@@ -13,21 +13,19 @@ mod systems;
 mod ui;
 mod utils;
 
-use crate::core::audio::{
-    change_audio_event, play_audio_event, play_music, setup_music_btn, toggle_music_keyboard,
-};
-use crate::core::camera::{move_camera_keyboard, reset_camera, setup_camera};
+use crate::core::audio::{change_audio_event, play_audio_event, play_music, setup_music_btn, toggle_music_keyboard, ChangeAudioEv, PlayAudioEv};
+use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp};
+use crate::core::map::systems::draw_map;
 use crate::core::network::Ip;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::persistence::{load_game, save_game};
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, initialize_game, on_resize_system};
-use crate::core::utils::{despawn};
+use crate::core::utils::despawn;
 use bevy::prelude::*;
-use crate::core::map::systems::draw_map;
 
 pub struct GamePlugin;
 
@@ -42,8 +40,10 @@ impl Plugin for GamePlugin {
             .init_state::<GameState>()
             .init_state::<AudioState>()
             // Events
-            .add_event::<LoadGameEv>()
+            .add_event::<PlayAudioEv>()
+            .add_event::<ChangeAudioEv>()
             .add_event::<SaveGameEv>()
+            .add_event::<LoadGameEv>()
             // Resources
             .init_resource::<Ip>()
             .init_resource::<GameSettings>()
@@ -52,20 +52,20 @@ impl Plugin for GamePlugin {
             .configure_sets(Update, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PostUpdate, InGameSet.run_if(in_state(AppState::Game)))
             // Camera
-            .add_systems(Startup, (initialize_game, setup_camera, draw_map).chain());
-            // .add_systems(
-            //     Update,
-            //     (move_camera_keyboard)
-            //         .run_if(not(in_state(GameState::InGameMenu)))
-            //         .in_set(InGameSet),
-            // )
-            // // Audio
-            // .add_systems(Startup, setup_music_btn)
-            // .add_systems(OnEnter(AudioState::Sound), play_music)
-            // .add_systems(
-            //     Update,
-            //     (change_audio_event, toggle_music_keyboard, play_audio_event),
-            // );
+            .add_systems(Startup, (initialize_game, setup_camera, draw_map).chain())
+            .add_systems(
+                Update,
+                (move_camera, move_camera_keyboard)
+                    .run_if(not(in_state(GameState::InGameMenu)))
+                    .in_set(InGameSet),
+            )
+            // Audio
+            .add_systems(Startup, setup_music_btn)
+            .add_systems(OnEnter(AudioState::Sound), play_music)
+            .add_systems(
+                Update,
+                (change_audio_event, toggle_music_keyboard, play_audio_event),
+            );
         //Networking
         // .add_systems(
         //     First,
@@ -127,7 +127,7 @@ impl Plugin for GamePlugin {
         //     );
 
         // Persistence
-        // #[cfg(not(target_arch = "wasm32"))]
-        // app.add_systems(Update, (load_game, save_game));
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Update, (load_game, save_game));
     }
 }

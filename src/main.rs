@@ -1,8 +1,9 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 
 mod core;
 mod utils;
 
+use crate::core::constants::{HEIGHT, WIDTH};
 use crate::core::GamePlugin;
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::NonSend;
@@ -11,7 +12,6 @@ use bevy::window::{WindowMode, WindowResolution};
 use bevy::winit::WinitWindows;
 use bevy_kira_audio::AudioPlugin;
 use winit::window::Icon;
-use crate::core::constants::{HEIGHT, WIDTH};
 
 pub const TITLE: &str = "Stellarion";
 

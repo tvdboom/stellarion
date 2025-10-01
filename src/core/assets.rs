@@ -1,4 +1,4 @@
-use bevy::asset::{AssetServer};
+use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use bevy_kira_audio::AudioSource;
 use std::collections::HashMap;
@@ -31,7 +31,12 @@ impl WorldAssets {
         name: &str,
         asset_type: &str,
     ) -> &'a T {
-        map.get(name).expect(&format!("No asset for {asset_type} {name}"))
+        map.get(name)
+            .expect(&format!("No asset for {asset_type} {name}"))
+    }
+
+    pub fn audio(&self, name: &str) -> Handle<AudioSource> {
+        self.get_asset(&self.audio, name, "audio").clone_weak()
     }
 
     pub fn font(&self, name: &str) -> Handle<Font> {
@@ -42,8 +47,12 @@ impl WorldAssets {
         self.get_asset(&self.images, name, "image").clone_weak()
     }
 
-    pub fn audio(&self, name: &str) -> Handle<AudioSource> {
-        self.get_asset(&self.audio, name, "audio").clone_weak()
+    pub fn texture(&self, name: &str) -> TextureInfo {
+        self.get_asset(&self.textures, name, "texture").clone()
+    }
+
+    pub fn atlas(&self, name: &str) -> AtlasInfo {
+        self.get_asset(&self.atlas, name, "atlas").clone()
     }
 }
 
@@ -70,15 +79,30 @@ impl FromWorld for WorldAssets {
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
             ("sound", assets.load("images/icons/sound.png")),
+            // Backgrounds
+            ("bg", assets.load("images/bg.png")),
             // Planets
             // ("desert", assets.load("images/planets/desert.png")),
             // ("gas", assets.load("images/planets/gas.png")),
             // ("ice", assets.load("images/planets/ice.png")),
             // ("normal", assets.load("images/planets/normal.png")),
-            ("water", assets.load("images/planets/water.png")),
+            ("planets", assets.load("images/planets.png")),
         ]);
 
-        let textures: HashMap<&'static str, TextureInfo> = HashMap::new();
+        let mut texture = world
+            .get_resource_mut::<Assets<TextureAtlasLayout>>()
+            .unwrap();
+
+        let planets =
+            TextureAtlasLayout::from_grid(UVec2::splat(450), 8, 8, Some(UVec2::splat(30)), None);
+        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([(
+            "planets",
+            TextureInfo {
+                image: images["planets"].clone_weak(),
+                layout: texture.add(planets),
+            },
+        )]);
+
         let atlas = HashMap::new();
 
         Self {

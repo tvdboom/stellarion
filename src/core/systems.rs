@@ -6,7 +6,6 @@ use bevy::prelude::*;
 use bevy::window::WindowResized;
 
 pub fn initialize_game(mut commands: Commands, game_settings: Res<GameSettings>) {
-    println!("ssaas");
     commands.insert_resource(Map::new(game_settings.n_planets));
 }
 

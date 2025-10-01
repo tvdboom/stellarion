@@ -2,7 +2,7 @@ use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
 use crate::core::map::map::Map;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
-use bevy::window::{SystemCursorIcon};
+use bevy::window::SystemCursorIcon;
 use bevy::winit::cursor::CursorIcon;
 
 #[derive(Component)]
@@ -33,82 +33,88 @@ pub fn setup_camera(mut commands: Commands) {
     ));
 }
 
-// pub fn move_camera(
-//     mut commands: Commands,
-//     mut camera_q: Query<
-//         (
-//             &Camera,
-//             &GlobalTransform,
-//             &mut Transform,
-//             &mut Projection,
-//         ),
-//         With<MainCamera>,
-//     >,
-//     mut scroll_ev: EventReader<MouseWheel>,
-//     mut motion_ev: EventReader<MouseMotion>,
-//     mouse: Res<ButtonInput<MouseButton>>,
-//     window: Single<(Entity, &Window)>,
-// ) {
-//     let (camera, global_t, mut camera_t, mut projection) = camera_q.single_mut().unwrap();
-//     let (window_e, window) = *window;
-//
-//     for ev in scroll_ev.read() {
-//         // Get cursor position in window space
-//         if let Some(cursor_pos) = window.cursor_position() {
-//             // Convert to world space
-//             if let Ok(world_pos) = camera.viewport_to_world_2d(global_t, cursor_pos) {
-//                 let scale_change = if ev.y > 0. {
-//                     1. / ZOOM_FACTOR
-//                 } else {
-//                     ZOOM_FACTOR
-//                 };
-//
-//                 let new_scale = (projection.scale * scale_change).clamp(MIN_ZOOM, MAX_ZOOM);
-//
-//                 // Adjust camera position to keep focus on the cursor
-//                 let shift = (world_pos - camera_t.translation.truncate())
-//                     * (1. - new_scale / projection.scale);
-//                 camera_t.translation += shift.extend(0.);
-//
-//                 projection.scale = new_scale;
-//             }
-//         }
-//     }
-//
-//     if mouse.pressed(MouseButton::Middle) {
-//         commands
-//             .entity(window_e)
-//             .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grab));
-//         for ev in motion_ev.read() {
-//             commands
-//                 .entity(window_e)
-//                 .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grabbing));
-//             if ev.delta.x.is_nan() || ev.delta.y.is_nan() {
-//                 continue;
-//             }
-//             camera_t.translation.x -= ev.delta.x * projection.scale;
-//             camera_t.translation.y += ev.delta.y * projection.scale;
-//         }
-//     } else {
-//         commands
-//             .entity(window_e)
-//             .insert(Into::<CursorIcon>::into(SystemCursorIcon::Default));
-//     }
-//
-//     let mut position = camera_t.translation.truncate();
-//
-//     // Compute the camera's current view size based on projection
-//     let view_size = projection.area.max - projection.area.min;
-//
-//     // Clamp camera position within bounds
-//     let target_pos = clamp_to_rect(position, view_size, Rect::new(0., 0., Map::SIZE, Map::SIZE));
-//     position = position.lerp(target_pos, LERP_FACTOR);
-//
-//     // Hard clamp to prevent escaping the map
-//     position = clamp_to_rect(position, view_size, Rect::new(Map::SIZE * 0.1, Map::SIZE * 0.1, Map::SIZE * 0.9, Map::SIZE * 0.9));
-//
-//     camera_t.translation = position.extend(camera_t.translation.z);
-// }
+pub fn move_camera(
+    mut commands: Commands,
+    map: Res<Map>,
+    mut camera_q: Query<
+        (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
+        With<MainCamera>,
+    >,
+    mut scroll_ev: EventReader<MouseWheel>,
+    mut motion_ev: EventReader<MouseMotion>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Single<(Entity, &Window)>,
+) {
+    let (camera, global_t, mut camera_t, mut projection) = camera_q.single_mut().unwrap();
+    let (window_e, window) = *window;
+
+    let Projection::Orthographic(projection) = &mut *projection else {
+        panic!("Expected Orthographic projection");
+    };
+
+    for ev in scroll_ev.read() {
+        // Get cursor position in window space
+        if let Some(cursor_pos) = window.cursor_position() {
+            // Convert to world space
+            if let Ok(world_pos) = camera.viewport_to_world_2d(global_t, cursor_pos) {
+                let scale_change = if ev.y > 0. {
+                    1. / ZOOM_FACTOR
+                } else {
+                    ZOOM_FACTOR
+                };
+
+                let new_scale = (projection.scale * scale_change).clamp(MIN_ZOOM, MAX_ZOOM);
+
+                // Adjust camera position to keep focus on the cursor
+                let shift = (world_pos - camera_t.translation.truncate())
+                    * (1. - new_scale / projection.scale);
+                camera_t.translation += shift.extend(0.);
+
+                projection.scale = new_scale;
+            }
+        }
+    }
+
+    if mouse.pressed(MouseButton::Middle) {
+        commands
+            .entity(window_e)
+            .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grab));
+        for ev in motion_ev.read() {
+            commands
+                .entity(window_e)
+                .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grabbing));
+            if ev.delta.x.is_nan() || ev.delta.y.is_nan() {
+                continue;
+            }
+            camera_t.translation.x -= ev.delta.x * projection.scale;
+            camera_t.translation.y += ev.delta.y * projection.scale;
+        }
+    } else {
+        commands
+            .entity(window_e)
+            .insert(Into::<CursorIcon>::into(SystemCursorIcon::Default));
+    }
+
+    let mut position = camera_t.translation.truncate();
+
+    // Compute the camera's current view size based on projection
+    let view_size = projection.area.max - projection.area.min;
+
+    // Clamp camera position within bounds
+    position = position.lerp(
+        clamp_to_rect(
+            position,
+            view_size,
+            Rect {
+                min: map.rect.min,
+                max: map.rect.max,
+            },
+        ),
+        LERP_FACTOR,
+    );
+
+    camera_t.translation = position.extend(camera_t.translation.z);
+}
 
 pub fn move_camera_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -116,10 +122,11 @@ pub fn move_camera_keyboard(
 ) {
     let (mut camera_t, projection) = camera_q.single_mut().unwrap();
 
-    println!("Camera position: {:?}", projection);
     let scale = if let Projection::Orthographic(projection) = &projection {
         projection.scale
-    } else {1.0};
+    } else {
+        1.0
+    };
 
     let transform = 10. * scale;
     if keyboard.pressed(KeyCode::KeyA) {
@@ -136,9 +143,7 @@ pub fn move_camera_keyboard(
     }
 }
 
-pub fn reset_camera(
-    mut camera_q: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
-) {
+pub fn reset_camera(mut camera_q: Query<(&mut Transform, &mut Projection), With<MainCamera>>) {
     let (mut camera_t, mut projection) = camera_q.single_mut().unwrap();
     camera_t.translation = Vec3::new(0., 0., 1.);
 

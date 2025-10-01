@@ -1,15 +1,15 @@
 use crate::core::game_settings::GameSettings;
+use crate::core::map::map::Map;
 use crate::core::states::{AppState, AudioState};
 use bevy::prelude::*;
+use bincode::config::standard;
+use bincode::serde::{decode_from_slice, encode_to_vec};
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use bincode::config::standard;
-use bincode::serde::{decode_from_slice, encode_to_vec};
-use crate::core::map::map::Map;
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveAll {
@@ -64,7 +64,11 @@ pub fn load_game(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_game(mut save_game_ev: EventReader<SaveGameEv>, game_settings: Res<GameSettings>, map: Res<Map>) {
+pub fn save_game(
+    mut save_game_ev: EventReader<SaveGameEv>,
+    game_settings: Res<GameSettings>,
+    map: Res<Map>,
+) {
     for _ in save_game_ev.read() {
         if let Some(mut file_path) = FileDialog::new().save_file() {
             if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {

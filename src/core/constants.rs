@@ -15,7 +15,15 @@ pub const PRESSED_BUTTON_COLOR: Color = Color::srgb(0.35, 0.65, 0.35);
 pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
 
 /// Camera
-pub const MIN_ZOOM: f32 = 0.2;
-pub const MAX_ZOOM: f32 = 1.;
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 1.2;
 pub const ZOOM_FACTOR: f32 = 1.1;
 pub const LERP_FACTOR: f32 = 0.05;
+
+/// Settings
+pub const MIN_PLANETS: u32 = 10;
+pub const MAX_PLANETS: u32 = 50;
+
+/// Map
+pub const BACKGROUND_Z: f32 = 0.;
+pub const PLANET_Z: f32 = 1.;

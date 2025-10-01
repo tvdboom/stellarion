@@ -22,7 +22,7 @@ impl Default for GameSettings {
             game_mode: GameMode::SinglePlayer,
             audio: AudioState::default(),
             n_players: 2,
-            n_planets: 10,
+            n_planets: 20,
         }
     }
 }
