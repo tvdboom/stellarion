@@ -6,6 +6,8 @@ use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
+pub type PlanetId = usize;
+
 #[derive(Component)]
 pub struct MapCmp;
 
@@ -30,22 +32,24 @@ impl PlanetKind {
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub struct Planet {
+    pub id: PlanetId,
     pub kind: PlanetKind,
     pub image: usize,
     pub resources: Resources,
     pub position: Vec2,
+    pub is_destroyed: bool,
 }
 
 impl Planet {
     // Pixel size of a planet on the screen
     pub const SIZE: f32 = 100.;
 
-    pub fn new(position: Vec2) -> Self {
-        let low = 0.0..3.0;
-        let medium = 2.0..4.0;
-        let high = 2.0..5.0;
+    pub fn new(id: PlanetId, position: Vec2) -> Self {
+        let low = 0..3;
+        let medium = 2..4;
+        let high = 2..5;
 
-        let configs: &[(PlanetKind, [&Range<f32>; 3])] = &[
+        let configs: &[(PlanetKind, [&Range<usize>; 3])] = &[
             (PlanetKind::Desert, [&high, &low, &low]),
             (PlanetKind::Gas, [&low, &low, &high]),
             (PlanetKind::Ice, [&low, &high, &low]),
@@ -55,17 +59,19 @@ impl Planet {
         let (kind, ranges) = configs.iter().choose(&mut rng()).unwrap();
 
         let resources = Resources::new(
-            rng().random_range(ranges[0].clone()),
-            rng().random_range(ranges[1].clone()),
-            rng().random_range(ranges[2].clone()),
-            0.,
+            rng().random_range(ranges[0].clone()) * 100,
+            rng().random_range(ranges[1].clone()) * 100,
+            rng().random_range(ranges[2].clone()) * 100,
+            0,
         );
 
         Self {
+            id,
             kind: *kind,
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
             resources,
             position,
+            is_destroyed: false,
         }
     }
 }
@@ -107,7 +113,11 @@ impl Map {
 
         Self {
             rect,
-            planets: positions.iter().map(|pos| Planet::new(*pos)).collect(),
+            planets: positions
+                .iter()
+                .enumerate()
+                .map(|(id, pos)| Planet::new(id, *pos))
+                .collect(),
         }
     }
 }

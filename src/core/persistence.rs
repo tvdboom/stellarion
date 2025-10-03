@@ -66,22 +66,24 @@ pub fn load_game(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
     mut save_game_ev: EventReader<SaveGameEv>,
-    game_settings: Res<GameSettings>,
-    map: Res<Map>,
+    settings: Res<GameSettings>,
+    map: Option<Res<Map>>,
 ) {
-    for _ in save_game_ev.read() {
-        if let Some(mut file_path) = FileDialog::new().save_file() {
-            if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
-                file_path.set_extension("bin");
+    if let Some(map) = map {
+        for _ in save_game_ev.read() {
+            if let Some(mut file_path) = FileDialog::new().save_file() {
+                if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
+                    file_path.set_extension("bin");
+                }
+
+                let file_path_str = file_path.to_string_lossy().to_string();
+                let data = SaveAll {
+                    game_settings: settings.clone(),
+                    map: map.clone(),
+                };
+
+                save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
             }
-
-            let file_path_str = file_path.to_string_lossy().to_string();
-            let data = SaveAll {
-                game_settings: game_settings.clone(),
-                map: map.clone(),
-            };
-
-            save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
         }
     }
 }

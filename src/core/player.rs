@@ -1,43 +1,14 @@
+use crate::core::map::map::PlanetId;
 use crate::core::resources::Resources;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
-pub struct Players(pub Vec<Player>);
-
-impl Default for Players {
-    fn default() -> Self {
-        Self(vec![Player::default()])
-    }
-}
-
-impl Players {
-    pub fn get(&self, id: ClientId) -> &Player {
-        self.0.iter().find(|p| p.id == id).unwrap()
-    }
-
-    pub fn get_mut(&mut self, id: ClientId) -> &mut Player {
-        self.0.iter_mut().find(|p| p.id == id).unwrap()
-    }
-
-    pub fn main(&self) -> &Player {
-        self.0.first().unwrap()
-    }
-
-    pub fn main_mut(&mut self) -> &mut Player {
-        self.0.first_mut().unwrap()
-    }
-
-    pub fn main_id(&self) -> ClientId {
-        self.main().id
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: ClientId,
     pub resources: Resources,
+    pub planets: Vec<PlanetId>,
 }
 
 impl Default for Player {
@@ -45,17 +16,22 @@ impl Default for Player {
         Self {
             id: 0,
             resources: Resources {
-                metal: 150.,
-                crystal: 150.,
-                deuterium: 150.,
-                energy: 150.,
+                metal: 1500,
+                crystal: 1500,
+                deuterium: 1500,
+                energy: 1500,
             },
+            planets: vec![0],
         }
     }
 }
 
 impl Player {
-    pub fn new(id: ClientId) -> Self {
-        Self { id, ..default() }
+    pub fn new(id: ClientId, home_planet: PlanetId) -> Self {
+        Self {
+            id,
+            planets: vec![home_planet],
+            ..default()
+        }
     }
 }

@@ -1,22 +1,41 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
+use bevy::prelude::Component;
+use strum_macros::EnumIter;
+
+#[derive(Component, EnumIter, Clone, Debug)]
+pub enum ResourceCmp {
+    Metal,
+    Crystal,
+    Deuterium,
+    Energy,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Resources {
-    pub metal: f32,
-    pub crystal: f32,
-    pub deuterium: f32,
-    pub energy: f32,
+    pub metal: usize,
+    pub crystal: usize,
+    pub deuterium: usize,
+    pub energy: usize,
 }
 
 impl Resources {
-    pub fn new(metal: f32, crystal: f32, deuterium: f32, energy: f32) -> Self {
+    pub fn new(metal: usize, crystal: usize, deuterium: usize, energy: usize) -> Self {
         Self {
             metal,
             crystal,
             deuterium,
             energy,
+        }
+    }
+
+    pub fn get(&self, resource: &ResourceCmp) -> usize {
+        match resource {
+            ResourceCmp::Metal => self.metal,
+            ResourceCmp::Crystal => self.crystal,
+            ResourceCmp::Deuterium => self.deuterium,
+            ResourceCmp::Energy => self.energy,
         }
     }
 }
@@ -59,23 +78,23 @@ macro_rules! resources_binary_ops {
                 }
             }
 
-            // Binary operations with float
-            impl<T: Into<f32>> $trait<T> for Resources {
+            // Binary operations with usize
+            impl<T: Into<usize>> $trait<T> for Resources {
                 type Output = Self;
 
                 fn $method(self, rhs: T) -> Self::Output {
-                    let float = rhs.into();
+                    let u = rhs.into();
                     Self {
-                        metal: self.metal $op float,
-                        crystal: self.crystal $op float,
-                        deuterium: self.deuterium $op float,
-                        energy: self.energy $op float,
+                        metal: self.metal $op u,
+                        crystal: self.crystal $op u,
+                        deuterium: self.deuterium $op u,
+                        energy: self.energy $op u,
                     }
                 }
             }
 
-            // Binary operations with float on reference
-            impl<T: Into<f32>> $trait<T> for &Resources {
+            // Binary operations with usize on reference
+            impl<T: Into<usize>> $trait<T> for &Resources {
                 type Output = Resources;
 
                 fn $method(self, rhs: T) -> Resources {
@@ -122,14 +141,14 @@ macro_rules! resources_assignment_ops {
                 }
             }
 
-            // Assignment operations with float
-            impl<T: Into<f32>> $trait<T> for Resources {
+            // Assignment operations with usize
+            impl<T: Into<usize>> $trait<T> for Resources {
                 fn $method(&mut self, rhs: T) {
-                    let float = rhs.into();
-                    self.metal $op float;
-                    self.crystal $op float;
-                    self.deuterium $op float;
-                    self.energy $op float;
+                    let u = rhs.into();
+                    self.metal $op u;
+                    self.crystal $op u;
+                    self.deuterium $op u;
+                    self.energy $op u;
                 }
             }
         )*

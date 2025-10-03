@@ -11,8 +11,8 @@ pub const SUBTITLE_TEXT_SIZE: f32 = 15.;
 pub const TITLE_TEXT_SIZE: f32 = 25.;
 pub const NORMAL_BUTTON_COLOR: Color = Color::srgb(0.15, 0.15, 0.15);
 pub const HOVERED_BUTTON_COLOR: Color = Color::srgb(0.25, 0.25, 0.25);
-pub const PRESSED_BUTTON_COLOR: Color = Color::srgb(0.35, 0.65, 0.35);
-pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
+pub const PRESSED_BUTTON_COLOR: Color = Color::srgb(0.55, 0.55, 0.65);
+pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.5, 0.5, 0.8);
 
 /// Camera
 pub const MIN_ZOOM: f32 = 0.5;

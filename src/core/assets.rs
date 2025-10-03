@@ -79,14 +79,25 @@ impl FromWorld for WorldAssets {
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
             ("sound", assets.load("images/icons/sound.png")),
+            ("attack", assets.load("images/icons/attack.png")),
+            ("defend", assets.load("images/icons/defend.png")),
+            ("fleet", assets.load("images/icons/fleet.png")),
+            ("owned", assets.load("images/icons/owned.png")),
+            ("spy", assets.load("images/icons/spy.png")),
             // Backgrounds
             ("bg", assets.load("images/bg.png")),
+            ("menu", assets.load("images/menu.png")),
+            ("defeat", assets.load("images/defeat.png")),
+            ("victory", assets.load("images/victory.png")),
             // Planets
-            // ("desert", assets.load("images/planets/desert.png")),
-            // ("gas", assets.load("images/planets/gas.png")),
-            // ("ice", assets.load("images/planets/ice.png")),
-            // ("normal", assets.load("images/planets/normal.png")),
             ("planets", assets.load("images/planets.png")),
+            ("destroyed", assets.load("images/destroyed.png")),
+            // Resources
+            ("cycle", assets.load("images/cycle.png")),
+            ("metal", assets.load("images/metal.png")),
+            ("crystal", assets.load("images/crystal.png")),
+            ("deuterium", assets.load("images/deuterium.png")),
+            ("energy", assets.load("images/energy.png")),
         ]);
 
         let mut texture = world

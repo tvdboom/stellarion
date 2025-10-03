@@ -1,5 +1,7 @@
 use crate::core::assets::WorldAssets;
+use crate::core::constants::{NORMAL_BUTTON_COLOR, PRESSED_BUTTON_COLOR};
 use crate::core::game_settings::GameSettings;
+use crate::core::menu::settings::SettingsBtn;
 use crate::core::states::AudioState;
 use bevy::prelude::*;
 use bevy_kira_audio::prelude::*;
@@ -27,10 +29,10 @@ pub fn setup_music_btn(mut commands: Commands, assets: Local<WorldAssets>) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
-            width: Val::Percent(5.),
-            height: Val::Percent(5.),
+            width: Val::Percent(3.),
+            height: Val::Percent(3.),
             right: Val::Percent(0.),
-            top: Val::Percent(3.),
+            top: Val::Percent(2.),
             ..default()
         })
         .with_children(|parent| {
@@ -58,7 +60,7 @@ pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
 pub fn change_audio_event(
     mut change_audio_ev: EventReader<ChangeAudioEv>,
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
-    // mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
+    mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
     mut game_settings: ResMut<GameSettings>,
     audio_state: Res<State<AudioState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
@@ -91,23 +93,23 @@ pub fn change_audio_event(
             };
         }
 
-        // for (mut bgcolor, setting) in &mut settings_btn {
-        //     if matches!(
-        //         setting,
-        //         SettingsBtn::Mute | SettingsBtn::NoMusic | SettingsBtn::Sound
-        //     ) {
-        //         bgcolor.0 = if (*setting == SettingsBtn::Mute
-        //             && game_settings.audio == AudioState::Mute)
-        //             || (*setting == SettingsBtn::NoMusic
-        //                 && game_settings.audio == AudioState::NoMusic)
-        //             || (*setting == SettingsBtn::Sound && game_settings.audio == AudioState::Sound)
-        //         {
-        //             PRESSED_BUTTON_COLOR
-        //         } else {
-        //             NORMAL_BUTTON_COLOR
-        //         };
-        //     }
-        // }
+        for (mut bgcolor, setting) in &mut settings_btn {
+            if matches!(
+                setting,
+                SettingsBtn::Mute | SettingsBtn::NoMusic | SettingsBtn::Sound
+            ) {
+                bgcolor.0 = if (*setting == SettingsBtn::Mute
+                    && game_settings.audio == AudioState::Mute)
+                    || (*setting == SettingsBtn::NoMusic
+                        && game_settings.audio == AudioState::NoMusic)
+                    || (*setting == SettingsBtn::Sound && game_settings.audio == AudioState::Sound)
+                {
+                    PRESSED_BUTTON_COLOR
+                } else {
+                    NORMAL_BUTTON_COLOR
+                };
+            }
+        }
     }
 }
 

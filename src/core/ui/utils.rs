@@ -27,18 +27,21 @@ pub fn despawn_ui<E: Debug + Clone + Reflect, T: Component>(
 }
 
 /// Add a root UI node that covers the whole screen
-pub fn add_root_node() -> Node {
-    Node {
-        width: Val::Percent(100.),
-        height: Val::Percent(100.),
-        position_type: PositionType::Absolute,
-        flex_direction: FlexDirection::Column,
-        align_content: AlignContent::Center,
-        align_items: AlignItems::Center,
-        align_self: AlignSelf::Center,
-        justify_content: JustifyContent::Center,
-        ..default()
-    }
+pub fn add_root_node() -> (Node, Pickable) {
+    (
+        Node {
+            width: Val::Percent(100.),
+            height: Val::Percent(100.),
+            position_type: PositionType::Absolute,
+            flex_direction: FlexDirection::Column,
+            align_content: AlignContent::Center,
+            align_items: AlignItems::Center,
+            align_self: AlignSelf::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Pickable::IGNORE,
+    )
 }
 
 /// Add a standard text component

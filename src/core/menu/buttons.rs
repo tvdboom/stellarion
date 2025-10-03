@@ -1,0 +1,235 @@
+use crate::core::assets::WorldAssets;
+use crate::core::constants::*;
+use crate::core::game_settings::GameSettings;
+use crate::core::map::map::{Map, Planet, PlanetId};
+use crate::core::network::{
+    new_renet_client, new_renet_server, Ip, ServerMessage, ServerSendMessage,
+};
+use crate::core::persistence::{LoadGameEv, SaveGameEv};
+use crate::core::player::Player;
+use crate::core::states::{AppState, GameState};
+use crate::core::ui::utils::{add_text, recolor};
+use crate::utils::NameFromEnum;
+use bevy::prelude::*;
+use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
+use bevy_renet::renet::{RenetClient, RenetServer};
+use rand::prelude::IteratorRandom;
+use rand::rng;
+use crate::core::resources::Resources;
+
+#[derive(Component)]
+pub struct MenuCmp;
+
+#[derive(Component)]
+pub struct ImageCover;
+
+#[derive(Component, Clone, Debug, PartialEq)]
+pub enum MenuBtn {
+    Singleplayer,
+    NewGame,
+    LoadGame,
+    HostGame,
+    FindGame,
+    Back,
+    Continue,
+    SaveGame,
+    Settings,
+    Quit,
+}
+
+#[derive(Component)]
+pub struct DisabledButton;
+
+#[derive(Component)]
+pub struct LobbyTextCmp;
+
+#[derive(Component)]
+pub struct IpTextCmp;
+
+pub fn on_click_menu_button(
+    trigger: Trigger<Pointer<Click>>,
+    mut commands: Commands,
+    btn_q: Query<(Option<&DisabledButton>, &MenuBtn)>,
+    server: Option<ResMut<RenetServer>>,
+    mut client: Option<ResMut<RenetClient>>,
+    settings: Res<GameSettings>,
+    ip: Res<Ip>,
+    mut load_game_ev: EventWriter<LoadGameEv>,
+    mut save_game_ev: EventWriter<SaveGameEv>,
+    mut server_send_message: EventWriter<ServerSendMessage>,
+    app_state: Res<State<AppState>>,
+    mut next_app_state: ResMut<NextState<AppState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
+) {
+    let (disabled, btn) = btn_q.get(trigger.target()).unwrap();
+
+    if disabled.is_some() {
+        return;
+    }
+
+    match btn {
+        MenuBtn::Singleplayer => {
+            let mut map = Map::new(settings.n_planets);
+
+            // Alter home planet's resources
+            map.planets
+                .iter_mut()
+                .find(|p| p.id == 0)
+                .map(|p| p.resources = Resources::new(200, 200, 100, 0));
+
+            commands.insert_resource(map);
+            commands.insert_resource(Player::new(0, 0));
+            next_app_state.set(AppState::Game);
+        }
+        MenuBtn::NewGame => {
+            let server = server.unwrap();
+
+            let mut map = Map::new(settings.n_planets * settings.n_players);
+
+            // Determine home planets
+            let mut home_planets: Vec<(PlanetId, Vec2)> = vec![];
+            while home_planets.len() < settings.n_players as usize {
+                let candidate = map
+                    .planets
+                    .iter()
+                    .choose(&mut rng())
+                    .map(|p| (p.id, p.position))
+                    .unwrap();
+
+                if !home_planets
+                    .iter()
+                    .all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 3.)
+                {
+                    home_planets.push(candidate);
+                }
+            }
+
+            // Alter home planet's resources
+            for planet in home_planets.iter() {
+                map.planets
+                    .iter_mut()
+                    .find(|p| p.id == planet.0)
+                    .map(|p| p.resources = Resources::new(200, 200, 100, 0));
+            }
+
+            // Send the start game signal to all clients with their player id
+            for (client, planet) in server.clients_id().iter().zip(home_planets.iter().skip(1)) {
+                server_send_message.write(ServerSendMessage {
+                    message: ServerMessage::StartGame {
+                        id: *client,
+                        home_planet: planet.0,
+                        map: map.clone(),
+                    },
+                    client: Some(*client),
+                });
+            }
+
+            commands.insert_resource(map);
+            commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
+
+            next_app_state.set(AppState::Game);
+        }
+        MenuBtn::LoadGame => {
+            load_game_ev.write(LoadGameEv);
+        }
+        MenuBtn::HostGame => {
+            // Remove client resources if they exist
+            if client.is_some() {
+                commands.remove_resource::<RenetClient>();
+                commands.remove_resource::<NetcodeClientTransport>();
+            }
+
+            let (server, transport) = new_renet_server();
+            commands.insert_resource(server);
+            commands.insert_resource(transport);
+
+            next_app_state.set(AppState::Lobby);
+        }
+        MenuBtn::FindGame => {
+            let (server, transport) = new_renet_client(&ip.0);
+            commands.insert_resource(server);
+            commands.insert_resource(transport);
+
+            next_app_state.set(AppState::Lobby);
+        }
+        MenuBtn::Back => match *app_state.get() {
+            AppState::MultiPlayerMenu | AppState::Settings => {
+                next_app_state.set(AppState::MainMenu);
+            }
+            AppState::Lobby => {
+                if let Some(client) = client.as_mut() {
+                    client.disconnect();
+                    commands.remove_resource::<RenetClient>();
+                } else if let Some(mut server) = server {
+                    server.disconnect_all();
+                    commands.remove_resource::<RenetServer>();
+                    commands.remove_resource::<NetcodeServerTransport>();
+                }
+
+                next_app_state.set(AppState::MultiPlayerMenu);
+            }
+            _ => unreachable!(),
+        },
+        MenuBtn::Continue => {
+            next_game_state.set(GameState::Playing);
+        }
+        MenuBtn::SaveGame => {
+            save_game_ev.write(SaveGameEv);
+        }
+        MenuBtn::Settings => {
+            next_app_state.set(AppState::Settings);
+        }
+        MenuBtn::Quit => match *app_state.get() {
+            AppState::Game => {
+                if let Some(client) = client.as_mut() {
+                    client.disconnect();
+                    commands.remove_resource::<RenetClient>();
+                } else if let Some(mut server) = server {
+                    server.disconnect_all();
+                    commands.remove_resource::<RenetServer>();
+                    commands.remove_resource::<NetcodeServerTransport>();
+                }
+
+                next_game_state.set(GameState::default());
+                next_app_state.set(AppState::MainMenu)
+            }
+            AppState::MainMenu => std::process::exit(0),
+            _ => unreachable!(),
+        },
+    }
+}
+
+pub fn spawn_menu_button(
+    parent: &mut ChildSpawnerCommands,
+    btn: MenuBtn,
+    assets: &WorldAssets,
+    window: &Window,
+) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(25.),
+                height: Val::Percent(10.),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                margin: UiRect::all(Val::Percent(1.)),
+                ..default()
+            },
+            BackgroundColor(NORMAL_BUTTON_COLOR),
+            btn.clone(),
+        ))
+        .observe(recolor::<Pointer<Over>>(HOVERED_BUTTON_COLOR))
+        .observe(recolor::<Pointer<Out>>(NORMAL_BUTTON_COLOR))
+        .observe(recolor::<Pointer<Pressed>>(PRESSED_BUTTON_COLOR))
+        .observe(recolor::<Pointer<Released>>(HOVERED_BUTTON_COLOR))
+        .observe(on_click_menu_button)
+        .with_children(|parent| {
+            parent.spawn(add_text(
+                btn.to_title(),
+                "bold",
+                BUTTON_TEXT_SIZE,
+                assets,
+                window,
+            ));
+        });
+}
