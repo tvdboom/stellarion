@@ -33,11 +33,11 @@ use crate::core::persistence::{load_game, save_game};
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
+use crate::core::ui::systems::{draw_ui, update_ui};
 use crate::core::utils::despawn;
 use bevy::prelude::*;
 use bevy_renet::renet::{RenetClient, RenetServer};
 use strum::IntoEnumIterator;
-use crate::core::ui::systems::{draw_ui, update_ui};
 
 pub struct GamePlugin;
 
@@ -116,7 +116,10 @@ impl Plugin for GamePlugin {
                 ),
             )
             // In-game states
-            .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map, draw_ui))
+            .add_systems(
+                OnEnter(AppState::Game),
+                (despawn::<MapCmp>, draw_map, draw_ui),
+            )
             .add_systems(Update, (update_planet_info, update_ui).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)

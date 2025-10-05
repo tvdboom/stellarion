@@ -1,4 +1,5 @@
 use crate::core::assets::WorldAssets;
+use crate::core::ui::systems::UiCmp;
 use bevy::prelude::*;
 use std::fmt::Debug;
 
@@ -27,7 +28,7 @@ pub fn despawn_ui<E: Debug + Clone + Reflect, T: Component>(
 }
 
 /// Add a root UI node that covers the whole screen
-pub fn add_root_node() -> (Node, Pickable, ZIndex) {
+pub fn add_root_node() -> (Node, Pickable, ZIndex, UiCmp) {
     (
         Node {
             width: Val::Percent(100.),
@@ -42,6 +43,7 @@ pub fn add_root_node() -> (Node, Pickable, ZIndex) {
         },
         Pickable::IGNORE,
         ZIndex(-1),
+        UiCmp,
     )
 }
 

@@ -1,9 +1,10 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
-use crate::core::constants::{PLANET_Z};
+use crate::core::constants::PLANET_Z;
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp, Planet};
 use crate::core::map::utils::{on_out, on_over, Hovered};
+use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::Player;
 use crate::core::resources::ResourceCmp;
 use crate::utils::NameFromEnum;
@@ -37,6 +38,12 @@ pub fn draw_map(
     let Projection::Orthographic(projection) = &mut *projection else {
         panic!("Expected Orthographic projection");
     };
+
+    commands.spawn((
+        Sprite::from_image(assets.image("bg")),
+        Pickable::IGNORE,
+        MenuCmp,
+    ));
 
     let texture = assets.texture("planets");
     for planet in &map.planets {
@@ -100,7 +107,10 @@ pub fn draw_map(
                             .spawn((
                                 Sprite {
                                     image: assets.image(resource.to_lowername().as_str()),
-                                    custom_size: Some(Vec2::new(Planet::SIZE * 0.45, Planet::SIZE * 0.3)),
+                                    custom_size: Some(Vec2::new(
+                                        Planet::SIZE * 0.45,
+                                        Planet::SIZE * 0.3,
+                                    )),
                                     ..default()
                                 },
                                 Transform {

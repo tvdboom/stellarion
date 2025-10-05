@@ -16,7 +16,6 @@ use crate::TITLE;
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
 use std::net::IpAddr;
-use crate::core::ui::systems::BackgroundImage;
 
 pub fn setup_menu(
     mut commands: Commands,
@@ -27,18 +26,12 @@ pub fn setup_menu(
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
-    commands.spawn((
-        Sprite {
-            image: assets.image("menu"),
-            custom_size: Some(Vec2::new(window.width(), window.height())),
-            ..default()
-        },
-        BackgroundImage,
-        MenuCmp,
-    ));
-
     commands
-        .spawn((add_root_node(), MenuCmp))
+        .spawn((
+            add_root_node(),
+            ImageNode::new(assets.image("menu")),
+            MenuCmp,
+        ))
         .with_children(|parent| {
             parent
                 .spawn(Node {
@@ -65,6 +58,7 @@ pub fn setup_menu(
                 .with_children(|parent| match app_state.get() {
                     AppState::MainMenu => {
                         spawn_menu_button(parent, MenuBtn::Singleplayer, &assets, &window);
+                        spawn_menu_button(parent, MenuBtn::Multiplayer, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::NewGame, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);
                         #[cfg(not(target_arch = "wasm32"))]

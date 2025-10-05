@@ -1,7 +1,7 @@
+use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
-use bevy::prelude::Component;
 use strum_macros::EnumIter;
 
 #[derive(Component, EnumIter, Clone, Debug)]

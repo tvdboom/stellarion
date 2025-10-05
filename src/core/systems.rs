@@ -4,20 +4,12 @@ use crate::core::states::{AppState, GameState};
 use crate::core::ui::utils::TextSize;
 use bevy::prelude::*;
 use bevy::window::WindowResized;
-use crate::core::ui::systems::BackgroundImage;
 
 pub fn on_resize_system(
     mut resize_reader: EventReader<WindowResized>,
-    mut image_q: Query<&mut Sprite, With<BackgroundImage>>,
     mut text: Query<(&mut TextFont, &TextSize)>,
 ) {
     for ev in resize_reader.read() {
-        for mut sprite in &mut image_q {
-            if let Some(size) = &mut sprite.custom_size {
-                *size = Vec2::new(ev.width, ev.height);
-            }
-        }
-
         for (mut text, size) in text.iter_mut() {
             text.font_size = size.0 * ev.height / 460.
         }

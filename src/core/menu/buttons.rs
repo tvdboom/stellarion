@@ -7,6 +7,7 @@ use crate::core::network::{
 };
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::player::Player;
+use crate::core::resources::Resources;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::utils::{add_text, recolor};
 use crate::utils::NameFromEnum;
@@ -15,7 +16,6 @@ use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
 use bevy_renet::renet::{RenetClient, RenetServer};
 use rand::prelude::IteratorRandom;
 use rand::rng;
-use crate::core::resources::Resources;
 
 #[derive(Component)]
 pub struct MenuCmp;
@@ -23,6 +23,7 @@ pub struct MenuCmp;
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum MenuBtn {
     Singleplayer,
+    Multiplayer,
     NewGame,
     LoadGame,
     HostGame,
@@ -77,6 +78,9 @@ pub fn on_click_menu_button(
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
             next_app_state.set(AppState::Game);
+        }
+        MenuBtn::Multiplayer => {
+            next_app_state.set(AppState::MultiPlayerMenu);
         }
         MenuBtn::NewGame => {
             let server = server.unwrap();
