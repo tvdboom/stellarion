@@ -27,7 +27,7 @@ pub fn despawn_ui<E: Debug + Clone + Reflect, T: Component>(
 }
 
 /// Add a root UI node that covers the whole screen
-pub fn add_root_node() -> (Node, Pickable) {
+pub fn add_root_node() -> (Node, Pickable, ZIndex) {
     (
         Node {
             width: Val::Percent(100.),
@@ -41,6 +41,7 @@ pub fn add_root_node() -> (Node, Pickable) {
             ..default()
         },
         Pickable::IGNORE,
+        ZIndex(-1),
     )
 }
 

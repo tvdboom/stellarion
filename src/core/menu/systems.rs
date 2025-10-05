@@ -4,7 +4,7 @@ use crate::core::constants::{
 };
 use crate::core::game_settings::GameSettings;
 use crate::core::menu::buttons::{
-    spawn_menu_button, DisabledButton, ImageCover, IpTextCmp, LobbyTextCmp, MenuBtn, MenuCmp,
+    spawn_menu_button, DisabledButton, IpTextCmp, LobbyTextCmp, MenuBtn, MenuCmp,
 };
 use crate::core::menu::settings::{spawn_label, SettingsBtn};
 use crate::core::network::Ip;
@@ -16,6 +16,7 @@ use crate::TITLE;
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
 use std::net::IpAddr;
+use crate::core::ui::systems::BackgroundImage;
 
 pub fn setup_menu(
     mut commands: Commands,
@@ -32,7 +33,7 @@ pub fn setup_menu(
             custom_size: Some(Vec2::new(window.width(), window.height())),
             ..default()
         },
-        ImageCover,
+        BackgroundImage,
         MenuCmp,
     ));
 

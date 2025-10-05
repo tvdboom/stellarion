@@ -9,7 +9,6 @@ pub enum ResourceCmp {
     Metal,
     Crystal,
     Deuterium,
-    Energy,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -17,16 +16,14 @@ pub struct Resources {
     pub metal: usize,
     pub crystal: usize,
     pub deuterium: usize,
-    pub energy: usize,
 }
 
 impl Resources {
-    pub fn new(metal: usize, crystal: usize, deuterium: usize, energy: usize) -> Self {
+    pub fn new(metal: usize, crystal: usize, deuterium: usize) -> Self {
         Self {
             metal,
             crystal,
             deuterium,
-            energy,
         }
     }
 
@@ -35,7 +32,6 @@ impl Resources {
             ResourceCmp::Metal => self.metal,
             ResourceCmp::Crystal => self.crystal,
             ResourceCmp::Deuterium => self.deuterium,
-            ResourceCmp::Energy => self.energy,
         }
     }
 }
@@ -44,13 +40,11 @@ impl PartialOrd for Resources {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         let all_gte = self.metal >= other.metal
             && self.crystal >= other.crystal
-            && self.deuterium >= other.deuterium
-            && self.energy >= other.energy;
+            && self.deuterium >= other.deuterium;
 
         let all_lte = self.metal <= other.metal
             && self.crystal <= other.crystal
-            && self.deuterium <= other.deuterium
-            && self.energy <= other.energy;
+            && self.deuterium <= other.deuterium;
 
         match (all_gte, all_lte) {
             (true, true) => Some(Ordering::Equal),
@@ -73,7 +67,6 @@ macro_rules! resources_binary_ops {
                         metal: self.metal $op rhs.metal,
                         crystal: self.crystal $op rhs.crystal,
                         deuterium: self.deuterium $op rhs.deuterium,
-                        energy: self.energy $op rhs.energy,
                     }
                 }
             }
@@ -88,7 +81,6 @@ macro_rules! resources_binary_ops {
                         metal: self.metal $op u,
                         crystal: self.crystal $op u,
                         deuterium: self.deuterium $op u,
-                        energy: self.energy $op u,
                     }
                 }
             }
@@ -103,7 +95,6 @@ macro_rules! resources_binary_ops {
                         metal: self.metal $op float,
                         crystal: self.crystal $op float,
                         deuterium: self.deuterium $op float,
-                        energy: self.energy $op float,
                     }
                 }
             }
@@ -127,7 +118,6 @@ macro_rules! resources_assignment_ops {
                     self.metal $op rhs.metal;
                     self.crystal $op rhs.crystal;
                     self.deuterium $op rhs.deuterium;
-                    self.energy $op rhs.energy;
                 }
             }
 
@@ -137,7 +127,6 @@ macro_rules! resources_assignment_ops {
                     self.metal $op rhs.metal;
                     self.crystal $op rhs.crystal;
                     self.deuterium $op rhs.deuterium;
-                    self.energy $op rhs.energy;
                 }
             }
 
@@ -148,7 +137,6 @@ macro_rules! resources_assignment_ops {
                     self.metal $op u;
                     self.crystal $op u;
                     self.deuterium $op u;
-                    self.energy $op u;
                 }
             }
         )*

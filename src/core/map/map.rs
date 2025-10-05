@@ -62,7 +62,6 @@ impl Planet {
             rng().random_range(ranges[0].clone()) * 100,
             rng().random_range(ranges[1].clone()) * 100,
             rng().random_range(ranges[2].clone()) * 100,
-            0,
         );
 
         Self {

@@ -19,7 +19,6 @@ impl Default for Player {
                 metal: 1500,
                 crystal: 1500,
                 deuterium: 1500,
-                energy: 1500,
             },
             planets: vec![0],
         }

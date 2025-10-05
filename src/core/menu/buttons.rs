@@ -20,9 +20,6 @@ use crate::core::resources::Resources;
 #[derive(Component)]
 pub struct MenuCmp;
 
-#[derive(Component)]
-pub struct ImageCover;
-
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum MenuBtn {
     Singleplayer,
@@ -75,7 +72,7 @@ pub fn on_click_menu_button(
             map.planets
                 .iter_mut()
                 .find(|p| p.id == 0)
-                .map(|p| p.resources = Resources::new(200, 200, 100, 0));
+                .map(|p| p.resources = Resources::new(200, 200, 100));
 
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
@@ -109,7 +106,7 @@ pub fn on_click_menu_button(
                 map.planets
                     .iter_mut()
                     .find(|p| p.id == planet.0)
-                    .map(|p| p.resources = Resources::new(200, 200, 100, 0));
+                    .map(|p| p.resources = Resources::new(200, 200, 100));
             }
 
             // Send the start game signal to all clients with their player id

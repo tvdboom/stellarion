@@ -1,16 +1,21 @@
 use crate::core::assets::WorldAssets;
 use bevy::prelude::*;
+use bevy::ui::NodeMeasure::Image;
 use strum::IntoEnumIterator;
-use crate::core::constants::{TITLE_TEXT_SIZE};
+use crate::core::constants::{BACKGROUND_Z, TITLE_TEXT_SIZE};
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::MapCmp;
+use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::Player;
 use crate::core::resources::ResourceCmp;
-use crate::core::ui::utils::add_text;
+use crate::core::ui::utils::{add_root_node, add_text};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
 pub struct UiCmp;
+
+#[derive(Component)]
+pub struct BackgroundImage;
 
 #[derive(Component)]
 pub struct CycleCmp;
@@ -22,17 +27,24 @@ pub fn draw_ui(
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
+    commands.spawn((
+        add_root_node(),
+        ImageNode::new(assets.image("bg")),
+        MenuCmp,
+    ));
+
     commands
         .spawn((
             Node {
                 top: Val::Percent(3.),
-                left: Val::Percent(2.),
-                width: Val::Percent(65.),
-                height: Val::Percent(7.),
+                width: Val::Percent(50.),
+                height: Val::Percent(6.),
                 position_type: PositionType::Absolute,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0., 0., 0., 0.8)),
+            ImageNode::new(assets.image("panel")),
             Pickable::IGNORE,
             UiCmp,
             MapCmp,

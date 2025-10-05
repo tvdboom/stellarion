@@ -1,6 +1,6 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
-use crate::core::constants::{BACKGROUND_Z, PLANET_Z};
+use crate::core::constants::{PLANET_Z};
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp, Planet};
 use crate::core::map::utils::{on_out, on_over, Hovered};
@@ -38,13 +38,6 @@ pub fn draw_map(
         panic!("Expected Orthographic projection");
     };
 
-    commands.spawn((
-        Sprite::from_image(assets.image("bg")),
-        Transform::from_xyz(0., 0., BACKGROUND_Z),
-        Pickable::IGNORE,
-        MapCmp,
-    ));
-
     let texture = assets.texture("planets");
     for planet in &map.planets {
         commands
@@ -80,22 +73,22 @@ pub fn draw_map(
                 if !planet.is_destroyed {
                     for icon in PlanetIcon::iter() {
                         parent.spawn((
-                            Sprite::from_image(assets.image(icon.to_lowername().as_str())),
-                            Transform {
-                                translation: Vec3::new(
-                                    Planet::SIZE
-                                        * (0.35
-                                            - match icon {
-                                                PlanetIcon::Attack | PlanetIcon::Owned => 0,
-                                                PlanetIcon::Spy | PlanetIcon::Defend => 1,
-                                                PlanetIcon::Fleet => 2,
-                                            } as f32),
-                                    Planet::SIZE * 0.45,
-                                    0.8,
-                                ),
-                                scale: Vec3::splat(1.2),
+                            Sprite {
+                                image: assets.image(icon.to_lowername().as_str()),
+                                custom_size: Some(Vec2::splat(Planet::SIZE * 0.2)),
                                 ..default()
                             },
+                            Transform::from_translation(Vec3::new(
+                                Planet::SIZE
+                                    * (0.35
+                                        - match icon {
+                                            PlanetIcon::Attack | PlanetIcon::Owned => 0,
+                                            PlanetIcon::Spy | PlanetIcon::Defend => 1,
+                                            PlanetIcon::Fleet => 2,
+                                        } as f32),
+                                Planet::SIZE * 0.45,
+                                0.8,
+                            )),
                             Pickable::IGNORE,
                             Visibility::Inherited,
                             icon,
@@ -105,7 +98,11 @@ pub fn draw_map(
                     for (i, resource) in ResourceCmp::iter().take(3).enumerate() {
                         parent
                             .spawn((
-                                Sprite::from_image(assets.image(resource.to_lowername().as_str())),
+                                Sprite {
+                                    image: assets.image(resource.to_lowername().as_str()),
+                                    custom_size: Some(Vec2::new(Planet::SIZE * 0.45, Planet::SIZE * 0.3)),
+                                    ..default()
+                                },
                                 Transform {
                                     translation: Vec3::new(
                                         -Planet::SIZE,

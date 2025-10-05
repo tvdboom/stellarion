@@ -89,6 +89,9 @@ impl FromWorld for WorldAssets {
             ("menu", assets.load("images/menu.png")),
             ("defeat", assets.load("images/defeat.png")),
             ("victory", assets.load("images/victory.png")),
+            // Ui
+            ("panel", assets.load("images/panel.png")),
+            ("panel2", assets.load("images/panel2.png")),
             // Planets
             ("planets", assets.load("images/planets.png")),
             ("destroyed", assets.load("images/destroyed.png")),
@@ -97,7 +100,6 @@ impl FromWorld for WorldAssets {
             ("metal", assets.load("images/metal.png")),
             ("crystal", assets.load("images/crystal.png")),
             ("deuterium", assets.load("images/deuterium.png")),
-            ("energy", assets.load("images/energy.png")),
         ]);
 
         let mut texture = world
