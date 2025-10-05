@@ -8,6 +8,9 @@ use bevy::winit::cursor::CursorIcon;
 #[derive(Component)]
 pub struct MainCamera;
 
+#[derive(Component)]
+pub struct ParallaxCmp;
+
 pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
     let min_x = bounds.min.x + view_size.x * 0.5;
     let min_y = bounds.min.y + view_size.y * 0.5;
@@ -40,6 +43,7 @@ pub fn move_camera(
         (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
         With<MainCamera>,
     >,
+    mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
     mut scroll_ev: EventReader<MouseWheel>,
     mut motion_ev: EventReader<MouseMotion>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -114,6 +118,13 @@ pub fn move_camera(
     );
 
     camera_t.translation = position.extend(camera_t.translation.z);
+
+    for mut parallax_t in parallax_q.iter_mut() {
+        parallax_t.translation.x = camera_t.translation.x / 1.2;
+        parallax_t.translation.y = camera_t.translation.y / 1.2;
+
+        parallax_t.scale = 0.6 * camera_t.scale.powf(0.8);
+    }
 }
 
 pub fn move_camera_keyboard(

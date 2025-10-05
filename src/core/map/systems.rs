@@ -1,5 +1,5 @@
 use crate::core::assets::WorldAssets;
-use crate::core::camera::MainCamera;
+use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::PLANET_Z;
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp, Planet};
@@ -41,6 +41,7 @@ pub fn draw_map(
 
     commands.spawn((
         Sprite::from_image(assets.image("bg")),
+        ParallaxCmp,
         Pickable::IGNORE,
         MenuCmp,
     ));

@@ -41,18 +41,25 @@ pub fn draw_ui(
             ))
             .with_children(|parent| {
                 parent
-                    .spawn((
-                        Node {
-                            width: Val::Percent(5.),
-                            margin: UiRect::all(Val::Percent(1.)).with_right(Val::Percent(0.)),
-                            ..default()
-                        },
-                        ImageNode::new(assets.image("cycle")),
-                    ))
+                    .spawn((Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        margin: UiRect::ZERO.with_right(Val::Percent(15.)),
+                        ..default()
+                    },))
                     .with_children(|parent| {
                         parent.spawn((
+                            Node {
+                                height: Val::Percent(80.),
+                                margin: UiRect::ZERO.with_right(Val::Percent(10.)),
+                                ..default()
+                            },
+                            ImageNode::new(assets.image("cycle")),
+                        ));
+
+                        parent.spawn((
                             add_text(
-                                format!("{:.0}", settings.cycle),
+                                settings.cycle.to_string(),
                                 "bold",
                                 SUBTITLE_TEXT_SIZE,
                                 &assets,
@@ -64,23 +71,25 @@ pub fn draw_ui(
 
                 for resource in ResourceCmp::iter() {
                     parent
-                        .spawn((
-                            Node {
-                                width: Val::Percent(5.),
-                                margin: UiRect::all(Val::Percent(1.)).with_right(Val::Percent(1.5)),
-                                ..default()
-                            },
-                            ImageNode::new(assets.image(resource.to_lowername().as_str())),
-                        ))
+                        .spawn((Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            margin: UiRect::ZERO.with_right(Val::Percent(5.)),
+                            ..default()
+                        },))
                         .with_children(|parent| {
                             parent.spawn((
                                 Node {
-                                    align_self: AlignSelf::Center,
-                                    margin: UiRect::ZERO.with_right(Val::Percent(3.)),
+                                    height: Val::Percent(80.),
+                                    margin: UiRect::ZERO.with_right(Val::Percent(10.)),
                                     ..default()
                                 },
+                                ImageNode::new(assets.image(resource.to_lowername().as_str())),
+                            ));
+
+                            parent.spawn((
                                 add_text(
-                                    format!("{:.0}", player.resources.get(&resource)),
+                                    player.resources.get(&resource).to_string(),
                                     "bold",
                                     SUBTITLE_TEXT_SIZE,
                                     &assets,
