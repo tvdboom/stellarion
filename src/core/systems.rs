@@ -42,8 +42,13 @@ pub fn check_keys(
         }
     }
 
-    // Toggle show planet resources
-    if keyboard.just_pressed(KeyCode::KeyR) {
-        settings.show_resources = !settings.show_resources;
+    // Toggle show planet info
+    if keyboard.just_pressed(KeyCode::KeyI) {
+        settings.show_info = !settings.show_info;
+    }
+    
+    // Toggle show hover info
+    if keyboard.just_pressed(KeyCode::KeyH) {
+        settings.show_hover = !settings.show_hover;
     }
 }

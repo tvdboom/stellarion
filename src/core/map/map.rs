@@ -1,4 +1,4 @@
-use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, WIDTH};
+use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, PLANET_NAMES, WIDTH};
 use crate::core::resources::Resources;
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
@@ -33,6 +33,7 @@ impl PlanetKind {
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub struct Planet {
     pub id: PlanetId,
+    pub name: String,
     pub kind: PlanetKind,
     pub image: usize,
     pub resources: Resources,
@@ -44,7 +45,7 @@ impl Planet {
     // Pixel size of a planet on the screen
     pub const SIZE: f32 = 100.;
 
-    pub fn new(id: PlanetId, position: Vec2) -> Self {
+    pub fn new(id: PlanetId, name: String, position: Vec2) -> Self {
         let low = 0..3;
         let medium = 2..4;
         let high = 2..5;
@@ -66,6 +67,7 @@ impl Planet {
 
         Self {
             id,
+            name,
             kind: *kind,
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
             resources,
@@ -110,12 +112,18 @@ impl Map {
             }
         }
 
+        let names = PLANET_NAMES
+            .iter()
+            .cloned()
+            .choose_multiple(&mut rng(), n_planets as usize);
+
         Self {
             rect,
-            planets: positions
+            planets: names
                 .iter()
+                .zip(positions)
                 .enumerate()
-                .map(|(id, pos)| Planet::new(id, *pos))
+                .map(|(id, (name, pos))| Planet::new(id, name.to_string(), pos))
                 .collect(),
         }
     }

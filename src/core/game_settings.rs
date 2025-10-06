@@ -7,8 +7,9 @@ pub struct GameSettings {
     pub audio: AudioState,
     pub n_players: u8,
     pub n_planets: u8,
-    pub show_resources: bool,
-    pub cycle: usize,
+    pub show_info: bool,
+    pub show_hover: bool,
+    pub turn: usize,
 }
 
 impl Default for GameSettings {
@@ -17,8 +18,9 @@ impl Default for GameSettings {
             audio: AudioState::default(),
             n_players: 2,
             n_planets: 10,
-            show_resources: false,
-            cycle: 1,
+            show_info: false,
+            show_hover: true,
+            turn: 1,
         }
     }
 }

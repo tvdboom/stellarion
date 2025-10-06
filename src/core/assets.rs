@@ -9,19 +9,11 @@ pub struct TextureInfo {
     pub layout: Handle<TextureAtlasLayout>,
 }
 
-#[derive(Clone)]
-pub struct AtlasInfo {
-    pub image: Handle<Image>,
-    pub texture: TextureAtlas,
-    pub last_index: usize,
-}
-
 pub struct WorldAssets {
     pub audio: HashMap<&'static str, Handle<AudioSource>>,
     pub fonts: HashMap<&'static str, Handle<Font>>,
     pub images: HashMap<&'static str, Handle<Image>>,
     pub textures: HashMap<&'static str, TextureInfo>,
-    pub atlas: HashMap<&'static str, AtlasInfo>,
 }
 
 impl WorldAssets {
@@ -50,10 +42,6 @@ impl WorldAssets {
     pub fn texture(&self, name: &str) -> TextureInfo {
         self.get_asset(&self.textures, name, "texture").clone()
     }
-
-    pub fn atlas(&self, name: &str) -> AtlasInfo {
-        self.get_asset(&self.atlas, name, "atlas").clone()
-    }
 }
 
 impl FromWorld for WorldAssets {
@@ -76,6 +64,7 @@ impl FromWorld for WorldAssets {
 
         let images: HashMap<&'static str, Handle<Image>> = HashMap::from([
             // Icons
+            ("turn", assets.load("images/icons/turn.png")),
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
             ("sound", assets.load("images/icons/sound.png")),
@@ -85,21 +74,20 @@ impl FromWorld for WorldAssets {
             ("owned", assets.load("images/icons/owned.png")),
             ("spy", assets.load("images/icons/spy.png")),
             // Backgrounds
-            ("bg", assets.load("images/bg.png")),
-            ("menu", assets.load("images/menu.png")),
-            ("defeat", assets.load("images/defeat.png")),
-            ("victory", assets.load("images/victory.png")),
+            ("bg", assets.load("images/bg/bg.png")),
+            ("menu", assets.load("images/bg/menu.png")),
+            ("defeat", assets.load("images/bg/defeat.png")),
+            ("victory", assets.load("images/bg/victory.png")),
             // Ui
-            ("panel", assets.load("images/panel.png")),
-            ("panel2", assets.load("images/panel2.png")),
+            ("panel", assets.load("images/ui/panel.png")),
+            ("thin_panel", assets.load("images/ui/thin_panel.png")),
             // Planets
-            ("planets", assets.load("images/planets.png")),
-            ("destroyed", assets.load("images/destroyed.png")),
+            ("planets", assets.load("images/planets/planets.png")),
+            ("destroyed", assets.load("images/planets/destroyed.png")),
             // Resources
-            ("cycle", assets.load("images/cycle.png")),
-            ("metal", assets.load("images/metal.png")),
-            ("crystal", assets.load("images/crystal.png")),
-            ("deuterium", assets.load("images/deuterium.png")),
+            ("metal", assets.load("images/resources/metal.png")),
+            ("crystal", assets.load("images/resources/crystal.png")),
+            ("deuterium", assets.load("images/resources/deuterium.png")),
         ]);
 
         let mut texture = world
@@ -116,14 +104,11 @@ impl FromWorld for WorldAssets {
             },
         )]);
 
-        let atlas = HashMap::new();
-
         Self {
             audio,
             fonts,
             images,
             textures,
-            atlas,
         }
     }
 }

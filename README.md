@@ -47,5 +47,6 @@ dies, you lose the game.
 
 **Others**
 - `escape`: Enter/exit the menu.
-- `space`: Pause/unpause the game.
-- `m`: Toggle the audio settings.
+- `M`: Toggle the audio settings.
+- `I`: Show/hide all planet information.
+- `H`: Enable/disable information tooltips on hover.

@@ -1,6 +1,6 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
-use crate::core::constants::PLANET_Z;
+use crate::core::constants::{PLANET_Z, SUBTITLE_TEXT_SIZE};
 use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp, Planet};
 use crate::core::map::utils::{on_out, on_over, Hovered};
@@ -24,13 +24,12 @@ pub enum PlanetIcon {
 }
 
 #[derive(Component)]
-pub struct PlanetResourceLabelCmp;
+pub struct ShowOnHoverCmp;
 
 pub fn draw_map(
     mut commands: Commands,
     map: Res<Map>,
     player: Res<Player>,
-    settings: Res<GameSettings>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
     assets: Local<WorldAssets>,
 ) {
@@ -78,6 +77,19 @@ pub fn draw_map(
             .observe(on_over)
             .observe(on_out)
             .with_children(|parent| {
+                parent.spawn((
+                    Text2d::new(&planet.name),
+                    TextFont {
+                        font: assets.font("bold"),
+                        font_size: SUBTITLE_TEXT_SIZE,
+                        ..default()
+                    },
+                    TextColor(WHITE.into()),
+                    Transform::from_xyz(-5., Planet::SIZE * 0.6, 0.9),
+                    Pickable::IGNORE,
+                    ShowOnHoverCmp,
+                ));
+
                 if !planet.is_destroyed {
                     for icon in PlanetIcon::iter() {
                         parent.spawn((
@@ -98,7 +110,6 @@ pub fn draw_map(
                                 0.8,
                             )),
                             Pickable::IGNORE,
-                            Visibility::Inherited,
                             icon,
                         ));
                     }
@@ -124,16 +135,11 @@ pub fn draw_map(
                                     ..default()
                                 },
                                 Pickable::IGNORE,
-                                if settings.show_resources {
-                                    Visibility::Inherited
-                                } else {
-                                    Visibility::Hidden
-                                },
-                                PlanetResourceLabelCmp,
+                                ShowOnHoverCmp,
                             ))
                             .with_children(|parent| {
                                 parent.spawn((
-                                    Text2d::new(format!("{}", planet.resources.get(&resource))),
+                                    Text2d::new(planet.resources.get(&resource).to_string()),
                                     TextFont {
                                         font: assets.font("bold"),
                                         font_size: 25.,
@@ -158,7 +164,7 @@ pub fn draw_map(
 pub fn update_planet_info(
     planet_q: Query<(Entity, Option<&Hovered>, &Planet)>,
     mut icon_q: Query<(&mut Visibility, &PlanetIcon)>,
-    mut resource_q: Query<&mut Visibility, (With<PlanetResourceLabelCmp>, Without<PlanetIcon>)>,
+    mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<PlanetIcon>)>,
     children_q: Query<&Children>,
     player: Res<Player>,
     settings: Res<GameSettings>,
@@ -184,11 +190,11 @@ pub fn update_planet_info(
         }
     }
 
-    // Update visibility of planet resources
+    // Update visibility of planet info
     for (planet_e, hovered, _) in &planet_q {
         for child in children_q.iter_descendants(planet_e) {
-            if let Ok(mut visibility) = resource_q.get_mut(child) {
-                *visibility = if hovered.is_some() || settings.show_resources {
+            if let Ok(mut visibility) = show_q.get_mut(child) {
+                *visibility = if hovered.is_some() || settings.show_info {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
