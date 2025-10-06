@@ -110,8 +110,8 @@ pub fn move_camera(
             position,
             view_size,
             Rect {
-                min: map.rect.min,
-                max: map.rect.max,
+                min: map.rect.min * 1.2,
+                max: map.rect.max * 1.2,
             },
         ),
         LERP_FACTOR,

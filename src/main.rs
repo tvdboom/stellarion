@@ -22,7 +22,7 @@ fn main() {
 
     app.add_plugins(
         DefaultPlugins
-            .set(ImagePlugin::default_nearest()) // Prevents blurry sprites
+            .set(ImagePlugin::default_linear())
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: TITLE.into(),

@@ -46,7 +46,7 @@ pub fn check_keys(
     if keyboard.just_pressed(KeyCode::KeyI) {
         settings.show_info = !settings.show_info;
     }
-    
+
     // Toggle show hover info
     if keyboard.just_pressed(KeyCode::KeyH) {
         settings.show_hover = !settings.show_hover;

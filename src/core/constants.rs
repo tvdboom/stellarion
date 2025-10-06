@@ -5,6 +5,7 @@ pub const WIDTH: f32 = 1600.;
 pub const HEIGHT: f32 = 900.;
 
 /// Menu
+pub const SUBLABEL_TEXT_SIZE: f32 = 7.;
 pub const LABEL_TEXT_SIZE: f32 = 10.;
 pub const BUTTON_TEXT_SIZE: f32 = 20.;
 pub const SUBTITLE_TEXT_SIZE: f32 = 15.;
