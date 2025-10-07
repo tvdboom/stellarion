@@ -1,13 +1,14 @@
 use crate::core::resources::Resources;
 use crate::core::units::{Combat, Description, Price};
-use crate::utils::NameFromEnum;
+use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use strum_macros::EnumIter;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Fleet(pub Vec<(Ship, usize)>);
+pub struct Fleet(pub HashMap<Ship, usize>);
 
-#[derive(EnumIter, Clone, Debug, Serialize, Deserialize)]
+#[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Ship {
     Probe,
     ColonyShip,
@@ -23,7 +24,7 @@ pub enum Ship {
 
 impl Ship {
     /// Minim level of the shipyard to build this ship
-    pub fn requires_level(&self) -> usize {
+    pub fn level(&self) -> usize {
         match self {
             Ship::Probe => 1,
             Ship::ColonyShip => 1,
@@ -40,64 +41,60 @@ impl Ship {
 }
 
 impl Description for Ship {
-    fn description(&self) -> String {
-        format!(
-            "{}\n\n{}",
-            self.to_name(),
-            match self {
-                Ship::Probe =>
-                    "\
-                The probe is an espionage craft, used to analyze enemy defenses. This ship \
+    fn description(&self) -> &str {
+        match self {
+            Ship::Probe => {
+                "The probe is an espionage craft, used to analyze enemy defenses. This ship \
                 is very likely to be destroyed in any conflict. They are the fastest ships \
-                in the game.",
-                Ship::ColonyShip =>
-                    "\
-                This ship is used for colonization. Upon landing on an empty planet, the ship \
+                in the game."
+            },
+            Ship::ColonyShip => {
+                "This ship is used for colonization. Upon landing on an empty planet, the ship \
                 is deconstructed to provide the initial metal and crystal required to start \
-                developing a colony.",
-                Ship::LightFighter =>
-                    "\
-                Given their relatively low armor and simple weapons systems, light fighters \
+                developing a colony."
+            },
+            Ship::LightFighter => {
+                "Given their relatively low armor and simple weapons systems, light fighters \
                 serve best as support ships in battle. Their agility and speed, paired with \
                 the number in which they often appear, can provide a shield-like buffer for \
                 bigger ships that are not quite as maneuverable. Light Fighters are often used \
-                as fodder.",
-                Ship::HeavyFighter =>
-                    "\
-                The Heavy Fighter is a more powerful version of the light fighter. Even though \
+                as fodder."
+            },
+            Ship::HeavyFighter => {
+                "The Heavy Fighter is a more powerful version of the light fighter. Even though \
                 it is not as effective as the cruiser, the heavy fighter can still cause a \
-                reasonable amount of damage when launched in significant numbers.",
-                Ship::Destroyer =>
-                    "\
-                With their rapidfire capabilities, destroyers are extremely effective at \
+                reasonable amount of damage when launched in significant numbers."
+            },
+            Ship::Destroyer => {
+                "With their rapidfire capabilities, destroyers are extremely effective at \
                 eliminating the light fighter and rocket launcher fodder. In addition they're \
-                speed make them excellent as fast strike ships.",
-                Ship::Cruiser =>
-                    "\
-                Cruisers are the backbone of any military fleet. Heavy armor, powerful weapon
-                systems, and a high speed make this ship a tough opponent to fight against.",
-                Ship::Bomber =>
-                    "\
-                The bomber is used primarily to destroy planetary defense. Its high rapid fire \
-                against most defensive structures makes it effective for planetary assaults.",
-                Ship::Battleship =>
-                    "\
-                The battleship is the mean between the cruiser and the dreadnought. Due to its \
+                speed make them excellent as fast strike ships."
+            },
+            Ship::Cruiser => {
+                "Cruisers are the backbone of any military fleet. Heavy armor, powerful weapon
+                systems, and a high speed make this ship a tough opponent to fight against."
+            },
+            Ship::Bomber => {
+                "The bomber is used primarily to destroy planetary defense. Its high rapid fire \
+                against most defensive structures makes it effective for planetary assaults."
+            },
+            Ship::Battleship => {
+                "The battleship is the mean between the cruiser and the dreadnought. Due to its \
                 rapid fire capabilities, it's highly specialized in the interception of hostile \
-                heavy ships.",
-                Ship::Dreadnought =>
-                    "\
-                Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
+                heavy ships."
+            },
+            Ship::Dreadnought => {
+                "Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
                 They are relatively slow, and require a lot of fuel to move, but have incredibly \
-                high damage.",
-                Ship::WarSun =>
-                    "\
-                The War Sun is the most advanced ship in the game. It has the highest damage, \
+                high damage."
+            },
+            Ship::WarSun => {
+                "The War Sun is the most advanced ship in the game. It has the highest damage, \
                 shield strength, and health of all ships, but what makes it unique, is that it \
                 can destroy entire planets. Some consider that building a War Sun the ultimate \
-                achievement in the universe.",
-            }
-        )
+                achievement in the universe."
+            },
+        }
     }
 }
 

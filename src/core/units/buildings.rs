@@ -1,6 +1,8 @@
+use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumIter;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Component, EnumIter, Clone, Debug, Serialize, Deserialize)]
 pub enum Building {
     Shipyard(u8),
     Factory(u8),

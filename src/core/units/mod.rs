@@ -6,7 +6,7 @@ pub mod missions;
 pub mod ships;
 
 pub trait Description {
-    fn description(&self) -> String;
+    fn description(&self) -> &str;
 }
 
 pub trait Price {

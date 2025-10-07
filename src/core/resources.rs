@@ -1,5 +1,4 @@
 use crate::core::units::Description;
-use crate::utils::NameFromEnum;
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -14,12 +13,12 @@ pub enum ResourceName {
 }
 
 impl Description for ResourceName {
-    fn description(&self) -> String {
-        format!("{}\n\n{}", self.to_name(), match self {
+    fn description(&self) -> &str {
+        match self {
             ResourceName::Metal => "Metal is the most basic resource, used in almost all constructions and ships.",
             ResourceName::Crystal => "Crystal is a more advanced resource, essential for high-tech buildings and ships.",
             ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used as fuel for ships and high-tech ships.",
-        })
+        }
     }
 }
 

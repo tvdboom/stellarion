@@ -1,6 +1,6 @@
 use crate::core::assets::WorldAssets;
 use crate::core::constants::{
-    BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, SUBTITLE_TEXT_SIZE,
+    BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, TITLE_TEXT_SIZE,
 };
 use crate::core::map::map::Map;
 use crate::core::menu::buttons::{
@@ -172,7 +172,7 @@ pub fn setup_menu(
                     ..default()
                 })
                 .with_children(|parent| {
-                    parent.spawn(add_text("Created by Mavs", "medium", SUBTITLE_TEXT_SIZE, &assets, &window));
+                    parent.spawn(add_text("Created by Mavs", "medium", TITLE_TEXT_SIZE, &assets, &window));
                 });
         });
 }
