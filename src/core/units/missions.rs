@@ -1,10 +1,7 @@
 use crate::core::map::map::PlanetId;
-use crate::core::units::ships::Ship;
+use crate::core::units::ships::Fleet;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Fleet(pub Vec<(Ship, usize)>);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Mission {

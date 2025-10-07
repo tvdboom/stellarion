@@ -1,4 +1,4 @@
-use crate::core::utils::Description;
+use crate::core::units::Description;
 use crate::utils::NameFromEnum;
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};

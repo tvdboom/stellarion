@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Battery(pub Vec<(Defense, usize)>);
+
 #[derive(EnumIter, Clone, Debug, Serialize, Deserialize)]
 pub enum Defense {
     RocketLauncher,

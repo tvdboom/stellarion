@@ -1,5 +1,5 @@
-use crate::core::game_settings::GameSettings;
 use crate::core::player::Player;
+use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::utils::TextSize;
 use bevy::prelude::*;
@@ -19,7 +19,7 @@ pub fn on_resize_system(
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut player: ResMut<Player>,
-    mut settings: ResMut<GameSettings>,
+    mut settings: ResMut<Settings>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,

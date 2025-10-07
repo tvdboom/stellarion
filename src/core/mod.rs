@@ -2,13 +2,13 @@ mod assets;
 mod audio;
 mod camera;
 pub mod constants;
-mod game_settings;
 mod map;
 mod menu;
 mod network;
 mod persistence;
 mod player;
 mod resources;
+mod settings;
 mod states;
 mod systems;
 mod ui;
@@ -20,7 +20,6 @@ use crate::core::audio::{
     ChangeAudioEv, PlayAudioEv,
 };
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::MapCmp;
 use crate::core::map::systems::{draw_map, update_planet_info};
 use crate::core::menu::buttons::MenuCmp;
@@ -32,6 +31,7 @@ use crate::core::network::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::persistence::{load_game, save_game};
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
+use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
 use crate::core::ui::systems::{draw_ui, update_ui};
@@ -61,7 +61,7 @@ impl Plugin for GamePlugin {
             .add_event::<ClientSendMessage>()
             // Resources
             .init_resource::<Ip>()
-            .init_resource::<GameSettings>()
+            .init_resource::<Settings>()
             // Sets
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(Update, InGameSet.run_if(in_state(AppState::Game)))
@@ -103,13 +103,7 @@ impl Plugin for GamePlugin {
 
         // Utilities
         app.add_systems(Update, check_keys.in_set(InGameSet))
-            .add_systems(
-                PostUpdate,
-                (
-                    on_resize_system,
-                    // update_transform_no_rotation.before(TransformSystems::Propagate),
-                ),
-            )
+            .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map, draw_ui))
             .add_systems(Update, (update_planet_info, update_ui).in_set(InGameSet))

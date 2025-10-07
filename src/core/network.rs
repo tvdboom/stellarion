@@ -1,8 +1,8 @@
 use crate::core::audio::PlayAudioEv;
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, PlanetId};
 use crate::core::menu::buttons::LobbyTextCmp;
 use crate::core::player::Player;
+use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::utils::get_local_ip;
 use bevy::prelude::*;
@@ -183,7 +183,7 @@ pub fn client_receive_message(
     mut commands: Commands,
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut client: ResMut<RenetClient>,
-    mut game_settings: ResMut<GameSettings>,
+    mut game_settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {

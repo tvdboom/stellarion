@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
-pub struct GameSettings {
+pub struct Settings {
     pub audio: AudioState,
     pub n_players: u8,
     pub n_planets: u8,
@@ -12,12 +12,12 @@ pub struct GameSettings {
     pub turn: usize,
 }
 
-impl Default for GameSettings {
+impl Default for Settings {
     fn default() -> Self {
         Self {
             audio: AudioState::default(),
             n_players: 2,
-            n_planets: 10,
+            n_planets: 3,
             show_info: false,
             show_hover: true,
             turn: 1,

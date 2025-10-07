@@ -1,7 +1,7 @@
 use crate::core::assets::WorldAssets;
 use crate::core::audio::ChangeAudioEv;
 use crate::core::constants::*;
-use crate::core::game_settings::GameSettings;
+use crate::core::settings::Settings;
 use crate::core::states::AudioState;
 use crate::core::ui::utils::add_text;
 use crate::utils::NameFromEnum;
@@ -18,7 +18,7 @@ pub enum SettingsBtn {
     Sound,
 }
 
-fn match_setting(setting: &SettingsBtn, game_settings: &GameSettings) -> bool {
+fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
     match setting {
         SettingsBtn::Five => game_settings.n_planets == 5,
         SettingsBtn::Ten => game_settings.n_planets == 10,
@@ -31,7 +31,7 @@ fn match_setting(setting: &SettingsBtn, game_settings: &GameSettings) -> bool {
 
 pub fn recolor_label<E: Debug + Clone + Reflect>(
     color: Color,
-) -> impl Fn(Trigger<E>, Query<(&mut BackgroundColor, &SettingsBtn)>, ResMut<GameSettings>) {
+) -> impl Fn(Trigger<E>, Query<(&mut BackgroundColor, &SettingsBtn)>, ResMut<Settings>) {
     move |ev, mut bgcolor_q, game_settings| {
         if let Ok((mut bgcolor, setting)) = bgcolor_q.get_mut(ev.target()) {
             // Don't change the color of selected buttons
@@ -45,7 +45,7 @@ pub fn recolor_label<E: Debug + Clone + Reflect>(
 pub fn on_click_label_button(
     trigger: Trigger<Pointer<Click>>,
     mut btn_q: Query<(&mut BackgroundColor, &SettingsBtn)>,
-    mut game_settings: ResMut<GameSettings>,
+    mut game_settings: ResMut<Settings>,
     mut change_audio_ev: EventWriter<ChangeAudioEv>,
 ) {
     match btn_q.get(trigger.target()).unwrap().1 {
@@ -78,7 +78,7 @@ pub fn spawn_label(
     parent: &mut ChildSpawnerCommands,
     title: &str,
     buttons: Vec<SettingsBtn>,
-    game_settings: &GameSettings,
+    game_settings: &Settings,
     assets: &WorldAssets,
     window: &Window,
 ) {

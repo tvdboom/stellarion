@@ -52,7 +52,7 @@ pub const PLANET_NAMES: [&str; 80] = [
     "Fornax",
     "Galatea",
     "Ganymede",
-    "HarroW",
+    "Harrow",
     "Helion",
     "Hesperus",
     "Hyperion",

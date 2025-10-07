@@ -1,6 +1,8 @@
 use crate::core::map::map::PlanetId;
 use crate::core::resources::Resources;
-use crate::core::units::missions::{Fleet, Mission};
+use crate::core::units::defense::Battery;
+use crate::core::units::missions::Mission;
+use crate::core::units::ships::Fleet;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
@@ -12,6 +14,7 @@ pub struct Player {
     pub resources: Resources,
     pub planets: Vec<PlanetId>,
     pub fleets: HashMap<PlanetId, Fleet>,
+    pub defenses: HashMap<PlanetId, Battery>,
     pub missions: Vec<Mission>,
 }
 
@@ -26,6 +29,7 @@ impl Default for Player {
             },
             planets: vec![0],
             fleets: HashMap::new(),
+            defenses: HashMap::new(),
             missions: vec![],
         }
     }

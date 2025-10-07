@@ -1,6 +1,5 @@
 use crate::core::assets::WorldAssets;
 use crate::core::constants::*;
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, Planet, PlanetId};
 use crate::core::network::{
     new_renet_client, new_renet_server, Ip, ServerMessage, ServerSendMessage,
@@ -8,6 +7,7 @@ use crate::core::network::{
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::player::Player;
 use crate::core::resources::Resources;
+use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::utils::{add_text, recolor};
 use crate::core::units::buildings::Building;
@@ -51,7 +51,7 @@ pub fn on_click_menu_button(
     btn_q: Query<(Option<&DisabledButton>, &MenuBtn)>,
     server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
     ip: Res<Ip>,
     mut load_game_ev: EventWriter<LoadGameEv>,
     mut save_game_ev: EventWriter<SaveGameEv>,

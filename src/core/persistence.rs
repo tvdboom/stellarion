@@ -1,5 +1,5 @@
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::Map;
+use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
 use bevy::prelude::*;
 use bincode::config::standard;
@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveAll {
-    pub game_settings: GameSettings,
+    pub game_settings: Settings,
     pub map: Map,
 }
 
@@ -66,7 +66,7 @@ pub fn load_game(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
     mut save_game_ev: EventReader<SaveGameEv>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
     map: Option<Res<Map>>,
 ) {
     if let Some(map) = map {

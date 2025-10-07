@@ -1,12 +1,12 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{PLANET_Z, SUBTITLE_TEXT_SIZE};
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::{Map, MapCmp, Planet};
-use crate::core::map::utils::{on_out, on_over, Hovered};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
+use crate::core::settings::Settings;
+use crate::core::utils::{on_out, on_over, Hovered};
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
@@ -16,11 +16,18 @@ use strum_macros::EnumIter;
 
 #[derive(Component, EnumIter, Clone, Debug)]
 pub enum PlanetIcon {
+    Attacked,
+    Owned,
+    Fleet,
+    Defense,
+    Buildings,
     Attack,
     Spy,
-    Owned,
-    Defend,
-    Fleet,
+    Destroy,
+}
+
+impl PlanetIcon {
+    pub const SIZE: f32 = Planet::SIZE * 0.2;
 }
 
 #[derive(Component)]
@@ -70,8 +77,8 @@ pub fn draw_map(
                     translation: planet.position.extend(PLANET_Z),
                     ..default()
                 },
-                planet.clone(),
                 Pickable::default(),
+                planet.clone(),
                 MapCmp,
             ))
             .observe(on_over)
@@ -85,35 +92,54 @@ pub fn draw_map(
                         ..default()
                     },
                     TextColor(WHITE.into()),
-                    Transform::from_xyz(-5., Planet::SIZE * 0.6, 0.9),
+                    Transform::from_xyz(-4., Planet::SIZE * 0.6, 0.9),
                     Pickable::IGNORE,
                     ShowOnHoverCmp,
                 ));
 
-                if !planet.is_destroyed {
-                    for icon in PlanetIcon::iter() {
-                        parent.spawn((
+                for (i, icon) in PlanetIcon::iter()
+                    .filter(|icon| {
+                        if player.planets.contains(&planet.id) {
+                            let attacked = false; // TODO: Implement when attacked logic
+
+                            match icon {
+                                PlanetIcon::Attacked => attacked,
+                                PlanetIcon::Owned => !attacked,
+                                PlanetIcon::Fleet | PlanetIcon::Defense | PlanetIcon::Buildings => {
+                                    true
+                                },
+                                _ => false,
+                            }
+                        } else {
+                            matches!(
+                                icon,
+                                PlanetIcon::Attack | PlanetIcon::Spy | PlanetIcon::Destroy
+                            )
+                        }
+                    })
+                    .enumerate()
+                {
+                    parent
+                        .spawn((
                             Sprite {
                                 image: assets.image(icon.to_lowername().as_str()),
-                                custom_size: Some(Vec2::splat(Planet::SIZE * 0.2)),
+                                custom_size: Some(Vec2::splat(PlanetIcon::SIZE)),
                                 ..default()
                             },
                             Transform::from_translation(Vec3::new(
-                                Planet::SIZE
-                                    * (0.35
-                                        - match icon {
-                                            PlanetIcon::Attack | PlanetIcon::Owned => 0,
-                                            PlanetIcon::Spy | PlanetIcon::Defend => 1,
-                                            PlanetIcon::Fleet => 2,
-                                        } as f32),
-                                Planet::SIZE * 0.45,
+                                Planet::SIZE * 0.4,
+                                Planet::SIZE * 0.35 - i as f32 * PlanetIcon::SIZE,
                                 0.8,
                             )),
-                            Pickable::IGNORE,
+                            Pickable::default(),
                             icon,
-                        ));
-                    }
+                        ))
+                        .observe(on_over)
+                        .observe(on_out);
+                }
 
+                // Destroyed planets don't have any resources
+                if !planet.is_destroyed {
                     for (i, resource) in ResourceName::iter().take(3).enumerate() {
                         parent
                             .spawn((
@@ -163,25 +189,34 @@ pub fn draw_map(
 
 pub fn update_planet_info(
     planet_q: Query<(Entity, Option<&Hovered>, &Planet)>,
-    mut icon_q: Query<(&mut Visibility, &PlanetIcon)>,
+    mut icon_q: Query<(&mut Visibility, &mut Transform, Option<&Hovered>, &PlanetIcon)>,
     mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<PlanetIcon>)>,
     children_q: Query<&Children>,
     player: Res<Player>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
 ) {
     // Update visibility of planet icons
-    for (planet_e, _, planet) in &planet_q {
+    for (planet_e, planet_h, planet) in &planet_q {
+        // Check if the planet or any icon is hovered
+        let hovered = planet_h.is_some()
+            || children_q
+                .iter_descendants(planet_e)
+                .any(|e| icon_q.get(e).map_or(false, |(_, _, h, i)| h.is_some()));
+
+        let mut count = 0;
         for child in children_q.iter_descendants(planet_e) {
-            if let Ok((mut visibility, icon)) = icon_q.get_mut(child) {
+            if let Ok((mut icon_v, mut icon_t, _, icon)) = icon_q.get_mut(child) {
                 let visible = match icon {
-                    PlanetIcon::Attack => false, // TODO: Implement attack logic
-                    PlanetIcon::Defend => false, // TODO: Implement defend logic
-                    PlanetIcon::Fleet => false,  // TODO: Implement fleet logic
-                    PlanetIcon::Owned => player.planets.contains(&planet.id),
-                    PlanetIcon::Spy => false, // TODO: Implement spy logic
+                    PlanetIcon::Attacked | PlanetIcon::Owned => true,
+                    PlanetIcon::Fleet => hovered || player.fleets.contains_key(&planet.id),
+                    PlanetIcon::Defense => hovered || player.defenses.contains_key(&planet.id),
+                    PlanetIcon::Buildings => hovered || !planet.buildings.is_empty(),
+                    _ => hovered,
                 };
 
-                *visibility = if visible {
+                *icon_v = if visible {
+                    icon_t.translation.y = Planet::SIZE * 0.35 - count as f32 * PlanetIcon::SIZE;
+                    count += 1;
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
@@ -191,10 +226,10 @@ pub fn update_planet_info(
     }
 
     // Update visibility of planet info
-    for (planet_e, hovered, _) in &planet_q {
+    for (planet_e, planet_h, _) in &planet_q {
         for child in children_q.iter_descendants(planet_e) {
             if let Ok(mut visibility) = show_q.get_mut(child) {
-                *visibility = if hovered.is_some() || settings.show_info {
+                *visibility = if planet_h.is_some() || settings.show_info {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden

@@ -1,7 +1,7 @@
 use crate::core::assets::WorldAssets;
 use crate::core::constants::{NORMAL_BUTTON_COLOR, PRESSED_BUTTON_COLOR};
-use crate::core::game_settings::GameSettings;
 use crate::core::menu::settings::SettingsBtn;
+use crate::core::settings::Settings;
 use crate::core::states::AudioState;
 use bevy::prelude::*;
 use bevy_kira_audio::prelude::*;
@@ -61,7 +61,7 @@ pub fn change_audio_event(
     mut change_audio_ev: EventReader<ChangeAudioEv>,
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
     mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
-    mut game_settings: ResMut<GameSettings>,
+    mut game_settings: ResMut<Settings>,
     audio_state: Res<State<AudioState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
     audio: Res<Audio>,

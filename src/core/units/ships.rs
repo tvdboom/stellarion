@@ -1,8 +1,11 @@
 use crate::core::resources::Resources;
-use crate::core::utils::{Combat, Description, Price};
+use crate::core::units::{Combat, Description, Price};
 use crate::utils::NameFromEnum;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Fleet(pub Vec<(Ship, usize)>);
 
 #[derive(EnumIter, Clone, Debug, Serialize, Deserialize)]
 pub enum Ship {

@@ -1,13 +1,13 @@
 use crate::core::assets::WorldAssets;
 use crate::core::constants::{SUBLABEL_TEXT_SIZE, SUBTITLE_TEXT_SIZE};
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::MapCmp;
 use crate::core::map::systems::ShowOnHoverCmp;
-use crate::core::map::utils::{on_out, on_over, Hovered};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
+use crate::core::settings::Settings;
 use crate::core::ui::utils::{add_root_node, add_text};
-use crate::core::utils::Description;
+use crate::core::units::Description;
+use crate::core::utils::{on_out, on_over, Hovered};
 use crate::utils::NameFromEnum;
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::prelude::*;
@@ -31,7 +31,7 @@ fn add_hover_info(
                 position_type: PositionType::Absolute,
                 top: Val::Percent(115.),
                 left: Val::Percent(0.),
-                width: Val::Px(400.),
+                width: Val::Px(window.width() * 0.2),
                 padding: UiRect::all(Val::Px(15.)),
                 ..default()
             },
@@ -47,7 +47,7 @@ fn add_hover_info(
 pub fn draw_ui(
     mut commands: Commands,
     player: Res<Player>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
@@ -158,7 +158,7 @@ pub fn update_ui(
     mut show_q: Query<&mut Visibility, With<ShowOnHoverCmp>>,
     children_q: Query<&Children>,
     players: Res<Player>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
 ) {
     // Update the cycle label
     cycle_q.single_mut().unwrap().0 = format!("{:.0}", settings.turn);

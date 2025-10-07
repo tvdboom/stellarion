@@ -2,7 +2,6 @@ use crate::core::assets::WorldAssets;
 use crate::core::constants::{
     BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, SUBTITLE_TEXT_SIZE,
 };
-use crate::core::game_settings::GameSettings;
 use crate::core::map::map::Map;
 use crate::core::menu::buttons::{
     spawn_menu_button, DisabledButton, IpTextCmp, LobbyTextCmp, MenuBtn, MenuCmp,
@@ -10,6 +9,7 @@ use crate::core::menu::buttons::{
 use crate::core::menu::settings::{spawn_label, SettingsBtn};
 use crate::core::network::Ip;
 use crate::core::player::Player;
+use crate::core::settings::Settings;
 use crate::core::states::AppState;
 use crate::core::ui::utils::{add_root_node, add_text};
 use crate::utils::get_local_ip;
@@ -22,7 +22,7 @@ pub fn setup_menu(
     mut commands: Commands,
     app_state: Res<State<AppState>>,
     server: Option<Res<RenetServer>>,
-    settings: Res<GameSettings>,
+    settings: Res<Settings>,
     ip: Res<Ip>,
     assets: Local<WorldAssets>,
     window: Single<&Window>,
