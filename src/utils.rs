@@ -5,13 +5,8 @@ use std::net::{IpAddr, UdpSocket};
 /// Get the local IP address
 #[cfg(not(target_arch = "wasm32"))]
 pub fn get_local_ip() -> IpAddr {
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .ok()
-        .expect("Socket not found.");
-    socket
-        .connect("8.8.8.8:80")
-        .ok()
-        .expect("Failed to connect to socket."); // Doesn't send data
+    let socket = UdpSocket::bind("0.0.0.0:0").ok().expect("Socket not found.");
+    socket.connect("8.8.8.8:80").ok().expect("Failed to connect to socket."); // Doesn't send data
     socket.local_addr().ok().map(|addr| addr.ip()).unwrap()
 }
 

@@ -6,7 +6,7 @@ use crate::core::map::map::{Map, MapCmp, Planet};
 use crate::core::map::utils::{on_out, on_over, Hovered};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::Player;
-use crate::core::resources::ResourceCmp;
+use crate::core::resources::ResourceName;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
@@ -114,7 +114,7 @@ pub fn draw_map(
                         ));
                     }
 
-                    for (i, resource) in ResourceCmp::iter().take(3).enumerate() {
+                    for (i, resource) in ResourceName::iter().take(3).enumerate() {
                         parent
                             .spawn((
                                 Sprite {

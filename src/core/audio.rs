@@ -15,7 +15,10 @@ pub struct PlayAudioEv {
 
 impl PlayAudioEv {
     pub fn new(name: &'static str) -> Self {
-        Self { name, volume: 1. }
+        Self {
+            name,
+            volume: 1.,
+        }
     }
 }
 
@@ -36,23 +39,20 @@ pub fn setup_music_btn(mut commands: Commands, assets: Local<WorldAssets>) {
             ..default()
         })
         .with_children(|parent| {
-            parent
-                .spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp))
-                .observe(|_: Trigger<Pointer<Click>>, mut commands: Commands| {
+            parent.spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp)).observe(
+                |_: Trigger<Pointer<Click>>, mut commands: Commands| {
                     commands.queue(|w: &mut World| {
                         w.send_event(ChangeAudioEv(None));
                     })
-                });
+                },
+            );
         });
 }
 
 pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
     audio
         .play(assets.audio("music"))
-        .fade_in(AudioTween::new(
-            Duration::from_secs(2),
-            AudioEasing::OutPowi(2),
-        ))
+        .fade_in(AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2)))
         .with_volume(0.03)
         .looped();
 }
@@ -80,24 +80,21 @@ pub fn change_audio_event(
                     audio.stop();
                     next_audio_state.set(AudioState::Mute);
                     assets.image("mute")
-                }
+                },
                 AudioState::NoMusic => {
                     audio.stop();
                     next_audio_state.set(AudioState::NoMusic);
                     assets.image("no-music")
-                }
+                },
                 AudioState::Sound => {
                     next_audio_state.set(AudioState::Sound);
                     assets.image("sound")
-                }
+                },
             };
         }
 
         for (mut bgcolor, setting) in &mut settings_btn {
-            if matches!(
-                setting,
-                SettingsBtn::Mute | SettingsBtn::NoMusic | SettingsBtn::Sound
-            ) {
+            if matches!(setting, SettingsBtn::Mute | SettingsBtn::NoMusic | SettingsBtn::Sound) {
                 bgcolor.0 = if (*setting == SettingsBtn::Mute
                     && game_settings.audio == AudioState::Mute)
                     || (*setting == SettingsBtn::NoMusic
@@ -129,7 +126,11 @@ pub fn play_audio_event(
     assets: Local<WorldAssets>,
 ) {
     if *audio_state.get() != AudioState::Mute {
-        for PlayAudioEv { name, volume } in ev.read() {
+        for PlayAudioEv {
+            name,
+            volume,
+        } in ev.read()
+        {
             audio.play(assets.audio(name)).with_volume(*volume);
         }
     }

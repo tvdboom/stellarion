@@ -1,5 +1,6 @@
 use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, PLANET_NAMES, WIDTH};
 use crate::core::resources::Resources;
+use crate::core::units::buildings::Building;
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
@@ -32,13 +33,15 @@ impl PlanetKind {
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub struct Planet {
+    // Planet characteristics
     pub id: PlanetId,
     pub name: String,
     pub kind: PlanetKind,
     pub image: usize,
-    pub resources: Resources,
     pub position: Vec2,
+    pub resources: Resources,
     pub is_destroyed: bool,
+    pub buildings: Vec<Building>,
 }
 
 impl Planet {
@@ -70,9 +73,10 @@ impl Planet {
             name,
             kind: *kind,
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
-            resources,
             position,
+            resources,
             is_destroyed: false,
+            buildings: vec![],
         }
     }
 }
@@ -89,12 +93,7 @@ impl Map {
         let scale = 0.5
             + ((n_planets as f32 - 10.) / (MAX_PLANETS - MIN_PLANETS) as f32).clamp(0., 1.)
                 * (1. - 0.5);
-        let rect = Rect::new(
-            -WIDTH * scale,
-            -HEIGHT * scale,
-            WIDTH * scale,
-            HEIGHT * scale,
-        );
+        let rect = Rect::new(-WIDTH * scale, -HEIGHT * scale, WIDTH * scale, HEIGHT * scale);
 
         // Determine positions for planets
         let mut positions: Vec<Vec2> = Vec::new();
@@ -104,18 +103,12 @@ impl Map {
                 rng().random_range(rect.min.y * 0.9..rect.max.y * 0.9),
             );
 
-            if positions
-                .iter()
-                .all(|&pos| pos.distance(candidate) > 2. * Planet::SIZE)
-            {
+            if positions.iter().all(|&pos| pos.distance(candidate) > 2. * Planet::SIZE) {
                 positions.push(candidate);
             }
         }
 
-        let names = PLANET_NAMES
-            .iter()
-            .cloned()
-            .choose_multiple(&mut rng(), n_planets as usize);
+        let names = PLANET_NAMES.iter().cloned().choose_multiple(&mut rng(), n_planets as usize);
 
         Self {
             rect,

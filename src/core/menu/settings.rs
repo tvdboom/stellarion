@@ -55,15 +55,15 @@ pub fn on_click_label_button(
         SettingsBtn::Mute => {
             game_settings.audio = AudioState::Mute;
             change_audio_ev.write(ChangeAudioEv(Some(AudioState::Mute)));
-        }
+        },
         SettingsBtn::NoMusic => {
             game_settings.audio = AudioState::NoMusic;
             change_audio_ev.write(ChangeAudioEv(Some(AudioState::NoMusic)));
-        }
+        },
         SettingsBtn::Sound => {
             game_settings.audio = AudioState::Sound;
             change_audio_ev.write(ChangeAudioEv(Some(AudioState::Sound)));
-        }
+        },
     }
 
     // Reset the color of the other buttons
@@ -82,13 +82,7 @@ pub fn spawn_label(
     assets: &WorldAssets,
     window: &Window,
 ) {
-    parent.spawn(add_text(
-        title,
-        "bold",
-        SUBTITLE_TEXT_SIZE,
-        &assets,
-        &window,
-    ));
+    parent.spawn(add_text(title, "bold", SUBTITLE_TEXT_SIZE, &assets, &window));
 
     parent
         .spawn(Node {

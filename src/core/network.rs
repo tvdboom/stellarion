@@ -52,15 +52,15 @@ pub enum ServerMessage {
 
 #[derive(Serialize, Deserialize)]
 pub enum ClientMessage {
-    Status { player: Player },
+    Status {
+        player: Player,
+    },
 }
 
 pub fn new_renet_client(ip: &String) -> (RenetClient, NetcodeClientTransport) {
     let server_addr = format!("{ip}:5000").parse().unwrap();
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-    let current_time = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
+    let current_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let client_id = current_time.as_millis() as u64;
     let authentication = ClientAuthentication::Unsecure {
         client_id,
@@ -78,9 +78,7 @@ pub fn new_renet_client(ip: &String) -> (RenetClient, NetcodeClientTransport) {
 pub fn new_renet_server() -> (RenetServer, NetcodeServerTransport) {
     let public_addr = "0.0.0.0:5000".parse().unwrap();
     let socket = UdpSocket::bind(public_addr).expect("Socket already in use.");
-    let current_time = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
+    let current_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let server_config = ServerConfig {
         current_time,
         max_clients: 4,
@@ -123,17 +121,22 @@ pub fn server_update(
             }
         } else {
             match ev {
-                ServerEvent::ClientConnected { client_id } => {
+                ServerEvent::ClientConnected {
+                    client_id,
+                } => {
                     println!("Client {client_id} connected");
-                }
-                ServerEvent::ClientDisconnected { client_id, reason } => {
+                },
+                ServerEvent::ClientDisconnected {
+                    client_id,
+                    reason,
+                } => {
                     println!("Client {client_id} disconnected: {reason}");
                     play_audio_ev.write(PlayAudioEv {
                         name: "error",
                         volume: 0.5,
                     });
                     next_game_state.set(GameState::InGameMenu);
-                }
+                },
             }
         }
     }
@@ -158,7 +161,9 @@ pub fn server_receive_message(mut server: ResMut<RenetServer>) {
         while let Some(message) = server.receive_message(id, DefaultChannel::ReliableOrdered) {
             let (d, _) = decode_from_slice(&message, standard()).unwrap();
             match d {
-                ClientMessage::Status { player } => {}
+                ClientMessage::Status {
+                    player,
+                } => {},
             }
         }
     }
@@ -184,18 +189,21 @@ pub fn client_receive_message(
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         let (d, _) = decode_from_slice(&message, standard()).unwrap();
         match d {
-            ServerMessage::LoadGame { player, map } => {
+            ServerMessage::LoadGame {
+                player,
+                map,
+            } => {
                 *game_settings = game_settings.clone();
                 commands.insert_resource(player);
                 commands.insert_resource(map);
 
                 next_app_state.set(AppState::Game);
-            }
+            },
             ServerMessage::NPlayers(i) => {
                 if let Ok(mut text) = n_players_q.single_mut() {
                     text.0 = format!("There are {i} players in the lobby.\nWaiting for the host to start the game...");
                 }
-            }
+            },
             ServerMessage::StartGame {
                 id,
                 home_planet,
@@ -206,7 +214,7 @@ pub fn client_receive_message(
                 commands.insert_resource(Player::new(id, home_planet));
                 commands.insert_resource(map);
                 next_app_state.set(AppState::Game);
-            }
+            },
             _ => unreachable!(),
         }
     }

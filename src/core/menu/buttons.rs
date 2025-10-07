@@ -10,6 +10,7 @@ use crate::core::player::Player;
 use crate::core::resources::Resources;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::utils::{add_text, recolor};
+use crate::core::units::buildings::Building;
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
@@ -69,19 +70,19 @@ pub fn on_click_menu_button(
         MenuBtn::Singleplayer => {
             let mut map = Map::new(settings.n_planets);
 
-            // Alter home planet's resources
-            map.planets
-                .iter_mut()
-                .find(|p| p.id == 0)
-                .map(|p| p.resources = Resources::new(200, 200, 100));
+            // Alter home planet's stats
+            map.planets.iter_mut().find(|p| p.id == 0).map(|p| {
+                p.resources = Resources::new(200, 200, 100);
+                p.buildings = vec![Building::Shipyard(1), Building::Factory(1)];
+            });
 
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
             next_app_state.set(AppState::Game);
-        }
+        },
         MenuBtn::Multiplayer => {
             next_app_state.set(AppState::MultiPlayerMenu);
-        }
+        },
         MenuBtn::NewGame => {
             let server = server.unwrap();
 
@@ -90,27 +91,20 @@ pub fn on_click_menu_button(
             // Determine home planets
             let mut home_planets: Vec<(PlanetId, Vec2)> = vec![];
             while home_planets.len() < settings.n_players as usize {
-                let candidate = map
-                    .planets
-                    .iter()
-                    .choose(&mut rng())
-                    .map(|p| (p.id, p.position))
-                    .unwrap();
+                let candidate =
+                    map.planets.iter().choose(&mut rng()).map(|p| (p.id, p.position)).unwrap();
 
-                if !home_planets
-                    .iter()
-                    .all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 3.)
-                {
+                if !home_planets.iter().all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 3.) {
                     home_planets.push(candidate);
                 }
             }
 
             // Alter home planet's resources
             for planet in home_planets.iter() {
-                map.planets
-                    .iter_mut()
-                    .find(|p| p.id == planet.0)
-                    .map(|p| p.resources = Resources::new(200, 200, 100));
+                map.planets.iter_mut().find(|p| p.id == planet.0).map(|p| {
+                    p.resources = Resources::new(200, 200, 100);
+                    p.buildings = vec![Building::Shipyard(1), Building::Factory(1)];
+                });
             }
 
             // Send the start game signal to all clients with their player id
@@ -129,10 +123,10 @@ pub fn on_click_menu_button(
             commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
 
             next_app_state.set(AppState::Game);
-        }
+        },
         MenuBtn::LoadGame => {
             load_game_ev.write(LoadGameEv);
-        }
+        },
         MenuBtn::HostGame => {
             // Remove client resources if they exist
             if client.is_some() {
@@ -145,18 +139,18 @@ pub fn on_click_menu_button(
             commands.insert_resource(transport);
 
             next_app_state.set(AppState::Lobby);
-        }
+        },
         MenuBtn::FindGame => {
             let (server, transport) = new_renet_client(&ip.0);
             commands.insert_resource(server);
             commands.insert_resource(transport);
 
             next_app_state.set(AppState::Lobby);
-        }
+        },
         MenuBtn::Back => match *app_state.get() {
             AppState::MultiPlayerMenu | AppState::Settings => {
                 next_app_state.set(AppState::MainMenu);
-            }
+            },
             AppState::Lobby => {
                 if let Some(client) = client.as_mut() {
                     client.disconnect();
@@ -168,18 +162,18 @@ pub fn on_click_menu_button(
                 }
 
                 next_app_state.set(AppState::MultiPlayerMenu);
-            }
+            },
             _ => unreachable!(),
         },
         MenuBtn::Continue => {
             next_game_state.set(GameState::Playing);
-        }
+        },
         MenuBtn::SaveGame => {
             save_game_ev.write(SaveGameEv);
-        }
+        },
         MenuBtn::Settings => {
             next_app_state.set(AppState::Settings);
-        }
+        },
         MenuBtn::Quit => match *app_state.get() {
             AppState::Game => {
                 if let Some(client) = client.as_mut() {
@@ -193,7 +187,7 @@ pub fn on_click_menu_button(
 
                 next_game_state.set(GameState::default());
                 next_app_state.set(AppState::MainMenu)
-            }
+            },
             AppState::MainMenu => std::process::exit(0),
             _ => unreachable!(),
         },
@@ -225,12 +219,6 @@ pub fn spawn_menu_button(
         .observe(recolor::<Pointer<Released>>(HOVERED_BUTTON_COLOR))
         .observe(on_click_menu_button)
         .with_children(|parent| {
-            parent.spawn(add_text(
-                btn.to_title(),
-                "bold",
-                BUTTON_TEXT_SIZE,
-                assets,
-                window,
-            ));
+            parent.spawn(add_text(btn.to_title(), "bold", BUTTON_TEXT_SIZE, assets, window));
         });
 }

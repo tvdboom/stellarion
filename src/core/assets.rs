@@ -23,8 +23,7 @@ impl WorldAssets {
         name: &str,
         asset_type: &str,
     ) -> &'a T {
-        map.get(name)
-            .expect(&format!("No asset for {asset_type} {name}"))
+        map.get(name).expect(&format!("No asset for {asset_type} {name}"))
     }
 
     pub fn audio(&self, name: &str) -> Handle<AudioSource> {
@@ -88,11 +87,36 @@ impl FromWorld for WorldAssets {
             ("metal", assets.load("images/resources/metal.png")),
             ("crystal", assets.load("images/resources/crystal.png")),
             ("deuterium", assets.load("images/resources/deuterium.png")),
+            // Buildings
+            ("shipyard", assets.load("images/resources/shipyard.png")),
+            ("factory", assets.load("images/resources/factory.png")),
+            ("silo", assets.load("images/resources/silo.png")),
+            ("planet shield", assets.load("images/resources/planet shield.png")),
+            ("jump gate", assets.load("images/resources/jump gate.png")),
+            ("sensor phalanx", assets.load("images/resources/sensor phalanx.png")),
+            // Defense
+            ("rocket launcher", assets.load("images/defense/rocket launcher.png")),
+            ("light laser", assets.load("images/defense/light laser.png")),
+            ("heavy laser", assets.load("images/defense/heavy laser.png")),
+            ("gauss cannon", assets.load("images/defense/gauss cannon.png")),
+            ("ion cannon", assets.load("images/defense/ion cannon.png")),
+            ("plasma turret", assets.load("images/defense/plasma turret.png")),
+            ("antiballistic missile", assets.load("images/defense/antiballistic missile.png")),
+            ("interplanetary missile", assets.load("images/defense/interplanetary missile.png")),
+            // Ships
+            ("probe", assets.load("images/ships/probe.png")),
+            ("colony ship", assets.load("images/ships/colony ship.png")),
+            ("light fighter", assets.load("images/ships/light fighter.png")),
+            ("heavy fighter", assets.load("images/ships/heavy fighter.png")),
+            ("destroyer", assets.load("images/ships/destroyer.png")),
+            ("cruiser", assets.load("images/ships/cruiser.png")),
+            ("bomber", assets.load("images/ships/bomber.png")),
+            ("battleship", assets.load("images/ships/battleship.png")),
+            ("dreadnought", assets.load("images/ships/dreadnought.png")),
+            ("war sun", assets.load("images/ships/war sun.png")),
         ]);
 
-        let mut texture = world
-            .get_resource_mut::<Assets<TextureAtlasLayout>>()
-            .unwrap();
+        let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
 
         let planets =
             TextureAtlasLayout::from_grid(UVec2::splat(450), 8, 8, Some(UVec2::splat(30)), None);

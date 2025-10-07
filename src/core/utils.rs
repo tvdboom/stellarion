@@ -1,3 +1,4 @@
+use crate::core::resources::Resources;
 use bevy::prelude::*;
 
 #[derive(Component)]
@@ -5,6 +6,22 @@ pub struct NoRotationChildCmp;
 
 #[derive(Component)]
 pub struct NoRotationParentCmp;
+
+pub trait Description {
+    fn description(&self) -> String;
+}
+
+pub trait Price {
+    fn price(&self) -> Resources;
+}
+
+pub trait Combat {
+    fn health(&self) -> usize;
+    fn shield(&self) -> usize;
+    fn damage(&self) -> usize;
+    fn speed(&self) -> f32;
+    fn fuel_consumption(&self) -> usize;
+}
 
 /// Generic system that despawns all entities with a specific component
 pub fn despawn<T: Component>(mut commands: Commands, query_c: Query<Entity, With<T>>) {

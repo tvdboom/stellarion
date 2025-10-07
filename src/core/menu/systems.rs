@@ -3,6 +3,7 @@ use crate::core::constants::{
     BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, SUBTITLE_TEXT_SIZE,
 };
 use crate::core::game_settings::GameSettings;
+use crate::core::map::map::Map;
 use crate::core::menu::buttons::{
     spawn_menu_button, DisabledButton, IpTextCmp, LobbyTextCmp, MenuBtn, MenuCmp,
 };
@@ -200,10 +201,10 @@ pub fn update_ip(
             KeyCode::Period => ip.0.push('.'),
             KeyCode::Backspace => {
                 ip.0.pop();
-            }
+            },
             KeyCode::Escape => {
                 *ip = Ip::default();
-            }
+            },
             _ => (),
         };
     }
@@ -223,7 +224,7 @@ pub fn update_ip(
                     bgcolor.0 = DISABLED_BUTTON_COLOR;
                     *not_local_ip = true;
                 }
-            }
+            },
             MenuBtn::FindGame => {
                 if ip.0.parse::<IpAddr>().is_ok() {
                     // Only enable once when the ip becomes valid
@@ -237,7 +238,7 @@ pub fn update_ip(
                     bgcolor.0 = DISABLED_BUTTON_COLOR;
                     *invalid_ip = true;
                 }
-            }
+            },
             _ => (),
         }
     }
@@ -252,17 +253,16 @@ pub fn setup_in_game_menu(
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
-    commands
-        .spawn((add_root_node(), MenuCmp))
-        .with_children(|parent| {
-            spawn_menu_button(parent, MenuBtn::Continue, &assets, &window);
-            spawn_menu_button(parent, MenuBtn::SaveGame, &assets, &window);
-            spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
-        });
+    commands.spawn((add_root_node(), MenuCmp)).with_children(|parent| {
+        spawn_menu_button(parent, MenuBtn::Continue, &assets, &window);
+        spawn_menu_button(parent, MenuBtn::SaveGame, &assets, &window);
+        spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
+    });
 }
 
 pub fn setup_end_game(
     mut commands: Commands,
+    map: Res<Map>,
     player: Res<Player>,
     assets: Local<WorldAssets>,
     window: Single<&Window>,
@@ -273,10 +273,8 @@ pub fn setup_end_game(
         "victory"
     };
 
-    commands
-        .spawn((add_root_node(), MenuCmp))
-        .with_children(|parent| {
-            parent.spawn(ImageNode::new(assets.image(image)));
-            spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
-        });
+    commands.spawn((add_root_node(), MenuCmp)).with_children(|parent| {
+        parent.spawn(ImageNode::new(assets.image(image)));
+        spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
+    });
 }

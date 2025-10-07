@@ -5,9 +5,11 @@ use crate::core::map::map::MapCmp;
 use crate::core::map::systems::ShowOnHoverCmp;
 use crate::core::map::utils::{on_out, on_over, Hovered};
 use crate::core::player::Player;
-use crate::core::resources::ResourceCmp;
+use crate::core::resources::ResourceName;
 use crate::core::ui::utils::{add_root_node, add_text};
+use crate::core::utils::Description;
 use crate::utils::NameFromEnum;
+use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::prelude::*;
 use strum::IntoEnumIterator;
 
@@ -16,6 +18,31 @@ pub struct UiCmp;
 
 #[derive(Component)]
 pub struct CycleCmp;
+
+fn add_hover_info(
+    parent: &mut RelatedSpawnerCommands<ChildOf>,
+    text: impl Into<String>,
+    assets: &WorldAssets,
+    window: &Window,
+) {
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(115.),
+                left: Val::Percent(0.),
+                width: Val::Px(400.),
+                padding: UiRect::all(Val::Px(15.)),
+                ..default()
+            },
+            ImageNode::new(assets.image("panel")),
+            Pickable::IGNORE,
+            ShowOnHoverCmp,
+        ))
+        .with_children(|parent| {
+            parent.spawn(add_text(text, "medium", SUBLABEL_TEXT_SIZE, assets, window));
+        });
+}
 
 pub fn draw_ui(
     mut commands: Commands,
@@ -37,7 +64,6 @@ pub fn draw_ui(
                     ..default()
                 },
                 ImageNode::new(assets.image("thin_panel")),
-                Pickable::IGNORE,
                 UiCmp,
                 MapCmp,
             ))
@@ -56,6 +82,8 @@ pub fn draw_ui(
                     .observe(on_over)
                     .observe(on_out)
                     .with_children(|parent| {
+                        add_hover_info(parent, "Turn\n\nNumber of turns played.", &assets, &window);
+
                         parent.spawn((
                             Node {
                                 height: Val::Percent(80.),
@@ -77,44 +105,25 @@ pub fn draw_ui(
                             Pickable::IGNORE,
                             CycleCmp,
                         ));
-
-                        parent
-                            .spawn((
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    top: Val::Percent(115.),
-                                    left: Val::Percent(0.),
-                                    width: Val::Percent(500.),
-                                    padding: UiRect::all(Val::Px(15.)),
-                                    ..default()
-                                },
-                                ImageNode::new(assets.image("panel")),
-                                Pickable::IGNORE,
-                                ShowOnHoverCmp,
-                            ))
-                            .with_children(|parent| {
-                                parent.spawn((
-                                    add_text(
-                                        "Turn\n\nNumber of turns played.",
-                                        "medium",
-                                        SUBLABEL_TEXT_SIZE,
-                                        &assets,
-                                        &window,
-                                    ),
-                                ));
-                            });
                     });
 
-                for resource in ResourceCmp::iter() {
+                for resource in ResourceName::iter() {
                     parent
-                        .spawn((Node {
-                            flex_direction: FlexDirection::Row,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::all(Val::Percent(0.)).with_top(Val::Percent(1.)),
-                            margin: UiRect::ZERO.with_right(Val::Percent(5.)),
-                            ..default()
-                        },))
+                        .spawn((
+                            Node {
+                                flex_direction: FlexDirection::Row,
+                                align_items: AlignItems::Center,
+                                padding: UiRect::all(Val::Percent(0.)).with_top(Val::Percent(1.)),
+                                margin: UiRect::ZERO.with_right(Val::Percent(5.)),
+                                ..default()
+                            },
+                            UiCmp,
+                        ))
+                        .observe(on_over)
+                        .observe(on_out)
                         .with_children(|parent| {
+                            add_hover_info(parent, resource.description(), &assets, &window);
+
                             parent.spawn((
                                 Node {
                                     height: Val::Percent(80.),
@@ -144,7 +153,7 @@ pub fn draw_ui(
 
 pub fn update_ui(
     mut cycle_q: Query<&mut Text, With<CycleCmp>>,
-    mut resource_q: Query<(&mut Text, &ResourceCmp), Without<CycleCmp>>,
+    mut resource_q: Query<(&mut Text, &ResourceName), Without<CycleCmp>>,
     hover_q: Query<(Entity, Option<&Hovered>), With<UiCmp>>,
     mut show_q: Query<&mut Visibility, With<ShowOnHoverCmp>>,
     children_q: Query<&Children>,

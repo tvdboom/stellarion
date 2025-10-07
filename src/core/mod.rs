@@ -12,6 +12,7 @@ mod resources;
 mod states;
 mod systems;
 mod ui;
+mod units;
 mod utils;
 
 use crate::core::audio::{
@@ -76,10 +77,7 @@ impl Plugin for GamePlugin {
             // Audio
             .add_systems(Startup, setup_music_btn)
             .add_systems(OnEnter(AudioState::Sound), play_music)
-            .add_systems(
-                Update,
-                (change_audio_event, toggle_music_keyboard, play_audio_event),
-            )
+            .add_systems(Update, (change_audio_event, toggle_music_keyboard, play_audio_event))
             //Networking
             .add_systems(
                 First,
@@ -101,10 +99,7 @@ impl Plugin for GamePlugin {
             app.add_systems(OnEnter(state), setup_menu)
                 .add_systems(OnExit(state), despawn::<MenuCmp>);
         }
-        app.add_systems(
-            Update,
-            update_ip.run_if(in_state(AppState::MultiPlayerMenu)),
-        );
+        app.add_systems(Update, update_ip.run_if(in_state(AppState::MultiPlayerMenu)));
 
         // Utilities
         app.add_systems(Update, check_keys.in_set(InGameSet))
@@ -116,10 +111,7 @@ impl Plugin for GamePlugin {
                 ),
             )
             // In-game states
-            .add_systems(
-                OnEnter(AppState::Game),
-                (despawn::<MapCmp>, draw_map, draw_ui),
-            )
+            .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map, draw_ui))
             .add_systems(Update, (update_planet_info, update_ui).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)

@@ -18,10 +18,7 @@ pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
     let max_y = bounds.max.y - view_size.y * 0.5;
 
     if min_x > max_x || min_y > max_y {
-        Vec2::new(
-            (bounds.min.x + bounds.max.x) * 0.5,
-            (bounds.min.y + bounds.max.y) * 0.5,
-        )
+        Vec2::new((bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5)
     } else {
         Vec2::new(pos.x.clamp(min_x, max_x), pos.y.clamp(min_y, max_y))
     }
@@ -80,13 +77,9 @@ pub fn move_camera(
     }
 
     if mouse.pressed(MouseButton::Middle) {
-        commands
-            .entity(window_e)
-            .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grab));
+        commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Grab));
         for ev in motion_ev.read() {
-            commands
-                .entity(window_e)
-                .insert(Into::<CursorIcon>::into(SystemCursorIcon::Grabbing));
+            commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Grabbing));
             if ev.delta.x.is_nan() || ev.delta.y.is_nan() {
                 continue;
             }
@@ -94,9 +87,7 @@ pub fn move_camera(
             camera_t.translation.y += ev.delta.y * projection.scale;
         }
     } else {
-        commands
-            .entity(window_e)
-            .insert(Into::<CursorIcon>::into(SystemCursorIcon::Default));
+        commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Default));
     }
 
     let mut position = camera_t.translation.truncate();

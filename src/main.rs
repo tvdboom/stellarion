@@ -47,12 +47,7 @@ fn main() {
             }),
     )
     // Networking: systems are disabled until server/client resource is added
-    .add_plugins((
-        RenetServerPlugin,
-        NetcodeServerPlugin,
-        RenetClientPlugin,
-        NetcodeClientPlugin,
-    ))
+    .add_plugins((RenetServerPlugin, NetcodeServerPlugin, RenetClientPlugin, NetcodeClientPlugin))
     .add_plugins((AudioPlugin, GamePlugin));
 
     #[cfg(target_os = "windows")]
@@ -63,9 +58,7 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 pub fn set_window_icon(windows: NonSend<WinitWindows>) {
-    let image = image::open("assets/images/planets/planet.png")
-        .unwrap()
-        .into_rgba8();
+    let image = image::open("assets/images/planets/planet.png").unwrap().into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
 

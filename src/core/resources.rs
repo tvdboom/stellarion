@@ -1,3 +1,5 @@
+use crate::core::utils::Description;
+use crate::utils::NameFromEnum;
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -5,10 +7,20 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use strum_macros::EnumIter;
 
 #[derive(Component, EnumIter, Clone, Debug)]
-pub enum ResourceCmp {
+pub enum ResourceName {
     Metal,
     Crystal,
     Deuterium,
+}
+
+impl Description for ResourceName {
+    fn description(&self) -> String {
+        format!("{}\n\n{}", self.to_name(), match self {
+            ResourceName::Metal => "Metal is the most basic resource, used in almost all constructions and ships.",
+            ResourceName::Crystal => "Crystal is a more advanced resource, essential for high-tech buildings and ships.",
+            ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used as fuel for ships and high-tech ships.",
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -27,11 +39,11 @@ impl Resources {
         }
     }
 
-    pub fn get(&self, resource: &ResourceCmp) -> usize {
+    pub fn get(&self, resource: &ResourceName) -> usize {
         match resource {
-            ResourceCmp::Metal => self.metal,
-            ResourceCmp::Crystal => self.crystal,
-            ResourceCmp::Deuterium => self.deuterium,
+            ResourceName::Metal => self.metal,
+            ResourceName::Crystal => self.crystal,
+            ResourceName::Deuterium => self.deuterium,
         }
     }
 }
