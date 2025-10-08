@@ -1,0 +1,57 @@
+use crate::core::assets::WorldAssets;
+use crate::core::ui::systems::UiCmp;
+use bevy::prelude::*;
+use std::fmt::Debug;
+
+#[derive(Component)]
+pub struct TextSize(pub f32);
+
+/// Change the background color of an entity
+pub fn recolor<E: Debug + Clone + Reflect>(
+    color: Color,
+) -> impl Fn(Trigger<E>, Query<&mut BackgroundColor>) {
+    move |ev, mut bgcolor_q| {
+        if let Ok(mut bgcolor) = bgcolor_q.get_mut(ev.target()) {
+            bgcolor.0 = color;
+        };
+    }
+}
+
+/// Add a root UI node that covers the whole screen
+pub fn add_root_node() -> (Node, Pickable, ZIndex, UiCmp) {
+    (
+        Node {
+            width: Val::Percent(100.),
+            height: Val::Percent(100.),
+            position_type: PositionType::Absolute,
+            flex_direction: FlexDirection::Column,
+            align_content: AlignContent::Center,
+            align_items: AlignItems::Center,
+            align_self: AlignSelf::Center,
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        Pickable::IGNORE,
+        ZIndex(-1),
+        UiCmp,
+    )
+}
+
+/// Add a standard text component
+pub fn add_text(
+    text: impl Into<String>,
+    font: &str,
+    font_size: f32,
+    assets: &WorldAssets,
+    window: &Window,
+) -> (Text, TextFont, TextSize) {
+    (
+        Text::new(text),
+        TextFont {
+            font: assets.font(font),
+            font_size: font_size * window.height() / 460.,
+            ..default()
+        },
+        TextSize(font_size),
+    )
+}

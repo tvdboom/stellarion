@@ -1,7 +1,17 @@
-use crate::core::map::map::PlanetId;
+use crate::core::map::planet::PlanetId;
 use crate::core::units::ships::Fleet;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub enum Objective {
+    Colonize,
+    Attack,
+    Spy,
+    Bomb,
+    Destroy,
+    Transport,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Mission {
@@ -9,4 +19,5 @@ pub struct Mission {
     pub origin: PlanetId,
     pub destination: PlanetId,
     pub position: Vec2,
+    pub objective: Objective,
 }

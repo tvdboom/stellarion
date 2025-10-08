@@ -25,6 +25,7 @@ pub const MIN_PLANETS: u32 = 10;
 pub const MAX_PLANETS: u32 = 50;
 
 /// Map
+pub const BACKGROUND_Z: f32 = 0.;
 pub const PLANET_Z: f32 = 1.;
 
 pub const PLANET_NAMES: [&str; 80] = [

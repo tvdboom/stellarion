@@ -10,6 +10,7 @@ use bevy::prelude::NonSend;
 use bevy::prelude::*;
 use bevy::window::{WindowMode, WindowResolution};
 use bevy::winit::WinitWindows;
+use bevy_egui::EguiPlugin;
 use bevy_kira_audio::AudioPlugin;
 use bevy_renet::netcode::{NetcodeClientPlugin, NetcodeServerPlugin};
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
@@ -48,7 +49,8 @@ fn main() {
     )
     // Networking: systems are disabled until server/client resource is added
     .add_plugins((RenetServerPlugin, NetcodeServerPlugin, RenetClientPlugin, NetcodeClientPlugin))
-    .add_plugins((AudioPlugin, GamePlugin));
+    .add_plugins((EguiPlugin::default(), AudioPlugin))
+    .add_plugins(GamePlugin);
 
     #[cfg(target_os = "windows")]
     app.add_systems(Startup, set_window_icon);

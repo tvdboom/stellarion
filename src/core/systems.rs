@@ -1,7 +1,7 @@
+use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::ui::utils::TextSize;
 use bevy::prelude::*;
 use bevy::window::WindowResized;
 

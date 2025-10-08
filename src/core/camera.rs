@@ -36,7 +36,7 @@ pub fn setup_camera(mut commands: Commands) {
 pub fn move_camera(
     mut commands: Commands,
     map: Res<Map>,
-    mut camera_q: Query<
+    mut camera_q: Single<
         (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
         With<MainCamera>,
     >,
@@ -46,7 +46,7 @@ pub fn move_camera(
     mouse: Res<ButtonInput<MouseButton>>,
     window: Single<(Entity, &Window)>,
 ) {
-    let (camera, global_t, mut camera_t, mut projection) = camera_q.single_mut().unwrap();
+    let (camera, global_t, mut camera_t, mut projection) = camera_q.into_inner();
     let (window_e, window) = *window;
 
     let Projection::Orthographic(projection) = &mut *projection else {

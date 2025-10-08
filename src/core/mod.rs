@@ -34,9 +34,10 @@ use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
-use crate::core::ui::systems::{draw_ui, update_ui};
+use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, ImageIds, UiState};
 use crate::core::utils::despawn;
 use bevy::prelude::*;
+use bevy_egui::{EguiPrimaryContextPass, EguiStartupSet};
 use bevy_renet::renet::{RenetClient, RenetServer};
 use strum::IntoEnumIterator;
 
@@ -62,18 +63,16 @@ impl Plugin for GamePlugin {
             // Resources
             .init_resource::<Ip>()
             .init_resource::<Settings>()
+            .init_resource::<ImageIds>()
+            .init_resource::<UiState>()
             // Sets
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(Update, InGameSet.run_if(in_state(AppState::Game)))
+            .configure_sets(EguiPrimaryContextPass, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PostUpdate, InGameSet.run_if(in_state(AppState::Game)))
             // Camera
-            .add_systems(Startup, setup_camera)
-            .add_systems(
-                Update,
-                (move_camera, move_camera_keyboard)
-                    .run_if(not(in_state(GameState::InGameMenu)))
-                    .in_set(InGameSet),
-            )
+            .add_systems(PreStartup, setup_camera.before(EguiStartupSet::InitContexts))
+            .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InGameSet))
             // Audio
             .add_systems(Startup, setup_music_btn)
             .add_systems(OnEnter(AudioState::Sound), play_music)
@@ -101,12 +100,16 @@ impl Plugin for GamePlugin {
         }
         app.add_systems(Update, update_ip.run_if(in_state(AppState::MultiPlayerMenu)));
 
-        // Utilities
-        app.add_systems(Update, check_keys.in_set(InGameSet))
+        app
+            // Ui
+            .add_systems(Startup, (add_ui_images, set_ui_style))
+            .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
+            // Utilities
+            .add_systems(Update, check_keys.in_set(InGameSet))
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
-            .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map, draw_ui))
-            .add_systems(Update, (update_planet_info, update_ui).in_set(InGameSet))
+            .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map))
+            .add_systems(Update, update_planet_info.in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
             .add_systems(OnExit(GameState::InGameMenu), despawn::<MenuCmp>)

@@ -1,5 +1,6 @@
 use crate::core::audio::PlayAudioEv;
-use crate::core::map::map::{Map, PlanetId};
+use crate::core::map::map::Map;
+use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
 use crate::core::player::Player;
 use crate::core::settings::Settings;

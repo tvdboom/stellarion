@@ -1,268 +1,273 @@
 use crate::core::assets::WorldAssets;
-use crate::core::constants::{LABEL_TEXT_SIZE, SUBTITLE_TEXT_SIZE, TITLE_TEXT_SIZE};
-use crate::core::map::map::MapCmp;
-use crate::core::map::systems::ShowOnHoverCmp;
+use crate::core::camera::MainCamera;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
-use crate::core::ui::utils::{add_root_node, add_text};
-use crate::core::units::buildings::Building;
+use crate::core::ui::aesthetics::Aesthetics;
+use crate::core::ui::dark::NordDark;
+use crate::core::ui::utils::CustomUi;
+use crate::core::units::buildings::BuildingName;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Description;
-use crate::core::utils::{on_out, on_over, Hovered};
 use crate::utils::NameFromEnum;
-use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::prelude::*;
+use bevy_egui::egui;
+use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+use bevy_egui::egui::load::SizedTexture;
+use bevy_egui::egui::{emath, FontData, FontFamily, TextureId, UiBuilder};
+use bevy_egui::EguiContexts;
+use std::collections::HashMap;
 use strum::IntoEnumIterator;
 
 #[derive(Component)]
 pub struct UiCmp;
 
-#[derive(Component)]
-pub struct CycleCmp;
+#[derive(Resource, Default)]
+pub struct ImageIds(pub HashMap<&'static str, TextureId>);
 
-#[derive(Component)]
-pub struct UnitsPanelCmp;
-
-fn add_hover_info(
-    parent: &mut RelatedSpawnerCommands<ChildOf>,
-    text: impl Into<String>,
-    assets: &WorldAssets,
-    window: &Window,
-) {
-    parent
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Percent(115.),
-                left: Val::Percent(0.),
-                width: Val::Px(window.width() * 0.2),
-                padding: UiRect::all(Val::Px(15.)),
-                ..default()
-            },
-            ImageNode::new(assets.image("panel")),
-            Pickable::IGNORE,
-            ShowOnHoverCmp,
-        ))
-        .with_children(|parent| {
-            parent.spawn(add_text(text, "medium", LABEL_TEXT_SIZE, assets, window));
-        });
+impl ImageIds {
+    pub fn get(&self, key: &str) -> TextureId {
+        *self.0.get(key).expect(format!("No image found with name: {}", key).as_str())
+    }
 }
 
-fn add_units<T: NameFromEnum + IntoEnumIterator + Component>(
-    parent: &mut RelatedSpawnerCommands<ChildOf>,
-    assets: &WorldAssets,
-    window: &Window,
-) {
-    parent
-        .spawn(Node {
-            flex_direction: FlexDirection::Column,
-            margin: UiRect::ZERO.with_top(Val::Percent(2.)),
-            ..default()
-        })
-        .with_children(|parent| {
-            for unit in T::iter() {
-                parent
-                    .spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    })
-                    .with_children(|parent| {
-                        parent.spawn((
-                            Node {
-                                height: Val::Percent(10.),
-                                margin: UiRect::ZERO.with_right(Val::Percent(10.)),
-                                ..default()
-                            },
-                            ImageNode::new(assets.image(unit.to_lowername().as_str())),
-                            Pickable::IGNORE,
-                        ));
+#[derive(Clone, Default)]
+pub enum Unit {
+    #[default]
+    Building,
+    Fleet,
+    Defense,
+}
 
-                        parent.spawn((
-                            add_text("0", "bold", TITLE_TEXT_SIZE, &assets, &window),
-                            Pickable::IGNORE,
-                            unit,
-                        ));
-                    });
-            }
-        });
+#[derive(Resource, Default)]
+pub struct UiState {
+    pub hovered_planet: Option<PlanetId>,
+    pub selected_planet: Option<PlanetId>,
+    pub unit: Unit,
+}
+
+pub fn set_ui_style(mut contexts: EguiContexts) {
+    let context = contexts.ctx_mut().unwrap();
+    context.set_style(NordDark.custom_style());
+
+    context.add_font(FontInsert::new(
+        "firasans",
+        FontData::from_static(include_bytes!("../../../assets/fonts/FiraSans-Bold.ttf")),
+        vec![InsertFontFamily {
+            family: FontFamily::Proportional,
+            priority: FontPriority::Highest,
+        }],
+    ));
+}
+
+pub fn add_ui_images(
+    mut contexts: EguiContexts,
+    mut images: ResMut<ImageIds>,
+    assets: Local<WorldAssets>,
+) {
+    for (k, v) in assets.images.iter() {
+        let id = contexts.add_image(v.clone_weak());
+        images.0.insert(k, id);
+    }
 }
 
 pub fn draw_ui(
-    mut commands: Commands,
+    mut contexts: EguiContexts,
+    planet_q: Query<(&GlobalTransform, &Planet)>,
+    camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     player: Res<Player>,
+    state: Res<UiState>,
     settings: Res<Settings>,
-    assets: Local<WorldAssets>,
+    images: Res<ImageIds>,
     window: Single<&Window>,
 ) {
-    commands.spawn(add_root_node()).with_children(|parent| {
-        parent
-            .spawn((
-                Node {
-                    top: Val::Percent(3.),
-                    width: Val::Percent(50.),
-                    height: Val::Percent(6.),
-                    position_type: PositionType::Absolute,
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    ..default()
+    let (camera, camera_t) = camera_q.into_inner();
+
+    egui::Window::new("resources")
+        .frame(egui::Frame {
+            fill: egui::Color32::TRANSPARENT,
+            ..default()
+        })
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .fixed_pos((window.width() * 0.5 - 600., window.height() * 0.04))
+        .fixed_size((1200., 70.))
+        .show(contexts.ctx_mut().unwrap(), |ui| {
+            let response = ui.add(egui::Image::new(SizedTexture::new(
+                images.get("thin_panel"),
+                ui.available_size(),
+            )));
+
+            ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                ui.add_space(10.);
+
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(150.);
+
+                    let response = ui
+                        .scope(|ui| {
+                            ui.add_image(images.get("turn"), [65., 40.]);
+                            ui.heading(settings.turn.to_string());
+                        })
+                        .response;
+
+                    if settings.show_hover {
+                        response.on_hover_ui(|ui| {
+                            ui.label("Turn");
+                            ui.small("Current turn in the game");
+                        });
+                    }
+
+                    ui.add_space(120.);
+
+                    for resource in ResourceName::iter() {
+                        let response = ui
+                            .scope(|ui| {
+                                ui.add_image(
+                                    images.get(resource.to_lowername().as_str()),
+                                    [65., 40.],
+                                );
+                                ui.heading(player.resources.get(&resource).to_string());
+                                ui.add_space(35.);
+                            })
+                            .response;
+
+                        if settings.show_hover {
+                            response.on_hover_ui(|ui| {
+                                ui.label(resource.to_name());
+                                ui.small(resource.description());
+                            });
+                        }
+                    }
+                });
+            });
+        });
+
+    if let Some(id) = state.hovered_planet.or(state.selected_planet) {
+        let (planet, planet_pos) = planet_q
+            .iter()
+            .find_map(|(t, p)| {
+                (p.id == id).then_some((
+                    p,
+                    camera.world_to_viewport(camera_t, t.compute_transform().translation).unwrap(),
+                ))
+            })
+            .unwrap();
+
+        let (width, height) = (window.width(), window.height());
+        let (window_w, window_h) = (350., 630.);
+
+        egui::Window::new("overview")
+            .frame(egui::Frame {
+                fill: egui::Color32::TRANSPARENT,
+                ..default()
+            })
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .fixed_pos((
+                if planet_pos.x < width * 0.5 {
+                    width * 0.99 - window_w
+                } else {
+                    width * 0.01
                 },
-                ImageNode::new(assets.image("thin_panel")),
-                UiCmp,
-                MapCmp,
+                height * 0.2,
             ))
-            .with_children(|parent| {
-                parent
-                    .spawn((
-                        Node {
-                            flex_direction: FlexDirection::Row,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::ZERO.with_top(Val::Percent(1.)),
-                            margin: UiRect::ZERO.with_right(Val::Percent(15.)),
-                            ..default()
-                        },
-                        UiCmp,
-                    ))
-                    .observe(on_over)
-                    .observe(on_out)
-                    .with_children(|parent| {
-                        add_hover_info(parent, "Turn\n\nNumber of turns played.", &assets, &window);
+            .fixed_size((window_w, window_h))
+            .show(contexts.ctx_mut().unwrap(), |ui| {
+                let response = ui.add(egui::Image::new(SizedTexture::new(
+                    images.get("panel"),
+                    ui.available_size(),
+                )));
 
-                        parent.spawn((
-                            Node {
-                                height: Val::Percent(80.),
-                                margin: UiRect::ZERO.with_right(Val::Percent(10.)),
-                                ..default()
-                            },
-                            ImageNode::new(assets.image("turn")),
-                            Pickable::IGNORE,
-                        ));
+                ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                    ui.add_space(15.);
+                    ui.vertical_centered(|ui| {
+                        ui.label("Overview");
+                    });
+                });
 
-                        parent.spawn((
-                            add_text(
-                                settings.turn.to_string(),
-                                "bold",
-                                TITLE_TEXT_SIZE,
-                                &assets,
-                                &window,
-                            ),
-                            Pickable::IGNORE,
-                            CycleCmp,
-                        ));
+                ui.add_space(5.);
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = emath::Vec2::new(6., 4.);
+
+                    ui.add_space(20.);
+
+                    ui.vertical(|ui| {
+                        for building in BuildingName::iter() {
+                            ui.horizontal(|ui| {
+                                ui.add_image(
+                                    images.get(building.to_lowername().as_str()),
+                                    [50., 50.],
+                                );
+                                ui.label(
+                                    planet
+                                        .buildings
+                                        .iter()
+                                        .find(|b| b.name == building)
+                                        .map(|b| b.level)
+                                        .unwrap_or(0)
+                                        .to_string(),
+                                );
+                            })
+                            .response
+                            .on_hover_ui(|ui| {
+                                ui.small(building.to_name());
+                            });
+                        }
                     });
 
-                for resource in ResourceName::iter() {
-                    parent
-                        .spawn((
-                            Node {
-                                flex_direction: FlexDirection::Row,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::ZERO.with_top(Val::Percent(1.)),
-                                margin: UiRect::ZERO.with_right(Val::Percent(5.)),
-                                ..default()
-                            },
-                            Pickable::default(),
-                            UiCmp,
-                        ))
-                        .observe(on_over)
-                        .observe(on_out)
-                        .with_children(|parent| {
-                            add_hover_info(
-                                parent,
-                                format!("{}\n\n{}", resource.to_name(), resource.description()),
-                                &assets,
-                                &window,
-                            );
+                    ui.add_space(20.);
 
-                            parent.spawn((
-                                Node {
-                                    height: Val::Percent(80.),
-                                    margin: UiRect::ZERO.with_right(Val::Percent(10.)),
-                                    ..default()
-                                },
-                                ImageNode::new(assets.image(resource.to_lowername().as_str())),
-                                Pickable::IGNORE,
-                            ));
+                    ui.vertical(|ui| {
+                        for ship in Ship::iter() {
+                            ui.horizontal(|ui| {
+                                ui.add_image(images.get(ship.to_lowername().as_str()), [50., 50.]);
+                                ui.label(
+                                    player
+                                        .fleets
+                                        .get(&id)
+                                        .map(|f| f.get(&ship))
+                                        .unwrap_or(0)
+                                        .to_string(),
+                                );
+                            })
+                            .response
+                            .on_hover_ui(|ui| {
+                                ui.small(ship.to_name());
+                            });
+                        }
+                    });
 
-                            parent.spawn((
-                                add_text(
-                                    player.resources.get(&resource).to_string(),
-                                    "bold",
-                                    TITLE_TEXT_SIZE,
-                                    &assets,
-                                    &window,
-                                ),
-                                Pickable::IGNORE,
-                                resource,
-                            ));
-                        });
-                }
+                    ui.add_space(20.);
+
+                    ui.vertical(|ui| {
+                        for defense in Defense::iter() {
+                            ui.horizontal(|ui| {
+                                ui.add_image(
+                                    images.get(defense.to_lowername().as_str()),
+                                    [50., 50.],
+                                );
+                                ui.label(
+                                    player
+                                        .defenses
+                                        .get(&id)
+                                        .map(|f| f.get(&defense))
+                                        .unwrap_or(0)
+                                        .to_string(),
+                                );
+                            })
+                            .response
+                            .on_hover_ui(|ui| {
+                                ui.small(defense.to_name());
+                            });
+                        }
+                    });
+                });
             });
-
-        parent
-            .spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    right: Val::Percent(2.),
-                    width: Val::Percent(20.),
-                    height: Val::Percent(70.),
-                    padding: UiRect::ZERO.with_top(Val::Percent(4.)),
-                    ..default()
-                },
-                ImageNode::new(assets.image("panel")),
-                Pickable::IGNORE,
-                UnitsPanelCmp,
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        top: Val::Percent(2.5),
-                        ..default()
-                    },
-                    add_text("Overview", "bold", SUBTITLE_TEXT_SIZE, &assets, &window),
-                    Pickable::IGNORE,
-                ));
-
-                add_units::<Ship>(parent, &assets, &window);
-                // add_units::<Defense>(parent, &assets, &window);
-                // add_units::<Building>(parent, &assets, &window);
-            });
-    });
-}
-
-pub fn update_ui(
-    mut cycle_q: Query<&mut Text, With<CycleCmp>>,
-    mut resource_q: Query<(&mut Text, &ResourceName), Without<CycleCmp>>,
-    hover_q: Query<(Entity, Option<&Hovered>), With<UiCmp>>,
-    mut show_q: Query<&mut Visibility, With<ShowOnHoverCmp>>,
-    children_q: Query<&Children>,
-    players: Res<Player>,
-    settings: Res<Settings>,
-) {
-    // Update the cycle label
-    cycle_q.single_mut().unwrap().0 = format!("{:.0}", settings.turn);
-
-    // Update the resource labels
-    for (mut text, resource) in &mut resource_q {
-        text.0 = format!("{:.0}", players.resources.get(resource));
-    }
-
-    // Show on hover
-    for (entity, hovered) in &hover_q {
-        for child in children_q.iter_descendants(entity) {
-            if let Ok(mut visibility) = show_q.get_mut(child) {
-                *visibility = if hovered.is_some() && settings.show_hover {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-            }
-        }
     }
 }

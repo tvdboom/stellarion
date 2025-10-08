@@ -1,9 +1,9 @@
 use crate::core::assets::WorldAssets;
 use crate::core::audio::ChangeAudioEv;
 use crate::core::constants::*;
+use crate::core::menu::utils::add_text;
 use crate::core::settings::Settings;
 use crate::core::states::AudioState;
-use crate::core::ui::utils::add_text;
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use std::fmt::Debug;

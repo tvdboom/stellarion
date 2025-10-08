@@ -17,7 +17,7 @@ impl Default for Settings {
         Self {
             audio: AudioState::default(),
             n_players: 2,
-            n_planets: 3,
+            n_planets: 10,
             show_info: false,
             show_hover: true,
             turn: 1,

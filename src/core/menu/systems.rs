@@ -7,11 +7,11 @@ use crate::core::menu::buttons::{
     spawn_menu_button, DisabledButton, IpTextCmp, LobbyTextCmp, MenuBtn, MenuCmp,
 };
 use crate::core::menu::settings::{spawn_label, SettingsBtn};
+use crate::core::menu::utils::{add_root_node, add_text};
 use crate::core::network::Ip;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::AppState;
-use crate::core::ui::utils::{add_root_node, add_text};
 use crate::utils::get_local_ip;
 use crate::TITLE;
 use bevy::prelude::*;

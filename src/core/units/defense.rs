@@ -1,12 +1,19 @@
 use crate::core::units::Description;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use strum_macros::EnumIter;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Battery(pub Vec<(Defense, usize)>);
+pub struct Battery(pub HashMap<Defense, usize>);
 
-#[derive(Component, EnumIter, Clone, Debug, Serialize, Deserialize)]
+impl Battery {
+    pub fn get(&self, defense: &Defense) -> usize {
+        *self.0.get(defense).unwrap_or(&0)
+    }
+}
+
+#[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {
     RocketLauncher,
     LightLaser,
@@ -42,14 +49,43 @@ impl Description for Defense {
                 fodder to protect the better, more expensive, defences."
             },
             Defense::LightLaser => {
-                "The light laser is the second Defensive Structure that most players can build. It's used as fodder at all stages of the game, much like the Rocket Launcher, but is better in several ways. All the ships with Rapid Fire against the Light Laser are relatively slow. Light Lasers also have a higher weapon power than Rocket Launchers. Although the weapon power is only 25% higher, fodder is built in much larger numbers than anything else, and the difference quickly becomes rather significant."
+                "The light laser is much like the rocket launcher, but is better in several ways. \
+                All the ships with Rapid Fire against the light laser are relatively slow. Light \
+                Lasers also have a higher weapon power than rocket launchers. Although the weapon \
+                power is only slightly higher, fodder is built in much larger numbers than anything \
+                else, and the difference quickly becomes rather significant."
             },
-            Defense::HeavyLaser => "More powerful laser with longer range, effective against medium ships.".into(),
-            Defense::GaussCannon => "Projectile weapon that fires metal slugs at high velocity, effective against large ships.".into(),
-            Defense::IonCannon => "Energy weapon that disables ship systems, effective against shields and electronics.".into(),
-            Defense::PlasmaTurret => "High-energy plasma weapon that causes significant damage, effective against all ship types.".into(),
-            Defense::AntiballisticMissile => "Missile system designed to intercept and destroy incoming ballistic missiles.".into(),
-            Defense::InterplanetaryMissile => "Long-range missile capable of striking targets on other planets or moons.".into(),
+            Defense::HeavyLaser => {
+                "The heavy laser is an improvement in sheer power over the light Laser. However, \
+                it has less overall power-per-resource and similar things have rapid fire against \
+                it."
+            },
+            Defense::GaussCannon => {
+                "Gauss cannons are an effective defence due to their high shield and weapon power, \
+                making them capable of holding their own against cruiser-based fleets, when backed \
+                by large amounts of fodder."
+            },
+            Defense::IonCannon => {
+                "The ion cannon is well known for its relatively high shield power. A reason to \
+                build them is because only the bomber and the war sun have rapid fire against it. \
+                This makes them useful against cruisers and destroyer-dominated fleets."
+            },
+            Defense::PlasmaTurret => {
+                "The plasma turret is the most powerful defense in the game. It is fairly \
+                expensive, but well worth its price. Bomber is the only ship with rapid fire \
+                against it. "
+            },
+            Defense::AntiballisticMissile => {
+                "Antiballistic missiles are the only way to destroy attacking interplanetary \
+                missiles. Each anti-ballistic missile has a 50% chance of destroying one incoming \
+                interplanetary missile. Antiballistic missiles are launched automatically whenever \
+                an approaching interplanetary missile is detected. Otherwise, they do not take \
+                part in any attacks."
+            },
+            Defense::InterplanetaryMissile => {
+                "Interplanetary missiles are designed to destroy enemy defenses. Before a missile \
+                can hit the defense itself, all the enemy's antiballistic missiles must be destroyed."
+            },
         }
     }
 }

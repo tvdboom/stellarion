@@ -17,7 +17,7 @@ impl Description for ResourceName {
         match self {
             ResourceName::Metal => "Metal is the most basic resource, used in almost all constructions and ships.",
             ResourceName::Crystal => "Crystal is a more advanced resource, essential for high-tech buildings and ships.",
-            ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used as fuel for ships and high-tech ships.",
+            ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used for high-tech ships and as fuel.",
         }
     }
 }

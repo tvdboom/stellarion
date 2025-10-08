@@ -5,8 +5,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use strum_macros::EnumIter;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Fleet(pub HashMap<Ship, usize>);
+
+impl Fleet {
+    pub fn get(&self, ship: &Ship) -> usize {
+        *self.0.get(ship).unwrap_or(&0)
+    }
+}
 
 #[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Ship {

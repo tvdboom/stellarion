@@ -1,16 +1,16 @@
 use crate::core::assets::WorldAssets;
 use crate::core::constants::*;
-use crate::core::map::map::{Map, Planet, PlanetId};
+use crate::core::map::map::Map;
+use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::menu::utils::{add_text, recolor};
 use crate::core::network::{
     new_renet_client, new_renet_server, Ip, ServerMessage, ServerSendMessage,
 };
 use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::player::Player;
-use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::ui::utils::{add_text, recolor};
-use crate::core::units::buildings::Building;
+use crate::core::ui::systems::UiState;
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
@@ -71,11 +71,9 @@ pub fn on_click_menu_button(
             let mut map = Map::new(settings.n_planets);
 
             // Alter home planet's stats
-            map.planets.iter_mut().find(|p| p.id == 0).map(|p| {
-                p.resources = Resources::new(200, 200, 100);
-                p.buildings = vec![Building::Shipyard(1), Building::Factory(1)];
-            });
+            map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet();
 
+            commands.insert_resource(UiState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
             next_app_state.set(AppState::Game);
@@ -101,10 +99,7 @@ pub fn on_click_menu_button(
 
             // Alter home planet's resources
             for planet in home_planets.iter() {
-                map.planets.iter_mut().find(|p| p.id == planet.0).map(|p| {
-                    p.resources = Resources::new(200, 200, 100);
-                    p.buildings = vec![Building::Shipyard(1), Building::Factory(1)];
-                });
+                map.planets.iter_mut().find(|p| p.id == planet.0).map(|p| p.make_home_planet());
             }
 
             // Send the start game signal to all clients with their player id
@@ -119,6 +114,7 @@ pub fn on_click_menu_button(
                 });
             }
 
+            commands.insert_resource(UiState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
 

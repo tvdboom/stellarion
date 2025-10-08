@@ -1,4 +1,4 @@
-use crate::core::map::map::PlanetId;
+use crate::core::map::planet::PlanetId;
 use crate::core::resources::Resources;
 use crate::core::units::defense::Battery;
 use crate::core::units::missions::Mission;
@@ -42,5 +42,9 @@ impl Player {
             planets: vec![home_planet],
             ..default()
         }
+    }
+
+    pub fn controls(&self, planet: &PlanetId) -> bool {
+        self.planets.contains(planet)
     }
 }
