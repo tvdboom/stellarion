@@ -1,4 +1,5 @@
-use crate::core::units::Description;
+use crate::core::resources::Resources;
+use crate::core::units::{Description, Price};
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
@@ -8,10 +9,63 @@ pub enum BuildingName {
     Mine,
     Shipyard,
     Factory,
-    Silo,
-    PlanetShield,
+    MissileSilo,
+    PlanetaryShield,
     SensorPhalanx,
     JumpGate,
+}
+
+impl Description for BuildingName {
+    fn description(&self) -> &str {
+        match self {
+            BuildingName::Mine => {
+                "The mine is the building that produces resources. The amount of resources \
+                mined each turn is equal to the planet's base resources times the mine's level."
+            },
+            BuildingName::Shipyard => {
+                "The shipyard is responsible for the construction of all ships. A higher level \
+                allows the construction of more advanced ships."
+            },
+            BuildingName::Factory => {
+                "The factory is responsible for the construction of planet defenses. The higher \
+                the level, the more advanced defenses can be built."
+            }
+            BuildingName::MissileSilo => {
+                "A missile silo is a building that launches and stores missiles. A level 2 silo \
+                is required to be able to build interplanetary missiles For each level of the silo, \
+                10 missile slots are made available."
+            },
+            BuildingName::PlanetaryShield => {
+                "The planetary shield is a defensive structure with high shield power to use as \
+                fodder. They act as a single unit of fodder. Higher levels increase the shield \
+                power."
+            },
+            BuildingName::SensorPhalanx => {
+                "The sensor phalanx scans the space around a planet to detect incoming attacks. \
+                The higher the level of the phalanx, the more accurate the scanned information."
+            },
+            BuildingName::JumpGate => {
+                "The jump gate enables rapid travel between two controlled planets with jump \
+                gates (at any distance in space). Thus, having only a single gate is useless. \
+                Jumps always take 1 turn, independent of the fleet's composition. Upgrading the \
+                jump gate increases the number of ships it can transport per turn."
+            },
+        }
+    }
+}
+
+impl Price for BuildingName {
+    fn price(&self) -> Resources {
+        match self {
+            BuildingName::Mine => Resources::new(500, 100, 0),
+            BuildingName::Shipyard => Resources::new(400, 200, 100),
+            BuildingName::Factory => Resources::new(300, 200, 100),
+            BuildingName::MissileSilo => Resources::new(300, 300, 300),
+            BuildingName::PlanetaryShield => Resources::new(200, 100, 200),
+            BuildingName::SensorPhalanx => Resources::new(400, 300, 300),
+            BuildingName::JumpGate => Resources::new(500, 300, 500),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,48 +81,6 @@ impl Building {
         Self {
             name,
             level: 1,
-        }
-    }
-}
-
-impl Description for Building {
-    fn description(&self) -> &str {
-        match self.name {
-            BuildingName::Mine => {
-                "Mines are the backbone of any colony, providing the essential resources \
-                needed for expansion and survival. Upgrading mines increases their efficiency, \
-                allowing for greater resource extraction and supporting larger populations."
-            },
-            BuildingName::Shipyard => {
-                "The shipyard is where all spacefaring vessels are constructed. A higher-level \
-                shipyard allows for the construction of more advanced ships, enabling players to \
-                build a formidable fleet to defend their colony or launch offensives against enemies."
-            },
-            BuildingName::Factory => {
-                "Factories are essential for producing the components and materials needed for \
-                building ships and defenses. Upgrading factories increases their production speed \
-                and capacity, ensuring a steady supply of resources for your colony's growth."
-            }
-            BuildingName::Silo => {
-                "Silos are used to store deuterium, a crucial resource for powering ships and \
-                advanced technologies. Upgrading silos increases their storage capacity, allowing \
-                players to stockpile more deuterium for future use."
-            },
-            BuildingName::PlanetShield => {
-                "The planet shield provides a defensive barrier against incoming attacks. \
-                Upgrading the planet shield increases its strength and durability, making it \
-                harder for enemies to penetrate and cause damage to your colony."
-            },
-            BuildingName::SensorPhalanx => {
-                "The sensor phalanx allows for the detection of enemy fleets and activities \
-                in the vicinity of your colony. Upgrading the sensor phalanx increases its range \
-                and sensitivity, providing better intelligence on potential threats."
-            },
-            BuildingName::JumpGate => {
-                "The jump gate enables rapid travel between distant locations in space. \
-                Upgrading the jump gate increases its stability and the frequency of jumps, \
-                allowing for quicker deployment of fleets across the galaxy."
-            },
         }
     }
 }

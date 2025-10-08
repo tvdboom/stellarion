@@ -1,4 +1,4 @@
-use crate::core::map::planet::PlanetId;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
 use crate::core::units::defense::Battery;
 use crate::core::units::missions::Mission;
@@ -46,5 +46,9 @@ impl Player {
 
     pub fn controls(&self, planet: &PlanetId) -> bool {
         self.planets.contains(planet)
+    }
+
+    pub fn production(&self, planets: &Vec<Planet>) -> Resources {
+        planets.iter().filter(|p| self.controls(&p.id)).map(|p| p.production()).sum()
     }
 }

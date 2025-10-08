@@ -1,5 +1,7 @@
+use std::cmp::min;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
+use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
@@ -7,16 +9,16 @@ use crate::core::settings::Settings;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::CustomUi;
-use crate::core::units::buildings::BuildingName;
+use crate::core::units::buildings::{Building, BuildingName};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::Description;
+use crate::core::units::{Description, Price};
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{emath, FontData, FontFamily, TextureId, UiBuilder};
+use bevy_egui::egui::{emath, FontData, FontFamily, Sense, TextureId, UiBuilder};
 use bevy_egui::EguiContexts;
 use std::collections::HashMap;
 use strum::IntoEnumIterator;
@@ -46,6 +48,7 @@ pub struct UiState {
     pub hovered_planet: Option<PlanetId>,
     pub selected_planet: Option<PlanetId>,
     pub unit: Unit,
+    pub end_turn: bool,
 }
 
 pub fn set_ui_style(mut contexts: EguiContexts) {
@@ -77,6 +80,7 @@ pub fn draw_ui(
     mut contexts: EguiContexts,
     planet_q: Query<(&GlobalTransform, &Planet)>,
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    map: Res<Map>,
     player: Res<Player>,
     state: Res<UiState>,
     settings: Res<Settings>,
@@ -116,8 +120,16 @@ pub fn draw_ui(
 
                     if settings.show_hover {
                         response.on_hover_ui(|ui| {
-                            ui.label("Turn");
-                            ui.small("Current turn in the game");
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.add_image(images.get("turn"), [130., 90.]);
+                                });
+                                ui.vertical(|ui| {
+                                    ui.label("Turn");
+                                    ui.separator();
+                                    ui.small("Current turn in the game.");
+                                });
+                            });
                         });
                     }
 
@@ -137,8 +149,23 @@ pub fn draw_ui(
 
                         if settings.show_hover {
                             response.on_hover_ui(|ui| {
-                                ui.label(resource.to_name());
-                                ui.small(resource.description());
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.add_image(
+                                            images.get(resource.to_lowername().as_str()),
+                                            [130., 90.],
+                                        );
+                                    });
+                                    ui.vertical(|ui| {
+                                        ui.label(resource.to_name());
+                                        ui.separator();
+                                        ui.small(format!(
+                                            "Production: +{}",
+                                            player.production(&map.planets).get(&resource)
+                                        ));
+                                        ui.small(resource.description());
+                                    });
+                                });
                             });
                         }
                     }
@@ -147,127 +174,232 @@ pub fn draw_ui(
         });
 
     if let Some(id) = state.hovered_planet.or(state.selected_planet) {
-        let (planet, planet_pos) = planet_q
-            .iter()
-            .find_map(|(t, p)| {
-                (p.id == id).then_some((
-                    p,
-                    camera.world_to_viewport(camera_t, t.compute_transform().translation).unwrap(),
+        if player.controls(&id) {
+            let (planet, planet_pos) = planet_q
+                .iter()
+                .find_map(|(t, p)| {
+                    (p.id == id).then_some((
+                        p,
+                        camera
+                            .world_to_viewport(camera_t, t.compute_transform().translation)
+                            .unwrap(),
+                    ))
+                })
+                .unwrap();
+
+            let (width, height) = (window.width(), window.height());
+            let (window_w, window_h) = (350., 630.);
+
+            egui::Window::new("overview")
+                .frame(egui::Frame {
+                    fill: egui::Color32::TRANSPARENT,
+                    ..default()
+                })
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(false)
+                .fixed_pos((
+                    if planet_pos.x < width * 0.5 {
+                        width * 0.995 - window_w
+                    } else {
+                        width * 0.01
+                    },
+                    height * 0.2,
                 ))
-            })
-            .unwrap();
+                .fixed_size((window_w, window_h))
+                .show(contexts.ctx_mut().unwrap(), |ui| {
+                    let response = ui.add(egui::Image::new(SizedTexture::new(
+                        images.get("panel"),
+                        ui.available_size(),
+                    )));
 
-        let (width, height) = (window.width(), window.height());
-        let (window_w, window_h) = (350., 630.);
+                    ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                        ui.add_space(15.);
+                        ui.vertical_centered(|ui| {
+                            ui.label("Overview");
+                        });
+                    });
 
-        egui::Window::new("overview")
-            .frame(egui::Frame {
-                fill: egui::Color32::TRANSPARENT,
-                ..default()
-            })
-            .collapsible(false)
-            .resizable(false)
-            .title_bar(false)
-            .fixed_pos((
-                if planet_pos.x < width * 0.5 {
-                    width * 0.99 - window_w
-                } else {
-                    width * 0.01
-                },
-                height * 0.2,
-            ))
-            .fixed_size((window_w, window_h))
-            .show(contexts.ctx_mut().unwrap(), |ui| {
-                let response = ui.add(egui::Image::new(SizedTexture::new(
-                    images.get("panel"),
-                    ui.available_size(),
-                )));
+                    ui.add_space(5.);
 
-                ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
-                    ui.add_space(15.);
-                    ui.vertical_centered(|ui| {
-                        ui.label("Overview");
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = emath::Vec2::new(6., 4.);
+
+                        ui.add_space(20.);
+
+                        ui.vertical(|ui| {
+                            for building in BuildingName::iter() {
+                                ui.horizontal(|ui| {
+                                    ui.add_image(
+                                        images.get(building.to_lowername().as_str()),
+                                        [50., 50.],
+                                    );
+                                    ui.label(
+                                        planet
+                                            .buildings
+                                            .iter()
+                                            .find(|b| b.name == building)
+                                            .map(|b| b.level)
+                                            .unwrap_or(0)
+                                            .to_string(),
+                                    );
+                                })
+                                .response
+                                .on_hover_ui(|ui| {
+                                    ui.small(building.to_name());
+                                });
+                            }
+                        });
+
+                        ui.add_space(20.);
+
+                        ui.vertical(|ui| {
+                            for ship in Ship::iter() {
+                                ui.horizontal(|ui| {
+                                    ui.add_image(
+                                        images.get(ship.to_lowername().as_str()),
+                                        [50., 50.],
+                                    );
+                                    ui.label(
+                                        player
+                                            .fleets
+                                            .get(&id)
+                                            .map(|f| f.get(&ship))
+                                            .unwrap_or(0)
+                                            .to_string(),
+                                    );
+                                })
+                                .response
+                                .on_hover_ui(|ui| {
+                                    ui.small(ship.to_name());
+                                });
+                            }
+                        });
+
+                        ui.add_space(20.);
+
+                        ui.vertical(|ui| {
+                            for defense in Defense::iter() {
+                                ui.horizontal(|ui| {
+                                    ui.add_image(
+                                        images.get(defense.to_lowername().as_str()),
+                                        [50., 50.],
+                                    );
+                                    ui.label(
+                                        player
+                                            .defenses
+                                            .get(&id)
+                                            .map(|f| f.get(&defense))
+                                            .unwrap_or(0)
+                                            .to_string(),
+                                    );
+                                })
+                                .response
+                                .on_hover_ui(|ui| {
+                                    ui.small(defense.to_name());
+                                });
+                            }
+                        });
                     });
                 });
+        }
+    }
 
-                ui.add_space(5.);
+    if let Some(id) = state.selected_planet {
+        if player.controls(&id) {
+            let planet = planet_q.iter().find_map(|(_, p)| (p.id == id).then_some(p)).unwrap();
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing = emath::Vec2::new(6., 4.);
+            let (width, height) = (window.width(), window.height());
+            let (window_w, window_h) = (800., 300.);
 
-                    ui.add_space(20.);
+            egui::Window::new("shop")
+                .frame(egui::Frame {
+                    fill: egui::Color32::TRANSPARENT,
+                    ..default()
+                })
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(false)
+                .fixed_pos((width * 0.5 - window_w * 0.5, height * 0.99 - window_h))
+                .fixed_size((window_w, window_h))
+                .show(contexts.ctx_mut().unwrap(), |ui| {
+                    let response = ui.add(egui::Image::new(SizedTexture::new(
+                        images.get("panel"),
+                        ui.available_size(),
+                    )));
 
-                    ui.vertical(|ui| {
-                        for building in BuildingName::iter() {
+                    ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                        ui.add_space(40.);
+
+                        let buildings: Vec<_> = BuildingName::iter().collect();
+                        let (r1, r2) = buildings.split_at(min(5, buildings.len()));
+                        for row in [r1, r2] {
                             ui.horizontal(|ui| {
-                                ui.add_image(
-                                    images.get(building.to_lowername().as_str()),
-                                    [50., 50.],
-                                );
-                                ui.label(
-                                    planet
-                                        .buildings
-                                        .iter()
-                                        .find(|b| b.name == building)
-                                        .map(|b| b.level)
-                                        .unwrap_or(0)
-                                        .to_string(),
-                                );
-                            })
-                            .response
-                            .on_hover_ui(|ui| {
-                                ui.small(building.to_name());
-                            });
-                        }
-                    });
+                                ui.add_space(40.);
 
-                    ui.add_space(20.);
+                                match state.unit {
+                                    Unit::Building => {
+                                        for building in row {
+                                            let level = planet
+                                                .buildings
+                                                .iter()
+                                                .find(|b| b.name == *building)
+                                                .map(|b| b.level)
+                                                .unwrap_or(0);
 
-                    ui.vertical(|ui| {
-                        for ship in Ship::iter() {
-                            ui.horizontal(|ui| {
-                                ui.add_image(images.get(ship.to_lowername().as_str()), [50., 50.]);
-                                ui.label(
-                                    player
-                                        .fleets
-                                        .get(&id)
-                                        .map(|f| f.get(&ship))
-                                        .unwrap_or(0)
-                                        .to_string(),
-                                );
-                            })
-                            .response
-                            .on_hover_ui(|ui| {
-                                ui.small(ship.to_name());
-                            });
-                        }
-                    });
+                                            ui.add_enabled_ui(
+                                                level < Building::MAX_LEVEL
+                                                    && player.resources >= building.price(),
+                                                |ui| {
+                                                    let response = ui
+                                                        .scope_builder(
+                                                            UiBuilder::new()
+                                                                .id_salt("interactive_container")
+                                                                .sense(Sense::click()),
+                                                            |ui| {
+                                                                ui.add_image(
+                                                                    images.get(
+                                                                        building
+                                                                            .to_lowername()
+                                                                            .as_str(),
+                                                                    ),
+                                                                    [130., 130.],
+                                                                );
+                                                            },
+                                                        )
+                                                        .response;
 
-                    ui.add_space(20.);
-
-                    ui.vertical(|ui| {
-                        for defense in Defense::iter() {
-                            ui.horizontal(|ui| {
-                                ui.add_image(
-                                    images.get(defense.to_lowername().as_str()),
-                                    [50., 50.],
-                                );
-                                ui.label(
-                                    player
-                                        .defenses
-                                        .get(&id)
-                                        .map(|f| f.get(&defense))
-                                        .unwrap_or(0)
-                                        .to_string(),
-                                );
-                            })
-                            .response
-                            .on_hover_ui(|ui| {
-                                ui.small(defense.to_name());
+                                                    if settings.show_hover {
+                                                        response.on_hover_ui(|ui| {
+                                                            ui.horizontal(|ui| {
+                                                                ui.vertical(|ui| {
+                                                                    ui.add_image(
+                                                                        images.get(
+                                                                            building
+                                                                                .to_lowername()
+                                                                                .as_str(),
+                                                                        ),
+                                                                        [200., 200.],
+                                                                    );
+                                                                });
+                                                                ui.vertical(|ui| {
+                                                                    ui.label(building.to_name());
+                                                                    ui.separator();
+                                                                    ui.small(building.description());
+                                                                });
+                                                            });
+                                                        });
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    },
+                                    _ => (),
+                                }
                             });
                         }
                     });
                 });
-            });
+        }
     }
 }

@@ -11,6 +11,7 @@ mod resources;
 mod settings;
 mod states;
 mod systems;
+mod turns;
 mod ui;
 mod units;
 mod utils;
@@ -34,6 +35,7 @@ use crate::core::persistence::{LoadGameEv, SaveGameEv};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
+use crate::core::turns::{next_turn, NextTurnEv};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, ImageIds, UiState};
 use crate::core::utils::despawn;
 use bevy::prelude::*;
@@ -60,6 +62,7 @@ impl Plugin for GamePlugin {
             .add_event::<LoadGameEv>()
             .add_event::<ServerSendMessage>()
             .add_event::<ClientSendMessage>()
+            .add_event::<NextTurnEv>()
             // Resources
             .init_resource::<Ip>()
             .init_resource::<Settings>()
@@ -109,7 +112,7 @@ impl Plugin for GamePlugin {
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map))
-            .add_systems(Update, update_planet_info.in_set(InGameSet))
+            .add_systems(Update, (next_turn, update_planet_info).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
             .add_systems(OnExit(GameState::InGameMenu), despawn::<MenuCmp>)

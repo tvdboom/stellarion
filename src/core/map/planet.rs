@@ -84,4 +84,9 @@ impl Planet {
             Building::new(BuildingName::Factory),
         ];
     }
+
+    pub fn production(&self) -> Resources {
+        self.resources
+            * self.buildings.iter().find(|b| b.name == BuildingName::Mine).map_or(0, |b| b.level)
+    }
 }

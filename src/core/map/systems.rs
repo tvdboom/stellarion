@@ -1,11 +1,12 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
-use crate::core::constants::{BACKGROUND_Z, PLANET_Z, TITLE_TEXT_SIZE};
+use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::Planet;
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
+use crate::core::turns::NextTurnEv;
 use crate::core::ui::systems::{UiState, Unit};
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::Objective;
@@ -48,6 +49,15 @@ impl PlanetIcon {
 
 #[derive(Component)]
 pub struct ShowOnHoverCmp;
+
+#[derive(Component)]
+pub struct EndTurnButtonCmp;
+
+fn set_button_index(button_q: &mut ImageNode, index: usize) {
+    if let Some(texture) = &mut button_q.texture_atlas {
+        texture.index = index;
+    }
+}
 
 pub fn draw_map(
     mut commands: Commands,
@@ -106,7 +116,6 @@ pub fn draw_map(
             ))
             .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = Some(planet_id);
-                state.selected_planet = None;
             })
             .observe(move |_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = None;
@@ -149,7 +158,6 @@ pub fn draw_map(
                         ))
                         .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                             state.hovered_planet = Some(planet_id);
-                            state.selected_planet = None;
                         })
                         .observe(move |_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
                             state.hovered_planet = None;
@@ -216,6 +224,72 @@ pub fn draw_map(
             camera_t.translation = planet.position.extend(camera_t.translation.z);
         }
     }
+
+    // Spawn end turn button
+    let texture = assets.texture("button");
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Percent(3.),
+                right: Val::Percent(3.),
+                width: Val::Px(200.),
+                height: Val::Px(40.),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            ImageNode::from_atlas_image(
+                texture.image.clone_weak(),
+                TextureAtlas {
+                    layout: texture.layout.clone_weak(),
+                    index: 0,
+                },
+            ),
+            Pickable::default(),
+            EndTurnButtonCmp,
+            MapCmp,
+            children![
+                Text::new("End Turn"),
+                TextFont {
+                    font: assets.font("bold"),
+                    font_size: BUTTON_TEXT_SIZE,
+                    ..default()
+                },
+            ],
+        ))
+        .observe(
+            move |_: Trigger<Pointer<Over>>,
+                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+                set_button_index(&mut button_q.into_inner(), 1);
+            },
+        )
+        .observe(
+            move |_: Trigger<Pointer<Out>>,
+                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+                set_button_index(&mut button_q.into_inner(), 0);
+            },
+        )
+        .observe(
+            move |_: Trigger<Pointer<Pressed>>,
+                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+                set_button_index(&mut button_q.into_inner(), 0);
+            },
+        )
+        .observe(
+            move |_: Trigger<Pointer<Released>>,
+                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+                set_button_index(&mut button_q.into_inner(), 1);
+            },
+        )
+        .observe(
+            move |_: Trigger<Pointer<Click>>,
+                  mut state: ResMut<UiState>,
+                  mut next_turn_ev: EventWriter<NextTurnEv>| {
+                state.end_turn = true;
+                next_turn_ev.write(NextTurnEv);
+            },
+        );
 }
 
 pub fn update_planet_info(
@@ -228,7 +302,11 @@ pub fn update_planet_info(
     settings: Res<Settings>,
 ) {
     for (planet_e, planet) in &planet_q {
-        let hovered = state.hovered_planet.map(|id| id == planet.id).unwrap_or(false);
+        let selected = state
+            .hovered_planet
+            .or(state.selected_planet)
+            .map(|id| id == planet.id)
+            .unwrap_or(false);
 
         // Show/hide planet icons
         let mut count = 0;
@@ -237,16 +315,16 @@ pub fn update_planet_info(
                 let visible =
                     match icon {
                         PlanetIcon::Attacked => true,
-                        PlanetIcon::Buildings => !planet.buildings.is_empty() || hovered,
-                        PlanetIcon::Fleet => player.fleets.contains_key(&planet.id) || hovered,
-                        PlanetIcon::Defense => player.defenses.contains_key(&planet.id) || hovered,
+                        PlanetIcon::Buildings => !planet.buildings.is_empty() || selected,
+                        PlanetIcon::Fleet => player.fleets.contains_key(&planet.id) || selected,
+                        PlanetIcon::Defense => player.defenses.contains_key(&planet.id) || selected,
                         PlanetIcon::Transport => {
-                            hovered && player.fleets.keys().any(|&k| k != planet.id)
+                            player.fleets.keys().any(|&k| k != planet.id) && selected
                         },
                         PlanetIcon::Colonize => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Colonize && m.destination == planet.id
-                            }) || (hovered
+                            }) || (selected
                                 && player
                                     .fleets
                                     .values()
@@ -255,18 +333,18 @@ pub fn update_planet_info(
                         PlanetIcon::Attack => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Attack && m.destination == planet.id
-                            }) || (hovered && !player.fleets.is_empty())
+                            }) || (selected && !player.fleets.is_empty())
                         },
                         PlanetIcon::Spy => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Spy && m.destination == planet.id
-                            }) || (hovered
+                            }) || (selected
                                 && player.fleets.values().any(|f| f.0.contains_key(&Ship::Probe)))
                         },
                         PlanetIcon::Bomb => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Bomb && m.destination == planet.id
-                            }) || (hovered
+                            }) || (selected
                                 && player
                                     .defenses
                                     .values()
@@ -275,7 +353,7 @@ pub fn update_planet_info(
                         PlanetIcon::Destroy => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Destroy && m.destination == planet.id
-                            }) || (hovered
+                            }) || (selected
                                 && player.fleets.values().any(|f| f.0.contains_key(&Ship::WarSun)))
                         },
                     };
@@ -291,7 +369,7 @@ pub fn update_planet_info(
 
             // Show/hide planet resources and name
             if let Ok(mut visibility) = show_q.get_mut(child) {
-                *visibility = if hovered || settings.show_info {
+                *visibility = if selected || settings.show_info {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden

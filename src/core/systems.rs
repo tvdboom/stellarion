@@ -4,6 +4,7 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use bevy::prelude::*;
 use bevy::window::WindowResized;
+use crate::core::resources::Resources;
 
 pub fn on_resize_system(
     mut resize_reader: EventReader<WindowResized>,
@@ -24,11 +25,14 @@ pub fn check_keys(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
-    // Hack to add resources
+    // Hack to add/remove resources
     if keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
         if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
             if keyboard.just_pressed(KeyCode::ArrowUp) {
                 player.resources += 1000usize;
+            }
+            if keyboard.just_pressed(KeyCode::ArrowDown) {
+                player.resources = Resources::default();
             }
         }
     }

@@ -85,6 +85,7 @@ impl FromWorld for WorldAssets {
             // Ui
             ("panel", assets.load("images/ui/panel.png")),
             ("thin_panel", assets.load("images/ui/thin_panel.png")),
+            ("button", assets.load("images/ui/button.png")),
             // Planets
             ("planets", assets.load("images/planets/planets.png")),
             ("destroyed", assets.load("images/planets/destroyed.png")),
@@ -96,8 +97,8 @@ impl FromWorld for WorldAssets {
             ("mine", assets.load("images/buildings/mine.png")),
             ("shipyard", assets.load("images/buildings/shipyard.png")),
             ("factory", assets.load("images/buildings/factory.png")),
-            ("silo", assets.load("images/buildings/silo.png")),
-            ("planet shield", assets.load("images/buildings/planet shield.png")),
+            ("missile silo", assets.load("images/buildings/missile silo.png")),
+            ("planetary shield", assets.load("images/buildings/planetary shield.png")),
             ("jump gate", assets.load("images/buildings/jump gate.png")),
             ("sensor phalanx", assets.load("images/buildings/sensor phalanx.png")),
             // Defense
@@ -124,15 +125,26 @@ impl FromWorld for WorldAssets {
 
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
 
+        let button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
         let planets =
             TextureAtlasLayout::from_grid(UVec2::splat(450), 8, 8, Some(UVec2::splat(30)), None);
-        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([(
-            "planets",
-            TextureInfo {
-                image: images["planets"].clone_weak(),
-                layout: texture.add(planets),
-            },
-        )]);
+
+        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
+            (
+                "button",
+                TextureInfo {
+                    image: images["button"].clone_weak(),
+                    layout: texture.add(button),
+                },
+            ),
+            (
+                "planets",
+                TextureInfo {
+                    image: images["planets"].clone_weak(),
+                    layout: texture.add(planets),
+                },
+            ),
+        ]);
 
         Self {
             audio,

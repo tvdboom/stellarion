@@ -2,6 +2,7 @@ use crate::core::units::Description;
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::iter::Sum;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use strum_macros::EnumIter;
 
@@ -66,9 +67,28 @@ impl PartialOrd for Resources {
     }
 }
 
+impl Sum for Resources {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |acc, x| acc + x)
+    }
+}
+
 macro_rules! resources_binary_ops {
     ($($trait:ident, $method:ident, $op:tt);*;) => {
         $(
+            // Binary operations with Resources
+            impl $trait<Self> for Resources {
+                type Output = Self;
+
+                fn $method(self, rhs: Resources) -> Self::Output {
+                    Self {
+                        metal: self.metal $op rhs.metal,
+                        crystal: self.crystal $op rhs.crystal,
+                        deuterium: self.deuterium $op rhs.deuterium,
+                    }
+                }
+            }
+
             // Binary operations with Resources reference
             impl $trait<&Self> for Resources {
                 type Output = Self;
