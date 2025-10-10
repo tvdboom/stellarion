@@ -92,7 +92,7 @@ pub fn on_click_menu_button(
                 let candidate =
                     map.planets.iter().choose(&mut rng()).map(|p| (p.id, p.position)).unwrap();
 
-                if !home_planets.iter().all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 3.) {
+                if !home_planets.iter().all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 5.) {
                     home_planets.push(candidate);
                 }
             }

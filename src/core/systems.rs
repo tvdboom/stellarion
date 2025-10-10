@@ -1,7 +1,6 @@
 use crate::core::map::map::Map;
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
-use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{Shop, UiState};

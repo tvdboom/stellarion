@@ -31,22 +31,24 @@ impl Description for Building {
                 mined each turn is equal to the planet's base resources times the mine's level."
             },
             Building::Shipyard => {
-                "The shipyard is responsible for the construction of all ships. A higher level \
-                allows the construction of more advanced ships."
+                "The shipyard is responsible for the construction of all ships. At higher levels, \
+                more advanced ships can be build. Higher levels also increase the production \
+                limit, i.e., the number of ships that can be build per turn."
             },
             Building::Factory => {
-                "The factory is responsible for the construction of planet defenses. The higher \
-                the level, the more advanced defenses can be built."
-            }
+                "The factory is responsible for the construction of planet defenses. At higher \
+                levels, more advanced defenses can be build. Higher levels also increase the \
+                production limit, i.e., the number of defenses that can be build per turn."
+            },
             Building::MissileSilo => {
-                "A missile silo is a building that launches and stores missiles. A level 2 silo \
-                is required to be able to build interplanetary missiles For each level of the silo, \
-                10 missile slots are made available."
+                "A missile silo is a building that launches and stores missiles. For each level \
+                of the silo, 10 missile slots are made available (every missile take up 1 slot)."
             },
             Building::PlanetaryShield => {
-                "The planetary shield is a defensive structure with high shield power to use as \
-                fodder. They act as a single unit of fodder. Higher levels increase the shield \
-                power."
+                "The planetary shield is a defensive structure with high shield power but no \
+                damage. Enemy ships must first destroy the planetary shield before they can \
+                attack the defenses. Each level of the building increases the shield with 50. \
+                Interplanetary missiles ignore the planetary shield."
             },
             Building::SensorPhalanx => {
                 "The sensor phalanx scans the space around a planet to detect incoming attacks. \

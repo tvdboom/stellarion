@@ -55,9 +55,8 @@ impl Description for Ship {
                 in the game."
             },
             Ship::ColonyShip => {
-                "This ship is used for colonization. Upon landing on an empty planet, the ship \
-                is deconstructed to provide the initial metal and crystal required to start \
-                developing a colony."
+                "This ship is used to colonize planets. During a fight, the colony ship \
+                is always focused last. Upon colonizing a planet, the ship is deconstructed."
             },
             Ship::LightFighter => {
                 "Given their relatively low armor and simple weapons systems, light fighters \
@@ -72,7 +71,7 @@ impl Description for Ship {
                 reasonable amount of damage when launched in significant numbers."
             },
             Ship::Destroyer => {
-                "With their rapidfire capabilities, destroyers are extremely effective at \
+                "With their rapid fire capabilities, destroyers are extremely effective at \
                 eliminating the light fighter and rocket launcher fodder. In addition they're \
                 speed make them excellent as fast strike ships."
             },

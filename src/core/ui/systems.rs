@@ -39,7 +39,7 @@ impl ImageIds {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum Shop {
     #[default]
     Buildings,
@@ -137,8 +137,8 @@ pub fn draw_ui(
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
-        .fixed_pos((window.width() * 0.5 - 600., window.height() * 0.04))
-        .default_size((1200., 70.))
+        .fixed_pos((window.width() * 0.5 - 525., window.height() * 0.01))
+        .default_size((1050., 70.))
         .show(contexts.ctx_mut().unwrap(), |ui| {
             let response = ui.add(egui::Image::new(SizedTexture::new(
                 images.get("thin_panel"),
@@ -149,7 +149,7 @@ pub fn draw_ui(
                 ui.add_space(10.);
 
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(150.);
+                    ui.add_space(80.);
 
                     let response = ui
                         .scope(|ui| {
@@ -244,7 +244,7 @@ pub fn draw_ui(
                     },
                     height * 0.2,
                 ))
-                .default_size((window_w, window_h))
+                .fixed_size((window_w, window_h))
                 .show(contexts.ctx_mut().unwrap(), |ui| {
                     let response = ui.add(egui::Image::new(SizedTexture::new(
                         images.get("panel"),
@@ -252,13 +252,17 @@ pub fn draw_ui(
                     )));
 
                     ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
-                        ui.add_space(15.);
-                        ui.vertical_centered(|ui| {
-                            ui.label("Overview");
+                        ui.add_space(17.);
+
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 7.;
+                            ui.add_space(110.);
+                            ui.add_image(images.get("overview"), [20., 20.]);
+                            ui.small("Overview");
                         });
                     });
 
-                    ui.add_space(5.);
+                    ui.add_space(10.);
 
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
@@ -276,9 +280,11 @@ pub fn draw_ui(
                                         ui.label(planet.get(&unit).to_string());
                                     })
                                     .response
-                                    .on_hover_ui(|ui| {
-                                        ui.small(unit.to_name());
-                                    });
+                                    .on_hover_ui(
+                                        |ui| {
+                                            ui.small(unit.to_name());
+                                        },
+                                    );
                                 }
                             });
                         }
@@ -292,7 +298,7 @@ pub fn draw_ui(
 
         if player.controls(&planet) {
             let (width, height) = (window.width(), window.height());
-            let (window_w, window_h) = (740., 340.);
+            let (window_w, window_h) = (735., 340.);
 
             egui::Window::new("shop")
                 .frame(egui::Frame {
@@ -315,37 +321,44 @@ pub fn draw_ui(
 
                         ui.add_space(4.);
 
-                        let units = match state.shop {
-                            Shop::Buildings => {
-                                ui.add_space(35.);
-                                &all_units[0]
-                            },
-                            Shop::Ships | Shop::Defenses => {
-                                let (current, max) = match state.shop {
-                                    Shop::Ships => {
-                                        (planet.fleet_production(), planet.max_fleet_production())
-                                    },
-                                    Shop::Defenses => (
-                                        planet.battery_production(),
-                                        planet.max_battery_production(),
-                                    ),
-                                    _ => unreachable!(),
-                                };
+                        let (production, idx) = match state.shop {
+                            Shop::Buildings => (None, 0),
+                            Shop::Ships => (
+                                Some((planet.fleet_production(), planet.max_fleet_production())),
+                                1,
+                            ),
+                            Shop::Defenses => (
+                                Some((
+                                    planet.battery_production(),
+                                    planet.max_battery_production(),
+                                )),
+                                2,
+                            ),
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(45.);
+                            ui.add_image(
+                                images.get(match state.shop {
+                                    Shop::Buildings => "buildings",
+                                    Shop::Ships => "fleet",
+                                    Shop::Defenses => "defense",
+                                }),
+                                [20., 20.],
+                            );
+                            ui.small(state.shop.to_name());
+
+                            if let Some((current, max)) = production {
                                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                     ui.add_space(45.);
                                     ui.small(format!("Production: {}/{}", current, max));
                                 });
+                            }
+                        });
 
-                                ui.add_space(9.);
+                        ui.add_space(10.);
 
-                                &all_units[match state.shop {
-                                    Shop::Ships => 1,
-                                    Shop::Defenses => 2,
-                                    _ => unreachable!(),
-                                }]
-                            },
-                        };
-
+                        let units = &all_units[idx];
                         let (r1, r2) = units.split_at(min(5, units.len()));
 
                         for row in [r1, r2] {
@@ -467,20 +480,23 @@ pub fn draw_ui(
                                                                 "Building already at maximum level."
                                                                     .to_string()
                                                             } else if !level_check {
-                                                                match unit {
-                                                                    Unit::Ship(s) => format!(
-                                                                        "Requires {} level {}.",
-                                                                        Building::Shipyard
-                                                                            .to_name(),
-                                                                        s.level()
-                                                                    ),
-                                                                    Unit::Defense(d) => format!(
-                                                                        "Requires {} level {}.",
-                                                                        Building::Factory.to_name(),
-                                                                        d.level()
-                                                                    ),
-                                                                    _ => unreachable!(),
-                                                                }
+                                                                format!(
+                                                                    "Requires {} level {}.",
+                                                                    match unit {
+                                                                        Unit::Ship(_) =>
+                                                                            Building::Shipyard
+                                                                                .to_name(),
+                                                                        Unit::Defense(d)
+                                                                            if d.is_missile() =>
+                                                                            Building::MissileSilo
+                                                                                .to_name(),
+                                                                        Unit::Defense(_) =>
+                                                                            Building::Factory
+                                                                                .to_name(),
+                                                                        _ => unreachable!(),
+                                                                    },
+                                                                    unit.level()
+                                                                )
                                                             } else {
                                                                 "Production limit reached."
                                                                     .to_string()
