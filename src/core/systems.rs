@@ -1,11 +1,15 @@
+use crate::core::map::map::Map;
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
 use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{Shop, UiState};
+use crate::core::units::buildings::Building;
 use bevy::prelude::*;
 use bevy::window::WindowResized;
+use std::collections::HashMap;
+use strum::IntoEnumIterator;
 
 pub fn on_resize_system(
     mut resize_reader: EventReader<WindowResized>,
@@ -20,6 +24,7 @@ pub fn on_resize_system(
 
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
@@ -27,14 +32,16 @@ pub fn check_keys(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
-    // Hack to add/remove resources
+    // Hack to add resources and bump building levels to max
     if keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
         if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
             if keyboard.just_pressed(KeyCode::ArrowUp) {
                 player.resources += 1000usize;
-            }
-            if keyboard.just_pressed(KeyCode::ArrowDown) {
-                player.resources = Resources::default();
+                map.planets.iter_mut().for_each(|p| {
+                    p.complex = Building::iter()
+                        .map(|c| (c, Building::MAX_LEVEL))
+                        .collect::<HashMap<_, _>>()
+                });
             }
         }
     }

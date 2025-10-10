@@ -3,6 +3,7 @@ use crate::core::units::{Description, Price};
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::iter::Iterator;
 use strum_macros::EnumIter;
 
 pub type Complex = HashMap<Building, usize>;

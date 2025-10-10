@@ -1,6 +1,5 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
-use crate::core::constants::SILO_CAPACITY_FACTOR;
 use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::PlanetCmp;
@@ -19,7 +18,10 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{emath, Align, Align2, Color32, FontData, FontFamily, Layout, RichText, TextStyle, TextureId, UiBuilder};
+use bevy_egui::egui::{
+    emath, Align, Align2, Color32, FontData, FontFamily, Layout, RichText, TextStyle, TextureId,
+    UiBuilder,
+};
 use bevy_egui::EguiContexts;
 use std::cmp::min;
 use std::collections::HashMap;
@@ -53,7 +55,7 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
-fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<&str>, images: &ImageIds) {
+fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<String>, images: &ImageIds) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.add_image(images.get(unit.to_lowername().as_str()), [200., 200.]);
@@ -110,7 +112,7 @@ pub fn add_ui_images(
 
 pub fn draw_ui(
     mut contexts: EguiContexts,
-    mut planet_q: Query<(&GlobalTransform, &PlanetCmp)>,
+    planet_q: Query<(&GlobalTransform, &PlanetCmp)>,
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -224,7 +226,7 @@ pub fn draw_ui(
 
         if player.controls(planet) {
             let (width, height) = (window.width(), window.height());
-            let (window_w, window_h) = (330., 630.);
+            let (window_w, window_h) = (320., 630.);
 
             egui::Window::new("overview")
                 .frame(egui::Frame {
@@ -242,7 +244,7 @@ pub fn draw_ui(
                     },
                     height * 0.2,
                 ))
-                .fixed_size((window_w, window_h))
+                .default_size((window_w, window_h))
                 .show(contexts.ctx_mut().unwrap(), |ui| {
                     let response = ui.add(egui::Image::new(SizedTexture::new(
                         images.get("panel"),
@@ -259,10 +261,10 @@ pub fn draw_ui(
                     ui.add_space(5.);
 
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = emath::Vec2::new(6., 4.);
+                        ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
                         for units in all_units.iter() {
-                            ui.add_space(30.);
+                            ui.add_space(20.);
 
                             ui.vertical(|ui| {
                                 for unit in units {
@@ -290,7 +292,7 @@ pub fn draw_ui(
 
         if player.controls(&planet) {
             let (width, height) = (window.width(), window.height());
-            let (window_w, window_h) = (730., 340.);
+            let (window_w, window_h) = (740., 340.);
 
             egui::Window::new("shop")
                 .frame(egui::Frame {
@@ -351,29 +353,44 @@ pub fn draw_ui(
                                 ui.add_space(25.);
 
                                 for unit in row {
+                                    let count = planet.get(unit);
+                                    let bought = planet.buy.iter().filter(|u| *u == unit).count();
+
                                     let resources_check = player.resources >= unit.price();
-                                    let (level_check, production_check) = match unit {
+                                    let (level_check, building_check, production_check) = match unit
+                                    {
                                         Unit::Building(_) => (
                                             true,
-                                            !planet.buy.contains(unit)
-                                                && planet.get(unit) < Building::MAX_LEVEL,
+                                            count < Building::MAX_LEVEL,
+                                            !planet.buy.contains(unit),
                                         ),
                                         Unit::Ship(s) => (
                                             s.level()
                                                 <= planet.get(&Unit::Building(Building::Shipyard)),
+                                            true,
                                             planet.fleet_production() + s.level()
                                                 <= planet.max_fleet_production(),
                                         ),
                                         Unit::Defense(d) => (
                                             d.level()
                                                 <= planet.get(&Unit::Building(Building::Factory)),
+                                            true,
                                             planet.battery_production() + d.level()
-                                                <= planet.max_battery_production() && d.is_missile().then_some(planet.missile_capacity() < planet.max_missile_capacity()).unwrap_or(true)
+                                                <= planet.max_battery_production()
+                                                && d.is_missile()
+                                                    .then_some(
+                                                        planet.missile_capacity() + bought
+                                                            < planet.max_missile_capacity(),
+                                                    )
+                                                    .unwrap_or(true),
                                         ),
                                     };
 
                                     ui.add_enabled_ui(
-                                        resources_check && level_check && production_check,
+                                        resources_check
+                                            && level_check
+                                            && building_check
+                                            && production_check,
                                         |ui| {
                                             ui.spacing_mut().button_padding.x = 2.;
 
@@ -391,18 +408,15 @@ pub fn draw_ui(
                                             let painter = ui.painter();
 
                                             if matches!(unit, Unit::Building(Building::MissileSilo))
+                                                && count > 0
                                             {
                                                 painter.text(
-                                                    rect.left_bottom() + egui::vec2(7., -4.),
-                                                    Align2::LEFT_BOTTOM,
+                                                    rect.right_top() + egui::vec2(-7., 4.),
+                                                    Align2::RIGHT_TOP,
                                                     format!(
                                                         "{}/{}",
-                                                        planet.get(&Unit::Defense(
-                                                            Defense::InterplanetaryMissile
-                                                        )) + planet.get(&Unit::Defense(
-                                                            Defense::AntiballisticMissile
-                                                        )),
-                                                        unit.level() * SILO_CAPACITY_FACTOR
+                                                        planet.missile_capacity(),
+                                                        planet.max_missile_capacity()
                                                     ),
                                                     TextStyle::Body.resolve(ui.style()),
                                                     Color32::WHITE,
@@ -410,12 +424,33 @@ pub fn draw_ui(
                                             }
 
                                             painter.text(
-                                                rect.right_bottom() + egui::vec2(-7., -4.),
-                                                Align2::RIGHT_BOTTOM,
-                                                planet.get(unit).to_string(),
+                                                rect.left_bottom() + egui::vec2(7., -4.),
+                                                Align2::LEFT_BOTTOM,
+                                                count.to_string(),
                                                 TextStyle::Heading.resolve(ui.style()),
                                                 Color32::WHITE,
                                             );
+
+                                            if bought > 0 {
+                                                let offset_x = ui
+                                                    .painter()
+                                                    .layout_no_wrap(
+                                                        count.to_string(),
+                                                        TextStyle::Heading.resolve(ui.style()),
+                                                        Color32::WHITE,
+                                                    )
+                                                    .size()
+                                                    .x;
+
+                                                painter.text(
+                                                    rect.left_bottom()
+                                                        + egui::vec2(8. + offset_x, -12.),
+                                                    Align2::LEFT_BOTTOM,
+                                                    format!(" (+{})", bought),
+                                                    TextStyle::Body.resolve(ui.style()),
+                                                    Color32::WHITE,
+                                                );
+                                            }
 
                                             if settings.show_hover {
                                                 response
@@ -423,13 +458,35 @@ pub fn draw_ui(
                                                         create_unit_hover(ui, unit, None, &images);
                                                     })
                                                     .on_disabled_hover_ui(|ui| {
-                                                        create_unit_hover(ui, unit, Some(if !resources_check {
-                                                            "Not enough resources."
-                                                        } else if !level_check {
-                                                            "Building level too low to produce this unit."
-                                                        } else {
-                                                            "Production limit reached."
-                                                        }), &images);
+                                                        create_unit_hover(
+                                                            ui,
+                                                            unit,
+                                                            Some(if !resources_check {
+                                                                "Not enough resources.".to_string()
+                                                            } else if !building_check {
+                                                                "Building already at maximum level."
+                                                                    .to_string()
+                                                            } else if !level_check {
+                                                                match unit {
+                                                                    Unit::Ship(s) => format!(
+                                                                        "Requires {} level {}.",
+                                                                        Building::Shipyard
+                                                                            .to_name(),
+                                                                        s.level()
+                                                                    ),
+                                                                    Unit::Defense(d) => format!(
+                                                                        "Requires {} level {}.",
+                                                                        Building::Factory.to_name(),
+                                                                        d.level()
+                                                                    ),
+                                                                    _ => unreachable!(),
+                                                                }
+                                                            } else {
+                                                                "Production limit reached."
+                                                                    .to_string()
+                                                            }),
+                                                            &images,
+                                                        );
                                                     });
                                             }
                                         },
