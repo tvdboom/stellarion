@@ -1,17 +1,11 @@
-use crate::core::units::Description;
+use crate::core::resources::Resources;
+use crate::core::units::{Combat, Description, Price};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use strum_macros::EnumIter;
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Battery(pub HashMap<Defense, usize>);
-
-impl Battery {
-    pub fn get(&self, defense: &Defense) -> usize {
-        *self.0.get(defense).unwrap_or(&0)
-    }
-}
+pub type Battery = HashMap<Defense, usize>;
 
 #[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {
@@ -38,6 +32,10 @@ impl Defense {
             Defense::AntiballisticMissile => 1,
             Defense::InterplanetaryMissile => 2,
         }
+    }
+
+    pub fn is_missile(&self) -> bool {
+        matches!(self, Defense::AntiballisticMissile | Defense::InterplanetaryMissile)
     }
 }
 
@@ -86,6 +84,62 @@ impl Description for Defense {
                 "Interplanetary missiles are designed to destroy enemy defenses. Before a missile \
                 can hit the defense itself, all the enemy's antiballistic missiles must be destroyed."
             },
+        }
+    }
+}
+
+impl Price for Defense {
+    fn price(&self) -> Resources {
+        match self {
+            Defense::RocketLauncher => Resources::new(20, 0, 0),
+            Defense::LightLaser => Resources::new(15, 5, 0),
+            Defense::HeavyLaser => Resources::new(50, 20, 0),
+            Defense::GaussCannon => Resources::new(100, 100, 0),
+            Defense::IonCannon => Resources::new(150, 150, 100),
+            Defense::PlasmaTurret => Resources::new(250, 150, 150),
+            Defense::AntiballisticMissile => Resources::new(80, 0, 20),
+            Defense::InterplanetaryMissile => Resources::new(125, 25, 100),
+        }
+    }
+}
+
+impl Combat for Defense {
+    fn health(&self) -> usize {
+        match self {
+            Defense::RocketLauncher => 80,
+            Defense::LightLaser => 100,
+            Defense::HeavyLaser => 180,
+            Defense::GaussCannon => 350,
+            Defense::IonCannon => 500,
+            Defense::PlasmaTurret => 600,
+            Defense::AntiballisticMissile => 0,
+            Defense::InterplanetaryMissile => 150,
+        }
+    }
+
+    fn shield(&self) -> usize {
+        match self {
+            Defense::RocketLauncher => 2,
+            Defense::LightLaser => 2,
+            Defense::HeavyLaser => 3,
+            Defense::GaussCannon => 25,
+            Defense::IonCannon => 50,
+            Defense::PlasmaTurret => 70,
+            Defense::AntiballisticMissile => 0,
+            Defense::InterplanetaryMissile => 0,
+        }
+    }
+
+    fn damage(&self) -> usize {
+        match self {
+            Defense::RocketLauncher => 8,
+            Defense::LightLaser => 10,
+            Defense::HeavyLaser => 20,
+            Defense::GaussCannon => 80,
+            Defense::IonCannon => 100,
+            Defense::PlasmaTurret => 120,
+            Defense::AntiballisticMissile => 0,
+            Defense::InterplanetaryMissile => 120,
         }
     }
 }

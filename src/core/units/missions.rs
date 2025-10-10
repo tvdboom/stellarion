@@ -8,7 +8,7 @@ pub enum Objective {
     Colonize,
     Attack,
     Spy,
-    Bomb,
+    Strike,
     Destroy,
     Transport,
 }

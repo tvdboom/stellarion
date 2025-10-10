@@ -1,10 +1,17 @@
+use crate::core::constants::{
+    FACTORY_PRODUCTION_FACTOR, SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR,
+};
 use crate::core::resources::Resources;
-use crate::core::units::buildings::{Building, BuildingName};
+use crate::core::units::buildings::{Building, Complex};
+use crate::core::units::defense::Battery;
+use crate::core::units::ships::Fleet;
+use crate::core::units::Unit;
 use bevy::math::Vec2;
-use bevy::prelude::Component;
+use bevy_renet::renet::ClientId;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ops::Range;
 
 pub type PlanetId = usize;
@@ -28,8 +35,9 @@ impl PlanetKind {
     }
 }
 
-#[derive(Component, Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Planet {
+    // Planet characteristics
     pub id: PlanetId,
     pub name: String,
     pub kind: PlanetKind,
@@ -37,7 +45,13 @@ pub struct Planet {
     pub position: Vec2,
     pub resources: Resources,
     pub is_destroyed: bool,
-    pub buildings: Vec<Building>,
+
+    // Ownership and units
+    pub owner: Option<ClientId>,
+    pub complex: Complex,
+    pub battery: Battery,
+    pub fleet: Fleet,
+    pub buy: Vec<Unit>,
 }
 
 impl Planet {
@@ -72,21 +86,71 @@ impl Planet {
             position,
             resources,
             is_destroyed: false,
-            buildings: vec![],
+            owner: None,
+            complex: HashMap::new(),
+            battery: HashMap::new(),
+            fleet: HashMap::new(),
+            buy: vec![],
         }
     }
 
-    pub fn make_home_planet(&mut self) {
+    pub fn make_home_planet(&mut self, client_id: ClientId) {
         self.resources = Resources::new(200, 200, 100);
-        self.buildings = vec![
-            Building::new(BuildingName::Mine),
-            Building::new(BuildingName::Shipyard),
-            Building::new(BuildingName::Factory),
-        ];
+        self.owner = Some(client_id);
+        self.complex =
+            HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);
     }
 
-    pub fn production(&self) -> Resources {
-        self.resources
-            * self.buildings.iter().find(|b| b.name == BuildingName::Mine).map_or(0, |b| b.level)
+    pub fn get(&self, unit: &Unit) -> usize {
+        match unit {
+            Unit::Building(building) => *self.complex.get(building).unwrap_or(&0),
+            Unit::Defense(defense) => *self.battery.get(defense).unwrap_or(&0),
+            Unit::Ship(ship) => *self.fleet.get(ship).unwrap_or(&0),
+        }
+    }
+
+    /// Produce the units bought during the turn
+    pub fn produce(&mut self) {
+        for unit in self.buy.drain(..) {
+            match unit {
+                Unit::Building(b) => {
+                    *self.complex.entry(b).or_default() += 1;
+                },
+                Unit::Ship(s) => {
+                    *self.fleet.entry(s).or_default() += 1;
+                },
+                Unit::Defense(d) => {
+                    *self.battery.entry(d).or_default() += 1;
+                },
+            }
+        }
+    }
+
+    pub fn resource_production(&self) -> Resources {
+        self.resources * self.get(&Unit::Building(Building::Mine))
+    }
+
+    pub fn fleet_production(&self) -> usize {
+        self.buy.iter().filter_map(|u| u.is_ship().then_some(u.level())).sum()
+    }
+
+    pub fn max_fleet_production(&self) -> usize {
+        SHIPYARD_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::Shipyard))
+    }
+
+    pub fn battery_production(&self) -> usize {
+        self.buy.iter().filter_map(|u| u.is_defense().then_some(u.level())).sum()
+    }
+
+    pub fn max_battery_production(&self) -> usize {
+        FACTORY_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::Factory))
+    }
+
+    pub fn missile_capacity(&self) -> usize {
+        self.battery.iter().filter_map(|(d, c)| d.is_missile().then_some(c)).sum()
+    }
+
+    pub fn max_missile_capacity(&self) -> usize {
+        SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
     }
 }

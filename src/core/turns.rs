@@ -10,15 +10,19 @@ pub struct NextTurnEv;
 pub fn next_turn(
     mut next_turn_ev: EventReader<NextTurnEv>,
     mut state: ResMut<UiState>,
-    map: Res<Map>,
+    mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut settings: ResMut<Settings>,
 ) {
     for _ in next_turn_ev.read() {
         settings.turn += 1;
 
-        let production = player.production(&map.planets);
+        // Produce resources
+        let production = player.resource_production(&map.planets);
         player.resources += production;
+
+        // Apply purchases
+        map.planets.iter_mut().for_each(|p| p.produce());
 
         *state = UiState::default()
     }

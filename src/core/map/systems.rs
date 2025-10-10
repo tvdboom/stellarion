@@ -2,12 +2,12 @@ use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
 use crate::core::map::map::{Map, MapCmp};
-use crate::core::map::planet::Planet;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::turns::NextTurnEv;
-use crate::core::ui::systems::{UiState, Unit};
+use crate::core::ui::systems::{Shop, UiState};
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::Objective;
 use crate::core::units::ships::Ship;
@@ -28,7 +28,7 @@ pub enum PlanetIcon {
     Colonize,
     Attack,
     Spy,
-    Bomb,
+    Strike,
     Destroy,
 }
 
@@ -44,6 +44,19 @@ impl PlanetIcon {
                 | PlanetIcon::Defense
                 | PlanetIcon::Transport
         )
+    }
+}
+
+#[derive(Component)]
+pub struct PlanetCmp {
+    pub id: PlanetId,
+}
+
+impl PlanetCmp {
+    pub fn new(id: PlanetId) -> Self {
+        Self {
+            id,
+        }
     }
 }
 
@@ -111,7 +124,7 @@ pub fn draw_map(
                     ..default()
                 },
                 Pickable::default(),
-                planet.clone(),
+                PlanetCmp::new(planet.id),
                 MapCmp,
             ))
             .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
@@ -138,7 +151,7 @@ pub fn draw_map(
                 ));
 
                 for (i, icon) in PlanetIcon::iter()
-                    .filter(|icon| player.controls(&planet.id) == icon.is_friendly_icon())
+                    .filter(|icon| player.controls(&planet) == icon.is_friendly_icon())
                     .enumerate()
                 {
                     parent
@@ -164,16 +177,12 @@ pub fn draw_map(
                         })
                         .observe(move |_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
                             state.selected_planet = Some(planet_id);
-                            if let PlanetIcon::Buildings | PlanetIcon::Fleet | PlanetIcon::Defense =
-                                icon
-                            {
-                                state.unit = match icon {
-                                    PlanetIcon::Buildings => Unit::Building,
-                                    PlanetIcon::Fleet => Unit::Fleet,
-                                    PlanetIcon::Defense => Unit::Defense,
-                                    _ => unreachable!(),
-                                };
-                            }
+                            match icon {
+                                PlanetIcon::Buildings => state.shop = Shop::Buildings,
+                                PlanetIcon::Fleet => state.shop = Shop::Ships,
+                                PlanetIcon::Defense => state.shop = Shop::Defenses,
+                                _ => (),
+                            };
                         });
                 }
 
@@ -218,7 +227,7 @@ pub fn draw_map(
                 }
             });
 
-        if planet.id == *player.planets.first().unwrap() {
+        if player.controls(planet) {
             // Place the camera on top of the player's home planet
             projection.scale = 0.8; // Increase zoom
             camera_t.translation = planet.position.extend(camera_t.translation.z);
@@ -293,15 +302,18 @@ pub fn draw_map(
 }
 
 pub fn update_planet_info(
-    planet_q: Query<(Entity, &Planet)>,
+    planet_q: Query<(Entity, &PlanetCmp)>,
     mut icon_q: Query<(&mut Visibility, &mut Transform, &PlanetIcon)>,
     mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<PlanetIcon>)>,
     children_q: Query<&Children>,
+    map: Res<Map>,
     player: Res<Player>,
     state: Res<UiState>,
     settings: Res<Settings>,
 ) {
-    for (planet_e, planet) in &planet_q {
+    for (planet_e, planet_c) in &planet_q {
+        let planet = map.get(planet_c.id);
+
         let selected = state
             .hovered_planet
             .or(state.selected_planet)
@@ -315,46 +327,64 @@ pub fn update_planet_info(
                 let visible =
                     match icon {
                         PlanetIcon::Attacked => true,
-                        PlanetIcon::Buildings => !planet.buildings.is_empty() || selected,
-                        PlanetIcon::Fleet => player.fleets.contains_key(&planet.id) || selected,
-                        PlanetIcon::Defense => player.defenses.contains_key(&planet.id) || selected,
+                        PlanetIcon::Buildings => selected || !planet.complex.is_empty(),
+                        PlanetIcon::Fleet => selected || !planet.fleet.is_empty(),
+                        PlanetIcon::Defense => selected || !planet.battery.is_empty(),
                         PlanetIcon::Transport => {
-                            player.fleets.keys().any(|&k| k != planet.id) && selected
+                            selected
+                                && map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| p.id != planet.id && p.owner == Some(player.id))
+                                    .any(|p| !p.fleet.is_empty())
                         },
                         PlanetIcon::Colonize => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Colonize && m.destination == planet.id
                             }) || (selected
-                                && player
-                                    .fleets
-                                    .values()
-                                    .any(|f| f.0.contains_key(&Ship::ColonyShip)))
+                                && map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| p.owner == Some(player.id))
+                                    .any(|p| p.fleet.contains_key(&Ship::ColonyShip)))
                         },
                         PlanetIcon::Attack => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Attack && m.destination == planet.id
-                            }) || (selected && !player.fleets.is_empty())
+                            }) || (selected
+                                && map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| p.owner == Some(player.id))
+                                    .any(|p| p.fleet.iter().any(|(s, _)| s.is_combat())))
                         },
                         PlanetIcon::Spy => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Spy && m.destination == planet.id
                             }) || (selected
-                                && player.fleets.values().any(|f| f.0.contains_key(&Ship::Probe)))
+                                && map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| p.owner == Some(player.id))
+                                    .any(|p| p.fleet.contains_key(&Ship::Probe)))
                         },
-                        PlanetIcon::Bomb => {
+                        PlanetIcon::Strike => {
                             player.missions.iter().any(|m| {
-                                m.objective == Objective::Bomb && m.destination == planet.id
+                                m.objective == Objective::Strike && m.destination == planet.id
                             }) || (selected
-                                && player
-                                    .defenses
-                                    .values()
-                                    .any(|b| b.0.contains_key(&Defense::InterplanetaryMissile)))
+                                && map.planets.iter().filter(|p| p.owner == Some(player.id)).any(
+                                    |p| p.battery.contains_key(&Defense::InterplanetaryMissile),
+                                ))
                         },
                         PlanetIcon::Destroy => {
                             player.missions.iter().any(|m| {
                                 m.objective == Objective::Destroy && m.destination == planet.id
                             }) || (selected
-                                && player.fleets.values().any(|f| f.0.contains_key(&Ship::WarSun)))
+                                && map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| p.owner == Some(player.id))
+                                    .any(|p| p.fleet.contains_key(&Ship::WarSun)))
                         },
                     };
 

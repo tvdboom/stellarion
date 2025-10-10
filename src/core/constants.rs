@@ -24,10 +24,14 @@ pub const LERP_FACTOR: f32 = 0.05;
 pub const MIN_PLANETS: u32 = 10;
 pub const MAX_PLANETS: u32 = 50;
 
+/// GAME
+pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;
+pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
+pub const SILO_CAPACITY_FACTOR: usize = 10;
+
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;
 pub const PLANET_Z: f32 = 1.;
-
 pub const PLANET_NAMES: [&str; 80] = [
     "Aegis",
     "Arcadia",

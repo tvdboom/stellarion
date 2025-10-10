@@ -47,4 +47,12 @@ impl Map {
                 .collect(),
         }
     }
+
+    pub fn get(&self, planet_id: usize) -> &Planet {
+        self.planets.iter().find(|p| p.id == planet_id).expect("Planet not found.")
+    }
+
+    pub fn get_mut(&mut self, planet_id: usize) -> &mut Planet {
+        self.planets.iter_mut().find(|p| p.id == planet_id).expect("Planet not found.")
+    }
 }

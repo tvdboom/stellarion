@@ -71,11 +71,11 @@ pub fn on_click_menu_button(
             let mut map = Map::new(settings.n_planets);
 
             // Alter home planet's stats
-            map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet();
+            map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet(0);
 
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
-            commands.insert_resource(Player::new(0, 0));
+            commands.insert_resource(Player::new(0));
             next_app_state.set(AppState::Game);
         },
         MenuBtn::Multiplayer => {
@@ -97,17 +97,21 @@ pub fn on_click_menu_button(
                 }
             }
 
-            // Alter home planet's resources
-            for planet in home_planets.iter() {
-                map.planets.iter_mut().find(|p| p.id == planet.0).map(|p| p.make_home_planet());
-            }
+            // Alter home planets
+            let mut clients = server.clients_id();
+            clients.push(0);
+
+            home_planets.iter().zip(clients).for_each(|((planet_id, _), client_id)| {
+                if let Some(planet) = map.planets.iter_mut().find(|p| p.id == *planet_id) {
+                    planet.make_home_planet(client_id);
+                }
+            });
 
             // Send the start game signal to all clients with their player id
-            for (client, planet) in server.clients_id().iter().zip(home_planets.iter().skip(1)) {
+            for client in server.clients_id().iter() {
                 server_send_message.write(ServerSendMessage {
                     message: ServerMessage::StartGame {
                         id: *client,
-                        home_planet: planet.0,
                         map: map.clone(),
                     },
                     client: Some(*client),
@@ -116,7 +120,7 @@ pub fn on_click_menu_button(
 
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
-            commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
+            commands.insert_resource(Player::new(0));
 
             next_app_state.set(AppState::Game);
         },

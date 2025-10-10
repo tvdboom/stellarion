@@ -5,14 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use strum_macros::EnumIter;
 
-#[derive(Clone, Default, Serialize, Deserialize)]
-pub struct Fleet(pub HashMap<Ship, usize>);
-
-impl Fleet {
-    pub fn get(&self, ship: &Ship) -> usize {
-        *self.0.get(ship).unwrap_or(&0)
-    }
-}
+pub type Fleet = HashMap<Ship, usize>;
 
 #[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Ship {
@@ -33,7 +26,7 @@ impl Ship {
     pub fn level(&self) -> usize {
         match self {
             Ship::Probe => 1,
-            Ship::ColonyShip => 1,
+            Ship::ColonyShip => 2,
             Ship::LightFighter => 1,
             Ship::HeavyFighter => 1,
             Ship::Destroyer => 2,
@@ -42,6 +35,13 @@ impl Ship {
             Ship::Battleship => 4,
             Ship::Dreadnought => 4,
             Ship::WarSun => 5,
+        }
+    }
+
+    pub fn is_combat(&self) -> bool {
+        match self {
+            Ship::Probe | Ship::ColonyShip => false,
+            _ => true,
         }
     }
 }

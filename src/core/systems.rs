@@ -1,10 +1,11 @@
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
+use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
+use crate::core::ui::systems::{Shop, UiState};
 use bevy::prelude::*;
 use bevy::window::WindowResized;
-use crate::core::resources::Resources;
 
 pub fn on_resize_system(
     mut resize_reader: EventReader<WindowResized>,
@@ -20,6 +21,7 @@ pub fn on_resize_system(
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut player: ResMut<Player>,
+    mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
@@ -37,10 +39,16 @@ pub fn check_keys(
         }
     }
 
-    // Open in-game menu
+    // Open in-game menu or exit planet selection
     if keyboard.just_pressed(KeyCode::Escape) {
         match game_state.get() {
-            GameState::Playing => next_game_state.set(GameState::InGameMenu),
+            GameState::Playing => {
+                if state.selected_planet.is_some() {
+                    state.selected_planet = None;
+                } else {
+                    next_game_state.set(GameState::InGameMenu)
+                }
+            },
             GameState::InGameMenu => next_game_state.set(GameState::Playing),
             GameState::EndGame => next_app_state.set(AppState::MainMenu),
         }
@@ -54,5 +62,16 @@ pub fn check_keys(
     // Toggle show hover info
     if keyboard.just_pressed(KeyCode::KeyH) {
         settings.show_hover = !settings.show_hover;
+    }
+
+    // Move between shop tabs
+    if state.selected_planet.is_some() {
+        if keyboard.just_pressed(KeyCode::Tab) {
+            state.shop = match state.shop {
+                Shop::Buildings => Shop::Ships,
+                Shop::Ships => Shop::Defenses,
+                Shop::Defenses => Shop::Buildings,
+            }
+        }
     }
 }

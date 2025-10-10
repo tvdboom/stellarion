@@ -75,7 +75,7 @@ impl FromWorld for WorldAssets {
             ("colonize", assets.load("images/icons/colonize.png")),
             ("attack", assets.load("images/icons/attack.png")),
             ("spy", assets.load("images/icons/spy.png")),
-            ("bomb", assets.load("images/icons/bomb.png")),
+            ("strike", assets.load("images/icons/strike.png")),
             ("destroy", assets.load("images/icons/destroy.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
