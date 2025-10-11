@@ -78,8 +78,8 @@ impl FromWorld for WorldAssets {
             ("spy", assets.load("images/icons/spy.png")),
             ("strike", assets.load("images/icons/strike.png")),
             ("destroy", assets.load("images/icons/destroy.png")),
-            ("move", assets.load("images/icons/move.png")),
-            ("move hover", assets.load("images/icons/move hover.png")),
+            ("mission", assets.load("images/icons/mission.png")),
+            ("mission hover", assets.load("images/icons/mission hover.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),

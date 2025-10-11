@@ -33,20 +33,11 @@ dies, you lose the game.
 
 ### Key bindings
 
-**Camera**
+- `escape`: Enter/exit the in-game menu.
 - `w-a-s-d`: Move the camera.
-- `middle mouse button`: Move the camera.
 - `scroll`: Zoom in/out.
- 
-**Ant control**
-- `left-click`: Select ants (ctrl + click) to add to the selection.
-- `right-click`: Move/dig/defend/attack target location/ant.
-- `delete`: Remove player commands from selected ants.
-- `ctrl + digit`: Bind the current selection to this number.
-- `digit`: Select the ants bound to this digit.
-
-**Others**
-- `escape`: Enter/exit the menu.
-- `M`: Toggle the audio settings.
+- `tab`: Cycle through a planet's shop.
+- `Q`: Toggle the audio settings.
 - `I`: Show/hide all planet information.
 - `H`: Enable/disable information tooltips on hover.
+- `M`: Show/hide the mission panel.

@@ -1,7 +1,10 @@
 use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
 use crate::core::map::map::Map;
+use crate::core::map::systems::PlanetCmp;
+use crate::core::ui::systems::UiState;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy_egui::EguiContexts;
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -32,12 +35,15 @@ pub fn setup_camera(mut commands: Commands) {
 }
 
 pub fn move_camera(
-    map: Res<Map>,
+    context: EguiContexts,
     camera_q: Single<
         (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
         With<MainCamera>,
     >,
+    planet_q: Query<(&Transform, &PlanetCmp), (Without<MainCamera>, Without<ParallaxCmp>)>,
     mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
+    map: Res<Map>,
+    mut state: ResMut<UiState>,
     mut scroll_ev: EventReader<MouseWheel>,
     window: Single<&Window>,
 ) {
@@ -47,30 +53,43 @@ pub fn move_camera(
         panic!("Expected Orthographic projection");
     };
 
-    for ev in scroll_ev.read() {
-        // Get cursor position in window space
-        if let Some(cursor_pos) = window.cursor_position() {
-            // Convert to world space
-            if let Ok(world_pos) = camera.viewport_to_world_2d(global_t, cursor_pos) {
-                let scale_change = if ev.y > 0. {
-                    1. / ZOOM_FACTOR
-                } else {
-                    ZOOM_FACTOR
-                };
+    // Ignore scrolling if pointer is over UI
+    if !context.ctx().unwrap().is_pointer_over_area() {
+        for ev in scroll_ev.read() {
+            // Get cursor position in window space
+            if let Some(cursor_pos) = window.cursor_position() {
+                // Convert to world space
+                if let Ok(world_pos) = camera.viewport_to_world_2d(global_t, cursor_pos) {
+                    let scale_change = if ev.y > 0. {
+                        1. / ZOOM_FACTOR
+                    } else {
+                        ZOOM_FACTOR
+                    };
 
-                let new_scale = (projection.scale * scale_change).clamp(MIN_ZOOM, MAX_ZOOM);
+                    let new_scale = (projection.scale * scale_change).clamp(MIN_ZOOM, MAX_ZOOM);
 
-                // Adjust camera position to keep focus on the cursor
-                let shift = (world_pos - camera_t.translation.truncate())
-                    * (1. - new_scale / projection.scale);
-                camera_t.translation += shift.extend(0.);
+                    // Adjust camera position to keep focus on the cursor
+                    let shift = (world_pos - camera_t.translation.truncate())
+                        * (1. - new_scale / projection.scale);
+                    camera_t.translation += shift.extend(0.);
 
-                projection.scale = new_scale;
+                    projection.scale = new_scale;
+                    state.to_selected = false;
+                }
             }
         }
     }
 
     let mut position = camera_t.translation.truncate();
+
+    // Move camera on top of selected planet
+    if state.to_selected {
+        if let Some(planet_id) = state.selected_planet {
+            if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
+                position = position.lerp(pos.translation.truncate(), LERP_FACTOR);
+            }
+        }
+    }
 
     // Compute the camera's current view size based on projection
     let view_size = projection.area.max - projection.area.min;
@@ -101,6 +120,7 @@ pub fn move_camera(
 pub fn move_camera_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
+    mut state: ResMut<UiState>,
 ) {
     let (mut camera_t, projection) = camera_q.single_mut().unwrap();
 
@@ -113,15 +133,19 @@ pub fn move_camera_keyboard(
     let transform = 10. * scale;
     if keyboard.pressed(KeyCode::KeyA) {
         camera_t.translation.x -= transform;
+        state.to_selected = false;
     }
     if keyboard.pressed(KeyCode::KeyD) {
         camera_t.translation.x += transform;
+        state.to_selected = false;
     }
     if keyboard.pressed(KeyCode::KeyW) {
         camera_t.translation.y += transform;
+        state.to_selected = false;
     }
     if keyboard.pressed(KeyCode::KeyS) {
         camera_t.translation.y -= transform;
+        state.to_selected = false;
     }
 }
 

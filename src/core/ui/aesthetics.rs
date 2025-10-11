@@ -241,7 +241,7 @@ pub trait Aesthetics {
         [
             (TextStyle::Small, FontId::new(18., FontFamily::Proportional)),
             (TextStyle::Body, FontId::new(23., FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(30., FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(20., FontFamily::Proportional)),
             (TextStyle::Heading, FontId::new(40., FontFamily::Proportional)),
             (TextStyle::Monospace, FontId::new(30., FontFamily::Monospace)),
         ]

@@ -17,7 +17,7 @@ mod units;
 mod utils;
 
 use crate::core::audio::{
-    change_audio_event, play_audio_event, play_music, setup_music_btn, toggle_music_keyboard,
+    change_audio_event, play_audio_event, play_music, setup_music_btn, toggle_audio_keyboard,
     ChangeAudioEv, PlayAudioEv,
 };
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
@@ -79,7 +79,7 @@ impl Plugin for GamePlugin {
             // Audio
             .add_systems(Startup, setup_music_btn)
             .add_systems(OnEnter(AudioState::Sound), play_music)
-            .add_systems(Update, (change_audio_event, toggle_music_keyboard, play_audio_event))
+            .add_systems(Update, (change_audio_event, toggle_audio_keyboard, play_audio_event))
             //Networking
             .add_systems(
                 First,

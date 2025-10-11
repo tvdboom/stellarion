@@ -110,11 +110,11 @@ pub fn change_audio_event(
     }
 }
 
-pub fn toggle_music_keyboard(
+pub fn toggle_audio_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut change_audio_ev: EventWriter<ChangeAudioEv>,
 ) {
-    if keyboard.just_pressed(KeyCode::KeyM) {
+    if keyboard.just_pressed(KeyCode::KeyQ) {
         change_audio_ev.write(ChangeAudioEv(None));
     }
 }

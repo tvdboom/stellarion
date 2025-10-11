@@ -67,9 +67,6 @@ impl PlanetCmp {
 pub struct ShowOnHoverCmp;
 
 #[derive(Component)]
-pub struct BorderCmp;
-
-#[derive(Component)]
 pub struct EndTurnButtonCmp;
 
 fn set_button_index(button_q: &mut ImageNode, index: usize) {
@@ -83,8 +80,6 @@ pub fn draw_map(
     map: Res<Map>,
     player: Res<Player>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     assets: Local<WorldAssets>,
 ) {
     let (mut camera_t, mut projection) = camera.into_inner();
@@ -114,8 +109,12 @@ pub fn draw_map(
         .observe(
             |trigger: Trigger<Pointer<Move>>,
              camera_q: Single<(&mut Transform, &Projection), With<MainCamera>>,
-             mouse: Res<ButtonInput<MouseButton>>| {
-                if mouse.pressed(MouseButton::Left) {
+             mut state: ResMut<UiState>,
+             mouse: Res<ButtonInput<MouseButton>>,
+             window: Single<&CursorIcon, With<Window>>| {
+                if mouse.pressed(MouseButton::Left)
+                    && matches!(*window, CursorIcon::System(SystemCursorIcon::Grabbing))
+                {
                     let (mut camera_t, projection) = camera_q.into_inner();
 
                     let Projection::Orthographic(projection) = projection else {
@@ -125,6 +124,7 @@ pub fn draw_map(
                     if !trigger.delta.x.is_nan() && !trigger.delta.y.is_nan() {
                         camera_t.translation.x -= trigger.delta.x * projection.scale;
                         camera_t.translation.y += trigger.delta.y * projection.scale;
+                        state.to_selected = false;
                     }
                 }
             },
@@ -137,6 +137,7 @@ pub fn draw_map(
     let texture = assets.texture("planets");
     for planet in &map.planets {
         let planet_id = planet.id;
+        let owner = planet.owner;
 
         commands
             .spawn((
@@ -166,6 +167,7 @@ pub fn draw_map(
                 MapCmp,
             ))
             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+            .observe(cursor::<Out>(SystemCursorIcon::Default))
             .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = Some(planet_id);
             })
@@ -175,13 +177,20 @@ pub fn draw_map(
             .observe(
                 move |trigger: Trigger<Pointer<Click>>,
                       mut state: ResMut<UiState>,
+                      map: Res<Map>,
                       player: Res<Player>| {
                     if trigger.button == PointerButton::Primary {
                         state.selected_planet = Some(planet_id);
+                        state.to_selected = true;
+                        if owner == Some(player.id) {
+                            state.mission_info.origin = planet_id;
+                        }
                     } else {
                         state.mission = true;
-                        state.mission_info.origin =
-                            state.selected_planet.unwrap_or(player.home_planet);
+                        state.mission_info.origin = state
+                            .selected_planet
+                            .filter(|&p| map.get(p).owner == Some(player.id))
+                            .unwrap_or(player.home_planet);
                         state.mission_info.destination = planet_id;
                     }
                 },
@@ -222,14 +231,7 @@ pub fn draw_map(
                                 icon.clone(),
                             ))
                             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-                            // .observe(|trigger: Trigger<Pointer<Over>>, mut commands: Commands, | {
-                            //     commands.entity(trigger.target()).insert((
-                            //          Mesh2d(meshes.add(Rectangle::new(PlanetIcon::SIZE + 2., PlanetIcon::SIZE + 2.))),
-                            //          MeshMaterial2d(materials.add(Color::WHITE)),
-                            //          Transform::from_xyz(0., 0., -0.1),
-                            //          BorderCmp,
-                            //     ));
-                            // })
+                            .observe(cursor::<Out>(SystemCursorIcon::Default))
                             .observe(
                                 move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                                     state.hovered_planet = Some(planet_id);
@@ -238,14 +240,10 @@ pub fn draw_map(
                             .observe(|_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
                                 state.hovered_planet = None;
                             })
-                            // .observe(
-                            //     move |trigger: Trigger<Pointer<Out>>, mut commands: Commands| {
-                            //         commands.entity(trigger.target()).remove::<BorderCmp>();
-                            //     },
-                            // )
                             .observe(
                                 move |trigger: Trigger<Pointer<Click>>,
                                       mut state: ResMut<UiState>,
+                                      map: Res<Map>,
                                       player: Res<Player>| {
                                     if trigger.button == PointerButton::Primary {
                                         if matches!(
@@ -255,6 +253,7 @@ pub fn draw_map(
                                                 | PlanetIcon::Defenses
                                         ) {
                                             state.selected_planet = Some(planet_id);
+                                            state.mission = false;
                                         }
 
                                         match icon {
@@ -282,6 +281,9 @@ pub fn draw_map(
                                                     },
                                                     origin: state
                                                         .selected_planet
+                                                        .filter(|&p| {
+                                                            map.get(p).owner == Some(player.id)
+                                                        })
                                                         .unwrap_or(player.home_planet),
                                                     destination: planet_id,
                                                     ..state.mission_info.clone()
@@ -291,16 +293,7 @@ pub fn draw_map(
                                         }
                                     }
                                 },
-                            )
-                            .with_children(|parent| {
-                                parent.spawn((
-                                    Mesh2d(meshes.add(Rectangle::from_size(Vec2::splat(PlanetIcon::SIZE + 2.)))),
-                                    MeshMaterial2d(materials.add(Color::srgba_u8(59, 66, 82, 255))),
-                                    Transform::from_xyz(0., 0., -0.1),
-                                    // Visibility::Hidden,
-                                    BorderCmp,
-                                ));
-                            });
+                            );
                     }
 
                     for (i, resource) in ResourceName::iter().take(3).enumerate() {

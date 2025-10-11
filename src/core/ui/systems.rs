@@ -20,8 +20,8 @@ use bevy_egui::egui;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
-    emath, Align, Align2, Color32, CursorIcon, FontData, FontFamily, Layout, RichText, TextStyle,
-    TextureId, UiBuilder,
+    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
+    Separator, TextStyle, TextureId, UiBuilder,
 };
 use bevy_egui::EguiContexts;
 use std::cmp::min;
@@ -52,6 +52,7 @@ pub enum Shop {
 pub struct UiState {
     pub hovered_planet: Option<PlanetId>,
     pub selected_planet: Option<PlanetId>,
+    pub to_selected: bool,
     pub shop: Shop,
     pub mission: bool,
     pub mission_info: Mission,
@@ -314,7 +315,69 @@ pub fn draw_ui(
                 )));
 
                 ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
-                    ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
+                    ui.add_space(50.);
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(170.);
+
+                        ui.vertical_centered(|ui| {
+                            ComboBox::from_id_salt("origin")
+                                .selected_text(&map.get(state.mission_info.origin).name)
+                                .show_ui(ui, |ui| {
+                                    for planet in
+                                        map.planets.iter().filter(|p| p.owner == Some(player.id))
+                                    {
+                                        ui.selectable_value(
+                                            &mut state.mission_info.origin,
+                                            planet.id,
+                                            &planet.name,
+                                        );
+                                    }
+                                });
+                        });
+
+                        ui.add_space(20.);
+                        ui.add_image(images.get("mission"), [50., 50.]);
+                        ui.add_space(20.);
+
+                        ui.vertical_centered(|ui| {
+                            ComboBox::from_id_salt("destination")
+                                .selected_text(&map.get(state.mission_info.destination).name)
+                                .show_ui(ui, |ui| {
+                                    for planet in &map.planets {
+                                        ui.selectable_value(
+                                            &mut state.mission_info.destination,
+                                            planet.id,
+                                            &planet.name,
+                                        );
+                                    }
+                                });
+                        });
+                    });
+
+                    ui.add(Separator::default().shrink(50.));
+
+                    if state.mission_info.origin == state.mission_info.destination {
+                        ui.add_space(20.);
+                        ui.vertical_centered(|ui| {
+                            ui.colored_label(
+                                Color32::RED,
+                                "The origin and destination planets must be different.",
+                            );
+                        });
+                    } else {
+                        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                            ui.add_space(10.);
+                            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                ui.add_space(50.);
+                                let response = ui.button("Send mission");
+                                if response.clicked() {
+                                    player.missions.push(state.mission_info.clone());
+                                    state.mission = false;
+                                }
+                            });
+                        });
+                    }
                 });
             });
     } else if let Some(id) = state.selected_planet {

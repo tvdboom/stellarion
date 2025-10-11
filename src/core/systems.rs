@@ -49,9 +49,8 @@ pub fn check_keys(
     if keyboard.just_pressed(KeyCode::Escape) {
         match game_state.get() {
             GameState::Playing => {
-                if state.mission {
+                if state.mission || state.selected_planet.is_some() {
                     state.mission = false;
-                } else if state.selected_planet.is_some() {
                     state.selected_planet = None;
                 } else {
                     next_game_state.set(GameState::InGameMenu)
@@ -70,6 +69,11 @@ pub fn check_keys(
     // Toggle show hover info
     if keyboard.just_pressed(KeyCode::KeyH) {
         settings.show_hover = !settings.show_hover;
+    }
+
+    // Toggle mission panel
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        state.mission = true;
     }
 
     // Move between shop tabs
