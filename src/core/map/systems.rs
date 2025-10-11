@@ -3,6 +3,7 @@ use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::utils::cursor;
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -14,6 +15,7 @@ use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
+use bevy::window::SystemCursorIcon;
 use std::fmt::Debug;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -92,6 +94,27 @@ pub fn draw_map(
             ParallaxCmp,
             MapCmp,
         ))
+        .observe(cursor::<Over>(SystemCursorIcon::Default))
+        .observe(cursor::<Pressed>(SystemCursorIcon::Move))
+        .observe(cursor::<Released>(SystemCursorIcon::Default))
+        .observe(
+            |trigger: Trigger<Pointer<Move>>,
+             camera_q: Single<(&mut Transform, &Projection), With<MainCamera>>,
+             mouse: Res<ButtonInput<MouseButton>>| {
+                if mouse.pressed(MouseButton::Left) {
+                    let (mut camera_t, projection) = camera_q.into_inner();
+
+                    let Projection::Orthographic(projection) = projection else {
+                        panic!("Expected Orthographic projection");
+                    };
+
+                    if !trigger.delta.x.is_nan() && !trigger.delta.y.is_nan() {
+                        camera_t.translation.x -= trigger.delta.x * projection.scale;
+                        camera_t.translation.y += trigger.delta.y * projection.scale;
+                    }
+                }
+            },
+        )
         .observe(|_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.selected_planet = None;
         });
@@ -127,6 +150,7 @@ pub fn draw_map(
                 PlanetCmp::new(planet.id),
                 MapCmp,
             ))
+            .observe(cursor::<Over>(SystemCursorIcon::Pointer))
             .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = Some(planet_id);
             })
@@ -169,6 +193,7 @@ pub fn draw_map(
                             Pickable::default(),
                             icon.clone(),
                         ))
+                        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                         .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                             state.hovered_planet = Some(planet_id);
                         })
@@ -267,6 +292,7 @@ pub fn draw_map(
                 },
             ],
         ))
+        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
         .observe(
             move |_: Trigger<Pointer<Over>>,
                   button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {

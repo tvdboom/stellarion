@@ -1,9 +1,7 @@
 use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
 use crate::core::map::map::Map;
-use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::mouse::{MouseWheel};
 use bevy::prelude::*;
-use bevy::window::SystemCursorIcon;
-use bevy::winit::cursor::CursorIcon;
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -34,20 +32,16 @@ pub fn setup_camera(mut commands: Commands) {
 }
 
 pub fn move_camera(
-    mut commands: Commands,
     map: Res<Map>,
-    mut camera_q: Single<
+    camera_q: Single<
         (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
         With<MainCamera>,
     >,
     mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
     mut scroll_ev: EventReader<MouseWheel>,
-    mut motion_ev: EventReader<MouseMotion>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    window: Single<(Entity, &Window)>,
+    window: Single<&Window>,
 ) {
     let (camera, global_t, mut camera_t, mut projection) = camera_q.into_inner();
-    let (window_e, window) = *window;
 
     let Projection::Orthographic(projection) = &mut *projection else {
         panic!("Expected Orthographic projection");
@@ -74,20 +68,6 @@ pub fn move_camera(
                 projection.scale = new_scale;
             }
         }
-    }
-
-    if mouse.pressed(MouseButton::Middle) {
-        commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Grab));
-        for ev in motion_ev.read() {
-            commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Grabbing));
-            if ev.delta.x.is_nan() || ev.delta.y.is_nan() {
-                continue;
-            }
-            camera_t.translation.x -= ev.delta.x * projection.scale;
-            camera_t.translation.y += ev.delta.y * projection.scale;
-        }
-    } else {
-        commands.entity(window_e).insert(Into::<CursorIcon>::into(SystemCursorIcon::Default));
     }
 
     let mut position = camera_t.translation.truncate();

@@ -19,8 +19,8 @@ use bevy_egui::egui;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
-    emath, Align, Align2, Color32, FontData, FontFamily, Layout, RichText, TextStyle, TextureId,
-    UiBuilder,
+    emath, Align, Align2, Color32, CursorIcon, FontData, FontFamily, Layout, RichText, TextStyle,
+    TextureId, UiBuilder,
 };
 use bevy_egui::EguiContexts;
 use std::cmp::min;
@@ -280,11 +280,9 @@ pub fn draw_ui(
                                         ui.label(planet.get(&unit).to_string());
                                     })
                                     .response
-                                    .on_hover_ui(
-                                        |ui| {
-                                            ui.small(unit.to_name());
-                                        },
-                                    );
+                                    .on_hover_ui(|ui| {
+                                        ui.small(unit.to_name());
+                                    });
                                 }
                             });
                         }
@@ -407,10 +405,15 @@ pub fn draw_ui(
                                         |ui| {
                                             ui.spacing_mut().button_padding.x = 2.;
 
-                                            let response = ui.add_image_button(
+                                            let mut response = ui.add_image_button(
                                                 images.get(unit.to_lowername().as_str()),
                                                 [130., 130.],
                                             );
+
+                                            if ui.is_enabled() {
+                                                response = response
+                                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                            }
 
                                             if response.clicked() {
                                                 player.resources -= unit.price();
