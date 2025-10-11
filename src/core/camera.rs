@@ -1,6 +1,6 @@
 use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
 use crate::core::map::map::Map;
-use bevy::input::mouse::{MouseWheel};
+use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 
 #[derive(Component)]

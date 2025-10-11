@@ -10,22 +10,23 @@ use crate::core::settings::Settings;
 use crate::core::turns::NextTurnEv;
 use crate::core::ui::systems::{Shop, UiState};
 use crate::core::units::defense::Defense;
-use crate::core::units::missions::Objective;
+use crate::core::units::missions::{Mission, Objective};
 use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
 use bevy::window::SystemCursorIcon;
+use bevy::winit::cursor::CursorIcon;
 use std::fmt::Debug;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-#[derive(Component, EnumIter, Clone, Debug)]
+#[derive(Component, EnumIter, Copy, Clone, Debug)]
 pub enum PlanetIcon {
     Attacked,
     Buildings,
     Fleet,
-    Defense,
+    Defenses,
     Transport,
     Colonize,
     Attack,
@@ -43,7 +44,7 @@ impl PlanetIcon {
             PlanetIcon::Attacked
                 | PlanetIcon::Buildings
                 | PlanetIcon::Fleet
-                | PlanetIcon::Defense
+                | PlanetIcon::Defenses
                 | PlanetIcon::Transport
         )
     }
@@ -66,6 +67,9 @@ impl PlanetCmp {
 pub struct ShowOnHoverCmp;
 
 #[derive(Component)]
+pub struct BorderCmp;
+
+#[derive(Component)]
 pub struct EndTurnButtonCmp;
 
 fn set_button_index(button_q: &mut ImageNode, index: usize) {
@@ -79,6 +83,8 @@ pub fn draw_map(
     map: Res<Map>,
     player: Res<Player>,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     assets: Local<WorldAssets>,
 ) {
     let (mut camera_t, mut projection) = camera.into_inner();
@@ -95,7 +101,15 @@ pub fn draw_map(
             MapCmp,
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Default))
-        .observe(cursor::<Pressed>(SystemCursorIcon::Move))
+        .observe(
+            |trigger: Trigger<Pointer<Pressed>>,
+             mut commands: Commands,
+             window_e: Single<Entity, With<Window>>| {
+                if trigger.button == PointerButton::Primary {
+                    commands.entity(*window_e).insert(CursorIcon::from(SystemCursorIcon::Grabbing));
+                }
+            },
+        )
         .observe(cursor::<Released>(SystemCursorIcon::Default))
         .observe(
             |trigger: Trigger<Pointer<Move>>,
@@ -117,6 +131,7 @@ pub fn draw_map(
         )
         .observe(|_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.selected_planet = None;
+            state.mission = false;
         });
 
     let texture = assets.texture("planets");
@@ -154,65 +169,140 @@ pub fn draw_map(
             .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = Some(planet_id);
             })
-            .observe(move |_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
+            .observe(|_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = None;
             })
-            .observe(move |_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
-                state.selected_planet = Some(planet_id);
-            })
+            .observe(
+                move |trigger: Trigger<Pointer<Click>>,
+                      mut state: ResMut<UiState>,
+                      player: Res<Player>| {
+                    if trigger.button == PointerButton::Primary {
+                        state.selected_planet = Some(planet_id);
+                    } else {
+                        state.mission = true;
+                        state.mission_info.origin =
+                            state.selected_planet.unwrap_or(player.home_planet);
+                        state.mission_info.destination = planet_id;
+                    }
+                },
+            )
             .with_children(|parent| {
-                parent.spawn((
-                    Text2d::new(&planet.name),
-                    TextFont {
-                        font: assets.font("bold"),
-                        font_size: TITLE_TEXT_SIZE,
-                        ..default()
-                    },
-                    TextColor(WHITE.into()),
-                    Transform::from_xyz(-4., Planet::SIZE * 0.6, 0.9),
-                    Pickable::IGNORE,
-                    ShowOnHoverCmp,
-                ));
-
-                for (i, icon) in PlanetIcon::iter()
-                    .filter(|icon| player.controls(&planet) == icon.is_friendly_icon())
-                    .enumerate()
-                {
-                    parent
-                        .spawn((
-                            Sprite {
-                                image: assets.image(icon.to_lowername().as_str()),
-                                custom_size: Some(Vec2::splat(PlanetIcon::SIZE)),
-                                ..default()
-                            },
-                            Transform::from_translation(Vec3::new(
-                                Planet::SIZE * 0.4,
-                                Planet::SIZE * 0.35 - i as f32 * PlanetIcon::SIZE,
-                                0.8,
-                            )),
-                            Pickable::default(),
-                            icon.clone(),
-                        ))
-                        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-                        .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
-                            state.hovered_planet = Some(planet_id);
-                        })
-                        .observe(move |_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
-                            state.hovered_planet = None;
-                        })
-                        .observe(move |_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
-                            state.selected_planet = Some(planet_id);
-                            match icon {
-                                PlanetIcon::Buildings => state.shop = Shop::Buildings,
-                                PlanetIcon::Fleet => state.shop = Shop::Ships,
-                                PlanetIcon::Defense => state.shop = Shop::Defenses,
-                                _ => (),
-                            };
-                        });
-                }
-
-                // Destroyed planets don't have any resources
+                // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
+                    parent.spawn((
+                        Text2d::new(&planet.name),
+                        TextFont {
+                            font: assets.font("bold"),
+                            font_size: TITLE_TEXT_SIZE,
+                            ..default()
+                        },
+                        TextColor(WHITE.into()),
+                        Transform::from_xyz(-4., Planet::SIZE * 0.6, 0.9),
+                        Pickable::IGNORE,
+                        ShowOnHoverCmp,
+                    ));
+
+                    for (i, icon) in PlanetIcon::iter()
+                        .filter(|icon| player.controls(&planet) == icon.is_friendly_icon())
+                        .enumerate()
+                    {
+                        parent
+                            .spawn((
+                                Sprite {
+                                    image: assets.image(icon.to_lowername().as_str()),
+                                    custom_size: Some(Vec2::splat(PlanetIcon::SIZE)),
+                                    ..default()
+                                },
+                                Transform::from_translation(Vec3::new(
+                                    Planet::SIZE * 0.4,
+                                    Planet::SIZE * 0.35 - i as f32 * PlanetIcon::SIZE,
+                                    0.8,
+                                )),
+                                Pickable::default(),
+                                icon.clone(),
+                            ))
+                            .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                            // .observe(|trigger: Trigger<Pointer<Over>>, mut commands: Commands, | {
+                            //     commands.entity(trigger.target()).insert((
+                            //          Mesh2d(meshes.add(Rectangle::new(PlanetIcon::SIZE + 2., PlanetIcon::SIZE + 2.))),
+                            //          MeshMaterial2d(materials.add(Color::WHITE)),
+                            //          Transform::from_xyz(0., 0., -0.1),
+                            //          BorderCmp,
+                            //     ));
+                            // })
+                            .observe(
+                                move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
+                                    state.hovered_planet = Some(planet_id);
+                                },
+                            )
+                            .observe(|_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
+                                state.hovered_planet = None;
+                            })
+                            // .observe(
+                            //     move |trigger: Trigger<Pointer<Out>>, mut commands: Commands| {
+                            //         commands.entity(trigger.target()).remove::<BorderCmp>();
+                            //     },
+                            // )
+                            .observe(
+                                move |trigger: Trigger<Pointer<Click>>,
+                                      mut state: ResMut<UiState>,
+                                      player: Res<Player>| {
+                                    if trigger.button == PointerButton::Primary {
+                                        if matches!(
+                                            icon,
+                                            PlanetIcon::Buildings
+                                                | PlanetIcon::Fleet
+                                                | PlanetIcon::Defenses
+                                        ) {
+                                            state.selected_planet = Some(planet_id);
+                                        }
+
+                                        match icon {
+                                            PlanetIcon::Buildings => state.shop = Shop::Buildings,
+                                            PlanetIcon::Fleet => state.shop = Shop::Fleet,
+                                            PlanetIcon::Defenses => state.shop = Shop::Defenses,
+                                            icon @ (PlanetIcon::Transport
+                                            | PlanetIcon::Colonize
+                                            | PlanetIcon::Attack
+                                            | PlanetIcon::Spy
+                                            | PlanetIcon::Strike
+                                            | PlanetIcon::Destroy) => {
+                                                state.mission = true;
+                                                state.mission_info = Mission {
+                                                    objective: match icon {
+                                                        PlanetIcon::Transport => {
+                                                            Objective::Transport
+                                                        },
+                                                        PlanetIcon::Colonize => Objective::Colonize,
+                                                        PlanetIcon::Attack => Objective::Attack,
+                                                        PlanetIcon::Spy => Objective::Spy,
+                                                        PlanetIcon::Strike => Objective::Strike,
+                                                        PlanetIcon::Destroy => Objective::Destroy,
+                                                        _ => unreachable!(),
+                                                    },
+                                                    origin: state
+                                                        .selected_planet
+                                                        .unwrap_or(player.home_planet),
+                                                    destination: planet_id,
+                                                    ..state.mission_info.clone()
+                                                };
+                                            },
+                                            _ => (),
+                                        }
+                                    }
+                                },
+                            )
+                            .with_children(|parent| {
+                                parent.spawn((
+                                    Mesh2d(meshes.add(Rectangle::from_size(Vec2::splat(PlanetIcon::SIZE + 2.)))),
+                                    MeshMaterial2d(materials.add(Color::srgba_u8(59, 66, 82, 255))),
+                                    Transform::from_xyz(0., 0., -0.1),
+                                    // Visibility::Hidden,
+                                    BorderCmp,
+                                ));
+                            });
+                    }
+
                     for (i, resource) in ResourceName::iter().take(3).enumerate() {
                         parent
                             .spawn((
@@ -294,33 +384,32 @@ pub fn draw_map(
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Pointer))
         .observe(
-            move |_: Trigger<Pointer<Over>>,
-                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: Trigger<Pointer<Over>>,
+             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 1);
             },
         )
         .observe(
-            move |_: Trigger<Pointer<Out>>,
-                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: Trigger<Pointer<Out>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 0);
             },
         )
         .observe(
-            move |_: Trigger<Pointer<Pressed>>,
-                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: Trigger<Pointer<Pressed>>,
+             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 0);
             },
         )
         .observe(
-            move |_: Trigger<Pointer<Released>>,
-                  button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: Trigger<Pointer<Released>>,
+             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 1);
             },
         )
         .observe(
-            move |_: Trigger<Pointer<Click>>,
-                  mut state: ResMut<UiState>,
-                  mut next_turn_ev: EventWriter<NextTurnEv>| {
+            |_: Trigger<Pointer<Click>>,
+             mut state: ResMut<UiState>,
+             mut next_turn_ev: EventWriter<NextTurnEv>| {
                 state.end_turn = true;
                 next_turn_ev.write(NextTurnEv);
             },
@@ -355,7 +444,7 @@ pub fn update_planet_info(
                         PlanetIcon::Attacked => true,
                         PlanetIcon::Buildings => selected || !planet.complex.is_empty(),
                         PlanetIcon::Fleet => selected || !planet.fleet.is_empty(),
-                        PlanetIcon::Defense => selected || !planet.battery.is_empty(),
+                        PlanetIcon::Defenses => selected || !planet.battery.is_empty(),
                         PlanetIcon::Transport => {
                             selected
                                 && map

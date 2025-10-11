@@ -1,4 +1,4 @@
-use crate::core::map::planet::Planet;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
 use crate::core::units::missions::Mission;
 use bevy::prelude::*;
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: ClientId,
+    pub home_planet: PlanetId,
     pub resources: Resources,
     pub missions: Vec<Mission>,
 }
@@ -16,6 +17,7 @@ impl Default for Player {
     fn default() -> Self {
         Self {
             id: 0,
+            home_planet: 0,
             resources: Resources {
                 metal: 1500,
                 crystal: 1500,
@@ -27,9 +29,10 @@ impl Default for Player {
 }
 
 impl Player {
-    pub fn new(id: ClientId) -> Self {
+    pub fn new(id: ClientId, home_planet: PlanetId) -> Self {
         Self {
             id,
+            home_planet,
             ..default()
         }
     }

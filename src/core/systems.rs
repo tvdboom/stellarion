@@ -49,7 +49,9 @@ pub fn check_keys(
     if keyboard.just_pressed(KeyCode::Escape) {
         match game_state.get() {
             GameState::Playing => {
-                if state.selected_planet.is_some() {
+                if state.mission {
+                    state.mission = false;
+                } else if state.selected_planet.is_some() {
                     state.selected_planet = None;
                 } else {
                     next_game_state.set(GameState::InGameMenu)
@@ -74,8 +76,8 @@ pub fn check_keys(
     if state.selected_planet.is_some() {
         if keyboard.just_pressed(KeyCode::Tab) {
             state.shop = match state.shop {
-                Shop::Buildings => Shop::Ships,
-                Shop::Ships => Shop::Defenses,
+                Shop::Buildings => Shop::Fleet,
+                Shop::Fleet => Shop::Defenses,
                 Shop::Defenses => Shop::Buildings,
             }
         }

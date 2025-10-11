@@ -1,5 +1,6 @@
 use crate::core::audio::PlayAudioEv;
 use crate::core::map::map::Map;
+use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -45,6 +46,7 @@ pub enum ServerMessage {
     NPlayers(usize),
     StartGame {
         id: ClientId,
+        home_planet: PlanetId,
         map: Map,
     },
 }
@@ -205,11 +207,12 @@ pub fn client_receive_message(
             },
             ServerMessage::StartGame {
                 id,
+                home_planet,
                 map,
             } => {
                 *game_settings = game_settings.clone();
 
-                commands.insert_resource(Player::new(id));
+                commands.insert_resource(Player::new(id, home_planet));
                 commands.insert_resource(map);
                 next_app_state.set(AppState::Game);
             },

@@ -75,7 +75,7 @@ pub fn on_click_menu_button(
 
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
-            commands.insert_resource(Player::new(0));
+            commands.insert_resource(Player::new(0, 0));
             next_app_state.set(AppState::Game);
         },
         MenuBtn::Multiplayer => {
@@ -108,19 +108,22 @@ pub fn on_click_menu_button(
             });
 
             // Send the start game signal to all clients with their player id
-            for client in server.clients_id().iter() {
+            for (client_id, (planet_id, _)) in
+                server.clients_id().iter().zip(home_planets.iter().skip(1))
+            {
                 server_send_message.write(ServerSendMessage {
                     message: ServerMessage::StartGame {
-                        id: *client,
+                        id: *client_id,
+                        home_planet: *planet_id,
                         map: map.clone(),
                     },
-                    client: Some(*client),
+                    client: Some(*client_id),
                 });
             }
 
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
-            commands.insert_resource(Player::new(0));
+            commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
 
             next_app_state.set(AppState::Game);
         },

@@ -11,6 +11,7 @@ use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::CustomUi;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
+use crate::core::units::missions::Mission;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Description, Unit};
 use crate::utils::NameFromEnum;
@@ -43,7 +44,7 @@ impl ImageIds {
 pub enum Shop {
     #[default]
     Buildings,
-    Ships,
+    Fleet,
     Defenses,
 }
 
@@ -52,6 +53,8 @@ pub struct UiState {
     pub hovered_planet: Option<PlanetId>,
     pub selected_planet: Option<PlanetId>,
     pub shop: Shop,
+    pub mission: bool,
+    pub mission_info: Mission,
     pub end_turn: bool,
 }
 
@@ -116,12 +119,13 @@ pub fn draw_ui(
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
-    state: Res<UiState>,
+    mut state: ResMut<UiState>,
     settings: Res<Settings>,
     images: Res<ImageIds>,
     window: Single<&Window>,
 ) {
     let (camera, camera_t) = camera_q.into_inner();
+    let (width, height) = (window.width(), window.height());
 
     let all_units: [Vec<Unit>; 3] = [
         Building::iter().map(|b| Unit::Building(b)).collect(),
@@ -225,7 +229,6 @@ pub fn draw_ui(
             .unwrap();
 
         if player.controls(planet) {
-            let (width, height) = (window.width(), window.height());
             let (window_w, window_h) = (320., 630.);
 
             egui::Window::new("overview")
@@ -291,11 +294,33 @@ pub fn draw_ui(
         }
     }
 
-    if let Some(id) = state.selected_planet {
+    if state.mission {
+        let (window_w, window_h) = (700., 450.);
+
+        egui::Window::new("mission")
+            .frame(egui::Frame {
+                fill: Color32::TRANSPARENT,
+                ..default()
+            })
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .fixed_pos(((width - window_w) * 0.5, (height - window_h) * 0.5))
+            .fixed_size((window_w, window_h))
+            .show(contexts.ctx_mut().unwrap(), |ui| {
+                let response = ui.add(egui::Image::new(SizedTexture::new(
+                    images.get("panel"),
+                    ui.available_size(),
+                )));
+
+                ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                    ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
+                });
+            });
+    } else if let Some(id) = state.selected_planet {
         let planet = map.get_mut(id);
 
         if player.controls(&planet) {
-            let (width, height) = (window.width(), window.height());
             let (window_w, window_h) = (735., 340.);
 
             egui::Window::new("shop")
@@ -321,7 +346,7 @@ pub fn draw_ui(
 
                         let (production, idx) = match state.shop {
                             Shop::Buildings => (None, 0),
-                            Shop::Ships => (
+                            Shop::Fleet => (
                                 Some((planet.fleet_production(), planet.max_fleet_production())),
                                 1,
                             ),
@@ -337,11 +362,7 @@ pub fn draw_ui(
                         ui.horizontal(|ui| {
                             ui.add_space(45.);
                             ui.add_image(
-                                images.get(match state.shop {
-                                    Shop::Buildings => "buildings",
-                                    Shop::Ships => "fleet",
-                                    Shop::Defenses => "defense",
-                                }),
+                                images.get(state.shop.to_lowername().as_str()),
                                 [20., 20.],
                             );
                             ui.small(state.shop.to_name());
