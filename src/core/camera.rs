@@ -26,12 +26,7 @@ pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
 }
 
 pub fn setup_camera(mut commands: Commands) {
-    commands.spawn((
-        Camera2d,
-        IsDefaultUiCamera,
-        Msaa::Off, // Solves white lines on map issue (partially)
-        MainCamera,
-    ));
+    commands.spawn((Camera2d, Msaa::Off, MainCamera));
 }
 
 pub fn move_camera(
@@ -44,7 +39,7 @@ pub fn move_camera(
     mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
     map: Res<Map>,
     mut state: ResMut<UiState>,
-    mut scroll_ev: EventReader<MouseWheel>,
+    mut scroll_ev: MessageReader<MouseWheel>,
     window: Single<&Window>,
 ) {
     let (camera, global_t, mut camera_t, mut projection) = camera_q.into_inner();

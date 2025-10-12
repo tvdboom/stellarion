@@ -121,7 +121,7 @@ impl Price for Ship {
 }
 
 impl Combat for Ship {
-    fn health(&self) -> usize {
+    fn hull(&self) -> usize {
         match self {
             Ship::Probe => 10,
             Ship::ColonyShip => 300,

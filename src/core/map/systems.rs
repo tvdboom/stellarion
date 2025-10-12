@@ -7,7 +7,7 @@ use crate::core::map::utils::cursor;
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
-use crate::core::turns::NextTurnEv;
+use crate::core::turns::NextTurnMsg;
 use crate::core::ui::systems::{Shop, UiState};
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::{Mission, Objective};
@@ -15,8 +15,7 @@ use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
-use bevy::window::SystemCursorIcon;
-use bevy::winit::cursor::CursorIcon;
+use bevy::window::{CursorIcon, SystemCursorIcon};
 use std::fmt::Debug;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -97,17 +96,17 @@ pub fn draw_map(
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Default))
         .observe(
-            |trigger: Trigger<Pointer<Pressed>>,
+            |event: On<Pointer<Press>>,
              mut commands: Commands,
              window_e: Single<Entity, With<Window>>| {
-                if trigger.button == PointerButton::Primary {
+                if event.button == PointerButton::Primary {
                     commands.entity(*window_e).insert(CursorIcon::from(SystemCursorIcon::Grabbing));
                 }
             },
         )
-        .observe(cursor::<Released>(SystemCursorIcon::Default))
+        .observe(cursor::<Release>(SystemCursorIcon::Default))
         .observe(
-            |trigger: Trigger<Pointer<Move>>,
+            |event: On<Pointer<Move>>,
              camera_q: Single<(&mut Transform, &Projection), With<MainCamera>>,
              mut state: ResMut<UiState>,
              mouse: Res<ButtonInput<MouseButton>>,
@@ -121,15 +120,15 @@ pub fn draw_map(
                         panic!("Expected Orthographic projection");
                     };
 
-                    if !trigger.delta.x.is_nan() && !trigger.delta.y.is_nan() {
-                        camera_t.translation.x -= trigger.delta.x * projection.scale;
-                        camera_t.translation.y += trigger.delta.y * projection.scale;
+                    if !event.delta.x.is_nan() && !event.delta.y.is_nan() {
+                        camera_t.translation.x -= event.delta.x * projection.scale;
+                        camera_t.translation.y += event.delta.y * projection.scale;
                         state.to_selected = false;
                     }
                 }
             },
         )
-        .observe(|_: Trigger<Pointer<Click>>, mut state: ResMut<UiState>| {
+        .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.selected_planet = None;
             state.mission = false;
         });
@@ -149,10 +148,10 @@ pub fn draw_map(
                     }
                 } else {
                     Sprite {
-                        image: texture.image.clone_weak(),
+                        image: texture.image.clone(),
                         custom_size: Some(Vec2::splat(Planet::SIZE)),
                         texture_atlas: Some(TextureAtlas {
-                            layout: texture.layout.clone_weak(),
+                            layout: texture.layout.clone(),
                             index: planet.image,
                         }),
                         ..default()
@@ -168,18 +167,18 @@ pub fn draw_map(
             ))
             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
             .observe(cursor::<Out>(SystemCursorIcon::Default))
-            .observe(move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
+            .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = Some(planet_id);
             })
-            .observe(|_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
+            .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                 state.hovered_planet = None;
             })
             .observe(
-                move |trigger: Trigger<Pointer<Click>>,
+                move |event: On<Pointer<Click>>,
                       mut state: ResMut<UiState>,
                       map: Res<Map>,
                       player: Res<Player>| {
-                    if trigger.button == PointerButton::Primary {
+                    if event.button == PointerButton::Primary {
                         state.selected_planet = Some(planet_id);
                         state.to_selected = true;
                         if owner == Some(player.id) {
@@ -232,20 +231,18 @@ pub fn draw_map(
                             ))
                             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                             .observe(cursor::<Out>(SystemCursorIcon::Default))
-                            .observe(
-                                move |_: Trigger<Pointer<Over>>, mut state: ResMut<UiState>| {
-                                    state.hovered_planet = Some(planet_id);
-                                },
-                            )
-                            .observe(|_: Trigger<Pointer<Out>>, mut state: ResMut<UiState>| {
+                            .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                                state.hovered_planet = Some(planet_id);
+                            })
+                            .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                                 state.hovered_planet = None;
                             })
                             .observe(
-                                move |trigger: Trigger<Pointer<Click>>,
+                                move |event: On<Pointer<Click>>,
                                       mut state: ResMut<UiState>,
                                       map: Res<Map>,
                                       player: Res<Player>| {
-                                    if trigger.button == PointerButton::Primary {
+                                    if event.button == PointerButton::Primary {
                                         if matches!(
                                             icon,
                                             PlanetIcon::Buildings
@@ -357,9 +354,9 @@ pub fn draw_map(
                 ..default()
             },
             ImageNode::from_atlas_image(
-                texture.image.clone_weak(),
+                texture.image.clone(),
                 TextureAtlas {
-                    layout: texture.layout.clone_weak(),
+                    layout: texture.layout.clone(),
                     index: 0,
                 },
             ),
@@ -378,34 +375,29 @@ pub fn draw_map(
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Pointer))
         .observe(
-            |_: Trigger<Pointer<Over>>,
-             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: On<Pointer<Over>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 1);
             },
         )
+        .observe(|_: On<Pointer<Out>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            set_button_index(&mut button_q.into_inner(), 0);
+        })
         .observe(
-            |_: Trigger<Pointer<Out>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: On<Pointer<Press>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 0);
             },
         )
         .observe(
-            |_: Trigger<Pointer<Pressed>>,
-             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
-                set_button_index(&mut button_q.into_inner(), 0);
-            },
-        )
-        .observe(
-            |_: Trigger<Pointer<Released>>,
-             button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
+            |_: On<Pointer<Release>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
                 set_button_index(&mut button_q.into_inner(), 1);
             },
         )
         .observe(
-            |_: Trigger<Pointer<Click>>,
+            |_: On<Pointer<Click>>,
              mut state: ResMut<UiState>,
-             mut next_turn_ev: EventWriter<NextTurnEv>| {
+             mut next_turn_ev: MessageWriter<NextTurnMsg>| {
                 state.end_turn = true;
-                next_turn_ev.write(NextTurnEv);
+                next_turn_ev.write(NextTurnMsg);
             },
         );
 }

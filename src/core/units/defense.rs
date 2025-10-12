@@ -105,7 +105,7 @@ impl Price for Defense {
 }
 
 impl Combat for Defense {
-    fn health(&self) -> usize {
+    fn hull(&self) -> usize {
         match self {
             Defense::RocketLauncher => 80,
             Defense::LightLaser => 100,

@@ -17,11 +17,11 @@ pub struct SaveAll {
     pub map: Map,
 }
 
-#[derive(Event)]
-pub struct LoadGameEv;
+#[derive(Message)]
+pub struct LoadGameMsg;
 
-#[derive(Event)]
-pub struct SaveGameEv;
+#[derive(Message)]
+pub struct SaveGameMsg;
 
 fn save_to_bin(file_path: &str, data: &SaveAll) -> io::Result<()> {
     let mut file = File::create(file_path)?;
@@ -45,7 +45,7 @@ fn load_from_bin(file_path: &str) -> io::Result<SaveAll> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_game(
     mut commands: Commands,
-    mut load_game_ev: EventReader<LoadGameEv>,
+    mut load_game_ev: MessageReader<LoadGameMsg>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
 ) {
@@ -65,7 +65,7 @@ pub fn load_game(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
-    mut save_game_ev: EventReader<SaveGameEv>,
+    mut save_game_ev: MessageReader<SaveGameMsg>,
     settings: Res<Settings>,
     map: Option<Res<Map>>,
 ) {

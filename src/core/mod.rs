@@ -16,30 +16,25 @@ mod ui;
 mod units;
 mod utils;
 
-use crate::core::audio::{
-    change_audio_event, play_audio_event, play_music, setup_music_btn, toggle_audio_keyboard,
-    ChangeAudioEv, PlayAudioEv,
-};
+use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::map::map::MapCmp;
 use crate::core::map::systems::{draw_map, update_planet_info};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
-use crate::core::network::{
-    client_receive_message, server_receive_message, server_update, ClientSendMessage, Ip,
-    ServerSendMessage,
-};
+use crate::core::network::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::persistence::{load_game, save_game};
-use crate::core::persistence::{LoadGameEv, SaveGameEv};
+use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
-use crate::core::turns::{next_turn, NextTurnEv};
-use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, ImageIds, UiState};
+use crate::core::turns::{next_turn, NextTurnMsg};
+use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, UiState};
+use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
 use bevy::prelude::*;
-use bevy_egui::{EguiPrimaryContextPass, EguiStartupSet};
+use bevy_egui::EguiPrimaryContextPass;
 use bevy_renet::renet::{RenetClient, RenetServer};
 use strum::IntoEnumIterator;
 
@@ -56,13 +51,13 @@ impl Plugin for GamePlugin {
             .init_state::<GameState>()
             .init_state::<AudioState>()
             // Events
-            .add_event::<PlayAudioEv>()
-            .add_event::<ChangeAudioEv>()
-            .add_event::<SaveGameEv>()
-            .add_event::<LoadGameEv>()
-            .add_event::<ServerSendMessage>()
-            .add_event::<ClientSendMessage>()
-            .add_event::<NextTurnEv>()
+            .add_message::<PlayAudioMsg>()
+            .add_message::<ChangeAudioMsg>()
+            .add_message::<SaveGameMsg>()
+            .add_message::<LoadGameMsg>()
+            .add_message::<ServerSendMessage>()
+            .add_message::<ClientSendMessage>()
+            .add_message::<NextTurnMsg>()
             // Resources
             .init_resource::<Ip>()
             .init_resource::<Settings>()
@@ -74,12 +69,12 @@ impl Plugin for GamePlugin {
             .configure_sets(EguiPrimaryContextPass, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PostUpdate, InGameSet.run_if(in_state(AppState::Game)))
             // Camera
-            .add_systems(PreStartup, setup_camera.before(EguiStartupSet::InitContexts))
+            .add_systems(Startup, setup_camera)
             .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InGameSet))
             // Audio
             .add_systems(Startup, setup_music_btn)
             .add_systems(OnEnter(AudioState::Sound), play_music)
-            .add_systems(Update, (change_audio_event, toggle_audio_keyboard, play_audio_event))
+            .add_systems(Update, (change_audio_message, toggle_audio_keyboard, play_audio_message))
             //Networking
             .add_systems(
                 First,
@@ -105,7 +100,7 @@ impl Plugin for GamePlugin {
 
         app
             // Ui
-            .add_systems(Startup, (add_ui_images, set_ui_style))
+            .add_systems(OnEnter(AppState::Game), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
             // Utilities
             .add_systems(Update, check_keys.in_set(InGameSet))

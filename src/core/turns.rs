@@ -4,11 +4,11 @@ use crate::core::settings::Settings;
 use crate::core::ui::systems::UiState;
 use bevy::prelude::*;
 
-#[derive(Event)]
-pub struct NextTurnEv;
+#[derive(Message)]
+pub struct NextTurnMsg;
 
 pub fn next_turn(
-    mut next_turn_ev: EventReader<NextTurnEv>,
+    mut next_turn_ev: MessageReader<NextTurnMsg>,
     mut state: ResMut<UiState>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,

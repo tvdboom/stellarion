@@ -4,6 +4,7 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub mod buildings;
 pub mod defense;
@@ -80,9 +81,12 @@ pub trait Price {
 }
 
 pub trait Combat {
-    fn health(&self) -> usize;
+    fn hull(&self) -> usize;
     fn shield(&self) -> usize;
     fn damage(&self) -> usize;
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+        HashMap::new()
+    }
     fn speed(&self) -> f32 {
         0.
     }

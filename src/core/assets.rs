@@ -27,15 +27,15 @@ impl WorldAssets {
     }
 
     pub fn audio(&self, name: &str) -> Handle<AudioSource> {
-        self.get_asset(&self.audio, name, "audio").clone_weak()
+        self.get_asset(&self.audio, name, "audio").clone()
     }
 
     pub fn font(&self, name: &str) -> Handle<Font> {
-        self.get_asset(&self.fonts, name, "font").clone_weak()
+        self.get_asset(&self.fonts, name, "font").clone()
     }
 
     pub fn image(&self, name: &str) -> Handle<Image> {
-        self.get_asset(&self.images, name, "image").clone_weak()
+        self.get_asset(&self.images, name, "image").clone()
     }
 
     pub fn texture(&self, name: &str) -> TextureInfo {
@@ -63,23 +63,9 @@ impl FromWorld for WorldAssets {
 
         let images: HashMap<&'static str, Handle<Image>> = HashMap::from([
             // Icons
-            ("turn", assets.load("images/icons/turn.png")),
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
             ("sound", assets.load("images/icons/sound.png")),
-            ("overview", assets.load("images/icons/overview.png")),
-            ("attacked", assets.load("images/icons/attacked.png")),
-            ("buildings", assets.load("images/icons/buildings.png")),
-            ("fleet", assets.load("images/icons/fleet.png")),
-            ("defenses", assets.load("images/icons/defenses.png")),
-            ("transport", assets.load("images/icons/transport.png")),
-            ("colonize", assets.load("images/icons/colonize.png")),
-            ("attack", assets.load("images/icons/attack.png")),
-            ("spy", assets.load("images/icons/spy.png")),
-            ("strike", assets.load("images/icons/strike.png")),
-            ("destroy", assets.load("images/icons/destroy.png")),
-            ("mission", assets.load("images/icons/mission.png")),
-            ("mission hover", assets.load("images/icons/mission hover.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),
@@ -87,7 +73,7 @@ impl FromWorld for WorldAssets {
             ("victory", assets.load("images/bg/victory.png")),
             // Ui
             ("panel", assets.load("images/ui/panel.png")),
-            ("thin_panel", assets.load("images/ui/thin_panel.png")),
+            ("thin panel", assets.load("images/ui/thin panel.png")),
             ("long button", assets.load("images/ui/long button.png")),
             ("button", assets.load("images/ui/button.png")),
             ("button hover", assets.load("images/ui/button hover.png")),
@@ -95,6 +81,7 @@ impl FromWorld for WorldAssets {
             ("planets", assets.load("images/planets/planets.png")),
             ("destroyed", assets.load("images/planets/destroyed.png")),
             // Resources
+            ("turn", assets.load("images/resources/turn.png")),
             ("metal", assets.load("images/resources/metal.png")),
             ("crystal", assets.load("images/resources/crystal.png")),
             ("deuterium", assets.load("images/resources/deuterium.png")),
@@ -126,6 +113,27 @@ impl FromWorld for WorldAssets {
             ("battleship", assets.load("images/ships/battleship.png")),
             ("dreadnought", assets.load("images/ships/dreadnought.png")),
             ("war sun", assets.load("images/ships/war sun.png")),
+            // Mission
+            ("overview", assets.load("images/mission/overview.png")),
+            ("attacked", assets.load("images/mission/attacked.png")),
+            ("buildings", assets.load("images/mission/buildings.png")),
+            ("fleet", assets.load("images/mission/fleet.png")),
+            ("defenses", assets.load("images/mission/defenses.png")),
+            ("transport", assets.load("images/mission/transport.png")),
+            ("colonize", assets.load("images/mission/colonize.png")),
+            ("attack", assets.load("images/mission/attack.png")),
+            ("spy", assets.load("images/mission/spy.png")),
+            ("strike", assets.load("images/mission/strike.png")),
+            ("destroy", assets.load("images/mission/destroy.png")),
+            ("mission", assets.load("images/mission/mission.png")),
+            ("mission hover", assets.load("images/mission/mission hover.png")),
+            // Combat
+            ("hull", assets.load("images/combat/hull.png")),
+            ("shield", assets.load("images/combat/shield.png")),
+            ("damage", assets.load("images/combat/damage.png")),
+            ("rapid fire", assets.load("images/combat/rapid fire.png")),
+            ("speed", assets.load("images/combat/speed.png")),
+            ("fuel", assets.load("images/combat/fuel.png")),
         ]);
 
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
@@ -138,14 +146,14 @@ impl FromWorld for WorldAssets {
             (
                 "long button",
                 TextureInfo {
-                    image: images["long button"].clone_weak(),
+                    image: images["long button"].clone(),
                     layout: texture.add(long_button),
                 },
             ),
             (
                 "planets",
                 TextureInfo {
-                    image: images["planets"].clone_weak(),
+                    image: images["planets"].clone(),
                     layout: texture.add(planets),
                 },
             ),

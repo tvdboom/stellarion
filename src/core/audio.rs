@@ -7,13 +7,13 @@ use bevy::prelude::*;
 use bevy_kira_audio::prelude::*;
 use std::time::Duration;
 
-#[derive(Event)]
-pub struct PlayAudioEv {
+#[derive(Message)]
+pub struct PlayAudioMsg {
     pub name: &'static str,
-    pub volume: f64,
+    pub volume: f32,
 }
 
-impl PlayAudioEv {
+impl PlayAudioMsg {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -25,8 +25,8 @@ impl PlayAudioEv {
 #[derive(Component)]
 pub struct MusicBtnCmp;
 
-#[derive(Event)]
-pub struct ChangeAudioEv(pub Option<AudioState>);
+#[derive(Message)]
+pub struct ChangeAudioMsg(pub Option<AudioState>);
 
 pub fn setup_music_btn(mut commands: Commands, assets: Local<WorldAssets>) {
     commands
@@ -40,9 +40,9 @@ pub fn setup_music_btn(mut commands: Commands, assets: Local<WorldAssets>) {
         })
         .with_children(|parent| {
             parent.spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp)).observe(
-                |_: Trigger<Pointer<Click>>, mut commands: Commands| {
+                |_: On<Pointer<Click>>, mut commands: Commands| {
                     commands.queue(|w: &mut World| {
-                        w.send_event(ChangeAudioEv(None));
+                        w.write_message(ChangeAudioMsg(None));
                     })
                 },
             );
@@ -57,8 +57,8 @@ pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
         .looped();
 }
 
-pub fn change_audio_event(
-    mut change_audio_ev: EventReader<ChangeAudioEv>,
+pub fn change_audio_message(
+    mut change_audio_ev: MessageReader<ChangeAudioMsg>,
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
     mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
     mut game_settings: ResMut<Settings>,
@@ -112,21 +112,21 @@ pub fn change_audio_event(
 
 pub fn toggle_audio_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut change_audio_ev: EventWriter<ChangeAudioEv>,
+    mut change_audio_ev: MessageWriter<ChangeAudioMsg>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyQ) {
-        change_audio_ev.write(ChangeAudioEv(None));
+        change_audio_ev.write(ChangeAudioMsg(None));
     }
 }
 
-pub fn play_audio_event(
-    mut ev: EventReader<PlayAudioEv>,
+pub fn play_audio_message(
+    mut ev: MessageReader<PlayAudioMsg>,
     audio_state: Res<State<AudioState>>,
     audio: Res<Audio>,
     assets: Local<WorldAssets>,
 ) {
     if *audio_state.get() != AudioState::Mute {
-        for PlayAudioEv {
+        for PlayAudioMsg {
             name,
             volume,
         } in ev.read()

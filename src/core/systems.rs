@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use strum::IntoEnumIterator;
 
 pub fn on_resize_system(
-    mut resize_reader: EventReader<WindowResized>,
+    mut resize_reader: MessageReader<WindowResized>,
     mut text: Query<(&mut TextFont, &TextSize)>,
 ) {
     for ev in resize_reader.read() {

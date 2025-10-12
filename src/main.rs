@@ -6,10 +6,9 @@ mod utils;
 use crate::core::constants::{HEIGHT, WIDTH};
 use crate::core::GamePlugin;
 use bevy::asset::AssetMetaCheck;
-use bevy::prelude::NonSend;
 use bevy::prelude::*;
 use bevy::window::{WindowMode, WindowResolution};
-use bevy::winit::WinitWindows;
+use bevy::winit::WINIT_WINDOWS;
 use bevy_egui::EguiPlugin;
 use bevy_kira_audio::AudioPlugin;
 use bevy_renet::netcode::{NetcodeClientPlugin, NetcodeServerPlugin};
@@ -23,13 +22,13 @@ fn main() {
 
     app.add_plugins(
         DefaultPlugins
-            .set(ImagePlugin::default_linear())
+            .set(ImagePlugin::default_nearest())
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: TITLE.into(),
                     mode: WindowMode::Windowed,
                     position: WindowPosition::Centered(MonitorSelection::Primary),
-                    resolution: WindowResolution::new(WIDTH, HEIGHT),
+                    resolution: WindowResolution::new(WIDTH as u32, HEIGHT as u32),
 
                     // Tells Wasm to resize the window according to the available canvas
                     fit_canvas_to_parent: true,
@@ -59,14 +58,16 @@ fn main() {
 }
 
 #[cfg(target_os = "windows")]
-pub fn set_window_icon(windows: NonSend<WinitWindows>) {
+pub fn set_window_icon() {
     let image = image::open("assets/images/planets/planet.png").unwrap().into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
 
     let icon = Icon::from_rgba(rgba, width, height).unwrap();
 
-    for window in windows.windows.values() {
-        window.set_window_icon(Some(icon.clone()));
-    }
+    WINIT_WINDOWS.with_borrow(|windows| {
+        for window in windows.windows.values() {
+            window.set_window_icon(Some(icon.clone()));
+        }
+    });
 }

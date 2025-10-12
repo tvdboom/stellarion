@@ -8,7 +8,7 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
-use crate::core::ui::utils::CustomUi;
+use crate::core::ui::utils::{CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::Mission;
@@ -16,29 +16,19 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Description, Unit};
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
-use bevy_egui::egui;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    Sense, Separator, TextStyle, TextureId, UiBuilder,
+    Sense, Separator, TextStyle, UiBuilder,
 };
 use bevy_egui::EguiContexts;
+use bevy_egui::{egui, EguiTextureHandle};
 use std::cmp::min;
-use std::collections::HashMap;
 use strum::IntoEnumIterator;
 
 #[derive(Component)]
 pub struct UiCmp;
-
-#[derive(Resource, Default)]
-pub struct ImageIds(pub HashMap<&'static str, TextureId>);
-
-impl ImageIds {
-    pub fn get(&self, key: &str) -> TextureId {
-        *self.0.get(key).expect(format!("No image found with name: {}", key).as_str())
-    }
-}
 
 #[derive(Clone, Debug, Default)]
 pub enum Shop {
@@ -109,7 +99,7 @@ pub fn add_ui_images(
     assets: Local<WorldAssets>,
 ) {
     for (k, v) in assets.images.iter() {
-        let id = contexts.add_image(v.clone_weak());
+        let id = contexts.add_image(EguiTextureHandle::Strong(v.clone()));
         images.0.insert(k, id);
     }
 }
@@ -146,7 +136,7 @@ pub fn draw_ui(
         .default_size((1050., 70.))
         .show(contexts.ctx_mut().unwrap(), |ui| {
             let response = ui.add(egui::Image::new(SizedTexture::new(
-                images.get("thin_panel"),
+                images.get("thin panel"),
                 ui.available_size(),
             )));
 

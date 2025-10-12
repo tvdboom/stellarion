@@ -9,9 +9,9 @@ pub struct TextSize(pub f32);
 /// Change the background color of an entity
 pub fn recolor<E: Debug + Clone + Reflect>(
     color: Color,
-) -> impl Fn(Trigger<E>, Query<&mut BackgroundColor>) {
+) -> impl Fn(On<Pointer<E>>, Query<&mut BackgroundColor>) {
     move |ev, mut bgcolor_q| {
-        if let Ok(mut bgcolor) = bgcolor_q.get_mut(ev.target()) {
+        if let Ok(mut bgcolor) = bgcolor_q.get_mut(ev.entity) {
             bgcolor.0 = color;
         };
     }

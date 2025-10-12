@@ -1,4 +1,4 @@
-use crate::core::audio::PlayAudioEv;
+use crate::core::audio::PlayAudioMsg;
 use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
@@ -26,13 +26,13 @@ impl Default for Ip {
     }
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct ServerSendMessage {
     pub message: ServerMessage,
     pub client: Option<ClientId>,
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct ClientSendMessage {
     pub message: ClientMessage,
 }
@@ -97,8 +97,8 @@ pub fn new_renet_server() -> (RenetServer, NetcodeServerTransport) {
 pub fn server_update(
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut server: ResMut<RenetServer>,
-    mut server_ev: EventReader<ServerEvent>,
-    mut play_audio_ev: EventWriter<PlayAudioEv>,
+    mut server_ev: MessageReader<ServerEvent>,
+    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
@@ -132,7 +132,7 @@ pub fn server_update(
                     reason,
                 } => {
                     println!("Client {client_id} disconnected: {reason}");
-                    play_audio_ev.write(PlayAudioEv {
+                    play_audio_ev.write(PlayAudioMsg {
                         name: "error",
                         volume: 0.5,
                     });
@@ -144,7 +144,7 @@ pub fn server_update(
 }
 
 pub fn server_send_message(
-    mut server_send_message: EventReader<ServerSendMessage>,
+    mut server_send_message: MessageReader<ServerSendMessage>,
     mut server: ResMut<RenetServer>,
 ) {
     for ev in server_send_message.read() {
@@ -171,7 +171,7 @@ pub fn server_receive_message(mut server: ResMut<RenetServer>) {
 }
 
 pub fn client_send_message(
-    mut client_send_message: EventReader<ClientSendMessage>,
+    mut client_send_message: MessageReader<ClientSendMessage>,
     mut client: ResMut<RenetClient>,
 ) {
     for ev in client_send_message.read() {

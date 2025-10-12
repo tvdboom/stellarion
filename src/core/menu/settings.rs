@@ -1,5 +1,5 @@
 use crate::core::assets::WorldAssets;
-use crate::core::audio::ChangeAudioEv;
+use crate::core::audio::ChangeAudioMsg;
 use crate::core::constants::*;
 use crate::core::menu::utils::add_text;
 use crate::core::settings::Settings;
@@ -31,9 +31,9 @@ fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
 
 pub fn recolor_label<E: Debug + Clone + Reflect>(
     color: Color,
-) -> impl Fn(Trigger<E>, Query<(&mut BackgroundColor, &SettingsBtn)>, ResMut<Settings>) {
+) -> impl Fn(On<Pointer<E>>, Query<(&mut BackgroundColor, &SettingsBtn)>, ResMut<Settings>) {
     move |ev, mut bgcolor_q, game_settings| {
-        if let Ok((mut bgcolor, setting)) = bgcolor_q.get_mut(ev.target()) {
+        if let Ok((mut bgcolor, setting)) = bgcolor_q.get_mut(ev.entity) {
             // Don't change the color of selected buttons
             if !match_setting(&setting, &game_settings) {
                 bgcolor.0 = color;
@@ -43,26 +43,26 @@ pub fn recolor_label<E: Debug + Clone + Reflect>(
 }
 
 pub fn on_click_label_button(
-    trigger: Trigger<Pointer<Click>>,
+    event: On<Pointer<Click>>,
     mut btn_q: Query<(&mut BackgroundColor, &SettingsBtn)>,
     mut game_settings: ResMut<Settings>,
-    mut change_audio_ev: EventWriter<ChangeAudioEv>,
+    mut change_audio_ev: MessageWriter<ChangeAudioMsg>,
 ) {
-    match btn_q.get(trigger.target()).unwrap().1 {
+    match btn_q.get(event.entity).unwrap().1 {
         SettingsBtn::Five => game_settings.n_planets = 5,
         SettingsBtn::Ten => game_settings.n_planets = 10,
         SettingsBtn::Twenty => game_settings.n_planets = 20,
         SettingsBtn::Mute => {
             game_settings.audio = AudioState::Mute;
-            change_audio_ev.write(ChangeAudioEv(Some(AudioState::Mute)));
+            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Mute)));
         },
         SettingsBtn::NoMusic => {
             game_settings.audio = AudioState::NoMusic;
-            change_audio_ev.write(ChangeAudioEv(Some(AudioState::NoMusic)));
+            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::NoMusic)));
         },
         SettingsBtn::Sound => {
             game_settings.audio = AudioState::Sound;
-            change_audio_ev.write(ChangeAudioEv(Some(AudioState::Sound)));
+            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Sound)));
         },
     }
 
@@ -119,10 +119,10 @@ pub fn spawn_label(
                         item.clone(),
                         Button,
                     ))
-                    .observe(recolor_label::<Pointer<Over>>(HOVERED_BUTTON_COLOR))
-                    .observe(recolor_label::<Pointer<Out>>(NORMAL_BUTTON_COLOR))
-                    .observe(recolor_label::<Pointer<Pressed>>(PRESSED_BUTTON_COLOR))
-                    .observe(recolor_label::<Pointer<Released>>(HOVERED_BUTTON_COLOR))
+                    .observe(recolor_label::<Over>(HOVERED_BUTTON_COLOR))
+                    .observe(recolor_label::<Out>(NORMAL_BUTTON_COLOR))
+                    .observe(recolor_label::<Press>(PRESSED_BUTTON_COLOR))
+                    .observe(recolor_label::<Release>(HOVERED_BUTTON_COLOR))
                     .observe(on_click_label_button)
                     .with_children(|parent| {
                         parent.spawn(add_text(

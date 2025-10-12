@@ -6,7 +6,7 @@ use crate::core::menu::utils::{add_text, recolor};
 use crate::core::network::{
     new_renet_client, new_renet_server, Ip, ServerMessage, ServerSendMessage,
 };
-use crate::core::persistence::{LoadGameEv, SaveGameEv};
+use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
@@ -46,21 +46,21 @@ pub struct LobbyTextCmp;
 pub struct IpTextCmp;
 
 pub fn on_click_menu_button(
-    trigger: Trigger<Pointer<Click>>,
+    event: On<Pointer<Click>>,
     mut commands: Commands,
     btn_q: Query<(Option<&DisabledButton>, &MenuBtn)>,
     server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
     settings: Res<Settings>,
     ip: Res<Ip>,
-    mut load_game_ev: EventWriter<LoadGameEv>,
-    mut save_game_ev: EventWriter<SaveGameEv>,
-    mut server_send_message: EventWriter<ServerSendMessage>,
+    mut load_game_ev: MessageWriter<LoadGameMsg>,
+    mut save_game_ev: MessageWriter<SaveGameMsg>,
+    mut server_send_message: MessageWriter<ServerSendMessage>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
-    let (disabled, btn) = btn_q.get(trigger.target()).unwrap();
+    let (disabled, btn) = btn_q.get(event.entity).unwrap();
 
     if disabled.is_some() {
         return;
@@ -128,7 +128,7 @@ pub fn on_click_menu_button(
             next_app_state.set(AppState::Game);
         },
         MenuBtn::LoadGame => {
-            load_game_ev.write(LoadGameEv);
+            load_game_ev.write(LoadGameMsg);
         },
         MenuBtn::HostGame => {
             // Remove client resources if they exist
@@ -172,7 +172,7 @@ pub fn on_click_menu_button(
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {
-            save_game_ev.write(SaveGameEv);
+            save_game_ev.write(SaveGameMsg);
         },
         MenuBtn::Settings => {
             next_app_state.set(AppState::Settings);
@@ -216,10 +216,10 @@ pub fn spawn_menu_button(
             BackgroundColor(NORMAL_BUTTON_COLOR),
             btn.clone(),
         ))
-        .observe(recolor::<Pointer<Over>>(HOVERED_BUTTON_COLOR))
-        .observe(recolor::<Pointer<Out>>(NORMAL_BUTTON_COLOR))
-        .observe(recolor::<Pointer<Pressed>>(PRESSED_BUTTON_COLOR))
-        .observe(recolor::<Pointer<Released>>(HOVERED_BUTTON_COLOR))
+        .observe(recolor::<Over>(HOVERED_BUTTON_COLOR))
+        .observe(recolor::<Out>(NORMAL_BUTTON_COLOR))
+        .observe(recolor::<Press>(PRESSED_BUTTON_COLOR))
+        .observe(recolor::<Release>(HOVERED_BUTTON_COLOR))
         .observe(on_click_menu_button)
         .with_children(|parent| {
             parent.spawn(add_text(btn.to_title(), "bold", BUTTON_TEXT_SIZE, assets, window));
