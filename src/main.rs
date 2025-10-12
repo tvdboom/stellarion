@@ -6,6 +6,7 @@ mod utils;
 use crate::core::constants::{HEIGHT, WIDTH};
 use crate::core::GamePlugin;
 use bevy::asset::AssetMetaCheck;
+use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
 use bevy::window::{WindowMode, WindowResolution};
 use bevy::winit::WINIT_WINDOWS;
@@ -58,7 +59,7 @@ fn main() {
 }
 
 #[cfg(target_os = "windows")]
-pub fn set_window_icon() {
+pub fn set_window_icon(_: NonSendMarker) {
     let image = image::open("assets/images/planets/planet.png").unwrap().into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();

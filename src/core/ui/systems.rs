@@ -106,7 +106,7 @@ pub fn add_ui_images(
 
 pub fn draw_ui(
     mut contexts: EguiContexts,
-    planet_q: Query<(&GlobalTransform, &PlanetCmp)>,
+    planet_q: Query<(&Transform, &PlanetCmp)>,
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -214,7 +214,7 @@ pub fn draw_ui(
             .find_map(|(t, p)| {
                 (p.id == id).then_some((
                     map.get(id),
-                    camera.world_to_viewport(camera_t, t.compute_transform().translation).unwrap(),
+                    camera.world_to_viewport(camera_t, t.translation).unwrap(),
                 ))
             })
             .unwrap();
