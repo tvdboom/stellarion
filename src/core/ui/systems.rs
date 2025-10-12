@@ -1,5 +1,6 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
+use crate::core::combat::CombatStats;
 use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::PlanetCmp;
@@ -13,7 +14,7 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::Mission;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Description, Unit};
+use crate::core::units::{Description, Price, Unit};
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
@@ -56,6 +57,17 @@ fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<String>, images
         });
         ui.vertical(|ui| {
             ui.label(unit.to_name());
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.;
+                for resource in ResourceName::iter() {
+                    let price = unit.price().get(&resource);
+                    ui.add_image(images.get(resource.to_lowername().as_str()), [50., 35.]);
+                    ui.label(price.to_string());
+                    ui.add_space(30.);
+                }
+            });
+
             ui.separator();
 
             if let Some(msg) = msg {
@@ -66,15 +78,18 @@ fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<String>, images
 
             ui.add_space(10.);
 
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.;
-                for resource in ResourceName::iter() {
-                    let price = unit.price().get(&resource);
-                    ui.add_image(images.get(resource.to_lowername().as_str()), [35., 25.]);
-                    ui.label(price.to_string());
-                    ui.add_space(30.);
-                }
-            });
+            if unit.is_defense() {
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    for stat in [CombatStats::Hull, CombatStats::Shield, CombatStats::Damage] {
+                        ui.spacing_mut().item_spacing.x = 12.;
+                        ui.add_image(images.get(stat.to_lowername().as_str()), [70., 45.]);
+                        ui.label(unit.get(&stat).to_string());
+                        ui.add_space(50.);
+                    }
+                });
+            }
         });
     });
 }
@@ -250,9 +265,9 @@ pub fn draw_ui(
 
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 7.;
-                            ui.add_space(110.);
+                            ui.add_space(20.);
                             ui.add_image(images.get("overview"), [20., 20.]);
-                            ui.small("Overview");
+                            ui.small(format!("Overview: {}", &planet.name));
                         });
                     });
 
@@ -310,39 +325,35 @@ pub fn draw_ui(
                     ui.horizontal(|ui| {
                         ui.add_space(170.);
 
-                        ui.vertical_centered(|ui| {
-                            ComboBox::from_id_salt("origin")
-                                .selected_text(&map.get(state.mission_info.origin).name)
-                                .show_ui(ui, |ui| {
-                                    for planet in
-                                        map.planets.iter().filter(|p| p.owner == Some(player.id))
-                                    {
-                                        ui.selectable_value(
-                                            &mut state.mission_info.origin,
-                                            planet.id,
-                                            &planet.name,
-                                        );
-                                    }
-                                });
-                        });
+                        ComboBox::from_id_salt("origin")
+                            .selected_text(&map.get(state.mission_info.origin).name)
+                            .show_ui(ui, |ui| {
+                                for planet in
+                                    map.planets.iter().filter(|p| p.owner == Some(player.id))
+                                {
+                                    ui.selectable_value(
+                                        &mut state.mission_info.origin,
+                                        planet.id,
+                                        &planet.name,
+                                    );
+                                }
+                            });
 
                         ui.add_space(20.);
                         ui.add_image(images.get("mission"), [50., 50.]);
                         ui.add_space(20.);
 
-                        ui.vertical_centered(|ui| {
-                            ComboBox::from_id_salt("destination")
-                                .selected_text(&map.get(state.mission_info.destination).name)
-                                .show_ui(ui, |ui| {
-                                    for planet in &map.planets {
-                                        ui.selectable_value(
-                                            &mut state.mission_info.destination,
-                                            planet.id,
-                                            &planet.name,
-                                        );
-                                    }
-                                });
-                        });
+                        ComboBox::from_id_salt("destination")
+                            .selected_text(&map.get(state.mission_info.destination).name)
+                            .show_ui(ui, |ui| {
+                                for planet in &map.planets {
+                                    ui.selectable_value(
+                                        &mut state.mission_info.destination,
+                                        planet.id,
+                                        &planet.name,
+                                    );
+                                }
+                            });
                     });
 
                     ui.add(Separator::default().shrink(50.));
@@ -403,232 +414,235 @@ pub fn draw_ui(
                 });
             });
     } else if let Some(id) = state.selected_planet {
-        let planet = map.get_mut(id);
+        // Hide shop if hovering another planet
+        if !state.hovered_planet.is_some_and(|planet_id| planet_id != id) {
+            let planet = map.get_mut(id);
 
-        if player.controls(&planet) {
-            let (window_w, window_h) = (735., 340.);
+            if player.controls(&planet) {
+                let (window_w, window_h) = (735., 340.);
 
-            egui::Window::new("shop")
-                .frame(egui::Frame {
-                    fill: Color32::TRANSPARENT,
-                    ..default()
-                })
-                .collapsible(false)
-                .resizable(false)
-                .title_bar(false)
-                .fixed_pos((width * 0.5 - window_w * 0.5, height * 0.995 - window_h))
-                .fixed_size((window_w, window_h))
-                .show(contexts.ctx_mut().unwrap(), |ui| {
-                    let response = ui.add(egui::Image::new(SizedTexture::new(
-                        images.get("panel"),
-                        ui.available_size(),
-                    )));
+                egui::Window::new("shop")
+                    .frame(egui::Frame {
+                        fill: Color32::TRANSPARENT,
+                        ..default()
+                    })
+                    .collapsible(false)
+                    .resizable(false)
+                    .title_bar(false)
+                    .fixed_pos((width * 0.5 - window_w * 0.5, height * 0.995 - window_h))
+                    .fixed_size((window_w, window_h))
+                    .show(contexts.ctx_mut().unwrap(), |ui| {
+                        let response = ui.add(egui::Image::new(SizedTexture::new(
+                            images.get("panel"),
+                            ui.available_size(),
+                        )));
 
-                    ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
-                        ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
+                        ui.scope_builder(UiBuilder::new().max_rect(response.rect), |ui| {
+                            ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
 
-                        ui.add_space(4.);
+                            ui.add_space(4.);
 
-                        let (production, idx) = match state.shop {
-                            Shop::Buildings => (None, 0),
-                            Shop::Fleet => (
-                                Some((planet.fleet_production(), planet.max_fleet_production())),
-                                1,
-                            ),
-                            Shop::Defenses => (
-                                Some((
-                                    planet.battery_production(),
-                                    planet.max_battery_production(),
-                                )),
-                                2,
-                            ),
-                        };
+                            let (production, idx) = match state.shop {
+                                Shop::Buildings => (None, 0),
+                                Shop::Fleet => (
+                                    Some((planet.fleet_production(), planet.max_fleet_production())),
+                                    1,
+                                ),
+                                Shop::Defenses => (
+                                    Some((
+                                        planet.battery_production(),
+                                        planet.max_battery_production(),
+                                    )),
+                                    2,
+                                ),
+                            };
 
-                        ui.horizontal(|ui| {
-                            ui.add_space(45.);
-                            ui.add_image(
-                                images.get(state.shop.to_lowername().as_str()),
-                                [20., 20.],
-                            );
-                            ui.small(state.shop.to_name());
-
-                            if let Some((current, max)) = production {
-                                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                                    ui.add_space(45.);
-                                    ui.small(format!("Production: {}/{}", current, max));
-                                });
-                            }
-                        });
-
-                        ui.add_space(10.);
-
-                        let units = &all_units[idx];
-                        let (r1, r2) = units.split_at(min(5, units.len()));
-
-                        for row in [r1, r2] {
                             ui.horizontal(|ui| {
-                                ui.add_space(25.);
+                                ui.add_space(45.);
+                                ui.add_image(
+                                    images.get(state.shop.to_lowername().as_str()),
+                                    [20., 20.],
+                                );
+                                ui.small(state.shop.to_name());
 
-                                for unit in row {
-                                    let count = planet.get(unit);
-                                    let bought = planet.buy.iter().filter(|u| *u == unit).count();
+                                if let Some((current, max)) = production {
+                                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                        ui.add_space(45.);
+                                        ui.small(format!("Production: {}/{}", current, max));
+                                    });
+                                }
+                            });
 
-                                    let resources_check = player.resources >= unit.price();
-                                    let (level_check, building_check, production_check) = match unit
-                                    {
-                                        Unit::Building(_) => (
-                                            true,
-                                            count < Building::MAX_LEVEL,
-                                            !planet.buy.contains(unit),
-                                        ),
-                                        Unit::Ship(s) => (
-                                            s.level()
-                                                <= planet.get(&Unit::Building(Building::Shipyard)),
-                                            true,
-                                            planet.fleet_production() + s.level()
-                                                <= planet.max_fleet_production(),
-                                        ),
-                                        Unit::Defense(d) => (
-                                            d.level()
-                                                <= planet.get(&Unit::Building(Building::Factory)),
-                                            true,
-                                            planet.battery_production() + d.level()
-                                                <= planet.max_battery_production()
-                                                && d.is_missile()
+                            ui.add_space(10.);
+
+                            let units = &all_units[idx];
+                            let (r1, r2) = units.split_at(min(5, units.len()));
+
+                            for row in [r1, r2] {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(25.);
+
+                                    for unit in row {
+                                        let count = planet.get(unit);
+                                        let bought = planet.buy.iter().filter(|u| *u == unit).count();
+
+                                        let resources_check = player.resources >= unit.price();
+                                        let (level_check, building_check, production_check) = match unit
+                                        {
+                                            Unit::Building(_) => (
+                                                true,
+                                                count < Building::MAX_LEVEL,
+                                                !planet.buy.contains(unit),
+                                            ),
+                                            Unit::Ship(s) => (
+                                                s.level()
+                                                    <= planet.get(&Unit::Building(Building::Shipyard)),
+                                                true,
+                                                planet.fleet_production() + s.level()
+                                                    <= planet.max_fleet_production(),
+                                            ),
+                                            Unit::Defense(d) => (
+                                                d.level()
+                                                    <= planet.get(&Unit::Building(Building::Factory)),
+                                                true,
+                                                planet.battery_production() + d.level()
+                                                    <= planet.max_battery_production()
+                                                    && d.is_missile()
                                                     .then_some(
                                                         planet.missile_capacity() + bought
                                                             < planet.max_missile_capacity(),
                                                     )
                                                     .unwrap_or(true),
-                                        ),
-                                    };
+                                            ),
+                                        };
 
-                                    ui.add_enabled_ui(
-                                        resources_check
-                                            && level_check
-                                            && building_check
-                                            && production_check,
-                                        |ui| {
-                                            ui.spacing_mut().button_padding.x = 2.;
+                                        ui.add_enabled_ui(
+                                            resources_check
+                                                && level_check
+                                                && building_check
+                                                && production_check,
+                                            |ui| {
+                                                ui.spacing_mut().button_padding.x = 2.;
 
-                                            let mut response = ui.add_image_button(
-                                                images.get(unit.to_lowername().as_str()),
-                                                [130., 130.],
-                                            );
-
-                                            if ui.is_enabled() {
-                                                response = response
-                                                    .on_hover_cursor(CursorIcon::PointingHand);
-                                            }
-
-                                            if response.clicked() {
-                                                player.resources -= unit.price();
-                                                planet.buy.push(unit.clone());
-                                            }
-
-                                            if !unit.is_building()
-                                                && response.secondary_clicked()
-                                                && player.resources >= unit.price() * 5usize
-                                            {
-                                                player.resources -= unit.price() * 5usize;
-                                                planet.buy.extend([unit.clone(); 5]);
-                                            }
-
-                                            let rect = response.rect;
-                                            let painter = ui.painter();
-
-                                            if matches!(unit, Unit::Building(Building::MissileSilo))
-                                                && count > 0
-                                            {
-                                                painter.text(
-                                                    rect.right_top() + egui::vec2(-7., 4.),
-                                                    Align2::RIGHT_TOP,
-                                                    format!(
-                                                        "{}/{}",
-                                                        planet.missile_capacity(),
-                                                        planet.max_missile_capacity()
-                                                    ),
-                                                    TextStyle::Body.resolve(ui.style()),
-                                                    Color32::WHITE,
+                                                let mut response = ui.add_image_button(
+                                                    images.get(unit.to_lowername().as_str()),
+                                                    [130., 130.],
                                                 );
-                                            }
 
-                                            painter.text(
-                                                rect.left_bottom() + egui::vec2(7., -4.),
-                                                Align2::LEFT_BOTTOM,
-                                                count.to_string(),
-                                                TextStyle::Heading.resolve(ui.style()),
-                                                Color32::WHITE,
-                                            );
+                                                if ui.is_enabled() {
+                                                    response = response
+                                                        .on_hover_cursor(CursorIcon::PointingHand);
+                                                }
 
-                                            if bought > 0 {
-                                                let offset_x = ui
-                                                    .painter()
-                                                    .layout_no_wrap(
-                                                        count.to_string(),
-                                                        TextStyle::Heading.resolve(ui.style()),
+                                                if response.clicked() {
+                                                    player.resources -= unit.price();
+                                                    planet.buy.push(unit.clone());
+                                                }
+
+                                                if !unit.is_building()
+                                                    && response.secondary_clicked()
+                                                    && player.resources >= unit.price() * 5usize
+                                                {
+                                                    player.resources -= unit.price() * 5usize;
+                                                    planet.buy.extend([unit.clone(); 5]);
+                                                }
+
+                                                let rect = response.rect;
+                                                let painter = ui.painter();
+
+                                                if matches!(unit, Unit::Building(Building::MissileSilo))
+                                                    && count > 0
+                                                {
+                                                    painter.text(
+                                                        rect.right_top() + egui::vec2(-7., 4.),
+                                                        Align2::RIGHT_TOP,
+                                                        format!(
+                                                            "{}/{}",
+                                                            planet.missile_capacity(),
+                                                            planet.max_missile_capacity()
+                                                        ),
+                                                        TextStyle::Body.resolve(ui.style()),
                                                         Color32::WHITE,
-                                                    )
-                                                    .size()
-                                                    .x;
+                                                    );
+                                                }
 
                                                 painter.text(
-                                                    rect.left_bottom()
-                                                        + egui::vec2(8. + offset_x, -12.),
+                                                    rect.left_bottom() + egui::vec2(7., -4.),
                                                     Align2::LEFT_BOTTOM,
-                                                    format!(" (+{})", bought),
-                                                    TextStyle::Body.resolve(ui.style()),
+                                                    count.to_string(),
+                                                    TextStyle::Heading.resolve(ui.style()),
                                                     Color32::WHITE,
                                                 );
-                                            }
 
-                                            if settings.show_hover {
-                                                response
-                                                    .on_hover_ui(|ui| {
-                                                        create_unit_hover(ui, unit, None, &images);
-                                                    })
-                                                    .on_disabled_hover_ui(|ui| {
-                                                        create_unit_hover(
-                                                            ui,
-                                                            unit,
-                                                            Some(if !resources_check {
-                                                                "Not enough resources.".to_string()
-                                                            } else if !building_check {
-                                                                "Building already at maximum level."
-                                                                    .to_string()
-                                                            } else if !level_check {
-                                                                format!(
-                                                                    "Requires {} level {}.",
-                                                                    match unit {
-                                                                        Unit::Ship(_) =>
-                                                                            Building::Shipyard
-                                                                                .to_name(),
-                                                                        Unit::Defense(d)
+                                                if bought > 0 {
+                                                    let offset_x = ui
+                                                        .painter()
+                                                        .layout_no_wrap(
+                                                            count.to_string(),
+                                                            TextStyle::Heading.resolve(ui.style()),
+                                                            Color32::WHITE,
+                                                        )
+                                                        .size()
+                                                        .x;
+
+                                                    painter.text(
+                                                        rect.left_bottom()
+                                                            + egui::vec2(8. + offset_x, -12.),
+                                                        Align2::LEFT_BOTTOM,
+                                                        format!(" (+{})", bought),
+                                                        TextStyle::Body.resolve(ui.style()),
+                                                        Color32::WHITE,
+                                                    );
+                                                }
+
+                                                if settings.show_hover {
+                                                    response
+                                                        .on_hover_ui(|ui| {
+                                                            create_unit_hover(ui, unit, None, &images);
+                                                        })
+                                                        .on_disabled_hover_ui(|ui| {
+                                                            create_unit_hover(
+                                                                ui,
+                                                                unit,
+                                                                Some(if !resources_check {
+                                                                    "Not enough resources.".to_string()
+                                                                } else if !building_check {
+                                                                    "Building already at maximum level."
+                                                                        .to_string()
+                                                                } else if !level_check {
+                                                                    format!(
+                                                                        "Requires {} level {}.",
+                                                                        match unit {
+                                                                            Unit::Ship(_) =>
+                                                                                Building::Shipyard
+                                                                                    .to_name(),
+                                                                            Unit::Defense(d)
                                                                             if d.is_missile() =>
-                                                                            Building::MissileSilo
-                                                                                .to_name(),
-                                                                        Unit::Defense(_) =>
-                                                                            Building::Factory
-                                                                                .to_name(),
-                                                                        _ => unreachable!(),
-                                                                    },
-                                                                    unit.level()
-                                                                )
-                                                            } else {
-                                                                "Production limit reached."
-                                                                    .to_string()
-                                                            }),
-                                                            &images,
-                                                        );
-                                                    });
-                                            }
-                                        },
-                                    );
-                                }
-                            });
-                        }
+                                                                                Building::MissileSilo
+                                                                                    .to_name(),
+                                                                            Unit::Defense(_) =>
+                                                                                Building::Factory
+                                                                                    .to_name(),
+                                                                            _ => unreachable!(),
+                                                                        },
+                                                                        unit.level()
+                                                                    )
+                                                                } else {
+                                                                    "Production limit reached."
+                                                                        .to_string()
+                                                                }),
+                                                                &images,
+                                                            );
+                                                        });
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
+                            }
+                        });
                     });
-                });
+            }
         }
     }
 }

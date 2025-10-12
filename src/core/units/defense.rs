@@ -70,7 +70,7 @@ impl Description for Defense {
             },
             Defense::PlasmaTurret => {
                 "The plasma turret is the most powerful defense in the game. It is fairly \
-                expensive, but well worth its price. Bomber is the only ship with rapid fire \
+                expensive, but well worth its price. The bomber is the only ship with rapid fire \
                 against it. "
             },
             Defense::AntiballisticMissile => {

@@ -1,3 +1,4 @@
+use crate::core::combat::CombatStats;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -11,7 +12,30 @@ pub mod defense;
 pub mod missions;
 pub mod ships;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub trait Description {
+    fn description(&self) -> &str;
+}
+
+pub trait Price {
+    fn price(&self) -> Resources;
+}
+
+pub trait Combat {
+    fn hull(&self) -> usize;
+    fn shield(&self) -> usize;
+    fn damage(&self) -> usize;
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+        HashMap::new()
+    }
+    fn speed(&self) -> f32 {
+        0.
+    }
+    fn fuel_consumption(&self) -> usize {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
     Ship(Ship),
@@ -55,15 +79,30 @@ impl Unit {
         }
     }
 
-    pub fn description(&self) -> &str {
+    pub fn get(&self, stat: &CombatStats) -> f32 {
+        match stat {
+            CombatStats::Hull => self.hull() as f32,
+            CombatStats::Shield => self.shield() as f32,
+            CombatStats::Damage => self.damage() as f32,
+            CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
+            CombatStats::Speed => self.speed(),
+            CombatStats::FuelConsumption => self.fuel_consumption() as f32,
+        }
+    }
+}
+
+impl Description for Unit {
+    fn description(&self) -> &str {
         match self {
             Unit::Building(b) => b.description(),
             Unit::Ship(s) => s.description(),
             Unit::Defense(d) => d.description(),
         }
     }
+}
 
-    pub fn price(&self) -> Resources {
+impl Price for Unit {
+    fn price(&self) -> Resources {
         match self {
             Unit::Building(b) => b.price(),
             Unit::Ship(s) => s.price(),
@@ -72,25 +111,52 @@ impl Unit {
     }
 }
 
-pub trait Description {
-    fn description(&self) -> &str;
-}
+impl Combat for Unit {
+    fn hull(&self) -> usize {
+        match self {
+            Unit::Building(_) => 0,
+            Unit::Ship(s) => s.hull(),
+            Unit::Defense(d) => d.hull(),
+        }
+    }
 
-pub trait Price {
-    fn price(&self) -> Resources;
-}
+    fn shield(&self) -> usize {
+        match self {
+            Unit::Building(_) => 0,
+            Unit::Ship(s) => s.shield(),
+            Unit::Defense(d) => d.shield(),
+        }
+    }
 
-pub trait Combat {
-    fn hull(&self) -> usize;
-    fn shield(&self) -> usize;
-    fn damage(&self) -> usize;
+    fn damage(&self) -> usize {
+        match self {
+            Unit::Building(_) => 0,
+            Unit::Ship(s) => s.damage(),
+            Unit::Defense(d) => d.damage(),
+        }
+    }
+
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
-        HashMap::new()
+        match self {
+            Unit::Building(_) => HashMap::new(),
+            Unit::Ship(s) => s.rapid_fire(),
+            Unit::Defense(d) => d.rapid_fire(),
+        }
     }
+
     fn speed(&self) -> f32 {
-        0.
+        match self {
+            Unit::Building(_) => 0.,
+            Unit::Ship(s) => s.speed(),
+            Unit::Defense(d) => d.speed(),
+        }
     }
+
     fn fuel_consumption(&self) -> usize {
-        0
+        match self {
+            Unit::Building(_) => 0,
+            Unit::Ship(s) => s.fuel_consumption(),
+            Unit::Defense(d) => d.fuel_consumption(),
+        }
     }
 }

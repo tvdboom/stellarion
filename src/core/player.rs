@@ -41,6 +41,16 @@ impl Player {
         planet.owner == Some(self.id)
     }
 
+    /// Return the planets owned by the player, with the home planet first
+    pub fn planets<'a>(&self, planets: &'a Vec<Planet>) -> Vec<&'a Planet> {
+        let (home, others): (Vec<_>, Vec<_>) = planets
+            .iter()
+            .filter(|p| p.owner == Some(self.id))
+            .partition(|p| p.id == self.home_planet);
+
+        home.into_iter().chain(others).collect()
+    }
+
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
         planets.iter().filter(|p| p.owner == Some(self.id)).map(|p| p.resource_production()).sum()
     }

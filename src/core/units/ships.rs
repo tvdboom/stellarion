@@ -1,5 +1,6 @@
 use crate::core::resources::Resources;
-use crate::core::units::{Combat, Description, Price};
+use crate::core::units::defense::Defense;
+use crate::core::units::{Combat, Description, Price, Unit};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -55,8 +56,9 @@ impl Description for Ship {
                 in the game."
             },
             Ship::ColonyShip => {
-                "This ship is used to colonize planets. During a fight, the colony ship \
-                is always focused last. Upon colonizing a planet, the ship is deconstructed."
+                "This ship is used to colonize planets. The colony ship does not fight and is \
+                automatically destroyed if the fight is lost. Upon colonizing a planet, the \
+                ship is deconstructed."
             },
             Ship::LightFighter => {
                 "Given their relatively low armor and simple weapons systems, light fighters \
@@ -84,14 +86,14 @@ impl Description for Ship {
                 against most defensive structures makes it effective for planetary assaults."
             },
             Ship::Battleship => {
-                "The battleship is the mean between the cruiser and the dreadnought. Due to its \
-                rapid fire capabilities, it's highly specialized in the interception of hostile \
-                heavy ships."
+                "The battleship is the mean between the cruiser and the dreadnought. Its rapid \
+                fire capabilities makes him highly effective against medium-sized ships."
             },
             Ship::Dreadnought => {
                 "Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
                 They are relatively slow, and require a lot of fuel to move, but have incredibly \
-                high damage."
+                high damage. Due to its rapid fire capabilities, it's highly specialized in the \
+                interception of hostile heavy ships."
             },
             Ship::WarSun => {
                 "The War Sun is the most advanced ship in the game. It has the highest damage, \
@@ -124,7 +126,7 @@ impl Combat for Ship {
     fn hull(&self) -> usize {
         match self {
             Ship::Probe => 10,
-            Ship::ColonyShip => 300,
+            Ship::ColonyShip => 0,
             Ship::LightFighter => 40,
             Ship::HeavyFighter => 100,
             Ship::Destroyer => 270,
@@ -139,7 +141,7 @@ impl Combat for Ship {
     fn shield(&self) -> usize {
         match self {
             Ship::Probe => 0,
-            Ship::ColonyShip => 10,
+            Ship::ColonyShip => 0,
             Ship::LightFighter => 1,
             Ship::HeavyFighter => 3,
             Ship::Destroyer => 10,
@@ -154,7 +156,7 @@ impl Combat for Ship {
     fn damage(&self) -> usize {
         match self {
             Ship::Probe => 0,
-            Ship::ColonyShip => 5,
+            Ship::ColonyShip => 0,
             Ship::LightFighter => 5,
             Ship::HeavyFighter => 15,
             Ship::Destroyer => 40,
@@ -163,6 +165,57 @@ impl Combat for Ship {
             Ship::Battleship => 80,
             Ship::Dreadnought => 100,
             Ship::WarSun => 250,
+        }
+    }
+
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+        match self {
+            Ship::Probe | Ship::ColonyShip => HashMap::new(),
+            Ship::LightFighter | Ship::HeavyFighter => {
+                HashMap::from([(Unit::Ship(Ship::Probe), 80)])
+            },
+            Ship::Destroyer => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Ship(Ship::LightFighter), 70),
+                (Unit::Defense(Defense::RocketLauncher), 70),
+            ]),
+            Ship::Cruiser => HashMap::from([(Unit::Ship(Ship::Probe), 80)]),
+            Ship::Bomber => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::RocketLauncher), 80),
+                (Unit::Defense(Defense::LightLaser), 80),
+                (Unit::Defense(Defense::HeavyLaser), 60),
+                (Unit::Defense(Defense::GaussCannon), 60),
+                (Unit::Defense(Defense::IonCannon), 40),
+                (Unit::Defense(Defense::PlasmaTurret), 40),
+            ]),
+            Ship::Battleship => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Ship(Ship::HeavyFighter), 70),
+                (Unit::Ship(Ship::Destroyer), 60),
+                (Unit::Ship(Ship::Cruiser), 50),
+            ]),
+            Ship::Dreadnought => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Ship(Ship::Bomber), 40),
+                (Unit::Ship(Ship::Battleship), 40),
+                (Unit::Ship(Ship::Dreadnought), 30),
+            ]),
+            Ship::WarSun => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Ship(Ship::LightFighter), 80),
+                (Unit::Ship(Ship::HeavyFighter), 80),
+                (Unit::Ship(Ship::Destroyer), 70),
+                (Unit::Ship(Ship::Cruiser), 60),
+                (Unit::Ship(Ship::Bomber), 50),
+                (Unit::Ship(Ship::Battleship), 50),
+                (Unit::Ship(Ship::Dreadnought), 40),
+                (Unit::Defense(Defense::RocketLauncher), 80),
+                (Unit::Defense(Defense::LightLaser), 80),
+                (Unit::Defense(Defense::HeavyLaser), 60),
+                (Unit::Defense(Defense::GaussCannon), 60),
+                (Unit::Defense(Defense::IonCannon), 40),
+            ]),
         }
     }
 

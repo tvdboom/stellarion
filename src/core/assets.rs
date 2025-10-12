@@ -133,7 +133,7 @@ impl FromWorld for WorldAssets {
             ("damage", assets.load("images/combat/damage.png")),
             ("rapid fire", assets.load("images/combat/rapid fire.png")),
             ("speed", assets.load("images/combat/speed.png")),
-            ("fuel", assets.load("images/combat/fuel.png")),
+            ("fuel consumption", assets.load("images/combat/fuel consumption.png")),
         ]);
 
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();

@@ -1,6 +1,7 @@
 mod assets;
 mod audio;
 mod camera;
+mod combat;
 pub mod constants;
 mod map;
 mod menu;
