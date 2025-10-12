@@ -7,7 +7,7 @@ use strum_macros::EnumIter;
 
 pub type Battery = HashMap<Defense, usize>;
 
-#[derive(Component, EnumIter, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {
     RocketLauncher,
     LightLaser,

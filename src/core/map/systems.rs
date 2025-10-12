@@ -343,7 +343,7 @@ pub fn draw_map(
     }
 
     // Spawn end turn button
-    let texture = assets.texture("button");
+    let texture = assets.texture("long button");
     commands
         .spawn((
             Node {
@@ -367,6 +367,7 @@ pub fn draw_map(
             EndTurnButtonCmp,
             MapCmp,
             children![
+                Transform::from_xyz(0., -5., 0.1),
                 Text::new("End Turn"),
                 TextFont {
                     font: assets.font("bold"),

@@ -21,7 +21,7 @@ use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    Separator, TextStyle, TextureId, UiBuilder,
+    Sense, Separator, TextStyle, TextureId, UiBuilder,
 };
 use bevy_egui::EguiContexts;
 use std::cmp::min;
@@ -136,7 +136,7 @@ pub fn draw_ui(
 
     egui::Window::new("resources")
         .frame(egui::Frame {
-            fill: egui::Color32::TRANSPARENT,
+            fill: Color32::TRANSPARENT,
             ..default()
         })
         .collapsible(false)
@@ -370,9 +370,41 @@ pub fn draw_ui(
                             ui.add_space(10.);
                             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                 ui.add_space(50.);
-                                let response = ui.button("Send mission");
+
+                                let (rect, mut response) =
+                                    ui.allocate_exact_size([180., 50.].into(), Sense::click());
+
+                                response = response.on_hover_cursor(CursorIcon::PointingHand);
+
+                                let image = if response.hovered()
+                                    && !response.is_pointer_button_down_on()
+                                {
+                                    images.get("button hover")
+                                } else {
+                                    images.get("button")
+                                };
+
+                                ui.painter().image(
+                                    image,
+                                    rect,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0., 0.),
+                                        egui::pos2(1., 1.),
+                                    ),
+                                    Color32::WHITE,
+                                );
+
+                                ui.painter().text(
+                                    rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    "Send mission",
+                                    TextStyle::Button.resolve(ui.style()),
+                                    Color32::WHITE,
+                                );
+
                                 if response.clicked() {
                                     player.missions.push(state.mission_info.clone());
+                                    state.selected_planet = None;
                                     state.mission = false;
                                 }
                             });
@@ -502,6 +534,14 @@ pub fn draw_ui(
                                             if response.clicked() {
                                                 player.resources -= unit.price();
                                                 planet.buy.push(unit.clone());
+                                            }
+
+                                            if !unit.is_building()
+                                                && response.secondary_clicked()
+                                                && player.resources >= unit.price() * 5usize
+                                            {
+                                                player.resources -= unit.price() * 5usize;
+                                                planet.buy.extend([unit.clone(); 5]);
                                             }
 
                                             let rect = response.rect;

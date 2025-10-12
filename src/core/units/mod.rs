@@ -10,7 +10,7 @@ pub mod defense;
 pub mod missions;
 pub mod ships;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
     Ship(Ship),

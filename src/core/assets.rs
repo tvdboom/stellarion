@@ -88,7 +88,9 @@ impl FromWorld for WorldAssets {
             // Ui
             ("panel", assets.load("images/ui/panel.png")),
             ("thin_panel", assets.load("images/ui/thin_panel.png")),
+            ("long button", assets.load("images/ui/long button.png")),
             ("button", assets.load("images/ui/button.png")),
+            ("button hover", assets.load("images/ui/button hover.png")),
             // Planets
             ("planets", assets.load("images/planets/planets.png")),
             ("destroyed", assets.load("images/planets/destroyed.png")),
@@ -128,16 +130,16 @@ impl FromWorld for WorldAssets {
 
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
 
-        let button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
+        let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
         let planets =
             TextureAtlasLayout::from_grid(UVec2::splat(450), 8, 8, Some(UVec2::splat(30)), None);
 
         let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
             (
-                "button",
+                "long button",
                 TextureInfo {
-                    image: images["button"].clone_weak(),
-                    layout: texture.add(button),
+                    image: images["long button"].clone_weak(),
+                    layout: texture.add(long_button),
                 },
             ),
             (
