@@ -131,7 +131,7 @@ pub fn play_audio_message(
             volume,
         } in ev.read()
         {
-            audio.play(assets.audio(name)).with_volume(*volume);
+            audio.play(assets.audio(*name)).with_volume(*volume);
         }
     }
 }

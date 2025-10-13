@@ -173,29 +173,23 @@ pub fn draw_map(
             state.mission = false;
         });
 
-    let texture = assets.texture("planets");
     for planet in &map.planets {
         let planet_id = planet.id;
         let owner = planet.owner;
 
         commands
             .spawn((
-                if planet.is_destroyed {
-                    Sprite {
-                        image: assets.image("destroyed"),
-                        custom_size: Some(Vec2::splat(Planet::SIZE)),
-                        ..default()
-                    }
-                } else {
-                    Sprite {
-                        image: texture.image.clone(),
-                        custom_size: Some(Vec2::splat(Planet::SIZE)),
-                        texture_atlas: Some(TextureAtlas {
-                            layout: texture.layout.clone(),
-                            index: planet.image,
-                        }),
-                        ..default()
-                    }
+                Sprite {
+                    image: assets.image(format!(
+                        "planet{}",
+                        if planet.is_destroyed {
+                            0
+                        } else {
+                            planet.image
+                        }
+                    )),
+                    custom_size: Some(Vec2::splat(Planet::SIZE)),
+                    ..default()
                 },
                 Transform {
                     translation: planet.position.extend(PLANET_Z),

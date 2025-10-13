@@ -60,7 +60,7 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 pub fn set_window_icon(_: NonSendMarker) {
-    let image = image::open("assets/images/planets/planet.png").unwrap().into_rgba8();
+    let image = image::open("assets/images/icons/planet.png").unwrap().into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
 

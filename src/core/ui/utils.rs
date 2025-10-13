@@ -7,8 +7,9 @@ use std::collections::HashMap;
 pub struct ImageIds(pub HashMap<&'static str, TextureId>);
 
 impl ImageIds {
-    pub fn get(&self, key: &str) -> TextureId {
-        *self.0.get(key).expect(format!("No image found with name: {}", key).as_str())
+    pub fn get(&self, key: impl Into<String>) -> TextureId {
+        let key = key.into().clone();
+        *self.0.get(key.as_str()).expect(format!("No image found with name: {}", key).as_str())
     }
 }
 

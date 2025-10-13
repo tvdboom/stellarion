@@ -1,5 +1,5 @@
 use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, PLANET_NAMES, WIDTH};
-use crate::core::map::planet::Planet;
+use crate::core::map::planet::{Planet, PlanetId};
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
@@ -48,11 +48,11 @@ impl Map {
         }
     }
 
-    pub fn get(&self, planet_id: usize) -> &Planet {
+    pub fn get(&self, planet_id: PlanetId) -> &Planet {
         self.planets.iter().find(|p| p.id == planet_id).expect("Planet not found.")
     }
 
-    pub fn get_mut(&mut self, planet_id: usize) -> &mut Planet {
+    pub fn get_mut(&mut self, planet_id: PlanetId) -> &mut Planet {
         self.planets.iter_mut().find(|p| p.id == planet_id).expect("Planet not found.")
     }
 }

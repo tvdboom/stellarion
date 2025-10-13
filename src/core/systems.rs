@@ -79,7 +79,10 @@ pub fn check_keys(
     // Move between shop tabs
     if state.selected_planet.is_some() {
         if keyboard.just_pressed(KeyCode::Tab) {
-            state.shop = match (&state.shop, keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])) {
+            state.shop = match (
+                &state.shop,
+                keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+            ) {
                 (Shop::Buildings, false) | (Shop::Defenses, true) => Shop::Fleet,
                 (Shop::Fleet, false) | (Shop::Buildings, true) => Shop::Defenses,
                 (Shop::Defenses, false) | (Shop::Fleet, true) => Shop::Buildings,

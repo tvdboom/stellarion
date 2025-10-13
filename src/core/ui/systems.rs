@@ -80,6 +80,8 @@ fn create_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &Ima
 
             ui.add_space(10.);
 
+            ui.spacing_mut().item_spacing.y = 10.;
+
             if !unit.is_building() {
                 ui.separator();
             }
@@ -122,7 +124,6 @@ fn create_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &Ima
                             .response
                             .on_hover_ui(|ui| stat_hover(ui, stat));
                         }
-                        ui.end_row();
                     });
             }
 
@@ -130,7 +131,6 @@ fn create_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &Ima
                 ui.separator();
                 ui.small(CombatStats::RapidFire.to_name())
                     .on_hover_ui(|ui| stat_hover(ui, &CombatStats::RapidFire));
-                ui.add_space(10.);
 
                 let units: Vec<Unit> = Ship::iter()
                     .map(|s| Unit::Ship(s))
@@ -147,7 +147,7 @@ fn create_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &Ima
 
                                 ui.add_image(
                                     images.get(rf_unit.to_lowername().as_str()),
-                                    [45., 30.],
+                                    [45., 45.],
                                 );
                                 ui.small(format!("{}%", rf));
                             })
@@ -361,7 +361,7 @@ pub fn draw_ui(
 
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 7.;
-                            ui.add_space(20.);
+                            ui.add_space(100.);
                             ui.add_image(images.get("overview"), [20., 20.]);
                             ui.small(format!("Overview: {}", &planet.name));
                         });
@@ -419,36 +419,48 @@ pub fn draw_ui(
                     ui.add_space(50.);
 
                     ui.horizontal(|ui| {
-                        ui.add_space(170.);
+                        ui.add_space(70.);
+                        egui::Grid::new("mission_origin_destination")
+                            .spacing([30., 0.])
+                            .striped(false)
+                            .show(ui, |ui| {
+                                let origin = map.get(state.mission_info.origin);
+                                let destination = map.get(state.mission_info.destination);
 
-                        ComboBox::from_id_salt("origin")
-                            .selected_text(&map.get(state.mission_info.origin).name)
-                            .show_ui(ui, |ui| {
-                                for planet in
-                                    map.planets.iter().filter(|p| p.owner == Some(player.id))
-                                {
-                                    ui.selectable_value(
-                                        &mut state.mission_info.origin,
-                                        planet.id,
-                                        &planet.name,
-                                    );
-                                }
-                            });
+                                ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.]);
 
-                        ui.add_space(20.);
-                        ui.add_image(images.get("mission"), [50., 50.]);
-                        ui.add_space(20.);
+                                ComboBox::from_id_salt("origin")
+                                    .selected_text(&map.get(state.mission_info.origin).name)
+                                    .show_ui(ui, |ui| {
+                                        for planet in
+                                            map.planets.iter().filter(|p| p.owner == Some(player.id))
+                                        {
+                                            ui.selectable_value(
+                                                &mut state.mission_info.origin,
+                                                planet.id,
+                                                &planet.name,
+                                            );
+                                        }
+                                    });
 
-                        ComboBox::from_id_salt("destination")
-                            .selected_text(&map.get(state.mission_info.destination).name)
-                            .show_ui(ui, |ui| {
-                                for planet in &map.planets {
-                                    ui.selectable_value(
-                                        &mut state.mission_info.destination,
-                                        planet.id,
-                                        &planet.name,
-                                    );
-                                }
+                                ui.add_image(images.get("mission"), [50., 50.]);
+
+                                ComboBox::from_id_salt("destination")
+                                    .selected_text(&map.get(state.mission_info.destination).name)
+                                    .show_ui(ui, |ui| {
+                                        for planet in &map.planets {
+                                            ui.selectable_value(
+                                                &mut state.mission_info.destination,
+                                                planet.id,
+                                                &planet.name,
+                                            );
+                                        }
+                                    });
+
+                                ui.add_image(
+                                    images.get(format!("planet{}", destination.image)),
+                                    [70., 70.],
+                                );
                             });
                     });
 

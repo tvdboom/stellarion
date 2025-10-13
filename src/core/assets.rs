@@ -20,25 +20,26 @@ impl WorldAssets {
     fn get_asset<'a, T: Clone>(
         &self,
         map: &'a HashMap<&str, T>,
-        name: &str,
+        name: impl Into<String>,
         asset_type: &str,
     ) -> &'a T {
-        map.get(name).expect(&format!("No asset for {asset_type} {name}"))
+        let name = name.into().clone();
+        map.get(name.as_str()).expect(&format!("No asset for {asset_type} {name}"))
     }
 
-    pub fn audio(&self, name: &str) -> Handle<AudioSource> {
+    pub fn audio(&self, name: impl Into<String>) -> Handle<AudioSource> {
         self.get_asset(&self.audio, name, "audio").clone()
     }
 
-    pub fn font(&self, name: &str) -> Handle<Font> {
+    pub fn font(&self, name: impl Into<String>) -> Handle<Font> {
         self.get_asset(&self.fonts, name, "font").clone()
     }
 
-    pub fn image(&self, name: &str) -> Handle<Image> {
+    pub fn image(&self, name: impl Into<String>) -> Handle<Image> {
         self.get_asset(&self.images, name, "image").clone()
     }
 
-    pub fn texture(&self, name: &str) -> TextureInfo {
+    pub fn texture(&self, name: impl Into<String>) -> TextureInfo {
         self.get_asset(&self.textures, name, "texture").clone()
     }
 }
@@ -61,7 +62,7 @@ impl FromWorld for WorldAssets {
             ("medium", assets.load("fonts/FiraMono-Medium.ttf")),
         ]);
 
-        let images: HashMap<&'static str, Handle<Image>> = HashMap::from([
+        let mut images: HashMap<&'static str, Handle<Image>> = HashMap::from([
             // Icons
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
@@ -77,9 +78,6 @@ impl FromWorld for WorldAssets {
             ("long button", assets.load("images/ui/long button.png")),
             ("button", assets.load("images/ui/button.png")),
             ("button hover", assets.load("images/ui/button hover.png")),
-            // Planets
-            ("planets", assets.load("images/planets/planets.png")),
-            ("destroyed", assets.load("images/planets/destroyed.png")),
             // Resources
             ("turn", assets.load("images/resources/turn.png")),
             ("metal", assets.load("images/resources/metal.png")),
@@ -136,28 +134,21 @@ impl FromWorld for WorldAssets {
             ("fuel consumption", assets.load("images/combat/fuel consumption.png")),
         ]);
 
+        for i in 0..65 {
+            let name = Box::leak(Box::new(format!("planet{}", i))).as_str();
+            images.insert(&name, assets.load(&format!("images/planets/planet{}.png", i)));
+        }
+
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
 
         let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
-        let planets =
-            TextureAtlasLayout::from_grid(UVec2::splat(450), 8, 8, Some(UVec2::splat(30)), None);
-
-        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
-            (
-                "long button",
-                TextureInfo {
-                    image: images["long button"].clone(),
-                    layout: texture.add(long_button),
-                },
-            ),
-            (
-                "planets",
-                TextureInfo {
-                    image: images["planets"].clone(),
-                    layout: texture.add(planets),
-                },
-            ),
-        ]);
+        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([(
+            "long button",
+            TextureInfo {
+                image: images["long button"].clone(),
+                layout: texture.add(long_button),
+            },
+        )]);
 
         Self {
             audio,

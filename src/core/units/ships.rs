@@ -52,8 +52,9 @@ impl Description for Ship {
         match self {
             Ship::Probe => {
                 "The probe is an espionage craft, used to analyze enemy defenses. This ship \
-                is very likely to be destroyed in any conflict. They are the fastest ships \
-                in the game."
+                only takes part in the first round of any attack. After the first round, it \
+                goes back to report on the enemy units. The more probes return, the more \
+                accurate the reports. Probes are the fastest ships in the game."
             },
             Ship::ColonyShip => {
                 "This ship is used to colonize planets. The colony ship does not fight and is \
