@@ -14,18 +14,18 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::missions::Mission;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Description, Price, Unit};
+use crate::core::units::{Combat, Description, Price, Unit};
 use crate::utils::NameFromEnum;
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    Sense, Separator, TextStyle, UiBuilder,
+    Sense, Separator, TextStyle, Ui, UiBuilder,
 };
 use bevy_egui::EguiContexts;
 use bevy_egui::{egui, EguiTextureHandle};
-use std::cmp::min;
+use itertools::Itertools;
 use strum::IntoEnumIterator;
 
 #[derive(Component)]
@@ -50,8 +50,10 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
-fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<String>, images: &ImageIds) {
+fn create_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &ImageIds) {
     ui.horizontal(|ui| {
+        ui.set_width(700.);
+
         ui.vertical(|ui| {
             ui.add_image(images.get(unit.to_lowername().as_str()), [200., 200.]);
         });
@@ -78,15 +80,85 @@ fn create_unit_hover(ui: &mut egui::Ui, unit: &Unit, msg: Option<String>, images
 
             ui.add_space(10.);
 
-            if unit.is_defense() {
+            if !unit.is_building() {
                 ui.separator();
+            }
 
+            let stat_hover = |ui: &mut Ui, stat: &CombatStats| {
+                ui.set_width(500.);
                 ui.horizontal(|ui| {
-                    for stat in [CombatStats::Hull, CombatStats::Shield, CombatStats::Damage] {
-                        ui.spacing_mut().item_spacing.x = 12.;
-                        ui.add_image(images.get(stat.to_lowername().as_str()), [70., 45.]);
-                        ui.label(unit.get(&stat).to_string());
-                        ui.add_space(50.);
+                    ui.vertical(|ui| {
+                        ui.add_image(images.get(stat.to_lowername().as_str()), [130., 90.]);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(stat.to_name());
+                        ui.separator();
+                        ui.small(stat.description());
+                    });
+                });
+            };
+
+            let rows: Vec<CombatStats> = match unit {
+                Unit::Building(_) => vec![],
+                Unit::Ship(_) => {
+                    CombatStats::iter().filter(|c| *c != CombatStats::RapidFire).collect()
+                },
+                Unit::Defense(_) => CombatStats::iter().take(3).collect(),
+            };
+
+            for row in rows.chunks(3) {
+                egui::Grid::new(ui.auto_id_with(format!("row_{:?}", row[0])))
+                    .spacing([20., 0.])
+                    .striped(false)
+                    .show(ui, |ui| {
+                        for stat in row {
+                            ui.horizontal(|ui| {
+                                ui.set_width(150.);
+                                ui.style_mut().interaction.selectable_labels = true;
+
+                                ui.add_image(images.get(stat.to_lowername().as_str()), [70., 45.]);
+                                ui.label(unit.get(&stat)).on_hover_cursor(CursorIcon::Default);
+                            })
+                            .response
+                            .on_hover_ui(|ui| stat_hover(ui, stat));
+                        }
+                        ui.end_row();
+                    });
+            }
+
+            if !unit.rapid_fire().is_empty() {
+                ui.separator();
+                ui.small(CombatStats::RapidFire.to_name())
+                    .on_hover_ui(|ui| stat_hover(ui, &CombatStats::RapidFire));
+                ui.add_space(10.);
+
+                let units: Vec<Unit> = Ship::iter()
+                    .map(|s| Unit::Ship(s))
+                    .chain(Defense::iter().map(|d| Unit::Defense(d)))
+                    .collect();
+
+                egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(ui, |ui| {
+                    let mut counter = 0;
+                    for rf_unit in units {
+                        if let Some(rf) = unit.rapid_fire().get(&rf_unit) {
+                            ui.horizontal(|ui| {
+                                ui.set_width(115.);
+                                ui.spacing_mut().item_spacing.x = 8.;
+
+                                ui.add_image(
+                                    images.get(rf_unit.to_lowername().as_str()),
+                                    [45., 30.],
+                                );
+                                ui.small(format!("{}%", rf));
+                            })
+                            .response
+                            .on_hover_text(RichText::new(rf_unit.to_name()).small());
+
+                            counter += 1;
+                            if counter % 4 == 0 {
+                                ui.end_row();
+                            }
+                        }
                     }
                 });
             }
@@ -209,10 +281,34 @@ pub fn draw_ui(
                                     ui.vertical(|ui| {
                                         ui.label(resource.to_name());
                                         ui.separator();
-                                        ui.small(format!(
-                                            "Production: +{}",
-                                            player.resource_production(&map.planets).get(&resource)
-                                        ));
+                                        ui.scope(|ui| {
+                                            ui.style_mut().interaction.selectable_labels = true;
+                                            ui.small(format!(
+                                                "Production: +{}",
+                                                player
+                                                    .resource_production(&map.planets)
+                                                    .get(&resource)
+                                            ))
+                                            .on_hover_cursor(CursorIcon::Default)
+                                            .on_hover_text_at_pointer(
+                                                RichText::new(
+                                                    player
+                                                        .planets(&map.planets)
+                                                        .iter()
+                                                        .map(|p| {
+                                                            (
+                                                                p.name.clone(),
+                                                                p.resource_production()
+                                                                    .get(&resource),
+                                                            )
+                                                        })
+                                                        .sorted_by(|a, b| b.1.cmp(&a.1))
+                                                        .map(|(n, c)| format!("{}: {}", n, c))
+                                                        .join("\n"),
+                                                )
+                                                .small(),
+                                            );
+                                        });
                                         ui.small(resource.description());
                                     });
                                 });
@@ -475,10 +571,7 @@ pub fn draw_ui(
 
                             ui.add_space(10.);
 
-                            let units = &all_units[idx];
-                            let (r1, r2) = units.split_at(min(5, units.len()));
-
-                            for row in [r1, r2] {
+                            for row in all_units[idx].chunks(5) {
                                 ui.horizontal(|ui| {
                                     ui.add_space(25.);
 

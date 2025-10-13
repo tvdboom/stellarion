@@ -79,14 +79,20 @@ impl Unit {
         }
     }
 
-    pub fn get(&self, stat: &CombatStats) -> f32 {
-        match stat {
+    pub fn get(&self, stat: &CombatStats) -> String {
+        let n = match stat {
             CombatStats::Hull => self.hull() as f32,
             CombatStats::Shield => self.shield() as f32,
             CombatStats::Damage => self.damage() as f32,
             CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
             CombatStats::Speed => self.speed(),
             CombatStats::FuelConsumption => self.fuel_consumption() as f32,
+        };
+
+        if n == 0. {
+            "---".to_string()
+        } else {
+            n.to_string()
         }
     }
 }
