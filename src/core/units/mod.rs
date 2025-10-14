@@ -35,6 +35,8 @@ pub trait Combat {
     }
 }
 
+pub type Army = HashMap<Unit, usize>;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
@@ -71,11 +73,11 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
-    pub fn level(&self) -> usize {
+    pub fn production(&self) -> usize {
         match self {
             Unit::Building(_) => 0,
-            Unit::Ship(s) => s.level(),
-            Unit::Defense(d) => d.level(),
+            Unit::Ship(s) => s.production(),
+            Unit::Defense(d) => d.production(),
         }
     }
 
@@ -84,9 +86,10 @@ impl Unit {
             CombatStats::Hull => self.hull() as f32,
             CombatStats::Shield => self.shield() as f32,
             CombatStats::Damage => self.damage() as f32,
-            CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
+            CombatStats::Production => self.production() as f32,
             CombatStats::Speed => self.speed(),
             CombatStats::FuelConsumption => self.fuel_consumption() as f32,
+            CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
         };
 
         if n == 0. {

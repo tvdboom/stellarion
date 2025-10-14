@@ -73,7 +73,7 @@ pub fn check_keys(
 
     // Toggle mission panel
     if keyboard.just_pressed(KeyCode::KeyM) {
-        state.mission = true;
+        state.mission = !state.mission;
     }
 
     // Move between shop tabs

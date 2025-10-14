@@ -82,7 +82,7 @@ pub fn spawn_label(
     assets: &WorldAssets,
     window: &Window,
 ) {
-    parent.spawn(add_text(title, "bold", TITLE_TEXT_SIZE, &assets, &window));
+    parent.spawn(add_text(title, "bold", BUTTON_TEXT_SIZE, &assets, &window));
 
     parent
         .spawn(Node {

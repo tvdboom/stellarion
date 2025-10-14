@@ -312,7 +312,7 @@ pub trait Aesthetics {
                 ..Default::default()
             },
             animation_time: 0.083_333_336,
-            explanation_tooltips: true,
+            explanation_tooltips: false,
             ..Default::default()
         }
     }

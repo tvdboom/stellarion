@@ -1,6 +1,7 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
+use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::cursor;
@@ -8,86 +9,13 @@ use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::turns::NextTurnMsg;
-use crate::core::ui::systems::{Shop, UiState};
-use crate::core::units::defense::Defense;
-use crate::core::units::missions::{Mission, Objective};
-use crate::core::units::ships::Ship;
+use crate::core::ui::systems::UiState;
+use crate::core::units::missions::Mission;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
-use std::fmt::Debug;
 use strum::IntoEnumIterator;
-use strum_macros::EnumIter;
-
-#[derive(Component, EnumIter, Copy, Clone, Debug)]
-pub enum PlanetIcon {
-    Attacked,
-    Buildings,
-    Fleet,
-    Defenses,
-    Transport,
-    Colonize,
-    Attack,
-    Spy,
-    Strike,
-    Destroy,
-}
-
-impl PlanetIcon {
-    pub const SIZE: f32 = Planet::SIZE * 0.2;
-
-    pub fn on_own_planet(&self) -> bool {
-        matches!(
-            self,
-            PlanetIcon::Attacked
-                | PlanetIcon::Buildings
-                | PlanetIcon::Fleet
-                | PlanetIcon::Defenses
-                | PlanetIcon::Transport
-        )
-    }
-
-    pub fn on_units(&self) -> bool {
-        matches!(self, PlanetIcon::Buildings | PlanetIcon::Fleet | PlanetIcon::Defenses)
-    }
-
-    pub fn shop(&self) -> Shop {
-        match self {
-            PlanetIcon::Buildings => Shop::Buildings,
-            PlanetIcon::Fleet => Shop::Fleet,
-            PlanetIcon::Defenses => Shop::Defenses,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn objective(&self) -> Objective {
-        match self {
-            PlanetIcon::Transport => Objective::Transport,
-            PlanetIcon::Colonize => Objective::Colonize,
-            PlanetIcon::Attack => Objective::Attack,
-            PlanetIcon::Spy => Objective::Spy,
-            PlanetIcon::Strike => Objective::Strike,
-            PlanetIcon::Destroy => Objective::Destroy,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn condition(&self, planet: &Planet) -> bool {
-        match self {
-            PlanetIcon::Buildings => !planet.complex.is_empty(),
-            PlanetIcon::Fleet => !planet.fleet.is_empty(),
-            PlanetIcon::Defenses => !planet.battery.is_empty(),
-            PlanetIcon::Transport => !planet.fleet.is_empty(),
-            PlanetIcon::Colonize => planet.fleet.contains_key(&Ship::ColonyShip),
-            PlanetIcon::Attack => planet.fleet.iter().any(|(s, _)| s.is_combat()),
-            PlanetIcon::Spy => planet.fleet.contains_key(&Ship::Probe),
-            PlanetIcon::Strike => planet.battery.contains_key(&Defense::InterplanetaryMissile),
-            PlanetIcon::Destroy => planet.fleet.contains_key(&Ship::WarSun),
-            _ => unreachable!(),
-        }
-    }
-}
 
 #[derive(Component)]
 pub struct PlanetCmp {
@@ -245,7 +173,7 @@ pub fn draw_map(
                         ShowOnHoverCmp,
                     ));
 
-                    for (i, icon) in PlanetIcon::iter()
+                    for (i, icon) in Icon::iter()
                         .filter(|icon| player.controls(&planet) == icon.on_own_planet())
                         .enumerate()
                     {
@@ -253,12 +181,12 @@ pub fn draw_map(
                             .spawn((
                                 Sprite {
                                     image: assets.image(icon.to_lowername().as_str()),
-                                    custom_size: Some(Vec2::splat(PlanetIcon::SIZE)),
+                                    custom_size: Some(Vec2::splat(Icon::SIZE)),
                                     ..default()
                                 },
                                 Transform::from_translation(Vec3::new(
                                     Planet::SIZE * 0.4,
-                                    Planet::SIZE * 0.35 - i as f32 * PlanetIcon::SIZE,
+                                    Planet::SIZE * 0.35 - i as f32 * Icon::SIZE,
                                     0.8,
                                 )),
                                 Pickable::default(),
@@ -288,7 +216,7 @@ pub fn draw_map(
                                             // first planet of the player that fulfills condition
                                             state.mission = true;
                                             state.mission_info = Mission {
-                                                objective: icon.objective(),
+                                                objective: icon,
                                                 origin: state
                                                     .selected_planet
                                                     .filter(|&id| icon.condition(map.get(id)))
@@ -420,8 +348,8 @@ pub fn draw_map(
 
 pub fn update_planet_info(
     planet_q: Query<(Entity, &PlanetCmp)>,
-    mut icon_q: Query<(&mut Visibility, &mut Transform, &PlanetIcon)>,
-    mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<PlanetIcon>)>,
+    mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
+    mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<Icon>)>,
     children_q: Query<&Children>,
     map: Res<Map>,
     player: Res<Player>,
@@ -442,8 +370,8 @@ pub fn update_planet_info(
         for child in children_q.iter_descendants(planet_e) {
             if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
                 let visible = match icon {
-                    PlanetIcon::Attacked => true,
-                    PlanetIcon::Buildings | PlanetIcon::Fleet | PlanetIcon::Defenses => {
+                    Icon::Attacked => true,
+                    Icon::Buildings | Icon::Fleet | Icon::Defenses => {
                         selected || icon.condition(planet)
                     },
                     _ => {
@@ -453,7 +381,7 @@ pub fn update_planet_info(
                         let has_mission = player
                             .missions
                             .iter()
-                            .any(|m| m.objective == icon.objective() && m.destination == planet.id);
+                            .any(|m| m.objective == *icon && m.destination == planet.id);
 
                         let has_condition = selected && {
                             if let Some(id) = state.selected_planet {
@@ -472,7 +400,7 @@ pub fn update_planet_info(
                 };
 
                 *icon_v = if visible {
-                    icon_t.translation.y = Planet::SIZE * 0.35 - count as f32 * PlanetIcon::SIZE;
+                    icon_t.translation.y = Planet::SIZE * 0.35 - count as f32 * Icon::SIZE;
                     count += 1;
                     Visibility::Inherited
                 } else {

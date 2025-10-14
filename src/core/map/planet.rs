@@ -27,10 +27,10 @@ pub enum PlanetKind {
 impl PlanetKind {
     pub fn indices(self) -> Vec<usize> {
         match self {
-            PlanetKind::Desert => vec![1, 2, 4, 7, 8, 11, 12, 14, 15, 18, 19, 20],
-            PlanetKind::Gas => vec![6, 9, 10, 13, 17, 36, 42, 44],
-            PlanetKind::Ice => vec![0, 3, 5, 16, 21, 22, 25, 26, 27, 34, 35, 37, 39],
-            PlanetKind::Normal => vec![24, 31, 33, 51, 61],
+            PlanetKind::Desert => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
+            PlanetKind::Gas => vec![7, 10, 11, 14, 18, 37, 43, 45],
+            PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40],
+            PlanetKind::Normal => vec![25, 32, 34, 52, 62],
         }
     }
 }
@@ -131,7 +131,7 @@ impl Planet {
     }
 
     pub fn fleet_production(&self) -> usize {
-        self.buy.iter().filter_map(|u| u.is_ship().then_some(u.level())).sum()
+        self.buy.iter().filter_map(|u| u.is_ship().then_some(u.production())).sum()
     }
 
     pub fn max_fleet_production(&self) -> usize {
@@ -139,7 +139,7 @@ impl Planet {
     }
 
     pub fn battery_production(&self) -> usize {
-        self.buy.iter().filter_map(|u| u.is_defense().then_some(u.level())).sum()
+        self.buy.iter().filter_map(|u| u.is_defense().then_some(u.production())).sum()
     }
 
     pub fn max_battery_production(&self) -> usize {
@@ -152,5 +152,9 @@ impl Planet {
 
     pub fn max_missile_capacity(&self) -> usize {
         SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
+    }
+
+    pub fn distance(&self, other: &Planet) -> f32 {
+        self.position.distance(other.position)
     }
 }

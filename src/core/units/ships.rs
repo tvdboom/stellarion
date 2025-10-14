@@ -24,7 +24,7 @@ pub enum Ship {
 
 impl Ship {
     /// Minim level of the shipyard to build this ship
-    pub fn level(&self) -> usize {
+    pub fn production(&self) -> usize {
         match self {
             Ship::Probe => 1,
             Ship::ColonyShip => 2,
@@ -237,16 +237,16 @@ impl Combat for Ship {
 
     fn fuel_consumption(&self) -> usize {
         match self {
-            Ship::Probe => 1,
-            Ship::ColonyShip => 10,
-            Ship::LightFighter => 2,
-            Ship::HeavyFighter => 3,
-            Ship::Destroyer => 5,
-            Ship::Cruiser => 6,
-            Ship::Bomber => 7,
-            Ship::Battleship => 8,
-            Ship::Dreadnought => 9,
-            Ship::WarSun => 12,
+            Ship::Probe => 5,
+            Ship::ColonyShip => 50,
+            Ship::LightFighter => 10,
+            Ship::HeavyFighter => 15,
+            Ship::Destroyer => 15,
+            Ship::Cruiser => 18,
+            Ship::Bomber => 21,
+            Ship::Battleship => 24,
+            Ship::Dreadnought => 27,
+            Ship::WarSun => 36,
         }
     }
 }
