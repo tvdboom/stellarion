@@ -9,7 +9,6 @@ use std::collections::HashMap;
 
 pub mod buildings;
 pub mod defense;
-pub mod missions;
 pub mod ships;
 
 pub trait Description {

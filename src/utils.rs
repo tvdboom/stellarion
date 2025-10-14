@@ -31,7 +31,6 @@ pub trait NameFromEnum {
     fn to_name(&self) -> String;
     fn to_lowername(&self) -> String;
     fn to_title(&self) -> String;
-    fn to_snake(&self) -> String;
 }
 
 impl<T: Debug> NameFromEnum for T {
@@ -53,12 +52,5 @@ impl<T: Debug> NameFromEnum for T {
         name.replace_range(0..1, &name[0..1].to_uppercase());
 
         name
-    }
-
-    fn to_snake(&self) -> String {
-        let re = Regex::new(r"([a-z])([A-Z])").unwrap();
-
-        let text = extract_variant_name(format!("{:?}", self));
-        re.replace_all(&text, "${1}_${2}").to_lowercase()
     }
 }

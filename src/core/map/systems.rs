@@ -1,16 +1,19 @@
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
-use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
+use crate::core::constants::{
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, MISSION_Z, PLANET_Z, TITLE_TEXT_SIZE,
+};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::cursor;
+use crate::core::missions::{Mission, MissionId, SendMissionMsg};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::turns::NextTurnMsg;
 use crate::core::ui::systems::UiState;
-use crate::core::units::missions::Mission;
+use crate::core::units::Unit;
 use crate::utils::NameFromEnum;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
@@ -24,6 +27,19 @@ pub struct PlanetCmp {
 
 impl PlanetCmp {
     pub fn new(id: PlanetId) -> Self {
+        Self {
+            id,
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct MissionCmp {
+    pub id: MissionId,
+}
+
+impl MissionCmp {
+    pub fn new(id: MissionId) -> Self {
         Self {
             id,
         }
@@ -97,7 +113,7 @@ pub fn draw_map(
             },
         )
         .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
-            state.selected_planet = None;
+            state.planet_selected = None;
             state.mission = false;
         });
 
@@ -130,10 +146,10 @@ pub fn draw_map(
             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
             .observe(cursor::<Out>(SystemCursorIcon::Default))
             .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                state.hovered_planet = Some(planet_id);
+                state.planet_hover = Some(planet_id);
             })
             .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                state.hovered_planet = None;
+                state.planet_hover = None;
             })
             .observe(
                 move |event: On<Pointer<Click>>,
@@ -143,14 +159,14 @@ pub fn draw_map(
                     if event.button == PointerButton::Primary {
                         // Only owned planets can be selected
                         if owner == Some(player.id) {
-                            state.selected_planet = Some(planet_id);
+                            state.planet_selected = Some(planet_id);
                             state.to_selected = true;
                             state.mission_info.origin = planet_id;
                         }
                     } else {
                         state.mission = true;
                         state.mission_info.origin = state
-                            .selected_planet
+                            .planet_selected
                             .filter(|&p| map.get(p).owner == Some(player.id))
                             .unwrap_or(player.home_planet);
                         state.mission_info.destination = planet_id;
@@ -195,10 +211,10 @@ pub fn draw_map(
                             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                             .observe(cursor::<Out>(SystemCursorIcon::Default))
                             .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                                state.hovered_planet = Some(planet_id);
+                                state.planet_hover = Some(planet_id);
                             })
                             .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                                state.hovered_planet = None;
+                                state.planet_hover = None;
                             })
                             .observe(
                                 move |event: On<Pointer<Click>>,
@@ -207,7 +223,7 @@ pub fn draw_map(
                                       player: Res<Player>| {
                                     if event.button == PointerButton::Primary {
                                         if icon.on_units() {
-                                            state.selected_planet = Some(planet_id);
+                                            state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             state.shop = icon.shop();
                                         } else {
@@ -218,7 +234,7 @@ pub fn draw_map(
                                             state.mission_info = Mission {
                                                 objective: icon,
                                                 origin: state
-                                                    .selected_planet
+                                                    .planet_selected
                                                     .filter(|&id| icon.condition(map.get(id)))
                                                     .unwrap_or(
                                                         player
@@ -359,11 +375,8 @@ pub fn update_planet_info(
     for (planet_e, planet_c) in &planet_q {
         let planet = map.get(planet_c.id);
 
-        let selected = state
-            .hovered_planet
-            .or(state.selected_planet)
-            .map(|id| id == planet.id)
-            .unwrap_or(false);
+        let selected =
+            state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
 
         // Show/hide planet icons
         let mut count = 0;
@@ -384,7 +397,7 @@ pub fn update_planet_info(
                             .any(|m| m.objective == *icon && m.destination == planet.id);
 
                         let has_condition = selected && {
-                            if let Some(id) = state.selected_planet {
+                            if let Some(id) = state.planet_selected {
                                 let p = map.get(id);
                                 p.id != planet.id && icon.condition(p)
                             } else {
@@ -417,5 +430,82 @@ pub fn update_planet_info(
                 };
             }
         }
+    }
+}
+
+pub fn send_mission_message(
+    mut commands: Commands,
+    mut send_mission: MessageReader<SendMissionMsg>,
+    mut map: ResMut<Map>,
+    mut player: ResMut<Player>,
+    assets: Local<WorldAssets>,
+) {
+    for SendMissionMsg {
+        mission,
+    } in send_mission.read()
+    {
+        player.resources.deuterium -= mission.fuel_consumption(&map);
+
+        let origin = map.get_mut(mission.origin);
+        origin.fleet.iter_mut().for_each(|(s, c)| {
+            if let Some(n) = mission.army.get(&Unit::Ship(s.clone())) {
+                *c -= n;
+            }
+        });
+        origin.battery.iter_mut().for_each(|(d, c)| {
+            if let Some(n) = mission.army.get(&Unit::Defense(d.clone())) {
+                *c -= n;
+            }
+        });
+
+        player.missions.push(mission.clone());
+
+        let origin = map.get(mission.origin);
+        let destination = map.get(mission.destination);
+
+        let direction = -origin.position + destination.position;
+        let angle = direction.y.atan2(direction.x);
+
+        let mission_id = mission.id;
+        commands
+            .spawn((
+                Sprite {
+                    image: assets.image("mission"),
+                    custom_size: Some(Vec2::splat(30.)),
+                    ..default()
+                },
+                Transform {
+                    translation: mission.position.extend(MISSION_Z),
+                    rotation: Quat::from_rotation_z(angle),
+                    ..default()
+                },
+                Pickable::default(),
+                MissionCmp::new(mission_id),
+                MapCmp,
+            ))
+            .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+            .observe(cursor::<Out>(SystemCursorIcon::Default))
+            .observe(
+                move |event: On<Pointer<Over>>,
+                      mut state: ResMut<UiState>,
+                      mut mission_q: Query<&mut Sprite, With<MissionCmp>>,
+                      assets: Local<WorldAssets>| {
+                    state.mission_hover = Some(mission_id);
+                    if let Ok(mut sprite) = mission_q.get_mut(event.entity) {
+                        sprite.image = assets.image("mission hover");
+                    }
+                },
+            )
+            .observe(
+                |event: On<Pointer<Out>>,
+                 mut state: ResMut<UiState>,
+                 mut mission_q: Query<&mut Sprite, With<MissionCmp>>,
+                 assets: Local<WorldAssets>| {
+                    state.mission_hover = None;
+                    if let Ok(mut sprite) = mission_q.get_mut(event.entity) {
+                        sprite.image = assets.image("mission");
+                    }
+                },
+            );
     }
 }

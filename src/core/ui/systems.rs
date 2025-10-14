@@ -5,6 +5,7 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::PlanetCmp;
+use crate::core::missions::{Mission, MissionId, SendMissionMsg};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -13,7 +14,6 @@ use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::{CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
-use crate::core::units::missions::Mission;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Combat, Description, Price, Unit};
 use crate::utils::NameFromEnum;
@@ -42,12 +42,13 @@ pub enum Shop {
 
 #[derive(Resource, Default)]
 pub struct UiState {
-    pub hovered_planet: Option<PlanetId>,
-    pub selected_planet: Option<PlanetId>,
+    pub planet_hover: Option<PlanetId>,
+    pub planet_selected: Option<PlanetId>,
     pub to_selected: bool,
     pub shop: Shop,
     pub mission: bool,
     pub mission_info: Mission,
+    pub mission_hover: Option<MissionId>,
     pub end_turn: bool,
 }
 
@@ -196,8 +197,9 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
 
 fn draw_mission(
     ui: &mut Ui,
+    send_mission: &mut MessageWriter<SendMissionMsg>,
     state: &mut UiState,
-    map: &Map,
+    map: &mut Map,
     player: &mut Player,
     units: &[Vec<Unit>; 3],
     is_hovered: bool,
@@ -206,29 +208,15 @@ fn draw_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
+    state.mission_info.position = origin.position;
+
     let army = if state.mission_info.objective == Icon::MissileStrike {
         &vec![Unit::Defense(Defense::InterplanetaryMissile)]
     } else {
         &units[1]
     };
 
-    let distance = origin.distance(&destination) / Planet::SIZE;
-    let speed = state
-        .mission_info
-        .army
-        .iter()
-        .map(|(u, _)| u.speed())
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap_or(0.);
-    let duration = (distance / speed).ceil();
-    let fuel = state
-        .mission_info
-        .army
-        .iter()
-        .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
-        .sum::<f32>();
-
-    ui.add_space(50.);
+    ui.add_space(45.);
 
     ui.horizontal(|ui| {
         ui.add_space(60.);
@@ -237,9 +225,9 @@ fn draw_mission(
             ui, |ui| {
                 let response = ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.]).interact(Sense::hover());
                 if response.hovered() {
-                    state.hovered_planet = Some(origin.id);
+                    state.planet_hover = Some(origin.id);
                 } else if is_hovered {
-                    state.hovered_planet = None;
+                    state.planet_hover = None;
                 }
 
                 ComboBox::from_id_salt("origin")
@@ -295,9 +283,9 @@ fn draw_mission(
 
                     let response = ui.add_image(images.get(format!("planet{}", destination.image)), [70., 70.]).interact(Sense::hover());
                     if response.hovered() {
-                        state.hovered_planet = Some(destination.id);
-                    } else if is_hovered && state.hovered_planet.is_none() {
-                        state.hovered_planet = None;
+                        state.planet_hover = Some(destination.id);
+                    } else if is_hovered && state.planet_hover.is_none() {
+                        state.planet_hover = None;
                     }
             },
         );
@@ -382,7 +370,7 @@ fn draw_mission(
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.;
-                    ui.spacing_mut().button_padding.x = 2.;
+                    ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
 
                     let on_hover = |ui: &mut Ui, icon: &Icon, msg: bool| {
                         ui.horizontal(|ui| {
@@ -411,9 +399,12 @@ fn draw_mission(
                     for icon in Icon::objectives(player.controls(destination)) {
                         ui.add_enabled_ui(icon.condition(origin), |ui| {
                             let button = ui
-                                .add_image_button(
-                                    images.get(icon.to_lowername().as_str()),
-                                    [40., 40.],
+                                .add(
+                                    egui::Button::image(SizedTexture::new(
+                                        images.get(icon.to_lowername().as_str()),
+                                        [40., 40.],
+                                    ))
+                                    .corner_radius(5.),
                                 )
                                 .on_hover_ui(|ui| on_hover(ui, &icon, false))
                                 .on_disabled_hover_ui(|ui| on_hover(ui, &icon, true))
@@ -447,56 +438,83 @@ fn draw_mission(
                     }
                 });
 
-                ui.add_space(20.);
+                ui.add_space(5.);
 
+                let speed = state.mission_info.speed();
+                let distance = state.mission_info.distance(map);
+                let duration = state.mission_info.duration(map);
+                let fuel = state.mission_info.fuel_consumption(map);
+
+                ui.small(format!("Objective: {}", state.mission_info.objective.to_name()));
                 ui.small(format!("Distance: {distance:.1} AU"));
-                ui.small(format!("Speed: {speed:.1} AU / turn"));
                 ui.small(format!(
-                    "Duration: {duration} turn{}",
-                    if duration > 1. {
-                        "s"
+                    "Speed: {}",
+                    if speed == 0. {
+                        "---".to_string()
                     } else {
-                        ""
+                        format!("{speed} AU/turn")
                     }
                 ));
-                ui.small(format!("Fuel consumption: {}", fuel.ceil()));
+                ui.small(format!(
+                    "Duration: {}",
+                    if duration == 0 {
+                        "---".to_string()
+                    } else {
+                        format!("{duration} turns")
+                    }
+                ));
+                ui.small(format!("Fuel consumption: {fuel}"));
 
-                ui.add_space(30.);
+                ui.add_space(5.);
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     ui.add_space(40.);
 
-                    let (rect, mut response) =
-                        ui.allocate_exact_size([180., 50.].into(), Sense::click());
+                    let army_check = state.mission_info.army.values().sum::<usize>() > 0;
+                    let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
+                    ui.add_enabled_ui(army_check && fuel_check, |ui| {
+                        let (rect, mut response) =
+                            ui.allocate_exact_size([180., 50.].into(), Sense::click());
 
-                    response = response.on_hover_cursor(CursorIcon::PointingHand);
+                        response = response
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_disabled_hover_ui(|ui| {
+                                if !army_check {
+                                    ui.small("No ships selected for the mission.");
+                                } else {
+                                    ui.small("Not enough fuel (deuterium) for the mission.");
+                                }
+                            });
 
-                    let image = if response.hovered() && !response.is_pointer_button_down_on() {
-                        images.get("button hover")
-                    } else {
-                        images.get("button")
-                    };
+                        let image = if response.hovered() && !response.is_pointer_button_down_on() {
+                            images.get("button hover")
+                        } else {
+                            images.get("button")
+                        };
 
-                    ui.painter().image(
-                        image,
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
-                        Color32::WHITE,
-                    );
+                        ui.painter().image(
+                            image,
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
+                            Color32::WHITE,
+                        );
 
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        "Send mission",
-                        TextStyle::Button.resolve(ui.style()),
-                        Color32::WHITE,
-                    );
+                        ui.painter().text(
+                            rect.center(),
+                            Align2::CENTER_CENTER,
+                            "Send mission",
+                            TextStyle::Button.resolve(ui.style()),
+                            Color32::WHITE,
+                        );
 
-                    if response.clicked() {
-                        player.missions.push(state.mission_info.clone());
-                        state.selected_planet = None;
-                        state.mission = false;
-                    }
+                        if response.clicked() {
+                            send_mission
+                                .write(SendMissionMsg::new(Mission::from(&state.mission_info)));
+                            state.planet_selected = None;
+                            state.mission = false;
+                            state.mission_info = Mission::default();
+                        }
+                    });
                 });
             });
         });
@@ -521,6 +539,7 @@ fn draw_unit_hover(
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.;
+
                 for resource in ResourceName::iter() {
                     let price = unit.price().get(&resource);
                     ui.add_image(images.get(resource.to_lowername().as_str()), [50., 35.]);
@@ -697,7 +716,7 @@ fn draw_shop(
                 ui.add_enabled_ui(
                     resources_check && level_check && building_check && production_check,
                     |ui| {
-                        ui.spacing_mut().button_padding.x = 2.;
+                        ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
 
                         let mut response = ui.add_image_button(
                             images.get(unit.to_lowername().as_str()),
@@ -835,6 +854,7 @@ pub fn draw_ui(
     mut contexts: EguiContexts,
     planet_q: Query<(&Transform, &PlanetCmp)>,
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut send_mission: MessageWriter<SendMissionMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut state: ResMut<UiState>,
@@ -861,7 +881,7 @@ pub fn draw_ui(
         |ui| draw_resources(ui, &settings, &map, &player, &images),
     );
 
-    if let Some(id) = state.hovered_planet.or(state.selected_planet) {
+    if let Some(id) = state.planet_hover.or(state.planet_selected) {
         let (planet, planet_pos) = planet_q
             .iter()
             .find_map(|(t, p)| {
@@ -905,11 +925,22 @@ pub fn draw_ui(
             ((width - window_w) * 0.5, (height - window_h) * 0.5),
             (window_w, window_h),
             &images,
-            |ui| draw_mission(ui, &mut state, &map, &mut player, &units, is_hovered, &images),
+            |ui| {
+                draw_mission(
+                    ui,
+                    &mut send_mission,
+                    &mut state,
+                    &mut map,
+                    &mut player,
+                    &units,
+                    is_hovered,
+                    &images,
+                )
+            },
         );
-    } else if let Some(id) = state.selected_planet {
+    } else if let Some(id) = state.planet_selected {
         // Hide shop if hovering another planet
-        if !state.hovered_planet.is_some_and(|planet_id| planet_id != id) {
+        if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
             let planet = map.get_mut(id);
 
             if player.controls(&planet) {

@@ -39,7 +39,7 @@ bevy = { version = "0.17.2", default-features = false, features = [
     "webgl2",
     "x11",
 ]}
-bevy_egui = { version = "0.37.1", features = ["immutable_ctx"] }
+bevy_egui = { version = "0.38.0", features = ["immutable_ctx"] }
 bevy_kira_audio = "0.24.0"
 bevy_renet = "3.0.0"
 bimap = "0.6.3"

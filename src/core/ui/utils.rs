@@ -1,6 +1,6 @@
 use bevy::prelude::Resource;
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{Image, ImageButton, Response, TextureId, Ui, Vec2};
+use bevy_egui::egui::{Button, Image, Response, TextureId, Ui, Vec2};
 use std::collections::HashMap;
 
 #[derive(Resource, Default)]
@@ -32,6 +32,6 @@ impl CustomUi for Ui {
         texture: impl Into<TextureId>,
         size: impl Into<Vec2>,
     ) -> Response {
-        self.add(ImageButton::new(SizedTexture::new(texture, size)))
+        self.add(Button::image(SizedTexture::new(texture, size)))
     }
 }

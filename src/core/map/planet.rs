@@ -99,6 +99,7 @@ impl Planet {
         self.owner = Some(client_id);
         self.complex =
             HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);
+        self.fleet = HashMap::from([(crate::core::units::ships::Ship::LightFighter, 5)]);
     }
 
     pub fn get(&self, unit: &Unit) -> usize {
@@ -152,9 +153,5 @@ impl Planet {
 
     pub fn max_missile_capacity(&self) -> usize {
         SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
-    }
-
-    pub fn distance(&self, other: &Planet) -> f32 {
-        self.position.distance(other.position)
     }
 }

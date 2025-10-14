@@ -79,7 +79,7 @@ pub fn move_camera(
 
     // Move camera on top of selected planet
     if state.to_selected {
-        if let Some(planet_id) = state.selected_planet {
+        if let Some(planet_id) = state.planet_selected {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
                 position = position.lerp(pos.translation.truncate(), LERP_FACTOR);
             }

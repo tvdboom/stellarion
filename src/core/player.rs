@@ -1,6 +1,6 @@
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::missions::Mission;
 use crate::core::resources::Resources;
-use crate::core::units::missions::Mission;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};

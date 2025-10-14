@@ -5,6 +5,7 @@ mod combat;
 pub mod constants;
 mod map;
 mod menu;
+pub mod missions;
 mod network;
 mod persistence;
 mod player;
@@ -20,9 +21,10 @@ mod utils;
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::map::map::MapCmp;
-use crate::core::map::systems::{draw_map, update_planet_info};
+use crate::core::map::systems::{draw_map, send_mission_message, update_planet_info};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
+use crate::core::missions::SendMissionMsg;
 use crate::core::network::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::persistence::{load_game, save_game};
@@ -59,6 +61,7 @@ impl Plugin for GamePlugin {
             .add_message::<ServerSendMessage>()
             .add_message::<ClientSendMessage>()
             .add_message::<NextTurnMsg>()
+            .add_message::<SendMissionMsg>()
             // Resources
             .init_resource::<Ip>()
             .init_resource::<Settings>()
@@ -108,7 +111,10 @@ impl Plugin for GamePlugin {
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map))
-            .add_systems(Update, (next_turn, update_planet_info).in_set(InGameSet))
+            .add_systems(
+                Update,
+                (next_turn, update_planet_info, send_mission_message).in_set(InGameSet),
+            )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
             .add_systems(OnExit(GameState::InGameMenu), despawn::<MenuCmp>)
