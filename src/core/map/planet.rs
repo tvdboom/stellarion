@@ -99,7 +99,13 @@ impl Planet {
         self.owner = Some(client_id);
         self.complex =
             HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);
-        self.fleet = HashMap::from([(crate::core::units::ships::Ship::LightFighter, 5)]);
+        self.fleet = HashMap::from([
+            (crate::core::units::ships::Ship::LightFighter, 15),
+            (crate::core::units::ships::Ship::ColonyShip, 5),
+            (crate::core::units::ships::Ship::Cruiser, 11),
+        ]);
+        self.battery =
+            HashMap::from([(crate::core::units::defense::Defense::InterplanetaryMissile, 11)]);
     }
 
     pub fn get(&self, unit: &Unit) -> usize {

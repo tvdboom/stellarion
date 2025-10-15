@@ -76,6 +76,11 @@ pub fn check_keys(
         state.mission = !state.mission;
     }
 
+    // Go back to home planet
+    if keyboard.just_pressed(KeyCode::Space) {
+        state.planet_selected = Some(player.home_planet);
+    }
+
     // Move between shop tabs
     if state.planet_selected.is_some() {
         if keyboard.just_pressed(KeyCode::Tab) {

@@ -34,8 +34,9 @@ dies, you lose the game.
 ### Key bindings
 
 - `escape`: Enter/exit the in-game menu.
-- `w-a-s-d`: Move the camera.
+- `w-a-s-d`: Move the map.
 - `scroll`: Zoom in/out.
+- `space`: Center the map on your home planet.
 - `tab`: Cycle through a planet's shop.
 - `Q`: Toggle the audio settings.
 - `I`: Show/hide all planet information.

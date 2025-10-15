@@ -1,8 +1,9 @@
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::missions::Mission;
+use crate::core::missions::{Mission, MissionId};
 use crate::core::resources::Resources;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ impl Player {
     pub fn planets<'a>(&self, planets: &'a Vec<Planet>) -> Vec<&'a Planet> {
         let (home, others): (Vec<_>, Vec<_>) = planets
             .iter()
+            .sorted_by(|a, b| a.name.cmp(&b.name))
             .filter(|p| p.owner == Some(self.id))
             .partition(|p| p.id == self.home_planet);
 
@@ -53,5 +55,9 @@ impl Player {
 
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
         planets.iter().filter(|p| p.owner == Some(self.id)).map(|p| p.resource_production()).sum()
+    }
+
+    pub fn get_mission(&self, mission_id: MissionId) -> &Mission {
+        self.missions.iter().find(|m| m.id == mission_id).expect("Mission not found.")
     }
 }

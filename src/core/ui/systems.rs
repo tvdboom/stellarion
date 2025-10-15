@@ -112,7 +112,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
         for resource in ResourceName::iter() {
             let response = ui
                 .scope(|ui| {
-                    ui.add_image(images.get(resource.to_lowername().as_str()), [65., 40.]);
+                    ui.add_image(images.get(resource.to_lowername()), [65., 40.]);
                     ui.heading(player.resources.get(&resource).to_string());
                     ui.add_space(35.);
                 })
@@ -122,7 +122,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
                 response.on_hover_ui(|ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.add_image(images.get(resource.to_lowername().as_str()), [130., 90.]);
+                            ui.add_image(images.get(resource.to_lowername()), [130., 90.]);
                         });
                         ui.vertical(|ui| {
                             ui.label(resource.to_name());
@@ -182,7 +182,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
             ui.vertical(|ui| {
                 for unit in units {
                     ui.horizontal(|ui| {
-                        ui.add_image(images.get(unit.to_lowername().as_str()), [50., 50.]);
+                        ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
                         ui.label(planet.get(&unit).to_string());
                     })
                     .response
@@ -198,6 +198,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
 fn draw_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
+    settings: &Settings,
     state: &mut UiState,
     map: &mut Map,
     player: &mut Player,
@@ -242,7 +243,7 @@ fn draw_mission(
                         }
                     }).response.on_hover_cursor(CursorIcon::PointingHand);
 
-                    let (rect, mut response) = ui.allocate_exact_size([30., 30.].into(), Sense::click());
+                    let (rect, mut response) = ui.allocate_exact_size([50., 50.].into(), Sense::click());
 
                     response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_ui(|ui| {
                         ui.small("Click to select all units on the origin planet. Right-click to unselect all.");
@@ -272,7 +273,7 @@ fn draw_mission(
                     ComboBox::from_id_salt("destination")
                         .selected_text(&map.get(state.mission_info.destination).name)
                         .show_ui(ui, |ui| {
-                            for planet in &map.planets {
+                            for planet in map.planets.iter().sorted_by(|a, b| a.name.cmp(&b.name)) {
                                 ui.selectable_value(
                                     &mut state.mission_info.destination,
                                     planet.id,
@@ -320,7 +321,7 @@ fn draw_mission(
 
                                         let response = ui
                                             .add_image(
-                                                images.get(unit.to_lowername().as_str()),
+                                                images.get(unit.to_lowername()),
                                                 [55., 55.],
                                             )
                                             .interact(Sense::click())
@@ -401,7 +402,7 @@ fn draw_mission(
                             let button = ui
                                 .add(
                                     egui::Button::image(SizedTexture::new(
-                                        images.get(icon.to_lowername().as_str()),
+                                        images.get(icon.to_lowername()),
                                         [40., 40.],
                                     ))
                                     .corner_radius(5.),
@@ -445,7 +446,17 @@ fn draw_mission(
                 let duration = state.mission_info.duration(map);
                 let fuel = state.mission_info.fuel_consumption(map);
 
-                ui.small(format!("Objective: {}", state.mission_info.objective.to_name()));
+                ui.horizontal(|ui| {
+                    ui.small("Objective:");
+
+                    ui.spacing_mut().item_spacing.x = 4.;
+                    ui.add_image(
+                        images.get(state.mission_info.objective.to_lowername()),
+                        [20., 20.],
+                    );
+                    ui.small(state.mission_info.objective.to_name());
+                });
+
                 ui.small(format!("Distance: {distance:.1} AU"));
                 ui.small(format!(
                     "Speed: {}",
@@ -456,11 +467,11 @@ fn draw_mission(
                     }
                 ));
                 ui.small(format!(
-                    "Duration: {}",
+                    "Arrival: {}",
                     if duration == 0 {
                         "---".to_string()
                     } else {
-                        format!("{duration} turns")
+                        format!("Turn {} (+{})", settings.turn + duration, duration)
                     }
                 ));
                 ui.small(format!("Fuel consumption: {fuel}"));
@@ -472,7 +483,27 @@ fn draw_mission(
 
                     let army_check = state.mission_info.army.values().sum::<usize>() > 0;
                     let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
-                    ui.add_enabled_ui(army_check && fuel_check, |ui| {
+                    let objective_check = match state.mission_info.objective {
+                        Icon::Deploy => !state.mission_info.army.is_empty(),
+                        Icon::Colonize => state.mission_info.get(&Unit::Ship(Ship::ColonyShip)) > 0,
+                        Icon::Attack => state
+                            .mission_info
+                            .army
+                            .iter()
+                            .any(|(u, n)| *n > 0 && matches!(u, Unit::Ship(s) if s.is_combat())),
+                        Icon::Spy => {
+                            state.mission_info.get(&Unit::Ship(Ship::Probe))
+                                == state.mission_info.total()
+                        },
+                        Icon::MissileStrike => {
+                            state.mission_info.get(&Unit::Defense(Defense::InterplanetaryMissile))
+                                == state.mission_info.total()
+                        },
+                        Icon::Destroy => state.mission_info.get(&Unit::Ship(Ship::WarSun)) > 0,
+                        _ => unreachable!(),
+                    };
+
+                    ui.add_enabled_ui(army_check && fuel_check && objective_check, |ui| {
                         let (rect, mut response) =
                             ui.allocate_exact_size([180., 50.].into(), Sense::click());
 
@@ -481,8 +512,10 @@ fn draw_mission(
                             .on_disabled_hover_ui(|ui| {
                                 if !army_check {
                                     ui.small("No ships selected for the mission.");
-                                } else {
+                                } else if !fuel_check {
                                     ui.small("Not enough fuel (deuterium) for the mission.");
+                                } else {
+                                    ui.small("The ship requirements for the mission objective is not met.");
                                 }
                             });
 
@@ -521,6 +554,100 @@ fn draw_mission(
     }
 }
 
+fn draw_mission_fleet_hover(
+    ui: &mut Ui,
+    mission: &Mission,
+    units: &[Vec<Unit>; 3],
+    images: &ImageIds,
+) {
+    let army = if mission.objective == Icon::MissileStrike {
+        &vec![Unit::Defense(Defense::InterplanetaryMissile)]
+    } else {
+        &units[1]
+    };
+
+    ui.add_space(17.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space(30.);
+        ui.add_image(images.get("mission"), [25., 25.]);
+        ui.small("Fleet");
+    });
+
+    ui.add_space(10.);
+
+    ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
+    for unit in army.iter() {
+        ui.horizontal(|ui| {
+            ui.add_space(30.);
+            ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+            ui.label(mission.get(unit).to_string());
+        })
+        .response
+        .on_hover_ui(|ui| {
+            ui.small(unit.to_name());
+        });
+    }
+}
+
+fn draw_mission_info_hover(
+    ui: &mut Ui,
+    mission: &Mission,
+    settings: &Settings,
+    map: &Map,
+    images: &ImageIds,
+) {
+    let origin = map.get(mission.origin);
+    let destination = map.get(mission.destination);
+
+    ui.add_space(40.);
+
+    ui.spacing_mut().item_spacing.y = 10.;
+
+    ui.horizontal(|ui| {
+        ui.add_space(25.);
+        ui.small("Origin:");
+
+        ui.spacing_mut().item_spacing.x = 4.;
+        ui.add_image(images.get(format!("planet{}", origin.image)), [25., 25.]);
+        ui.small(origin.name.to_name());
+    });
+
+    ui.horizontal(|ui| {
+        ui.add_space(25.);
+        ui.small("Destination:");
+
+        ui.spacing_mut().item_spacing.x = 4.;
+        ui.add_image(images.get(format!("planet{}", destination.image)), [25., 25.]);
+        ui.small(destination.name.to_name());
+    });
+
+    ui.add(Separator::default().shrink(20.));
+
+    ui.horizontal(|ui| {
+        ui.add_space(25.);
+        ui.small("Objective:");
+
+        ui.spacing_mut().item_spacing.x = 4.;
+        ui.add_image(images.get(mission.objective.to_lowername()), [20., 20.]);
+        ui.small(mission.objective.to_name());
+    });
+
+    ui.add(Separator::default().shrink(20.));
+
+    ui.horizontal(|ui| {
+        ui.add_space(25.);
+        ui.vertical(|ui| {
+            ui.small(format!("Distance: {:.1} AU", mission.distance(map)));
+            ui.small(format!("Speed: {} AU/turn", mission.speed()));
+
+            let duration = mission.duration(map);
+            ui.small(format!("Arrival: Turn {} (+{})", settings.turn + duration, duration));
+        });
+    });
+}
+
 fn draw_unit_hover(
     ui: &mut Ui,
     unit: &Unit,
@@ -532,7 +659,7 @@ fn draw_unit_hover(
         ui.set_width(700.);
 
         ui.vertical(|ui| {
-            ui.add_image(images.get(unit.to_lowername().as_str()), [200., 200.]);
+            ui.add_image(images.get(unit.to_lowername()), [200., 200.]);
         });
         ui.vertical(|ui| {
             ui.label(unit.to_name());
@@ -542,7 +669,7 @@ fn draw_unit_hover(
 
                 for resource in ResourceName::iter() {
                     let price = unit.price().get(&resource);
-                    ui.add_image(images.get(resource.to_lowername().as_str()), [50., 35.]);
+                    ui.add_image(images.get(resource.to_lowername()), [50., 35.]);
                     ui.label(price.to_string());
                     ui.add_space(30.);
                 }
@@ -568,7 +695,7 @@ fn draw_unit_hover(
                 ui.set_width(500.);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.add_image(images.get(stat.to_lowername().as_str()), [130., 90.]);
+                        ui.add_image(images.get(stat.to_lowername()), [130., 90.]);
                     });
                     ui.vertical(|ui| {
                         ui.label(stat.to_name());
@@ -595,10 +722,7 @@ fn draw_unit_hover(
                                         ui.set_width(150.);
                                         ui.style_mut().interaction.selectable_labels = true;
 
-                                        ui.add_image(
-                                            images.get(stat.to_lowername().as_str()),
-                                            [70., 45.],
-                                        );
+                                        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
                                         ui.label(unit.get(&stat))
                                             .on_hover_cursor(CursorIcon::Default);
                                     })
@@ -625,10 +749,7 @@ fn draw_unit_hover(
                                 ui.set_width(115.);
                                 ui.spacing_mut().item_spacing.x = 8.;
 
-                                ui.add_image(
-                                    images.get(rf_unit.to_lowername().as_str()),
-                                    [45., 45.],
-                                );
+                                ui.add_image(images.get(rf_unit.to_lowername()), [45., 45.]);
                                 ui.small(format!("{}%", rf));
                             })
                             .response
@@ -667,7 +788,7 @@ fn draw_shop(
 
     ui.horizontal(|ui| {
         ui.add_space(45.);
-        ui.add_image(images.get(state.shop.to_lowername().as_str()), [20., 20.]);
+        ui.add_image(images.get(state.shop.to_lowername()), [20., 20.]);
         ui.small(state.shop.to_name());
 
         if let Some((current, max)) = production {
@@ -718,10 +839,8 @@ fn draw_shop(
                     |ui| {
                         ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
 
-                        let mut response = ui.add_image_button(
-                            images.get(unit.to_lowername().as_str()),
-                            [130., 130.],
-                        );
+                        let mut response =
+                            ui.add_image_button(images.get(unit.to_lowername()), [130., 130.]);
 
                         if ui.is_enabled() {
                             response = response.on_hover_cursor(CursorIcon::PointingHand);
@@ -881,7 +1000,8 @@ pub fn draw_ui(
         |ui| draw_resources(ui, &settings, &map, &player, &images),
     );
 
-    if let Some(id) = state.planet_hover.or(state.planet_selected) {
+    // Store whether the panel is being shown on the right side of the screen
+    let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
         let (planet, planet_pos) = planet_q
             .iter()
             .find_map(|(t, p)| {
@@ -895,23 +1015,73 @@ pub fn draw_ui(
         if player.controls(planet) {
             let (window_w, window_h) = (320., 630.);
 
+            let right_side = planet_pos.x < width * 0.5;
+
             draw_panel(
                 &mut contexts,
                 "overview",
                 "panel",
                 (
-                    if planet_pos.x < width * 0.5 {
+                    if right_side {
                         width * 0.998 - window_w
                     } else {
-                        width * 0.01
+                        width * 0.002
                     },
-                    height * 0.2,
+                    height * 0.5 - window_h * 0.5,
                 ),
                 (window_w, window_h),
                 &images,
                 |ui| draw_overview(ui, planet, &units, &images),
             );
+
+            right_side
+        } else {
+            false
         }
+    } else {
+        false
+    };
+
+    if let Some(mission_id) = state.mission_hover {
+        let mission = player.get_mission(mission_id);
+
+        let (window_w, window_h) = (140., 630.);
+
+        draw_panel(
+            &mut contexts,
+            "mission hover fleet",
+            "panel",
+            (
+                if !right_side {
+                    width * 0.998 - window_w
+                } else {
+                    width * 0.002
+                },
+                height * 0.5 - window_h * 0.5,
+            ),
+            (window_w, window_h),
+            &images,
+            |ui| draw_mission_fleet_hover(ui, mission, &units, &images),
+        );
+
+        let (window_w2, window_h2) = (270., 280.);
+
+        draw_panel(
+            &mut contexts,
+            "mission hover info",
+            "panel",
+            (
+                if !right_side {
+                    width * 0.998 - window_w - window_w2 - 1.
+                } else {
+                    width * 0.002 + window_w + 1.
+                },
+                height * 0.5 - window_h * 0.5 + 27.,
+            ),
+            (window_w2, window_h2),
+            &images,
+            |ui| draw_mission_info_hover(ui, mission, &settings, &map, &images),
+        );
     }
 
     if state.mission {
@@ -929,6 +1099,7 @@ pub fn draw_ui(
                 draw_mission(
                     ui,
                     &mut send_mission,
+                    &settings,
                     &mut state,
                     &mut map,
                     &mut player,
