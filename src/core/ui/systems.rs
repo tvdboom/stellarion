@@ -211,6 +211,12 @@ fn draw_mission(
 
     state.mission_info.position = origin.position;
 
+    if origin.owner == destination.owner {
+        state.mission_info.objective = Icon::Deploy;
+    } else if state.mission_info.objective == Icon::Deploy {
+        state.mission_info.objective = Icon::default();
+    }
+
     let army = if state.mission_info.objective == Icon::MissileStrike {
         &vec![Unit::Defense(Defense::InterplanetaryMissile)]
     } else {

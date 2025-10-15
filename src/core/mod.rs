@@ -24,7 +24,7 @@ use crate::core::map::map::MapCmp;
 use crate::core::map::systems::{draw_map, update_planet_info};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
-use crate::core::missions::{update_mission_hover, SendMissionMsg};
+use crate::core::missions::{update_mission, SendMissionMsg};
 use crate::core::network::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::persistence::{load_game, save_game};
@@ -114,7 +114,7 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map))
             .add_systems(
                 Update,
-                (next_turn, update_planet_info, send_mission_message, update_mission_hover)
+                (next_turn, update_planet_info, send_mission_message, update_mission)
                     .in_set(InGameSet),
             )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))

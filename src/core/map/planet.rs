@@ -116,7 +116,8 @@ impl Planet {
         }
     }
 
-    /// Produce the units bought during the turn
+    /// Resources and production ===================================== >>
+
     pub fn produce(&mut self) {
         for unit in self.buy.drain(..) {
             match unit {
@@ -159,5 +160,22 @@ impl Planet {
 
     pub fn max_missile_capacity(&self) -> usize {
         SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
+    }
+
+    /// Combat and missions ========================================== >>
+
+    pub fn has_army(&self) -> bool {
+        !self.fleet.is_empty() || !self.battery.is_empty()
+    }
+
+    pub fn dock(&mut self, army: HashMap<Unit, usize>) {
+        for (unit, count) in army {
+            match unit {
+                Unit::Ship(s) => {
+                    *self.fleet.entry(s).or_default() += count;
+                },
+                _ => unreachable!(),
+            }
+        }
     }
 }

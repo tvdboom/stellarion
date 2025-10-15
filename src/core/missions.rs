@@ -44,7 +44,8 @@ impl Mission {
     }
 
     pub fn distance(&self, map: &Map) -> f32 {
-        self.position.distance(map.get(self.destination).position) / Planet::SIZE
+        // Minus 1. planet sizes since it starts and ends a bit outside the planets
+        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 1.
     }
 
     pub fn speed(&self) -> f32 {
@@ -77,20 +78,37 @@ impl Mission {
     pub fn total(&self) -> usize {
         self.army.values().sum()
     }
+
+    pub fn advance(&mut self, map: &Map) {
+        let destination = map.get(self.destination);
+        let direction = (-self.position + destination.position).normalize();
+
+        self.position += direction * self.speed() * Planet::SIZE;
+    }
+
+    pub fn has_reached_destination(&self, map: &Map) -> bool {
+        let destination = map.get(self.destination);
+        self.position.distance(destination.position) <= 0.5 * Planet::SIZE
+    }
 }
 
-pub fn update_mission_hover(
-    mut mission_q: Query<(&mut Sprite, &MissionCmp)>,
+pub fn update_mission(
+    mut commands: Commands,
+    mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &MissionCmp)>,
     state: Res<UiState>,
+    player: Res<Player>,
     assets: Local<WorldAssets>,
 ) {
-    if let Some(id) = state.mission_hover {
-        if let Some((mut sprite, _)) = mission_q.iter_mut().find(|(_, m)| m.id == id) {
-            sprite.image = assets.image("mission hover");
-        }
-    } else {
-        for (mut sprite, _) in mission_q.iter_mut() {
-            sprite.image = assets.image("mission");
+    for (mission_e, mut mission_s, mut mission_t, mission_c) in mission_q.iter_mut() {
+        if let Some(mission) = player.missions.iter().find(|m| m.id == mission_c.id) {
+            mission_t.translation = mission.position.extend(MISSION_Z);
+            if state.mission_hover.is_some_and(|id| id == mission.id) {
+                mission_s.image = assets.image("mission hover");
+            } else {
+                mission_s.image = assets.image("mission");
+            }
+        } else {
+            commands.entity(mission_e).despawn();
         }
     }
 }
@@ -129,7 +147,7 @@ pub fn send_mission_message(
         let direction = (-origin.position + destination.position).normalize();
         let angle = direction.y.atan2(direction.x);
 
-        mission.position += direction * Planet::SIZE;
+        mission.position += direction * 0.5 * Planet::SIZE; // Start a bit outside the planet
         player.missions.push(mission.clone());
 
         commands

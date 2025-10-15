@@ -117,7 +117,6 @@ pub fn draw_map(
 
     for planet in &map.planets {
         let planet_id = planet.id;
-        let owner = planet.owner;
 
         commands
             .spawn((
@@ -156,7 +155,7 @@ pub fn draw_map(
                       player: Res<Player>| {
                     if event.button == PointerButton::Primary {
                         // Only owned planets can be selected
-                        if owner == Some(player.id) {
+                        if map.get(planet_id).owner == Some(player.id) {
                             state.planet_selected = Some(planet_id);
                             state.to_selected = true;
                             state.mission_info.origin = planet_id;
