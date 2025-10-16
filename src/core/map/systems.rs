@@ -223,18 +223,29 @@ pub fn draw_map(
                                 state.mission_hover = None;
                             })
                             .observe(
-                                move |event: On<Pointer<Click>>,
+                                move |mut event: On<Pointer<Click>>,
                                       mut state: ResMut<UiState>,
                                       map: Res<Map>,
                                       player: Res<Player>| {
                                     // Prevent the event from bubbling up to the planet
-                                    event.!!!
+                                    event.propagate(false);
 
                                     if event.button == PointerButton::Primary {
                                         if icon.on_units() && player.owns(map.get(planet_id)) {
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             state.shop = icon.shop();
+                                        } else if icon == Icon::Fleet {
+                                            state.mission = true;
+                                            state.mission_info = Mission {
+                                                objective: Icon::Deploy,
+                                                origin: planet_id,
+                                                destination: state
+                                                    .planet_selected
+                                                    .filter(|&id| player.controls(map.get(id)))
+                                                    .unwrap_or(player.home_planet),
+                                                ..state.mission_info.clone()
+                                            };
                                         } else if icon.is_mission() {
                                             // The origin is determined as follows: the selected
                                             // planet if owned and fulfills condition, else the
@@ -419,7 +430,9 @@ pub fn update_planet_info(
                         let has_condition = selected && {
                             if let Some(id) = state.planet_selected {
                                 let p = map.get(id);
-                                p.id != planet.id && icon.condition(p)
+                                (*icon == Icon::Deploy) == player.controls(planet)
+                                    && p.id != planet.id
+                                    && icon.condition(p)
                             } else {
                                 map.planets.iter().any(|p| {
                                     (*icon == Icon::Deploy) == player.controls(planet)

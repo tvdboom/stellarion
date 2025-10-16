@@ -5,6 +5,7 @@ mod combat;
 pub mod constants;
 mod map;
 mod menu;
+pub mod messages;
 pub mod missions;
 mod network;
 mod persistence;
@@ -24,6 +25,7 @@ use crate::core::map::map::MapCmp;
 use crate::core::map::systems::{draw_map, update_planet_info};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
+use crate::core::messages::MessageMsg;
 use crate::core::missions::{update_mission, SendMissionMsg};
 use crate::core::network::*;
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +63,7 @@ impl Plugin for GamePlugin {
             .add_message::<LoadGameMsg>()
             .add_message::<ServerSendMessage>()
             .add_message::<ClientSendMessage>()
+            .add_message::<MessageMsg>()
             .add_message::<NextTurnMsg>()
             .add_message::<SendMissionMsg>()
             // Resources

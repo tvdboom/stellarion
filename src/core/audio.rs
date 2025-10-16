@@ -17,7 +17,7 @@ impl PlayAudioMsg {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            volume: 1.,
+            volume: -1.,
         }
     }
 }
@@ -53,7 +53,7 @@ pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
     audio
         .play(assets.audio("music"))
         .fade_in(AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2)))
-        .with_volume(0.03)
+        .with_volume(-1.)
         .looped();
 }
 

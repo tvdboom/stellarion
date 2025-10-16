@@ -4,6 +4,7 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::MissionCmp;
+use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::UiState;
 use crate::core::units::{Army, Combat, Unit};
@@ -116,6 +117,7 @@ pub fn update_mission(
 pub fn send_mission_message(
     mut commands: Commands,
     mut send_mission: MessageReader<SendMissionMsg>,
+    mut message: MessageWriter<MessageMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     assets: Local<WorldAssets>,
@@ -172,5 +174,7 @@ pub fn send_mission_message(
             .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                 state.mission_hover = None;
             });
+
+        message.write(MessageMsg::info("Mission sent."));
     }
 }

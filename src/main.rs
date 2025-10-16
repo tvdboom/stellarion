@@ -4,6 +4,7 @@ mod core;
 mod utils;
 
 use crate::core::constants::{HEIGHT, WIDTH};
+use crate::core::messages::MessagesPlugin;
 use crate::core::GamePlugin;
 use bevy::asset::AssetMetaCheck;
 use bevy::ecs::system::NonSendMarker;
@@ -49,7 +50,7 @@ fn main() {
     )
     // Networking: systems are disabled until server/client resource is added
     .add_plugins((RenetServerPlugin, NetcodeServerPlugin, RenetClientPlugin, NetcodeClientPlugin))
-    .add_plugins((EguiPlugin::default(), AudioPlugin))
+    .add_plugins((EguiPlugin::default(), MessagesPlugin::default(), AudioPlugin))
     .add_plugins(GamePlugin);
 
     #[cfg(target_os = "windows")]

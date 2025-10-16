@@ -2523,6 +2523,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-notify"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8d811c81c13fbce131116eeb6b228086f2c7eb6e4105e03ceb3a358c53c1668"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5428,6 +5437,7 @@ dependencies = [
  "bevy_renet",
  "bimap",
  "bincode",
+ "egui-notify",
  "getrandom 0.3.3",
  "image",
  "itertools 0.14.0",

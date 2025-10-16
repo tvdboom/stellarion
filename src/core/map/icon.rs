@@ -9,17 +9,17 @@ use strum_macros::EnumIter;
 
 #[derive(Component, EnumIter, Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Icon {
-    Attacked,
-    Buildings,
-    Fleet,
-    Defenses,
-    Deploy,
     #[default]
     Colonize,
     Attack,
     Spy,
     MissileStrike,
     Destroy,
+    Attacked,
+    Buildings,
+    Fleet,
+    Defenses,
+    Deploy,
 }
 
 impl Icon {

@@ -1,5 +1,6 @@
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
+use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::UiState;
@@ -13,6 +14,7 @@ pub struct NextTurnMsg;
 
 pub fn next_turn(
     mut next_turn_ev: MessageReader<NextTurnMsg>,
+    mut message: MessageWriter<MessageMsg>,
     mut state: ResMut<UiState>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -68,6 +70,7 @@ pub fn next_turn(
             }
         });
 
+        message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
         *state = UiState::default()
     }
 }

@@ -232,10 +232,15 @@ fn draw_mission(
 
     state.mission_info.position = origin.position;
 
-    if origin.owned == destination.owned {
+    if origin.controlled == destination.controlled {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
         state.mission_info.objective = Icon::default();
+    }
+
+    if !state.mission_info.objective.condition(origin) {
+        state.mission_info.objective =
+            Icon::iter().find(|i| i.is_mission() && i.condition(origin)).unwrap_or_default();
     }
 
     let army = if state.mission_info.objective == Icon::MissileStrike {
@@ -511,7 +516,7 @@ fn draw_mission(
                     let army_check = state.mission_info.army.values().sum::<usize>() > 0;
                     let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
                     let objective_check = match state.mission_info.objective {
-                        Icon::Deploy => !state.mission_info.army.is_empty(),
+                        Icon::Deploy => state.mission_info.army.iter().any(|(u, c)| u.is_ship() && *c > 0),
                         Icon::Colonize => state.mission_info.get(&Unit::Ship(Ship::ColonyShip)) > 0,
                         Icon::Attack => state
                             .mission_info
