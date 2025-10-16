@@ -136,14 +136,13 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
                                 .on_hover_cursor(CursorIcon::Default)
                                 .on_hover_text_at_pointer(
                                     RichText::new(
-                                        player
-                                            .planets(&map.planets)
+                                        map.planets
                                             .iter()
-                                            .map(|p| {
-                                                (
+                                            .filter_map(|p| {
+                                                player.owns(p).then_some((
                                                     p.name.clone(),
                                                     p.resource_production().get(&resource),
-                                                )
+                                                ))
                                             })
                                             .sorted_by(|a, b| b.1.cmp(&a.1))
                                             .map(|(n, c)| format!("{}: {}", n, c))
@@ -195,6 +194,28 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
     });
 }
 
+fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &ImageIds) {
+    ui.add_space(17.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space(30.);
+        ui.add_image(images.get("fleet"), [25., 25.]);
+        ui.small("Fleet");
+    });
+
+    ui.add_space(10.);
+
+    ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
+    for unit in units[1].iter() {
+        ui.horizontal(|ui| {
+            ui.add_space(30.);
+            ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+            ui.label(planet.get(unit).to_string());
+        });
+    }
+}
+
 fn draw_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
@@ -211,7 +232,7 @@ fn draw_mission(
 
     state.mission_info.position = origin.position;
 
-    if origin.owner == destination.owner {
+    if origin.owned == destination.owned {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
         state.mission_info.objective = Icon::default();
@@ -240,7 +261,7 @@ fn draw_mission(
                 ComboBox::from_id_salt("origin")
                     .selected_text(&map.get(state.mission_info.origin).name)
                     .show_ui(ui, |ui| {
-                        for planet in player.planets(&map.planets) {
+                        for planet in map.planets.iter().filter(|p| player.controls(p)).sorted_by(|a, b| a.name.cmp(&b.name)) {
                             ui.selectable_value(
                                 &mut state.mission_info.origin,
                                 planet.id,
@@ -578,7 +599,7 @@ fn draw_mission_fleet_hover(
         ui.spacing_mut().item_spacing.x = 7.;
         ui.add_space(30.);
         ui.add_image(images.get("mission"), [25., 25.]);
-        ui.small("Fleet");
+        ui.small("Mission");
     });
 
     ui.add_space(10.);
@@ -589,10 +610,6 @@ fn draw_mission_fleet_hover(
             ui.add_space(30.);
             ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
             ui.label(mission.get(unit).to_string());
-        })
-        .response
-        .on_hover_ui(|ui| {
-            ui.small(unit.to_name());
         });
     }
 }
@@ -1018,10 +1035,10 @@ pub fn draw_ui(
             })
             .unwrap();
 
-        if player.controls(planet) {
-            let (window_w, window_h) = (320., 630.);
+        let right_side = planet_pos.x < width * 0.5;
 
-            let right_side = planet_pos.x < width * 0.5;
+        if player.owns(planet) {
+            let (window_w, window_h) = (320., 630.);
 
             draw_panel(
                 &mut contexts,
@@ -1038,6 +1055,27 @@ pub fn draw_ui(
                 (window_w, window_h),
                 &images,
                 |ui| draw_overview(ui, planet, &units, &images),
+            );
+
+            right_side
+        } else if player.controls(planet) && planet.has_fleet() {
+            let (window_w, window_h) = (140., 630.);
+
+            draw_panel(
+                &mut contexts,
+                "planet fleet",
+                "panel",
+                (
+                    if right_side {
+                        width * 0.998 - window_w
+                    } else {
+                        width * 0.002
+                    },
+                    height * 0.5 - window_h * 0.5,
+                ),
+                (window_w, window_h),
+                &images,
+                |ui| draw_fleet(ui, planet, &units, &images),
             );
 
             right_side
@@ -1120,7 +1158,7 @@ pub fn draw_ui(
         if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
             let planet = map.get_mut(id);
 
-            if player.controls(&planet) {
+            if player.owns(&planet) {
                 let (window_w, window_h) = (735., 340.);
 
                 draw_panel(

@@ -51,31 +51,31 @@ impl Description for Ship {
     fn description(&self) -> &str {
         match self {
             Ship::Probe => {
-                "The probe is an espionage craft, used to analyze enemy defenses. This ship \
+                "The Probe is an espionage craft, used to analyze enemy defenses. This ship \
                 only takes part in the first round of any attack. After the first round, it \
-                goes back to report on the enemy units. The more probes return, the more \
+                goes back to report on the enemy units. The more Probes return, the more \
                 accurate the reports. Probes are the fastest ships in the game."
             },
             Ship::ColonyShip => {
-                "This ship is used to colonize planets. The colony ship does not fight and is \
+                "This ship is used to colonize planets. The Colony Ship does not fight and is \
                 automatically destroyed if the fight is lost. Upon colonizing a planet, the \
-                ship is deconstructed."
+                ship is deconstructed. Colony ships are very slow and consume a lot of fuel."
             },
             Ship::LightFighter => {
-                "Given their relatively low armor and simple weapons systems, light fighters \
+                "Given their relatively low armor and simple weapons systems, Light Fighters \
                 serve best as support ships in battle. Their agility and speed, paired with \
                 the number in which they often appear, can provide a shield-like buffer for \
                 bigger ships that are not quite as maneuverable. Light Fighters are often used \
                 as fodder."
             },
             Ship::HeavyFighter => {
-                "The Heavy Fighter is a more powerful version of the light fighter. Even though \
-                it is not as effective as the cruiser, the heavy fighter can still cause a \
+                "The Heavy Fighter is a more powerful version of the Light Fighter. Even though \
+                it is not as effective as the Cruiser, the Heavy Fighter can still cause a \
                 reasonable amount of damage when launched in significant numbers."
             },
             Ship::Destroyer => {
-                "With their rapid fire capabilities, destroyers are extremely effective at \
-                eliminating the light fighter and rocket launcher fodder. In addition they're \
+                "With their rapid fire capabilities, Destroyers are extremely effective at \
+                eliminating the Light Fighter and rocket launcher fodder. In addition they're \
                 speed make them excellent as fast strike ships."
             },
             Ship::Cruiser => {
@@ -83,11 +83,11 @@ impl Description for Ship {
                 systems, and a high speed make this ship a tough opponent to fight against."
             },
             Ship::Bomber => {
-                "The bomber is used primarily to destroy planetary defense. Its high rapid fire \
+                "The Bomber is used primarily to destroy planetary defense. Its high rapid fire \
                 against most defensive structures makes it effective for planetary assaults."
             },
             Ship::Battleship => {
-                "The battleship is the mean between the cruiser and the dreadnought. Its rapid \
+                "The Battleship is the mean between the Cruiser and the Dreadnought. Its rapid \
                 fire capabilities makes him highly effective against medium-sized ships."
             },
             Ship::Dreadnought => {
@@ -222,16 +222,16 @@ impl Combat for Ship {
 
     fn speed(&self) -> f32 {
         match self {
-            Ship::Probe => 4.,
-            Ship::ColonyShip => 1.5,
-            Ship::LightFighter => 3.5,
-            Ship::HeavyFighter => 2.5,
-            Ship::Destroyer => 3.,
-            Ship::Cruiser => 2.5,
-            Ship::Bomber => 1.5,
-            Ship::Battleship => 2.,
-            Ship::Dreadnought => 1.5,
-            Ship::WarSun => 1.,
+            Ship::Probe => 1.8,
+            Ship::ColonyShip => 0.5,
+            Ship::LightFighter => 1.5,
+            Ship::HeavyFighter => 1.2,
+            Ship::Destroyer => 1.2,
+            Ship::Cruiser => 1.0,
+            Ship::Bomber => 0.6,
+            Ship::Battleship => 0.8,
+            Ship::Dreadnought => 0.7,
+            Ship::WarSun => 0.5,
         }
     }
 

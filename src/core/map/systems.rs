@@ -155,7 +155,7 @@ pub fn draw_map(
                       player: Res<Player>| {
                     if event.button == PointerButton::Primary {
                         // Only owned planets can be selected
-                        if map.get(planet_id).owner == Some(player.id) {
+                        if player.owns(map.get(planet_id)) {
                             state.planet_selected = Some(planet_id);
                             state.to_selected = true;
                             state.mission_info.origin = planet_id;
@@ -164,7 +164,7 @@ pub fn draw_map(
                         state.mission = true;
                         state.mission_info.origin = state
                             .planet_selected
-                            .filter(|&p| map.get(p).owner == Some(player.id))
+                            .filter(|&p| player.owns(map.get(p)))
                             .unwrap_or(player.home_planet);
                         state.mission_info.destination = planet_id;
                     }
@@ -186,10 +186,7 @@ pub fn draw_map(
                         ShowOnHoverCmp,
                     ));
 
-                    for (i, icon) in Icon::iter()
-                        .filter(|icon| player.controls(&planet) == icon.on_own_planet())
-                        .enumerate()
-                    {
+                    for (i, icon) in Icon::iter().enumerate() {
                         parent
                             .spawn((
                                 Sprite {
@@ -230,12 +227,15 @@ pub fn draw_map(
                                       mut state: ResMut<UiState>,
                                       map: Res<Map>,
                                       player: Res<Player>| {
+                                    // Prevent the event from bubbling up to the planet
+                                    event.!!!
+
                                     if event.button == PointerButton::Primary {
-                                        if icon.on_units() {
+                                        if icon.on_units() && player.owns(map.get(planet_id)) {
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             state.shop = icon.shop();
-                                        } else {
+                                        } else if icon.is_mission() {
                                             // The origin is determined as follows: the selected
                                             // planet if owned and fulfills condition, else the
                                             // first planet of the player that fulfills condition
@@ -244,13 +244,18 @@ pub fn draw_map(
                                                 objective: icon,
                                                 origin: state
                                                     .planet_selected
-                                                    .filter(|&id| icon.condition(map.get(id)))
+                                                    .filter(|&id| {
+                                                        id != planet_id
+                                                            && icon.condition(map.get(id))
+                                                    })
                                                     .unwrap_or(
-                                                        player
-                                                            .planets(&map.planets)
+                                                        map.planets
                                                             .iter()
                                                             .find_map(|p| {
-                                                                icon.condition(p).then_some(p.id)
+                                                                (p.id != planet_id
+                                                                    && player.controls(p)
+                                                                    && icon.condition(p))
+                                                                .then_some(p.id)
                                                             })
                                                             .unwrap(),
                                                     ),
@@ -302,7 +307,7 @@ pub fn draw_map(
                 }
             });
 
-        if player.controls(planet) {
+        if player.owns(planet) {
             // Place the camera on top of the player's home planet
             projection.scale = 0.8; // Increase zoom
             camera_t.translation = planet.position.extend(camera_t.translation.z);
@@ -392,9 +397,15 @@ pub fn update_planet_info(
         for child in children_q.iter_descendants(planet_e) {
             if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
                 let visible = match icon {
-                    Icon::Attacked => true,
-                    Icon::Buildings | Icon::Fleet | Icon::Defenses => {
-                        selected || icon.condition(planet)
+                    Icon::Attacked => {
+                        player.enemy_missions.iter().any(|m| m.destination == planet.id)
+                    },
+                    Icon::Buildings | Icon::Defenses => {
+                        player.owns(planet) && (selected || icon.condition(planet))
+                    },
+                    Icon::Fleet => {
+                        // A player can have a fleet on a not-owned planet
+                        player.controls(planet) && (selected || icon.condition(planet))
                     },
                     _ => {
                         // Show icon if there is a mission with this objective towards this
@@ -410,10 +421,11 @@ pub fn update_planet_info(
                                 let p = map.get(id);
                                 p.id != planet.id && icon.condition(p)
                             } else {
-                                player
-                                    .planets(&map.planets)
-                                    .iter()
-                                    .any(|p| p.id != planet.id && icon.condition(p))
+                                map.planets.iter().any(|p| {
+                                    (*icon == Icon::Deploy) == player.controls(planet)
+                                        && p.id != planet.id
+                                        && icon.condition(p)
+                                })
                             }
                         };
 

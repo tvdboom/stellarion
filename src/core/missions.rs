@@ -44,8 +44,8 @@ impl Mission {
     }
 
     pub fn distance(&self, map: &Map) -> f32 {
-        // Minus 1. planet sizes since it starts and ends a bit outside the planets
-        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 1.
+        // Minus 2 since the mission starts and ends a bit outside the planets
+        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 2.
     }
 
     pub fn speed(&self) -> f32 {
@@ -88,7 +88,7 @@ impl Mission {
 
     pub fn has_reached_destination(&self, map: &Map) -> bool {
         let destination = map.get(self.destination);
-        self.position.distance(destination.position) <= 0.5 * Planet::SIZE
+        self.position.distance(destination.position) <= Planet::SIZE
     }
 }
 
@@ -147,7 +147,7 @@ pub fn send_mission_message(
         let direction = (-origin.position + destination.position).normalize();
         let angle = direction.y.atan2(direction.x);
 
-        mission.position += direction * 0.5 * Planet::SIZE; // Start a bit outside the planet
+        mission.position += direction * Planet::SIZE; // Start a bit outside the planet
         player.missions.push(mission.clone());
 
         commands

@@ -3,7 +3,6 @@ use crate::core::missions::{Mission, MissionId};
 use crate::core::resources::Resources;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
@@ -12,6 +11,7 @@ pub struct Player {
     pub home_planet: PlanetId,
     pub resources: Resources,
     pub missions: Vec<Mission>,
+    pub enemy_missions: Vec<Mission>,
 }
 
 impl Default for Player {
@@ -25,6 +25,7 @@ impl Default for Player {
                 deuterium: 1500,
             },
             missions: vec![],
+            enemy_missions: vec![],
         }
     }
 }
@@ -38,23 +39,16 @@ impl Player {
         }
     }
 
-    pub fn controls(&self, planet: &Planet) -> bool {
-        planet.owner == Some(self.id)
+    pub fn owns(&self, planet: &Planet) -> bool {
+        planet.owned == Some(self.id)
     }
 
-    /// Return the planets owned by the player, with the home planet first
-    pub fn planets<'a>(&self, planets: &'a Vec<Planet>) -> Vec<&'a Planet> {
-        let (home, others): (Vec<_>, Vec<_>) = planets
-            .iter()
-            .sorted_by(|a, b| a.name.cmp(&b.name))
-            .filter(|p| p.owner == Some(self.id))
-            .partition(|p| p.id == self.home_planet);
-
-        home.into_iter().chain(others).collect()
+    pub fn controls(&self, planet: &Planet) -> bool {
+        planet.controlled == Some(self.id)
     }
 
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
-        planets.iter().filter(|p| p.owner == Some(self.id)).map(|p| p.resource_production()).sum()
+        planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
     pub fn get_mission(&self, mission_id: MissionId) -> &Mission {

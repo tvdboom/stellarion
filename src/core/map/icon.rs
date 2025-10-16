@@ -2,7 +2,7 @@ use crate::core::map::planet::Planet;
 use crate::core::ui::systems::Shop;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::Description;
+use crate::core::units::{Description, Unit};
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
@@ -14,8 +14,8 @@ pub enum Icon {
     Fleet,
     Defenses,
     Deploy,
-    Colonize,
     #[default]
+    Colonize,
     Attack,
     Spy,
     MissileStrike,
@@ -25,15 +25,20 @@ pub enum Icon {
 impl Icon {
     pub const SIZE: f32 = Planet::SIZE * 0.2;
 
-    pub fn on_own_planet(&self) -> bool {
-        matches!(
-            self,
-            Icon::Attacked | Icon::Buildings | Icon::Fleet | Icon::Defenses | Icon::Deploy
-        )
-    }
-
     pub fn on_units(&self) -> bool {
         matches!(self, Icon::Buildings | Icon::Fleet | Icon::Defenses)
+    }
+
+    pub fn is_mission(&self) -> bool {
+        matches!(
+            self,
+            Icon::Deploy
+                | Icon::Colonize
+                | Icon::Attack
+                | Icon::Spy
+                | Icon::MissileStrike
+                | Icon::Destroy
+        )
     }
 
     pub fn shop(&self) -> Shop {
@@ -56,25 +61,25 @@ impl Icon {
     pub fn condition(&self, planet: &Planet) -> bool {
         match self {
             Icon::Buildings => !planet.complex.is_empty(),
-            Icon::Fleet => !planet.fleet.is_empty(),
-            Icon::Defenses => !planet.battery.is_empty(),
-            Icon::Deploy => !planet.fleet.is_empty(),
-            Icon::Colonize => planet.fleet.contains_key(&Ship::ColonyShip),
-            Icon::Attack => planet.fleet.iter().any(|(s, _)| s.is_combat()),
-            Icon::Spy => planet.fleet.contains_key(&Ship::Probe),
-            Icon::MissileStrike => planet.battery.contains_key(&Defense::InterplanetaryMissile),
-            Icon::Destroy => planet.fleet.contains_key(&Ship::WarSun),
+            Icon::Fleet => planet.has_fleet(),
+            Icon::Defenses => planet.has_battery(),
+            Icon::Deploy => planet.has_fleet(),
+            Icon::Colonize => planet.has(&Unit::Ship(Ship::ColonyShip)),
+            Icon::Attack => planet.fleet.iter().any(|(s, c)| s.is_combat() && *c > 0),
+            Icon::Spy => planet.has(&Unit::Ship(Ship::Probe)),
+            Icon::MissileStrike => planet.has(&Unit::Defense(Defense::InterplanetaryMissile)),
+            Icon::Destroy => planet.has(&Unit::Ship(Ship::WarSun)),
             _ => unreachable!(),
         }
     }
 
     pub fn requirement(&self) -> &str {
         match self {
-            Icon::Colonize => "No colony ships on the origin planet.",
+            Icon::Colonize => "No Colony Ship on the origin planet.",
             Icon::Attack => "No combat ships on the origin planet.",
-            Icon::Spy => "No probes on the origin planet.",
-            Icon::MissileStrike => "No interplanetary missiles on the origin planet.",
-            Icon::Destroy => "No war suns on the origin planet.",
+            Icon::Spy => "No Probes on the origin planet.",
+            Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",
+            Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
             _ => unreachable!(),
         }
@@ -85,8 +90,8 @@ impl Description for Icon {
     fn description(&self) -> &str {
         match self {
             Icon::Colonize => {
-                "After a successful attack that contains at least one colony ship will colonize \
-                the target planet. The colony ship will be consumed in the process. If the planet \
+                "After a successful attack that contains at least one Colony Ship will colonize \
+                the target planet. The Colony Ship will be consumed in the process. If the planet \
                 is empty, a level 1 mine will be built automatically. A colonized planet produces \
                 resources and can be developed with buildings."
             },
@@ -96,8 +101,8 @@ impl Description for Icon {
                 by another player, they will lose control of it. All buildings will remain."
             },
             Icon::Spy => {
-                "Send only probes to gather intelligence on an enemy planet. Probes return to the \
-                origin planet after one round of combat. The more probes you send, the more \
+                "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
+                origin planet after one round of combat. The more Probes you send, the more \
                 accurate the returned information will be."
             },
             Icon::MissileStrike => {
@@ -106,7 +111,7 @@ impl Description for Icon {
                 and the planetary shield at the target planet, and directly hit the defenses."
             },
             Icon::Destroy => {
-                "After a successful attack, every surviving war sun will try to obliterate the \
+                "After a successful attack, every surviving War Sun will try to obliterate the \
                 target planet with a 20% chance. If the planet is destroyed, the fleet will return \
                 to the origin planet. A destroyed planet can not be colonized again."
             },

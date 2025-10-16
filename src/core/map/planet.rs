@@ -47,7 +47,8 @@ pub struct Planet {
     pub is_destroyed: bool,
 
     // Ownership and units
-    pub owner: Option<ClientId>,
+    pub owned: Option<ClientId>,
+    pub controlled: Option<ClientId>,
     pub complex: Complex,
     pub battery: Battery,
     pub fleet: Fleet,
@@ -86,7 +87,8 @@ impl Planet {
             position,
             resources,
             is_destroyed: false,
-            owner: None,
+            owned: None,
+            controlled: None,
             complex: HashMap::new(),
             battery: HashMap::new(),
             fleet: HashMap::new(),
@@ -96,9 +98,11 @@ impl Planet {
 
     pub fn make_home_planet(&mut self, client_id: ClientId) {
         self.resources = Resources::new(200, 200, 100);
-        self.owner = Some(client_id);
+        self.conquered(client_id);
         self.complex =
             HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);
+
+        // Remove!!
         self.fleet = HashMap::from([
             (crate::core::units::ships::Ship::LightFighter, 15),
             (crate::core::units::ships::Ship::ColonyShip, 5),
@@ -108,12 +112,9 @@ impl Planet {
             HashMap::from([(crate::core::units::defense::Defense::InterplanetaryMissile, 11)]);
     }
 
-    pub fn get(&self, unit: &Unit) -> usize {
-        match unit {
-            Unit::Building(building) => *self.complex.get(building).unwrap_or(&0),
-            Unit::Defense(defense) => *self.battery.get(defense).unwrap_or(&0),
-            Unit::Ship(ship) => *self.fleet.get(ship).unwrap_or(&0),
-        }
+    pub fn conquered(&mut self, client_id: ClientId) {
+        self.owned = Some(client_id);
+        self.controlled = Some(client_id);
     }
 
     /// Resources and production ===================================== >>
@@ -162,12 +163,29 @@ impl Planet {
         SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
     }
 
-    /// Combat and missions ========================================== >>
+    /// Units and combat ============================================= >>
 
-    pub fn has_army(&self) -> bool {
-        !self.fleet.is_empty() || !self.battery.is_empty()
+    pub fn get(&self, unit: &Unit) -> usize {
+        match unit {
+            Unit::Building(building) => *self.complex.get(building).unwrap_or(&0),
+            Unit::Defense(defense) => *self.battery.get(defense).unwrap_or(&0),
+            Unit::Ship(ship) => *self.fleet.get(ship).unwrap_or(&0),
+        }
     }
 
+    pub fn has(&self, unit: &Unit) -> bool {
+        self.get(unit) > 0
+    }
+
+    pub fn has_fleet(&self) -> bool {
+        self.fleet.iter().any(|(_, c)| *c > 0)
+    }
+
+    pub fn has_battery(&self) -> bool {
+        self.battery.iter().any(|(_, c)| *c > 0)
+    }
+
+    /// Merge the given army into the planet's army
     pub fn dock(&mut self, army: HashMap<Unit, usize>) {
         for (unit, count) in army {
             match unit {

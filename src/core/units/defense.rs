@@ -60,13 +60,13 @@ impl Description for Defense {
             },
             Defense::GaussCannon => {
                 "Gauss cannons are an effective defence due to their high shield and weapon power, \
-                making them capable of holding their own against cruiser-based fleets, when backed \
+                making them capable of holding their own against Cruiser-based fleets, when backed \
                 by large amounts of fodder."
             },
             Defense::IonCannon => {
                 "The ion cannon is well known for its relatively high shield power. A reason to \
-                build them is because only the bomber and the war sun have rapid fire against it. \
-                This makes them useful against cruisers and destroyer-dominated fleets."
+                build them is because only the bomber and the War Sun have rapid fire against it. \
+                This makes them useful against Cruisers and Destroyer-dominated fleets."
             },
             Defense::PlasmaTurret => {
                 "The plasma turret is the most powerful defense in the game. It is fairly \
@@ -147,7 +147,7 @@ impl Combat for Defense {
 
     fn speed(&self) -> f32 {
         match self {
-            Defense::InterplanetaryMissile => 4.,
+            Defense::InterplanetaryMissile => 2.,
             _ => 0.,
         }
     }

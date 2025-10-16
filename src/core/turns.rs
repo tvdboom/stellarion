@@ -33,30 +33,33 @@ pub fn next_turn(
         player.missions.retain_mut(|mission| {
             mission.advance(&map);
 
-            if mission.has_reached_destination(&map) {
-                let destination = map.get_mut(mission.destination);
+            let has_reached = mission.has_reached_destination(&map);
 
-                // If the destination planet is friendly, the fleet stops there
-                // (the planet could have been colonized by another mission)
-                // Missile strikes always attack the destination planet
-                if destination.owner != Some(id) || mission.objective == Icon::MissileStrike {
-                    // combat !! do as if won with all units for now
+            let destination = map.get_mut(mission.destination);
 
-                    match mission.objective {
-                        Icon::Colonize => {
-                            *mission.army.entry(Unit::Ship(Ship::ColonyShip)).or_insert(1) -= 1;
-                            destination.owner = Some(id);
+            // If the destination planet is friendly, the mission changes to deploy
+            // (the planet could have been colonized by another mission)
+            // Except Missile strikes, which always attack the destination planet
+            if destination.owned == Some(id) || mission.objective == Icon::MissileStrike {
+                mission.objective = Icon::Deploy;
+            }
 
-                            // If the planet has no buildings, build a level 1 mine
-                            if destination.complex.is_empty() {
-                                destination.complex.insert(Building::Mine, 1);
-                            }
-                        },
-                        _ => (),
-                    }
+            if has_reached {
+                match mission.objective {
+                    Icon::Colonize => {
+                        *mission.army.entry(Unit::Ship(Ship::ColonyShip)).or_insert(1) -= 1;
+                        destination.conquered(id);
+
+                        // If the planet has no buildings, build a level 1 mine
+                        if destination.complex.is_empty() {
+                            destination.complex.insert(Building::Mine, 1);
+                        }
+                    },
+                    _ => (),
                 }
 
-                // Dock surviving fleet on the planet
+                // Take control of the planet and dock the surviving fleet
+                destination.controlled = Some(id);
                 destination.dock(mission.army.clone());
 
                 false
