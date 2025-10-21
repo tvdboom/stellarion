@@ -39,6 +39,7 @@ dies, you lose the game.
 - `space`: Center the map on your home planet.
 - `tab`: Cycle through a planet's shop.
 - `Q`: Toggle the audio settings.
+- `C`: Show/hide owned planet cells.
 - `I`: Show/hide all planet information.
 - `H`: Enable/disable information tooltips on hover.
 - `M`: Show/hide the mission panel.

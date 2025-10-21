@@ -19,10 +19,10 @@ use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::cursor;
 use crate::core::missions::{Mission, MissionId};
+use crate::core::network::{ClientMessage, ClientSendMsg};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
-use crate::core::turns::NextTurnMsg;
 use crate::core::ui::systems::UiState;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
@@ -524,13 +524,15 @@ pub fn draw_map(
         .observe(
             |_: On<Pointer<Click>>,
              mut state: ResMut<UiState>,
-             mut next_turn_ev: MessageWriter<NextTurnMsg>| {
+             player: Res<Player>,
+             mut client_send_msg: MessageWriter<ClientSendMsg>| {
                 state.planet_selected = None;
                 state.mission = false;
                 state.end_turn = !state.end_turn;
-                if state.end_turn {
-                    next_turn_ev.write(NextTurnMsg);
-                }
+                client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
+                    end_turn: state.end_turn,
+                    player: player.clone(),
+                }));
             },
         );
 }
@@ -538,11 +540,12 @@ pub fn draw_map(
 pub fn update_voronoi(
     mut cell_q: Query<(&mut Visibility, &VoronoiCmp)>,
     mut edge_q: Query<(&mut Visibility, &VoronoiEdgeCmp), Without<VoronoiCmp>>,
+    settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
 ) {
     for (mut cell_v, cell) in &mut cell_q {
-        *cell_v = if player.owns(map.get(cell.0)) {
+        *cell_v = if player.owns(map.get(cell.0)) && settings.show_cells {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -558,7 +561,7 @@ pub fn update_voronoi(
         });
 
     for (mut edge_v, edge) in &mut edge_q {
-        *edge_v = if *counts.get(&edge.key).unwrap_or(&2) <= 1 {
+        *edge_v = if *counts.get(&edge.key).unwrap_or(&2) <= 1 && settings.show_cells {
             Visibility::Inherited
         } else {
             Visibility::Hidden

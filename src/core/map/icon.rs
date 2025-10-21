@@ -93,7 +93,7 @@ impl Description for Icon {
             Icon::Colonize => {
                 "After a successful attack that contains at least one Colony Ship will colonize \
                 the target planet. The Colony Ship will be consumed in the process. If the planet \
-                is empty, a level 1 mine will be built automatically. A colonized planet produces \
+                is empty, a level 1 Mine will be built automatically. A colonized planet produces \
                 resources and can be developed with buildings."
             },
             Icon::Attack => {
@@ -109,7 +109,7 @@ impl Description for Icon {
             Icon::MissileStrike => {
                 "Launch an interplanetary missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary missiles ignore any ships \
-                and the planetary shield at the target planet, and directly hit the defenses. \
+                and the Planetary Shield at the target planet, and directly hit the defenses. \
                 Once launched, a missile strike always hits the destination planet, even if it \
                 has been colonized by the user."
             },

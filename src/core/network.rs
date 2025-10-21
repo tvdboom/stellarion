@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
 use std::time::SystemTime;
 
@@ -15,6 +16,7 @@ use crate::core::menu::buttons::LobbyTextCmp;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
+use crate::core::turns::StartTurnMsg;
 use crate::utils::get_local_ip;
 
 const PROTOCOL_ID: u64 = 7;
@@ -28,20 +30,44 @@ impl Default for Ip {
     }
 }
 
+#[derive(Resource, Default)]
+pub struct Host {
+    pub clients: HashMap<ClientId, Player>,
+    pub turn_ended: HashSet<ClientId>,
+}
+
 #[derive(Message)]
-pub struct ServerSendMessage {
+pub struct ServerSendMsg {
     pub message: ServerMessage,
     pub client: Option<ClientId>,
 }
 
+impl ServerSendMsg {
+    pub fn new(message: ServerMessage, client: Option<ClientId>) -> Self {
+        Self {
+            message,
+            client,
+        }
+    }
+}
+
 #[derive(Message)]
-pub struct ClientSendMessage {
+pub struct ClientSendMsg {
     pub message: ClientMessage,
+}
+
+impl ClientSendMsg {
+    pub fn new(message: ClientMessage) -> Self {
+        Self {
+            message,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum ServerMessage {
     LoadGame {
+        turn: usize,
         player: Player,
         map: Map,
     },
@@ -51,11 +77,13 @@ pub enum ServerMessage {
         home_planet: PlanetId,
         map: Map,
     },
+    StartTurn(Player),
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum ClientMessage {
-    Status {
+    EndTurn {
+        end_turn: bool,
         player: Player,
     },
 }
@@ -146,10 +174,10 @@ pub fn server_update(
 }
 
 pub fn server_send_message(
-    mut server_send_message: MessageReader<ServerSendMessage>,
+    mut server_send_msg: MessageReader<ServerSendMsg>,
     mut server: ResMut<RenetServer>,
 ) {
-    for ev in server_send_message.read() {
+    for ev in server_send_msg.read() {
         let message = encode_to_vec(&ev.message, standard()).unwrap();
         if let Some(client_id) = ev.client {
             server.send_message(client_id, DefaultChannel::ReliableOrdered, message);
@@ -159,24 +187,38 @@ pub fn server_send_message(
     }
 }
 
-pub fn server_receive_message(mut server: ResMut<RenetServer>) {
+pub fn server_receive_message(mut server: ResMut<RenetServer>, mut host: Option<ResMut<Host>>) {
     for id in server.clients_id() {
         while let Some(message) = server.receive_message(id, DefaultChannel::ReliableOrdered) {
             let (d, _) = decode_from_slice(&message, standard()).unwrap();
             match d {
-                ClientMessage::Status {
+                ClientMessage::EndTurn {
+                    end_turn,
                     player,
-                } => {},
+                } => {
+                    if let Some(host) = &mut host {
+                        host.clients
+                            .entry(id)
+                            .and_modify(|p| *p = player.clone())
+                            .or_insert(player);
+
+                        if end_turn {
+                            host.turn_ended.insert(id);
+                        } else {
+                            host.turn_ended.remove(&id);
+                        }
+                    }
+                },
             }
         }
     }
 }
 
 pub fn client_send_message(
-    mut client_send_message: MessageReader<ClientSendMessage>,
+    mut client_send_msg: MessageReader<ClientSendMsg>,
     mut client: ResMut<RenetClient>,
 ) {
-    for ev in client_send_message.read() {
+    for ev in client_send_msg.read() {
         let message = encode_to_vec(&ev.message, standard()).unwrap();
         client.send_message(DefaultChannel::ReliableOrdered, message);
     }
@@ -188,20 +230,11 @@ pub fn client_receive_message(
     mut client: ResMut<RenetClient>,
     mut game_settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
+    mut start_turn_msg: MessageWriter<StartTurnMsg>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         let (d, _) = decode_from_slice(&message, standard()).unwrap();
         match d {
-            ServerMessage::LoadGame {
-                player,
-                map,
-            } => {
-                *game_settings = game_settings.clone();
-                commands.insert_resource(player);
-                commands.insert_resource(map);
-
-                next_app_state.set(AppState::Game);
-            },
             ServerMessage::NPlayers(i) => {
                 if let Ok(mut text) = n_players_q.single_mut() {
                     text.0 = format!("There are {i} players in the lobby.\nWaiting for the host to start the game...");
@@ -217,6 +250,21 @@ pub fn client_receive_message(
                 commands.insert_resource(Player::new(id, home_planet));
                 commands.insert_resource(map);
                 next_app_state.set(AppState::Game);
+            },
+            ServerMessage::LoadGame {
+                turn,
+                player,
+                map,
+            } => {
+                game_settings.turn = turn;
+                commands.insert_resource(player);
+                commands.insert_resource(map);
+
+                next_app_state.set(AppState::Game);
+            },
+            ServerMessage::StartTurn(player) => {
+                commands.insert_resource(player);
+                start_turn_msg.write(StartTurnMsg);
             },
         }
     }

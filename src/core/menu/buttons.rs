@@ -10,7 +10,7 @@ use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::menu::utils::{add_text, recolor};
 use crate::core::network::{
-    new_renet_client, new_renet_server, Ip, ServerMessage, ServerSendMessage,
+    new_renet_client, new_renet_server, Host, Ip, ServerMessage, ServerSendMsg,
 };
 use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::player::Player;
@@ -56,7 +56,7 @@ pub fn on_click_menu_button(
     ip: Res<Ip>,
     mut load_game_ev: MessageWriter<LoadGameMsg>,
     mut save_game_ev: MessageWriter<SaveGameMsg>,
-    mut server_send_message: MessageWriter<ServerSendMessage>,
+    mut server_send_msg: MessageWriter<ServerSendMsg>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
@@ -77,6 +77,7 @@ pub fn on_click_menu_button(
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
+            commands.insert_resource(Host::default());
             next_app_state.set(AppState::Game);
         },
         MenuBtn::Multiplayer => {
@@ -85,34 +86,33 @@ pub fn on_click_menu_button(
         MenuBtn::NewGame => {
             let server = server.unwrap();
 
-            let mut map = Map::new(settings.n_planets * settings.n_players);
+            let clients = server.clients_id();
+            let n_players = clients.len() + 1;
+
+            let mut map = Map::new(settings.n_planets * n_players);
 
             // Determine home planets
             let mut home_planets: Vec<(PlanetId, Vec2)> = vec![];
-            while home_planets.len() < settings.n_players as usize {
+            while home_planets.len() < n_players {
                 let candidate =
                     map.planets.iter().choose(&mut rng()).map(|p| (p.id, p.position)).unwrap();
 
-                if !home_planets.iter().all(|&p| p.1.distance(candidate.1) < Planet::SIZE * 5.) {
+                if home_planets.iter().all(|&p| p.1.distance(candidate.1) > Planet::SIZE * 5.) {
                     home_planets.push(candidate);
                 }
             }
 
             // Alter home planets
-            let mut clients = server.clients_id();
-            clients.push(0);
-
-            home_planets.iter().zip(clients).for_each(|((planet_id, _), client_id)| {
+            let players = std::iter::once(&0).chain(&clients).collect::<Vec<_>>();
+            home_planets.iter().zip(players).for_each(|((planet_id, _), client_id)| {
                 if let Some(planet) = map.planets.iter_mut().find(|p| p.id == *planet_id) {
-                    planet.make_home_planet(client_id);
+                    planet.make_home_planet(*client_id);
                 }
             });
 
             // Send the start game signal to all clients with their player id
-            for (client_id, (planet_id, _)) in
-                server.clients_id().iter().zip(home_planets.iter().skip(1))
-            {
-                server_send_message.write(ServerSendMessage {
+            for (client_id, (planet_id, _)) in clients.iter().zip(home_planets.iter().skip(1)) {
+                server_send_msg.write(ServerSendMsg {
                     message: ServerMessage::StartGame {
                         id: *client_id,
                         home_planet: *planet_id,
@@ -125,6 +125,7 @@ pub fn on_click_menu_button(
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
+            commands.insert_resource(Host::default());
 
             next_app_state.set(AppState::Game);
         },

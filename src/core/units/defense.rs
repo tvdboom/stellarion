@@ -85,7 +85,7 @@ impl Description for Defense {
             Defense::InterplanetaryMissile => {
                 "Interplanetary missiles are designed to destroy enemy defenses. Before a missile \
                 can hit the defense itself, all the enemy's antiballistic missiles must be \
-                destroyed. Interplanetary missiles ignore enemy ships and the planetary shield. \
+                destroyed. Interplanetary missiles ignore enemy ships and the Planetary Shield. \
                 They don't consume fuel."
             },
         }

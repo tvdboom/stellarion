@@ -99,7 +99,6 @@ impl Planet {
     }
 
     pub fn make_home_planet(&mut self, client_id: ClientId) {
-        self.resources = Resources::new(200, 200, 100);
         self.conquered(client_id);
         self.complex =
             HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);

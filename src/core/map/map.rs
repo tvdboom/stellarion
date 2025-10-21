@@ -16,7 +16,7 @@ pub struct Map {
 }
 
 impl Map {
-    pub fn new(n_planets: u8) -> Self {
+    pub fn new(n_planets: usize) -> Self {
         // Determine map size based on number of planets
         let scale = 0.5
             + ((n_planets as f32 - 10.) / (MAX_PLANETS - MIN_PLANETS) as f32).clamp(0., 1.)
@@ -25,7 +25,7 @@ impl Map {
 
         // Determine positions for planets
         let mut positions: Vec<Vec2> = Vec::new();
-        while positions.len() < n_planets as usize {
+        while positions.len() < n_planets {
             let candidate = Vec2::new(
                 rng().random_range(rect.min.x * 0.9..rect.max.x * 0.9),
                 rng().random_range(rect.min.y * 0.9..rect.max.y * 0.9),
@@ -36,7 +36,7 @@ impl Map {
             }
         }
 
-        let names = PLANET_NAMES.iter().cloned().choose_multiple(&mut rng(), n_planets as usize);
+        let names = PLANET_NAMES.iter().cloned().choose_multiple(&mut rng(), n_planets);
 
         Self {
             rect,

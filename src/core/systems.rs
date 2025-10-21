@@ -63,6 +63,11 @@ pub fn check_keys(
         }
     }
 
+    // Toggle show voronoi cells
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        settings.show_cells = !settings.show_cells;
+    }
+
     // Toggle show planet info
     if keyboard.just_pressed(KeyCode::KeyI) {
         settings.show_info = !settings.show_info;

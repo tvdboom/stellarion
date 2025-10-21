@@ -1,8 +1,10 @@
 use bevy::prelude::*;
+use bevy_renet::renet::RenetServer;
 
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
+use crate::core::network::{Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::UiState;
@@ -11,20 +13,19 @@ use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
 
 #[derive(Message)]
-pub struct NextTurnMsg;
+pub struct StartTurnMsg;
 
-pub fn next_turn(
-    mut next_turn_ev: MessageReader<NextTurnMsg>,
-    mut message: MessageWriter<MessageMsg>,
-    mut state: ResMut<UiState>,
+pub fn check_turn(
+    mut host: ResMut<Host>,
+    server: Option<ResMut<RenetServer>>,
+    state: Res<UiState>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
-    mut settings: ResMut<Settings>,
+    mut server_send_msg: MessageWriter<ServerSendMsg>,
+    mut start_turn_msg: MessageWriter<StartTurnMsg>,
 ) {
-    for _ in next_turn_ev.read() {
-        settings.turn += 1;
-        state.end_turn = false;
-
+    if state.end_turn && host.turn_ended.len() == server.map(|s| s.clients_id().len()).unwrap_or(0)
+    {
         // Produce resources
         let production = player.resource_production(&map.planets);
         player.resources += production;
@@ -43,7 +44,7 @@ pub fn next_turn(
 
             // If the destination planet is friendly, the mission changes to deploy
             // (the planet could have been colonized by another mission)
-            // Except Missile strikes, which always attack the destination planet
+            // Except missile strikes, which always attack the destination planet
             if destination.owned == Some(id) && mission.objective != Icon::MissileStrike {
                 mission.objective = Icon::Deploy;
             }
@@ -72,7 +73,28 @@ pub fn next_turn(
             }
         });
 
+        for (id, player) in host.clients.iter() {
+            server_send_msg.write(ServerSendMsg::new(
+                ServerMessage::StartTurn(player.clone()),
+                Some(id.clone()),
+            ));
+        }
+
+        host.turn_ended.clear();
+        start_turn_msg.write(StartTurnMsg);
+    }
+}
+
+pub fn start_turn_message(
+    mut start_turn_msg: MessageReader<StartTurnMsg>,
+    mut settings: ResMut<Settings>,
+    mut state: ResMut<UiState>,
+    mut message: MessageWriter<MessageMsg>,
+) {
+    for _ in start_turn_msg.read() {
+        settings.turn += 1;
+        *state = UiState::default();
+
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
-        *state = UiState::default()
     }
 }

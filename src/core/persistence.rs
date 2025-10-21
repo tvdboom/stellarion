@@ -3,6 +3,7 @@ use std::io;
 use std::io::{Read, Write};
 
 use bevy::prelude::*;
+use bevy_renet::renet::RenetServer;
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
 #[cfg(not(target_arch = "wasm32"))]
@@ -10,13 +11,18 @@ use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 
 use crate::core::map::map::Map;
+use crate::core::messages::MessageMsg;
+use crate::core::network::{Host, ServerMessage, ServerSendMsg};
+use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveAll {
-    pub game_settings: Settings,
+    pub settings: Settings,
     pub map: Map,
+    pub host: Player,
+    pub clients: Vec<Player>,
 }
 
 #[derive(Message)]
@@ -48,16 +54,57 @@ fn load_from_bin(file_path: &str) -> io::Result<SaveAll> {
 pub fn load_game(
     mut commands: Commands,
     mut load_game_ev: MessageReader<LoadGameMsg>,
+    server: Option<Res<RenetServer>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
+    mut message: MessageWriter<MessageMsg>,
+    mut server_send_msg: MessageWriter<ServerSendMsg>,
 ) {
     for _ in load_game_ev.read() {
         if let Some(file_path) = FileDialog::new().pick_file() {
             let file_path_str = file_path.to_string_lossy().to_string();
-            let data = load_from_bin(&file_path_str).expect("Failed to load the game.");
+            let mut data = load_from_bin(&file_path_str).expect("Failed to load the game.");
 
-            next_audio_state.set(data.game_settings.audio);
-            commands.insert_resource(data.game_settings);
+            let ids = data.clients.iter().map(|p| p.id).collect::<Vec<_>>();
+
+            let n_opponents = ids.len();
+            if n_opponents > 1 {
+                if let Some(server) = &server {
+                    let n_clients = server.clients_id().len();
+                    if n_clients != n_opponents {
+                        message.write(MessageMsg::error(format!("The loaded game has {n_opponents} opponents but the server has {n_clients} clients.")));
+                    } else {
+                        for (new_id, old_id) in server.clients_id().iter().zip(ids.iter()) {
+                            let player = data.clients.iter_mut().find(|p| p.id == *old_id).unwrap();
+
+                            // Update player and planets to use the new player id
+                            player.id = *new_id;
+                            data.map.planets.iter_mut().for_each(|p| {
+                                if p.owned.is_some_and(|id| id == *old_id) {
+                                    p.owned = Some(*new_id);
+                                }
+                                if p.controlled.is_some_and(|id| id == *old_id) {
+                                    p.controlled = Some(*new_id);
+                                }
+                            });
+
+                            server_send_msg.write(ServerSendMsg::new(
+                                ServerMessage::LoadGame {
+                                    turn: data.settings.turn,
+                                    player: player.clone(),
+                                    map: data.map.clone(),
+                                },
+                                Some(*new_id),
+                            ));
+                        }
+                    }
+                } else {
+                    message.write(MessageMsg::error(format!("The loaded game contains {n_opponents} opponents but there is no server initiated.")));
+                }
+            }
+
+            next_audio_state.set(data.settings.audio);
+            commands.insert_resource(data.settings);
             commands.insert_resource(data.map);
 
             next_app_state.set(AppState::Game);
@@ -69,23 +116,25 @@ pub fn load_game(
 pub fn save_game(
     mut save_game_ev: MessageReader<SaveGameMsg>,
     settings: Res<Settings>,
-    map: Option<Res<Map>>,
+    map: Res<Map>,
+    player: Res<Player>,
+    host: Res<Host>,
 ) {
-    if let Some(map) = map {
-        for _ in save_game_ev.read() {
-            if let Some(mut file_path) = FileDialog::new().save_file() {
-                if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
-                    file_path.set_extension("bin");
-                }
-
-                let file_path_str = file_path.to_string_lossy().to_string();
-                let data = SaveAll {
-                    game_settings: settings.clone(),
-                    map: map.clone(),
-                };
-
-                save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
+    for _ in save_game_ev.read() {
+        if let Some(mut file_path) = FileDialog::new().save_file() {
+            if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
+                file_path.set_extension("bin");
             }
+
+            let file_path_str = file_path.to_string_lossy().to_string();
+            let data = SaveAll {
+                settings: settings.clone(),
+                map: map.clone(),
+                host: player.clone(),
+                clients: host.clients.values().cloned().collect(),
+            };
+
+            save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
         }
     }
 }

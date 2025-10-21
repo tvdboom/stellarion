@@ -29,38 +29,41 @@ impl Description for Building {
     fn description(&self) -> &str {
         match self {
             Building::Mine => {
-                "The mine is the building that produces resources. The amount of resources \
-                mined each turn is equal to the planet's base resources times the mine's level."
+                "The Mine is the building that produces resources. The amount of resources \
+                mined each turn is equal to the planet's base resources times the Mine's level."
             },
             Building::Shipyard => {
-                "The shipyard is responsible for the construction of all ships. At higher levels, \
+                "The Shipyard is responsible for the construction of all ships. At higher levels, \
                 more advanced ships can be build. Higher levels also increase the production \
                 limit, i.e., the number of ships that can be build per turn."
             },
             Building::Factory => {
-                "The factory is responsible for the construction of planet defenses. At higher \
+                "The Factory is responsible for the construction of planet defenses. At higher \
                 levels, more advanced defenses can be build. Higher levels also increase the \
                 production limit, i.e., the number of defenses that can be build per turn."
             },
             Building::MissileSilo => {
-                "A missile silo is a building that launches and stores missiles. For each level \
+                "A Missile Silo is a building that launches and stores missiles. For each level \
                 of the silo, 10 missile slots are made available (every missile take up 1 slot)."
             },
             Building::PlanetaryShield => {
-                "The planetary shield is a defensive structure with high shield power but no \
-                damage. Enemy ships must first destroy the planetary shield before they can \
-                attack the defenses. Each level of the building increases the shield with 50. \
-                Interplanetary missiles ignore the planetary shield."
+                "The Planetary Shield is a defensive structure with high shield power but no \
+                damage. Enemy ships must first destroy the Planetary Shield before they can \
+                attack the planet's defenses (not ships!). Each level of the building increases \
+                the shield with 50. This shield does not regenerate after every combat round. \
+                Interplanetary missiles ignore the Planetary Shield."
             },
             Building::SensorPhalanx => {
-                "The sensor phalanx scans the space around a planet to detect incoming attacks. \
-                The higher the level of the phalanx, the more accurate the scanned information."
+                "The Sensor Phalanx scans the space around a planet to detect incoming attacks. \
+                The higher the level of the phalanx, the further it scans. Information accuracy \
+                decreases with distance to the attacking fleet and increases with the level of \
+                the Phalanx."
             },
             Building::JumpGate => {
-                "The jump gate enables rapid travel between two controlled planets with jump \
+                "The Jump Gate enables rapid travel between two controlled planets with jump \
                 gates (at any distance in space). Thus, having only a single gate is useless. \
                 Jumps always take 1 turn, independent of the fleet's composition. Upgrading the \
-                jump gate increases the number of ships it can transport per turn."
+                Jump Gate increases the number of ships it can transport per turn."
             },
         }
     }

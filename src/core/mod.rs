@@ -40,7 +40,7 @@ use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
-use crate::core::turns::{next_turn, NextTurnMsg};
+use crate::core::turns::{check_turn, start_turn_message, StartTurnMsg};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, UiState};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
@@ -62,10 +62,10 @@ impl Plugin for GamePlugin {
             .add_message::<ChangeAudioMsg>()
             .add_message::<SaveGameMsg>()
             .add_message::<LoadGameMsg>()
-            .add_message::<ServerSendMessage>()
-            .add_message::<ClientSendMessage>()
+            .add_message::<ServerSendMsg>()
+            .add_message::<ClientSendMsg>()
             .add_message::<MessageMsg>()
-            .add_message::<NextTurnMsg>()
+            .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
             // Resources
             .init_resource::<Ip>()
@@ -98,6 +98,14 @@ impl Plugin for GamePlugin {
                 server_update
                     .run_if(resource_exists::<RenetServer>)
                     .run_if(not(in_state(AppState::Game))),
+            )
+            .add_systems(
+                Last,
+                (
+                    server_send_message.run_if(resource_exists::<RenetServer>),
+                    client_send_message.run_if(resource_exists::<RenetClient>),
+                )
+                    .in_set(InGameSet),
             );
 
         // Menu
@@ -119,7 +127,6 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    next_turn,
                     update_voronoi,
                     update_end_turn,
                     update_planet_info,
@@ -127,6 +134,10 @@ impl Plugin for GamePlugin {
                     update_mission,
                 )
                     .in_set(InGameSet),
+            )
+            .add_systems(
+                PostUpdate,
+                (check_turn.run_if(resource_exists::<Host>), start_turn_message).chain(),
             )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
@@ -136,6 +147,6 @@ impl Plugin for GamePlugin {
 
         // Persistence
         #[cfg(not(target_arch = "wasm32"))]
-        app.add_systems(Update, (load_game, save_game));
+        app.add_systems(Update, (load_game, save_game.in_set(InGameSet)));
     }
 }
