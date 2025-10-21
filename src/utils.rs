@@ -1,6 +1,7 @@
-use regex::Regex;
 use std::fmt::Debug;
 use std::net::{IpAddr, UdpSocket};
+
+use regex::Regex;
 
 /// Get the local IP address
 #[cfg(not(target_arch = "wasm32"))]

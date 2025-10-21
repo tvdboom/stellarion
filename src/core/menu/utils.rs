@@ -1,7 +1,9 @@
+use std::fmt::Debug;
+
+use bevy::prelude::*;
+
 use crate::core::assets::WorldAssets;
 use crate::core::ui::systems::UiCmp;
-use bevy::prelude::*;
-use std::fmt::Debug;
 
 #[derive(Component)]
 pub struct TextSize(pub f32);

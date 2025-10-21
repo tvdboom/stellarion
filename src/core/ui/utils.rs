@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use bevy::prelude::Resource;
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{Button, Image, Response, TextureId, Ui, Vec2};
-use std::collections::HashMap;
 
 #[derive(Resource, Default)]
 pub struct ImageIds(pub HashMap<&'static str, TextureId>);

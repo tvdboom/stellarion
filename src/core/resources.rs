@@ -1,10 +1,12 @@
-use crate::core::units::Description;
-use bevy::prelude::Component;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
+
+use bevy::prelude::Component;
+use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
+
+use crate::core::units::Description;
 
 #[derive(Component, EnumIter, Clone, Debug)]
 pub enum ResourceName {

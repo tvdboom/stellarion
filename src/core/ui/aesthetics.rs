@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
+
 use bevy_egui;
 use bevy_egui::egui::style::*;
 use bevy_egui::egui::*;
-use std::collections::BTreeMap;
 
 pub trait Aesthetics {
     /// The name of the theme for debugging and comparison purposes.

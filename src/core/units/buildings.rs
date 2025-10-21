@@ -1,10 +1,12 @@
-use crate::core::resources::Resources;
-use crate::core::units::{Description, Price};
-use bevy::prelude::Component;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::iter::Iterator;
+
+use bevy::prelude::Component;
+use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
+
+use crate::core::resources::Resources;
+use crate::core::units::{Description, Price};
 
 pub type Complex = HashMap<Building, usize>;
 

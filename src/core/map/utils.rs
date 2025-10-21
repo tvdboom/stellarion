@@ -1,6 +1,7 @@
+use std::fmt::Debug;
+
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
-use std::fmt::Debug;
 
 pub fn cursor<T: Debug + Clone + Reflect>(
     icon: SystemCursorIcon,

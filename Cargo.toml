@@ -55,6 +55,7 @@ rfd = "0.15.4"
 serde = "1.0.228"
 strum = "0.27.2"
 strum_macros = "0.27.2"
+voronator = "0.2.1"
 winit = "0.30.12"
 
 # Enable a small amount of optimization in the dev profile.

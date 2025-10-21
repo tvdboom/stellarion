@@ -1,3 +1,7 @@
+use std::fmt::Debug;
+
+use bevy::prelude::*;
+
 use crate::core::assets::WorldAssets;
 use crate::core::audio::ChangeAudioMsg;
 use crate::core::constants::*;
@@ -5,8 +9,6 @@ use crate::core::menu::utils::add_text;
 use crate::core::settings::Settings;
 use crate::core::states::AudioState;
 use crate::utils::NameFromEnum;
-use bevy::prelude::*;
-use std::fmt::Debug;
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum SettingsBtn {

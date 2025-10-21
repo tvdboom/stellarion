@@ -1,3 +1,14 @@
+use bevy::prelude::*;
+use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+use bevy_egui::egui::load::SizedTexture;
+use bevy_egui::egui::{
+    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
+    Sense, Separator, TextStyle, Ui, UiBuilder,
+};
+use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
+use itertools::Itertools;
+use strum::IntoEnumIterator;
+
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
 use crate::core::combat::CombatStats;
@@ -17,17 +28,6 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Combat, Description, Price, Unit};
 use crate::utils::NameFromEnum;
-use bevy::prelude::*;
-use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{
-    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    Sense, Separator, TextStyle, Ui, UiBuilder,
-};
-use bevy_egui::EguiContexts;
-use bevy_egui::{egui, EguiTextureHandle};
-use itertools::Itertools;
-use strum::IntoEnumIterator;
 
 #[derive(Component)]
 pub struct UiCmp;
@@ -165,7 +165,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(75.);
+        ui.add_space(80.);
         ui.add_image(images.get("overview"), [20., 20.]);
         ui.small(format!("Overview: {}", &planet.name));
     });
@@ -357,6 +357,7 @@ fn draw_mission(
                                                 [55., 55.],
                                             )
                                             .interact(Sense::click())
+                                            .on_hover_cursor(CursorIcon::PointingHand)
                                             .on_hover_ui(|ui| {
                                                 ui.small(unit.to_name());
                                             })
@@ -385,7 +386,7 @@ fn draw_mission(
 
                                         let value =
                                             state.mission_info.army.entry(*unit).or_insert(0);
-                                        ui.add(egui::DragValue::new(value).speed(0.1).range(0..=n));
+                                        ui.add(egui::DragValue::new(value).speed(0.2).range(0..=n));
                                     });
                                 });
                             });
@@ -1043,7 +1044,7 @@ pub fn draw_ui(
         let right_side = planet_pos.x < width * 0.5;
 
         if player.owns(planet) {
-            let (window_w, window_h) = (320., 630.);
+            let (window_w, window_h) = (330., 630.);
 
             draw_panel(
                 &mut contexts,
@@ -1134,6 +1135,8 @@ pub fn draw_ui(
     }
 
     if state.mission {
+        state.end_turn = false;
+
         let (window_w, window_h) = (700., 500.);
 
         let is_hovered = contexts.ctx().unwrap().is_pointer_over_area();
@@ -1159,6 +1162,8 @@ pub fn draw_ui(
             },
         );
     } else if let Some(id) = state.planet_selected {
+        state.end_turn = false;
+
         // Hide shop if hovering another planet
         if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
             let planet = map.get_mut(id);

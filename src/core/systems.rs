@@ -1,3 +1,9 @@
+use std::collections::HashMap;
+
+use bevy::prelude::*;
+use bevy::window::WindowResized;
+use strum::IntoEnumIterator;
+
 use crate::core::map::map::Map;
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
@@ -5,10 +11,6 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{Shop, UiState};
 use crate::core::units::buildings::Building;
-use bevy::prelude::*;
-use bevy::window::WindowResized;
-use std::collections::HashMap;
-use strum::IntoEnumIterator;
 
 pub fn on_resize_system(
     mut resize_reader: MessageReader<WindowResized>,

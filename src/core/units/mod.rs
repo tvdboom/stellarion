@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::core::combat::CombatStats;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 pub mod buildings;
 pub mod defense;

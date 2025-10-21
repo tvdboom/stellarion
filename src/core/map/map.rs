@@ -1,9 +1,10 @@
-use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, PLANET_NAMES, WIDTH};
-use crate::core::map::planet::{Planet, PlanetId};
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
+
+use crate::core::constants::{HEIGHT, MAX_PLANETS, MIN_PLANETS, PLANET_NAMES, WIDTH};
+use crate::core::map::planet::{Planet, PlanetId};
 
 #[derive(Component)]
 pub struct MapCmp;

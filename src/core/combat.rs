@@ -1,5 +1,6 @@
-use crate::core::units::Description;
 use strum_macros::EnumIter;
+
+use crate::core::units::Description;
 
 #[derive(EnumIter, Debug, PartialEq)]
 pub enum CombatStats {

@@ -1,6 +1,7 @@
-use crate::core::states::AudioState;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+
+use crate::core::states::AudioState;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Settings {

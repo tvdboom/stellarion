@@ -19,10 +19,16 @@ mod ui;
 mod units;
 mod utils;
 
+use bevy::prelude::*;
+use bevy_egui::EguiPrimaryContextPass;
+use bevy_renet::renet::{RenetClient, RenetServer};
+use missions::send_mission_message;
+use strum::IntoEnumIterator;
+
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::map::map::MapCmp;
-use crate::core::map::systems::{draw_map, update_planet_info};
+use crate::core::map::systems::{draw_map, update_end_turn, update_planet_info, update_voronoi};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
 use crate::core::messages::MessageMsg;
@@ -38,11 +44,6 @@ use crate::core::turns::{next_turn, NextTurnMsg};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, UiState};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
-use bevy::prelude::*;
-use bevy_egui::EguiPrimaryContextPass;
-use bevy_renet::renet::{RenetClient, RenetServer};
-use missions::send_mission_message;
-use strum::IntoEnumIterator;
 
 pub struct GamePlugin;
 
@@ -114,10 +115,17 @@ impl Plugin for GamePlugin {
             .add_systems(Update, check_keys.in_set(InGameSet))
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
-            .add_systems(OnEnter(AppState::Game), (despawn::<MapCmp>, draw_map))
+            .add_systems(OnEnter(AppState::Game), draw_map)
             .add_systems(
                 Update,
-                (next_turn, update_planet_info, send_mission_message, update_mission)
+                (
+                    next_turn,
+                    update_voronoi,
+                    update_end_turn,
+                    update_planet_info,
+                    send_mission_message,
+                    update_mission,
+                )
                     .in_set(InGameSet),
             )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))

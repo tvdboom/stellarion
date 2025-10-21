@@ -1,3 +1,8 @@
+use std::net::IpAddr;
+
+use bevy::prelude::*;
+use bevy_renet::renet::RenetServer;
+
 use crate::core::assets::WorldAssets;
 use crate::core::constants::{
     BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, TITLE_TEXT_SIZE,
@@ -14,9 +19,6 @@ use crate::core::settings::Settings;
 use crate::core::states::AppState;
 use crate::utils::get_local_ip;
 use crate::TITLE;
-use bevy::prelude::*;
-use bevy_renet::renet::RenetServer;
-use std::net::IpAddr;
 
 pub fn setup_menu(
     mut commands: Commands,

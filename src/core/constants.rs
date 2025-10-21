@@ -32,8 +32,9 @@ pub const SILO_CAPACITY_FACTOR: usize = 10;
 
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;
-pub const MISSION_Z: f32 = 1.;
-pub const PLANET_Z: f32 = 2.;
+pub const VORONOI_Z: f32 = 1.;
+pub const MISSION_Z: f32 = 2.;
+pub const PLANET_Z: f32 = 3.;
 
 pub const PLANET_NAMES: [&str; 80] = [
     "Aegis",

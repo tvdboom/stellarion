@@ -1,11 +1,12 @@
+use bevy::prelude::Component;
+use serde::{Deserialize, Serialize};
+use strum_macros::EnumIter;
+
 use crate::core::map::planet::Planet;
 use crate::core::ui::systems::Shop;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Description, Unit};
-use bevy::prelude::Component;
-use serde::{Deserialize, Serialize};
-use strum_macros::EnumIter;
 
 #[derive(Component, EnumIter, Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Icon {
@@ -108,7 +109,9 @@ impl Description for Icon {
             Icon::MissileStrike => {
                 "Launch an interplanetary missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary missiles ignore any ships \
-                and the planetary shield at the target planet, and directly hit the defenses."
+                and the planetary shield at the target planet, and directly hit the defenses. \
+                Once launched, a missile strike always hits the destination planet, even if it \
+                has been colonized by the user."
             },
             Icon::Destroy => {
                 "After a successful attack, every surviving War Sun will try to obliterate the \

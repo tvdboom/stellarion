@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use bevy_kira_audio::AudioSource;
-use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct TextureInfo {

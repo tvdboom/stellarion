@@ -1,3 +1,9 @@
+use bevy::prelude::*;
+use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
+use bevy_renet::renet::{RenetClient, RenetServer};
+use rand::prelude::IteratorRandom;
+use rand::rng;
+
 use crate::core::assets::WorldAssets;
 use crate::core::constants::*;
 use crate::core::map::map::Map;
@@ -12,11 +18,6 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::UiState;
 use crate::utils::NameFromEnum;
-use bevy::prelude::*;
-use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
-use bevy_renet::renet::{RenetClient, RenetServer};
-use rand::prelude::IteratorRandom;
-use rand::rng;
 
 #[derive(Component)]
 pub struct MenuCmp;

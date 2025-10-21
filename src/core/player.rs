@@ -1,9 +1,10 @@
-use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::missions::{Mission, MissionId};
-use crate::core::resources::Resources;
 use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
+
+use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::missions::{Mission, MissionId};
+use crate::core::resources::Resources;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Player {

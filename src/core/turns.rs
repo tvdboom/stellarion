@@ -1,3 +1,5 @@
+use bevy::prelude::*;
+
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
@@ -7,7 +9,6 @@ use crate::core::ui::systems::UiState;
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
-use bevy::prelude::*;
 
 #[derive(Message)]
 pub struct NextTurnMsg;
@@ -22,6 +23,7 @@ pub fn next_turn(
 ) {
     for _ in next_turn_ev.read() {
         settings.turn += 1;
+        state.end_turn = false;
 
         // Produce resources
         let production = player.resource_production(&map.planets);
@@ -42,7 +44,7 @@ pub fn next_turn(
             // If the destination planet is friendly, the mission changes to deploy
             // (the planet could have been colonized by another mission)
             // Except Missile strikes, which always attack the destination planet
-            if destination.owned == Some(id) || mission.objective == Icon::MissileStrike {
+            if destination.owned == Some(id) && mission.objective != Icon::MissileStrike {
                 mission.objective = Icon::Deploy;
             }
 

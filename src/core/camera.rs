@@ -1,10 +1,11 @@
+use bevy::input::mouse::MouseWheel;
+use bevy::prelude::*;
+use bevy_egui::EguiContexts;
+
 use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
 use crate::core::map::map::Map;
 use crate::core::map::systems::PlanetCmp;
 use crate::core::ui::systems::UiState;
-use bevy::input::mouse::MouseWheel;
-use bevy::prelude::*;
-use bevy_egui::EguiContexts;
 
 #[derive(Component)]
 pub struct MainCamera;

@@ -1,3 +1,12 @@
+use std::collections::HashMap;
+use std::ops::Range;
+
+use bevy::math::Vec2;
+use bevy_renet::renet::ClientId;
+use rand::prelude::IteratorRandom;
+use rand::{rng, Rng};
+use serde::{Deserialize, Serialize};
+
 use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR,
 };
@@ -6,13 +15,6 @@ use crate::core::units::buildings::{Building, Complex};
 use crate::core::units::defense::Battery;
 use crate::core::units::ships::Fleet;
 use crate::core::units::Unit;
-use bevy::math::Vec2;
-use bevy_renet::renet::ClientId;
-use rand::prelude::IteratorRandom;
-use rand::{rng, Rng};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::ops::Range;
 
 pub type PlanetId = usize;
 
@@ -104,12 +106,15 @@ impl Planet {
 
         // Remove!!
         self.fleet = HashMap::from([
+            (crate::core::units::ships::Ship::Probe, 88),
             (crate::core::units::ships::Ship::LightFighter, 15),
             (crate::core::units::ships::Ship::ColonyShip, 5),
             (crate::core::units::ships::Ship::Cruiser, 11),
         ]);
-        self.battery =
-            HashMap::from([(crate::core::units::defense::Defense::InterplanetaryMissile, 11)]);
+        self.battery = HashMap::from([
+            (crate::core::units::defense::Defense::RocketLauncher, 79),
+            (crate::core::units::defense::Defense::InterplanetaryMissile, 88),
+        ]);
     }
 
     pub fn conquered(&mut self, client_id: ClientId) {

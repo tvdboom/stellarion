@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use bevy_egui::egui::{RichText, WidgetText};
+use bevy_egui::egui::RichText;
 use bevy_egui::EguiContexts;
 use egui_notify::{Anchor, Toast, Toasts};
 
@@ -45,19 +45,19 @@ impl MessageMsg {
 pub struct Messages(pub Toasts);
 
 impl Messages {
-    pub fn info(&mut self, message: String) -> &mut Toast {
+    pub fn info(&mut self, message: &String) -> &mut Toast {
         self.0
             .info(RichText::new(message).small())
             .duration(Some(Duration::from_secs(MESSAGE_DURATION)))
     }
 
-    pub fn warning(&mut self, message: impl Into<WidgetText>) -> &mut Toast {
+    pub fn warning(&mut self, message: &String) -> &mut Toast {
         self.0
             .warning(RichText::new(message).small())
             .duration(Some(Duration::from_secs(MESSAGE_DURATION)))
     }
 
-    pub fn error(&mut self, message: impl Into<WidgetText>) -> &mut Toast {
+    pub fn error(&mut self, message: &String) -> &mut Toast {
         self.0
             .error(RichText::new(message).small())
             .duration(Some(Duration::from_secs(MESSAGE_DURATION)))

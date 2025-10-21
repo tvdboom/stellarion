@@ -1,9 +1,11 @@
-use crate::core::resources::Resources;
-use crate::core::units::{Combat, Description, Price};
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use strum_macros::EnumIter;
+
+use crate::core::resources::Resources;
+use crate::core::units::{Combat, Description, Price};
 
 pub type Battery = HashMap<Defense, usize>;
 

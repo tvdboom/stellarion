@@ -3,9 +3,6 @@
 mod core;
 mod utils;
 
-use crate::core::constants::{HEIGHT, WIDTH};
-use crate::core::messages::MessagesPlugin;
-use crate::core::GamePlugin;
 use bevy::asset::AssetMetaCheck;
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
@@ -16,6 +13,10 @@ use bevy_kira_audio::AudioPlugin;
 use bevy_renet::netcode::{NetcodeClientPlugin, NetcodeServerPlugin};
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
 use winit::window::Icon;
+
+use crate::core::constants::{HEIGHT, WIDTH};
+use crate::core::messages::MessagesPlugin;
+use crate::core::GamePlugin;
 
 pub const TITLE: &str = "Stellarion";
 

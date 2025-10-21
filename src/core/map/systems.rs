@@ -1,6 +1,19 @@
+use std::collections::HashMap;
+
+use bevy::asset::RenderAssetUsages;
+use bevy::color::palettes::css::WHITE;
+use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::prelude::*;
+use bevy::window::{CursorIcon, SystemCursorIcon};
+use strum::IntoEnumIterator;
+use voronator::delaunator::Point;
+use voronator::VoronoiDiagram;
+
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
-use crate::core::constants::{BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE};
+use crate::core::constants::{
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE, VORONOI_Z,
+};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
@@ -11,11 +24,10 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::turns::NextTurnMsg;
 use crate::core::ui::systems::UiState;
+use crate::core::units::defense::Defense;
+use crate::core::units::ships::Ship;
+use crate::core::units::Unit;
 use crate::utils::NameFromEnum;
-use bevy::color::palettes::css::WHITE;
-use bevy::prelude::*;
-use bevy::window::{CursorIcon, SystemCursorIcon};
-use strum::IntoEnumIterator;
 
 #[derive(Component)]
 pub struct PlanetCmp {
@@ -47,7 +59,22 @@ impl MissionCmp {
 pub struct ShowOnHoverCmp;
 
 #[derive(Component)]
+pub struct VoronoiCmp(pub PlanetId);
+
+#[derive(Component)]
+pub struct VoronoiEdgeCmp {
+    pub planet: PlanetId,
+    pub key: usize,
+}
+
+#[derive(Component)]
+pub struct EndTurnLabelCmp;
+
+#[derive(Component)]
 pub struct EndTurnButtonCmp;
+
+#[derive(Component)]
+pub struct EndTurnButtonLabelCmp;
 
 fn set_button_index(button_q: &mut ImageNode, index: usize) {
     if let Some(texture) = &mut button_q.texture_atlas {
@@ -57,9 +84,11 @@ fn set_button_index(button_q: &mut ImageNode, index: usize) {
 
 pub fn draw_map(
     mut commands: Commands,
+    camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
     map: Res<Map>,
     player: Res<Player>,
-    camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     assets: Local<WorldAssets>,
 ) {
     let (mut camera_t, mut projection) = camera.into_inner();
@@ -247,30 +276,67 @@ pub fn draw_map(
                                                 ..state.mission_info.clone()
                                             };
                                         } else if icon.is_mission() {
+                                            state.mission = true;
+
                                             // The origin is determined as follows: the selected
                                             // planet if owned and fulfills condition, else the
                                             // first planet of the player that fulfills condition
-                                            state.mission = true;
+                                            let origin_id = state
+                                                .planet_selected
+                                                .filter(|&id| {
+                                                    id != planet_id && icon.condition(map.get(id))
+                                                })
+                                                .unwrap_or(
+                                                    map.planets
+                                                        .iter()
+                                                        .find_map(|p| {
+                                                            (p.id != planet_id
+                                                                && player.controls(p)
+                                                                && icon.condition(p))
+                                                            .then_some(p.id)
+                                                        })
+                                                        .unwrap(),
+                                                );
+
+                                            let origin = map.get(origin_id);
                                             state.mission_info = Mission {
                                                 objective: icon,
-                                                origin: state
-                                                    .planet_selected
-                                                    .filter(|&id| {
-                                                        id != planet_id
-                                                            && icon.condition(map.get(id))
-                                                    })
-                                                    .unwrap_or(
-                                                        map.planets
-                                                            .iter()
-                                                            .find_map(|p| {
-                                                                (p.id != planet_id
-                                                                    && player.controls(p)
-                                                                    && icon.condition(p))
-                                                                .then_some(p.id)
-                                                            })
-                                                            .unwrap(),
-                                                    ),
+                                                origin: origin_id,
                                                 destination: planet_id,
+                                                army: match icon {
+                                                    Icon::Colonize => HashMap::from([(
+                                                        Unit::Ship(Ship::ColonyShip),
+                                                        1,
+                                                    )]),
+                                                    Icon::Spy => HashMap::from([(
+                                                        Unit::Ship(Ship::Probe),
+                                                        origin.get(&Unit::Ship(Ship::Probe)),
+                                                    )]),
+                                                    Icon::Attack | Icon::Destroy => origin
+                                                        .fleet
+                                                        .iter()
+                                                        .filter_map(|(s, c)| {
+                                                            s.is_combat().then_some((
+                                                                Unit::Ship(s.clone()),
+                                                                *c,
+                                                            ))
+                                                        })
+                                                        .collect(),
+                                                    Icon::MissileStrike => HashMap::from([(
+                                                        Unit::Defense(
+                                                            Defense::InterplanetaryMissile,
+                                                        ),
+                                                        origin.get(&Unit::Defense(
+                                                            Defense::InterplanetaryMissile,
+                                                        )),
+                                                    )]),
+                                                    Icon::Deploy => origin
+                                                        .fleet
+                                                        .iter()
+                                                        .map(|(s, c)| (Unit::Ship(s.clone()), *c))
+                                                        .collect(),
+                                                    _ => unreachable!(),
+                                                },
                                                 ..state.mission_info.clone()
                                             };
                                         }
@@ -325,14 +391,91 @@ pub fn draw_map(
         }
     }
 
+    // Draw Voronoi cells
+    if let Some(voronoi) = VoronoiDiagram::<Point>::from_tuple(
+        &(-10000., -10000.),
+        &(10000., 10000.),
+        &map.planets.iter().map(|p| (p.position.x as f64, p.position.y as f64)).collect::<Vec<_>>(),
+    ) {
+        for (i, cell) in voronoi.cells().iter().enumerate() {
+            let planet_id = map.planets[i].id;
+
+            let points = cell.points();
+            let n = points.len();
+
+            if n >= 3 {
+                let positions = cell
+                    .points()
+                    .iter()
+                    .map(|p| Vec3::new(p.x as f32, p.y as f32, VORONOI_Z))
+                    .collect::<Vec<_>>();
+
+                let indices: Vec<u32> =
+                    (1..n - 1).flat_map(|i| vec![0u32, i as u32, (i + 1) as u32]).collect();
+
+                let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+                    .with_inserted_indices(Indices::U32(indices));
+
+                commands.spawn((
+                    Mesh2d(meshes.add(mesh)),
+                    MeshMaterial2d(materials.add(Color::srgba(0., 0.3, 0.5, 0.05))),
+                    Visibility::Hidden,
+                    VoronoiCmp(map.planets[i].id),
+                ));
+
+                for j in 0..n {
+                    let a = points[j];
+                    let b = points[(j + 1) % points.len()];
+                    let v1 = Vec2::new(a.x as f32, a.y as f32);
+                    let v2 = Vec2::new(b.x as f32, b.y as f32);
+
+                    let mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default())
+                        .with_inserted_attribute(
+                            Mesh::ATTRIBUTE_POSITION,
+                            vec![v1.extend(VORONOI_Z + 0.1), v2.extend(VORONOI_Z + 0.1)],
+                        )
+                        .with_inserted_indices(Indices::U32(vec![0, 1]));
+
+                    commands.spawn((
+                        Mesh2d(meshes.add(mesh)),
+                        MeshMaterial2d(materials.add(Color::srgba(0., 0.3, 0.5, 0.5))),
+                        Visibility::Hidden,
+                        VoronoiEdgeCmp {
+                            planet: planet_id,
+                            key: v1.distance(v2) as usize,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
     // Spawn end turn button
     let texture = assets.texture("long button");
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(35.),
+            right: Val::Px(270.),
+            ..default()
+        },
+        Text::new("Waiting for other players to finish their turn..."),
+        TextFont {
+            font: assets.font("bold"),
+            font_size: BUTTON_TEXT_SIZE,
+            ..default()
+        },
+        Visibility::Hidden,
+        EndTurnLabelCmp,
+    ));
+
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Percent(3.),
-                right: Val::Percent(3.),
+                bottom: Val::Px(30.),
+                right: Val::Px(50.),
                 width: Val::Px(200.),
                 height: Val::Px(40.),
                 justify_content: JustifyContent::Center,
@@ -349,14 +492,15 @@ pub fn draw_map(
             Pickable::default(),
             EndTurnButtonCmp,
             MapCmp,
-            children![
-                Text::new("End Turn"),
+            children![(
+                Text::new("End turn"),
                 TextFont {
                     font: assets.font("bold"),
                     font_size: BUTTON_TEXT_SIZE,
                     ..default()
                 },
-            ],
+                EndTurnButtonLabelCmp,
+            )],
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Pointer))
         .observe(
@@ -381,10 +525,65 @@ pub fn draw_map(
             |_: On<Pointer<Click>>,
              mut state: ResMut<UiState>,
              mut next_turn_ev: MessageWriter<NextTurnMsg>| {
-                state.end_turn = true;
-                next_turn_ev.write(NextTurnMsg);
+                state.planet_selected = None;
+                state.mission = false;
+                state.end_turn = !state.end_turn;
+                if state.end_turn {
+                    next_turn_ev.write(NextTurnMsg);
+                }
             },
         );
+}
+
+pub fn update_voronoi(
+    mut cell_q: Query<(&mut Visibility, &VoronoiCmp)>,
+    mut edge_q: Query<(&mut Visibility, &VoronoiEdgeCmp), Without<VoronoiCmp>>,
+    map: Res<Map>,
+    player: Res<Player>,
+) {
+    for (mut cell_v, cell) in &mut cell_q {
+        *cell_v = if player.owns(map.get(cell.0)) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    let counts: HashMap<usize, usize> = edge_q
+        .iter()
+        .filter_map(|(_, edge)| player.owns(map.get(edge.planet)).then_some(edge.key))
+        .fold(HashMap::new(), |mut acc, key| {
+            *acc.entry(key).or_default() += 1;
+            acc
+        });
+
+    for (mut edge_v, edge) in &mut edge_q {
+        *edge_v = if *counts.get(&edge.key).unwrap_or(&2) <= 1 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+pub fn update_end_turn(
+    button_q: Single<&mut Text, With<EndTurnButtonLabelCmp>>,
+    label_q: Single<&mut Visibility, With<EndTurnLabelCmp>>,
+    state: Res<UiState>,
+) {
+    let mut button_t = button_q.into_inner();
+    button_t.0 = if state.end_turn {
+        "Continue turn".to_string()
+    } else {
+        "End turn".to_string()
+    };
+
+    let mut label_v = label_q.into_inner();
+    *label_v = if state.end_turn {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
 }
 
 pub fn update_planet_info(
