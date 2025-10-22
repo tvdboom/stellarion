@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::assets::WorldAssets;
@@ -13,6 +14,19 @@ use crate::core::ui::systems::UiState;
 use crate::core::units::{Army, Combat, Unit};
 
 pub type MissionId = u64;
+
+#[derive(Resource, Clone, Default, Serialize, Deserialize)]
+pub struct Missions(pub Vec<Mission>);
+
+impl Missions {
+    pub fn get(&self, mission_id: MissionId) -> &Mission {
+        self.0.iter().find(|m| m.id == mission_id).expect("Mission not found.")
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Mission> {
+        self.0.iter()
+    }
+}
 
 #[derive(Message)]
 pub struct SendMissionMsg {
@@ -30,6 +44,7 @@ impl SendMissionMsg {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Mission {
     pub id: MissionId,
+    pub owner: ClientId,
     pub origin: PlanetId,
     pub destination: PlanetId,
     pub position: Vec2,
@@ -38,9 +53,10 @@ pub struct Mission {
 }
 
 impl Mission {
-    pub fn from(other: &Mission) -> Self {
+    pub fn from(other: &Mission, id: ClientId) -> Self {
         Self {
             id: rand::random(),
+            owner: id,
             ..other.clone()
         }
     }
@@ -92,43 +108,87 @@ impl Mission {
         let destination = map.get(self.destination);
         self.position.distance(destination.position) <= Planet::SIZE
     }
+
+    pub fn turns_to_destination(&self, map: &Map) -> usize {
+        (self.distance(map) / self.speed()).ceil() as usize
+    }
 }
 
-pub fn update_mission(
+pub fn update_missions(
     mut commands: Commands,
     mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &MissionCmp)>,
     state: Res<UiState>,
+    map: Res<Map>,
     player: Res<Player>,
+    missions: Res<Missions>,
     assets: Local<WorldAssets>,
 ) {
-    for (mission_e, mut mission_s, mut mission_t, mission_c) in mission_q.iter_mut() {
-        if let Some(mission) = player.missions.iter().find(|m| m.id == mission_c.id) {
+    for mission in missions.iter() {
+        if !mission_q.iter().any(|(_, _, _, m)| m.id == mission.id) {
+            let id = mission.id;
+
+            let origin = map.get(mission.origin);
+            let destination = map.get(mission.destination);
+
+            let direction = (-origin.position + destination.position).normalize();
+            let angle = direction.y.atan2(direction.x);
+
+            commands
+                .spawn((
+                    Sprite {
+                        image: assets.image("mission"),
+                        custom_size: Some(Vec2::splat(50.)),
+                        ..default()
+                    },
+                    Transform {
+                        translation: mission.position.extend(MISSION_Z),
+                        rotation: Quat::from_rotation_z(angle),
+                        ..default()
+                    },
+                    Pickable::default(),
+                    MissionCmp::new(id),
+                    MapCmp,
+                ))
+                .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                    state.mission_hover = Some(id);
+                })
+                .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
+                    state.mission_hover = None;
+                });
+        }
+    }
+
+    for (mission_e, mut mission_s, mut mission_t, mission_c) in &mut mission_q {
+        if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
             mission_t.translation = mission.position.extend(MISSION_Z);
-            if state.mission_hover.is_some_and(|id| id == mission.id) {
-                mission_s.image = assets.image("mission hover");
-            } else {
-                mission_s.image = assets.image("mission");
-            }
+
+            let hover = state.mission_hover.is_some_and(|id| id == mission.id);
+            let own = mission.owner == player.id;
+            let suffix = match (hover, own) {
+                (true, true) => "mission hover",
+                (true, false) => "mission hover enemy",
+                (false, true) => "mission",
+                (false, false) => "mission enemy",
+            };
+            mission_s.image = assets.image(suffix);
         } else {
             commands.entity(mission_e).despawn();
         }
     }
 }
 
-pub fn send_mission_message(
-    mut commands: Commands,
+pub fn send_mission(
     mut send_mission: MessageReader<SendMissionMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
-    assets: Local<WorldAssets>,
+    mut missions: ResMut<Missions>,
 ) {
     for SendMissionMsg {
         mission,
     } in send_mission.read()
     {
         let mut mission = mission.clone();
-        let mission_id = mission.id;
 
         player.resources.deuterium -= mission.fuel_consumption(&map);
 
@@ -148,33 +208,9 @@ pub fn send_mission_message(
         let destination = map.get(mission.destination);
 
         let direction = (-origin.position + destination.position).normalize();
-        let angle = direction.y.atan2(direction.x);
-
         mission.position += direction * Planet::SIZE; // Start a bit outside the planet
-        player.missions.push(mission.clone());
 
-        commands
-            .spawn((
-                Sprite {
-                    image: assets.image("mission"),
-                    custom_size: Some(Vec2::splat(50.)),
-                    ..default()
-                },
-                Transform {
-                    translation: mission.position.extend(MISSION_Z),
-                    rotation: Quat::from_rotation_z(angle),
-                    ..default()
-                },
-                Pickable::default(),
-                MissionCmp::new(mission_id),
-                MapCmp,
-            ))
-            .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                state.mission_hover = Some(mission_id);
-            })
-            .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                state.mission_hover = None;
-            });
+        missions.0.push(mission.clone());
 
         message.write(MessageMsg::info("Mission sent."));
     }

@@ -17,7 +17,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             audio: AudioState::default(),
-            n_planets: 10,
+            n_planets: 3,
             show_cells: true,
             show_info: false,
             show_hover: true,

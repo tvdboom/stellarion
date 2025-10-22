@@ -28,6 +28,20 @@ other ant colonies.
 The goal of the game is to conquer all enemy's home planets. If your home planet is conquered, 
 you lose the game.
 
+### Planets
+
+#### Owned vs controlled planets
+
+A planet is owned by a player if it's the player's home planet or if it has been colonized by a
+Colony Ship. A planet is controlled by a player if the player has military presence on it. If a
+planet is owned, it is also controlled by the owner. If a player wins a combat on a planet, but
+doesn't colonize it, he gains controls over that planet and the previous owner loses both 
+ownership and control.
+
+An owned planet produces resources for its owner. Buildings can only be build and used on owned
+planets. For example, a player controlling (but not owning) a planet, cannot use the Phalanx to
+see incoming attacks nor use the Jump Gate to move its fleet.
+
 ### Combat
 
 In combat, there are two sides: the attacker and the defender. There is the possibility that 

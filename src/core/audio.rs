@@ -59,7 +59,7 @@ pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
         .looped();
 }
 
-pub fn change_audio_message(
+pub fn change_audio(
     mut change_audio_ev: MessageReader<ChangeAudioMsg>,
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
     mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
@@ -121,7 +121,7 @@ pub fn toggle_audio_keyboard(
     }
 }
 
-pub fn play_audio_message(
+pub fn play_audio(
     mut ev: MessageReader<PlayAudioMsg>,
     audio_state: Res<State<AudioState>>,
     audio: Res<Audio>,

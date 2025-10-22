@@ -3,7 +3,6 @@ use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::missions::{Mission, MissionId};
 use crate::core::resources::Resources;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
@@ -11,8 +10,6 @@ pub struct Player {
     pub id: ClientId,
     pub home_planet: PlanetId,
     pub resources: Resources,
-    pub missions: Vec<Mission>,
-    pub enemy_missions: Vec<Mission>,
 }
 
 impl Default for Player {
@@ -25,8 +22,6 @@ impl Default for Player {
                 crystal: 1500,
                 deuterium: 1500,
             },
-            missions: vec![],
-            enemy_missions: vec![],
         }
     }
 }
@@ -50,9 +45,5 @@ impl Player {
 
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
-    }
-
-    pub fn get_mission(&self, mission_id: MissionId) -> &Mission {
-        self.missions.iter().find(|m| m.id == mission_id).expect("Mission not found.")
     }
 }

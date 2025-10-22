@@ -12,10 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
+use crate::core::missions::Missions;
 use crate::core::network::{Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
+use crate::core::turns::PreviousEndTurnState;
+use crate::core::ui::systems::UiState;
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveAll {
@@ -23,6 +26,7 @@ pub struct SaveAll {
     pub map: Map,
     pub host: Player,
     pub clients: Vec<Player>,
+    pub missions: Missions,
 }
 
 #[derive(Message)]
@@ -91,8 +95,9 @@ pub fn load_game(
                             server_send_msg.write(ServerSendMsg::new(
                                 ServerMessage::LoadGame {
                                     turn: data.settings.turn,
-                                    player: player.clone(),
                                     map: data.map.clone(),
+                                    player: player.clone(),
+                                    missions: data.missions.clone(),
                                 },
                                 Some(*new_id),
                             ));
@@ -104,8 +109,14 @@ pub fn load_game(
             }
 
             next_audio_state.set(data.settings.audio);
+
+            commands.insert_resource(UiState::default());
+            commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(data.settings);
             commands.insert_resource(data.map);
+            commands.insert_resource(data.host);
+            commands.insert_resource(data.missions);
+            commands.insert_resource(Host::default());
 
             next_app_state.set(AppState::Game);
         }
@@ -118,6 +129,7 @@ pub fn save_game(
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
+    missions: Res<Missions>,
     host: Option<Res<Host>>,
 ) {
     if let Some(host) = host {
@@ -133,6 +145,7 @@ pub fn save_game(
                     map: map.clone(),
                     host: player.clone(),
                     clients: host.clients.values().cloned().collect(),
+                    missions: missions.clone(),
                 };
 
                 save_to_bin(&file_path_str, &data).expect("Failed to save the game.");

@@ -9,6 +9,7 @@ use crate::core::constants::*;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::menu::utils::{add_text, recolor};
+use crate::core::missions::Missions;
 use crate::core::network::{
     new_renet_client, new_renet_server, Host, Ip, ServerMessage, ServerSendMsg,
 };
@@ -16,6 +17,7 @@ use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
+use crate::core::turns::PreviousEndTurnState;
 use crate::core::ui::systems::UiState;
 use crate::utils::NameFromEnum;
 
@@ -75,8 +77,10 @@ pub fn on_click_menu_button(
             map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet(0);
 
             commands.insert_resource(UiState::default());
+            commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, 0));
+            commands.insert_resource(Missions::default());
             commands.insert_resource(Host::default());
             next_app_state.set(AppState::Game);
         },
@@ -125,6 +129,7 @@ pub fn on_click_menu_button(
             commands.insert_resource(UiState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
+            commands.insert_resource(Missions::default());
             commands.insert_resource(Host::default());
 
             next_app_state.set(AppState::Game);
@@ -156,7 +161,7 @@ pub fn on_click_menu_button(
             AppState::MultiPlayerMenu | AppState::Settings => {
                 next_app_state.set(AppState::MainMenu);
             },
-            AppState::Lobby => {
+            AppState::Lobby | AppState::ConnectedLobby => {
                 if let Some(client) = client.as_mut() {
                     client.disconnect();
                     commands.remove_resource::<RenetClient>();

@@ -269,10 +269,10 @@ pub fn setup_end_game(
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
-    let image = if map.planets.iter().any(|p| p.id == player.home_planet && player.owns(p)) {
-        "victory"
-    } else {
+    let image = if !map.planets.iter().any(|p| p.id == player.home_planet && player.owns(p)) {
         "defeat"
+    } else {
+        "victory"
     };
 
     commands.spawn((add_root_node(), MenuCmp)).with_children(|parent| {

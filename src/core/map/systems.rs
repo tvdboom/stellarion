@@ -18,7 +18,7 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::cursor;
-use crate::core::missions::{Mission, MissionId};
+use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -235,13 +235,12 @@ pub fn draw_map(
                             .observe(
                                 move |_: On<Pointer<Over>>,
                                       mut state: ResMut<UiState>,
-                                      player: Res<Player>| {
+                                      missions: Res<Missions>| {
                                     state.planet_hover = Some(planet_id);
-                                    if let Some(mission) = player
-                                        .missions
-                                        .iter()
-                                        .find(|m| m.destination == planet_id && m.objective == icon)
-                                    {
+                                    if let Some(mission) = missions.iter().find(|m| {
+                                        m.destination == planet_id
+                                            && (m.objective == icon || icon == Icon::Attacked)
+                                    }) {
                                         state.mission_hover = Some(mission.id);
                                     }
                                 },
@@ -421,6 +420,7 @@ pub fn draw_map(
                     MeshMaterial2d(materials.add(Color::srgba(0., 0.3, 0.5, 0.05))),
                     Visibility::Hidden,
                     VoronoiCmp(map.planets[i].id),
+                    MapCmp,
                 ));
 
                 for j in 0..n {
@@ -444,6 +444,7 @@ pub fn draw_map(
                             planet: planet_id,
                             key: v1.distance(v2) as usize,
                         },
+                        MapCmp,
                     ));
                 }
             }
@@ -580,17 +581,29 @@ pub fn update_end_turn(
 }
 
 pub fn update_planet_info(
-    planet_q: Query<(Entity, &PlanetCmp)>,
+    mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
     mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
     mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<Icon>)>,
     children_q: Query<&Children>,
     map: Res<Map>,
     player: Res<Player>,
+    missions: Res<Missions>,
     state: Res<UiState>,
     settings: Res<Settings>,
+    assets: Local<WorldAssets>,
 ) {
-    for (planet_e, planet_c) in &planet_q {
+    for (planet_e, mut planet_s, planet_c) in &mut planet_q {
         let planet = map.get(planet_c.id);
+
+        // Update destroyed planet image
+        planet_s.image = assets.image(format!(
+            "planet{}",
+            if planet.is_destroyed {
+                0
+            } else {
+                planet.image
+            }
+        ));
 
         let selected =
             state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
@@ -600,9 +613,11 @@ pub fn update_planet_info(
         for child in children_q.iter_descendants(planet_e) {
             if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
                 let visible = match icon {
-                    Icon::Attacked => {
-                        player.enemy_missions.iter().any(|m| m.destination == planet.id)
-                    },
+                    Icon::Attacked => missions.iter().any(|m| {
+                        player.owns(planet)
+                            && m.objective != Icon::Deploy
+                            && m.destination == planet.id
+                    }),
                     Icon::Buildings | Icon::Defenses => {
                         player.owns(planet)
                             && (selected || icon.condition(planet) || settings.show_info)
@@ -616,8 +631,7 @@ pub fn update_planet_info(
                         // Show icon if there is a mission with this objective towards this
                         // planet or, if there's selected planet, it fulfills the condition,
                         // else if any of the player's planets fulfills the condition
-                        let has_mission = player
-                            .missions
+                        let has_mission = missions
                             .iter()
                             .any(|m| m.objective == *icon && m.destination == planet.id);
 

@@ -16,7 +16,7 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::PlanetCmp;
-use crate::core::missions::{Mission, MissionId, SendMissionMsg};
+use crate::core::missions::{Mission, MissionId, Missions, SendMissionMsg};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -575,7 +575,7 @@ fn draw_mission(
 
                         if response.clicked() {
                             send_mission
-                                .write(SendMissionMsg::new(Mission::from(&state.mission_info)));
+                                .write(SendMissionMsg::new(Mission::from(&state.mission_info, player.id)));
                             state.planet_selected = None;
                             state.mission = false;
                             state.mission_info = Mission::default();
@@ -603,7 +603,7 @@ fn draw_mission_fleet_hover(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(30.);
+        ui.add_space(20.);
         ui.add_image(images.get("mission"), [25., 25.]);
         ui.small("Mission");
     });
@@ -1005,6 +1005,7 @@ pub fn draw_ui(
     mut send_mission: MessageWriter<SendMissionMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
+    missions: Res<Missions>,
     mut state: ResMut<UiState>,
     settings: Res<Settings>,
     images: Res<ImageIds>,
@@ -1029,7 +1030,7 @@ pub fn draw_ui(
         |ui| draw_resources(ui, &settings, &map, &player, &images),
     );
 
-    // Store whether the panel is being shown on the right side of the screen
+    // Store whether the next panel should be shown on the right side or not
     let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
         let (planet, planet_pos) = planet_q
             .iter()
@@ -1063,7 +1064,7 @@ pub fn draw_ui(
                 |ui| draw_overview(ui, planet, &units, &images),
             );
 
-            right_side
+            !right_side
         } else if player.controls(planet) && planet.has_fleet() {
             let (window_w, window_h) = (140., 630.);
 
@@ -1084,16 +1085,16 @@ pub fn draw_ui(
                 |ui| draw_fleet(ui, planet, &units, &images),
             );
 
-            right_side
+            !right_side
         } else {
-            false
+            right_side
         }
     } else {
-        false
+        true
     };
 
     if let Some(mission_id) = state.mission_hover {
-        let mission = player.get_mission(mission_id);
+        let mission = missions.get(mission_id);
 
         let (window_w, window_h) = (140., 630.);
 
@@ -1102,7 +1103,7 @@ pub fn draw_ui(
             "mission hover fleet",
             "panel",
             (
-                if !right_side {
+                if right_side {
                     width * 0.998 - window_w
                 } else {
                     width * 0.002
@@ -1121,7 +1122,7 @@ pub fn draw_ui(
             "mission hover info",
             "panel",
             (
-                if !right_side {
+                if right_side {
                     width * 0.998 - window_w - window_w2 - 1.
                 } else {
                     width * 0.002 + window_w + 1.

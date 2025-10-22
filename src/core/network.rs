@@ -13,10 +13,12 @@ use crate::core::audio::PlayAudioMsg;
 use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
+use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::turns::StartTurnMsg;
+use crate::core::turns::{PreviousEndTurnState, StartTurnMsg};
+use crate::core::ui::systems::UiState;
 use crate::utils::get_local_ip;
 
 const PROTOCOL_ID: u64 = 7;
@@ -32,7 +34,13 @@ impl Default for Ip {
 
 #[derive(Resource, Default)]
 pub struct Host {
+    /// Maps client IDs to their respective players
     pub clients: HashMap<ClientId, Player>,
+
+    /// All missions in the game with real stats
+    pub missions: HashMap<MissionId, Mission>,
+
+    /// Keeps track of which clients have ended their turn
     pub turn_ended: HashSet<ClientId>,
 }
 
@@ -68,8 +76,9 @@ impl ClientSendMsg {
 pub enum ServerMessage {
     LoadGame {
         turn: usize,
-        player: Player,
         map: Map,
+        player: Player,
+        missions: Missions,
     },
     NPlayers(usize),
     StartGame {
@@ -77,7 +86,11 @@ pub enum ServerMessage {
         home_planet: PlanetId,
         map: Map,
     },
-    StartTurn(Player),
+    StartTurn {
+        map: Map,
+        player: Player,
+        missions: Missions,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,6 +98,7 @@ pub enum ClientMessage {
     EndTurn {
         end_turn: bool,
         player: Player,
+        missions: Missions,
     },
 }
 
@@ -195,12 +209,17 @@ pub fn server_receive_message(mut server: ResMut<RenetServer>, mut host: Option<
                 ClientMessage::EndTurn {
                     end_turn,
                     player,
+                    missions,
                 } => {
                     if let Some(host) = &mut host {
                         host.clients
                             .entry(id)
                             .and_modify(|p| *p = player.clone())
                             .or_insert(player);
+
+                        for mission in missions.iter().filter(|m| m.owner == id) {
+                            host.missions.insert(mission.id, mission.clone());
+                        }
 
                         if end_turn {
                             host.turn_ended.insert(id);
@@ -247,23 +266,38 @@ pub fn client_receive_message(
             } => {
                 *game_settings = game_settings.clone();
 
+                commands.insert_resource(UiState::default());
+                commands.insert_resource(PreviousEndTurnState::default());
                 commands.insert_resource(Player::new(id, home_planet));
                 commands.insert_resource(map);
+                commands.insert_resource(Missions::default());
+
                 next_app_state.set(AppState::Game);
             },
             ServerMessage::LoadGame {
                 turn,
-                player,
                 map,
+                player,
+                missions,
             } => {
                 game_settings.turn = turn;
-                commands.insert_resource(player);
+
+                commands.insert_resource(UiState::default());
+                commands.insert_resource(PreviousEndTurnState::default());
                 commands.insert_resource(map);
+                commands.insert_resource(player);
+                commands.insert_resource(missions);
 
                 next_app_state.set(AppState::Game);
             },
-            ServerMessage::StartTurn(player) => {
+            ServerMessage::StartTurn {
+                map,
+                player,
+                missions,
+            } => {
+                commands.insert_resource(map);
                 commands.insert_resource(player);
+                commands.insert_resource(missions);
                 start_turn_msg.write(StartTurnMsg);
             },
         }
