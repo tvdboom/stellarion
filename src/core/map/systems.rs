@@ -19,7 +19,6 @@ use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::cursor;
 use crate::core::missions::{Mission, MissionId};
-use crate::core::network::{ClientMessage, ClientSendMsg};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -521,20 +520,11 @@ pub fn draw_map(
                 set_button_index(&mut button_q.into_inner(), 1);
             },
         )
-        .observe(
-            |_: On<Pointer<Click>>,
-             mut state: ResMut<UiState>,
-             player: Res<Player>,
-             mut client_send_msg: MessageWriter<ClientSendMsg>| {
-                state.planet_selected = None;
-                state.mission = false;
-                state.end_turn = !state.end_turn;
-                client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
-                    end_turn: state.end_turn,
-                    player: player.clone(),
-                }));
-            },
-        );
+        .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
+            state.planet_selected = None;
+            state.mission = false;
+            state.end_turn = !state.end_turn;
+        });
 }
 
 pub fn update_voronoi(
@@ -614,11 +604,13 @@ pub fn update_planet_info(
                         player.enemy_missions.iter().any(|m| m.destination == planet.id)
                     },
                     Icon::Buildings | Icon::Defenses => {
-                        player.owns(planet) && (selected || icon.condition(planet))
+                        player.owns(planet)
+                            && (selected || icon.condition(planet) || settings.show_info)
                     },
                     Icon::Fleet => {
                         // A player can have a fleet on a not-owned planet
-                        player.controls(planet) && (selected || icon.condition(planet))
+                        player.controls(planet)
+                            && (selected || icon.condition(planet) || settings.show_info)
                     },
                     _ => {
                         // Show icon if there is a mission with this objective towards this
@@ -629,22 +621,27 @@ pub fn update_planet_info(
                             .iter()
                             .any(|m| m.objective == *icon && m.destination == planet.id);
 
-                        let has_condition = selected && {
-                            if let Some(id) = state.planet_selected {
-                                let p = map.get(id);
-                                (*icon == Icon::Deploy) == player.controls(planet)
-                                    && p.id != planet.id
+                        let has_condition = {
+                            let mut planets: Box<dyn Iterator<Item = &Planet>> =
+                                if let Some(id) = state.planet_selected {
+                                    Box::new(std::iter::once(map.get(id)))
+                                } else {
+                                    Box::new(map.planets.iter())
+                                };
+
+                            planets.any(|p| {
+                                p.id != planet.id
                                     && icon.condition(p)
-                            } else {
-                                map.planets.iter().any(|p| {
-                                    (*icon == Icon::Deploy) == player.controls(planet)
-                                        && p.id != planet.id
-                                        && icon.condition(p)
-                                })
-                            }
+                                    && match icon {
+                                        Icon::Deploy => {
+                                            player.controls(p) && player.controls(planet)
+                                        },
+                                        _ => player.controls(p) && !player.controls(planet),
+                                    }
+                            })
                         };
 
-                        has_mission || has_condition
+                        has_mission || ((selected || settings.show_info) && has_condition)
                     },
                 };
 

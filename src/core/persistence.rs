@@ -118,23 +118,25 @@ pub fn save_game(
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
-    host: Res<Host>,
+    host: Option<Res<Host>>,
 ) {
-    for _ in save_game_ev.read() {
-        if let Some(mut file_path) = FileDialog::new().save_file() {
-            if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
-                file_path.set_extension("bin");
+    if let Some(host) = host {
+        for _ in save_game_ev.read() {
+            if let Some(mut file_path) = FileDialog::new().save_file() {
+                if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
+                    file_path.set_extension("bin");
+                }
+
+                let file_path_str = file_path.to_string_lossy().to_string();
+                let data = SaveAll {
+                    settings: settings.clone(),
+                    map: map.clone(),
+                    host: player.clone(),
+                    clients: host.clients.values().cloned().collect(),
+                };
+
+                save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
             }
-
-            let file_path_str = file_path.to_string_lossy().to_string();
-            let data = SaveAll {
-                settings: settings.clone(),
-                map: map.clone(),
-                host: player.clone(),
-                clients: host.clients.values().cloned().collect(),
-            };
-
-            save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
         }
     }
 }

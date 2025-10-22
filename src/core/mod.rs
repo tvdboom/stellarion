@@ -40,7 +40,9 @@ use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::systems::{check_keys, on_resize_system};
-use crate::core::turns::{check_turn, start_turn_message, StartTurnMsg};
+use crate::core::turns::{
+    check_turn_ended, resolve_turn, start_turn_message, PreviousEndTurnState, StartTurnMsg,
+};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style, UiState};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
@@ -72,6 +74,7 @@ impl Plugin for GamePlugin {
             .init_resource::<Settings>()
             .init_resource::<ImageIds>()
             .init_resource::<UiState>()
+            .init_resource::<PreviousEndTurnState>()
             // Sets
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(Update, InGameSet.run_if(in_state(AppState::Game)))
@@ -137,7 +140,13 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 PostUpdate,
-                (check_turn.run_if(resource_exists::<Host>), start_turn_message).chain(),
+                check_turn_ended.run_if(resource_exists::<RenetClient>).in_set(InGameSet),
+            )
+            .add_systems(
+                Last,
+                (resolve_turn.run_if(resource_exists::<Host>), start_turn_message)
+                    .chain()
+                    .in_set(InGameSet),
             )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)

@@ -25,9 +25,51 @@ other ant colonies.
 
 ## 🎮 Gameplay
 
-The goal of the game is to kill the queen of every enemy colony on the map. If your own queen
-dies, you lose the game.
+The goal of the game is to conquer all enemy's home planets. If your home planet is conquered, 
+you lose the game.
 
+### Combat
+
+In combat, there are two sides: the attacker and the defender. There is the possibility that 
+the attacker has launched his fleets against a planet with no defense or ships, in which case 
+he automatically wins the combat. But otherwise, if the defender has ships or defense on his 
+planet, each side will fire upon the enemy. Each combat can have only two outcomes: attacker 
+wins or defender wins.
+
+Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S), 
+damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
+unit starts with its shield at its initial value. The hull has the value of previous round 
+(initial value of the ship if it's the first round). In each round, all participating units 
+randomly choose a target enemy unit.
+
+For each shooting unit:
+
+- A random enemy unit is chosen as target. If the unit is a defense and the planet has a 
+  Planetary Shield with remaining shield, the Planetary Shield is chosen as target instead.
+- If the damage is lower than the enemy's shield, the shield absorbs the shot, and the unit does 
+  not lose hull: S = S - W.
+- Else, if W > S, the shield only absorbs part of the shot and the rest of the damage is dealt to 
+  the hull: H = H - (W - S) and S = 0.
+- If the shooting unit has rapid fire against the target unit, it has a chance of RF% of choosing 
+  another target at random, and repeating the above steps for that new target.
+- All ships with H=0 (no hull points left) are destroyed.
+- If the objective is to destroy the planet and there are no enemy ships left, each attacking 
+  War Sun fires a shot with a chance of 20 - n_turn to hit. If it hits, the planet is immediately
+  destroyed and all defenses and buildings with it.
+- If it's the first round of combat and there are any Probes on the attacker's side, they leave 
+  combat and fly back to the origin planet.
+- If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 
+  side winning.
+
+
+Things to keep in mind:
+
+- Buildings are build before any combat takes place.
+- Movement and combat is resolved in arbitrary player order each turn. This means that you 
+  cannot know if reinforcements will arrive before or after an attack when they both arrive 
+  at the destination planet the same turn.
+- Missile strikes are resolved before any other combat of that same player.
+- The fleets of attacks on the same planet on the same turn are grouped together per player.
 
 <br>
 
@@ -39,7 +81,7 @@ dies, you lose the game.
 - `space`: Center the map on your home planet.
 - `tab`: Cycle through a planet's shop.
 - `Q`: Toggle the audio settings.
-- `C`: Show/hide owned planet cells.
+- `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.
 - `H`: Enable/disable information tooltips on hover.
 - `M`: Show/hide the mission panel.

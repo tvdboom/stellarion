@@ -4,7 +4,7 @@ use bevy_renet::renet::RenetServer;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
-use crate::core::network::{Host, ServerMessage, ServerSendMsg};
+use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::UiState;
@@ -15,7 +15,26 @@ use crate::core::units::Unit;
 #[derive(Message)]
 pub struct StartTurnMsg;
 
-pub fn check_turn(
+#[derive(Resource, Default)]
+pub struct PreviousEndTurnState(bool);
+
+pub fn check_turn_ended(
+    state: Res<UiState>,
+    mut prev_state: ResMut<PreviousEndTurnState>,
+    player: Res<Player>,
+    mut client_send_msg: MessageWriter<ClientSendMsg>,
+) {
+    if prev_state.0 != state.end_turn {
+        client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
+            end_turn: state.end_turn,
+            player: player.clone(),
+        }));
+
+        prev_state.0 = state.end_turn;
+    }
+}
+
+pub fn resolve_turn(
     mut host: ResMut<Host>,
     server: Option<ResMut<RenetServer>>,
     state: Res<UiState>,
