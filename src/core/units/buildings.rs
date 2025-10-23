@@ -60,10 +60,10 @@ impl Description for Building {
                 the Phalanx."
             },
             Building::JumpGate => {
-                "The Jump Gate enables rapid travel between two controlled planets with jump \
-                gates (at any distance in space). Thus, having only a single gate is useless. \
-                Jumps always take 1 turn, independent of the fleet's composition. Upgrading the \
-                Jump Gate increases the number of ships it can transport per turn."
+                "The Jump Gate enables rapid travel between two owned planets with jump gates \
+                (at any distance in space). Thus, having only a single gate is useless. Jumps \
+                always take 1 turn and costs no fuel, independent of the fleet's composition. \
+                Upgrading the Jump Gate increases the number of ships it can transport per turn."
             },
         }
     }

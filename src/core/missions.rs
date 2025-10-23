@@ -50,6 +50,7 @@ pub struct Mission {
     pub position: Vec2,
     pub objective: Icon,
     pub army: Army,
+    pub jump_gate: bool,
 }
 
 impl Mission {
@@ -67,11 +68,15 @@ impl Mission {
     }
 
     pub fn speed(&self) -> f32 {
-        self.army
-            .iter()
-            .filter_map(|(u, c)| (*c > 0).then_some(u.speed()))
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(0.)
+        if self.jump_gate {
+            f32::MAX
+        } else {
+            self.army
+                .iter()
+                .filter_map(|(u, c)| (*c > 0).then_some(u.speed()))
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or(0.)
+        }
     }
 
     pub fn duration(&self, map: &Map) -> usize {
@@ -81,12 +86,16 @@ impl Mission {
     }
 
     pub fn fuel_consumption(&self, map: &Map) -> usize {
-        let distance = self.distance(map);
-        self.army
-            .iter()
-            .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
-            .sum::<f32>()
-            .ceil() as usize
+        if self.jump_gate {
+            0
+        } else {
+            let distance = self.distance(map);
+            self.army
+                .iter()
+                .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
+                .sum::<f32>()
+                .ceil() as usize
+        }
     }
 
     pub fn get(&self, unit: &Unit) -> usize {
@@ -111,6 +120,10 @@ impl Mission {
 
     pub fn turns_to_destination(&self, map: &Map) -> usize {
         (self.distance(map) / self.speed()).ceil() as usize
+    }
+
+    pub fn jump_cost(&self) -> usize {
+        self.army.iter().map(|(u, c)| u.production() * c).sum()
     }
 }
 
@@ -164,11 +177,14 @@ pub fn update_missions(
 
             let hover = state.mission_hover.is_some_and(|id| id == mission.id);
             let own = mission.owner == player.id;
-            let suffix = match (hover, own) {
-                (true, true) => "mission hover",
-                (true, false) => "mission hover enemy",
-                (false, true) => "mission",
-                (false, false) => "mission enemy",
+            let jump = mission.jump_gate;
+            let suffix = match (hover, own, jump) {
+                (true, true, false) => "mission hover",
+                (true, true, true) => "mission hover jump",
+                (true, false, _) => "mission hover enemy",
+                (false, true, false) => "mission",
+                (false, true, true) => "mission jump",
+                (false, false, _) => "mission enemy",
             };
             mission_s.image = assets.image(suffix);
         } else {
@@ -193,6 +209,11 @@ pub fn send_mission(
         player.resources.deuterium -= mission.fuel_consumption(&map);
 
         let origin = map.get_mut(mission.origin);
+
+        if mission.jump_gate {
+            origin.jump_gate += mission.jump_cost();
+        }
+
         origin.fleet.iter_mut().for_each(|(s, c)| {
             if let Some(n) = mission.army.get(&Unit::Ship(s.clone())) {
                 *c -= n;
@@ -210,7 +231,7 @@ pub fn send_mission(
         let direction = (-origin.position + destination.position).normalize();
         mission.position += direction * Planet::SIZE; // Start a bit outside the planet
 
-        missions.0.push(mission.clone());
+        missions.0.push(mission);
 
         message.write(MessageMsg::info("Mission sent."));
     }

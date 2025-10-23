@@ -46,6 +46,7 @@ pub struct Planet {
     pub image: usize,
     pub position: Vec2,
     pub resources: Resources,
+    pub jump_gate: usize,
     pub is_destroyed: bool,
 
     // Ownership and units
@@ -88,6 +89,7 @@ impl Planet {
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
             position,
             resources,
+            jump_gate: 0,
             is_destroyed: false,
             owned: None,
             controlled: None,
@@ -165,6 +167,10 @@ impl Planet {
 
     pub fn max_missile_capacity(&self) -> usize {
         SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
+    }
+
+    pub fn max_jump_capacity(&self) -> usize {
+        FACTORY_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::JumpGate))
     }
 
     /// Units and combat ============================================= >>

@@ -49,8 +49,11 @@ pub fn resolve_turn(
 ) {
     if state.end_turn && host.turn_ended.len() == server.map(|s| s.clients_id().len()).unwrap_or(0)
     {
-        // Apply purchases
-        map.planets.iter_mut().for_each(|p| p.produce());
+        // Apply purchases and reset jump gates
+        map.planets.iter_mut().for_each(|p| {
+            p.produce();
+            p.jump_gate = 0;
+        });
 
         let mut players =
             std::iter::once(&mut *player).chain(host.clients.values_mut()).collect::<Vec<_>>();
@@ -118,6 +121,9 @@ pub fn resolve_turn(
             ));
         }
 
+        // Update the missions for the host
+        missions.0 = host.missions.values().cloned().collect();
+
         host.turn_ended.clear();
         start_turn_msg.write(StartTurnMsg);
     }
@@ -145,6 +151,8 @@ pub fn start_turn(
                 } else if planet.get(&Unit::Building(Building::SensorPhalanx))
                     >= m.turns_to_destination(&map)
                 {
+                    println!("{:?}", m.army);
+                    // m.army.iter_mut().for_each(|(u, c)| {});
                     true
                 } else {
                     false

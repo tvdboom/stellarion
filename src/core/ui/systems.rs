@@ -22,7 +22,7 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
-use crate::core::ui::utils::{CustomUi, ImageIds};
+use crate::core::ui::utils::{toggle, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
@@ -493,7 +493,7 @@ fn draw_mission(
                 ui.small(format!("Distance: {distance:.1} AU"));
                 ui.small(format!(
                     "Speed: {}",
-                    if speed == 0. {
+                    if speed == 0. || speed == f32::MAX {
                         "---".to_string()
                     } else {
                         format!("{speed} AU/turn")
@@ -508,6 +508,30 @@ fn draw_mission(
                     }
                 ));
                 ui.small(format!("Fuel consumption: {fuel}"));
+
+                if state.mission_info.objective == Icon::Deploy {
+                    if player.owns(origin)
+                        && player.owns(destination)
+                        && origin.get(&Unit::Building(Building::JumpGate)) > 0
+                        && destination.get(&Unit::Building(Building::JumpGate)) > 0 {
+                        let jump_cost = state.mission_info.jump_cost();
+                        ui.add_enabled_ui(origin.jump_gate + jump_cost <= origin.max_jump_capacity(), |ui| {
+                            ui.horizontal(|ui| {
+                            ui.small(format!("Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
+                            ui.add(toggle(&mut state.mission_info.jump_gate));
+                            });
+                        })
+                        .response
+                        .on_hover_ui(|ui| {
+                            ui.small("Whether to send this mission through the Jump Gate.");
+                        })
+                        .on_disabled_hover_ui(|ui| {
+                            ui.small("The selected fleet has a higher jump cost than the Jump Gate can transfer this turn.");
+                        });
+                    }
+                } else {
+                    state.mission_info.jump_gate = false;
+                }
 
                 ui.add_space(5.);
 
@@ -669,7 +693,16 @@ fn draw_mission_info_hover(
         ui.add_space(25.);
         ui.vertical(|ui| {
             ui.small(format!("Distance: {:.1} AU", mission.distance(map)));
-            ui.small(format!("Speed: {} AU/turn", mission.speed()));
+
+            let speed = mission.speed();
+            ui.small(format!(
+                "Speed: {}",
+                if speed == f32::MAX {
+                    "---".to_string()
+                } else {
+                    format!("{speed} AU/turn")
+                }
+            ));
 
             let duration = mission.duration(map);
             ui.small(format!("Arrival: Turn {} (+{})", settings.turn + duration, duration));
@@ -900,6 +933,14 @@ fn draw_shop(
                                     planet.missile_capacity(),
                                     planet.max_missile_capacity()
                                 ),
+                                TextStyle::Body.resolve(ui.style()),
+                                Color32::WHITE,
+                            );
+                        } else if matches!(unit, Unit::Building(Building::JumpGate)) && count > 0 {
+                            painter.text(
+                                rect.right_top() + egui::vec2(-7., 4.),
+                                Align2::RIGHT_TOP,
+                                format!("{}/{}", planet.jump_gate, planet.max_jump_capacity()),
                                 TextStyle::Body.resolve(ui.style()),
                                 Color32::WHITE,
                             );
