@@ -63,20 +63,22 @@ impl Mission {
     }
 
     pub fn distance(&self, map: &Map) -> f32 {
-        // Minus 2 since the mission starts and ends a bit outside the planets
-        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 2.
+        // Minus 1 since the mission ends a bit outside the destination planets
+        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 1.
     }
 
     pub fn speed(&self) -> f32 {
-        if self.jump_gate {
-            f32::MAX
-        } else {
-            self.army
-                .iter()
-                .filter_map(|(u, c)| (*c > 0).then_some(u.speed()))
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or(0.)
-        }
+        self.army
+            .iter()
+            .filter_map(|(u, c)| {
+                (*c > 0).then_some(if self.jump_gate {
+                    f32::MAX
+                } else {
+                    u.speed()
+                })
+            })
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.)
     }
 
     pub fn duration(&self, map: &Map) -> usize {
@@ -108,9 +110,13 @@ impl Mission {
 
     pub fn advance(&mut self, map: &Map) {
         let destination = map.get(self.destination);
-        let direction = (-self.position + destination.position).normalize();
 
-        self.position += direction * self.speed() * Planet::SIZE;
+        if self.jump_gate {
+            self.position = destination.position;
+        } else {
+            let direction = (-self.position + destination.position).normalize();
+            self.position += direction * self.speed() * Planet::SIZE;
+        }
     }
 
     pub fn has_reached_destination(&self, map: &Map) -> bool {
@@ -204,8 +210,6 @@ pub fn send_mission(
         mission,
     } in send_mission.read()
     {
-        let mut mission = mission.clone();
-
         player.resources.deuterium -= mission.fuel_consumption(&map);
 
         let origin = map.get_mut(mission.origin);
@@ -225,13 +229,7 @@ pub fn send_mission(
             }
         });
 
-        let origin = map.get(mission.origin);
-        let destination = map.get(mission.destination);
-
-        let direction = (-origin.position + destination.position).normalize();
-        mission.position += direction * Planet::SIZE; // Start a bit outside the planet
-
-        missions.0.push(mission);
+        missions.0.push(mission.clone());
 
         message.write(MessageMsg::info("Mission sent."));
     }

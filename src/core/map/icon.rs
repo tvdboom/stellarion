@@ -104,7 +104,8 @@ impl Description for Icon {
             Icon::Spy => {
                 "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
                 origin planet after one round of combat. The more Probes you send, the more \
-                accurate the returned information will be."
+                accurate the returned information will be. Spying missions can't be detected by \
+                the Sensor Phalanx."
             },
             Icon::MissileStrike => {
                 "Launch an interplanetary missile strike against an enemy planet. Missiles can \

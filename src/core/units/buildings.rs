@@ -57,7 +57,7 @@ impl Description for Building {
                 "The Sensor Phalanx scans the space around a planet to detect incoming attacks. \
                 The higher the level of the phalanx, the further it scans. Information accuracy \
                 decreases with distance to the attacking fleet and increases with the level of \
-                the Phalanx."
+                the Phalanx. Spying missions are not detected by the Phalanx."
             },
             Building::JumpGate => {
                 "The Jump Gate enables rapid travel between two owned planets with jump gates \

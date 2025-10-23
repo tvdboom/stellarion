@@ -127,6 +127,7 @@ pub fn on_click_menu_button(
             }
 
             commands.insert_resource(UiState::default());
+            commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(map);
             commands.insert_resource(Player::new(0, home_planets.first().unwrap().0));
             commands.insert_resource(Missions::default());

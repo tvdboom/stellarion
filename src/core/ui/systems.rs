@@ -230,7 +230,9 @@ fn draw_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
-    state.mission_info.position = origin.position;
+    // Start a bit outside the origin planet to be able to see the image
+    let direction = (-origin.position + destination.position).normalize();
+    state.mission_info.position = origin.position + direction * Planet::SIZE;
 
     if origin.controlled == destination.controlled {
         state.mission_info.objective = Icon::Deploy;
@@ -500,20 +502,28 @@ fn draw_mission(
                     }
                 ));
                 ui.small(format!(
-                    "Arrival: {}",
+                    "Duration: {}",
                     if duration == 0 {
                         "---".to_string()
                     } else {
-                        format!("Turn {} (+{})", settings.turn + duration, duration)
+                        format!(
+                            "+{} turn{} ({})",
+                            duration,
+                            if duration == 1 { "" } else { "s" },
+                            settings.turn + duration,
+                        )
                     }
                 ));
                 ui.small(format!("Fuel consumption: {fuel}"));
 
+                let mut has_gate = false;
                 if state.mission_info.objective == Icon::Deploy {
                     if player.owns(origin)
                         && player.owns(destination)
                         && origin.get(&Unit::Building(Building::JumpGate)) > 0
                         && destination.get(&Unit::Building(Building::JumpGate)) > 0 {
+                        has_gate = true;
+
                         let jump_cost = state.mission_info.jump_cost();
                         ui.add_enabled_ui(origin.jump_gate + jump_cost <= origin.max_jump_capacity(), |ui| {
                             ui.horizontal(|ui| {
@@ -523,17 +533,24 @@ fn draw_mission(
                         })
                         .response
                         .on_hover_ui(|ui| {
-                            ui.small("Whether to send this mission through the Jump Gate.");
+                            ui.small(
+                                "Whether to send this mission through the Jump Gate. \
+                                Missions through the Jump Gate always take 1 turn and cost \
+                                no fuel."
+                            );
                         })
                         .on_disabled_hover_ui(|ui| {
-                            ui.small("The selected fleet has a higher jump cost than the Jump Gate can transfer this turn.");
+                            ui.small(
+                                "The selected fleet has a higher jump cost than the Gate \
+                                can transfer this turn."
+                            );
                         });
                     }
                 } else {
                     state.mission_info.jump_gate = false;
                 }
 
-                ui.add_space(5.);
+                ui.add_space(if has_gate { 5. } else { 45. });
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     ui.add_space(40.);
@@ -705,7 +722,16 @@ fn draw_mission_info_hover(
             ));
 
             let duration = mission.duration(map);
-            ui.small(format!("Arrival: Turn {} (+{})", settings.turn + duration, duration));
+            ui.small(format!(
+                "Duration: +{} turn{} ({})",
+                duration,
+                if duration == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                settings.turn + duration
+            ));
         });
     });
 }
@@ -924,26 +950,30 @@ fn draw_shop(
                         let rect = response.rect;
                         let painter = ui.painter();
 
-                        if matches!(unit, Unit::Building(Building::MissileSilo)) && count > 0 {
-                            painter.text(
-                                rect.right_top() + egui::vec2(-7., 4.),
-                                Align2::RIGHT_TOP,
-                                format!(
+                        if count > 0 {
+                            let text = match unit {
+                                Unit::Building(Building::MissileSilo) => Some(format!(
                                     "{}/{}",
                                     planet.missile_capacity(),
                                     planet.max_missile_capacity()
-                                ),
-                                TextStyle::Body.resolve(ui.style()),
-                                Color32::WHITE,
-                            );
-                        } else if matches!(unit, Unit::Building(Building::JumpGate)) && count > 0 {
-                            painter.text(
-                                rect.right_top() + egui::vec2(-7., 4.),
-                                Align2::RIGHT_TOP,
-                                format!("{}/{}", planet.jump_gate, planet.max_jump_capacity()),
-                                TextStyle::Body.resolve(ui.style()),
-                                Color32::WHITE,
-                            );
+                                )),
+                                Unit::Building(Building::JumpGate) => Some(format!(
+                                    "{}/{}",
+                                    planet.jump_gate,
+                                    planet.max_jump_capacity()
+                                )),
+                                _ => None,
+                            };
+
+                            if let Some(text) = text {
+                                painter.text(
+                                    rect.right_top() + egui::vec2(-7., 4.),
+                                    Align2::RIGHT_TOP,
+                                    text,
+                                    TextStyle::Body.resolve(ui.style()),
+                                    Color32::WHITE,
+                                );
+                            }
                         }
 
                         painter.text(
@@ -1179,7 +1209,7 @@ pub fn draw_ui(
     if state.mission {
         state.end_turn = false;
 
-        let (window_w, window_h) = (700., 500.);
+        let (window_w, window_h) = (700., 540.);
 
         let is_hovered = contexts.ctx().unwrap().is_pointer_over_area();
         draw_panel(

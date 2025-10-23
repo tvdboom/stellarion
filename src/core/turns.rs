@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
+use rand::{rng, Rng};
+use rand_distr::Normal;
 
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -130,9 +132,9 @@ pub fn resolve_turn(
 }
 
 pub fn start_turn(
+    mut commands: Commands,
     mut start_turn_msg: MessageReader<StartTurnMsg>,
     mut settings: ResMut<Settings>,
-    mut state: ResMut<UiState>,
     map: Res<Map>,
     player: Res<Player>,
     mut missions: ResMut<Missions>,
@@ -140,19 +142,35 @@ pub fn start_turn(
 ) {
     for _ in start_turn_msg.read() {
         settings.turn += 1;
-        *state = UiState::default();
+        commands.insert_resource(UiState::default());
 
         // Once all missions are resolved, check which players can see which enemy missions
         // and adjust the stats according to the level of the Sensor Phalanx
         for planet in map.planets.iter().filter(|p| player.owns(p)) {
+            let phalanx = planet.get(&Unit::Building(Building::SensorPhalanx));
+
             missions.0.retain_mut(|m| {
+                let distance = m.turns_to_destination(&map);
+
+                let get_n = |n, s| {
+                    println!("{n} - {s}");
+                    let mean = n as f32;
+                    let sigma = s as f32;
+                    let val = rng().sample(Normal::new(mean, sigma).unwrap());
+                    val.clamp(0., mean.max(50.)) as usize
+                };
+
                 if m.owner == player.id {
                     true
-                } else if planet.get(&Unit::Building(Building::SensorPhalanx))
-                    >= m.turns_to_destination(&map)
-                {
-                    println!("{:?}", m.army);
-                    // m.army.iter_mut().for_each(|(u, c)| {});
+                } else if phalanx >= distance && m.objective != Icon::Spy {
+                    m.army.iter_mut().for_each(|(_, c)| {
+                        *c = get_n(
+                            *c,
+                            *c * ((Building::MAX_LEVEL + distance - phalanx)
+                                .rem_euclid(Building::MAX_LEVEL))
+                                + 1,
+                        );
+                    });
                     true
                 } else {
                     false

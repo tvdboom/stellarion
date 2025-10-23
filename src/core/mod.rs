@@ -27,7 +27,7 @@ use strum::IntoEnumIterator;
 
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
-use crate::core::map::map::MapCmp;
+use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{draw_map, update_end_turn, update_planet_info, update_voronoi};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
@@ -123,6 +123,7 @@ impl Plugin for GamePlugin {
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), draw_map)
+            .add_systems(First, start_turn.run_if(resource_exists::<Map>))
             .add_systems(
                 Update,
                 (
@@ -138,12 +139,7 @@ impl Plugin for GamePlugin {
                 PostUpdate,
                 check_turn_ended.run_if(resource_exists::<RenetClient>).in_set(InGameSet),
             )
-            .add_systems(
-                Last,
-                (resolve_turn.run_if(resource_exists::<Host>), start_turn)
-                    .chain()
-                    .in_set(InGameSet),
-            )
+            .add_systems(Last, resolve_turn.run_if(resource_exists::<Host>).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
             .add_systems(OnExit(GameState::InGameMenu), despawn::<MenuCmp>)

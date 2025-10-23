@@ -5,6 +5,7 @@ use bevy::color::palettes::css::WHITE;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
+use itertools::Itertools;
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
 use voronator::VoronoiDiagram;
@@ -235,12 +236,20 @@ pub fn draw_map(
                             .observe(
                                 move |_: On<Pointer<Over>>,
                                       mut state: ResMut<UiState>,
+                                      map: Res<Map>,
                                       missions: Res<Missions>| {
                                     state.planet_hover = Some(planet_id);
-                                    if let Some(mission) = missions.iter().find(|m| {
-                                        m.destination == planet_id
-                                            && (m.objective == icon || icon == Icon::Attacked)
-                                    }) {
+                                    if let Some(mission) = missions
+                                        .iter()
+                                        .sorted_by(|a, b| {
+                                            a.turns_to_destination(&map)
+                                                .cmp(&b.turns_to_destination(&map))
+                                        })
+                                        .find(|m| {
+                                            m.destination == planet_id
+                                                && (m.objective == icon || icon == Icon::Attacked)
+                                        })
+                                    {
                                         state.mission_hover = Some(mission.id);
                                     }
                                 },
@@ -293,7 +302,7 @@ pub fn draw_map(
                                                                 && icon.condition(p))
                                                             .then_some(p.id)
                                                         })
-                                                        .unwrap(),
+                                                        .unwrap_or(player.home_planet),
                                                 );
 
                                             let origin = map.get(origin_id);
@@ -631,9 +640,11 @@ pub fn update_planet_info(
                         // Show icon if there is a mission with this objective towards this
                         // planet or, if there's selected planet, it fulfills the condition,
                         // else if any of the player's planets fulfills the condition
-                        let has_mission = missions
-                            .iter()
-                            .any(|m| m.objective == *icon && m.destination == planet.id);
+                        let has_mission = missions.iter().any(|m| {
+                            m.owner == player.id
+                                && m.objective == *icon
+                                && m.destination == planet.id
+                        });
 
                         let has_condition = {
                             let mut planets: Box<dyn Iterator<Item = &Planet>> =
