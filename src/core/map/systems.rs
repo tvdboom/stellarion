@@ -23,7 +23,7 @@ use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
-use crate::core::ui::systems::UiState;
+use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
@@ -271,6 +271,9 @@ pub fn draw_map(
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             state.shop = icon.shop();
+                                        } else if icon == Icon::Attacked {
+                                            state.mission = true;
+                                            state.mission_tab = MissionTab::IncomingAttacks;
                                         } else if icon == Icon::Fleet {
                                             state.mission = true;
                                             state.mission_info = Mission {
@@ -284,6 +287,7 @@ pub fn draw_map(
                                             };
                                         } else if icon.is_mission() {
                                             state.mission = true;
+                                            state.mission_tab = MissionTab::NewMission;
 
                                             // The origin is determined as follows: the selected
                                             // planet if owned and fulfills condition, else the

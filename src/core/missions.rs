@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::SystemCursorIcon;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
@@ -8,9 +9,10 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::MissionCmp;
+use crate::core::map::utils::cursor;
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
-use crate::core::ui::systems::UiState;
+use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::{Army, Combat, Unit};
 
 pub type MissionId = u64;
@@ -54,11 +56,18 @@ pub struct Mission {
 }
 
 impl Mission {
-    pub fn from(other: &Mission, id: ClientId) -> Self {
+    pub fn from(other: &Mission) -> Self {
         Self {
             id: rand::random(),
-            owner: id,
             ..other.clone()
+        }
+    }
+
+    pub fn image(&self, player: &Player) -> &str {
+        match (self.owner == player.id, self.jump_gate) {
+            (true, false) => "mission",
+            (true, true) => "mission jump",
+            (false, _) => "mission enemy",
         }
     }
 
@@ -142,9 +151,12 @@ pub fn update_missions(
     missions: Res<Missions>,
     assets: Local<WorldAssets>,
 ) {
+    let player_id = player.id;
+
     for mission in missions.iter() {
         if !mission_q.iter().any(|(_, _, _, m)| m.id == mission.id) {
             let id = mission.id;
+            let owner = mission.owner;
 
             let origin = map.get(mission.origin);
             let destination = map.get(mission.destination);
@@ -155,7 +167,7 @@ pub fn update_missions(
             commands
                 .spawn((
                     Sprite {
-                        image: assets.image("mission"),
+                        image: assets.image(mission.image(&player)),
                         custom_size: Some(Vec2::splat(50.)),
                         ..default()
                     },
@@ -168,31 +180,37 @@ pub fn update_missions(
                     MissionCmp::new(id),
                     MapCmp,
                 ))
+                .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                .observe(cursor::<Out>(SystemCursorIcon::Default))
                 .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
                     state.mission_hover = Some(id);
                 })
                 .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                     state.mission_hover = None;
+                })
+                .observe(move |event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
+                    if event.button == PointerButton::Primary {
+                        state.mission = true;
+                        state.mission_tab = if owner == player_id {
+                            MissionTab::ActiveMissions
+                        } else {
+                            MissionTab::IncomingAttacks
+                        }
+                    }
                 });
         }
     }
 
     for (mission_e, mut mission_s, mut mission_t, mission_c) in &mut mission_q {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
-            mission_t.translation = mission.position.extend(MISSION_Z);
-
-            let hover = state.mission_hover.is_some_and(|id| id == mission.id);
-            let own = mission.owner == player.id;
-            let jump = mission.jump_gate;
-            let suffix = match (hover, own, jump) {
-                (true, true, false) => "mission hover",
-                (true, true, true) => "mission hover jump",
-                (true, false, _) => "mission hover enemy",
-                (false, true, false) => "mission",
-                (false, true, true) => "mission jump",
-                (false, false, _) => "mission enemy",
-            };
-            mission_s.image = assets.image(suffix);
+            if state.mission_hover.is_some_and(|id| id == mission.id) {
+                // Hovered missions show on top of all other components (e.g., planets)
+                mission_t.translation = mission.position.extend(MISSION_Z + 10.);
+                mission_s.image = assets.image(format!("{} hover", mission.image(&player)));
+            } else {
+                mission_t.translation = mission.position.extend(MISSION_Z);
+                mission_s.image = assets.image(mission.image(&player));
+            }
         } else {
             commands.entity(mission_e).despawn();
         }

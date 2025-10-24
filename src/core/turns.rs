@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
 use rand::{rng, Rng};
-use rand_distr::Normal;
 
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -152,24 +151,15 @@ pub fn start_turn(
             missions.0.retain_mut(|m| {
                 let distance = m.turns_to_destination(&map);
 
-                let get_n = |n, s| {
-                    println!("{n} - {s}");
-                    let mean = n as f32;
-                    let sigma = s as f32;
-                    let val = rng().sample(Normal::new(mean, sigma).unwrap());
-                    val.clamp(0., mean.max(50.)) as usize
-                };
-
                 if m.owner == player.id {
                     true
                 } else if phalanx >= distance && m.objective != Icon::Spy {
-                    m.army.iter_mut().for_each(|(_, c)| {
-                        *c = get_n(
-                            *c,
-                            *c * ((Building::MAX_LEVEL + distance - phalanx)
-                                .rem_euclid(Building::MAX_LEVEL))
-                                + 1,
-                        );
+                    m.army.iter_mut().for_each(|(u, c)| {
+                        // Change the real number of ships with an approximate value that
+                        // depends on the ship type, the distance and the level of the Phalanx
+                        *c = ((*c + 6 - u.production()) as f32
+                            * (2f32 - 0.2 * (phalanx - distance) as f32)
+                            * rng().random::<f32>()) as usize;
                     });
                     true
                 } else {

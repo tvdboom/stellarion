@@ -134,8 +134,8 @@ impl FromWorld for WorldAssets {
             ("mission jump", assets.load("images/mission/mission jump.png")),
             ("mission enemy", assets.load("images/mission/mission enemy.png")),
             ("mission hover", assets.load("images/mission/mission hover.png")),
-            ("mission hover jump", assets.load("images/mission/mission hover jump.png")),
-            ("mission hover enemy", assets.load("images/mission/mission hover enemy.png")),
+            ("mission jump hover", assets.load("images/mission/mission jump hover.png")),
+            ("mission enemy hover", assets.load("images/mission/mission enemy hover.png")),
             // Combat
             ("hull", assets.load("images/combat/hull.png")),
             ("shield", assets.load("images/combat/shield.png")),

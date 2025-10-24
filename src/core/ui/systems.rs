@@ -3,11 +3,12 @@ use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    Sense, Separator, TextStyle, Ui, UiBuilder,
+    ScrollArea, Sense, Separator, TextStyle, Ui, UiBuilder,
 };
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
@@ -40,6 +41,13 @@ pub enum Shop {
     Defenses,
 }
 
+#[derive(EnumIter, Copy, Clone, Debug, Default, PartialEq)]
+pub enum MissionTab {
+    #[default]
+    NewMission,
+    ActiveMissions,
+    IncomingAttacks,
+}
 #[derive(Resource, Default)]
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
@@ -47,6 +55,7 @@ pub struct UiState {
     pub to_selected: bool,
     pub shop: Shop,
     pub mission: bool,
+    pub mission_tab: MissionTab,
     pub mission_info: Mission,
     pub mission_hover: Option<MissionId>,
     pub end_turn: bool,
@@ -216,7 +225,7 @@ fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &Ima
     }
 }
 
-fn draw_mission(
+fn draw_new_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
     settings: &Settings,
@@ -229,6 +238,8 @@ fn draw_mission(
 ) {
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
+
+    state.mission_info.owner = player.id;
 
     // Start a bit outside the origin planet to be able to see the image
     let direction = (-origin.position + destination.position).normalize();
@@ -251,59 +262,61 @@ fn draw_mission(
         &units[1]
     };
 
-    ui.add_space(45.);
-
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.add_space(60.);
 
         egui::Grid::new("mission_origin_destination").spacing([30., 0.]).striped(false).show(
             ui, |ui| {
-                let response = ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.]).interact(Sense::hover());
+                let response = ui
+                    .add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
+                    .interact(Sense::hover());
+
                 if response.hovered() {
                     state.planet_hover = Some(origin.id);
                 } else if is_hovered {
                     state.planet_hover = None;
                 }
 
-                ComboBox::from_id_salt("origin")
-                    .selected_text(&map.get(state.mission_info.origin).name)
-                    .show_ui(ui, |ui| {
-                        for planet in map.planets.iter().filter(|p| player.controls(p)).sorted_by(|a, b| a.name.cmp(&b.name)) {
-                            ui.selectable_value(
-                                &mut state.mission_info.origin,
-                                planet.id,
-                                &planet.name,
-                            );
-                        }
-                    }).response.on_hover_cursor(CursorIcon::PointingHand);
+                ui.vertical(|ui| {
+                    ui.add_space(15.);
+                    ComboBox::from_id_salt("origin")
+                        .selected_text(&map.get(state.mission_info.origin).name)
+                        .show_ui(ui, |ui| {
+                            for planet in map.planets.iter().filter(|p| player.controls(p)).sorted_by(|a, b| a.name.cmp(&b.name)) {
+                                ui.selectable_value(
+                                    &mut state.mission_info.origin,
+                                    planet.id,
+                                    &planet.name,
+                                );
+                            }
+                        }).response.on_hover_cursor(CursorIcon::PointingHand);
+                });
 
-                    let (rect, mut response) = ui.allocate_exact_size([50., 50.].into(), Sense::click());
+                let (rect, mut response) = ui.allocate_exact_size([50., 50.].into(), Sense::click());
 
-                    response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_ui(|ui| {
-                        ui.small("Click to select all units on the origin planet. Right-click to unselect all.");
-                    });
+                response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_ui(|ui| {
+                    ui.small("Click to select all units on the origin planet. Right-click to unselect all.");
+                });
 
-                    let image = if response.hovered() && !response.is_pointer_button_down_on() {
-                        images.get("mission hover")
-                    } else {
-                        images.get("mission")
-                    };
+                let image = if response.hovered() && !response.is_pointer_button_down_on() {
+                    images.get(format!("{} hover", state.mission_info.image(player)))
+                } else {
+                    images.get(state.mission_info.image(player))
+                };
 
-                    ui.painter().image(
-                        image,
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
-                        Color32::WHITE,
-                    );
 
-                    if response.clicked() {
-                        state.mission_info.army = army.iter().map(|u| (u.clone(), origin.get(u))).collect();
-                    }
+                ui.add_image_painter(image, rect);
 
-                    if response.secondary_clicked() {
-                        state.mission_info.army.clear();
-                    }
+                if response.clicked() {
+                    state.mission_info.army = army.iter().map(|u| (u.clone(), origin.get(u))).collect();
+                }
 
+                if response.secondary_clicked() {
+                    state.mission_info.army.clear();
+                }
+
+                ui.vertical(|ui| {
+                    ui.add_space(15.);
                     ComboBox::from_id_salt("destination")
                         .selected_text(&map.get(state.mission_info.destination).name)
                         .show_ui(ui, |ui| {
@@ -315,17 +328,22 @@ fn draw_mission(
                                 );
                             }
                         }).response.on_hover_cursor(CursorIcon::PointingHand);
+                });
 
-                    let response = ui.add_image(images.get(format!("planet{}", destination.image)), [70., 70.]).interact(Sense::hover());
-                    if response.hovered() {
-                        state.planet_hover = Some(destination.id);
-                    } else if is_hovered && state.planet_hover.is_none() {
-                        state.planet_hover = None;
-                    }
+                let response = ui
+                    .add_image(images.get(format!("planet{}", destination.image)), [70., 70.])
+                    .interact(Sense::hover());
+
+                if response.hovered() {
+                    state.planet_hover = Some(destination.id);
+                } else if is_hovered && state.planet_hover.is_none() {
+                    state.planet_hover = None;
+                }
             },
         );
     });
 
+    ui.add_space(-10.);
     ui.add(Separator::default().shrink(50.));
 
     if state.mission_info.origin == state.mission_info.destination {
@@ -440,7 +458,7 @@ fn draw_mission(
                                         images.get(icon.to_lowername()),
                                         [40., 40.],
                                     ))
-                                    .corner_radius(5.),
+                                        .corner_radius(5.),
                                 )
                                 .on_hover_ui(|ui| on_hover(ui, &icon, false))
                                 .on_disabled_hover_ui(|ui| on_hover(ui, &icon, true))
@@ -525,26 +543,31 @@ fn draw_mission(
                         has_gate = true;
 
                         let jump_cost = state.mission_info.jump_cost();
-                        ui.add_enabled_ui(origin.jump_gate + jump_cost <= origin.max_jump_capacity(), |ui| {
+                        let can_jump = origin.jump_gate + jump_cost <= origin.max_jump_capacity();
+                        if !can_jump {
+                            state.mission_info.jump_gate = false;
+                        }
+
+                        ui.add_enabled_ui(can_jump, |ui| {
                             ui.horizontal(|ui| {
-                            ui.small(format!("Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
-                            ui.add(toggle(&mut state.mission_info.jump_gate));
+                                ui.small(format!("Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
+                                ui.add(toggle(&mut state.mission_info.jump_gate));
                             });
                         })
-                        .response
-                        .on_hover_ui(|ui| {
-                            ui.small(
-                                "Whether to send this mission through the Jump Gate. \
-                                Missions through the Jump Gate always take 1 turn and cost \
-                                no fuel."
-                            );
-                        })
-                        .on_disabled_hover_ui(|ui| {
-                            ui.small(
-                                "The selected fleet has a higher jump cost than the Gate \
-                                can transfer this turn."
-                            );
-                        });
+                            .response
+                            .on_hover_ui(|ui| {
+                                ui.small(
+                                    "Whether to send this mission through the Jump Gate. \
+                                    Missions through the Jump Gate always take 1 turn and cost \
+                                    no fuel."
+                                );
+                            })
+                            .on_disabled_hover_ui(|ui| {
+                                ui.small(
+                                    "The selected fleet has a higher jump cost than the Gate \
+                                    can transfer this turn."
+                                );
+                            });
                     }
                 } else {
                     state.mission_info.jump_gate = false;
@@ -599,12 +622,7 @@ fn draw_mission(
                             images.get("button")
                         };
 
-                        ui.painter().image(
-                            image,
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
-                            Color32::WHITE,
-                        );
+                        ui.add_image_painter(image, rect);
 
                         ui.painter().text(
                             rect.center(),
@@ -616,7 +634,7 @@ fn draw_mission(
 
                         if response.clicked() {
                             send_mission
-                                .write(SendMissionMsg::new(Mission::from(&state.mission_info, player.id)));
+                                .write(SendMissionMsg::new(Mission::from(&state.mission_info)));
                             state.planet_selected = None;
                             state.mission = false;
                             state.mission_info = Mission::default();
@@ -628,9 +646,157 @@ fn draw_mission(
     }
 }
 
+fn draw_active_missions(
+    ui: &mut Ui,
+    missions: &Vec<Mission>,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    is_hovered: bool,
+    images: &ImageIds,
+) {
+    if missions.len() == 0 {
+        ui.add_space(20.);
+        ui.vertical_centered(|ui| {
+            ui.label("No active missions.");
+        });
+        return;
+    }
+
+    ui.vertical_centered(|ui| {
+        ui.set_width(ui.available_width());
+
+        ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("active missions").spacing([40., 10.]).striped(false).show(ui, |ui| {
+                for mission in missions.iter() {
+                    let origin = map.get(mission.origin);
+                    let destination = map.get(mission.destination);
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(80.);
+
+                        let response = ui
+                            .horizontal(|ui| {
+                                ui.set_min_width(180.);
+
+                                ui.add_image(
+                                    images.get(format!("planet{}", origin.image)),
+                                    [70., 70.],
+                                );
+
+                                ui.small(&origin.name);
+                            })
+                            .response
+                            .interact(Sense::hover());
+
+                        if response.hovered() {
+                            state.planet_hover = Some(origin.id);
+                        } else if is_hovered {
+                            state.planet_hover = None;
+                        }
+
+                        let response = ui
+                            .horizontal(|ui| {
+                                ui.add_image(
+                                    images.get(mission.objective.to_lowername()),
+                                    [25., 25.],
+                                );
+
+                                let (rect, response) =
+                                    ui.allocate_exact_size([50., 50.].into(), Sense::click());
+
+                                let image = if response.hovered() {
+                                    images.get(format!("{} hover", mission.image(player)))
+                                } else {
+                                    images.get(mission.image(player))
+                                };
+
+                                ui.add_image_painter(image, rect);
+                            })
+                            .response
+                            .interact(Sense::hover());
+
+                        if response.hovered() {
+                            state.mission_hover = Some(mission.id);
+                        } else if is_hovered && state.mission_hover.is_none() {
+                            state.mission_hover = None;
+                        }
+
+                        ui.small(format!("+{}", mission.turns_to_destination(map)));
+
+                        let response = ui
+                            .horizontal(|ui| {
+                                ui.set_min_width(180.);
+
+                                ui.small(&destination.name);
+
+                                ui.add_image(
+                                    images.get(format!("planet{}", destination.image)),
+                                    [70., 70.],
+                                );
+                            })
+                            .response
+                            .interact(Sense::hover());
+
+                        if response.hovered() {
+                            state.planet_hover = Some(destination.id);
+                        } else if is_hovered && state.planet_hover.is_none() {
+                            state.planet_hover = None;
+                        }
+                    });
+
+                    ui.end_row();
+                }
+            });
+        });
+    });
+}
+
+fn draw_mission(
+    ui: &mut Ui,
+    missions: &Vec<Mission>,
+    send_mission: &mut MessageWriter<SendMissionMsg>,
+    settings: &Settings,
+    state: &mut UiState,
+    map: &mut Map,
+    player: &mut Player,
+    units: &[Vec<Unit>; 3],
+    is_hovered: bool,
+    images: &ImageIds,
+) {
+    ui.add_space(12.);
+    ui.horizontal(|ui| {
+        ui.style_mut().spacing.button_padding = egui::vec2(6., 0.);
+
+        ui.add_space(40.);
+        for tab in MissionTab::iter() {
+            ui.selectable_value(&mut state.mission_tab, tab, tab.to_title());
+        }
+    });
+
+    match state.mission_tab {
+        MissionTab::NewMission => draw_new_mission(
+            ui,
+            send_mission,
+            settings,
+            state,
+            map,
+            player,
+            units,
+            is_hovered,
+            images,
+        ),
+        MissionTab::ActiveMissions => {
+            draw_active_missions(ui, missions, state, map, player, is_hovered, images)
+        },
+        MissionTab::IncomingAttacks => (),
+    }
+}
+
 fn draw_mission_fleet_hover(
     ui: &mut Ui,
     mission: &Mission,
+    player: &Player,
     units: &[Vec<Unit>; 3],
     images: &ImageIds,
 ) {
@@ -645,7 +811,7 @@ fn draw_mission_fleet_hover(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
         ui.add_space(20.);
-        ui.add_image(images.get("mission"), [25., 25.]);
+        ui.add_image(images.get(mission.image(player)), [25., 25.]);
         ui.small("Mission");
     });
 
@@ -1183,7 +1349,7 @@ pub fn draw_ui(
             ),
             (window_w, window_h),
             &images,
-            |ui| draw_mission_fleet_hover(ui, mission, &units, &images),
+            |ui| draw_mission_fleet_hover(ui, mission, &player, &units, &images),
         );
 
         let (window_w2, window_h2) = (270., 280.);
@@ -1222,6 +1388,7 @@ pub fn draw_ui(
             |ui| {
                 draw_mission(
                     ui,
+                    &missions.0,
                     &mut send_mission,
                     &settings,
                     &mut state,

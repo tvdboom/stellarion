@@ -55,6 +55,7 @@ pub trait CustomUi {
         texture: impl Into<TextureId>,
         size: impl Into<Vec2>,
     ) -> Response;
+    fn add_image_painter(&mut self, image: TextureId, rect: Rect);
 }
 
 impl CustomUi for Ui {
@@ -68,5 +69,14 @@ impl CustomUi for Ui {
         size: impl Into<Vec2>,
     ) -> Response {
         self.add(Button::image(SizedTexture::new(texture, size)))
+    }
+
+    fn add_image_painter(&mut self, image: TextureId, rect: Rect) {
+        self.painter().image(
+            image,
+            rect,
+            Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
+            Color32::WHITE,
+        );
     }
 }
