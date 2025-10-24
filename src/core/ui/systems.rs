@@ -648,7 +648,7 @@ fn draw_new_mission(
 
 fn draw_active_missions(
     ui: &mut Ui,
-    missions: &Vec<Mission>,
+    missions: Vec<&Mission>,
     state: &mut UiState,
     map: &Map,
     player: &Player,
@@ -658,92 +658,109 @@ fn draw_active_missions(
     if missions.len() == 0 {
         ui.add_space(20.);
         ui.vertical_centered(|ui| {
-            ui.label("No active missions.");
+            ui.label(format!("No {}.", state.mission_tab.to_lowername()));
         });
         return;
     }
 
-    ui.vertical_centered(|ui| {
-        ui.set_width(ui.available_width());
+    ui.add_space(20.);
 
+    ui.horizontal(|ui| {
+        ui.add_space(90.);
+
+        let mut changed_hover = false;
         ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("active missions").spacing([40., 10.]).striped(false).show(ui, |ui| {
+            ui.set_width(ui.available_width() - 45.);
+
+            egui::Grid::new("active missions").spacing([20., 0.]).striped(false).show(ui, |ui| {
                 for mission in missions.iter() {
                     let origin = map.get(mission.origin);
                     let destination = map.get(mission.destination);
 
-                    ui.horizontal(|ui| {
-                        ui.add_space(80.);
+                    let response = ui
+                        .horizontal(|ui| {
+                            ui.set_min_size([190., 70.].into());
 
-                        let response = ui
-                            .horizontal(|ui| {
-                                ui.set_min_width(180.);
+                            ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.]);
 
-                                ui.add_image(
-                                    images.get(format!("planet{}", origin.image)),
-                                    [70., 70.],
-                                );
-
+                            ui.centered_and_justified(|ui| {
+                                ui.set_width(100.);
                                 ui.small(&origin.name);
-                            })
-                            .response
-                            .interact(Sense::hover());
+                            });
+                        })
+                        .response
+                        .interact(Sense::hover());
 
-                        if response.hovered() {
-                            state.planet_hover = Some(origin.id);
-                        } else if is_hovered {
-                            state.planet_hover = None;
-                        }
+                    if response.hovered() {
+                        state.planet_hover = Some(origin.id);
+                        changed_hover = true;
+                    } else if is_hovered && !changed_hover {
+                        state.planet_hover = None;
+                    }
+
+                    ui.vertical(|ui| {
+                        ui.add_space(10.);
 
                         let response = ui
                             .horizontal(|ui| {
+                                ui.set_min_size([100., 50.].into());
+
+                                ui.spacing_mut().item_spacing.x = 4.;
+
                                 ui.add_image(
-                                    images.get(mission.objective.to_lowername()),
+                                    images.get(if mission.owner == player.id {
+                                        mission.objective.to_lowername()
+                                    } else {
+                                        Icon::Attacked.to_lowername()
+                                    }),
                                     [25., 25.],
                                 );
 
-                                let (rect, response) =
-                                    ui.allocate_exact_size([50., 50.].into(), Sense::click());
+                                ui.add_image(
+                                    if state.mission_hover == Some(mission.id) {
+                                        images.get(format!("{} hover", mission.image(player)))
+                                    } else {
+                                        images.get(mission.image(player))
+                                    },
+                                    [50., 50.],
+                                );
 
-                                let image = if response.hovered() {
-                                    images.get(format!("{} hover", mission.image(player)))
-                                } else {
-                                    images.get(mission.image(player))
-                                };
-
-                                ui.add_image_painter(image, rect);
+                                ui.small(format!("+{}", mission.turns_to_destination(map)));
                             })
                             .response
                             .interact(Sense::hover());
 
                         if response.hovered() {
                             state.mission_hover = Some(mission.id);
-                        } else if is_hovered && state.mission_hover.is_none() {
+                            changed_hover = true;
+                        } else if is_hovered && !changed_hover {
                             state.mission_hover = None;
                         }
-
-                        ui.small(format!("+{}", mission.turns_to_destination(map)));
-
-                        let response = ui
-                            .horizontal(|ui| {
-                                ui.set_min_width(180.);
-
-                                ui.small(&destination.name);
-
-                                ui.add_image(
-                                    images.get(format!("planet{}", destination.image)),
-                                    [70., 70.],
-                                );
-                            })
-                            .response
-                            .interact(Sense::hover());
-
-                        if response.hovered() {
-                            state.planet_hover = Some(destination.id);
-                        } else if is_hovered && state.planet_hover.is_none() {
-                            state.planet_hover = None;
-                        }
                     });
+
+                    let response = ui
+                        .horizontal(|ui| {
+                            ui.set_min_size([190., 70.].into());
+
+                            ui.centered_and_justified(|ui| {
+                                ui.set_width(100.);
+                                ui.small(&destination.name);
+                            });
+
+                            ui.add_image(
+                                images.get(format!("planet{}", destination.image)),
+                                [70., 70.],
+                            );
+                        })
+                        .response
+                        .interact(Sense::hover());
+
+                    if response.hovered() {
+                        state.planet_hover = Some(destination.id);
+                        changed_hover = true;
+                    } else if is_hovered && !changed_hover {
+                        state.planet_hover = None;
+                    }
 
                     ui.end_row();
                 }
@@ -786,10 +803,24 @@ fn draw_mission(
             is_hovered,
             images,
         ),
-        MissionTab::ActiveMissions => {
-            draw_active_missions(ui, missions, state, map, player, is_hovered, images)
-        },
-        MissionTab::IncomingAttacks => (),
+        MissionTab::ActiveMissions => draw_active_missions(
+            ui,
+            missions.iter().filter(|m| m.owner == player.id).collect(),
+            state,
+            map,
+            player,
+            is_hovered,
+            images,
+        ),
+        MissionTab::IncomingAttacks => draw_active_missions(
+            ui,
+            missions.iter().filter(|m| m.owner != player.id).collect(),
+            state,
+            map,
+            player,
+            is_hovered,
+            images,
+        ),
     }
 }
 
@@ -832,6 +863,7 @@ fn draw_mission_info_hover(
     mission: &Mission,
     settings: &Settings,
     map: &Map,
+    player: &Player,
     images: &ImageIds,
 ) {
     let origin = map.get(mission.origin);
@@ -866,8 +898,13 @@ fn draw_mission_info_hover(
         ui.small("Objective:");
 
         ui.spacing_mut().item_spacing.x = 4.;
-        ui.add_image(images.get(mission.objective.to_lowername()), [20., 20.]);
-        ui.small(mission.objective.to_name());
+        let objective = if mission.owner == player.id {
+            mission.objective
+        } else {
+            Icon::Attacked
+        };
+        ui.add_image(images.get(objective.to_lowername()), [20., 20.]);
+        ui.small(objective.to_name());
     });
 
     ui.add(Separator::default().shrink(20.));
@@ -1368,7 +1405,7 @@ pub fn draw_ui(
             ),
             (window_w2, window_h2),
             &images,
-            |ui| draw_mission_info_hover(ui, mission, &settings, &map, &images),
+            |ui| draw_mission_info_hover(ui, mission, &settings, &map, &player, &images),
         );
     }
 
