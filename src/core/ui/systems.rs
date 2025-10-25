@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
-    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, RichText,
-    ScrollArea, Sense, Separator, TextStyle, Ui, UiBuilder,
+    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Response,
+    RichText, ScrollArea, Sense, Separator, TextStyle, Ui, UiBuilder,
 };
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
@@ -646,6 +646,13 @@ fn draw_new_mission(
     }
 }
 
+fn cell<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.centered_and_justified(|ui| {
+        ui.set_min_size([100., 70.].into());
+        add_contents(ui);
+    })
+}
+
 fn draw_active_missions(
     ui: &mut Ui,
     missions: Vec<&Mission>,
@@ -665,17 +672,22 @@ fn draw_active_missions(
 
     ui.add_space(20.);
 
-    ui.horizontal(|ui| {
-        ui.add_space(90.);
+    let mut changed_hover = false;
+    ScrollArea::vertical().show(ui, |ui| {
+        ui.set_width(ui.available_width() - 45.);
+        ui.set_height(500.);
 
-        let mut changed_hover = false;
-        ScrollArea::vertical().show(ui, |ui| {
-            ui.set_width(ui.available_width() - 45.);
+        ui.horizontal(|ui| {
+            ui.add_space(90.);
 
             egui::Grid::new("active missions").spacing([20., 0.]).striped(false).show(ui, |ui| {
                 for mission in missions.iter() {
                     let origin = map.get(mission.origin);
                     let destination = map.get(mission.destination);
+
+                    let response = cell(ui, |ui| {
+                        ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
+                    });
 
                     let response = ui
                         .horizontal(|ui| {
@@ -1438,24 +1450,36 @@ pub fn draw_ui(
             },
         );
     } else if let Some(id) = state.planet_selected {
-        state.end_turn = false;
+        if settings.show_menu {
+            state.end_turn = false;
 
-        // Hide shop if hovering another planet
-        if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
-            let planet = map.get_mut(id);
+            // Hide shop if hovering another planet
+            if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
+                let planet = map.get_mut(id);
 
-            if player.owns(&planet) {
-                let (window_w, window_h) = (735., 340.);
+                if player.owns(&planet) {
+                    let (window_w, window_h) = (735., 340.);
 
-                draw_panel(
-                    &mut contexts,
-                    "shop",
-                    "panel",
-                    (width * 0.5 - window_w * 0.5, height * 0.995 - window_h),
-                    (window_w, window_h),
-                    &images,
-                    |ui| draw_shop(ui, &mut state, &settings, &mut player, planet, &units, &images),
-                );
+                    draw_panel(
+                        &mut contexts,
+                        "shop",
+                        "panel",
+                        (width * 0.5 - window_w * 0.5, height * 0.995 - window_h),
+                        (window_w, window_h),
+                        &images,
+                        |ui| {
+                            draw_shop(
+                                ui,
+                                &mut state,
+                                &settings,
+                                &mut player,
+                                planet,
+                                &units,
+                                &images,
+                            )
+                        },
+                    );
+                }
             }
         }
     }

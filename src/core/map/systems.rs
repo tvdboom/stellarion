@@ -261,6 +261,7 @@ pub fn draw_map(
                             .observe(
                                 move |mut event: On<Pointer<Click>>,
                                       mut state: ResMut<UiState>,
+                                      mut settings: ResMut<Settings>,
                                       map: Res<Map>,
                                       player: Res<Player>| {
                                     // Prevent the event from bubbling up to the planet
@@ -270,6 +271,7 @@ pub fn draw_map(
                                         if icon.on_units() && player.owns(map.get(planet_id)) {
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
+                                            settings.show_menu = true;
                                             state.shop = icon.shop();
                                         } else if icon == Icon::Attacked {
                                             state.mission = true;

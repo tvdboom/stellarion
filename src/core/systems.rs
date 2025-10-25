@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy::window::WindowResized;
+use itertools::Itertools;
 use strum::IntoEnumIterator;
 
 use crate::core::map::map::Map;
@@ -9,7 +10,7 @@ use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::ui::systems::{Shop, UiState};
+use crate::core::ui::systems::{MissionTab, Shop, UiState};
 use crate::core::units::buildings::Building;
 
 pub fn on_resize_system(
@@ -25,6 +26,7 @@ pub fn on_resize_system(
 
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut state: ResMut<UiState>,
@@ -78,6 +80,11 @@ pub fn check_keys(
         settings.show_hover = !settings.show_hover;
     }
 
+    // Toggle shop panel
+    if keyboard.just_pressed(KeyCode::KeyB) {
+        settings.show_menu = !settings.show_menu;
+    }
+
     // Toggle mission panel
     if keyboard.just_pressed(KeyCode::KeyM) {
         state.mission = !state.mission;
@@ -89,16 +96,57 @@ pub fn check_keys(
         state.to_selected = true;
     }
 
+    // Move between owned planets
+    if keyboard.just_pressed(KeyCode::Tab) {
+        if let Some(selected) = state.planet_selected {
+            let planets: Vec<_> = map
+                .planets
+                .iter()
+                .sorted_by(|a, b| a.name.cmp(&b.name))
+                .filter_map(|p| player.owns(p).then_some(p.id))
+                .collect();
+
+            if let Some(pos) = planets.iter().position(|id| *id == selected) {
+                let len = planets.len();
+
+                let new_index = if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+                    (pos + len - 1) % len
+                } else {
+                    (pos + 1) % len
+                };
+
+                state.planet_selected = Some(planets[new_index]);
+            }
+        }
+    }
+
     // Move between shop tabs
-    if state.planet_selected.is_some() {
-        if keyboard.just_pressed(KeyCode::Tab) {
-            state.shop = match (
-                &state.shop,
-                keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
-            ) {
-                (Shop::Buildings, false) | (Shop::Defenses, true) => Shop::Fleet,
-                (Shop::Fleet, false) | (Shop::Buildings, true) => Shop::Defenses,
-                (Shop::Defenses, false) | (Shop::Fleet, true) => Shop::Buildings,
+    if settings.show_menu && state.planet_selected.is_some() {
+        if mouse.just_pressed(MouseButton::Forward) {
+            state.shop = match &state.shop {
+                Shop::Buildings => Shop::Fleet,
+                Shop::Fleet => Shop::Defenses,
+                Shop::Defenses => Shop::Buildings,
+            };
+        } else if mouse.just_pressed(MouseButton::Back) {
+            state.shop = match &state.shop {
+                Shop::Buildings => Shop::Defenses,
+                Shop::Fleet => Shop::Buildings,
+                Shop::Defenses => Shop::Fleet,
+            };
+        }
+    } else if state.mission {
+        if mouse.just_pressed(MouseButton::Forward) {
+            state.mission_tab = match &state.mission_tab {
+                MissionTab::NewMission => MissionTab::ActiveMissions,
+                MissionTab::ActiveMissions => MissionTab::IncomingAttacks,
+                MissionTab::IncomingAttacks => MissionTab::NewMission,
+            };
+        } else if mouse.just_pressed(MouseButton::Back) {
+            state.mission_tab = match &state.mission_tab {
+                MissionTab::NewMission => MissionTab::IncomingAttacks,
+                MissionTab::ActiveMissions => MissionTab::NewMission,
+                MissionTab::IncomingAttacks => MissionTab::ActiveMissions,
             };
         }
     }

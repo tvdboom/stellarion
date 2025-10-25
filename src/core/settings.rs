@@ -10,6 +10,7 @@ pub struct Settings {
     pub show_cells: bool,
     pub show_info: bool,
     pub show_hover: bool,
+    pub show_menu: bool,
     pub turn: usize,
 }
 
@@ -21,6 +22,7 @@ impl Default for Settings {
             show_cells: true,
             show_info: false,
             show_hover: true,
+            show_menu: true,
             turn: 1,
         }
     }
