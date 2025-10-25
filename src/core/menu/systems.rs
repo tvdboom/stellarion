@@ -61,8 +61,7 @@ pub fn setup_menu(
                 .with_children(|parent| match app_state.get() {
                     AppState::MainMenu => {
                         spawn_menu_button(parent, MenuBtn::Singleplayer, &assets, &window);
-                        spawn_menu_button(parent, MenuBtn::Multiplayer, &assets, &window);
-                        spawn_menu_button(parent, MenuBtn::NewGame, &assets, &window);
+                        spawn_menu_button(parent, MenuBtn::StartGame, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);
                         #[cfg(not(target_arch = "wasm32"))]
                         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);

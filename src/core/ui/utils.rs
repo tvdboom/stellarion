@@ -56,6 +56,8 @@ pub trait CustomUi {
         size: impl Into<Vec2>,
     ) -> Response;
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
+
+    fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R;
 }
 
 impl CustomUi for Ui {
@@ -78,5 +80,13 @@ impl CustomUi for Ui {
             Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
             Color32::WHITE,
         );
+    }
+
+    fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+        self.centered_and_justified(|ui| {
+            ui.set_min_size([width, 70.].into());
+            add_contents(ui)
+        })
+        .inner
     }
 }

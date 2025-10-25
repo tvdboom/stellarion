@@ -120,22 +120,8 @@ pub fn check_keys(
         }
     }
 
-    // Move between shop tabs
-    if settings.show_menu && state.planet_selected.is_some() {
-        if mouse.just_pressed(MouseButton::Forward) {
-            state.shop = match &state.shop {
-                Shop::Buildings => Shop::Fleet,
-                Shop::Fleet => Shop::Defenses,
-                Shop::Defenses => Shop::Buildings,
-            };
-        } else if mouse.just_pressed(MouseButton::Back) {
-            state.shop = match &state.shop {
-                Shop::Buildings => Shop::Defenses,
-                Shop::Fleet => Shop::Buildings,
-                Shop::Defenses => Shop::Fleet,
-            };
-        }
-    } else if state.mission {
+    // Move between mission or shop tabs
+    if state.mission {
         if mouse.just_pressed(MouseButton::Forward) {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,
@@ -147,6 +133,20 @@ pub fn check_keys(
                 MissionTab::NewMission => MissionTab::IncomingAttacks,
                 MissionTab::ActiveMissions => MissionTab::NewMission,
                 MissionTab::IncomingAttacks => MissionTab::ActiveMissions,
+            };
+        }
+    } else if settings.show_menu && state.planet_selected.is_some() {
+        if mouse.just_pressed(MouseButton::Forward) {
+            state.shop = match &state.shop {
+                Shop::Buildings => Shop::Fleet,
+                Shop::Fleet => Shop::Defenses,
+                Shop::Defenses => Shop::Buildings,
+            };
+        } else if mouse.just_pressed(MouseButton::Back) {
+            state.shop = match &state.shop {
+                Shop::Buildings => Shop::Defenses,
+                Shop::Fleet => Shop::Buildings,
+                Shop::Defenses => Shop::Fleet,
             };
         }
     }

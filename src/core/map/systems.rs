@@ -183,14 +183,14 @@ pub fn draw_map(
                       map: Res<Map>,
                       player: Res<Player>| {
                     if event.button == PointerButton::Primary {
-                        // Only owned planets can be selected
+                        state.planet_selected = Some(planet_id);
+                        state.to_selected = true;
                         if player.owns(map.get(planet_id)) {
-                            state.planet_selected = Some(planet_id);
-                            state.to_selected = true;
                             state.mission_info.origin = planet_id;
                         }
                     } else {
                         state.mission = true;
+                        state.mission_tab = MissionTab::NewMission;
                         state.mission_info.origin = state
                             .planet_selected
                             .filter(|&p| player.owns(map.get(p)))

@@ -27,7 +27,7 @@ pub struct MenuCmp;
 #[derive(Component, Clone, Debug, PartialEq)]
 pub enum MenuBtn {
     Singleplayer,
-    Multiplayer,
+    StartGame,
     NewGame,
     LoadGame,
     HostGame,
@@ -84,7 +84,7 @@ pub fn on_click_menu_button(
             commands.insert_resource(Host::default());
             next_app_state.set(AppState::Game);
         },
-        MenuBtn::Multiplayer => {
+        MenuBtn::StartGame => {
             next_app_state.set(AppState::MultiPlayerMenu);
         },
         MenuBtn::NewGame => {
