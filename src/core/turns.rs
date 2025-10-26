@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
-use rand::{rng, Rng};
 
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::Missions;
+use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -111,19 +112,33 @@ pub fn resolve_turn(
             }
         });
 
+        let filter_missions = |missions: &HashMap<MissionId, Mission>, player: &Player| {
+            missions
+                .values()
+                .filter(|m| {
+                    let origin = map.get(m.origin);
+                    m.owner == player.id
+                        || (origin.get(&Unit::Building(Building::SensorPhalanx))
+                            >= m.turns_to_destination(&map)
+                            && m.objective != Icon::Spy)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
         for (id, player) in host.clients.iter() {
             server_send_msg.write(ServerSendMsg::new(
                 ServerMessage::StartTurn {
                     map: map.clone(),
                     player: player.clone(),
-                    missions: Missions(host.missions.values().cloned().collect()),
+                    missions: Missions(filter_missions(&host.missions, player)),
                 },
                 Some(id.clone()),
             ));
         }
 
         // Update the missions for the host
-        missions.0 = host.missions.values().cloned().collect();
+        missions.0 = filter_missions(&host.missions, &player);
 
         host.turn_ended.clear();
         start_turn_msg.write(StartTurnMsg);
@@ -134,39 +149,11 @@ pub fn start_turn(
     mut commands: Commands,
     mut start_turn_msg: MessageReader<StartTurnMsg>,
     mut settings: ResMut<Settings>,
-    map: Res<Map>,
-    player: Res<Player>,
-    mut missions: ResMut<Missions>,
     mut message: MessageWriter<MessageMsg>,
 ) {
     for _ in start_turn_msg.read() {
         settings.turn += 1;
         commands.insert_resource(UiState::default());
-
-        // Once all missions are resolved, check which players can see which enemy missions
-        // and adjust the stats according to the level of the Sensor Phalanx
-        for planet in map.planets.iter().filter(|p| player.owns(p)) {
-            let phalanx = planet.get(&Unit::Building(Building::SensorPhalanx));
-
-            missions.0.retain_mut(|m| {
-                let distance = m.turns_to_destination(&map);
-
-                if m.owner == player.id {
-                    true
-                } else if phalanx >= distance && m.objective != Icon::Spy {
-                    m.army.iter_mut().for_each(|(u, c)| {
-                        // Change the real number of ships with an approximate value that
-                        // depends on the ship type, the distance and the level of the Phalanx
-                        *c = ((*c + 6 - u.production()) as f32
-                            * (2f32 - 0.2 * (phalanx - distance) as f32)
-                            * rng().random::<f32>()) as usize;
-                    });
-                    true
-                } else {
-                    false
-                }
-            });
-        }
 
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
     }

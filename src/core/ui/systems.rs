@@ -864,6 +864,7 @@ fn draw_mission(
 fn draw_mission_fleet_hover(
     ui: &mut Ui,
     mission: &Mission,
+    map: &Map,
     player: &Player,
     units: &[Vec<Unit>; 3],
     images: &ImageIds,
@@ -873,6 +874,8 @@ fn draw_mission_fleet_hover(
     } else {
         &units[1]
     };
+
+    let phalanx = map.get(mission.destination).get(&Unit::Building(Building::SensorPhalanx));
 
     ui.add_space(17.);
 
@@ -890,7 +893,11 @@ fn draw_mission_fleet_hover(
         ui.horizontal(|ui| {
             ui.add_space(30.);
             ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-            ui.label(mission.get(unit).to_string());
+            ui.label(if unit.production() > phalanx {
+                "?".to_string()
+            } else {
+                mission.get(unit).to_string()
+            });
         });
     }
 }
@@ -1423,7 +1430,7 @@ pub fn draw_ui(
             ),
             (window_w, window_h),
             &images,
-            |ui| draw_mission_fleet_hover(ui, mission, &player, &units, &images),
+            |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &units, &images),
         );
 
         let (window_w2, window_h2) = (270., 280.);

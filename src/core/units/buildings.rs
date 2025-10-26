@@ -54,10 +54,10 @@ impl Description for Building {
                 Interplanetary missiles ignore the Planetary Shield."
             },
             Building::SensorPhalanx => {
-                "The Sensor Phalanx scans the space around a planet to detect incoming attacks. \
-                The higher the level of the phalanx, the further it scans. Information accuracy \
-                decreases with distance to the attacking fleet and increases with the level of \
-                the Phalanx. Spying missions are not detected by the Phalanx."
+                "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
+                The higher the level of the phalanx, the further it scans. A Phalanx of level N \
+                detects incoming attacks at N turns away, but can only see units with production \
+                <= N. Spying missions are not detected by the Phalanx."
             },
             Building::JumpGate => {
                 "The Jump Gate enables rapid travel between two owned planets with jump gates \
