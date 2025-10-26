@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
 
+use crate::core::combat::combat;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{Mission, MissionId, Missions};
+use crate::core::missions::{Mission, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -59,26 +58,29 @@ pub fn resolve_turn(
             p.jump_gate = 0;
         });
 
-        let mut players =
-            std::iter::once(&mut *player).chain(host.clients.values_mut()).collect::<Vec<_>>();
+        // Collect all players and missions
+        let mut all_players = std::iter::once(player.clone())
+            .chain(host.clients.values().cloned())
+            .collect::<Vec<_>>();
 
-        for player in &mut players {
-            // Produce resources
+        let mut all_missions =
+            missions.0.iter().cloned().chain(host.missions.values().cloned()).collect::<Vec<_>>();
+
+        // Produce resources
+        for player in &mut all_players {
             let production = player.resource_production(&map.planets);
             player.resources += production;
         }
 
-        // Add host's missions to the missions list
-        for mission in missions.iter().filter(|m| m.owner == player.id) {
-            host.missions.insert(mission.id, mission.clone());
-        }
-
         // Resolve missions
-        host.missions.retain(|_, mission| {
+        let mut to_add = vec![];
+        let mut to_drop = vec![];
+        for mission in &mut all_missions {
             mission.advance(&map);
 
             let has_reached = mission.has_reached_destination(&map);
 
+            let origin = map.get(mission.origin).clone();
             let destination = map.get_mut(mission.destination);
 
             // If the destination planet is friendly, the mission changes to deploy
@@ -91,36 +93,64 @@ pub fn resolve_turn(
             }
 
             if has_reached {
-                match mission.objective {
-                    Icon::Colonize => {
-                        *mission.army.entry(Unit::Ship(Ship::ColonyShip)).or_insert(1) -= 1;
-                        destination.conquered(mission.owner);
+                let report = combat(
+                    mission,
+                    destination.owned,
+                    destination.army(),
+                    destination.get(&Unit::Building(Building::PlanetaryShield)),
+                );
 
-                        // If the planet has no buildings, build a level 1 mine
-                        if destination.complex.is_empty() {
-                            destination.complex.insert(Building::Mine, 1);
+                all_players
+                    .iter_mut()
+                    .filter(|p| p.owns(destination) || report.winner() == Some(p.id))
+                    .for_each(|p| p.reports.push(report.clone()));
+
+                if report.winner() == Some(mission.owner) {
+                    if report.planet_destroyed {
+                        destination.destroy();
+
+                        // Send fleet back to planet of origin
+                        // Start a bit outside the origin planet to be able to see the image
+                        to_add.push(Mission::new(
+                            mission.owner,
+                            destination,
+                            &origin,
+                            Icon::Deploy,
+                            report.surviving_attacker,
+                            false,
+                            false,
+                        ));
+                    } else {
+                        if mission.objective == Icon::Colonize {
+                            *mission.army.entry(Unit::Ship(Ship::ColonyShip)).or_insert(1) -= 1;
+                            destination.conquered(mission.owner);
+
+                            // If the planet has no buildings, build a level 1 mine
+                            if destination.complex.is_empty() {
+                                destination.complex.insert(Building::Mine, 1);
+                            }
                         }
-                    },
-                    _ => (),
+
+                        // Take control of the planet and dock the surviving fleet
+                        destination.controlled = Some(mission.owner);
+                        destination.dock(mission.army.clone());
+                    }
                 }
 
-                // Take control of the planet and dock the surviving fleet
-                // Surviving missiles are automatically destroyed
-                if mission.objective != Icon::MissileStrike {
-                    destination.controlled = Some(mission.owner);
-                    destination.dock(mission.army.clone());
-                }
-
-                false
-            } else {
-                true
+                to_drop.push(mission.id);
             }
-        });
+        }
+
+        // Remove missions that reached the destination
+        all_missions.retain(|m| !to_drop.contains(&m.id));
+
+        // Add new missions to existing list
+        all_missions.extend(to_add);
 
         // Select the missions every player is able to see
-        let filter_missions = |missions: &HashMap<MissionId, Mission>, player: &Player| {
+        let filter_missions = |missions: &Vec<Mission>, player: &Player| {
             missions
-                .values()
+                .iter()
                 .filter(|m| {
                     let destination = map.get(m.destination);
                     let phalanx = destination.get(&Unit::Building(Building::SensorPhalanx));
@@ -134,19 +164,23 @@ pub fn resolve_turn(
                 .collect::<Vec<_>>()
         };
 
-        for (id, player) in host.clients.iter() {
-            server_send_msg.write(ServerSendMsg::new(
-                ServerMessage::StartTurn {
-                    map: map.clone(),
-                    player: player.clone(),
-                    missions: Missions(filter_missions(&host.missions, player)),
-                },
-                Some(id.clone()),
-            ));
+        for p in all_players {
+            // Update the host
+            if p.id == 0 {
+                missions.0 = filter_missions(&all_missions, &p);
+                *player = p;
+            } else {
+                // Update the clients
+                server_send_msg.write(ServerSendMsg::new(
+                    ServerMessage::StartTurn {
+                        map: map.clone(),
+                        player: p.clone(),
+                        missions: Missions(filter_missions(&all_missions, &p)),
+                    },
+                    Some(p.id),
+                ));
+            }
         }
-
-        // Update the missions for the host
-        missions.0 = filter_missions(&host.missions, &player);
 
         host.turn_ended.clear();
         start_turn_msg.write(StartTurnMsg);

@@ -239,12 +239,6 @@ fn draw_new_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
-    state.mission_info.owner = player.id;
-
-    // Start a bit outside the origin planet to be able to see the image
-    let direction = (-origin.position + destination.position).normalize();
-    state.mission_info.position = origin.position + direction * Planet::SIZE;
-
     if origin.controlled == destination.controlled {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
@@ -564,6 +558,31 @@ fn draw_new_mission(
                 ));
                 ui.small(format!("Fuel consumption: {fuel}"));
 
+                if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
+                    let probes = state.mission_info.get(&Unit::Ship(Ship::Probe));
+                    ui.add_enabled_ui(probes > 0, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.small("Probes stay:");
+                            ui.add(toggle(&mut state.mission_info.probes_stay)).on_hover_cursor(CursorIcon::PointingHand);
+                        });
+                    })
+                    .response
+                    .on_hover_ui(|ui| {
+                        ui.small(
+                            "Normally, Probes leave combat after the first round and \
+                            return to the planet of origin. Enabling this option makes the \
+                            Probes stay during the whole combat."
+                        );
+                    })
+                    .on_disabled_hover_ui(|ui| {
+                        ui.small("No Probes selected for this mission.");
+                    });
+
+                    if probes == 0 {
+                        state.mission_info.probes_stay = false;
+                    }
+                }
+
                 let mut has_gate = false;
                 if state.mission_info.objective == Icon::Deploy {
                     if player.owns(origin)
@@ -581,29 +600,29 @@ fn draw_new_mission(
                         ui.add_enabled_ui(can_jump, |ui| {
                             ui.horizontal(|ui| {
                                 ui.small(format!("Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
-                                ui.add(toggle(&mut state.mission_info.jump_gate));
+                                ui.add(toggle(&mut state.mission_info.jump_gate)).on_hover_cursor(CursorIcon::PointingHand);
                             });
                         })
-                            .response
-                            .on_hover_ui(|ui| {
-                                ui.small(
-                                    "Whether to send this mission through the Jump Gate. \
-                                    Missions through the Jump Gate always take 1 turn and cost \
-                                    no fuel."
-                                );
-                            })
-                            .on_disabled_hover_ui(|ui| {
-                                ui.small(
-                                    "The selected fleet has a higher jump cost than the Gate \
-                                    can transfer this turn."
-                                );
-                            });
+                        .response
+                        .on_hover_ui(|ui| {
+                            ui.small(
+                                "Whether to send this mission through the Jump Gate. \
+                                Missions through the Jump Gate always take 1 turn and cost \
+                                no fuel."
+                            );
+                        })
+                        .on_disabled_hover_ui(|ui| {
+                            ui.small(
+                                "The selected fleet has a higher jump cost than the Gate \
+                                can transfer this turn."
+                            );
+                        });
                     }
                 } else {
                     state.mission_info.jump_gate = false;
                 }
 
-                ui.add_space(if has_gate { 5. } else { 45. });
+                ui.add_space(if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) || has_gate { 5. } else { 45. });
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     ui.add_space(40.);
@@ -663,8 +682,17 @@ fn draw_new_mission(
                         );
 
                         if response.clicked() {
-                            send_mission
-                                .write(SendMissionMsg::new(Mission::from(&state.mission_info)));
+                            let mission = Mission::new(
+                                player.id,
+                                origin,
+                                destination,
+                                state.mission_info.objective,
+                                state.mission_info.army.clone(),
+                                state.mission_info.probes_stay,
+                                state.mission_info.jump_gate,
+                            );
+
+                            send_mission.write(SendMissionMsg::new(mission));
                             state.planet_selected = None;
                             state.mission = false;
                             state.mission_info = Mission::default();

@@ -117,7 +117,7 @@ impl Combat for Defense {
             Defense::IonCannon => 500,
             Defense::PlasmaTurret => 600,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 150,
+            Defense::InterplanetaryMissile => 0,
         }
     }
 
@@ -143,7 +143,7 @@ impl Combat for Defense {
             Defense::IonCannon => 100,
             Defense::PlasmaTurret => 120,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 120,
+            Defense::InterplanetaryMissile => 320,
         }
     }
 

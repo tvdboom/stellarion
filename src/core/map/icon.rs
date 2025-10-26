@@ -99,7 +99,8 @@ impl Description for Icon {
             Icon::Attack => {
                 "Attack a planet with your combat ships. If the attack is successful, the ships \
                 remain on the conquered planet, but do not colonize it. If the planet was owned \
-                by another player, they will lose control of it. All buildings will remain."
+                by another player, they will lose control of it. Buildings on the target planet \
+                remain."
             },
             Icon::Spy => {
                 "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
@@ -116,9 +117,11 @@ impl Description for Icon {
                 been colonized by the user."
             },
             Icon::Destroy => {
-                "After a successful attack, every surviving War Sun will try to obliterate the \
-                target planet with a 20% chance. If the planet is destroyed, the fleet will return \
-                to the origin planet. A destroyed planet can not be colonized again."
+                "Attack a planet with your combat ships. After every round of the attack, and only \
+                if there are no enemy ships left, every War Sun will try to obliterate the target \
+                planet with a 10% chance, decreased with 1% for every turn afterwards. If the \
+                planet is destroyed, the fleet will return to the origin planet. A destroyed \
+                planet can not be colonized again."
             },
             Icon::Deploy => "Send a fleet to another one of your planets.",
             _ => unreachable!(),

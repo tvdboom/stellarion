@@ -14,7 +14,7 @@ use crate::core::resources::Resources;
 use crate::core::units::buildings::{Building, Complex};
 use crate::core::units::defense::Battery;
 use crate::core::units::ships::Fleet;
-use crate::core::units::Unit;
+use crate::core::units::{Army, Unit};
 
 pub type PlanetId = usize;
 
@@ -183,6 +183,18 @@ impl Planet {
         }
     }
 
+    pub fn army(&self) -> Army {
+        self.fleet
+            .iter()
+            .filter_map(|(s, c)| (*c > 0).then_some((Unit::Ship(*s), *c)))
+            .chain(
+                self.battery
+                    .iter()
+                    .filter_map(|(d, c)| (*c > 0).then_some((Unit::Defense(*d), *c))),
+            )
+            .collect()
+    }
+
     pub fn has(&self, unit: &Unit) -> bool {
         self.get(unit) > 0
     }
@@ -205,5 +217,16 @@ impl Planet {
                 _ => unreachable!(),
             }
         }
+    }
+
+    /// Destroy this planet
+    pub fn destroy(&mut self) {
+        self.owned = None;
+        self.controlled = None;
+        self.complex = HashMap::new();
+        self.battery = HashMap::new();
+        self.fleet = HashMap::new();
+        self.buy = Vec::new();
+        self.is_destroyed = true;
     }
 }

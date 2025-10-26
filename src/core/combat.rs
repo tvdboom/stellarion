@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
+use bevy_renet::renet::ClientId;
+use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::core::units::Description;
+use crate::core::missions::Mission;
+use crate::core::units::{Army, Description};
 
 #[derive(EnumIter, Debug, PartialEq)]
 pub enum CombatStats {
@@ -37,5 +42,47 @@ impl Description for CombatStats {
                 "The chance to fire again this round when targeting specific units."
             },
         }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CombatReport {
+    pub mission: Mission,
+    pub defender: Option<ClientId>,
+    pub defense: Army,
+    pub surviving_attacker: Army,
+    pub surviving_defense: Army,
+    pub planetary_shield: usize,
+    pub planet_colonized: bool,
+    pub planet_destroyed: bool,
+}
+
+impl CombatReport {
+    pub fn winner(&self) -> Option<ClientId> {
+        if !self.surviving_attacker.is_empty() {
+            Some(self.mission.owner)
+        } else {
+            self.defender
+        }
+    }
+}
+
+pub fn combat(
+    mission: &Mission,
+    defender: Option<ClientId>,
+    defense: Army,
+    planetary_shield: usize,
+) -> CombatReport {
+    // Surviving missiles are destroyed
+
+    CombatReport {
+        mission: mission.clone(),
+        defender,
+        defense: defense.clone(),
+        surviving_attacker: HashMap::new(),
+        surviving_defense: defense,
+        planetary_shield,
+        planet_colonized: false,
+        planet_destroyed: false,
     }
 }

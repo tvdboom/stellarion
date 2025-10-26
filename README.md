@@ -84,6 +84,9 @@ Things to keep in mind:
   at the destination planet the same turn.
 - Missile strikes are resolved before any other combat of that same player.
 - The fleets of attacks on the same planet on the same turn are grouped together per player.
+- An attacking player receives no enemy unit information if all its units are destroyed.
+- A defender player receives no enemy unit information if all its units are destroyed and he
+  doesn't own the planet.
 
 <br>
 

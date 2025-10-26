@@ -52,14 +52,34 @@ pub struct Mission {
     pub position: Vec2,
     pub objective: Icon,
     pub army: Army,
+    pub probes_stay: bool,
     pub jump_gate: bool,
 }
 
 impl Mission {
-    pub fn from(other: &Mission) -> Self {
-        Self {
+    pub fn new(
+        owner: ClientId,
+        origin: &Planet,
+        destination: &Planet,
+        objective: Icon,
+        army: Army,
+        probes_stay: bool,
+        jump_gate: bool,
+    ) -> Self {
+        Mission {
             id: rand::random(),
-            ..other.clone()
+            owner,
+            origin: origin.id,
+            destination: destination.id,
+            position: {
+                // Start a bit outside the origin planet to be able to see the image
+                let direction = (-origin.position + destination.position).normalize();
+                origin.position + direction * Planet::SIZE
+            },
+            objective,
+            army,
+            probes_stay,
+            jump_gate,
         }
     }
 
