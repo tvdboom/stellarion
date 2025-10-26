@@ -111,8 +111,9 @@ impl Description for Icon {
                 "Launch an interplanetary missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary missiles ignore any ships \
                 and the Planetary Shield at the target planet, and directly hit the defenses. \
-                Once launched, a missile strike always hits the destination planet, even if it \
-                has been colonized by the user."
+                At the end of combat, all surviving missiles are automatically destroyed. Once \
+                launched, a missile strike always hits the destination planet, even if it has \
+                been colonized by the user."
             },
             Icon::Destroy => {
                 "After a successful attack, every surviving War Sun will try to obliterate the \

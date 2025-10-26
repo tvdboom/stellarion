@@ -97,6 +97,7 @@ pub enum ServerMessage {
 pub enum ClientMessage {
     EndTurn {
         end_turn: bool,
+        map: Map,
         player: Player,
         missions: Missions,
     },
@@ -201,25 +202,40 @@ pub fn server_send_message(
     }
 }
 
-pub fn server_receive_message(mut server: ResMut<RenetServer>, mut host: Option<ResMut<Host>>) {
+pub fn server_receive_message(
+    mut server: ResMut<RenetServer>,
+    mut map: Option<ResMut<Map>>,
+    mut host: Option<ResMut<Host>>,
+) {
     for id in server.clients_id() {
         while let Some(message) = server.receive_message(id, DefaultChannel::ReliableOrdered) {
             let (d, _) = decode_from_slice(&message, standard()).unwrap();
             match d {
                 ClientMessage::EndTurn {
                     end_turn,
-                    player,
-                    missions,
+                    map: new_map,
+                    player: new_player,
+                    missions: new_missions,
                 } => {
                     if let Some(host) = &mut host {
-                        host.clients
-                            .entry(id)
-                            .and_modify(|p| *p = player.clone())
-                            .or_insert(player);
+                        let map = map.as_mut().unwrap();
 
-                        for mission in missions.iter().filter(|m| m.owner == id) {
+                        // Replace the planets controlled by the client on the host's map
+                        for planet in new_map.planets.iter().filter(|p| new_player.controls(p)) {
+                            *map.planets.iter_mut().find(|p| p.id == planet.id).unwrap() =
+                                planet.clone();
+                        }
+
+                        // Insert the client's missions in the host's list
+                        for mission in new_missions.iter().filter(|m| m.owner == id) {
                             host.missions.insert(mission.id, mission.clone());
                         }
+
+                        // Replace the client itself in the host's list
+                        host.clients
+                            .entry(id)
+                            .and_modify(|p| *p = new_player.clone())
+                            .or_insert(new_player);
 
                         if end_turn {
                             host.turn_ended.insert(id);

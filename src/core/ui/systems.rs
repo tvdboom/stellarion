@@ -893,7 +893,7 @@ fn draw_mission_fleet_hover(
         ui.horizontal(|ui| {
             ui.add_space(30.);
             ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-            ui.label(if unit.production() > phalanx {
+            ui.label(if mission.owner != player.id && unit.production() > phalanx {
                 "?".to_string()
             } else {
                 mission.get(unit).to_string()

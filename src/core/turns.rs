@@ -24,6 +24,7 @@ pub struct PreviousEndTurnState(bool);
 pub fn check_turn_ended(
     state: Res<UiState>,
     mut prev_state: ResMut<PreviousEndTurnState>,
+    map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
     mut client_send_msg: MessageWriter<ClientSendMsg>,
@@ -31,6 +32,7 @@ pub fn check_turn_ended(
     if prev_state.0 != state.end_turn {
         client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
             end_turn: state.end_turn,
+            map: map.clone(),
             player: player.clone(),
             missions: missions.clone(),
         }));
@@ -103,8 +105,11 @@ pub fn resolve_turn(
                 }
 
                 // Take control of the planet and dock the surviving fleet
-                destination.controlled = Some(mission.owner);
-                destination.dock(mission.army.clone());
+                // Surviving missiles are automatically destroyed
+                if mission.objective != Icon::MissileStrike {
+                    destination.controlled = Some(mission.owner);
+                    destination.dock(mission.army.clone());
+                }
 
                 false
             } else {
@@ -112,14 +117,17 @@ pub fn resolve_turn(
             }
         });
 
+        // Select the missions every player is able to see
         let filter_missions = |missions: &HashMap<MissionId, Mission>, player: &Player| {
             missions
                 .values()
                 .filter(|m| {
-                    let origin = map.get(m.origin);
+                    let destination = map.get(m.destination);
+                    let phalanx = destination.get(&Unit::Building(Building::SensorPhalanx));
+                    let distance = m.turns_to_destination(&map);
                     m.owner == player.id
-                        || (origin.get(&Unit::Building(Building::SensorPhalanx))
-                            >= m.turns_to_destination(&map)
+                        || (player.owns(destination)
+                            && phalanx >= distance
                             && m.objective != Icon::Spy)
                 })
                 .cloned()
