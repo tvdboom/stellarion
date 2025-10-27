@@ -12,8 +12,8 @@ use crate::core::constants::{
 };
 use crate::core::resources::Resources;
 use crate::core::units::buildings::{Building, Complex};
-use crate::core::units::defense::Battery;
-use crate::core::units::ships::Fleet;
+use crate::core::units::defense::{Battery, Defense};
+use crate::core::units::ships::{Fleet, Ship};
 use crate::core::units::{Army, Unit};
 
 pub type PlanetId = usize;
@@ -107,14 +107,16 @@ impl Planet {
 
         // Remove!!
         self.fleet = HashMap::from([
-            (crate::core::units::ships::Ship::Probe, 88),
-            (crate::core::units::ships::Ship::LightFighter, 15),
-            (crate::core::units::ships::Ship::ColonyShip, 5),
-            (crate::core::units::ships::Ship::Cruiser, 11),
+            (Ship::Probe, 88),
+            (Ship::LightFighter, 15),
+            (Ship::ColonyShip, 5),
+            (Ship::Cruiser, 11),
+            (Ship::WarSun, 50),
         ]);
         self.battery = HashMap::from([
-            (crate::core::units::defense::Defense::RocketLauncher, 79),
-            (crate::core::units::defense::Defense::InterplanetaryMissile, 88),
+            (Defense::RocketLauncher, 79),
+            (Defense::AntiballisticMissile, 40),
+            (Defense::InterplanetaryMissile, 80),
         ]);
     }
 
@@ -207,7 +209,7 @@ impl Planet {
         self.battery.iter().any(|(_, c)| *c > 0)
     }
 
-    /// Merge the given army into the planet's army
+    /// Merge a fleet into the planet's fleet
     pub fn dock(&mut self, army: HashMap<Unit, usize>) {
         for (unit, count) in army {
             match unit {
@@ -221,6 +223,7 @@ impl Planet {
 
     /// Destroy this planet
     pub fn destroy(&mut self) {
+        self.image = 0;
         self.owned = None;
         self.controlled = None;
         self.complex = HashMap::new();

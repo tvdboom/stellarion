@@ -56,7 +56,10 @@ impl MissionCmp {
 }
 
 #[derive(Component)]
-pub struct ShowOnHoverCmp;
+pub struct PlanetNameCmp;
+
+#[derive(Component)]
+pub struct PlanetResourcesCmp;
 
 #[derive(Component)]
 pub struct VoronoiCmp(pub PlanetId);
@@ -182,20 +185,30 @@ pub fn draw_map(
                       mut state: ResMut<UiState>,
                       map: Res<Map>,
                       player: Res<Player>| {
+                    let planet = map.get(planet_id);
                     if event.button == PointerButton::Primary {
                         state.planet_selected = Some(planet_id);
                         state.to_selected = true;
-                        if player.owns(map.get(planet_id)) {
+                        if player.owns(planet) {
                             state.mission_info.origin = planet_id;
                         }
-                    } else {
+                    } else if !planet.is_destroyed {
                         state.mission = true;
                         state.mission_tab = MissionTab::NewMission;
-                        state.mission_info.origin = state
-                            .planet_selected
-                            .filter(|&p| player.owns(map.get(p)))
-                            .unwrap_or(player.home_planet);
-                        state.mission_info.destination = planet_id;
+                        state.mission_info = Mission::new(
+                            player.id,
+                            map.get(
+                                state
+                                    .planet_selected
+                                    .filter(|&p| player.owns(map.get(p)))
+                                    .unwrap_or(player.home_planet),
+                            ),
+                            map.get(planet_id),
+                            state.mission_info.objective,
+                            state.mission_info.army.clone(),
+                            state.mission_info.probes_stay,
+                            state.mission_info.jump_gate,
+                        );
                     }
                 },
             )
@@ -212,7 +225,7 @@ pub fn draw_map(
                         TextColor(WHITE.into()),
                         Transform::from_xyz(-4., Planet::SIZE * 0.6, 0.9),
                         Pickable::IGNORE,
-                        ShowOnHoverCmp,
+                        PlanetNameCmp,
                     ));
 
                     for (i, icon) in Icon::iter().enumerate() {
@@ -278,15 +291,20 @@ pub fn draw_map(
                                             state.mission_tab = MissionTab::IncomingAttacks;
                                         } else if icon == Icon::Fleet {
                                             state.mission = true;
-                                            state.mission_info = Mission {
-                                                objective: Icon::Deploy,
-                                                origin: planet_id,
-                                                destination: state
-                                                    .planet_selected
-                                                    .filter(|&id| player.controls(map.get(id)))
-                                                    .unwrap_or(player.home_planet),
-                                                ..state.mission_info.clone()
-                                            };
+                                            state.mission_info = Mission::new(
+                                                player.id,
+                                                map.get(planet_id),
+                                                map.get(
+                                                    state
+                                                        .planet_selected
+                                                        .filter(|&id| player.controls(map.get(id)))
+                                                        .unwrap_or(player.home_planet),
+                                                ),
+                                                Icon::Deploy,
+                                                state.mission_info.army.clone(),
+                                                state.mission_info.probes_stay,
+                                                state.mission_info.jump_gate,
+                                            );
                                         } else if icon.is_mission() {
                                             state.mission = true;
                                             state.mission_tab = MissionTab::NewMission;
@@ -312,11 +330,12 @@ pub fn draw_map(
                                                 );
 
                                             let origin = map.get(origin_id);
-                                            state.mission_info = Mission {
-                                                objective: icon,
-                                                origin: origin_id,
-                                                destination: planet_id,
-                                                army: match icon {
+                                            state.mission_info = Mission::new(
+                                                player.id,
+                                                map.get(origin_id),
+                                                map.get(planet_id),
+                                                icon,
+                                                match icon {
                                                     Icon::Colonize => HashMap::from([(
                                                         Unit::Ship(Ship::ColonyShip),
                                                         1,
@@ -350,8 +369,9 @@ pub fn draw_map(
                                                         .collect(),
                                                     _ => unreachable!(),
                                                 },
-                                                ..state.mission_info.clone()
-                                            };
+                                                state.mission_info.probes_stay,
+                                                state.mission_info.jump_gate,
+                                            );
                                         }
                                     }
                                 },
@@ -379,7 +399,7 @@ pub fn draw_map(
                                     ..default()
                                 },
                                 Pickable::IGNORE,
-                                ShowOnHoverCmp,
+                                PlanetResourcesCmp,
                             ))
                             .with_children(|parent| {
                                 parent.spawn((
@@ -598,7 +618,14 @@ pub fn update_end_turn(
 pub fn update_planet_info(
     mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
     mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
-    mut show_q: Query<&mut Visibility, (With<ShowOnHoverCmp>, Without<Icon>)>,
+    mut name_q: Query<
+        &mut Visibility,
+        (With<PlanetNameCmp>, Without<Icon>, Without<PlanetResourcesCmp>),
+    >,
+    mut resources_q: Query<
+        &mut Visibility,
+        (With<PlanetResourcesCmp>, Without<Icon>, Without<PlanetNameCmp>),
+    >,
     children_q: Query<&Children>,
     map: Res<Map>,
     player: Res<Player>,
@@ -611,14 +638,7 @@ pub fn update_planet_info(
         let planet = map.get(planet_c.id);
 
         // Update destroyed planet image
-        planet_s.image = assets.image(format!(
-            "planet{}",
-            if planet.is_destroyed {
-                0
-            } else {
-                planet.image
-            }
-        ));
+        planet_s.image = assets.image(format!("planet{}", planet.image));
 
         let selected =
             state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
@@ -676,7 +696,7 @@ pub fn update_planet_info(
                     },
                 };
 
-                *icon_v = if visible {
+                *icon_v = if visible && !planet.is_destroyed {
                     icon_t.translation.y = Planet::SIZE * 0.35 - count as f32 * Icon::SIZE;
                     count += 1;
                     Visibility::Inherited
@@ -686,8 +706,16 @@ pub fn update_planet_info(
             }
 
             // Show/hide planet resources and name
-            if let Ok(mut visibility) = show_q.get_mut(child) {
+            if let Ok(mut visibility) = name_q.get_mut(child) {
                 *visibility = if selected || settings.show_info {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+
+            if let Ok(mut visibility) = resources_q.get_mut(child) {
+                *visibility = if (selected || settings.show_info) && !planet.is_destroyed {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden

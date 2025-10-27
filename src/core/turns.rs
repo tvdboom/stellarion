@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
+use rand::rng;
+use rand::seq::SliceRandom;
 
 use crate::core::combat::combat;
 use crate::core::map::icon::Icon;
@@ -9,7 +13,7 @@ use crate::core::missions::{Mission, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
-use crate::core::ui::systems::UiState;
+use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
@@ -19,6 +23,31 @@ pub struct StartTurnMsg;
 
 #[derive(Resource, Default)]
 pub struct PreviousEndTurnState(bool);
+
+/// Merge missions per objective and return ordered by objective priority
+fn regroup_missions(mut missions: Vec<&mut Mission>) -> Vec<&mut Mission> {
+    let mut deploy: Option<&mut Mission> = None;
+    let mut missile: Option<&mut Mission> = None;
+    let mut spy: Option<&mut Mission> = None;
+    let mut rest: Option<&mut Mission> = None;
+
+    for m in missions.drain(..) {
+        let target = match m.objective {
+            Icon::MissileStrike => &mut missile,
+            Icon::Spy => &mut spy,
+            Icon::Deploy => &mut deploy,
+            _ => &mut rest,
+        };
+
+        if let Some(t) = target {
+            t.merge(m);
+        } else {
+            *target = Some(m);
+        }
+    }
+
+    [deploy, missile, spy, rest].into_iter().flatten().collect()
+}
 
 pub fn check_turn_ended(
     state: Res<UiState>,
@@ -43,6 +72,7 @@ pub fn check_turn_ended(
 pub fn resolve_turn(
     mut host: ResMut<Host>,
     server: Option<ResMut<RenetServer>>,
+    settings: Res<Settings>,
     state: Res<UiState>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -72,29 +102,34 @@ pub fn resolve_turn(
             player.resources += production;
         }
 
-        // Resolve missions
-        let mut to_add = vec![];
-        let mut to_drop = vec![];
-        for mission in &mut all_missions {
+        // Advance missions and separate those that have arrived
+        let mut arrived = vec![];
+        all_missions.retain_mut(|mission| {
             mission.advance(&map);
 
-            let has_reached = mission.has_reached_destination(&map);
-
-            let origin = map.get(mission.origin).clone();
-            let destination = map.get_mut(mission.destination);
-
-            // If the destination planet is friendly, the mission changes to deploy
-            // (the planet could have been colonized by another mission)
-            // Except missile strikes, which always attack the destination planet
-            if destination.controlled == Some(mission.owner)
-                && mission.objective != Icon::MissileStrike
-            {
-                mission.objective = Icon::Deploy;
+            if mission.has_reached_destination(&map) {
+                arrived.push(mission.clone());
+                false
+            } else {
+                true
             }
+        });
 
-            if has_reached {
+        // Resolve missions in random player order
+        let mut players_shuffled = all_players.clone();
+        players_shuffled.shuffle(&mut rng());
+        for player in players_shuffled {
+            // Select only missions owned by this player
+            let arrived_f = arrived.iter_mut().filter(|m| m.owner == player.id).collect::<Vec<_>>();
+
+            // Resolve missions that reached destination
+            for mission in regroup_missions(arrived_f) {
+                let origin = map.get(mission.origin).clone();
+                let destination = map.get_mut(mission.destination);
+
                 let report = combat(
-                    mission,
+                    settings.turn + 1,
+                    &mission,
                     destination.owned,
                     destination.army(),
                     destination.get(&Unit::Building(Building::PlanetaryShield)),
@@ -102,16 +137,28 @@ pub fn resolve_turn(
 
                 all_players
                     .iter_mut()
-                    .filter(|p| p.owns(destination) || report.winner() == Some(p.id))
+                    .filter(|p| p.owns(destination) || p.id == report.mission.owner)
                     .for_each(|p| p.reports.push(report.clone()));
+
+                // Send probes back that left combat after one round
+                if report.returning_probes > 0 {
+                    all_missions.push(Mission::new(
+                        mission.owner,
+                        destination,
+                        &origin,
+                        Icon::Deploy,
+                        HashMap::from([(Unit::Ship(Ship::Probe), report.returning_probes)]),
+                        false,
+                        false,
+                    ));
+                }
 
                 if report.winner() == Some(mission.owner) {
                     if report.planet_destroyed {
                         destination.destroy();
 
                         // Send fleet back to planet of origin
-                        // Start a bit outside the origin planet to be able to see the image
-                        to_add.push(Mission::new(
+                        all_missions.push(Mission::new(
                             mission.owner,
                             destination,
                             &origin,
@@ -121,7 +168,7 @@ pub fn resolve_turn(
                             false,
                         ));
                     } else {
-                        if mission.objective == Icon::Colonize {
+                        if report.planet_colonized {
                             *mission.army.entry(Unit::Ship(Ship::ColonyShip)).or_insert(1) -= 1;
                             destination.conquered(mission.owner);
 
@@ -131,21 +178,60 @@ pub fn resolve_turn(
                             }
                         }
 
+                        // Clear all defenders
+                        if mission.objective != Icon::Deploy {
+                            destination.fleet = HashMap::new();
+                            destination.battery = HashMap::new();
+                        }
+
                         // Take control of the planet and dock the surviving fleet
                         destination.controlled = Some(mission.owner);
                         destination.dock(mission.army.clone());
                     }
-                }
+                } else {
+                    // Merge surviving defenders with planet
+                    destination.fleet = report
+                        .surviving_defense
+                        .iter()
+                        .filter_map(|(u, v)| {
+                            if let Unit::Ship(s) = u {
+                                Some((*s, *v))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                to_drop.push(mission.id);
+                    destination.battery = report
+                        .surviving_defense
+                        .iter()
+                        .filter_map(|(u, v)| {
+                            if let Unit::Defense(d) = u {
+                                Some((*d, *v))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                }
             }
         }
 
-        // Remove missions that reached the destination
-        all_missions.retain(|m| !to_drop.contains(&m.id));
+        // Correct mission objectives based on planet changes
+        all_missions.iter_mut().for_each(|mission| {
+            let control = map.get(mission.destination).controlled;
+            // If the destination planet is friendly, the mission changes to deploy
+            // (the planet could have been colonized by another mission)
+            // Except missile strikes, which always attack the destination planet
+            if control == Some(mission.owner) && mission.objective != Icon::MissileStrike {
+                mission.objective = Icon::Deploy;
+            }
 
-        // Add new missions to existing list
-        all_missions.extend(to_add);
+            // If deploying to a planet that's no longer under control, convert to attack
+            if control != Some(mission.owner) && mission.objective == Icon::Deploy {
+                mission.objective = Icon::Attack;
+            }
+        });
 
         // Select the missions every player is able to see
         let filter_missions = |missions: &Vec<Mission>, player: &Player| {
@@ -191,6 +277,9 @@ pub fn start_turn(
     mut commands: Commands,
     mut start_turn_msg: MessageReader<StartTurnMsg>,
     mut settings: ResMut<Settings>,
+    mut state: ResMut<UiState>,
+    map: Res<Map>,
+    player: Res<Player>,
     mut message: MessageWriter<MessageMsg>,
 ) {
     for _ in start_turn_msg.read() {
@@ -198,5 +287,37 @@ pub fn start_turn(
         commands.insert_resource(UiState::default());
 
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
+
+        let new_reports =
+            player.reports.iter().filter(|r| r.turn == settings.turn).collect::<Vec<_>>();
+        if !new_reports.is_empty() {
+            for report in &new_reports {
+                let destination = map.get(report.mission.destination);
+
+                if report.planet_destroyed {
+                    message.write(MessageMsg::warning(format!(
+                        "Planet {} has been destroyed.",
+                        destination.name
+                    )));
+                }
+
+                if report.planet_colonized {
+                    if report.mission.owner == player.id {
+                        message.write(MessageMsg::info(format!(
+                            "Planet {} has been colonized.",
+                            destination.name
+                        )));
+                    } else {
+                        message.write(MessageMsg::warning(format!(
+                            "Your planet {} has been conquered by the enemy.",
+                            destination.name
+                        )));
+                    }
+                }
+            }
+
+            state.mission = true;
+            state.mission_tab = MissionTab::MissionReports;
+        }
     }
 }

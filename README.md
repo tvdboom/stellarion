@@ -79,11 +79,13 @@ For each shooting unit:
 Things to keep in mind:
 
 - Buildings are build before any combat takes place.
-- Movement and combat is resolved in arbitrary player order each turn. This means that you 
-  cannot know if reinforcements will arrive before or after an attack when they both arrive 
-  at the destination planet the same turn.
-- Missile strikes are resolved before any other combat of that same player.
-- The fleets of attacks on the same planet on the same turn are grouped together per player.
+- Missions are resolved in arbitrary player order each turn. This means that you cannot know if
+  reinforcements will arrive before or after an attack when they both arrive at the destination
+  planet the same turn. If reinforcements arrive after the planet has been conquered, the objective
+  automatically is transformed in an attack.
+- Attacks on the same planet on the same turn are merged per player and per objective. Missile
+  strikes are resolved first, followed by spying missions, and then the remaining, which are
+  grouped together following objective priority `Destroy` > `Colonize` > `Attack`.
 - An attacking player receives no enemy unit information if all its units are destroyed.
 - A defender player receives no enemy unit information if all its units are destroyed and he
   doesn't own the planet.

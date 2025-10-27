@@ -126,13 +126,15 @@ pub fn check_keys(
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,
                 MissionTab::ActiveMissions => MissionTab::IncomingAttacks,
-                MissionTab::IncomingAttacks => MissionTab::NewMission,
+                MissionTab::IncomingAttacks => MissionTab::MissionReports,
+                MissionTab::MissionReports => MissionTab::NewMission,
             };
         } else if mouse.just_pressed(MouseButton::Back) {
             state.mission_tab = match &state.mission_tab {
-                MissionTab::NewMission => MissionTab::IncomingAttacks,
+                MissionTab::NewMission => MissionTab::MissionReports,
                 MissionTab::ActiveMissions => MissionTab::NewMission,
                 MissionTab::IncomingAttacks => MissionTab::ActiveMissions,
+                MissionTab::MissionReports => MissionTab::IncomingAttacks,
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {

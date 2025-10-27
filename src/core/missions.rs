@@ -160,6 +160,18 @@ impl Mission {
     pub fn jump_cost(&self) -> usize {
         self.army.iter().map(|(u, c)| u.production() * c).sum()
     }
+
+    pub fn merge(&mut self, other: &mut Mission) {
+        // Select objective based on priority
+        self.objective =
+            [self.objective, other.objective].into_iter().max_by_key(|o| o.priority()).unwrap();
+
+        for (u, c) in &other.army {
+            *self.army.entry(*u).or_default() += c;
+        }
+
+        self.probes_stay = other.probes_stay || self.probes_stay;
+    }
 }
 
 pub fn update_missions(

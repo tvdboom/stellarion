@@ -8,7 +8,9 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Description, Unit};
 
-#[derive(Component, EnumIter, Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Component, EnumIter, Copy, Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize,
+)]
 pub enum Icon {
     #[default]
     Colonize,
@@ -47,6 +49,17 @@ impl Icon {
             Icon::Buildings => Shop::Buildings,
             Icon::Fleet => Shop::Fleet,
             Icon::Defenses => Shop::Defenses,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn priority(&self) -> usize {
+        match self {
+            Icon::Colonize => 2,
+            Icon::Attack => 1,
+            Icon::Spy => 4,
+            Icon::MissileStrike => 5,
+            Icon::Destroy => 3,
             _ => unreachable!(),
         }
     }
@@ -105,7 +118,7 @@ impl Description for Icon {
             Icon::Spy => {
                 "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
                 origin planet after one round of combat. The more Probes you send, the more \
-                accurate the returned information will be. Spying missions can't be detected by \
+                accurate the returned information will be. Spying missions aren't detected by \
                 the Sensor Phalanx."
             },
             Icon::MissileStrike => {
@@ -118,10 +131,11 @@ impl Description for Icon {
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
-                if there are no enemy ships left, every War Sun will try to obliterate the target \
-                planet with a 10% chance, decreased with 1% for every turn afterwards. If the \
-                planet is destroyed, the fleet will return to the origin planet. A destroyed \
-                planet can not be colonized again."
+                if there are no enemy ships left, every War Sun will try to destroy the target \
+                planet with a 10% chance, decreased with 1% for every round afterwards. If combat \
+                ends and the planet isn't destroyed, the fleet docks. If the planet is destroyed, \
+                the fleet will return to the origin planet. A destroyed planet can not be colonized \
+                again."
             },
             Icon::Deploy => "Send a fleet to another one of your planets.",
             _ => unreachable!(),

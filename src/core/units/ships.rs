@@ -53,10 +53,12 @@ impl Description for Ship {
     fn description(&self) -> &str {
         match self {
             Ship::Probe => {
-                "The Probe is an espionage craft, used to analyze enemy defenses. This ship \
-                only takes part in the first round of any attack. After the first round, it \
-                goes back to report on the enemy units. The more Probes return, the more \
-                accurate the reports. Probes are the fastest ships in the game."
+                "The Probe is an espionage craft, used to analyze enemy defenses. By default, \
+                this ship only takes part in the first round of any attack (this behavior can be \
+                changed). After the first round, it goes back to the planet of origin, reporting \
+                on the enemy units. The more Probes return, the better the intelligence. Probes \
+                are the fastest ships in the game. Probes don't have damage, but can be used as \
+                fodder in combat."
             },
             Ship::ColonyShip => {
                 "This ship is used to colonize planets. The Colony Ship does not fight and is \

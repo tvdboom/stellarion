@@ -47,6 +47,7 @@ pub enum MissionTab {
     NewMission,
     ActiveMissions,
     IncomingAttacks,
+    MissionReports,
 }
 #[derive(Resource, Default)]
 pub struct UiState {
@@ -239,6 +240,8 @@ fn draw_new_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
+    state.mission_info.owner = player.id;
+
     if origin.controlled == destination.controlled {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
@@ -257,7 +260,7 @@ fn draw_new_mission(
     };
 
     ui.horizontal_top(|ui| {
-        ui.add_space(60.);
+        ui.add_space(85.);
 
         let action = |r1: Response, id, h: &mut bool, state: &mut UiState| {
             if r1.clicked() {
@@ -339,7 +342,7 @@ fn draw_new_mission(
                         ComboBox::from_id_salt("destination")
                             .selected_text(&map.get(state.mission_info.destination).name)
                             .show_ui(ui, |ui| {
-                                for planet in map.planets.iter().sorted_by(|a, b| a.name.cmp(&b.name)) {
+                                for planet in map.planets.iter().filter(|p| !p.is_destroyed).sorted_by(|a, b| a.name.cmp(&b.name)) {
                                     ui.selectable_value(
                                         &mut state.mission_info.destination,
                                         planet.id,
@@ -377,7 +380,7 @@ fn draw_new_mission(
         });
     } else {
         ui.horizontal(|ui| {
-            ui.add_space(70.);
+            ui.add_space(95.);
 
             ui.vertical(|ui| {
                 ui.set_width(260.);
@@ -569,9 +572,12 @@ fn draw_new_mission(
                     .response
                     .on_hover_ui(|ui| {
                         ui.small(
-                            "Normally, Probes leave combat after the first round and \
-                            return to the planet of origin. Enabling this option makes the \
-                            Probes stay during the whole combat."
+                            "Normally, Probes leave combat after the first round and return \
+                            to the planet of origin. Enabling this option makes the Probes stay \
+                            during the whole combat, serving as extra fodder and having the \
+                            advantage that they stay with the rest of the fleet when victorious, \
+                            at risk of getting no enemy unit information when losing combat. \
+                            Probes always stay if the combat takes only one round."
                         );
                     })
                     .on_disabled_hover_ui(|ui| {
@@ -733,7 +739,7 @@ fn draw_active_missions(
         ui.set_height(ui.available_height() - 100.);
 
         ui.horizontal(|ui| {
-            ui.add_space(90.);
+            ui.add_space(115.);
 
             let action = |r1: Response, r2: Response, id, h: &mut bool, state: &mut UiState| {
                 if r1.clicked() || r2.clicked() {
@@ -834,6 +840,16 @@ fn draw_active_missions(
     });
 }
 
+fn draw_mission_reports(ui: &mut Ui, state: &UiState, player: &Player, images: &ImageIds) {
+    if player.reports.len() == 0 {
+        ui.add_space(20.);
+        ui.vertical_centered(|ui| {
+            ui.label(format!("No {}.", state.mission_tab.to_lowername()));
+        });
+        return;
+    }
+}
+
 fn draw_mission(
     ui: &mut Ui,
     missions: &Vec<Mission>,
@@ -850,7 +866,7 @@ fn draw_mission(
     ui.horizontal(|ui| {
         ui.style_mut().spacing.button_padding = egui::vec2(6., 0.);
 
-        ui.add_space(40.);
+        ui.add_space(50.);
         for tab in MissionTab::iter() {
             ui.selectable_value(&mut state.mission_tab, tab, tab.to_title());
         }
@@ -886,6 +902,7 @@ fn draw_mission(
             is_hovered,
             images,
         ),
+        MissionTab::MissionReports => draw_mission_reports(ui, state, player, images),
     }
 }
 
@@ -1484,7 +1501,7 @@ pub fn draw_ui(
     if state.mission {
         state.end_turn = false;
 
-        let (window_w, window_h) = (700., 540.);
+        let (window_w, window_h) = (750., 540.);
 
         let is_hovered = contexts.ctx().unwrap().is_pointer_over_area();
         draw_panel(
