@@ -22,7 +22,7 @@ pub const LERP_FACTOR: f32 = 0.05;
 /// Settings
 pub const MIN_PLANETS: u32 = 10;
 pub const MAX_PLANETS: u32 = 50;
-pub const MESSAGE_DURATION: u64 = 3;
+pub const MESSAGE_DURATION: u64 = 5;
 
 /// GAME
 pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;

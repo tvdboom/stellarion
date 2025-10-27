@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
-use crate::core::combat::CombatReport;
+use crate::core::combat::MissionReport;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
 
@@ -11,7 +11,7 @@ pub struct Player {
     pub id: ClientId,
     pub home_planet: PlanetId,
     pub resources: Resources,
-    pub reports: Vec<CombatReport>,
+    pub reports: Vec<MissionReport>,
 }
 
 impl Default for Player {

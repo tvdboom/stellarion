@@ -50,7 +50,7 @@ impl Description for CombatStats {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct CombatReport {
+pub struct MissionReport {
     pub turn: usize,
     pub mission: Mission,
     pub defender: Option<ClientId>,
@@ -63,7 +63,7 @@ pub struct CombatReport {
     pub planet_destroyed: bool,
 }
 
-impl CombatReport {
+impl MissionReport {
     pub fn winner(&self) -> Option<ClientId> {
         if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
             Some(self.mission.owner)
@@ -96,9 +96,9 @@ pub fn combat(
     defender: Option<ClientId>,
     defense: Army,
     planetary_shield: usize,
-) -> CombatReport {
+) -> MissionReport {
     if mission.objective == Icon::Deploy {
-        return CombatReport {
+        return MissionReport {
             turn,
             mission: mission.clone(),
             defender,
@@ -205,7 +205,7 @@ pub fn combat(
             *defense.get(&Unit::Defense(Defense::InterplanetaryMissile)).unwrap_or(&0);
     }
 
-    CombatReport {
+    MissionReport {
         turn,
         mission: mission.clone(),
         defender,

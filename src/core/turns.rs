@@ -294,25 +294,85 @@ pub fn start_turn(
             for report in &new_reports {
                 let destination = map.get(report.mission.destination);
 
-                if report.planet_destroyed {
-                    message.write(MessageMsg::warning(format!(
-                        "Planet {} has been destroyed.",
-                        destination.name
-                    )));
-                }
-
-                if report.planet_colonized {
-                    if report.mission.owner == player.id {
+                match report.mission.objective {
+                    Icon::Deploy => {
                         message.write(MessageMsg::info(format!(
-                            "Planet {} has been colonized.",
+                            "Deployed fleet to planet {}.",
                             destination.name
                         )));
-                    } else {
+                    },
+                    Icon::Colonize if report.planet_colonized => {
+                        if report.mission.owner == player.id {
+                            if report.defender.is_none() {
+                                message.write(MessageMsg::info(format!(
+                                    "Planet {} has been colonized.",
+                                    destination.name
+                                )));
+                            } else {
+                                message.write(MessageMsg::info(format!(
+                                    "Planet {} has been conquered.",
+                                    destination.name
+                                )));
+                            }
+                        } else {
+                            message.write(MessageMsg::warning(format!(
+                                "Planet {} has been conquered by the enemy.",
+                                destination.name
+                            )));
+                        }
+                    },
+                    Icon::Spy => {
+                        if report.mission.owner == player.id {
+                            if report.returning_probes > 0 {
+                                message.write(MessageMsg::info(format!(
+                                    "Successful spy mission on planet {}.",
+                                    destination.name
+                                )));
+                            } else {
+                                message.write(MessageMsg::warning(format!(
+                                    "All probes lost while spying planet {}.",
+                                    destination.name
+                                )));
+                            }
+                        } else {
+                            message.write(MessageMsg::warning(format!(
+                                "Enemy Probes have been signaled around planet {}.",
+                                destination.name
+                            )));
+                        }
+                    },
+                    Icon::MissileStrike => {
+                        if report.mission.owner == player.id {
+                            message.write(MessageMsg::info(format!(
+                                "Successful missile strike on planet {}.",
+                                destination.name
+                            )));
+                        } else {
+                            message.write(MessageMsg::warning(format!(
+                                "Planet {} has been hit by a missile strike.",
+                                destination.name
+                            )));
+                        }
+                    },
+                    Icon::Destroy if report.planet_destroyed => {
                         message.write(MessageMsg::warning(format!(
-                            "Your planet {} has been conquered by the enemy.",
+                            "Planet {} has been destroyed.",
                             destination.name
                         )));
-                    }
+                    },
+                    _ => {
+                        if report.winner() == Some(player.id) {
+                            message.write(MessageMsg::info(format!(
+                                "Battle won at planet {}.",
+                                destination.name
+                            )));
+                        } else {
+                            message.write(MessageMsg::warning(format!(
+                                "Battle lost at planet {}.",
+                                destination.name
+                            )));
+                        }
+                    },
                 }
             }
 
