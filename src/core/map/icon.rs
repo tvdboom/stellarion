@@ -122,8 +122,8 @@ impl Description for Icon {
                 the Sensor Phalanx."
             },
             Icon::MissileStrike => {
-                "Launch an interplanetary missile strike against an enemy planet. Missiles can \
-                not be accompanied by any other ships. Interplanetary missiles ignore any ships \
+                "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
+                not be accompanied by any other ships. Interplanetary Missiles ignore any ships \
                 and the Planetary Shield at the target planet, and directly hit the defenses. \
                 At the end of combat, all surviving missiles are automatically destroyed. Once \
                 launched, a missile strike always hits the destination planet, even if it has \

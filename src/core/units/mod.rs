@@ -76,7 +76,7 @@ impl Unit {
 
     pub fn production(&self) -> usize {
         match self {
-            Unit::Building(_) => 0,
+            Unit::Building(_) => 1,
             Unit::Ship(s) => s.production(),
             Unit::Defense(d) => d.production(),
         }

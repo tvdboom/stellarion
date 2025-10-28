@@ -52,7 +52,7 @@ pub struct Mission {
     pub position: Vec2,
     pub objective: Icon,
     pub army: Army,
-    pub probes_stay: bool,
+    pub combat_probes: bool,
     pub jump_gate: bool,
 }
 
@@ -78,7 +78,7 @@ impl Mission {
             },
             objective,
             army,
-            probes_stay,
+            combat_probes: probes_stay,
             jump_gate,
         }
     }
@@ -170,7 +170,7 @@ impl Mission {
             *self.army.entry(*u).or_default() += c;
         }
 
-        self.probes_stay = other.probes_stay || self.probes_stay;
+        self.combat_probes = other.combat_probes || self.combat_probes;
     }
 }
 

@@ -68,6 +68,12 @@ impl FromWorld for WorldAssets {
             ("mute", assets.load("images/icons/mute.png")),
             ("no-music", assets.load("images/icons/no-music.png")),
             ("sound", assets.load("images/icons/sound.png")),
+            ("user", assets.load("images/icons/user.png")),
+            ("info", assets.load("images/icons/info.png")),
+            ("message", assets.load("images/icons/message.png")),
+            ("win", assets.load("images/icons/win.png")),
+            ("draw", assets.load("images/icons/draw.png")),
+            ("lose", assets.load("images/icons/lose.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),

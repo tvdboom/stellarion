@@ -7,6 +7,8 @@ use strum_macros::EnumIter;
 
 use crate::core::map::icon::Icon;
 use crate::core::missions::Mission;
+use crate::core::player::Player;
+use crate::core::units::buildings::{Building, Complex};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Combat, Description, Unit};
@@ -55,12 +57,13 @@ pub struct MissionReport {
     pub mission: Mission,
     pub defender: Option<ClientId>,
     pub defense: Army,
-    pub returning_probes: usize,
+    pub scout_probes: usize,
     pub surviving_attacker: Army,
     pub surviving_defense: Army,
-    pub planetary_shield: usize,
+    pub complex: Complex,
     pub planet_colonized: bool,
     pub planet_destroyed: bool,
+    pub details: Option<String>,
 }
 
 impl MissionReport {
@@ -69,6 +72,20 @@ impl MissionReport {
             Some(self.mission.owner)
         } else {
             self.defender
+        }
+    }
+
+    pub fn image(&self, player: &Player) -> &str {
+        match self.mission.objective {
+            Icon::Deploy | Icon::MissileStrike => "draw",
+            Icon::Spy if self.scout_probes > 0 => "draw",
+            _ => {
+                if self.winner() == Some(player.id) {
+                    "win"
+                } else {
+                    "lose"
+                }
+            },
         }
     }
 }
@@ -95,7 +112,7 @@ pub fn combat(
     mission: &Mission,
     defender: Option<ClientId>,
     defense: Army,
-    planetary_shield: usize,
+    complex: &Complex,
 ) -> MissionReport {
     if mission.objective == Icon::Deploy {
         return MissionReport {
@@ -103,12 +120,13 @@ pub fn combat(
             mission: mission.clone(),
             defender,
             defense: defense.clone(),
-            returning_probes: 0,
+            scout_probes: 0,
             surviving_attacker: mission.army.clone(),
             surviving_defense: defense,
-            planetary_shield,
+            complex: complex.clone(),
             planet_colonized: false,
             planet_destroyed: false,
+            details: None,
         };
     }
 
@@ -121,23 +139,31 @@ pub fn combat(
 
     let mut defend_army: Vec<CombatUnit> = defense
         .iter()
-        .filter(|(u, _)| !matches!(u, Unit::Defense(d) if d.is_missile()))
+        .filter(|(u, _)| {
+            **u != Unit::Ship(Ship::ColonyShip) && !matches!(u, Unit::Defense(d) if d.is_missile())
+        })
         .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
         .collect();
 
-    // Bring missiles down with anti-ballistic
+    // Bring missiles down with antiballistic
     let mut n_antiballistic = defense
         .iter()
         .filter_map(|(u, c)| (*u == Unit::Defense(Defense::AntiballisticMissile)).then_some(c))
         .count();
 
+    let planetary_shield = *complex.get(&Building::PlanetaryShield).unwrap_or(&0);
+
+    let mut missiles_fired = 0;
+    let mut missiles_hit = 0;
     while n_antiballistic > 0 {
         if let Some(pos) = attack_army
             .iter()
             .position(|cu| cu.unit == Unit::Defense(Defense::AntiballisticMissile))
         {
             n_antiballistic -= 1;
+            missiles_fired += 1;
             if rng().random::<f32>() < 0.5 {
+                missiles_hit += 1;
                 attack_army.remove(pos);
             }
         } else {
@@ -145,10 +171,25 @@ pub fn combat(
         }
     }
 
-    let mut round = 0;
+    let mut details = String::new();
+
+    let mut round = 1;
     let mut returning_probes = 0;
     let mut planet_destroyed = false;
-    while !attack_army.is_empty() && (!defend_army.is_empty() || round == 0) {
+    while !attack_army.is_empty() && (!defend_army.is_empty() || round == 1) {
+        details.push_str(&format!(
+            "{}Round {round} ==============",
+            if round == 1 {
+                ""
+            } else {
+                "\n\n"
+            }
+        ));
+
+        if missiles_fired > 0 && round == 1 {
+            details.push_str(&format!("\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."));
+        }
+
         for army in [&mut attack_army, &mut defend_army] {
             // Reset all shields
             army.iter_mut().for_each(|u| u.shield = u.unit.shield());
@@ -158,12 +199,16 @@ pub fn combat(
         attack_army.retain(|u| u.hull > 0);
         defend_army.retain(|u| u.hull > 0);
 
-        if round == 0 {
-            // Send probes back if there are still remaining enemies
+        if round == 1 {
+            // Send probes back if there are still remaining enemies or objective is spying
             let probes = attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::Probe)).count();
-            if !mission.probes_stay && probes > 0 && !defend_army.is_empty() {
+            if ((!mission.combat_probes && !defend_army.is_empty())
+                || mission.objective == Icon::Spy)
+                && probes > 0
+            {
                 attack_army.retain(|u| u.unit != Unit::Ship(Ship::Probe));
                 returning_probes = probes;
+                details.push_str(&format!("\n- {probes} probes returning to origin."));
             }
         }
 
@@ -177,10 +222,13 @@ pub fn combat(
             }
         }
 
-        println!("Round: {}", round);
         round += 1;
     }
 
+    // Remove any surviving Interplanetary Missiles
+    attack_army.retain(|u| u.unit != Unit::Defense(Defense::InterplanetaryMissile));
+
+    // Calculate the surviving units
     let mut surviving_attacker = attack_army.iter().fold(HashMap::new(), |mut army, cu| {
         *army.entry(cu.unit).or_insert(0) += 1;
         army
@@ -197,8 +245,10 @@ pub fn combat(
             mission.get(&Unit::Ship(Ship::ColonyShip));
     }
 
-    // If no attacker, the defender won, add the remaining missiles
+    // If no attacker, the defender won, add non-combat ships and the remaining missiles
     if surviving_attacker.is_empty() {
+        *surviving_defense.entry(Unit::Ship(Ship::ColonyShip)).or_insert(0) =
+            *defense.get(&Unit::Defense(Defense::InterplanetaryMissile)).unwrap_or(&0);
         *surviving_defense.entry(Unit::Defense(Defense::AntiballisticMissile)).or_insert(0) =
             n_antiballistic;
         *surviving_defense.entry(Unit::Defense(Defense::InterplanetaryMissile)).or_insert(0) =
@@ -210,11 +260,12 @@ pub fn combat(
         mission: mission.clone(),
         defender,
         defense: defense.clone(),
-        returning_probes,
+        scout_probes: returning_probes,
         surviving_attacker,
         surviving_defense,
-        planetary_shield,
+        complex: complex.clone(),
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
+        details: Some(details),
     }
 }

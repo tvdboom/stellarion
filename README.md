@@ -58,6 +58,8 @@ randomly choose a target enemy unit.
 
 For each shooting unit:
 
+- If it's the first round of a missile strike, the defender's Antiballistic Missiles will fire
+  sequentially until they are depleted or no Interplanetary Missiles remain.
 - A random enemy unit is chosen as target. If the unit is a defense and the planet has a 
   Planetary Shield with remaining shield, the Planetary Shield is chosen as target instead.
 - If the damage is lower than the enemy's shield, the shield absorbs the shot, and the unit does 
@@ -68,10 +70,10 @@ For each shooting unit:
   another target at random, and repeating the above steps for that new target.
 - All ships with H=0 (no hull points left) are destroyed.
 - If the objective is to destroy the planet and there are no enemy ships left, each attacking 
-  War Sun fires a shot with a chance of 20 - n_turn to hit. If it hits, the planet is immediately
-  destroyed and all defenses and buildings with it.
+  War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet is
+  immediately destroyed and all defenses and buildings with it.
 - If it's the first round of combat and there are any Probes on the attacker's side, they leave 
-  combat and fly back to the origin planet.
+  combat and fly back to the origin planet (if `combat probes` option disabled).
 - If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 
   side winning.
 

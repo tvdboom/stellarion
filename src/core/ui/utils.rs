@@ -56,7 +56,7 @@ pub trait CustomUi {
         size: impl Into<Vec2>,
     ) -> Response;
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
-
+    fn add_text_on_image(&mut self, text: String, color: Color32, rect: Rect);
     fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R;
 }
 
@@ -79,6 +79,30 @@ impl CustomUi for Ui {
             rect,
             Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
             Color32::WHITE,
+        );
+    }
+
+    fn add_text_on_image(&mut self, text: String, color: Color32, rect: Rect) {
+        let pos = rect.left_bottom() + vec2(2., -2.);
+
+        let galley = self.painter().layout_no_wrap(
+            text.clone(),
+            TextStyle::Button.resolve(self.style()),
+            color,
+        );
+
+        // Background rect (with padding)
+        let bg = Rect::from_min_size(pos - vec2(2., galley.size().y), galley.size() + vec2(6., 4.));
+
+        // Draw semi-transparent background
+        self.painter().rect_filled(bg, 4., Color32::from_rgba_premultiplied(0, 0, 0, 128));
+
+        self.painter().text(
+            pos,
+            Align2::LEFT_BOTTOM,
+            text,
+            TextStyle::Button.resolve(self.style()),
+            color,
         );
     }
 

@@ -51,7 +51,7 @@ impl Description for Building {
                 damage. Enemy ships must first destroy the Planetary Shield before they can \
                 attack the planet's defenses (not ships!). Each level of the building increases \
                 the shield with 50. This shield does not regenerate after every combat round. \
-                Interplanetary missiles ignore the Planetary Shield."
+                Interplanetary Missiles ignore the Planetary Shield."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \

@@ -206,7 +206,7 @@ pub fn draw_map(
                             map.get(planet_id),
                             state.mission_info.objective,
                             state.mission_info.army.clone(),
-                            state.mission_info.probes_stay,
+                            state.mission_info.combat_probes,
                             state.mission_info.jump_gate,
                         );
                     }
@@ -302,7 +302,7 @@ pub fn draw_map(
                                                 ),
                                                 Icon::Deploy,
                                                 state.mission_info.army.clone(),
-                                                state.mission_info.probes_stay,
+                                                state.mission_info.combat_probes,
                                                 state.mission_info.jump_gate,
                                             );
                                         } else if icon.is_mission() {
@@ -369,7 +369,7 @@ pub fn draw_map(
                                                         .collect(),
                                                     _ => unreachable!(),
                                                 },
-                                                state.mission_info.probes_stay,
+                                                state.mission_info.combat_probes,
                                                 state.mission_info.jump_gate,
                                             );
                                         }

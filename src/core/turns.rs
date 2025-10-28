@@ -132,7 +132,7 @@ pub fn resolve_turn(
                     &mission,
                     destination.owned,
                     destination.army(),
-                    destination.get(&Unit::Building(Building::PlanetaryShield)),
+                    &destination.complex,
                 );
 
                 all_players
@@ -141,13 +141,13 @@ pub fn resolve_turn(
                     .for_each(|p| p.reports.push(report.clone()));
 
                 // Send probes back that left combat after one round
-                if report.returning_probes > 0 {
+                if report.scout_probes > 0 {
                     all_missions.push(Mission::new(
                         mission.owner,
                         destination,
                         &origin,
                         Icon::Deploy,
-                        HashMap::from([(Unit::Ship(Ship::Probe), report.returning_probes)]),
+                        HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
                         false,
                         false,
                     ));
@@ -274,7 +274,6 @@ pub fn resolve_turn(
 }
 
 pub fn start_turn(
-    mut commands: Commands,
     mut start_turn_msg: MessageReader<StartTurnMsg>,
     mut settings: ResMut<Settings>,
     mut state: ResMut<UiState>,
@@ -284,7 +283,10 @@ pub fn start_turn(
 ) {
     for _ in start_turn_msg.read() {
         settings.turn += 1;
-        commands.insert_resource(UiState::default());
+        *state = UiState {
+            mission_report: state.mission_report,
+            ..default()
+        };
 
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
 
@@ -323,7 +325,7 @@ pub fn start_turn(
                     },
                     Icon::Spy => {
                         if report.mission.owner == player.id {
-                            if report.returning_probes > 0 {
+                            if report.scout_probes > 0 {
                                 message.write(MessageMsg::info(format!(
                                     "Successful spy mission on planet {}.",
                                     destination.name
@@ -378,6 +380,7 @@ pub fn start_turn(
 
             state.mission = true;
             state.mission_tab = MissionTab::MissionReports;
+            state.mission_report = Some(player.reports.last().unwrap().mission.id);
         }
     }
 }

@@ -45,47 +45,47 @@ impl Description for Defense {
     fn description(&self) -> &str {
         match self {
             Defense::RocketLauncher => {
-                "The rocket launcher is the weakest defense you can build. They are used as \
+                "The Rocket Launcher is the weakest defense you can build. They are used as \
                 fodder to protect the better, more expensive, defences."
             },
             Defense::LightLaser => {
-                "The light laser is much like the rocket launcher, but is better in several ways. \
-                All the ships with Rapid Fire against the light laser are relatively slow. Light \
-                Lasers also have a higher weapon power than rocket launchers. Although the weapon \
+                "The Light Laser is much like the Rocket Launcher, but is better in several ways. \
+                All the ships with Rapid Fire against the Light Laser are relatively slow. Light \
+                Lasers also have a higher weapon power than Rocket Launchers. Although the weapon \
                 power is only slightly higher, fodder is built in much larger numbers than anything \
                 else, and the difference quickly becomes rather significant."
             },
             Defense::HeavyLaser => {
-                "The heavy laser is an improvement in sheer power over the light Laser. However, \
-                it has less overall power-per-resource and similar things have rapid fire against \
+                "The Heavy Laser is an improvement in sheer power over the Light Laser. However, \
+                it has less overall power-per-resource and similar things have Rapid Fire against \
                 it."
             },
             Defense::GaussCannon => {
-                "Gauss cannons are an effective defence due to their high shield and weapon power, \
+                "Gauss Cannons are an effective defence due to their high shield and weapon power, \
                 making them capable of holding their own against Cruiser-based fleets, when backed \
                 by large amounts of fodder."
             },
             Defense::IonCannon => {
-                "The ion cannon is well known for its relatively high shield power. A reason to \
-                build them is because only the bomber and the War Sun have rapid fire against it. \
+                "The Ion Cannon is well known for its relatively high shield power. A reason to \
+                build them is because only the bomber and the War Sun have Rapid Fire against it. \
                 This makes them useful against Cruisers and Destroyer-dominated fleets."
             },
             Defense::PlasmaTurret => {
-                "The plasma turret is the most powerful defense in the game. It is fairly \
-                expensive, but well worth its price. The bomber is the only ship with rapid fire \
+                "The Plasma Turret is the most powerful defense in the game. It is fairly \
+                expensive, but well worth its price. The bomber is the only ship with Rapid Fire \
                 against it. "
             },
             Defense::AntiballisticMissile => {
-                "Antiballistic missiles are the only way to destroy attacking interplanetary \
-                missiles. Each anti-ballistic missile has a 50% chance of destroying one incoming \
-                interplanetary missile. Antiballistic missiles are launched automatically whenever \
-                an approaching interplanetary missile is detected. Otherwise, they do not take \
+                "Antiballistic Missiles are the only way to destroy attacking interplanetary \
+                missiles. Each Antiballistic Missile has a 50% chance of destroying one incoming \
+                Interplanetary Missile. Antiballistic Missiles are launched automatically whenever \
+                an approaching Interplanetary Missile is detected. Otherwise, they do not take \
                 part in any attacks."
             },
             Defense::InterplanetaryMissile => {
-                "Interplanetary missiles are designed to destroy enemy defenses. Before a missile \
-                can hit the defense itself, all the enemy's antiballistic missiles must be \
-                destroyed. Interplanetary missiles ignore enemy ships and the Planetary Shield. \
+                "Interplanetary Missiles are designed to destroy enemy defenses. Before a missile \
+                can hit the defense itself, all the enemy's Antiballistic Missiles must be \
+                destroyed. Interplanetary Missiles ignore enemy ships and the Planetary Shield. \
                 They don't consume fuel."
             },
         }
@@ -117,7 +117,7 @@ impl Combat for Defense {
             Defense::IonCannon => 500,
             Defense::PlasmaTurret => 600,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 0,
+            Defense::InterplanetaryMissile => 800,
         }
     }
 
@@ -143,7 +143,7 @@ impl Combat for Defense {
             Defense::IonCannon => 100,
             Defense::PlasmaTurret => 120,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 320,
+            Defense::InterplanetaryMissile => 120,
         }
     }
 

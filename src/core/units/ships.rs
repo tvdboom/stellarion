@@ -78,8 +78,8 @@ impl Description for Ship {
                 reasonable amount of damage when launched in significant numbers."
             },
             Ship::Destroyer => {
-                "With their rapid fire capabilities, Destroyers are extremely effective at \
-                eliminating the Light Fighter and rocket launcher fodder. In addition they're \
+                "With their Rapid Fire capabilities, Destroyers are extremely effective at \
+                eliminating the Light Fighter and Rocket Launcher fodder. In addition they're \
                 speed make them excellent as fast strike ships."
             },
             Ship::Cruiser => {
@@ -87,7 +87,7 @@ impl Description for Ship {
                 systems, and a high speed make this ship a tough opponent to fight against."
             },
             Ship::Bomber => {
-                "The Bomber is used primarily to destroy planetary defense. Its high rapid fire \
+                "The Bomber is used primarily to destroy planetary defense. Its high Rapid Fire \
                 against most defensive structures makes it effective for planetary assaults."
             },
             Ship::Battleship => {
@@ -97,7 +97,7 @@ impl Description for Ship {
             Ship::Dreadnought => {
                 "Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
                 They are relatively slow, and require a lot of fuel to move, but have incredibly \
-                high damage. Due to its rapid fire capabilities, it's highly specialized in the \
+                high damage. Due to its Rapid Fire capabilities, it's highly specialized in the \
                 interception of hostile heavy ships."
             },
             Ship::WarSun => {
