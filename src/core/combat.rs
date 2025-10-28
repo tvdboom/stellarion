@@ -176,7 +176,7 @@ pub fn combat(
     let mut round = 1;
     let mut returning_probes = 0;
     let mut planet_destroyed = false;
-    while !attack_army.is_empty() && (!defend_army.is_empty() || round == 1) {
+    while (!attack_army.is_empty() && !defend_army.is_empty()) || round == 1 {
         details.push_str(&format!(
             "{}Round {round} ==============",
             if round == 1 {

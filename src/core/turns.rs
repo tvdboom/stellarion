@@ -218,6 +218,7 @@ pub fn resolve_turn(
         }
 
         // Correct mission objectives based on planet changes
+        !! correct after every mission and also check for destroyed planets, in which case return mission!
         all_missions.iter_mut().for_each(|mission| {
             let control = map.get(mission.destination).controlled;
             // If the destination planet is friendly, the mission changes to deploy

@@ -189,10 +189,11 @@ pub fn draw_map(
                     if event.button == PointerButton::Primary {
                         state.planet_selected = Some(planet_id);
                         state.to_selected = true;
+                        state.mission = false;
                         if player.owns(planet) {
                             state.mission_info.origin = planet_id;
                         }
-                    } else if !planet.is_destroyed {
+                    } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
                         state.mission = true;
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info = Mission::new(
@@ -477,7 +478,7 @@ pub fn draw_map(
                         Visibility::Hidden,
                         VoronoiEdgeCmp {
                             planet: planet_id,
-                            key: v1.distance(v2) as usize,
+                            key: (v1.length() + v2.length() + v1.distance(v2)) as usize,
                         },
                         MapCmp,
                     ));

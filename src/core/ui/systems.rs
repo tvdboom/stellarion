@@ -112,39 +112,37 @@ fn draw_army_grid(
             let lost = total - survived;
 
             let text = if can_see {
-                if matches!(unit, Unit::Building(_))
-                    || matches!(report.mission.objective, Icon::Deploy | Icon::Spy)
-                {
+                if report.mission.objective == Icon::Deploy {
                     total.to_string()
-                } else if total > 0 {
+                } else if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
-                    "-".to_string()
+                    "0".to_string()
                 }
             } else {
                 "?".to_string()
             };
 
-            ui.add_enabled_ui(
-                text == "-",
-                |ui| {
-                    let response = ui
-                        .add_image(images.get(unit.to_lowername()), [55., 55.])
-                        .on_hover_ui(|ui| {
-                            ui.small(unit.to_name());
-                        });
+            ui.add_enabled_ui(text != "0", |ui| {
+                let response = ui
+                    .add_image(images.get(unit.to_lowername()), [55., 55.])
+                    .on_hover_ui(|ui| {
+                        ui.small(unit.to_name());
+                    })
+                    .on_disabled_hover_ui(|ui| {
+                        ui.small(unit.to_name());
+                    });
 
-                    ui.add_text_on_image(
-                        text,
-                        if lost > 0 {
-                            Color32::RED
-                        } else {
-                            Color32::WHITE
-                        },
-                        response.rect,
-                    );
-                },
-            );
+                ui.add_text_on_image(
+                    text,
+                    if lost > 0 {
+                        Color32::RED
+                    } else {
+                        Color32::WHITE
+                    },
+                    response.rect,
+                );
+            });
 
             if i % 2 == 1 {
                 ui.end_row();
@@ -266,7 +264,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(80.);
+        ui.add_space(10.);
         ui.add_image(images.get("overview"), [20., 20.]);
         ui.small(format!("Overview: {}", &planet.name));
     });
@@ -276,17 +274,23 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
+        ui.add_space(10.);
         for units in units.iter() {
-            ui.add_space(20.);
+            ui.add_space(5.);
 
             ui.vertical(|ui| {
                 for unit in units {
-                    ui.horizontal(|ui| {
-                        ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-                        ui.label(planet.get(&unit).to_string());
+                    let n = planet.get(&unit);
+
+                    ui.add_enabled_ui(n > 0, |ui| {
+                        let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+                        ui.add_text_on_image(n.to_string(), Color32::WHITE, response.rect);
                     })
                     .response
                     .on_hover_ui(|ui| {
+                        ui.small(unit.to_name());
+                    })
+                    .on_disabled_hover_ui(|ui| {
                         ui.small(unit.to_name());
                     });
                 }
@@ -300,21 +304,96 @@ fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &Ima
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(30.);
+        ui.add_space(18.);
         ui.add_image(images.get("fleet"), [25., 25.]);
         ui.small("Fleet");
     });
 
     ui.add_space(10.);
 
-    ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
-    for unit in units[1].iter() {
-        ui.horizontal(|ui| {
-            ui.add_space(30.);
-            ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-            ui.label(planet.get(unit).to_string());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
+
+        ui.add_space(32.);
+
+        ui.vertical(|ui| {
+            for unit in units[1].iter() {
+                let n = planet.get(&unit);
+
+                ui.add_enabled_ui(n > 0, |ui| {
+                    let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+                    ui.add_text_on_image(n.to_string(), Color32::WHITE, response.rect);
+                })
+                .response
+                .on_hover_ui(|ui| {
+                    ui.small(unit.to_name());
+                })
+                .on_disabled_hover_ui(|ui| {
+                    ui.small(unit.to_name());
+                });
+            }
         });
-    }
+    });
+}
+
+fn draw_mission_fleet_hover(
+    ui: &mut Ui,
+    mission: &Mission,
+    map: &Map,
+    player: &Player,
+    units: &[Vec<Unit>; 3],
+    images: &ImageIds,
+) {
+    let army = match mission.objective {
+        Icon::MissileStrike => &vec![Unit::Defense(Defense::InterplanetaryMissile)],
+        Icon::Spy => &vec![Unit::Ship(Ship::Probe)],
+        _ => &units[1],
+    };
+
+    let phalanx = map.get(mission.destination).get(&Unit::Building(Building::SensorPhalanx));
+
+    ui.add_space(17.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space(5.);
+        ui.add_image(images.get(mission.image(player)), [25., 25.]);
+        ui.small("Mission");
+    });
+
+    ui.add_space(10.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
+
+        ui.add_space(32.);
+
+        ui.vertical(|ui| {
+            for unit in army.iter() {
+                let n = mission.get(&unit);
+
+                ui.add_enabled_ui(n > 0, |ui| {
+                    let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+                    ui.add_text_on_image(
+                        if mission.owner != player.id && unit.production() > phalanx {
+                            "?".to_string()
+                        } else {
+                            mission.get(unit).to_string()
+                        },
+                        Color32::WHITE,
+                        response.rect,
+                    );
+                })
+                .response
+                .on_hover_ui(|ui| {
+                    ui.small(unit.to_name());
+                })
+                .on_disabled_hover_ui(|ui| {
+                    ui.small(unit.to_name());
+                });
+            }
+        });
+    });
 }
 
 fn draw_new_mission(
@@ -353,21 +432,23 @@ fn draw_new_mission(
     ui.horizontal_top(|ui| {
         ui.add_space(85.);
 
-        let action = |r1: Response, id, h: &mut bool, state: &mut UiState| {
+        let action = |r1: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
             if r1.clicked() {
-                state.planet_selected = Some(id);
+                state.planet_selected = Some(planet.id);
                 state.to_selected = true;
-                state.mission_info.origin = id;
                 state.mission = false;
-            } else if r1.secondary_clicked() {
+                if player.owns(planet) {
+                    state.mission_info.origin = planet.id;
+                }
+            } else if r1.secondary_clicked() && !planet.is_destroyed {
                 state.mission_tab = MissionTab::NewMission;
                 state.mission_info.origin = state
                     .planet_selected
                     .filter(|&p| player.owns(map.get(p)))
                     .unwrap_or(player.home_planet);
-                state.mission_info.destination = id;
+                state.mission_info.destination = planet.id;
             } else if r1.hovered() {
-                state.planet_hover = Some(id);
+                state.planet_hover = Some(planet.id);
                 *h = true;
             }
         };
@@ -381,7 +462,7 @@ fn draw_new_mission(
                         .on_hover_cursor(CursorIcon::PointingHand)
                 });
 
-                action(response, origin.id, &mut changed_hover, state);
+                action(response, origin, &mut changed_hover, state);
 
                 ui.cell(100., |ui| {
                     ui.vertical(|ui| {
@@ -452,7 +533,7 @@ fn draw_new_mission(
                         .on_hover_cursor(CursorIcon::PointingHand)
                 });
 
-                action(response, destination.id, &mut changed_hover, state);
+                action(response, destination, &mut changed_hover, state);
             });
 
         // If not hovering anything, reset hover selection
@@ -823,24 +904,29 @@ fn draw_active_missions(
         ui.horizontal(|ui| {
             ui.add_space(115.);
 
-            let action = |r1: Response, r2: Response, id, h: &mut bool, state: &mut UiState| {
-                if r1.clicked() || r2.clicked() {
-                    state.planet_selected = Some(id);
-                    state.to_selected = true;
-                    state.mission_info.origin = id;
-                    state.mission = false;
-                } else if r1.secondary_clicked() || r2.secondary_clicked() {
-                    state.mission_tab = MissionTab::NewMission;
-                    state.mission_info.origin = state
-                        .planet_selected
-                        .filter(|&p| player.owns(map.get(p)))
-                        .unwrap_or(player.home_planet);
-                    state.mission_info.destination = id;
-                } else if r1.hovered() || r2.hovered() {
-                    state.planet_hover = Some(id);
-                    *h = true;
-                }
-            };
+            let action =
+                |r1: Response, r2: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
+                    if r1.clicked() || r2.clicked() {
+                        state.planet_selected = Some(planet.id);
+                        state.to_selected = true;
+                        state.mission = false;
+                        if player.owns(planet) {
+                            state.mission_info.origin = planet.id;
+                        }
+                    } else if (r1.secondary_clicked() || r2.secondary_clicked())
+                        && !planet.is_destroyed
+                    {
+                        state.mission_tab = MissionTab::NewMission;
+                        state.mission_info.origin = state
+                            .planet_selected
+                            .filter(|&p| player.owns(map.get(p)))
+                            .unwrap_or(player.home_planet);
+                        state.mission_info.destination = planet.id;
+                    } else if r1.hovered() || r2.hovered() {
+                        state.planet_hover = Some(planet.id);
+                        *h = true;
+                    }
+                };
 
             let mut changed_hover = false;
             egui::Grid::new("active missions").spacing([20., 0.]).striped(false).show(ui, |ui| {
@@ -860,7 +946,7 @@ fn draw_active_missions(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    action(resp1, resp2, origin.id, &mut changed_hover, state);
+                    action(resp1, resp2, origin, &mut changed_hover, state);
 
                     let response = ui.cell(100., |ui| {
                         ui.horizontal(|ui| {
@@ -907,7 +993,7 @@ fn draw_active_missions(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    action(resp3, resp4, destination.id, &mut changed_hover, state);
+                    action(resp3, resp4, destination, &mut changed_hover, state);
 
                     ui.end_row();
                 }
@@ -942,7 +1028,7 @@ fn draw_mission_reports(
     ui.add_space(10.);
 
     ui.horizontal(|ui| {
-        ui.set_height(440.);
+        ui.set_height(447.);
 
         ui.add_space(20.);
 
@@ -956,7 +1042,7 @@ fn draw_mission_reports(
                     let destination = map.get(report.mission.destination);
 
                     let (rect, mut response) =
-                        ui.allocate_exact_size([150., 50.].into(), Sense::click());
+                        ui.allocate_exact_size([160., 50.].into(), Sense::click());
 
                     ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                         ui.horizontal_centered(|ui| {
@@ -984,9 +1070,10 @@ fn draw_mission_reports(
                                 [50., 50.],
                             );
 
-                            ui.small(report.turn.to_string());
-
-                            ui.add_space(5.);
+                            ui.scope(|ui| {
+                                ui.set_width(20.);
+                                ui.small(report.turn.to_string());
+                            });
 
                             let resp = ui.add_image(
                                 images.get(format!("planet{}", destination.image)),
@@ -1032,9 +1119,10 @@ fn draw_mission_reports(
 
         ui.add_space(-10.);
         ui.separator();
+        ui.add_space(-5.);
 
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() - 50.);
+            ui.set_width(ui.available_width() - 40.);
 
             let report =
                 player.reports.iter().find(|r| state.mission_report == Some(r.mission.id)).unwrap();
@@ -1042,26 +1130,28 @@ fn draw_mission_reports(
             let destination = map.get(report.mission.destination);
 
             ui.horizontal(|ui| {
-                let action = |r1: Response, r2: Response, id, h: &mut bool, state: &mut UiState| {
+                let action = |r1: Response, r2: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
                     if r1.clicked() || r2.clicked() {
-                        state.planet_selected = Some(id);
+                        state.planet_selected = Some(planet.id);
                         state.to_selected = true;
-                        state.mission_info.origin = id;
                         state.mission = false;
-                    } else if r1.secondary_clicked() || r2.secondary_clicked() {
+                        if player.owns(planet) {
+                            state.mission_info.origin = planet.id;
+                        }
+                    } else if (r1.secondary_clicked() || r2.secondary_clicked()) && !planet.is_destroyed {
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info.origin = state
                             .planet_selected
                             .filter(|&p| player.owns(map.get(p)))
                             .unwrap_or(player.home_planet);
-                        state.mission_info.destination = id;
+                        state.mission_info.destination = planet.id;
                     } else if r1.hovered() || r2.hovered() {
-                        state.planet_hover = Some(id);
+                        state.planet_hover = Some(planet.id);
                         *h = true;
                     }
                 };
 
-                ui.add_space(10.);
+                ui.add_space(15.);
 
                 let mut changed_hover = false;
                 egui::Grid::new("active report").spacing([10., 0.]).striped(false).show(ui, |ui| {
@@ -1080,7 +1170,7 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    action(resp1, resp2, origin.id, &mut changed_hover, state);
+                    action(resp1, resp2, origin, &mut changed_hover, state);
 
                     ui.cell(100., |ui| {
                         ui.horizontal(|ui| {
@@ -1135,7 +1225,7 @@ fn draw_mission_reports(
                         });
                     }
 
-                    action(resp3, resp4, destination.id, &mut changed_hover, state);
+                    action(resp3, resp4, destination, &mut changed_hover, state);
 
                     // If not hovering anything, reset all hover selections
                     if is_hovered && !changed_hover {
@@ -1144,15 +1234,15 @@ fn draw_mission_reports(
                 });
             });
 
-            ui.add_space(-15.);
+            ui.add_space(-10.);
             ui.separator();
-            ui.add_space(-15.);
 
             ui.horizontal(|ui| {
-                ui.set_width(80.);
-                ui.set_height(300.);
+                ui.set_height(345.);
 
                 ui.vertical(|ui| {
+                    ui.set_width(120.);
+
                     let army = match report.mission.objective {
                         Icon::MissileStrike => &vec![Unit::Defense(Defense::InterplanetaryMissile)],
                         Icon::Spy => &vec![Unit::Ship(Ship::Probe)],
@@ -1161,7 +1251,7 @@ fn draw_mission_reports(
 
                     draw_army_grid(ui, "attacker", army, report, player, destination, images);
 
-                    if report.scout_probes >= 0 {
+                    if report.scout_probes > 0 {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.;
                             ui.add_image(images.get(Icon::Spy.to_lowername()), [15., 15.]);
@@ -1172,7 +1262,9 @@ fn draw_mission_reports(
                     }
                 });
 
+                ui.add_space(-13.);
                 ui.separator();
+                ui.add_space(-10.);
 
                 ui.vertical(|ui| {
                     ui.horizontal_top(|ui| {
@@ -1191,17 +1283,18 @@ fn draw_mission_reports(
                         }
                     });
 
-                    if report.planet_destroyed {
+                    if report.planet_destroyed || report.planet_colonized {
+                        let (icon, label) = if report.planet_destroyed {
+                            (Icon::Destroy, "Planet destroyed")
+                        } else {
+                            (Icon::Colonize, "Planet colonized")
+                        };
+
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.;
-                            ui.add_image(images.get(Icon::Destroy.to_lowername()), [15., 15.]);
-                            ui.small("Planet destroyed");
-                        });
-                    } else if report.planet_colonized {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.;
-                            ui.add_image(images.get(Icon::Colonize.to_lowername()), [15., 15.]);
-                            ui.small("Planet colonized");
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.add_space(10.);
+                            ui.add_image(images.get(icon.to_lowername()), [15.0, 15.0]);
+                            ui.small(label);
                         });
                     }
                 });
@@ -1226,7 +1319,7 @@ fn draw_mission(
     ui.horizontal(|ui| {
         ui.style_mut().spacing.button_padding = egui::vec2(6., 0.);
 
-        ui.add_space(50.);
+        ui.add_space(45.);
         for tab in MissionTab::iter() {
             ui.selectable_value(&mut state.mission_tab, tab, tab.to_title());
         }
@@ -1265,47 +1358,6 @@ fn draw_mission(
         MissionTab::MissionReports => {
             draw_mission_reports(ui, state, map, player, units, is_hovered, images)
         },
-    }
-}
-
-fn draw_mission_fleet_hover(
-    ui: &mut Ui,
-    mission: &Mission,
-    map: &Map,
-    player: &Player,
-    units: &[Vec<Unit>; 3],
-    images: &ImageIds,
-) {
-    let army = if mission.objective == Icon::MissileStrike {
-        &vec![Unit::Defense(Defense::InterplanetaryMissile)]
-    } else {
-        &units[1]
-    };
-
-    let phalanx = map.get(mission.destination).get(&Unit::Building(Building::SensorPhalanx));
-
-    ui.add_space(17.);
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(20.);
-        ui.add_image(images.get(mission.image(player)), [25., 25.]);
-        ui.small("Mission");
-    });
-
-    ui.add_space(10.);
-
-    ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
-    for unit in army.iter() {
-        ui.horizontal(|ui| {
-            ui.add_space(30.);
-            ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-            ui.label(if mission.owner != player.id && unit.production() > phalanx {
-                "?".to_string()
-            } else {
-                mission.get(unit).to_string()
-            });
-        });
     }
 }
 
@@ -1767,7 +1819,7 @@ pub fn draw_ui(
         let right_side = planet_pos.x < width * 0.5;
 
         if player.owns(planet) {
-            let (window_w, window_h) = (330., 630.);
+            let (window_w, window_h) = (205., 630.);
 
             draw_panel(
                 &mut contexts,
@@ -1788,7 +1840,7 @@ pub fn draw_ui(
 
             !right_side
         } else if player.controls(planet) && planet.has_fleet() {
-            let (window_w, window_h) = (140., 630.);
+            let (window_w, window_h) = (110., 630.);
 
             draw_panel(
                 &mut contexts,
@@ -1818,7 +1870,7 @@ pub fn draw_ui(
     if let Some(mission_id) = state.mission_hover {
         let mission = missions.get(mission_id);
 
-        let (window_w, window_h) = (140., 630.);
+        let (window_w, window_h) = (110., 630.);
 
         draw_panel(
             &mut contexts,
