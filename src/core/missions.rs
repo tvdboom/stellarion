@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::window::SystemCursorIcon;
+use bevy_egui::egui::emath::OrderedFloat;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
@@ -148,11 +149,6 @@ impl Mission {
         }
     }
 
-    pub fn has_reached_destination(&self, map: &Map) -> bool {
-        let destination = map.get(self.destination);
-        self.position.distance(destination.position) <= Planet::SIZE
-    }
-
     pub fn turns_to_destination(&self, map: &Map) -> usize {
         (self.distance(map) / self.speed()).ceil() as usize
     }
@@ -161,7 +157,7 @@ impl Mission {
         self.army.iter().map(|(u, c)| u.production() * c).sum()
     }
 
-    pub fn merge(&mut self, other: &mut Mission) {
+    pub fn merge(&mut self, other: Mission) {
         // Select objective based on priority
         self.objective =
             [self.objective, other.objective].into_iter().max_by_key(|o| o.priority()).unwrap();
@@ -171,6 +167,21 @@ impl Mission {
         }
 
         self.combat_probes = other.combat_probes || self.combat_probes;
+    }
+
+    /// Return the origin planet if still owned by the player,
+    /// else go to the nearest friendly planet
+    pub fn check_origin(&self, map: &Map) -> PlanetId {
+        let origin = map.get(self.origin);
+        if origin.controlled == Some(self.owner) {
+            origin.id
+        } else {
+            map.planets
+                .iter()
+                .min_by_key(|p| OrderedFloat(p.position.distance(self.position)))
+                .map(|p| p.id)
+                .unwrap()
+        }
     }
 }
 

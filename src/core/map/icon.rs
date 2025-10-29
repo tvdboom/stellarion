@@ -60,6 +60,7 @@ impl Icon {
             Icon::Spy => 4,
             Icon::MissileStrike => 5,
             Icon::Destroy => 3,
+            Icon::Deploy => 0,
             _ => unreachable!(),
         }
     }

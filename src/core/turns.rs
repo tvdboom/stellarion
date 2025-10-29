@@ -25,11 +25,11 @@ pub struct StartTurnMsg;
 pub struct PreviousEndTurnState(bool);
 
 /// Merge missions per objective and return ordered by objective priority
-fn regroup_missions(mut missions: Vec<&mut Mission>) -> Vec<&mut Mission> {
-    let mut deploy: Option<&mut Mission> = None;
-    let mut missile: Option<&mut Mission> = None;
-    let mut spy: Option<&mut Mission> = None;
-    let mut rest: Option<&mut Mission> = None;
+fn regroup_missions(mut missions: Vec<Mission>) -> Vec<Mission> {
+    let mut deploy: Option<Mission> = None;
+    let mut missile: Option<Mission> = None;
+    let mut spy: Option<Mission> = None;
+    let mut rest: Option<Mission> = None;
 
     for m in missions.drain(..) {
         let target = match m.objective {
@@ -47,6 +47,31 @@ fn regroup_missions(mut missions: Vec<&mut Mission>) -> Vec<&mut Mission> {
     }
 
     [deploy, missile, spy, rest].into_iter().flatten().collect()
+}
+
+/// Check if a mission objective has to change because the destination
+/// planet changed owner or was destroyed
+fn check_mission(mission: &mut Mission, map: &Map) {
+    let destination = map.get(mission.destination);
+
+    // If the destination planet is friendly, the mission changes to deploy
+    // (the planet could have been colonized by another mission)
+    // Except missile strikes, which always attack the destination planet
+    if destination.controlled == Some(mission.owner) && mission.objective != Icon::MissileStrike {
+        mission.objective = Icon::Deploy;
+    }
+
+    // If deploying to a planet that's no longer under control, convert to attack
+    if destination.controlled != Some(mission.owner) && mission.objective == Icon::Deploy {
+        mission.objective = Icon::Attack;
+    }
+
+    // If going towards a planet that has been destroyed, deploy back to planet of origin,
+    // except if conquered, then to the closest owned planet
+    if map.get(mission.destination).is_destroyed {
+        mission.destination = mission.check_origin(map);
+        mission.objective = Icon::Deploy;
+    }
 }
 
 pub fn check_turn_ended(
@@ -102,29 +127,32 @@ pub fn resolve_turn(
             player.resources += production;
         }
 
-        // Advance missions and separate those that have arrived
-        let mut arrived = vec![];
-        all_missions.retain_mut(|mission| {
-            mission.advance(&map);
-
-            if mission.has_reached_destination(&map) {
-                arrived.push(mission.clone());
-                false
-            } else {
-                true
-            }
-        });
-
         // Resolve missions in random player order
         let mut players_shuffled = all_players.clone();
         players_shuffled.shuffle(&mut rng());
+
+        let mut to_drop = vec![];
         for player in players_shuffled {
-            // Select only missions owned by this player
-            let arrived_f = arrived.iter_mut().filter(|m| m.owner == player.id).collect::<Vec<_>>();
+            let arrived = all_missions
+                .iter()
+                // Select only arriving missions owned by this player
+                .filter(|m| m.owner == player.id && m.turns_to_destination(&map) == 1)
+                .cloned()
+                // Update mission if the destination planet changed
+                .map(|mut m| {
+                    check_mission(&mut m, &map);
+                    m
+                })
+                // Filter again since it could have changed after check
+                .filter(|m| m.turns_to_destination(&map) == 1)
+                .collect::<Vec<_>>();
+
+            // All that arrived can be dropped later from all_missions
+            to_drop.extend(arrived.iter().map(|m| m.id));
 
             // Resolve missions that reached destination
-            for mission in regroup_missions(arrived_f) {
-                let origin = map.get(mission.origin).clone();
+            for mut mission in regroup_missions(arrived) {
+                let new_origin = map.get(mission.check_origin(&map)).clone();
                 let destination = map.get_mut(mission.destination);
 
                 let report = combat(
@@ -145,7 +173,7 @@ pub fn resolve_turn(
                     all_missions.push(Mission::new(
                         mission.owner,
                         destination,
-                        &origin,
+                        &new_origin,
                         Icon::Deploy,
                         HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
                         false,
@@ -157,11 +185,11 @@ pub fn resolve_turn(
                     if report.planet_destroyed {
                         destination.destroy();
 
-                        // Send fleet back to planet of origin
+                        // Send fleet back
                         all_missions.push(Mission::new(
                             mission.owner,
                             destination,
-                            &origin,
+                            &new_origin,
                             Icon::Deploy,
                             report.surviving_attacker,
                             false,
@@ -217,28 +245,17 @@ pub fn resolve_turn(
             }
         }
 
-        // Correct mission objectives based on planet changes
-        // correct after every mission and also check for destroyed planets, in which case return mission!
-        all_missions.iter_mut().for_each(|mission| {
-            let control = map.get(mission.destination).controlled;
+        all_missions.retain_mut(|m| {
+            // Update mission if destination changed
+            check_mission(m, &map);
 
-            // If the destination planet is friendly, the mission changes to deploy
-            // (the planet could have been colonized by another mission)
-            // Except missile strikes, which always attack the destination planet
-            if control == Some(mission.owner) && mission.objective != Icon::MissileStrike {
-                mission.objective = Icon::Deploy;
-            }
+            !! after the update, a send mission could be returning and arrive that same turn
+            !! also change phalanx to scan on distance and not turns remaining
+            // Move the mission forward
+            m.advance(&map);
 
-            // If deploying to a planet that's no longer under control, convert to attack
-            if control != Some(mission.owner) && mission.objective == Icon::Deploy {
-                mission.objective = Icon::Attack;
-            }
-
-            // If going towards a planet that has been destroyed, deploy back to planet of origin
-            if map.get(mission.destination).is_destroyed {
-                mission.destination = mission.origin;
-                mission.objective = Icon::Deploy;
-            }
+            // Remove all missions that were previously resolved
+            !to_drop.contains(&m.id)
         });
 
         // Select the missions every player is able to see

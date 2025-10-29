@@ -112,18 +112,16 @@ fn draw_army_grid(
             let lost = total - survived;
 
             let text = if can_see {
-                if report.mission.objective == Icon::Deploy {
-                    total.to_string()
-                } else if lost > 0 {
+                if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
-                    "0".to_string()
+                    total.to_string()
                 }
             } else {
                 "?".to_string()
             };
 
-            ui.add_enabled_ui(text != "0", |ui| {
+            ui.add_enabled_ui(total > 0 || !can_see, |ui| {
                 let response = ui
                     .add_image(images.get(unit.to_lowername()), [55., 55.])
                     .on_hover_ui(|ui| {
