@@ -190,10 +190,9 @@ pub fn update_missions(
             let id = mission.id;
             let owner = mission.owner;
 
-            let origin = map.get(mission.origin);
             let destination = map.get(mission.destination);
 
-            let direction = (-origin.position + destination.position).normalize();
+            let direction = (-mission.position + destination.position).normalize();
             let angle = direction.y.atan2(direction.x);
 
             commands
@@ -235,6 +234,15 @@ pub fn update_missions(
 
     for (mission_e, mut mission_s, mut mission_t, mission_c) in &mut mission_q {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
+            // Update the direction the image is pointing at
+            // Could change if the destination planet was destroyed
+            let destination = map.get(mission.destination);
+
+            let direction = (-mission.position + destination.position).normalize();
+            let angle = direction.y.atan2(direction.x);
+
+            mission_t.rotation = Quat::from_rotation_z(angle);
+
             if state.mission_hover.is_some_and(|id| id == mission.id) {
                 // Hovered missions show on top of all other components (e.g., planets)
                 mission_t.translation = mission.position.extend(MISSION_Z + 10.);

@@ -35,18 +35,16 @@ pub fn check_keys(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
 ) {
+    let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+
     // Hack to add resources and bump building levels to max
-    if keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
-        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-            if keyboard.just_pressed(KeyCode::ArrowUp) {
-                player.resources += 1000usize;
-                map.planets.iter_mut().for_each(|p| {
-                    p.complex = Building::iter()
-                        .map(|c| (c, Building::MAX_LEVEL))
-                        .collect::<HashMap<_, _>>()
-                });
-            }
-        }
+    if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
+        player.resources += 1000usize;
+        map.planets.iter_mut().for_each(|p| {
+            p.complex =
+                Building::iter().map(|c| (c, Building::MAX_LEVEL)).collect::<HashMap<_, _>>()
+        });
     }
 
     // Open in-game menu or exit planet selection
@@ -109,7 +107,7 @@ pub fn check_keys(
             if let Some(pos) = planets.iter().position(|id| *id == selected) {
                 let len = planets.len();
 
-                let new_index = if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+                let new_index = if shift_pressed {
                     (pos + len - 1) % len
                 } else {
                     (pos + 1) % len
@@ -122,14 +120,18 @@ pub fn check_keys(
 
     // Move between mission or shop tabs
     if state.mission {
-        if mouse.just_pressed(MouseButton::Forward) {
+        if mouse.just_pressed(MouseButton::Forward)
+            || (ctrl_pressed && keyboard.just_pressed(KeyCode::Tab))
+        {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,
                 MissionTab::ActiveMissions => MissionTab::IncomingAttacks,
                 MissionTab::IncomingAttacks => MissionTab::MissionReports,
                 MissionTab::MissionReports => MissionTab::NewMission,
             };
-        } else if mouse.just_pressed(MouseButton::Back) {
+        } else if mouse.just_pressed(MouseButton::Back)
+            || (ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::Tab))
+        {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::MissionReports,
                 MissionTab::ActiveMissions => MissionTab::NewMission,
@@ -138,13 +140,17 @@ pub fn check_keys(
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {
-        if mouse.just_pressed(MouseButton::Forward) {
+        if mouse.just_pressed(MouseButton::Forward)
+            || (ctrl_pressed && keyboard.just_pressed(KeyCode::Tab))
+        {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Fleet,
                 Shop::Fleet => Shop::Defenses,
                 Shop::Defenses => Shop::Buildings,
             };
-        } else if mouse.just_pressed(MouseButton::Back) {
+        } else if mouse.just_pressed(MouseButton::Back)
+            || (ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::Tab))
+        {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Defenses,
                 Shop::Fleet => Shop::Buildings,

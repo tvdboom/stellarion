@@ -218,9 +218,10 @@ pub fn resolve_turn(
         }
 
         // Correct mission objectives based on planet changes
-        !! correct after every mission and also check for destroyed planets, in which case return mission!
+        // correct after every mission and also check for destroyed planets, in which case return mission!
         all_missions.iter_mut().for_each(|mission| {
             let control = map.get(mission.destination).controlled;
+
             // If the destination planet is friendly, the mission changes to deploy
             // (the planet could have been colonized by another mission)
             // Except missile strikes, which always attack the destination planet
@@ -231,6 +232,12 @@ pub fn resolve_turn(
             // If deploying to a planet that's no longer under control, convert to attack
             if control != Some(mission.owner) && mission.objective == Icon::Deploy {
                 mission.objective = Icon::Attack;
+            }
+
+            // If going towards a planet that has been destroyed, deploy back to planet of origin
+            if map.get(mission.destination).is_destroyed {
+                mission.destination = mission.origin;
+                mission.objective = Icon::Deploy;
             }
         });
 
