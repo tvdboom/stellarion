@@ -63,6 +63,33 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
+fn draw_panel<R>(
+    contexts: &mut EguiContexts,
+    name: &str,
+    image: &str,
+    pos: (f32, f32),
+    size: (f32, f32),
+    images: &ImageIds,
+    content: impl FnOnce(&mut Ui) -> R,
+) {
+    egui::Window::new(name)
+        .frame(egui::Frame {
+            fill: Color32::TRANSPARENT,
+            ..default()
+        })
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .fixed_pos(pos)
+        .fixed_size(size)
+        .show(contexts.ctx_mut().unwrap(), |ui| {
+            let response =
+                ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
+
+            ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
+        });
+}
+
 fn draw_army_grid(
     ui: &mut Ui,
     name: &str,
@@ -147,33 +174,6 @@ fn draw_army_grid(
             }
         }
     });
-}
-
-fn draw_panel<R>(
-    contexts: &mut EguiContexts,
-    name: &str,
-    image: &str,
-    pos: (f32, f32),
-    size: (f32, f32),
-    images: &ImageIds,
-    content: impl FnOnce(&mut Ui) -> R,
-) {
-    egui::Window::new(name)
-        .frame(egui::Frame {
-            fill: Color32::TRANSPARENT,
-            ..default()
-        })
-        .collapsible(false)
-        .resizable(false)
-        .title_bar(false)
-        .fixed_pos(pos)
-        .fixed_size(size)
-        .show(contexts.ctx_mut().unwrap(), |ui| {
-            let response =
-                ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
-
-            ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
-        });
 }
 
 fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, images: &ImageIds) {
@@ -262,9 +262,9 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(10.);
+        ui.add_space(50.);
         ui.add_image(images.get("overview"), [20., 20.]);
-        ui.small(format!("Overview: {}", &planet.name));
+        ui.small(&planet.name);
     });
 
     ui.add_space(10.);
@@ -331,6 +331,76 @@ fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &Ima
                 });
             }
         });
+    });
+}
+
+fn draw_report_overview(
+    ui: &mut Ui,
+    planet: &Planet,
+    report: &MissionReport,
+    player: &Player,
+    units: &[Vec<Unit>; 3],
+    images: &ImageIds,
+) {
+    ui.add_space(17.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space(50.);
+        ui.add_image(images.get(report.mission.objective.to_lowername()), [20., 20.]);
+        ui.small(format!("{} ({})", planet.name, report.turn));
+    })
+    .response
+    .on_hover_ui(|ui| {
+        ui.small(format!(
+            "Information from a {} mission in turn {}.",
+            report.mission.objective.to_lowername(),
+            report.turn
+        ));
+    });
+
+    ui.add_space(10.);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
+
+        ui.add_space(10.);
+        for units in units.iter() {
+            ui.add_space(5.);
+
+            ui.vertical(|ui| {
+                for unit in units {
+                    // Whether the player can see the unit
+                    let can_see = report.winner() == Some(player.id)
+                        || report.scout_probes > 10 * (unit.production() - 1);
+
+                    let n = match unit {
+                        Unit::Building(b) => *report.complex.get(b).unwrap_or(&0),
+                        _ => *report.surviving_defense.get(unit).unwrap_or(&0),
+                    };
+
+                    ui.add_enabled_ui(n > 0 || can_see, |ui| {
+                        let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
+                        ui.add_text_on_image(
+                            if can_see {
+                                n.to_string()
+                            } else {
+                                "?".to_string()
+                            },
+                            Color32::WHITE,
+                            response.rect,
+                        );
+                    })
+                    .response
+                    .on_hover_ui(|ui| {
+                        ui.small(unit.to_name());
+                    })
+                    .on_disabled_hover_ui(|ui| {
+                        ui.small(unit.to_name());
+                    });
+                }
+            });
+        }
     });
 }
 
@@ -1217,9 +1287,9 @@ fn draw_mission_reports(
                         egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
                     );
 
-                    if let Some(details) = &report.details {
+                    if let Some(logs) = &report.logs {
                         resp5.on_hover_ui(|ui| {
-                            ui.small(details);
+                            ui.small(logs);
                         });
                     }
 
@@ -1816,6 +1886,9 @@ pub fn draw_ui(
 
         let right_side = planet_pos.x < width * 0.5;
 
+        // Check whether there is a report on this planet
+        let report = player.last_report(planet.id);
+
         if player.owns(planet) {
             let (window_w, window_h) = (205., 630.);
 
@@ -1855,6 +1928,27 @@ pub fn draw_ui(
                 (window_w, window_h),
                 &images,
                 |ui| draw_fleet(ui, planet, &units, &images),
+            );
+
+            !right_side
+        } else if let Some(report) = report {
+            let (window_w, window_h) = (205., 630.);
+
+            draw_panel(
+                &mut contexts,
+                "report overview",
+                "panel",
+                (
+                    if right_side {
+                        width * 0.998 - window_w
+                    } else {
+                        width * 0.002
+                    },
+                    height * 0.5 - window_h * 0.5,
+                ),
+                (window_w, window_h),
+                &images,
+                |ui| draw_report_overview(ui, planet, report, &player, &units, &images),
             );
 
             !right_side

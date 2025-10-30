@@ -4,7 +4,6 @@ use bevy::asset::RenderAssetUsages;
 use bevy::color::palettes::css::WHITE;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::sprite_render::Material2d;
 use bevy::window::{CursorIcon, SystemCursorIcon};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -567,38 +566,77 @@ pub fn draw_map(
 }
 
 pub fn update_voronoi(
-    mut cell_q: Query<(&mut Visibility, &mut MeshMaterial2d<Material2d>, &VoronoiCmp)>,
-    mut edge_q: Query<(&mut Visibility, &VoronoiEdgeCmp), Without<VoronoiCmp>>,
+    mut cell_q: Query<(&mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &VoronoiCmp)>,
+    mut edge_q: Query<
+        (&mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &VoronoiEdgeCmp),
+        Without<VoronoiCmp>,
+    >,
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    for (mut cell_v, cell) in &mut cell_q {
+    for (mut cell_v, cell_m, cell) in &mut cell_q {
         let planet_id = cell.0;
-        
-        // Check if there is a mine on the planet according to the last available report
+
+        // Check if there is a mine on the planet according to the last available report,
+        // which means the planet is owned by someone
         let report = player.last_report(planet_id);
         let mine = report.map(|r| *r.complex.get(&Building::Mine).unwrap_or(&0)).unwrap_or(0);
-        
-        *cell_v = if player.owns(map.get(planet_id)) && settings.show_cells {
-            Visibility::Inherited
-        } else if mine > 0 && settings.show_cells {
+        let visible = settings.show_cells && (player.owns(map.get(planet_id)) || mine > 0);
+
+        if visible {
+            if let Some(material) = materials.get_mut(&*cell_m) {
+                material.color = if player.owns(map.get(planet_id)) {
+                    Color::srgba(0., 0.3, 0.5, 0.05)
+                } else {
+                    Color::srgba(0.5, 0.1, 0., 0.05)
+                };
+            }
+        }
+
+        *cell_v = if visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
     }
 
-    let counts: HashMap<usize, usize> = edge_q
-        .iter()
-        .filter_map(|(_, edge)| player.owns(map.get(edge.planet)).then_some(edge.key))
-        .fold(HashMap::new(), |mut acc, key| {
-            *acc.entry(key).or_default() += 1;
-            acc
-        });
+    let mut counts_enemy = HashMap::new();
+    let mut counts_own = HashMap::new();
 
-    for (mut edge_v, edge) in &mut edge_q {
-        *edge_v = if *counts.get(&edge.key).unwrap_or(&2) <= 1 && settings.show_cells {
+    for (_, _, edge) in &edge_q {
+        let report = player.last_report(edge.planet);
+        let mine = report.map(|r| *r.complex.get(&Building::Mine).unwrap_or(&0)).unwrap_or(0);
+
+        if player.owns(map.get(edge.planet)) {
+            *counts_own.entry(edge.key).or_default() += 1;
+        } else if mine > 0 {
+            *counts_enemy.entry(edge.key).or_default() += 1;
+        }
+    }
+
+    for (mut edge_v, edge_m, edge) in &mut edge_q {
+        if !settings.show_cells {
+            *edge_v = Visibility::Hidden;
+            continue;
+        }
+
+        let (visible, color) = if *counts_own.get(&edge.key).unwrap_or(&2) <= 1 {
+            (true, Color::srgba(0., 0.3, 0.5, 0.5))
+        } else if *counts_enemy.get(&edge.key).unwrap_or(&2) <= 1 {
+            (true, Color::srgba(0.5, 0.1, 0., 0.5))
+        } else {
+            (false, Color::default())
+        };
+
+        if visible {
+            if let Some(mat) = materials.get_mut(&*edge_m) {
+                mat.color = color;
+            }
+        }
+
+        *edge_v = if visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden

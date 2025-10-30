@@ -3,6 +3,7 @@ use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::MissionReport;
+use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
 
@@ -49,8 +50,12 @@ impl Player {
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
-    
+
     pub fn last_report(&self, planet_id: PlanetId) -> Option<&MissionReport> {
-        self.reports.iter().rev().find(|r| r.mission.destination == planet_id)
+        self.reports.iter().rev().find(|r| {
+            r.defender != Some(self.id)
+                && r.mission.destination == planet_id
+                && r.mission.objective != Icon::MissileStrike
+        })
     }
 }

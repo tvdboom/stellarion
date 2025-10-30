@@ -63,7 +63,7 @@ pub struct MissionReport {
     pub complex: Complex,
     pub planet_colonized: bool,
     pub planet_destroyed: bool,
-    pub details: Option<String>,
+    pub logs: Option<String>,
 }
 
 impl MissionReport {
@@ -126,7 +126,7 @@ pub fn combat(
             complex: complex.clone(),
             planet_colonized: false,
             planet_destroyed: false,
-            details: None,
+            logs: None,
         };
     }
 
@@ -171,14 +171,14 @@ pub fn combat(
         }
     }
 
-    let mut details = String::new();
+    let mut logs = "Combat logs\n===========\n\n".to_string();
 
     let mut round = 1;
     let mut returning_probes = 0;
     let mut planet_destroyed = false;
     while (!attack_army.is_empty() && !defend_army.is_empty()) || round == 1 {
-        details.push_str(&format!(
-            "{}Round {round} ==============",
+        logs.push_str(&format!(
+            "{}Round {round}",
             if round == 1 {
                 ""
             } else {
@@ -187,7 +187,7 @@ pub fn combat(
         ));
 
         if missiles_fired > 0 && round == 1 {
-            details.push_str(&format!("\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."));
+            logs.push_str(&format!("\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."));
         }
 
         for army in [&mut attack_army, &mut defend_army] {
@@ -208,7 +208,7 @@ pub fn combat(
             {
                 attack_army.retain(|u| u.unit != Unit::Ship(Ship::Probe));
                 returning_probes = probes;
-                details.push_str(&format!("\n- {probes} probes returning to origin."));
+                logs.push_str(&format!("\n- {probes} probes leaving combat."));
             }
         }
 
@@ -266,6 +266,6 @@ pub fn combat(
         complex: complex.clone(),
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
-        details: Some(details),
+        logs: Some(logs),
     }
 }
