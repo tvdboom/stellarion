@@ -249,8 +249,7 @@ pub fn resolve_turn(
             // Update mission if destination changed
             check_mission(m, &map);
 
-            !! after the update, a send mission could be returning and arrive that same turn
-            !! also change phalanx to scan on distance and not turns remaining
+            // after the update, a send mission could be returning and arrive that same turn
             // Move the mission forward
             m.advance(&map);
 
@@ -265,10 +264,9 @@ pub fn resolve_turn(
                 .filter(|m| {
                     let destination = map.get(m.destination);
                     let phalanx = destination.get(&Unit::Building(Building::SensorPhalanx));
-                    let distance = m.turns_to_destination(&map);
                     m.owner == player.id
                         || (player.owns(destination)
-                            && phalanx >= distance
+                            && 0.6 * phalanx as f32 >= m.distance(&map)
                             && m.objective != Icon::Spy)
                 })
                 .cloned()

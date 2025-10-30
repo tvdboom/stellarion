@@ -4,6 +4,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::color::palettes::css::WHITE;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::sprite_render::Material2d;
 use bevy::window::{CursorIcon, SystemCursorIcon};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -24,6 +25,7 @@ use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::{MissionTab, UiState};
+use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
@@ -565,14 +567,22 @@ pub fn draw_map(
 }
 
 pub fn update_voronoi(
-    mut cell_q: Query<(&mut Visibility, &VoronoiCmp)>,
+    mut cell_q: Query<(&mut Visibility, &mut MeshMaterial2d<Material2d>, &VoronoiCmp)>,
     mut edge_q: Query<(&mut Visibility, &VoronoiEdgeCmp), Without<VoronoiCmp>>,
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
 ) {
     for (mut cell_v, cell) in &mut cell_q {
-        *cell_v = if player.owns(map.get(cell.0)) && settings.show_cells {
+        let planet_id = cell.0;
+        
+        // Check if there is a mine on the planet according to the last available report
+        let report = player.last_report(planet_id);
+        let mine = report.map(|r| *r.complex.get(&Building::Mine).unwrap_or(&0)).unwrap_or(0);
+        
+        *cell_v = if player.owns(map.get(planet_id)) && settings.show_cells {
+            Visibility::Inherited
+        } else if mine > 0 && settings.show_cells {
             Visibility::Inherited
         } else {
             Visibility::Hidden

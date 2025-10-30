@@ -49,4 +49,8 @@ impl Player {
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
+    
+    pub fn last_report(&self, planet_id: PlanetId) -> Option<&MissionReport> {
+        self.reports.iter().rev().find(|r| r.mission.destination == planet_id)
+    }
 }
