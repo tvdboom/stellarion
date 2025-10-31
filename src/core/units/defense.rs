@@ -1,13 +1,9 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
 use crate::core::units::{Combat, Description, Price};
-
-pub type Battery = HashMap<Defense, usize>;
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {

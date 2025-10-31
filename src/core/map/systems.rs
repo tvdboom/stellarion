@@ -25,9 +25,8 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
-use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::Unit;
+use crate::core::units::{Amount, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
@@ -332,48 +331,48 @@ pub fn draw_map(
                                                 );
 
                                             let origin = map.get(origin_id);
-                                            state.mission_info = Mission::new(
-                                                player.id,
-                                                map.get(origin_id),
-                                                map.get(planet_id),
-                                                icon,
-                                                match icon {
-                                                    Icon::Colonize => HashMap::from([(
-                                                        Unit::Ship(Ship::ColonyShip),
-                                                        1,
-                                                    )]),
-                                                    Icon::Spy => HashMap::from([(
-                                                        Unit::Ship(Ship::Probe),
-                                                        origin.get(&Unit::Ship(Ship::Probe)),
-                                                    )]),
-                                                    Icon::Attack | Icon::Destroy => origin
-                                                        .fleet
-                                                        .iter()
-                                                        .filter_map(|(s, c)| {
-                                                            s.is_combat().then_some((
-                                                                Unit::Ship(s.clone()),
-                                                                *c,
-                                                            ))
-                                                        })
-                                                        .collect(),
-                                                    Icon::MissileStrike => HashMap::from([(
-                                                        Unit::Defense(
-                                                            Defense::InterplanetaryMissile,
-                                                        ),
-                                                        origin.get(&Unit::Defense(
-                                                            Defense::InterplanetaryMissile,
-                                                        )),
-                                                    )]),
-                                                    Icon::Deploy => origin
-                                                        .fleet
-                                                        .iter()
-                                                        .map(|(s, c)| (Unit::Ship(s.clone()), *c))
-                                                        .collect(),
-                                                    _ => unreachable!(),
-                                                },
-                                                state.mission_info.combat_probes,
-                                                state.mission_info.jump_gate,
-                                            );
+                                            state.mission_info =
+                                                Mission::new(
+                                                    player.id,
+                                                    map.get(origin_id),
+                                                    map.get(planet_id),
+                                                    icon,
+                                                    match icon {
+                                                        Icon::Colonize => HashMap::from([(
+                                                            Unit::Ship(Ship::ColonyShip),
+                                                            1,
+                                                        )]),
+                                                        Icon::Spy => HashMap::from([(
+                                                            Unit::probe(),
+                                                            origin.army.amount(&Unit::probe()),
+                                                        )]),
+                                                        Icon::Attack | Icon::Destroy => origin
+                                                            .army
+                                                            .iter()
+                                                            .filter_map(|(u, c)| {
+                                                                (*c > 0 && u.is_combat_ship())
+                                                                    .then_some((*u, *c))
+                                                            })
+                                                            .collect(),
+                                                        Icon::MissileStrike => HashMap::from([(
+                                                            Unit::interplanetary_missile(),
+                                                            origin.army.amount(
+                                                                &Unit::interplanetary_missile(),
+                                                            ),
+                                                        )]),
+                                                        Icon::Deploy => origin
+                                                            .army
+                                                            .iter()
+                                                            .filter_map(|(u, c)| {
+                                                                (*c > 0 && u.is_ship())
+                                                                    .then_some((*u, *c))
+                                                            })
+                                                            .collect(),
+                                                        _ => unreachable!(),
+                                                    },
+                                                    state.mission_info.combat_probes,
+                                                    state.mission_info.jump_gate,
+                                                );
                                         }
                                     }
                                 },
@@ -582,7 +581,9 @@ pub fn update_voronoi(
         // Check if there is a mine on the planet according to the last available report,
         // which means the planet is owned by someone
         let report = player.last_report(planet_id);
-        let mine = report.map(|r| *r.complex.get(&Building::Mine).unwrap_or(&0)).unwrap_or(0);
+        let mine = report
+            .map(|r| r.surviving_defense.amount(&Unit::Building(Building::Mine)))
+            .unwrap_or(0);
         let visible = settings.show_cells && (player.owns(map.get(planet_id)) || mine > 0);
 
         if visible {
@@ -607,11 +608,11 @@ pub fn update_voronoi(
 
     for (_, _, edge) in &edge_q {
         let report = player.last_report(edge.planet);
-        let mine = report.map(|r| *r.complex.get(&Building::Mine).unwrap_or(&0)).unwrap_or(0);
+        let mine = report.map(|r| r.surviving_defense.amount(&Unit::Building(Building::Mine)));
 
         if player.owns(map.get(edge.planet)) {
             *counts_own.entry(edge.key).or_default() += 1;
-        } else if mine > 0 {
+        } else if mine.unwrap_or_default() > 0 {
             *counts_enemy.entry(edge.key).or_default() += 1;
         }
     }

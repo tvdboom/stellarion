@@ -16,7 +16,7 @@ use crate::core::settings::Settings;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
-use crate::core::units::Unit;
+use crate::core::units::{Amount, Unit};
 
 #[derive(Message)]
 pub struct StartTurnMsg;
@@ -155,13 +155,8 @@ pub fn resolve_turn(
                 let new_origin = map.get(mission.check_origin(&map)).clone();
                 let destination = map.get_mut(mission.destination);
 
-                let report = combat(
-                    settings.turn + 1,
-                    &mission,
-                    destination.owned,
-                    destination.army(),
-                    &destination.complex,
-                );
+                let report =
+                    combat(settings.turn + 1, &mission, destination.owned, &destination.army);
 
                 all_players
                     .iter_mut()
@@ -201,15 +196,14 @@ pub fn resolve_turn(
                             destination.conquered(mission.owner);
 
                             // If the planet has no buildings, build a level 1 mine
-                            if destination.complex.is_empty() {
-                                destination.complex.insert(Building::Mine, 1);
+                            if !destination.has_buildings() {
+                                destination.army.insert(Unit::Building(Building::Mine), 1);
                             }
                         }
 
-                        // Clear all defenders
+                        // Clear defenders from planet
                         if mission.objective != Icon::Deploy {
-                            destination.fleet = HashMap::new();
-                            destination.battery = HashMap::new();
+                            destination.army.retain(|u, _| u.is_building());
                         }
 
                         // Take control of the planet and dock the surviving fleet
@@ -218,29 +212,7 @@ pub fn resolve_turn(
                     }
                 } else {
                     // Merge surviving defenders with planet
-                    destination.fleet = report
-                        .surviving_defense
-                        .iter()
-                        .filter_map(|(u, v)| {
-                            if let Unit::Ship(s) = u {
-                                Some((*s, *v))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    destination.battery = report
-                        .surviving_defense
-                        .iter()
-                        .filter_map(|(u, v)| {
-                            if let Unit::Defense(d) = u {
-                                Some((*d, *v))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+                    destination.army = report.surviving_defense;
                 }
             }
         }
@@ -263,7 +235,7 @@ pub fn resolve_turn(
                 .iter()
                 .filter(|m| {
                     let destination = map.get(m.destination);
-                    let phalanx = destination.get(&Unit::Building(Building::SensorPhalanx));
+                    let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
                     m.owner == player.id
                         || (player.owns(destination)
                             && 0.6 * phalanx as f32 >= m.distance(&map)

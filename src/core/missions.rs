@@ -14,7 +14,7 @@ use crate::core::map::utils::cursor;
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::core::units::{Army, Combat, Unit};
+use crate::core::units::{Amount, Army, Combat};
 
 pub type MissionId = u64;
 
@@ -128,10 +128,6 @@ impl Mission {
                 .sum::<f32>()
                 .ceil() as usize
         }
-    }
-
-    pub fn get(&self, unit: &Unit) -> usize {
-        *self.army.get(unit).unwrap_or(&0)
     }
 
     pub fn total(&self) -> usize {
@@ -287,15 +283,9 @@ pub fn send_mission(
             origin.jump_gate += mission.jump_cost();
         }
 
-        origin.fleet.iter_mut().for_each(|(s, c)| {
-            if let Some(n) = mission.army.get(&Unit::Ship(s.clone())) {
-                *c -= n;
-            }
-        });
-        origin.battery.iter_mut().for_each(|(d, c)| {
-            if let Some(n) = mission.army.get(&Unit::Defense(d.clone())) {
-                *c -= n;
-            }
+        // Subtract armies from the origin planet
+        origin.army.iter_mut().for_each(|(u, c)| {
+            *c -= mission.army.amount(u);
         });
 
         missions.0.push(mission.clone());

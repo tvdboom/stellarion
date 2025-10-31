@@ -75,12 +75,12 @@ impl Icon {
 
     pub fn condition(&self, planet: &Planet) -> bool {
         match self {
-            Icon::Buildings => !planet.complex.is_empty(),
+            Icon::Buildings => planet.has_buildings(),
             Icon::Fleet => planet.has_fleet(),
-            Icon::Defenses => planet.has_battery(),
+            Icon::Defenses => planet.has_defense(),
             Icon::Deploy => planet.has_fleet(),
             Icon::Colonize => planet.has(&Unit::Ship(Ship::ColonyShip)),
-            Icon::Attack => planet.fleet.iter().any(|(s, c)| s.is_combat() && *c > 0),
+            Icon::Attack => planet.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
             Icon::Spy => planet.has(&Unit::Ship(Ship::Probe)),
             Icon::MissileStrike => planet.has(&Unit::Defense(Defense::InterplanetaryMissile)),
             Icon::Destroy => planet.has(&Unit::Ship(Ship::WarSun)),

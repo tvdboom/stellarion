@@ -27,7 +27,7 @@ use crate::core::ui::utils::{toggle, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Combat, Description, Price, Unit};
+use crate::core::units::{Amount, Combat, Description, Price, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
@@ -107,34 +107,10 @@ fn draw_army_grid(
                 || (name == "attacker" && report.mission.owner == player.id)
                 || (name != "attacker" && report.scout_probes > 10 * (unit.production() - 1));
 
-            let (total, survived) = if let Unit::Building(building) = unit {
-                let lvl = *report.complex.get(building).unwrap_or(&0);
-                (
-                    lvl,
-                    if report.planet_destroyed {
-                        0
-                    } else {
-                        lvl
-                    },
-                )
+            let (survived, total) = if name == "attacker" {
+                (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
             } else {
-                if name == "attacker" {
-                    let total = report.mission.get(unit);
-                    let survived = *report.surviving_attacker.get(unit).unwrap_or(&0);
-                    (
-                        total,
-                        if *unit == Unit::Ship(Ship::Probe) {
-                            survived + report.scout_probes
-                        } else {
-                            survived
-                        },
-                    )
-                } else {
-                    (
-                        *report.defense.get(unit).unwrap_or(&0),
-                        *report.surviving_defense.get(unit).unwrap_or(&0),
-                    )
-                }
+                (report.defense.amount(unit), report.surviving_defense.amount(unit))
             };
             let lost = total - survived;
 
@@ -257,7 +233,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     });
 }
 
-fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &ImageIds) {
+fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -273,12 +249,12 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
         ui.add_space(10.);
-        for units in units.iter() {
+        for units in Unit::all().iter() {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
                 for unit in units {
-                    let n = planet.get(&unit);
+                    let n = planet.army.amount(&unit);
 
                     ui.add_enabled_ui(n > 0, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
@@ -297,7 +273,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &
     });
 }
 
-fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &ImageIds) {
+fn draw_fleet(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -315,8 +291,8 @@ fn draw_fleet(ui: &mut Ui, planet: &Planet, units: &[Vec<Unit>; 3], images: &Ima
         ui.add_space(32.);
 
         ui.vertical(|ui| {
-            for unit in units[1].iter() {
-                let n = planet.get(&unit);
+            for unit in Unit::ships().iter() {
+                let n = planet.army.amount(&unit);
 
                 ui.add_enabled_ui(n > 0, |ui| {
                     let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
@@ -339,7 +315,6 @@ fn draw_report_overview(
     planet: &Planet,
     report: &MissionReport,
     player: &Player,
-    units: &[Vec<Unit>; 3],
     images: &ImageIds,
 ) {
     ui.add_space(17.);
@@ -365,7 +340,7 @@ fn draw_report_overview(
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
         ui.add_space(10.);
-        for units in units.iter() {
+        for units in Unit::all().iter() {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -374,10 +349,7 @@ fn draw_report_overview(
                     let can_see = report.winner() == Some(player.id)
                         || report.scout_probes > 10 * (unit.production() - 1);
 
-                    let n = match unit {
-                        Unit::Building(b) => *report.complex.get(b).unwrap_or(&0),
-                        _ => *report.surviving_defense.get(unit).unwrap_or(&0),
-                    };
+                    let n = report.surviving_defense.amount(unit);
 
                     ui.add_enabled_ui(n > 0 || can_see, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
@@ -409,16 +381,16 @@ fn draw_mission_fleet_hover(
     mission: &Mission,
     map: &Map,
     player: &Player,
-    units: &[Vec<Unit>; 3],
     images: &ImageIds,
 ) {
     let army = match mission.objective {
-        Icon::MissileStrike => &vec![Unit::Defense(Defense::InterplanetaryMissile)],
-        Icon::Spy => &vec![Unit::Ship(Ship::Probe)],
-        _ => &units[1],
+        Icon::MissileStrike => vec![Unit::interplanetary_missile()],
+        Icon::Spy => vec![Unit::probe()],
+        _ => Unit::ships(),
     };
 
-    let phalanx = map.get(mission.destination).get(&Unit::Building(Building::SensorPhalanx));
+    let phalanx =
+        map.get(mission.destination).army.amount(&Unit::Building(Building::SensorPhalanx));
 
     ui.add_space(17.);
 
@@ -438,7 +410,7 @@ fn draw_mission_fleet_hover(
 
         ui.vertical(|ui| {
             for unit in army.iter() {
-                let n = mission.get(&unit);
+                let n = mission.army.amount(unit);
 
                 ui.add_enabled_ui(n > 0, |ui| {
                     let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
@@ -446,7 +418,7 @@ fn draw_mission_fleet_hover(
                         if mission.owner != player.id && unit.production() > phalanx {
                             "?".to_string()
                         } else {
-                            mission.get(unit).to_string()
+                            n.to_string()
                         },
                         Color32::WHITE,
                         response.rect,
@@ -471,7 +443,6 @@ fn draw_new_mission(
     state: &mut UiState,
     map: &mut Map,
     player: &mut Player,
-    units: &[Vec<Unit>; 3],
     is_hovered: bool,
     images: &ImageIds,
 ) {
@@ -492,9 +463,9 @@ fn draw_new_mission(
     }
 
     let army = match state.mission_info.objective {
-        Icon::MissileStrike => &vec![Unit::Defense(Defense::InterplanetaryMissile)],
-        Icon::Spy => &vec![Unit::Ship(Ship::Probe)],
-        _ => &units[1],
+        Icon::MissileStrike => vec![Unit::interplanetary_missile()],
+        Icon::Spy => vec![Unit::probe()],
+        _ => Unit::ships(),
     };
 
     ui.horizontal_top(|ui| {
@@ -571,7 +542,7 @@ fn draw_new_mission(
                 ui.add_image_painter(image, rect);
 
                 if response.clicked() {
-                    state.mission_info.army = army.iter().map(|u| (u.clone(), origin.get(u))).collect();
+                    state.mission_info.army = army.iter().map(|u| (*u, origin.army.amount(u))).collect();
                 } else if response.secondary_clicked() {
                     state.mission_info.army.clear();
                 }
@@ -631,7 +602,7 @@ fn draw_new_mission(
                         ui.spacing_mut().item_spacing.x = 8.;
 
                         for (i, unit) in army.iter().enumerate() {
-                            let n = origin.get(unit);
+                            let n = origin.army.amount(unit);
 
                             ui.add_enabled_ui(n > 0, |ui| {
                                 ui.vertical_centered(|ui| {
@@ -793,7 +764,7 @@ fn draw_new_mission(
                 ui.small(format!("Fuel consumption: {fuel}"));
 
                 if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
-                    let probes = state.mission_info.get(&Unit::Ship(Ship::Probe));
+                    let probes = state.mission_info.army.amount(&Unit::probe());
                     ui.add_enabled_ui(probes > 0, |ui| {
                         ui.horizontal(|ui| {
                             ui.small("Combat Probes:");
@@ -824,8 +795,8 @@ fn draw_new_mission(
                 if state.mission_info.objective == Icon::Deploy {
                     if player.owns(origin)
                         && player.owns(destination)
-                        && origin.get(&Unit::Building(Building::JumpGate)) > 0
-                        && destination.get(&Unit::Building(Building::JumpGate)) > 0 {
+                        && origin.army.amount(&Unit::Building(Building::JumpGate)) > 0
+                        && destination.army.amount(&Unit::Building(Building::JumpGate)) > 0 {
                         has_gate = true;
 
                         let jump_cost = state.mission_info.jump_cost();
@@ -868,21 +839,21 @@ fn draw_new_mission(
                     let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
                     let objective_check = match state.mission_info.objective {
                         Icon::Deploy => state.mission_info.army.iter().any(|(u, c)| u.is_ship() && *c > 0),
-                        Icon::Colonize => state.mission_info.get(&Unit::Ship(Ship::ColonyShip)) > 0,
+                        Icon::Colonize => state.mission_info.army.amount(&Unit::colony_ship()) > 0,
                         Icon::Attack => state
                             .mission_info
                             .army
                             .iter()
-                            .any(|(u, n)| *n > 0 && matches!(u, Unit::Ship(s) if s.is_combat())),
+                            .any(|(u, n)| *n > 0 && u.is_combat_ship()),
                         Icon::Spy => {
-                            state.mission_info.get(&Unit::Ship(Ship::Probe))
+                            state.mission_info.army.amount(&Unit::probe())
                                 == state.mission_info.total()
                         },
                         Icon::MissileStrike => {
-                            state.mission_info.get(&Unit::Defense(Defense::InterplanetaryMissile))
+                            state.mission_info.army.amount(&Unit::interplanetary_missile())
                                 == state.mission_info.total()
                         },
-                        Icon::Destroy => state.mission_info.get(&Unit::Ship(Ship::WarSun)) > 0,
+                        Icon::Destroy => state.mission_info.army.amount(&Unit::Ship(Ship::WarSun)) > 0,
                         _ => unreachable!(),
                     };
 
@@ -1081,7 +1052,6 @@ fn draw_mission_reports(
     state: &mut UiState,
     map: &Map,
     player: &Player,
-    units: &[Vec<Unit>; 3],
     is_hovered: bool,
     images: &ImageIds,
 ) {
@@ -1312,12 +1282,12 @@ fn draw_mission_reports(
                     ui.set_width(120.);
 
                     let army = match report.mission.objective {
-                        Icon::MissileStrike => &vec![Unit::Defense(Defense::InterplanetaryMissile)],
-                        Icon::Spy => &vec![Unit::Ship(Ship::Probe)],
-                        _ => &units[1]
+                        Icon::MissileStrike => vec![Unit::interplanetary_missile()],
+                        Icon::Spy => vec![Unit::probe()],
+                        _ => Unit::ships()
                     };
 
-                    draw_army_grid(ui, "attacker", army, report, player, destination, images);
+                    draw_army_grid(ui, "attacker", &army, report, player, destination, images);
 
                     if report.scout_probes > 0 {
                         ui.horizontal(|ui| {
@@ -1338,6 +1308,7 @@ fn draw_mission_reports(
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.;
 
+                        let units = Unit::all();
                         for (i, army) in [&units[1], &units[2], &units[0]].iter().enumerate() {
                             draw_army_grid(
                                 ui,
@@ -1379,7 +1350,6 @@ fn draw_mission(
     state: &mut UiState,
     map: &mut Map,
     player: &mut Player,
-    units: &[Vec<Unit>; 3],
     is_hovered: bool,
     images: &ImageIds,
 ) {
@@ -1401,7 +1371,6 @@ fn draw_mission(
             state,
             map,
             player,
-            units,
             is_hovered,
             images,
         ),
@@ -1424,7 +1393,7 @@ fn draw_mission(
             images,
         ),
         MissionTab::MissionReports => {
-            draw_mission_reports(ui, state, map, player, units, is_hovered, images)
+            draw_mission_reports(ui, state, map, player, is_hovered, images)
         },
     }
 }
@@ -1513,7 +1482,6 @@ fn draw_mission_info_hover(
 fn draw_unit_hover(
     ui: &mut Ui,
     unit: &Unit,
-    units: &[Vec<Unit>; 3],
     msg: Option<String>,
     images: &ImageIds,
 ) {
@@ -1574,7 +1542,7 @@ fn draw_unit_hover(
                     .chunks(3)
                     .enumerate()
                 {
-                    if i == 0 || row.iter().any(|s| unit.get(s) != "---") {
+                    if i == 0 || row.iter().any(|s| unit.get_stat(s) != "---") {
                         egui::Grid::new(ui.auto_id_with(format!("row_{:?}", row[0])))
                             .spacing([20., 0.])
                             .striped(false)
@@ -1585,7 +1553,7 @@ fn draw_unit_hover(
                                         ui.style_mut().interaction.selectable_labels = true;
 
                                         ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-                                        ui.label(unit.get(&stat))
+                                        ui.label(unit.get_stat(&stat))
                                             .on_hover_cursor(CursorIcon::Default);
                                     })
                                     .response
@@ -1605,7 +1573,7 @@ fn draw_unit_hover(
 
                 egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(ui, |ui| {
                     let mut counter = 0;
-                    for rf_unit in units.iter().take(2).flatten() {
+                    for rf_unit in Unit::all().iter().take(2).flatten() {
                         if let Some(rf) = unit.rapid_fire().get(&rf_unit) {
                             ui.horizontal(|ui| {
                                 ui.set_width(115.);
@@ -1635,7 +1603,6 @@ fn draw_shop(
     settings: &Settings,
     player: &mut Player,
     planet: &mut Planet,
-    units: &[Vec<Unit>; 3],
     images: &ImageIds,
 ) {
     ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
@@ -1663,12 +1630,12 @@ fn draw_shop(
 
     ui.add_space(10.);
 
-    for row in units[idx].chunks(5) {
+    for row in Unit::all()[idx].chunks(5) {
         ui.horizontal(|ui| {
             ui.add_space(25.);
 
             for unit in row {
-                let count = planet.get(unit);
+                let count = planet.army.amount(unit);
                 let bought = planet.buy.iter().filter(|u| *u == unit).count();
 
                 let resources_check = player.resources >= unit.price();
@@ -1677,19 +1644,20 @@ fn draw_shop(
                         (true, count < Building::MAX_LEVEL, !planet.buy.contains(unit))
                     },
                     Unit::Ship(s) => (
-                        s.production() <= planet.get(&Unit::Building(Building::Shipyard)),
+                        s.production() <= planet.army.amount(&Unit::Building(Building::Shipyard)),
                         true,
                         planet.fleet_production() + s.production() <= planet.max_fleet_production(),
                     ),
                     Unit::Defense(d) if d.is_missile() => (
-                        d.production() <= planet.get(&Unit::Building(Building::MissileSilo)),
+                        d.production()
+                            <= planet.army.amount(&Unit::Building(Building::MissileSilo)),
                         true,
                         planet.battery_production() + d.production()
                             <= planet.max_battery_production()
                             && planet.missile_capacity() + bought < planet.max_missile_capacity(),
                     ),
                     Unit::Defense(d) => (
-                        d.production() <= planet.get(&Unit::Building(Building::Factory)),
+                        d.production() <= planet.army.amount(&Unit::Building(Building::Factory)),
                         true,
                         planet.battery_production() + d.production()
                             <= planet.max_battery_production(),
@@ -1778,13 +1746,12 @@ fn draw_shop(
                         if settings.show_hover {
                             response
                                 .on_hover_ui(|ui| {
-                                    draw_unit_hover(ui, unit, units, None, &images);
+                                    draw_unit_hover(ui, unit, None, &images);
                                 })
                                 .on_disabled_hover_ui(|ui| {
                                     draw_unit_hover(
                                         ui,
                                         unit,
-                                        units,
                                         Some(if !resources_check {
                                             "Not enough resources.".to_string()
                                         } else if !building_check {
@@ -1856,12 +1823,6 @@ pub fn draw_ui(
     let (camera, camera_t) = camera_q.into_inner();
     let (width, height) = (window.width(), window.height());
 
-    let units: [Vec<Unit>; 3] = [
-        Building::iter().map(|b| Unit::Building(b)).collect(),
-        Ship::iter().map(|s| Unit::Ship(s)).collect(),
-        Defense::iter().map(|d| Unit::Defense(d)).collect(),
-    ];
-
     draw_panel(
         &mut contexts,
         "resources",
@@ -1906,7 +1867,7 @@ pub fn draw_ui(
                 ),
                 (window_w, window_h),
                 &images,
-                |ui| draw_overview(ui, planet, &units, &images),
+                |ui| draw_overview(ui, planet, &images),
             );
 
             !right_side
@@ -1927,31 +1888,35 @@ pub fn draw_ui(
                 ),
                 (window_w, window_h),
                 &images,
-                |ui| draw_fleet(ui, planet, &units, &images),
+                |ui| draw_fleet(ui, planet, &images),
             );
 
             !right_side
         } else if let Some(report) = report {
-            let (window_w, window_h) = (205., 630.);
+            if !planet.is_destroyed {
+                let (window_w, window_h) = (205., 630.);
 
-            draw_panel(
-                &mut contexts,
-                "report overview",
-                "panel",
-                (
-                    if right_side {
-                        width * 0.998 - window_w
-                    } else {
-                        width * 0.002
-                    },
-                    height * 0.5 - window_h * 0.5,
-                ),
-                (window_w, window_h),
-                &images,
-                |ui| draw_report_overview(ui, planet, report, &player, &units, &images),
-            );
+                draw_panel(
+                    &mut contexts,
+                    "report overview",
+                    "panel",
+                    (
+                        if right_side {
+                            width * 0.998 - window_w
+                        } else {
+                            width * 0.002
+                        },
+                        height * 0.5 - window_h * 0.5,
+                    ),
+                    (window_w, window_h),
+                    &images,
+                    |ui| draw_report_overview(ui, planet, report, &player, &images),
+                );
 
-            !right_side
+                !right_side
+            } else {
+                right_side
+            }
         } else {
             right_side
         }
@@ -1978,7 +1943,7 @@ pub fn draw_ui(
             ),
             (window_w, window_h),
             &images,
-            |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &units, &images),
+            |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &images),
         );
 
         let (window_w2, window_h2) = (270., 280.);
@@ -2023,7 +1988,6 @@ pub fn draw_ui(
                     &mut state,
                     &mut map,
                     &mut player,
-                    &units,
                     is_hovered,
                     &images,
                 )
@@ -2054,7 +2018,6 @@ pub fn draw_ui(
                                 &settings,
                                 &mut player,
                                 planet,
-                                &units,
                                 &images,
                             )
                         },

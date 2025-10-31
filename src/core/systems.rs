@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use bevy::window::WindowResized;
 use itertools::Itertools;
-use strum::IntoEnumIterator;
 
 use crate::core::map::map::Map;
 use crate::core::menu::utils::TextSize;
@@ -12,6 +9,7 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{MissionTab, Shop, UiState};
 use crate::core::units::buildings::Building;
+use crate::core::units::Unit;
 
 pub fn on_resize_system(
     mut resize_reader: MessageReader<WindowResized>,
@@ -42,8 +40,9 @@ pub fn check_keys(
     if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
         player.resources += 1000usize;
         map.planets.iter_mut().for_each(|p| {
-            p.complex =
-                Building::iter().map(|c| (c, Building::MAX_LEVEL)).collect::<HashMap<_, _>>()
+            for building in Unit::buildings().iter() {
+                *p.army.entry(*building).or_insert(0) = Building::MAX_LEVEL;
+            }
         });
     }
 
@@ -95,7 +94,7 @@ pub fn check_keys(
     }
 
     // Move between owned planets
-    if keyboard.just_pressed(KeyCode::Tab) {
+    if ctrl_pressed && keyboard.just_pressed(KeyCode::Tab) {
         if let Some(selected) = state.planet_selected {
             let planets: Vec<_> = map
                 .planets
@@ -120,9 +119,7 @@ pub fn check_keys(
 
     // Move between mission or shop tabs
     if state.mission {
-        if mouse.just_pressed(MouseButton::Forward)
-            || (ctrl_pressed && keyboard.just_pressed(KeyCode::Tab))
-        {
+        if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,
                 MissionTab::ActiveMissions => MissionTab::IncomingAttacks,
@@ -130,7 +127,7 @@ pub fn check_keys(
                 MissionTab::MissionReports => MissionTab::NewMission,
             };
         } else if mouse.just_pressed(MouseButton::Back)
-            || (ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::Tab))
+            || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::MissionReports,
@@ -140,16 +137,14 @@ pub fn check_keys(
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {
-        if mouse.just_pressed(MouseButton::Forward)
-            || (ctrl_pressed && keyboard.just_pressed(KeyCode::Tab))
-        {
+        if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Fleet,
                 Shop::Fleet => Shop::Defenses,
                 Shop::Defenses => Shop::Buildings,
             };
         } else if mouse.just_pressed(MouseButton::Back)
-            || (ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::Tab))
+            || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Defenses,

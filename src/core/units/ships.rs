@@ -6,9 +6,7 @@ use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
 use crate::core::units::defense::Defense;
-use crate::core::units::{Combat, Description, Price, Unit};
-
-pub type Fleet = HashMap<Ship, usize>;
+use crate::core::units::{Army, Combat, Description, Price, Unit};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Ship {
@@ -38,13 +36,6 @@ impl Ship {
             Ship::Battleship => 4,
             Ship::Dreadnought => 4,
             Ship::WarSun => 5,
-        }
-    }
-
-    pub fn is_combat(&self) -> bool {
-        match self {
-            Ship::Probe | Ship::ColonyShip => false,
-            _ => true,
         }
     }
 }
@@ -173,19 +164,17 @@ impl Combat for Ship {
         }
     }
 
-    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+    fn rapid_fire(&self) -> Army {
         match self {
-            Ship::Probe | Ship::ColonyShip => HashMap::new(),
-            Ship::LightFighter | Ship::HeavyFighter => {
-                HashMap::from([(Unit::Ship(Ship::Probe), 80)])
-            },
-            Ship::Destroyer => HashMap::from([
+            Ship::Probe | Ship::ColonyShip => Army::new(),
+            Ship::LightFighter | Ship::HeavyFighter => Army::from([(Unit::Ship(Ship::Probe), 80)]),
+            Ship::Destroyer => Army::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 70),
                 (Unit::Defense(Defense::RocketLauncher), 70),
             ]),
-            Ship::Cruiser => HashMap::from([(Unit::Ship(Ship::Probe), 80)]),
-            Ship::Bomber => HashMap::from([
+            Ship::Cruiser => Army::from([(Unit::Ship(Ship::Probe), 80)]),
+            Ship::Bomber => Army::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
@@ -194,19 +183,19 @@ impl Combat for Ship {
                 (Unit::Defense(Defense::IonCannon), 40),
                 (Unit::Defense(Defense::PlasmaTurret), 40),
             ]),
-            Ship::Battleship => HashMap::from([
+            Ship::Battleship => Army::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::HeavyFighter), 70),
                 (Unit::Ship(Ship::Destroyer), 60),
                 (Unit::Ship(Ship::Cruiser), 50),
             ]),
-            Ship::Dreadnought => HashMap::from([
+            Ship::Dreadnought => Army::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::Bomber), 40),
                 (Unit::Ship(Ship::Battleship), 40),
                 (Unit::Ship(Ship::Dreadnought), 30),
             ]),
-            Ship::WarSun => HashMap::from([
+            Ship::WarSun => Army::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 80),
                 (Unit::Ship(Ship::HeavyFighter), 80),

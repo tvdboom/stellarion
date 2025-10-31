@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use strum::IntoEnumIterator;
 
 use crate::core::combat::CombatStats;
 use crate::core::resources::Resources;
@@ -25,8 +26,8 @@ pub trait Combat {
     fn hull(&self) -> usize;
     fn shield(&self) -> usize;
     fn damage(&self) -> usize;
-    fn rapid_fire(&self) -> HashMap<Unit, usize> {
-        HashMap::new()
+    fn rapid_fire(&self) -> Army {
+        Army::new()
     }
     fn speed(&self) -> f32 {
         0.
@@ -38,6 +39,16 @@ pub trait Combat {
 
 pub type Army = HashMap<Unit, usize>;
 
+pub trait Amount {
+    fn amount(&self, unit: &Unit) -> usize;
+}
+
+impl Amount for Army {
+    fn amount(&self, unit: &Unit) -> usize {
+        *self.get(unit).unwrap_or(&0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
@@ -46,20 +57,32 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub fn to_name(&self) -> String {
-        match self {
-            Unit::Building(b) => b.to_name(),
-            Unit::Ship(s) => s.to_name(),
-            Unit::Defense(d) => d.to_name(),
-        }
+    pub fn buildings() -> Vec<Self> {
+        Building::iter().map(|b| Unit::Building(b)).collect()
     }
 
-    pub fn to_lowername(&self) -> String {
-        match self {
-            Unit::Building(b) => b.to_lowername(),
-            Unit::Ship(s) => s.to_lowername(),
-            Unit::Defense(d) => d.to_lowername(),
-        }
+    pub fn ships() -> Vec<Self> {
+        Ship::iter().map(|b| Unit::Ship(b)).collect()
+    }
+
+    pub fn defenses() -> Vec<Self> {
+        Defense::iter().map(|b| Unit::Defense(b)).collect()
+    }
+
+    pub fn all() -> Vec<Vec<Self>> {
+        vec![Self::buildings(), Self::ships(), Self::defenses()]
+    }
+
+    pub fn probe() -> Self {
+        Unit::Ship(Ship::Probe)
+    }
+
+    pub fn colony_ship() -> Self {
+        Unit::Ship(Ship::ColonyShip)
+    }
+
+    pub fn interplanetary_missile() -> Self {
+        Unit::Defense(Defense::InterplanetaryMissile)
     }
 
     pub fn is_building(&self) -> bool {
@@ -74,6 +97,13 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
+    pub fn is_combat_ship(&self) -> bool {
+        match self {
+            Unit::Ship(s) if !matches!(s, Ship::Probe | Ship::ColonyShip) => true,
+            _ => false,
+        }
+    }
+
     pub fn production(&self) -> usize {
         match self {
             Unit::Building(_) => 1,
@@ -82,7 +112,7 @@ impl Unit {
         }
     }
 
-    pub fn get(&self, stat: &CombatStats) -> String {
+    pub fn get_stat(&self, stat: &CombatStats) -> String {
         let n = match stat {
             CombatStats::Hull => self.hull() as f32,
             CombatStats::Shield => self.shield() as f32,
@@ -97,6 +127,22 @@ impl Unit {
             "---".to_string()
         } else {
             n.to_string()
+        }
+    }
+
+    pub fn to_name(&self) -> String {
+        match self {
+            Unit::Building(b) => b.to_name(),
+            Unit::Ship(s) => s.to_name(),
+            Unit::Defense(d) => d.to_name(),
+        }
+    }
+
+    pub fn to_lowername(&self) -> String {
+        match self {
+            Unit::Building(b) => b.to_lowername(),
+            Unit::Ship(s) => s.to_lowername(),
+            Unit::Defense(d) => d.to_lowername(),
         }
     }
 }
@@ -146,9 +192,9 @@ impl Combat for Unit {
         }
     }
 
-    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+    fn rapid_fire(&self) -> Army {
         match self {
-            Unit::Building(_) => HashMap::new(),
+            Unit::Building(_) => Army::new(),
             Unit::Ship(s) => s.rapid_fire(),
             Unit::Defense(d) => d.rapid_fire(),
         }

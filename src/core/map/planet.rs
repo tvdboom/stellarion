@@ -11,10 +11,10 @@ use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR,
 };
 use crate::core::resources::Resources;
-use crate::core::units::buildings::{Building, Complex};
-use crate::core::units::defense::{Battery, Defense};
-use crate::core::units::ships::{Fleet, Ship};
-use crate::core::units::{Army, Unit};
+use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Amount, Army, Unit};
 
 pub type PlanetId = usize;
 
@@ -52,9 +52,7 @@ pub struct Planet {
     // Ownership and units
     pub owned: Option<ClientId>,
     pub controlled: Option<ClientId>,
-    pub complex: Complex,
-    pub battery: Battery,
-    pub fleet: Fleet,
+    pub army: Army,
     pub buy: Vec<Unit>,
 }
 
@@ -93,30 +91,26 @@ impl Planet {
             is_destroyed: false,
             owned: None,
             controlled: None,
-            complex: HashMap::new(),
-            battery: HashMap::new(),
-            fleet: HashMap::new(),
+            army: Army::new(),
             buy: vec![],
         }
     }
 
     pub fn make_home_planet(&mut self, client_id: ClientId) {
         self.conquered(client_id);
-        self.complex =
-            HashMap::from([(Building::Mine, 1), (Building::Shipyard, 1), (Building::Factory, 1)]);
-
-        // Remove!!
-        self.fleet = HashMap::from([
-            (Ship::Probe, 88),
-            (Ship::LightFighter, 15),
-            (Ship::ColonyShip, 5),
-            (Ship::Cruiser, 11),
-            (Ship::WarSun, 50),
-        ]);
-        self.battery = HashMap::from([
-            (Defense::RocketLauncher, 79),
-            (Defense::AntiballisticMissile, 40),
-            (Defense::InterplanetaryMissile, 80),
+        self.army = Army::from([
+            (Unit::Building(Building::Mine), 1),
+            (Unit::Building(Building::Shipyard), 1),
+            (Unit::Building(Building::Factory), 1),
+            // Remove!!
+            (Unit::Ship(Ship::Probe), 88),
+            (Unit::Ship(Ship::LightFighter), 15),
+            (Unit::Ship(Ship::ColonyShip), 5),
+            (Unit::Ship(Ship::Cruiser), 11),
+            (Unit::Ship(Ship::WarSun), 50),
+            (Unit::Defense(Defense::RocketLauncher), 79),
+            (Unit::Defense(Defense::AntiballisticMissile), 40),
+            (Unit::Defense(Defense::InterplanetaryMissile), 80),
         ]);
     }
 
@@ -129,22 +123,12 @@ impl Planet {
 
     pub fn produce(&mut self) {
         for unit in self.buy.drain(..) {
-            match unit {
-                Unit::Building(b) => {
-                    *self.complex.entry(b).or_default() += 1;
-                },
-                Unit::Ship(s) => {
-                    *self.fleet.entry(s).or_default() += 1;
-                },
-                Unit::Defense(d) => {
-                    *self.battery.entry(d).or_default() += 1;
-                },
-            }
+            *self.army.entry(unit).or_default() += 1;
         }
     }
 
     pub fn resource_production(&self) -> Resources {
-        self.resources * self.get(&Unit::Building(Building::Mine))
+        self.resources * self.army.amount(&Unit::Building(Building::Mine))
     }
 
     pub fn fleet_production(&self) -> usize {
@@ -152,7 +136,7 @@ impl Planet {
     }
 
     pub fn max_fleet_production(&self) -> usize {
-        SHIPYARD_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::Shipyard))
+        SHIPYARD_PRODUCTION_FACTOR * self.army.amount(&Unit::Building(Building::Shipyard))
     }
 
     pub fn battery_production(&self) -> usize {
@@ -160,64 +144,46 @@ impl Planet {
     }
 
     pub fn max_battery_production(&self) -> usize {
-        FACTORY_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::Factory))
+        FACTORY_PRODUCTION_FACTOR * self.army.amount(&Unit::Building(Building::Factory))
     }
 
     pub fn missile_capacity(&self) -> usize {
-        self.battery.iter().filter_map(|(d, c)| d.is_missile().then_some(c)).sum()
+        self.army
+            .iter()
+            .filter_map(|(u, c)| matches!(u, Unit::Defense(d) if d.is_missile()).then_some(c))
+            .sum()
     }
 
     pub fn max_missile_capacity(&self) -> usize {
-        SILO_CAPACITY_FACTOR * self.get(&Unit::Building(Building::MissileSilo))
+        SILO_CAPACITY_FACTOR * self.army.amount(&Unit::Building(Building::MissileSilo))
     }
 
     pub fn max_jump_capacity(&self) -> usize {
-        FACTORY_PRODUCTION_FACTOR * self.get(&Unit::Building(Building::JumpGate))
+        FACTORY_PRODUCTION_FACTOR * self.army.amount(&Unit::Building(Building::JumpGate))
     }
 
     /// Units and combat ============================================= >>
 
-    pub fn get(&self, unit: &Unit) -> usize {
-        match unit {
-            Unit::Building(building) => *self.complex.get(building).unwrap_or(&0),
-            Unit::Defense(defense) => *self.battery.get(defense).unwrap_or(&0),
-            Unit::Ship(ship) => *self.fleet.get(ship).unwrap_or(&0),
-        }
-    }
-
-    pub fn army(&self) -> Army {
-        self.fleet
-            .iter()
-            .filter_map(|(s, c)| (*c > 0).then_some((Unit::Ship(*s), *c)))
-            .chain(
-                self.battery
-                    .iter()
-                    .filter_map(|(d, c)| (*c > 0).then_some((Unit::Defense(*d), *c))),
-            )
-            .collect()
-    }
-
     pub fn has(&self, unit: &Unit) -> bool {
-        self.get(unit) > 0
+        self.army.amount(unit) > 0
+    }
+
+    pub fn has_buildings(&self) -> bool {
+        self.army.iter().any(|(u, c)| u.is_building() && *c > 0)
     }
 
     pub fn has_fleet(&self) -> bool {
-        self.fleet.iter().any(|(_, c)| *c > 0)
+        self.army.iter().any(|(u, c)| u.is_ship() && *c > 0)
     }
 
-    pub fn has_battery(&self) -> bool {
-        self.battery.iter().any(|(_, c)| *c > 0)
+    pub fn has_defense(&self) -> bool {
+        self.army.iter().any(|(u, c)| u.is_defense() && *c > 0)
     }
 
     /// Merge a fleet into the planet's fleet
-    pub fn dock(&mut self, army: HashMap<Unit, usize>) {
+    pub fn dock(&mut self, army: Army) {
         for (unit, count) in army {
-            match unit {
-                Unit::Ship(s) => {
-                    *self.fleet.entry(s).or_default() += count;
-                },
-                _ => unreachable!(),
-            }
+            *self.army.entry(unit).or_default() += count;
         }
     }
 
@@ -226,9 +192,7 @@ impl Planet {
         self.image = 0;
         self.owned = None;
         self.controlled = None;
-        self.complex = HashMap::new();
-        self.battery = HashMap::new();
-        self.fleet = HashMap::new();
+        self.army = HashMap::new();
         self.buy = Vec::new();
         self.is_destroyed = true;
     }
