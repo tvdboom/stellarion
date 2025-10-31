@@ -236,7 +236,10 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
 fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
-    ui.vertical_centered(|ui| {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space(50.);
+        ui.add_image(images.get("overview"), [20., 20.]);
         ui.small(&planet.name);
     });
 

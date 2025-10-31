@@ -184,7 +184,9 @@ pub fn combat(
         ));
 
         if missiles_fired > 0 && round == 1 {
-            logs.push_str(&format!("\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."));
+            logs.push_str(&format!(
+                "\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."
+            ));
         }
 
         for army in [&mut attack_army, &mut defend_army] {

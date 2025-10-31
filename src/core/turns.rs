@@ -187,24 +187,44 @@ pub fn resolve_turn(
                         .filter(|p| p.owns(destination) || p.id == report.mission.owner)
                         .for_each(|p| p.reports.push(report.clone()));
 
-                    // Send probes back that left combat after one round
                     if report.scout_probes > 0 {
-                        new_missions.push(Mission::new(
-                            settings.turn,
-                            mission.owner,
-                            destination,
-                            &new_origin,
-                            Icon::Deploy,
-                            HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
-                            false,
-                            false,
-                        ));
+                        if mission.objective == Icon::Spy {
+                            let mut return_m = mission.clone();
+                            mission.logs.push_str(
+                                format!(
+                                    "\n- ({}) Spied on planet {}.",
+                                    settings.turn, destination.name
+                                )
+                                .as_str(),
+                            );
+                            return_m.destination = new_origin.id;
+                            return_m.objective = Icon::Deploy;
+                            new_missions.push(return_m);
+                        } else {
+                            // Send probes back that left combat after one round
+                            new_missions.push(Mission::new(
+                                settings.turn,
+                                mission.owner,
+                                destination,
+                                &new_origin,
+                                Icon::Deploy,
+                                HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
+                                false,
+                                false,
+                            ));
+                        }
                     }
 
                     if report.winner() == Some(mission.owner) {
                         if report.planet_destroyed {
                             destination.destroy();
-                            mission.logs.push_str(format!("\n- ({}) Planet {} destroyed.", settings.turn, destination.name).as_str());
+                            mission.logs.push_str(
+                                format!(
+                                    "\n- ({}) Planet {} destroyed.",
+                                    settings.turn, destination.name
+                                )
+                                .as_str(),
+                            );
                             check_mission(&mut mission, &map, settings.turn);
                             new_missions.push(mission.clone());
                         } else {
@@ -223,9 +243,11 @@ pub fn resolve_turn(
                                 destination.army.retain(|u, _| u.is_building());
                             }
 
-                            // Take control of the planet and dock the surviving fleet
-                            destination.controlled = Some(mission.owner);
-                            destination.dock(mission.army.clone());
+                            if mission.objective != Icon::Spy {
+                                // Take control of the planet and dock the surviving fleet
+                                destination.controlled = Some(mission.owner);
+                                destination.dock(mission.army.clone());
+                            }
                         }
                     } else {
                         // Merge surviving defenders with planet
