@@ -183,6 +183,7 @@ pub fn draw_map(
             .observe(
                 move |event: On<Pointer<Click>>,
                       mut state: ResMut<UiState>,
+                      settings: Res<Settings>,
                       map: Res<Map>,
                       player: Res<Player>| {
                     let planet = map.get(planet_id);
@@ -197,6 +198,7 @@ pub fn draw_map(
                         state.mission = true;
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info = Mission::new(
+                            settings.turn,
                             player.id,
                             map.get(
                                 state
@@ -224,7 +226,7 @@ pub fn draw_map(
                             ..default()
                         },
                         TextColor(WHITE.into()),
-                        Transform::from_xyz(-4., Planet::SIZE * 0.6, 0.9),
+                        Transform::from_xyz(0., Planet::SIZE * 0.6, 0.9),
                         Pickable::IGNORE,
                         PlanetNameCmp,
                     ));
@@ -293,6 +295,7 @@ pub fn draw_map(
                                         } else if icon == Icon::Fleet {
                                             state.mission = true;
                                             state.mission_info = Mission::new(
+                                                settings.turn,
                                                 player.id,
                                                 map.get(planet_id),
                                                 map.get(
@@ -333,6 +336,7 @@ pub fn draw_map(
                                             let origin = map.get(origin_id);
                                             state.mission_info =
                                                 Mission::new(
+                                                    settings.turn,
                                                     player.id,
                                                     map.get(origin_id),
                                                     map.get(planet_id),

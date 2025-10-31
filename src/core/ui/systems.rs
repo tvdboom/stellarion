@@ -236,10 +236,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
 fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(50.);
-        ui.add_image(images.get("overview"), [20., 20.]);
+    ui.vertical_centered(|ui| {
         ui.small(&planet.name);
     });
 
@@ -891,6 +888,7 @@ fn draw_new_mission(
 
                         if response.clicked() {
                             let mission = Mission::new(
+                                settings.turn,
                                 player.id,
                                 origin,
                                 destination,
@@ -974,9 +972,24 @@ fn draw_active_missions(
                     let destination = map.get(mission.destination);
 
                     let resp1 = ui.cell(70., |ui| {
-                        ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
+                        let resp1 = ui
+                            .add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
                             .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_cursor(CursorIcon::PointingHand);
+
+                        let size = [20., 20.];
+                        let pos = resp1.rect.right_top() - egui::vec2(size[0], 0.);
+
+                        let resp = ui.put(
+                            egui::Rect::from_min_size(pos, size.into()),
+                            egui::Image::new(SizedTexture::new(images.get("logs"), size)),
+                        );
+
+                        resp.on_hover_ui(|ui| {
+                            ui.small(format!("Mission logs\n===========\n\n{}", mission.logs));
+                        });
+
+                        resp1
                     });
 
                     let resp2 = ui.cell(100., |ui| {
@@ -1118,15 +1131,17 @@ fn draw_mission_reports(
                                 [40., 40.],
                             );
 
-                            let size = [20., 20.];
-                            let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
-                            ui.put(
-                                egui::Rect::from_min_size(pos, size.into()),
-                                egui::Image::new(SizedTexture::new(
-                                    images.get(report.image(player)),
-                                    size,
-                                )),
-                            );
+                            if report.logs.is_some() {
+                                let size = [20., 20.];
+                                let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
+                                ui.put(
+                                    egui::Rect::from_min_size(pos, size.into()),
+                                    egui::Image::new(SizedTexture::new(
+                                        images.get(report.image(player)),
+                                        size,
+                                    )),
+                                );
+                            }
                         });
                     });
 
@@ -1168,7 +1183,11 @@ fn draw_mission_reports(
             let destination = map.get(report.mission.destination);
 
             ui.horizontal(|ui| {
-                let action = |r1: Response, r2: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
+                let action = |r1: Response,
+                              r2: Response,
+                              planet: &Planet,
+                              h: &mut bool,
+                              state: &mut UiState| {
                     if r1.clicked() || r2.clicked() {
                         state.planet_selected = Some(planet.id);
                         state.to_selected = true;
@@ -1176,7 +1195,9 @@ fn draw_mission_reports(
                         if player.owns(planet) {
                             state.mission_info.origin = planet.id;
                         }
-                    } else if (r1.secondary_clicked() || r2.secondary_clicked()) && !planet.is_destroyed {
+                    } else if (r1.secondary_clicked() || r2.secondary_clicked())
+                        && !planet.is_destroyed
+                    {
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info.origin = state
                             .planet_selected
@@ -1197,9 +1218,27 @@ fn draw_mission_reports(
                     let destination = map.get(report.mission.destination);
 
                     let resp1 = ui.cell(70., |ui| {
-                        ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
+                        let resp1 = ui
+                            .add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
                             .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_cursor(CursorIcon::PointingHand);
+
+                        let size = [20., 20.];
+                        let pos = resp1.rect.right_top() - egui::vec2(size[0], 0.);
+
+                        let resp = ui.put(
+                            egui::Rect::from_min_size(pos, size.into()),
+                            egui::Image::new(SizedTexture::new(images.get("logs"), size)),
+                        );
+
+                        resp.on_hover_ui(|ui| {
+                            ui.small(format!(
+                                "Mission logs\n===========\n\n{}",
+                                report.mission.logs
+                            ));
+                        });
+
+                        resp1
                     });
 
                     let resp2 = ui.cell(100., |ui| {
@@ -1249,17 +1288,20 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    let size = [30., 30.];
-                    let pos = resp4.rect.right_top() - egui::vec2(size[0], 0.);
-
-                    let resp5 = ui.put(
-                        egui::Rect::from_min_size(pos, size.into()),
-                        egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
-                    );
-
                     if let Some(logs) = &report.logs {
-                        resp5.on_hover_ui(|ui| {
-                            ui.small(logs);
+                        let size = [30., 30.];
+                        let pos = resp4.rect.right_top() - egui::vec2(size[0], 0.);
+
+                        let resp = ui.put(
+                            egui::Rect::from_min_size(pos, size.into()),
+                            egui::Image::new(SizedTexture::new(
+                                images.get(report.image(player)),
+                                size,
+                            )),
+                        );
+
+                        resp.on_hover_ui(|ui| {
+                            ui.small(format!("Combat logs\n===========\n\n{logs}"));
                         });
                     }
 
@@ -1284,7 +1326,7 @@ fn draw_mission_reports(
                     let army = match report.mission.objective {
                         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
                         Icon::Spy => vec![Unit::probe()],
-                        _ => Unit::ships()
+                        _ => Unit::ships(),
                     };
 
                     draw_army_grid(ui, "attacker", &army, report, player, destination, images);
@@ -1294,8 +1336,10 @@ fn draw_mission_reports(
                             ui.spacing_mut().item_spacing.x = 4.;
                             ui.add_image(images.get(Icon::Spy.to_lowername()), [15., 15.]);
                             ui.small(format!("Scouts: {}", report.scout_probes));
-                        }).response.on_hover_ui(|ui| {
-                            ui.small("Number of Probes that returned to the origin planet after the first round of combat.");
+                        })
+                        .response
+                        .on_hover_ui(|ui| {
+                            ui.small("Number of Probes that left combat after the first round.");
                         });
                     }
                 });
@@ -1364,16 +1408,9 @@ fn draw_mission(
     });
 
     match state.mission_tab {
-        MissionTab::NewMission => draw_new_mission(
-            ui,
-            send_mission,
-            settings,
-            state,
-            map,
-            player,
-            is_hovered,
-            images,
-        ),
+        MissionTab::NewMission => {
+            draw_new_mission(ui, send_mission, settings, state, map, player, is_hovered, images)
+        },
         MissionTab::ActiveMissions => draw_active_missions(
             ui,
             missions.iter().filter(|m| m.owner == player.id).collect(),
@@ -1479,12 +1516,7 @@ fn draw_mission_info_hover(
     });
 }
 
-fn draw_unit_hover(
-    ui: &mut Ui,
-    unit: &Unit,
-    msg: Option<String>,
-    images: &ImageIds,
-) {
+fn draw_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &ImageIds) {
     ui.horizontal(|ui| {
         ui.set_width(700.);
 
@@ -2011,16 +2043,7 @@ pub fn draw_ui(
                         (width * 0.5 - window_w * 0.5, height * 0.995 - window_h),
                         (window_w, window_h),
                         &images,
-                        |ui| {
-                            draw_shop(
-                                ui,
-                                &mut state,
-                                &settings,
-                                &mut player,
-                                planet,
-                                &images,
-                            )
-                        },
+                        |ui| draw_shop(ui, &mut state, &settings, &mut player, planet, &images),
                     );
                 }
             }

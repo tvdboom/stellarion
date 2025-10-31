@@ -87,6 +87,7 @@ pub enum ServerMessage {
         map: Map,
     },
     StartTurn {
+        turn: usize,
         map: Map,
         player: Player,
         missions: Missions,
@@ -263,7 +264,7 @@ pub fn client_receive_message(
     mut commands: Commands,
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut client: ResMut<RenetClient>,
-    mut game_settings: ResMut<Settings>,
+    mut settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
 ) {
@@ -280,7 +281,7 @@ pub fn client_receive_message(
                 home_planet,
                 map,
             } => {
-                *game_settings = game_settings.clone();
+                *settings = settings.clone();
 
                 commands.insert_resource(UiState::default());
                 commands.insert_resource(PreviousEndTurnState::default());
@@ -296,7 +297,7 @@ pub fn client_receive_message(
                 player,
                 missions,
             } => {
-                game_settings.turn = turn;
+                settings.turn = turn;
 
                 commands.insert_resource(UiState::default());
                 commands.insert_resource(PreviousEndTurnState::default());
@@ -307,10 +308,12 @@ pub fn client_receive_message(
                 next_app_state.set(AppState::Game);
             },
             ServerMessage::StartTurn {
+                turn,
                 map,
                 player,
                 missions,
             } => {
+                settings.turn = turn;
                 commands.insert_resource(map);
                 commands.insert_resource(player);
                 commands.insert_resource(missions);

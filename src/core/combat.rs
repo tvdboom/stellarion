@@ -65,24 +65,24 @@ pub struct MissionReport {
 
 impl MissionReport {
     pub fn winner(&self) -> Option<ClientId> {
-        if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
-            Some(self.mission.owner)
-        } else {
-            self.defender
+        match self.mission.objective {
+            Icon::Deploy => None,
+            Icon::Spy if self.scout_probes > 0 => Some(self.mission.owner),
+            _ => {
+                if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
+                    Some(self.mission.owner)
+                } else {
+                    self.defender
+                }
+            },
         }
     }
 
     pub fn image(&self, player: &Player) -> &str {
-        match self.mission.objective {
-            Icon::Deploy | Icon::MissileStrike => "draw",
-            Icon::Spy if self.scout_probes > 0 => "draw",
-            _ => {
-                if self.winner() == Some(player.id) {
-                    "win"
-                } else {
-                    "lose"
-                }
-            },
+        if self.winner() == Some(player.id) {
+            "win"
+        } else {
+            "lose"
         }
     }
 }
@@ -168,7 +168,7 @@ pub fn combat(
         }
     }
 
-    let mut logs = "Combat logs\n===========\n\n".to_string();
+    let mut logs = String::new();
 
     let mut round = 1;
     let mut returning_probes = 0;

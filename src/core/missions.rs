@@ -55,10 +55,12 @@ pub struct Mission {
     pub army: Army,
     pub combat_probes: bool,
     pub jump_gate: bool,
+    pub logs: String,
 }
 
 impl Mission {
     pub fn new(
+        turn: usize,
         owner: ClientId,
         origin: &Planet,
         destination: &Planet,
@@ -73,14 +75,15 @@ impl Mission {
             origin: origin.id,
             destination: destination.id,
             position: {
-                // Start a bit outside the origin planet to be able to see the image
+                // Start at the edge of the origin planet
                 let direction = (-origin.position + destination.position).normalize();
-                origin.position + direction * Planet::SIZE
+                origin.position + direction * Planet::SIZE * 0.7
             },
             objective,
             army,
             combat_probes: probes_stay,
             jump_gate,
+            logs: format!("- ({turn}) Mission send to {}.", destination.name),
         }
     }
 
@@ -93,8 +96,8 @@ impl Mission {
     }
 
     pub fn distance(&self, map: &Map) -> f32 {
-        // Minus 1 since the mission ends a bit outside the destination planets
-        self.position.distance(map.get(self.destination).position) / Planet::SIZE - 1.
+        // Minus 0.7 since the mission ends at the edge of the planet
+        (self.position.distance(map.get(self.destination).position) / Planet::SIZE - 0.7).max(0.)
     }
 
     pub fn speed(&self) -> f32 {
@@ -153,7 +156,7 @@ impl Mission {
         self.army.iter().map(|(u, c)| u.production() * c).sum()
     }
 
-    pub fn merge(&mut self, other: Mission) {
+    pub fn merge(&mut self, other: &Mission) {
         // Select objective based on priority
         self.objective =
             [self.objective, other.objective].into_iter().max_by_key(|o| o.priority()).unwrap();

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
@@ -218,13 +216,13 @@ impl Combat for Ship {
             Ship::Probe => 1.8,
             Ship::ColonyShip => 0.5,
             Ship::LightFighter => 1.5,
-            Ship::HeavyFighter => 1.2,
+            Ship::HeavyFighter => 1.3,
             Ship::Destroyer => 1.2,
-            Ship::Cruiser => 1.0,
-            Ship::Bomber => 0.6,
-            Ship::Battleship => 0.8,
-            Ship::Dreadnought => 0.7,
-            Ship::WarSun => 0.5,
+            Ship::Cruiser => 1.1,
+            Ship::Bomber => 0.8,
+            Ship::Battleship => 0.9,
+            Ship::Dreadnought => 0.8,
+            Ship::WarSun => 0.7,
         }
     }
 

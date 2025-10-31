@@ -72,8 +72,8 @@ impl FromWorld for WorldAssets {
             ("info", assets.load("images/icons/info.png")),
             ("message", assets.load("images/icons/message.png")),
             ("win", assets.load("images/icons/win.png")),
-            ("draw", assets.load("images/icons/draw.png")),
             ("lose", assets.load("images/icons/lose.png")),
+            ("logs", assets.load("images/icons/logs.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),
