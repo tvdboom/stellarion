@@ -44,7 +44,7 @@ impl Player {
     }
 
     pub fn controls(&self, planet: &Planet) -> bool {
-        planet.controlled == Some(self.id)
+        planet.controlled() == Some(self.id)
     }
 
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {

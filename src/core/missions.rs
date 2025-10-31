@@ -172,7 +172,7 @@ impl Mission {
     /// else go to the nearest friendly planet
     pub fn check_origin(&self, map: &Map) -> PlanetId {
         let origin = map.get(self.origin);
-        if origin.controlled == Some(self.owner) {
+        if origin.controlled() == Some(self.owner) {
             origin.id
         } else {
             map.planets

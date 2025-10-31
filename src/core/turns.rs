@@ -59,7 +59,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
     // If the destination planet is friendly, the mission changes to deploy
     // (the planet could have been colonized by another mission)
     // Except missile strikes, which always attack the destination planet
-    if destination.controlled == Some(mission.owner)
+    if destination.controlled() == Some(mission.owner)
         && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike)
     {
         mission.objective = Icon::Deploy;
@@ -69,7 +69,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
     }
 
     // If deploying to a planet that's no longer under control, convert to attack
-    if destination.controlled != Some(mission.owner) && mission.objective == Icon::Deploy {
+    if destination.controlled() != Some(mission.owner) && mission.objective == Icon::Deploy {
         mission.objective = Icon::Attack;
         mission.logs.push_str(
             format!("\n- ({}) Objective changed to: {}.", turn, Icon::Attack.to_name()).as_str(),

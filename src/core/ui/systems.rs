@@ -273,43 +273,6 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     });
 }
 
-fn draw_fleet(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
-    ui.add_space(17.);
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(18.);
-        ui.add_image(images.get("fleet"), [25., 25.]);
-        ui.small("Fleet");
-    });
-
-    ui.add_space(10.);
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
-
-        ui.add_space(32.);
-
-        ui.vertical(|ui| {
-            for unit in Unit::ships().iter() {
-                let n = planet.army.amount(&unit);
-
-                ui.add_enabled_ui(n > 0, |ui| {
-                    let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-                    ui.add_text_on_image(n.to_string(), Color32::WHITE, response.rect);
-                })
-                .response
-                .on_hover_ui(|ui| {
-                    ui.small(unit.to_name());
-                })
-                .on_disabled_hover_ui(|ui| {
-                    ui.small(unit.to_name());
-                });
-            }
-        });
-    });
-}
-
 fn draw_report_overview(
     ui: &mut Ui,
     planet: &Planet,
@@ -351,7 +314,7 @@ fn draw_report_overview(
 
                     let n = report.surviving_defense.amount(unit);
 
-                    ui.add_enabled_ui(n > 0 || can_see, |ui| {
+                    ui.add_enabled_ui(n > 0 && can_see, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
                         ui.add_text_on_image(
                             if can_see {
@@ -395,8 +358,8 @@ fn draw_mission_fleet_hover(
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(5.);
+        ui.spacing_mut().item_spacing.x = 2.;
+        ui.add_space(10.);
         ui.add_image(images.get(mission.image(player)), [25., 25.]);
         ui.small("Mission");
     });
@@ -451,7 +414,7 @@ fn draw_new_mission(
 
     state.mission_info.owner = player.id;
 
-    if origin.controlled == destination.controlled {
+    if origin.controlled() == destination.controlled() {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
         state.mission_info.objective = Icon::default();
@@ -1885,7 +1848,7 @@ pub fn draw_ui(
         // Check whether there is a report on this planet
         let report = player.last_report(planet.id);
 
-        if player.owns(planet) {
+        if player.controls(planet) {
             let (window_w, window_h) = (205., 630.);
 
             draw_panel(
@@ -1903,27 +1866,6 @@ pub fn draw_ui(
                 (window_w, window_h),
                 &images,
                 |ui| draw_overview(ui, planet, &images),
-            );
-
-            !right_side
-        } else if player.controls(planet) && planet.has_fleet() {
-            let (window_w, window_h) = (110., 630.);
-
-            draw_panel(
-                &mut contexts,
-                "planet fleet",
-                "panel",
-                (
-                    if right_side {
-                        width * 0.998 - window_w
-                    } else {
-                        width * 0.002
-                    },
-                    height * 0.5 - window_h * 0.5,
-                ),
-                (window_w, window_h),
-                &images,
-                |ui| draw_fleet(ui, planet, &images),
             );
 
             !right_side

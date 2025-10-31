@@ -114,6 +114,14 @@ impl Planet {
         ]);
     }
 
+    pub fn controlled(&self) -> Option<ClientId> {
+        if self.has_fleet() {
+            self.controlled
+        } else {
+            None
+        }
+    }
+
     pub fn conquered(&mut self, client_id: ClientId) {
         self.owned = Some(client_id);
         self.controlled = Some(client_id);

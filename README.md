@@ -100,11 +100,11 @@ Things to keep in mind:
 - `w-a-s-d`: Move the map.
 - `scroll`: Zoom in/out the map.
 - `space`: Center the map on your home planet and select it.
-- `tab`: Cycle through your owned planets (if any selected).
+- `tab / mouse forward-backward`: Cycle through the shop/mission menu.
+- `ctrl + tab`: Cycle through your owned planets (if any selected).
 - `Q`: Toggle the audio settings.
 - `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.
 - `H`: Enable/disable information tooltips on hover.
 - `M`: Show/hide the shop panel.
 - `M`: Show/hide the mission panel.
-- `mouse forward/backward`: Cycle through the shop/mission menu.
