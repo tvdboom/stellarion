@@ -6,6 +6,8 @@ use crate::core::combat::MissionReport;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
+use crate::core::units::{Amount, Army, Unit};
+use crate::core::units::buildings::Building;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Player {
@@ -51,11 +53,24 @@ impl Player {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
-    pub fn last_report(&self, planet_id: PlanetId) -> Option<&MissionReport> {
-        self.reports.iter().rev().find(|r| {
-            r.defender != Some(self.id)
-                && r.mission.destination == planet_id
-                && r.mission.objective != Icon::MissileStrike
-        })
+    pub fn last_known_army(&self, id: PlanetId) -> Option<(usize, Army)> {
+        for r in self.reports.iter().rev() {
+            if r.mission.owner == self.id && r.mission.origin == id {
+                // Mission send by the player
+                return Some((r.mission.send, r.mission.origin_army.clone()))
+            } else if r.defender == Some(self.id) && r.mission.destination == id && r.surviving_defender.amount(&Unit::Building(Building::Mine)) > 0 {
+                // Player was the defender and owned the planet
+                return Some((r.turn, r.surviving_defender.clone()))
+            } else if r.defender != Some(self.id) && r.mission.destination == id {
+                // Player was the attacker and won the battle
+
+
+            }
+            // r.defender != Some(self.id)
+            //     && r.mission.destination == planet_id
+                // && r.mission.objective != Icon::MissileStrike)
+        }
+
+        None
     }
 }

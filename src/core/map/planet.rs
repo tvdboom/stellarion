@@ -97,7 +97,7 @@ impl Planet {
     }
 
     pub fn make_home_planet(&mut self, client_id: ClientId) {
-        self.conquered(client_id);
+        self.colonized(client_id);
         self.army = Army::from([
             (Unit::Building(Building::Mine), 1),
             (Unit::Building(Building::Shipyard), 1),
@@ -115,14 +115,16 @@ impl Planet {
     }
 
     pub fn controlled(&self) -> Option<ClientId> {
-        if self.has_fleet() {
+        if self.owned.is_some() {
+            self.owned
+        } else if self.has_fleet() {
             self.controlled
         } else {
             None
         }
     }
 
-    pub fn conquered(&mut self, client_id: ClientId) {
+    pub fn colonized(&mut self, client_id: ClientId) {
         self.owned = Some(client_id);
         self.controlled = Some(client_id);
     }

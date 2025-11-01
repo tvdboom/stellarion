@@ -110,7 +110,7 @@ fn draw_army_grid(
             let (survived, total) = if name == "attacker" {
                 (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
             } else {
-                (report.defense.amount(unit), report.surviving_defense.amount(unit))
+                (report.surviving_defender.amount(unit), report.planet.army.amount(unit))
             };
             let lost = total - survived;
 
@@ -233,20 +233,21 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     });
 }
 
-fn draw_overview(ui: &mut Ui, planet: &Planet, player: &Player, images: &ImageIds) {
+fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
-    ui.vertical_centered(|ui| {
-        ui.add_space(-15.);
-        ui.small(format!(
-            "{} {}",
-            if player.owns(planet) {
-                "🌍"
-            } else {
-                "🌌"
-            },
-            planet.name
-        ));
+    ui.horizontal(|ui| {
+        let text = &planet.name;
+        let size_x = ui
+            .painter()
+            .layout_no_wrap(text.clone(), TextStyle::Small.resolve(ui.style()), Color32::WHITE)
+            .size()
+            .x;
+
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space((ui.available_width() - size_x - 27.) * 0.5);
+        ui.add_image(images.get("overview"), [20., 20.]);
+        ui.small(text);
     });
 
     ui.add_space(10.);
@@ -288,8 +289,26 @@ fn draw_report_overview(
 ) {
     ui.add_space(17.);
 
-    ui.vertical_centered(|ui| {
-        ui.small(format!("{} ({})", planet.name, report.turn));
+    ui.horizontal(|ui| {
+        let text = format!("{} ({})", planet.name, report.turn);
+        let size_x = ui
+            .painter()
+            .layout_no_wrap(text.clone(), TextStyle::Small.resolve(ui.style()), Color32::WHITE)
+            .size()
+            .x;
+
+        ui.spacing_mut().item_spacing.x = 7.;
+        ui.add_space((ui.available_width() - size_x - 27.) * 0.5);
+        ui.add_image(images.get(report.mission.objective.to_lowername()), [20., 20.]);
+        ui.small(text);
+    })
+    .response
+    .on_hover_ui(|ui| {
+        ui.small(format!(
+            "Intelligence from a {} mission in turn {}.",
+            report.mission.objective.to_lowername(),
+            report.turn
+        ));
     });
 
     ui.add_space(10.);
@@ -307,7 +326,7 @@ fn draw_report_overview(
                     let can_see = report.winner() == Some(player.id)
                         || report.scout_probes > 10 * (unit.production() - 1);
 
-                    let n = report.surviving_defense.amount(unit);
+                    let n = report.surviving_defender.amount(unit);
 
                     ui.add_enabled_ui(n > 0 && can_see, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
@@ -947,6 +966,7 @@ fn draw_active_missions(
                         );
 
                         resp.on_hover_ui(|ui| {
+                            ui.set_min_width(350.);
                             ui.small(format!("Mission logs\n===========\n\n{}", mission.logs));
                         });
 
@@ -1193,6 +1213,7 @@ fn draw_mission_reports(
                         );
 
                         resp.on_hover_ui(|ui| {
+                            ui.set_min_width(350.);
                             ui.small(format!(
                                 "Mission logs\n===========\n\n{}",
                                 report.mission.logs
@@ -1262,6 +1283,7 @@ fn draw_mission_reports(
                         );
 
                         resp.on_hover_ui(|ui| {
+                            ui.set_min_width(350.);
                             ui.small(format!("Combat logs\n===========\n\n{logs}"));
                         });
                     }
@@ -1860,7 +1882,7 @@ pub fn draw_ui(
                 ),
                 (window_w, window_h),
                 &images,
-                |ui| draw_overview(ui, planet, &player, &images),
+                |ui| draw_overview(ui, planet, &images),
             );
 
             !right_side

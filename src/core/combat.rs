@@ -4,12 +4,18 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::map::icon::Icon;
+use crate::core::map::planet::Planet;
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
+
+pub enum Side {
+    Attacker,
+    Defender,
+}
 
 #[derive(EnumIter, Debug, PartialEq)]
 pub enum CombatStats {
@@ -51,15 +57,31 @@ impl Description for CombatStats {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MissionReport {
+    /// Turn the report was generated
     pub turn: usize,
+    
+    /// Mission that created the report
     pub mission: Mission,
-    pub defender: Option<ClientId>,
-    pub defense: Army,
+    
+    /// Planet as it was before the mission resolution
+    pub planet: Planet,
+    
+    /// Number of probes that left after one round of combat
     pub scout_probes: usize,
+    
+    /// Surviving units from the attacker
     pub surviving_attacker: Army,
-    pub surviving_defense: Army,
+    
+    /// Surviving units from the defender
+    pub surviving_defender: Army,
+    
+    /// Whether the planet was colonized
     pub planet_colonized: bool,
+    
+    /// Whether the planet was destroyed
     pub planet_destroyed: bool,
+    
+    /// Combat logs (if combat took place)
     pub logs: Option<String>,
 }
 
@@ -72,7 +94,7 @@ impl MissionReport {
                 if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
                     Some(self.mission.owner)
                 } else {
-                    self.defender
+                    self.planet.controlled
                 }
             },
         }
@@ -83,6 +105,23 @@ impl MissionReport {
             "win"
         } else {
             "lose"
+        }
+    }
+    
+    /// Return the amount of units from a side that survived
+    pub fn amount(&self, unit: &Unit, side: Side, player: &Player) -> Option<usize> {
+        match side {
+            Side::Attacker if self.mission.owner == player.id
+                || self.planet.owned == Some(player.id)
+                || self.winner() == Some(player.id) => {
+                Some(self.surviving_attacker.amount(unit))
+            },
+            Side::Defender if self.planet.controlled == Some(player.id)
+                || self.winner() == Some(player.id)
+                || self.scout_probes > 10 * (unit.production() - 1) => {
+                Some(self.surviving_defender.amount(unit))
+            },
+            _ => None,
         }
     }
 }
@@ -107,8 +146,7 @@ impl CombatUnit {
 pub fn combat(
     turn: usize,
     mission: &Mission,
-    defender: Option<ClientId>,
-    defense: &Army,
+    destination: &Planet,
 ) -> MissionReport {
     if mission.objective == Icon::Deploy {
         return MissionReport {
@@ -118,7 +156,7 @@ pub fn combat(
             defense: defense.clone(),
             scout_probes: 0,
             surviving_attacker: mission.army.clone(),
-            surviving_defense: defense.clone(),
+            surviving_defender: defense.clone(),
             planet_colonized: false,
             planet_destroyed: false,
             logs: None,
@@ -273,7 +311,7 @@ pub fn combat(
         defense: defense.clone(),
         scout_probes: returning_probes,
         surviving_attacker,
-        surviving_defense,
+        surviving_defender: surviving_defense,
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
         logs: Some(logs),

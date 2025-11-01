@@ -49,7 +49,9 @@ pub struct Mission {
     pub id: MissionId,
     pub owner: ClientId,
     pub origin: PlanetId,
+    pub origin_army: Army,
     pub destination: PlanetId,
+    pub send: usize,
     pub position: Vec2,
     pub objective: Icon,
     pub army: Army,
@@ -73,7 +75,9 @@ impl Mission {
             id: rand::random(),
             owner,
             origin: origin.id,
+            origin_army: origin.army.clone(),
             destination: destination.id,
+            send: turn,
             position: {
                 // Start at the edge of the origin planet
                 let direction = (-origin.position + destination.position).normalize();

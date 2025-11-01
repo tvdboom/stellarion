@@ -19,7 +19,7 @@ impl PlayAudioMsg {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            volume: -1.,
+            volume: -5.,
         }
     }
 }
