@@ -580,19 +580,20 @@ pub fn update_voronoi(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for (mut cell_v, cell_m, cell) in &mut cell_q {
-        let planet_id = cell.0;
+        let planet = map.get(cell.0);
 
         // Check if there is a mine on the planet according to the last available report,
-        // which means the planet is owned by someone
-        let report = player.last_report(planet_id);
+        // which means the planet is owned by someone (if not controlled by the player)
+        let report = player.last_report(planet.id);
         let mine = report
             .map(|r| r.surviving_defense.amount(&Unit::Building(Building::Mine)))
             .unwrap_or(0);
-        let visible = settings.show_cells && (player.owns(map.get(planet_id)) || mine > 0);
+        let visible =
+            settings.show_cells && (player.owns(planet) || (!player.controls(planet) && mine > 0));
 
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
-                material.color = if player.owns(map.get(planet_id)) {
+                material.color = if player.owns(planet) {
                     Color::srgba(0., 0.3, 0.5, 0.05)
                 } else {
                     Color::srgba(0.5, 0.1, 0., 0.05)

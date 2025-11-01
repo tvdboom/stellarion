@@ -233,14 +233,20 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     });
 }
 
-fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
+fn draw_overview(ui: &mut Ui, planet: &Planet, player: &Player, images: &ImageIds) {
     ui.add_space(17.);
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(50.);
-        ui.add_image(images.get("overview"), [20., 20.]);
-        ui.small(&planet.name);
+    ui.vertical_centered(|ui| {
+        ui.add_space(-15.);
+        ui.small(format!(
+            "{} {}",
+            if player.owns(planet) {
+                "🌍"
+            } else {
+                "🌌"
+            },
+            planet.name
+        ));
     });
 
     ui.add_space(10.);
@@ -282,19 +288,8 @@ fn draw_report_overview(
 ) {
     ui.add_space(17.);
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space(50.);
-        ui.add_image(images.get(report.mission.objective.to_lowername()), [20., 20.]);
+    ui.vertical_centered(|ui| {
         ui.small(format!("{} ({})", planet.name, report.turn));
-    })
-    .response
-    .on_hover_ui(|ui| {
-        ui.small(format!(
-            "Information from a {} mission in turn {}.",
-            report.mission.objective.to_lowername(),
-            report.turn
-        ));
     });
 
     ui.add_space(10.);
@@ -1865,7 +1860,7 @@ pub fn draw_ui(
                 ),
                 (window_w, window_h),
                 &images,
-                |ui| draw_overview(ui, planet, &images),
+                |ui| draw_overview(ui, planet, &player, &images),
             );
 
             !right_side

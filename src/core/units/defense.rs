@@ -91,14 +91,14 @@ impl Description for Defense {
 impl Price for Defense {
     fn price(&self) -> Resources {
         match self {
-            Defense::RocketLauncher => Resources::new(20, 0, 0),
-            Defense::LightLaser => Resources::new(15, 5, 0),
-            Defense::HeavyLaser => Resources::new(50, 20, 0),
-            Defense::GaussCannon => Resources::new(100, 100, 0),
-            Defense::IonCannon => Resources::new(150, 150, 100),
-            Defense::PlasmaTurret => Resources::new(250, 150, 150),
+            Defense::RocketLauncher => Resources::new(15, 0, 0),
+            Defense::LightLaser => Resources::new(10, 5, 0),
+            Defense::HeavyLaser => Resources::new(40, 10, 0),
+            Defense::GaussCannon => Resources::new(80, 80, 0),
+            Defense::IonCannon => Resources::new(130, 130, 100),
+            Defense::PlasmaTurret => Resources::new(220, 130, 130),
             Defense::AntiballisticMissile => Resources::new(80, 0, 20),
-            Defense::InterplanetaryMissile => Resources::new(125, 25, 100),
+            Defense::InterplanetaryMissile => Resources::new(105, 20, 100),
         }
     }
 }

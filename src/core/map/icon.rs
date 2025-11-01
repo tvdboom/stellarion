@@ -118,9 +118,8 @@ impl Description for Icon {
             },
             Icon::Spy => {
                 "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
-                origin planet after one round of combat. The more Probes you send, the more \
-                accurate the returned information will be. Spying missions aren't detected by \
-                the Sensor Phalanx."
+                origin planet after one round of combat. The more Probes return, the better the \
+                returned intelligence. Spying missions aren't detected by the Sensor Phalanx."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
@@ -133,10 +132,9 @@ impl Description for Icon {
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
                 if there are no enemy ships left, every War Sun will try to destroy the target \
-                planet with a 10% chance, decreased with 1% for every round afterwards. If combat \
-                ends and the planet isn't destroyed, the fleet docks. If the planet is destroyed, \
-                the fleet will return to the origin planet. A destroyed planet can not be colonized \
-                again."
+                planet with a 10% chance, decreased with 1% for every round afterwards. Regardless \
+                of the result, the fleet will return after combat. A destroyed planet can not be \
+                colonized again."
             },
             Icon::Deploy => "Send a fleet to another one of your planets.",
             _ => unreachable!(),
