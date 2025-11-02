@@ -137,19 +137,19 @@ pub fn check_keys(
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {
-        if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
-            state.shop = match &state.shop {
-                Shop::Buildings => Shop::Fleet,
-                Shop::Fleet => Shop::Defenses,
-                Shop::Defenses => Shop::Buildings,
-            };
-        } else if mouse.just_pressed(MouseButton::Back)
+        if mouse.just_pressed(MouseButton::Back)
             || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Defenses,
                 Shop::Fleet => Shop::Buildings,
                 Shop::Defenses => Shop::Fleet,
+            };
+        } else if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
+            state.shop = match &state.shop {
+                Shop::Buildings => Shop::Fleet,
+                Shop::Fleet => Shop::Defenses,
+                Shop::Defenses => Shop::Buildings,
             };
         }
     }

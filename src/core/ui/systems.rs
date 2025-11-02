@@ -13,6 +13,7 @@ use strum_macros::EnumIter;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
 use crate::core::combat::{CombatStats, MissionReport, Side};
+use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
@@ -105,6 +106,8 @@ fn draw_army_grid(
     };
 
     egui::Grid::new(name).striped(false).num_columns(2).spacing([8., 8.]).show(ui, |ui| {
+        let can_see = report.can_see(&side, player.id);
+
         for (i, unit) in army.iter().enumerate() {
             let (survived, total) = if side == Side::Attacker {
                 (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
@@ -113,12 +116,18 @@ fn draw_army_grid(
             };
             let lost = total - survived;
 
-            let text = if report.can_see(unit, &side, player.id) {
+            let text = if can_see {
                 if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
                     total.to_string()
                 }
+            } else if report.mission.owner == player.id
+                && side == Side::Defender
+                && report.scout_probes > (unit.production() - 1) * PROBES_PER_PRODUCTION_LEVEL
+            {
+                // Even if attacker lost combat, he can see enemy starting units with scouts
+                total.to_string()
             } else {
                 "?".to_string()
             };
@@ -400,6 +409,7 @@ fn draw_new_mission(
     map: &mut Map,
     player: &mut Player,
     is_hovered: bool,
+    keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
 ) {
     let origin = map.get(state.mission_info.origin);
@@ -840,7 +850,7 @@ fn draw_new_mission(
                             Color32::WHITE,
                         );
 
-                        if response.clicked() {
+                        if response.clicked() || (response.enabled() && keyboard.just_pressed(KeyCode::Enter)) {
                             let mission = Mission::new(
                                 settings.turn,
                                 player.id,
@@ -932,7 +942,7 @@ fn draw_active_missions(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         let size = [20., 20.];
-                        let pos = resp1.rect.right_top() - egui::vec2(size[0], 0.);
+                        let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
 
                         let resp = ui.put(
                             egui::Rect::from_min_size(pos, size.into()),
@@ -1177,7 +1187,7 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         let size = [20., 20.];
-                        let pos = resp1.rect.right_top() - egui::vec2(size[0], 0.);
+                        let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
 
                         let resp = ui.put(
                             egui::Rect::from_min_size(pos, size.into()),
@@ -1242,22 +1252,24 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    if let Some(logs) = &report.logs {
-                        let size = [30., 30.];
-                        let pos = resp4.rect.right_top() - egui::vec2(size[0], 0.);
+                    if report.can_see(&Side::Defender, player.id) {
+                        if let Some(logs) = &report.logs {
+                            let size = [20., 20.];
+                            let pos = resp4.rect.right_top() - egui::vec2(size[0] + 5., -5.);
 
-                        let resp = ui.put(
-                            egui::Rect::from_min_size(pos, size.into()),
-                            egui::Image::new(SizedTexture::new(
-                                images.get(report.image(player)),
-                                size,
-                            )),
-                        );
+                            let resp = ui.put(
+                                egui::Rect::from_min_size(pos, size.into()),
+                                egui::Image::new(SizedTexture::new(
+                                    images.get(report.image(player)),
+                                    size,
+                                )),
+                            );
 
-                        resp.on_hover_ui(|ui| {
-                            ui.set_min_width(350.);
-                            ui.small(format!("Combat logs\n===========\n\n{logs}"));
-                        });
+                            resp.on_hover_ui(|ui| {
+                                ui.set_min_width(350.);
+                                ui.small(format!("Combat logs\n===========\n\n{logs}"));
+                            });
+                        }
                     }
 
                     action(resp3, resp4, destination, &mut changed_hover, state);
@@ -1286,7 +1298,7 @@ fn draw_mission_reports(
 
                     draw_army_grid(ui, "attacker", &army, report, player, images);
 
-                    if report.scout_probes > 0 {
+                    if report.scout_probes > 0 && report.can_see(&Side::Attacker, player.id) {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.;
                             ui.add_image(images.get(Icon::Spy.to_lowername()), [15., 15.]);
@@ -1320,7 +1332,9 @@ fn draw_mission_reports(
                         }
                     });
 
-                    if report.planet_destroyed || report.planet_colonized {
+                    if (report.planet_destroyed || report.planet_colonized)
+                        && report.can_see(&Side::Defender, player.id)
+                    {
                         let (icon, label) = if report.planet_destroyed {
                             (Icon::Destroy, "Planet destroyed")
                         } else {
@@ -1349,6 +1363,7 @@ fn draw_mission(
     map: &mut Map,
     player: &mut Player,
     is_hovered: bool,
+    keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
 ) {
     ui.add_space(12.);
@@ -1362,9 +1377,17 @@ fn draw_mission(
     });
 
     match state.mission_tab {
-        MissionTab::NewMission => {
-            draw_new_mission(ui, send_mission, settings, state, map, player, is_hovered, images)
-        },
+        MissionTab::NewMission => draw_new_mission(
+            ui,
+            send_mission,
+            settings,
+            state,
+            map,
+            player,
+            is_hovered,
+            keyboard,
+            images,
+        ),
         MissionTab::ActiveMissions => draw_active_missions(
             ui,
             missions.iter().filter(|m| m.owner == player.id).collect(),
@@ -1803,6 +1826,7 @@ pub fn draw_ui(
     missions: Res<Missions>,
     mut state: ResMut<UiState>,
     settings: Res<Settings>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     images: Res<ImageIds>,
     window: Single<&Window>,
 ) {
@@ -1954,6 +1978,7 @@ pub fn draw_ui(
                     &mut map,
                     &mut player,
                     is_hovered,
+                    &keyboard,
                     &images,
                 )
             },

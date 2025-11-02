@@ -191,7 +191,12 @@ pub fn resolve_turn(
                                 .as_str(),
                             );
 
-                            let mut return_m = report.mission.clone();
+                            let mut return_m = Mission {
+                                id: rand::random(),
+                                destination: new_origin.id,
+                                objective: Icon::Deploy,
+                                ..report.mission.clone()
+                            };
                             return_m.logs.push_str(
                                 format!(
                                     "\n- ({}) Returning to planet {}.",
@@ -199,8 +204,6 @@ pub fn resolve_turn(
                                 )
                                 .as_str(),
                             );
-                            return_m.destination = new_origin.id;
-                            return_m.objective = Icon::Deploy;
                             new_missions.push(return_m);
                         } else {
                             // Send probes back that left combat after one round
@@ -238,9 +241,12 @@ pub fn resolve_turn(
                                 );
                             }
 
-                            let mut return_m = report.mission.clone();
-                            return_m.destination = new_origin.id;
-                            return_m.objective = Icon::Deploy;
+                            let mut return_m = Mission {
+                                id: rand::random(),
+                                destination: new_origin.id,
+                                objective: Icon::Deploy,
+                                ..report.mission.clone()
+                            };
                             return_m.logs.push_str(
                                 format!(
                                     "\n- ({}) Returning to planet {}.",
@@ -273,11 +279,9 @@ pub fn resolve_turn(
                                 destination.army.retain(|u, _| u.is_building());
                             }
 
-                            if mission.objective != Icon::Spy {
-                                // Take control of the planet and dock the surviving fleet
-                                destination.control(mission.owner);
-                                destination.dock(mission.army.clone());
-                            }
+                            // Take control of the planet and dock the surviving fleet
+                            destination.control(mission.owner);
+                            destination.dock(mission.army.clone());
                         }
                     } else {
                         // Merge surviving defenders with planet

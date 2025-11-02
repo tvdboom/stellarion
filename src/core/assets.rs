@@ -71,8 +71,9 @@ impl FromWorld for WorldAssets {
             ("user", assets.load("images/icons/user.png")),
             ("info", assets.load("images/icons/info.png")),
             ("message", assets.load("images/icons/message.png")),
-            ("win", assets.load("images/icons/win.png")),
-            ("lose", assets.load("images/icons/lose.png")),
+            ("won", assets.load("images/icons/won.png")),
+            ("lost", assets.load("images/icons/lost.png")),
+            ("eye", assets.load("images/icons/eye.png")),
             ("logs", assets.load("images/icons/logs.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),

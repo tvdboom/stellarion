@@ -3,6 +3,7 @@ use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::{MissionReport, Side};
+use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
@@ -75,6 +76,7 @@ impl Player {
                 }
             } else if r.mission.destination == id {
                 // Mission arrived at this planet
+                let can_see = r.can_see(&Side::Defender, self.id);
                 PlanetInfo {
                     turn: r.turn,
                     owner: r.destination_owned,
@@ -82,8 +84,16 @@ impl Player {
                         .iter()
                         .flatten()
                         .filter_map(|u| {
-                            r.can_see(u, &Side::Defender, self.id)
-                                .then_some((u.clone(), r.surviving_defender.amount(u)))
+                            if can_see {
+                                Some((u.clone(), r.surviving_defender.amount(u)))
+                            } else if r.mission.owner == self.id
+                                && r.scout_probes
+                                    > (u.production() - 1) * PROBES_PER_PRODUCTION_LEVEL
+                            {
+                                Some((u.clone(), r.planet.army.amount(u)))
+                            } else {
+                                None
+                            }
                         })
                         .collect(),
                 }

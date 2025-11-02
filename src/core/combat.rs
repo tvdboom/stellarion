@@ -92,8 +92,7 @@ pub struct MissionReport {
 impl MissionReport {
     pub fn winner(&self) -> Option<ClientId> {
         match self.mission.objective {
-            Icon::Deploy => None,
-            Icon::Spy if self.scout_probes > 0 => Some(self.mission.owner),
+            Icon::Spy if self.scout_probes > 0 => None,
             _ => {
                 if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
                     Some(self.mission.owner)
@@ -105,30 +104,24 @@ impl MissionReport {
     }
 
     pub fn image(&self, player: &Player) -> &str {
-        if self.winner() == Some(player.id) {
-            "win"
-        } else {
-            "lose"
+        match self.mission.objective {
+            Icon::MissileStrike => "won",
+            Icon::Spy if self.scout_probes > 0 => "eye",
+            _ if self.winner() == Some(player.id) => "won",
+            _ => "lost",
         }
     }
 
-    pub fn can_see(&self, unit: &Unit, side: &Side, player_id: ClientId) -> bool {
+    pub fn can_see(&self, side: &Side, player_id: ClientId) -> bool {
         match side {
-            Side::Attacker
-                if self.mission.owner == player_id
+            Side::Attacker => {
+                self.mission.owner == player_id
                     || self.planet.owned == Some(player_id)
-                    || self.winner() == Some(player_id) =>
-            {
-                true
-            },
-            Side::Defender
-                if self.planet.controlled() == Some(player_id)
                     || self.winner() == Some(player_id)
-                    || self.scout_probes > 10 * (unit.production() - 1) =>
-            {
-                true
             },
-            _ => false,
+            Side::Defender => {
+                self.planet.controlled() == Some(player_id) || self.winner() == Some(player_id)
+            },
         }
     }
 }
