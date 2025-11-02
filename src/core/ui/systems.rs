@@ -12,7 +12,7 @@ use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
-use crate::core::combat::{CombatStats, MissionReport};
+use crate::core::combat::{CombatStats, MissionReport, Side};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
@@ -96,25 +96,24 @@ fn draw_army_grid(
     army: &Vec<Unit>,
     report: &MissionReport,
     player: &Player,
-    destination: &Planet,
     images: &ImageIds,
 ) {
+    let side = if name == "attacker" {
+        Side::Attacker
+    } else {
+        Side::Defender
+    };
+
     egui::Grid::new(name).striped(false).num_columns(2).spacing([8., 8.]).show(ui, |ui| {
         for (i, unit) in army.iter().enumerate() {
-            // Whether the player can see the unit
-            let can_see = player.owns(&destination)
-                || report.winner() == Some(player.id)
-                || (name == "attacker" && report.mission.owner == player.id)
-                || (name != "attacker" && report.scout_probes > 10 * (unit.production() - 1));
-
-            let (survived, total) = if name == "attacker" {
+            let (survived, total) = if side == Side::Attacker {
                 (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
             } else {
                 (report.surviving_defender.amount(unit), report.planet.army.amount(unit))
             };
             let lost = total - survived;
 
-            let text = if can_see {
+            let text = if report.amount(unit, &side, player).is_some() {
                 if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
@@ -124,7 +123,7 @@ fn draw_army_grid(
                 "?".to_string()
             };
 
-            ui.add_enabled_ui(total > 0 || !can_see, |ui| {
+            ui.add_enabled_ui(text != "0", |ui| {
                 let response = ui
                     .add_image(images.get(unit.to_lowername()), [55., 55.])
                     .on_hover_ui(|ui| {
@@ -322,23 +321,15 @@ fn draw_report_overview(
 
             ui.vertical(|ui| {
                 for unit in units {
-                    // Whether the player can see the unit
-                    let can_see = report.winner() == Some(player.id)
-                        || report.scout_probes > 10 * (unit.production() - 1);
+                    let text = if let Some(n) = report.amount(unit, &Side::Defender, player) {
+                        n.to_string()
+                    } else {
+                        "?".to_string()
+                    };
 
-                    let n = report.surviving_defender.amount(unit);
-
-                    ui.add_enabled_ui(n > 0 && can_see, |ui| {
+                    ui.add_enabled_ui(text != "0", |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-                        ui.add_text_on_image(
-                            if can_see {
-                                n.to_string()
-                            } else {
-                                "?".to_string()
-                            },
-                            Color32::WHITE,
-                            response.rect,
-                        );
+                        ui.add_text_on_image(text, Color32::WHITE, response.rect);
                     })
                     .response
                     .on_hover_ui(|ui| {
@@ -1161,8 +1152,6 @@ fn draw_mission_reports(
             let report =
                 player.reports.iter().find(|r| state.mission_report == Some(r.mission.id)).unwrap();
 
-            let destination = map.get(report.mission.destination);
-
             ui.horizontal(|ui| {
                 let action = |r1: Response,
                               r2: Response,
@@ -1312,7 +1301,7 @@ fn draw_mission_reports(
                         _ => Unit::ships(),
                     };
 
-                    draw_army_grid(ui, "attacker", &army, report, player, destination, images);
+                    draw_army_grid(ui, "attacker", &army, report, player, images);
 
                     if report.scout_probes > 0 {
                         ui.horizontal(|ui| {
@@ -1343,7 +1332,6 @@ fn draw_mission_reports(
                                 army,
                                 report,
                                 player,
-                                destination,
                                 images,
                             );
                         }

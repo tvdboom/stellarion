@@ -12,6 +12,7 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
 
+#[derive(PartialEq)]
 pub enum Side {
     Attacker,
     Defender,
@@ -59,28 +60,28 @@ impl Description for CombatStats {
 pub struct MissionReport {
     /// Turn the report was generated
     pub turn: usize,
-    
+
     /// Mission that created the report
     pub mission: Mission,
-    
+
     /// Planet as it was before the mission resolution
     pub planet: Planet,
-    
+
     /// Number of probes that left after one round of combat
     pub scout_probes: usize,
-    
+
     /// Surviving units from the attacker
     pub surviving_attacker: Army,
-    
+
     /// Surviving units from the defender
     pub surviving_defender: Army,
-    
+
     /// Whether the planet was colonized
     pub planet_colonized: bool,
-    
+
     /// Whether the planet was destroyed
     pub planet_destroyed: bool,
-    
+
     /// Combat logs (if combat took place)
     pub logs: Option<String>,
 }
@@ -107,18 +108,22 @@ impl MissionReport {
             "lose"
         }
     }
-    
+
     /// Return the amount of units from a side that survived
-    pub fn amount(&self, unit: &Unit, side: Side, player: &Player) -> Option<usize> {
+    pub fn amount(&self, unit: &Unit, side: &Side, player: &Player) -> Option<usize> {
         match side {
-            Side::Attacker if self.mission.owner == player.id
-                || self.planet.owned == Some(player.id)
-                || self.winner() == Some(player.id) => {
+            Side::Attacker
+                if self.mission.owner == player.id
+                    || self.planet.owned == Some(player.id)
+                    || self.winner() == Some(player.id) =>
+            {
                 Some(self.surviving_attacker.amount(unit))
             },
-            Side::Defender if self.planet.controlled == Some(player.id)
-                || self.winner() == Some(player.id)
-                || self.scout_probes > 10 * (unit.production() - 1) => {
+            Side::Defender
+                if self.planet.controlled == Some(player.id)
+                    || self.winner() == Some(player.id)
+                    || self.scout_probes > 10 * (unit.production() - 1) =>
+            {
                 Some(self.surviving_defender.amount(unit))
             },
             _ => None,
@@ -143,11 +148,7 @@ impl CombatUnit {
     }
 }
 
-pub fn combat(
-    turn: usize,
-    mission: &Mission,
-    destination: &Planet,
-) -> MissionReport {
+pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionReport {
     if mission.objective == Icon::Deploy {
         return MissionReport {
             turn,

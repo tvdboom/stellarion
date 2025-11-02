@@ -378,7 +378,7 @@ pub fn start_turn(
                     },
                     Icon::Colonize if report.planet_colonized => {
                         if report.mission.owner == player.id {
-                            if report.defender.is_none() {
+                            if !report.planet.has_buildings() {
                                 message.write(MessageMsg::info(format!(
                                     "Planet {} has been colonized.",
                                     destination.name
