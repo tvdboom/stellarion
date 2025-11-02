@@ -2,19 +2,16 @@ use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
-use crate::core::combat::MissionReport;
-use crate::core::map::icon::Icon;
+use crate::core::combat::{MissionReport, Side};
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::missions::Mission;
 use crate::core::resources::Resources;
-use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
 pub struct PlanetInfo {
     pub turn: usize,
     pub owner: Option<ClientId>,
-    pub controlled: Option<ClientId>,
     pub army: Army,
-    pub objective: Icon,
 }
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
@@ -61,29 +58,53 @@ impl Player {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
-    pub fn last_info(&self, id: PlanetId) -> Option<PlanetInfo> {
-        let mut last_report = None;
-        for r in self.reports.iter().rev() {
-            if r.mission.owner == self.id && r.mission.origin == id {
-                // Mission send by the player
-                last_report = Some((r.mission.send, r.mission.origin_army.clone()));
-            } else if r.planet.controlled == Some(self.id)
-                && r.mission.destination == id
-                && r.surviving_defender.amount(&Unit::Building(Building::Mine)) > 0
-            {
-                // Player was the defender and owned the planet
-                last_report = Some((r.turn, r.surviving_defender.clone()));
-            } else if r.planet.controlled != Some(self.id)
-                && r.mission.destination == id
-                && 
-            {
-                // Player was the attacker and won the battle
-            }
-            // r.defender != Some(self.id)
-            //     && r.mission.destination == planet_id
-            // && r.mission.objective != Icon::MissileStrike)
+    pub fn last_info(&self, id: PlanetId, missions: &Vec<Mission>) -> Option<PlanetInfo> {
+        let mut reports = vec![];
+
+        for r in self.reports.iter() {
+            reports.push(if r.mission.origin == id && r.mission.owner == self.id {
+                // Mission send from this planet
+                PlanetInfo {
+                    turn: r.mission.send,
+                    owner: r.planet.owned,
+                    army: Unit::all()
+                        .iter()
+                        .flatten()
+                        .map(|u| (*u, r.mission.origin_army.amount(u) - r.mission.army.amount(&u)))
+                        .collect(),
+                }
+            } else if r.mission.destination == id {
+                // Mission arrived at this planet
+                PlanetInfo {
+                    turn: r.turn,
+                    owner: r.destination_owned,
+                    army: Unit::all()
+                        .iter()
+                        .flatten()
+                        .filter_map(|u| {
+                            r.can_see(u, &Side::Defender, self.id)
+                                .then_some((u.clone(), r.surviving_defender.amount(u)))
+                        })
+                        .collect(),
+                }
+            } else {
+                continue;
+            });
         }
 
-        None
+        // Add missions that were sent from the planet but haven't arrived yet
+        reports.extend(missions.into_iter().filter_map(|m| {
+            (m.owner == self.id && m.origin == id).then_some(PlanetInfo {
+                turn: m.send,
+                owner: m.origin_owned,
+                army: Unit::all()
+                    .iter()
+                    .flatten()
+                    .map(|u| (u.clone(), m.origin_army.amount(u) - m.army.amount(u)))
+                    .collect(),
+            })
+        }));
+
+        reports.into_iter().max_by_key(|i| i.turn)
     }
 }

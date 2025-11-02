@@ -113,7 +113,7 @@ fn draw_army_grid(
             };
             let lost = total - survived;
 
-            let text = if report.can_see(unit, &side, player) {
+            let text = if report.can_see(unit, &side, player.id) {
                 if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
@@ -279,12 +279,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     });
 }
 
-fn draw_report_overview(
-    ui: &mut Ui,
-    planet: &Planet,
-    info: &PlanetInfo,
-    images: &ImageIds,
-) {
+fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images: &ImageIds) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -295,18 +290,12 @@ fn draw_report_overview(
             .size()
             .x;
 
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space((ui.available_width() - size_x - 27.) * 0.5);
-        ui.add_image(images.get(info.objective.to_lowername()), [20., 20.]);
+        ui.add_space((ui.available_width() - size_x) * 0.5);
         ui.small(text);
     })
     .response
     .on_hover_ui(|ui| {
-        ui.small(format!(
-            "Intelligence from a {} mission in turn {}.",
-            info.objective.to_lowername(),
-            info.turn
-        ));
+        ui.small(format!("Intelligence from turn {}.", info.turn));
     });
 
     ui.add_space(10.);
@@ -438,22 +427,18 @@ fn draw_new_mission(
     ui.horizontal_top(|ui| {
         ui.add_space(85.);
 
-        let action = |r1: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
-            if r1.clicked() {
+        let action = |r: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
+            if r.clicked() {
                 state.planet_selected = Some(planet.id);
                 state.to_selected = true;
                 state.mission = false;
                 if player.owns(planet) {
                     state.mission_info.origin = planet.id;
                 }
-            } else if r1.secondary_clicked() && !planet.is_destroyed {
+            } else if r.secondary_clicked() && !planet.is_destroyed {
                 state.mission_tab = MissionTab::NewMission;
-                state.mission_info.origin = state
-                    .planet_selected
-                    .filter(|&p| player.owns(map.get(p)))
-                    .unwrap_or(player.home_planet);
                 state.mission_info.destination = planet.id;
-            } else if r1.hovered() {
+            } else if r.hovered() {
                 state.planet_hover = Some(planet.id);
                 *h = true;
             }
@@ -474,7 +459,6 @@ fn draw_new_mission(
                     ui.vertical(|ui| {
                         ui.add_space(15.);
                         ComboBox::from_id_salt("origin")
-                            .height(50.)
                             .selected_text(&map.get(state.mission_info.origin).name)
                             .show_ui(ui, |ui| {
                                 for planet in map.planets.iter().filter(|p| player.controls(p)).sorted_by(|a, b| a.name.cmp(&b.name)) {
@@ -535,7 +519,7 @@ fn draw_new_mission(
 
                 let response = ui.cell(70., |ui| {
                     ui.add_image(images.get(format!("planet{}", destination.image)), [70., 70.])
-                        .interact(Sense::hover())
+                        .interact(Sense::click())
                         .on_hover_cursor(CursorIcon::PointingHand)
                 });
 
@@ -1850,7 +1834,7 @@ pub fn draw_ui(
         let right_side = planet_pos.x < width * 0.5;
 
         // Check whether there is a report on this planet
-        let info = player.last_info(planet.id);
+        let info = player.last_info(planet.id, &missions.0);
 
         if player.controls(planet) {
             let (window_w, window_h) = (205., 630.);

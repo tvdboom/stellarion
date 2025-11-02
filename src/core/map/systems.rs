@@ -576,13 +576,15 @@ pub fn update_voronoi(
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
+    missions: Res<Missions>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for (mut cell_v, cell_m, cell) in &mut cell_q {
         let planet = map.get(cell.0);
 
-        let info = player.last_info(planet.id);
-        let visible = settings.show_cells && (player.owns(planet) || info.is_some_and(|i| i.owner.is_some()));
+        let info = player.last_info(planet.id, &missions.0);
+        let visible =
+            settings.show_cells && (player.owns(planet) || info.is_some_and(|i| i.owner.is_some()));
 
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
@@ -605,7 +607,7 @@ pub fn update_voronoi(
     let mut counts_own = HashMap::new();
 
     for (_, _, edge) in &edge_q {
-        let info = player.last_info(edge.planet);
+        let info = player.last_info(edge.planet, &missions.0);
         if player.owns(map.get(edge.planet)) {
             *counts_own.entry(edge.key).or_default() += 1;
         } else if info.is_some_and(|i| i.owner.is_some()) {

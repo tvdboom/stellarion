@@ -284,6 +284,9 @@ pub fn resolve_turn(
                         destination.army = report.surviving_defender.clone();
                     }
 
+                    // Update the ownership in the report
+                    report.destination_owned = destination.owned;
+
                     // Attach mission report to relevant players
                     all_players
                         .iter_mut()

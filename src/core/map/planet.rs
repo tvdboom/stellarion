@@ -128,7 +128,7 @@ impl Planet {
         self.owned = Some(client_id);
         self.controlled = Some(client_id);
     }
-    
+
     pub fn control(&mut self, client_id: ClientId) {
         self.controlled = Some(client_id);
         if self.owned != Some(client_id) {

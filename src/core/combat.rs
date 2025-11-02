@@ -82,6 +82,9 @@ pub struct MissionReport {
     /// Whether the planet was destroyed
     pub planet_destroyed: bool,
 
+    /// Owner of the planet after mission resolution
+    pub destination_owned: Option<ClientId>,
+
     /// Combat logs (if combat took place)
     pub logs: Option<String>,
 }
@@ -109,18 +112,18 @@ impl MissionReport {
         }
     }
 
-    pub fn can_see(&self, unit: &Unit, side: &Side, player: &Player) -> bool {
+    pub fn can_see(&self, unit: &Unit, side: &Side, player_id: ClientId) -> bool {
         match side {
             Side::Attacker
-                if self.mission.owner == player.id
-                    || self.planet.owned == Some(player.id)
-                    || self.winner() == Some(player.id) =>
+                if self.mission.owner == player_id
+                    || self.planet.owned == Some(player_id)
+                    || self.winner() == Some(player_id) =>
             {
                 true
             },
             Side::Defender
-                if self.planet.controlled == Some(player.id)
-                    || self.winner() == Some(player.id)
+                if self.planet.controlled() == Some(player_id)
+                    || self.winner() == Some(player_id)
                     || self.scout_probes > 10 * (unit.production() - 1) =>
             {
                 true
@@ -158,6 +161,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             surviving_defender: destination.army.clone(),
             planet_colonized: false,
             planet_destroyed: false,
+            destination_owned: destination.owned,
             logs: None,
         };
     }
@@ -169,7 +173,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
         .collect();
 
-    let mut defend_army: Vec<CombatUnit> = destination.army
+    let mut defend_army: Vec<CombatUnit> = destination
+        .army
         .iter()
         .filter(|(u, _)| {
             !u.is_building()
@@ -180,7 +185,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .collect();
 
     // Bring missiles down with antiballistic
-    let mut n_antiballistic = destination.army
+    let mut n_antiballistic = destination
+        .army
         .iter()
         .filter_map(|(u, c)| (*u == Unit::Defense(Defense::AntiballisticMissile)).then_some(c))
         .count();
@@ -312,6 +318,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         surviving_defender: surviving_defense,
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
+        destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         logs: Some(logs),
     }
 }
