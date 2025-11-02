@@ -24,7 +24,6 @@ use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 use crate::utils::NameFromEnum;
@@ -582,14 +581,8 @@ pub fn update_voronoi(
     for (mut cell_v, cell_m, cell) in &mut cell_q {
         let planet = map.get(cell.0);
 
-        // Check if there is a mine on the planet according to the last available report,
-        // which means the planet is owned by someone (if not controlled by the player)
-        let report = player.last_report(planet.id);
-        let mine = report
-            .map(|r| r.surviving_defense.amount(&Unit::Building(Building::Mine)))
-            .unwrap_or(0);
-        let visible =
-            settings.show_cells && (player.owns(planet) || (!player.controls(planet) && mine > 0));
+        let info = player.last_info(planet.id);
+        let visible = settings.show_cells && (player.owns(planet) || info.is_some_and(|i| i.owner.is_some()));
 
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
@@ -612,12 +605,10 @@ pub fn update_voronoi(
     let mut counts_own = HashMap::new();
 
     for (_, _, edge) in &edge_q {
-        let report = player.last_report(edge.planet);
-        let mine = report.map(|r| r.surviving_defense.amount(&Unit::Building(Building::Mine)));
-
+        let info = player.last_info(edge.planet);
         if player.owns(map.get(edge.planet)) {
             *counts_own.entry(edge.key).or_default() += 1;
-        } else if mine.unwrap_or_default() > 0 {
+        } else if info.is_some_and(|i| i.owner.is_some()) {
             *counts_enemy.entry(edge.key).or_default() += 1;
         }
     }

@@ -9,6 +9,14 @@ use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
+pub struct PlanetInfo {
+    pub turn: usize,
+    pub owner: Option<ClientId>,
+    pub controlled: Option<ClientId>,
+    pub army: Army,
+    pub objective: Icon,
+}
+
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: ClientId,
@@ -53,7 +61,7 @@ impl Player {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
-    pub fn last_known_army(&self, id: PlanetId) -> Option<(usize, Army)> {
+    pub fn last_info(&self, id: PlanetId) -> Option<PlanetInfo> {
         let mut last_report = None;
         for r in self.reports.iter().rev() {
             if r.mission.owner == self.id && r.mission.origin == id {

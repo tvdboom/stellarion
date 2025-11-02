@@ -252,7 +252,7 @@ pub fn resolve_turn(
                         } else {
                             if report.planet_colonized {
                                 *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
-                                destination.colonized(mission.owner);
+                                destination.colonize(mission.owner);
 
                                 report.mission.logs.push_str(
                                     format!(
@@ -275,10 +275,7 @@ pub fn resolve_turn(
 
                             if mission.objective != Icon::Spy {
                                 // Take control of the planet and dock the surviving fleet
-                                destination.controlled = Some(mission.owner);
-                                if destination.owned != Some(mission.owner) {
-                                    destination.owned = None;
-                                }
+                                destination.control(mission.owner);
                                 destination.dock(mission.army.clone());
                             }
                         }

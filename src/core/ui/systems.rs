@@ -18,7 +18,7 @@ use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::PlanetCmp;
 use crate::core::missions::{Mission, MissionId, Missions, SendMissionMsg};
-use crate::core::player::Player;
+use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::aesthetics::Aesthetics;
@@ -113,7 +113,7 @@ fn draw_army_grid(
             };
             let lost = total - survived;
 
-            let text = if report.amount(unit, &side, player).is_some() {
+            let text = if report.can_see(unit, &side, player) {
                 if lost > 0 {
                     format!("{lost}/{total}")
                 } else {
@@ -282,14 +282,13 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 fn draw_report_overview(
     ui: &mut Ui,
     planet: &Planet,
-    report: &MissionReport,
-    player: &Player,
+    info: &PlanetInfo,
     images: &ImageIds,
 ) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
-        let text = format!("{} ({})", planet.name, report.turn);
+        let text = format!("{} ({})", planet.name, info.turn);
         let size_x = ui
             .painter()
             .layout_no_wrap(text.clone(), TextStyle::Small.resolve(ui.style()), Color32::WHITE)
@@ -298,15 +297,15 @@ fn draw_report_overview(
 
         ui.spacing_mut().item_spacing.x = 7.;
         ui.add_space((ui.available_width() - size_x - 27.) * 0.5);
-        ui.add_image(images.get(report.mission.objective.to_lowername()), [20., 20.]);
+        ui.add_image(images.get(info.objective.to_lowername()), [20., 20.]);
         ui.small(text);
     })
     .response
     .on_hover_ui(|ui| {
         ui.small(format!(
             "Intelligence from a {} mission in turn {}.",
-            report.mission.objective.to_lowername(),
-            report.turn
+            info.objective.to_lowername(),
+            info.turn
         ));
     });
 
@@ -321,7 +320,7 @@ fn draw_report_overview(
 
             ui.vertical(|ui| {
                 for unit in units {
-                    let text = if let Some(n) = report.amount(unit, &Side::Defender, player) {
+                    let text = if let Some(n) = info.army.get(unit) {
                         n.to_string()
                     } else {
                         "?".to_string()
@@ -1851,7 +1850,7 @@ pub fn draw_ui(
         let right_side = planet_pos.x < width * 0.5;
 
         // Check whether there is a report on this planet
-        let report = player.last_report(planet.id);
+        let info = player.last_info(planet.id);
 
         if player.controls(planet) {
             let (window_w, window_h) = (205., 630.);
@@ -1874,7 +1873,7 @@ pub fn draw_ui(
             );
 
             !right_side
-        } else if let Some(report) = report {
+        } else if let Some(info) = info {
             if !planet.is_destroyed {
                 let (window_w, window_h) = (205., 630.);
 
@@ -1892,7 +1891,7 @@ pub fn draw_ui(
                     ),
                     (window_w, window_h),
                     &images,
-                    |ui| draw_report_overview(ui, planet, report, &player, &images),
+                    |ui| draw_report_overview(ui, planet, &info, &images),
                 );
 
                 !right_side

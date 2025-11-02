@@ -109,24 +109,23 @@ impl MissionReport {
         }
     }
 
-    /// Return the amount of units from a side that survived
-    pub fn amount(&self, unit: &Unit, side: &Side, player: &Player) -> Option<usize> {
+    pub fn can_see(&self, unit: &Unit, side: &Side, player: &Player) -> bool {
         match side {
             Side::Attacker
                 if self.mission.owner == player.id
                     || self.planet.owned == Some(player.id)
                     || self.winner() == Some(player.id) =>
             {
-                Some(self.surviving_attacker.amount(unit))
+                true
             },
             Side::Defender
                 if self.planet.controlled == Some(player.id)
                     || self.winner() == Some(player.id)
                     || self.scout_probes > 10 * (unit.production() - 1) =>
             {
-                Some(self.surviving_defender.amount(unit))
+                true
             },
-            _ => None,
+            _ => false,
         }
     }
 }
@@ -153,11 +152,10 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         return MissionReport {
             turn,
             mission: mission.clone(),
-            defender,
-            defense: defense.clone(),
+            planet: destination.clone(),
             scout_probes: 0,
             surviving_attacker: mission.army.clone(),
-            surviving_defender: defense.clone(),
+            surviving_defender: destination.army.clone(),
             planet_colonized: false,
             planet_destroyed: false,
             logs: None,
@@ -171,7 +169,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
         .collect();
 
-    let mut defend_army: Vec<CombatUnit> = defense
+    let mut defend_army: Vec<CombatUnit> = destination.army
         .iter()
         .filter(|(u, _)| {
             !u.is_building()
@@ -182,12 +180,12 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .collect();
 
     // Bring missiles down with antiballistic
-    let mut n_antiballistic = defense
+    let mut n_antiballistic = destination.army
         .iter()
         .filter_map(|(u, c)| (*u == Unit::Defense(Defense::AntiballisticMissile)).then_some(c))
         .count();
 
-    let planetary_shield = defense.amount(&Unit::Building(Building::PlanetaryShield));
+    let planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
 
     let mut missiles_fired = 0;
     let mut missiles_hit = 0;
@@ -284,7 +282,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     if !planet_destroyed {
         surviving_defense = surviving_defense
             .iter()
-            .chain(defense.iter().filter(|(u, _)| u.is_building()))
+            .chain(destination.army.iter().filter(|(u, _)| u.is_building()))
             .map(|(u, &v)| (u.clone(), v))
             .collect();
     }
@@ -298,18 +296,17 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     // If no attacker, the defender won, add non-combat ships and the remaining missiles
     if surviving_attacker.is_empty() {
         *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
-            *defense.get(&Unit::interplanetary_missile()).unwrap_or(&0);
+            destination.army.amount(&Unit::interplanetary_missile());
         *surviving_defense.entry(Unit::Defense(Defense::AntiballisticMissile)).or_insert(0) =
             n_antiballistic;
         *surviving_defense.entry(Unit::interplanetary_missile()).or_insert(0) =
-            *defense.get(&Unit::interplanetary_missile()).unwrap_or(&0);
+            destination.army.amount(&Unit::interplanetary_missile());
     }
 
     MissionReport {
         turn,
         mission: mission.clone(),
-        defender,
-        defense: defense.clone(),
+        planet: destination.clone(),
         scout_probes: returning_probes,
         surviving_attacker,
         surviving_defender: surviving_defense,
