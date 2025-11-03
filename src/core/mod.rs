@@ -39,7 +39,7 @@ use crate::core::persistence::{load_game, save_game};
 use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
-use crate::core::systems::{check_keys, on_resize_system};
+use crate::core::systems::{check_keys, check_keys_menu, on_resize_system};
 use crate::core::turns::{check_turn_ended, resolve_turn, start_turn, StartTurnMsg};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
 use crate::core::ui::utils::ImageIds;
@@ -49,6 +49,9 @@ pub struct GamePlugin;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 struct InGameSet;
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+struct InPlayingGameSet;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
@@ -78,9 +81,29 @@ impl Plugin for GamePlugin {
             .configure_sets(EguiPrimaryContextPass, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PostUpdate, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(Last, InGameSet.run_if(in_state(AppState::Game)))
+            .configure_sets(
+                First,
+                InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            .configure_sets(
+                PreUpdate,
+                InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            .configure_sets(
+                Update,
+                InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            .configure_sets(
+                PostUpdate,
+                InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            .configure_sets(
+                Last,
+                InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
             // Camera
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InGameSet))
+            .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InPlayingGameSet))
             // Audio
             .add_systems(Startup, setup_music_btn)
             .add_systems(OnEnter(AudioState::Sound), play_music)
@@ -119,11 +142,14 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(AppState::Game), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
             // Utilities
-            .add_systems(Update, check_keys.in_set(InGameSet))
+            .add_systems(
+                Update,
+                (check_keys_menu.in_set(InGameSet), check_keys.in_set(InPlayingGameSet)),
+            )
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), draw_map)
-            .add_systems(First, start_turn.run_if(resource_exists::<Map>))
+            .add_systems(First, start_turn.run_if(resource_exists::<Map>).in_set(InPlayingGameSet))
             .add_systems(
                 Update,
                 (
@@ -133,7 +159,7 @@ impl Plugin for GamePlugin {
                     send_mission,
                     update_missions,
                 )
-                    .in_set(InGameSet),
+                    .in_set(InPlayingGameSet),
             )
             .add_systems(
                 PostUpdate,
@@ -148,6 +174,6 @@ impl Plugin for GamePlugin {
 
         // Persistence
         #[cfg(not(target_arch = "wasm32"))]
-        app.add_systems(Update, (load_game, save_game.in_set(InGameSet)));
+        app.add_systems(Update, (load_game, save_game.in_set(InGameSet)).run_if(resource_exists::<RenetServer>));
     }
 }

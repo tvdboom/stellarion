@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::SystemCursorIcon;
 use bevy_renet::netcode::{NetcodeClientTransport, NetcodeServerTransport};
 use bevy_renet::renet::{RenetClient, RenetServer};
 use rand::prelude::IteratorRandom;
@@ -8,6 +9,7 @@ use crate::core::assets::WorldAssets;
 use crate::core::constants::*;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::utils::cursor;
 use crate::core::menu::utils::{add_text, recolor};
 use crate::core::missions::Missions;
 use crate::core::network::{
@@ -228,6 +230,8 @@ pub fn spawn_menu_button(
         .observe(recolor::<Out>(NORMAL_BUTTON_COLOR))
         .observe(recolor::<Press>(PRESSED_BUTTON_COLOR))
         .observe(recolor::<Release>(HOVERED_BUTTON_COLOR))
+        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+        .observe(cursor::<Out>(SystemCursorIcon::Default))
         .observe(on_click_menu_button)
         .with_children(|parent| {
             parent.spawn(add_text(btn.to_title(), "bold", BUTTON_TEXT_SIZE, assets, window));

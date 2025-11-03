@@ -271,6 +271,20 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         army
     });
 
+    if !attack_army.is_empty() {
+        // Add the non-combat ships to the attacker
+        *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
+            mission.army.amount(&Unit::colony_ship());
+    } else {
+        // Add non-combat ships and the remaining missiles to the defender
+        *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
+            destination.army.amount(&Unit::colony_ship());
+        *surviving_defense.entry(Unit::Defense(Defense::AntiballisticMissile)).or_insert(0) =
+            n_antiballistic;
+        *surviving_defense.entry(Unit::interplanetary_missile()).or_insert(0) =
+            destination.army.amount(&Unit::interplanetary_missile());
+    }
+
     // Add the scout probes to the surviving attacker
     *surviving_attacker.entry(Unit::probe()).or_insert(0) += returning_probes;
 
@@ -281,22 +295,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             .chain(destination.army.iter().filter(|(u, _)| u.is_building()))
             .map(|(u, &v)| (u.clone(), v))
             .collect();
-    }
-
-    // If no defense, the attacker won, add the non-combat ships
-    if surviving_defense.is_empty() {
-        *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
-            mission.army.amount(&Unit::colony_ship());
-    }
-
-    // If no attacker, the defender won, add non-combat ships and the remaining missiles
-    if surviving_attacker.is_empty() {
-        *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
-            destination.army.amount(&Unit::interplanetary_missile());
-        *surviving_defense.entry(Unit::Defense(Defense::AntiballisticMissile)).or_insert(0) =
-            n_antiballistic;
-        *surviving_defense.entry(Unit::interplanetary_missile()).or_insert(0) =
-            destination.army.amount(&Unit::interplanetary_missile());
     }
 
     MissionReport {

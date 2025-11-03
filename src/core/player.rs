@@ -132,7 +132,8 @@ impl Player {
                         owner: m.origin_owned,
                         army: Army::from([(
                             Unit::Building(Building::MissileSilo),
-                            (m.army.amount(&Unit::interplanetary_missile()) + 9) / SILO_CAPACITY_FACTOR,
+                            (m.army.amount(&Unit::interplanetary_missile()) + 9)
+                                / SILO_CAPACITY_FACTOR,
                         )]),
                     })
             }));

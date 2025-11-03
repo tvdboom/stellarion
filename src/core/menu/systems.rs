@@ -13,7 +13,7 @@ use crate::core::menu::buttons::{
 };
 use crate::core::menu::settings::{spawn_label, SettingsBtn};
 use crate::core::menu::utils::{add_root_node, add_text};
-use crate::core::network::Ip;
+use crate::core::network::{Host, Ip};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::AppState;
@@ -31,7 +31,7 @@ pub fn setup_menu(
 ) {
     commands
         .spawn((
-            add_root_node(),
+            add_root_node(false),
             ImageNode::new(assets.image("menu")),
             MenuCmp,
         ))
@@ -251,12 +251,15 @@ pub fn update_ip(
 
 pub fn setup_in_game_menu(
     mut commands: Commands,
+    host: Option<Res<Host>>,
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
-    commands.spawn((add_root_node(), MenuCmp)).with_children(|parent| {
+    commands.spawn((add_root_node(true), MenuCmp)).with_children(|parent| {
         spawn_menu_button(parent, MenuBtn::Continue, &assets, &window);
-        spawn_menu_button(parent, MenuBtn::SaveGame, &assets, &window);
+        if host.is_some() {
+            spawn_menu_button(parent, MenuBtn::SaveGame, &assets, &window);
+        }
         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
     });
 }
@@ -274,7 +277,7 @@ pub fn setup_end_game(
         "defeat"
     };
 
-    commands.spawn((add_root_node(), MenuCmp)).with_children(|parent| {
+    commands.spawn((add_root_node(false), MenuCmp)).with_children(|parent| {
         parent.spawn(ImageNode::new(assets.image(image)));
         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
     });

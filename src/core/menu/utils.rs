@@ -20,7 +20,7 @@ pub fn recolor<E: Debug + Clone + Reflect>(
 }
 
 /// Add a root UI node that covers the whole screen
-pub fn add_root_node() -> (Node, Pickable, ZIndex, UiCmp) {
+pub fn add_root_node(block: bool) -> (Node, Pickable, ZIndex, UiCmp) {
     (
         Node {
             width: Val::Percent(100.),
@@ -33,8 +33,19 @@ pub fn add_root_node() -> (Node, Pickable, ZIndex, UiCmp) {
             justify_content: JustifyContent::Center,
             ..default()
         },
-        Pickable::IGNORE,
-        ZIndex(-1),
+        if block {
+            Pickable {
+                should_block_lower: true,
+                is_hoverable: false,
+            }
+        } else {
+            Pickable::IGNORE
+        },
+        ZIndex(if block {
+            4 // On top of end turn but below audio button
+        } else {
+            -1 // Below everything
+        }),
         UiCmp,
     )
 }

@@ -941,18 +941,20 @@ fn draw_active_missions(
                             .interact(Sense::click())
                             .on_hover_cursor(CursorIcon::PointingHand);
 
-                        let size = [20., 20.];
-                        let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
+                        if mission.owner == player.id {
+                            let size = [20., 20.];
+                            let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
 
-                        let resp = ui.put(
-                            egui::Rect::from_min_size(pos, size.into()),
-                            egui::Image::new(SizedTexture::new(images.get("logs"), size)),
-                        );
+                            let resp = ui.put(
+                                egui::Rect::from_min_size(pos, size.into()),
+                                egui::Image::new(SizedTexture::new(images.get("logs"), size)),
+                            );
 
-                        resp.on_hover_ui(|ui| {
-                            ui.set_min_width(350.);
-                            ui.small(format!("Mission logs\n===========\n\n{}", mission.logs));
-                        });
+                            resp.on_hover_ui(|ui| {
+                                ui.set_min_width(350.);
+                                ui.small(format!("Mission logs\n===========\n\n{}", mission.logs));
+                            });
+                        }
 
                         resp1
                     });
@@ -1186,21 +1188,23 @@ fn draw_mission_reports(
                             .interact(Sense::click())
                             .on_hover_cursor(CursorIcon::PointingHand);
 
-                        let size = [20., 20.];
-                        let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
+                        if report.mission.owner == player.id {
+                            let size = [20., 20.];
+                            let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
 
-                        let resp = ui.put(
-                            egui::Rect::from_min_size(pos, size.into()),
-                            egui::Image::new(SizedTexture::new(images.get("logs"), size)),
-                        );
+                            let resp = ui.put(
+                                egui::Rect::from_min_size(pos, size.into()),
+                                egui::Image::new(SizedTexture::new(images.get("logs"), size)),
+                            );
 
-                        resp.on_hover_ui(|ui| {
-                            ui.set_min_width(350.);
-                            ui.small(format!(
-                                "Mission logs\n===========\n\n{}",
-                                report.mission.logs
-                            ));
-                        });
+                            resp.on_hover_ui(|ui| {
+                                ui.set_min_width(350.);
+                                ui.small(format!(
+                                    "Mission logs\n===========\n\n{}",
+                                    report.mission.logs
+                                ));
+                            });
+                        }
 
                         resp1
                     });

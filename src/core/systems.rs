@@ -22,31 +22,14 @@ pub fn on_resize_system(
     }
 }
 
-pub fn check_keys(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    mut map: ResMut<Map>,
-    mut player: ResMut<Player>,
-    mut state: ResMut<UiState>,
-    mut settings: ResMut<Settings>,
+pub fn check_keys_menu(
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
+    mut state: ResMut<UiState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-
-    // Hack to add resources and bump building levels to max
-    if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
-        player.resources += 1000usize;
-        map.planets.iter_mut().for_each(|p| {
-            for building in Unit::buildings().iter() {
-                *p.army.entry(*building).or_insert(0) = Building::MAX_LEVEL;
-            }
-        });
-    }
-
-    // Open in-game menu or exit planet selection
+    // Open in-game menu or exit mission/planet selection
     if keyboard.just_pressed(KeyCode::Escape) {
         match game_state.get() {
             GameState::Playing => {
@@ -60,6 +43,28 @@ pub fn check_keys(
             GameState::InGameMenu => next_game_state.set(GameState::Playing),
             GameState::EndGame => next_app_state.set(AppState::MainMenu),
         }
+    }
+}
+
+pub fn check_keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut map: ResMut<Map>,
+    mut player: ResMut<Player>,
+    mut state: ResMut<UiState>,
+    mut settings: ResMut<Settings>,
+) {
+    let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+
+    // Hack to add resources and bump building levels to max
+    if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
+        player.resources += 1000usize;
+        map.planets.iter_mut().for_each(|p| {
+            for building in Unit::buildings().iter() {
+                *p.army.entry(*building).or_insert(0) = Building::MAX_LEVEL;
+            }
+        });
     }
 
     // Toggle show voronoi cells

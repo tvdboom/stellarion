@@ -3,7 +3,7 @@ use std::io;
 use std::io::{Read, Write};
 
 use bevy::prelude::*;
-use bevy_renet::renet::RenetServer;
+use bevy_renet::renet::{DefaultChannel, RenetServer};
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,6 +19,14 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
 use crate::core::turns::PreviousEndTurnState;
 use crate::core::ui::systems::UiState;
+
+#[derive(Default)]
+pub enum SaveState {
+    #[default]
+    WaitingForRequest,
+    SaveGame,
+    WaitingForClients,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveAll {
@@ -72,22 +80,22 @@ pub fn load_game(
             let ids = data.clients.iter().map(|p| p.id).collect::<Vec<_>>();
 
             let n_opponents = ids.len();
-            if n_opponents > 1 {
+            if n_opponents > 0 {
                 if let Some(server) = &server {
                     let n_clients = server.clients_id().len();
                     if n_clients != n_opponents {
                         message.write(MessageMsg::error(format!("The loaded game has {n_opponents} opponents but the server has {n_clients} clients.")));
                     } else {
-                        for (new_id, old_id) in server.clients_id().iter().zip(ids.iter()) {
-                            let player = data.clients.iter_mut().find(|p| p.id == *old_id).unwrap();
+                        for (new_id, old_id) in server.clients_id().iter().zip(ids) {
+                            let player = data.clients.iter_mut().find(|p| p.id == old_id).unwrap();
 
                             // Update player and planets to use the new player id
                             player.id = *new_id;
                             data.map.planets.iter_mut().for_each(|p| {
-                                if p.owned.is_some_and(|id| id == *old_id) {
+                                if p.owned.is_some_and(|id| id == old_id) {
                                     p.owned = Some(*new_id);
                                 }
-                                if p.controlled.is_some_and(|id| id == *old_id) {
+                                if p.controlled.is_some_and(|id| id == old_id) {
                                     p.controlled = Some(*new_id);
                                 }
                             });
@@ -119,36 +127,59 @@ pub fn load_game(
             commands.insert_resource(Host::default());
 
             next_app_state.set(AppState::Game);
+
+            message.write(MessageMsg::info("Game loaded."));
         }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
+    server: Option<ResMut<RenetServer>>,
     mut save_game_ev: MessageReader<SaveGameMsg>,
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
-    host: Option<Res<Host>>,
+    host: Res<Host>,
+    mut message: MessageWriter<MessageMsg>,
+    mut state: Local<SaveState>,
 ) {
-    if let Some(host) = host {
-        for _ in save_game_ev.read() {
-            if let Some(mut file_path) = FileDialog::new().save_file() {
-                if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
-                    file_path.set_extension("bin");
+    if let Some(mut server) = server {
+        match *state {
+            SaveState::WaitingForRequest => {
+                for _ in save_game_ev.read() {
+                    // Request an update of every player's state
+                    let msg = encode_to_vec(&ServerMessage::RequestUpdate, standard()).unwrap();
+                    server.broadcast_message(DefaultChannel::ReliableOrdered, msg);
+
+                    *state = SaveState::WaitingForClients;
                 }
+            },
+            SaveState::WaitingForClients => {
 
-                let file_path_str = file_path.to_string_lossy().to_string();
-                let data = SaveAll {
-                    settings: settings.clone(),
-                    map: map.clone(),
-                    host: player.clone(),
-                    clients: host.clients.values().cloned().collect(),
-                    missions: missions.clone(),
-                };
+            },
+            SaveState::SaveGame => {
+                if let Some(mut file_path) = FileDialog::new().save_file() {
+                    if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
+                        file_path.set_extension("bin");
+                    }
 
-                save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
+                    let file_path_str = file_path.to_string_lossy().to_string();
+                    let data = SaveAll {
+                        settings: settings.clone(),
+                        map: map.clone(),
+                        host: player.clone(),
+                        clients: host.clients.values().cloned().collect(),
+                        missions: missions.clone(),
+                    };
+
+                    save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
+
+                    *state = SaveState::WaitingForRequest;
+
+                    message.write(MessageMsg::info("Game saved."));
+                }
             }
         }
     }

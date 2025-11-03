@@ -93,6 +93,7 @@ pub enum ServerMessage {
         missions: Missions,
         end_game: bool,
     },
+    RequestUpdate,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,11 +179,8 @@ pub fn server_update(
                     client_id,
                     reason,
                 } => {
-                    println!("Client {client_id} disconnected: {reason}");
-                    play_audio_ev.write(PlayAudioMsg {
-                        name: "error",
-                        volume: 0.5,
-                    });
+                    println!("Client {client_id} disconnected. Reason: {reason}");
+                    play_audio_ev.write(PlayAudioMsg::new("error"));
                     next_game_state.set(GameState::InGameMenu);
                 },
             }
@@ -263,12 +261,17 @@ pub fn client_send_message(
 
 pub fn client_receive_message(
     mut commands: Commands,
+    state: Res<UiState>,
+    map: Res<Map>,
+    player: Res<Player>,
+    missions: Res<Missions>,
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut client: ResMut<RenetClient>,
     mut settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
+    mut client_send_msg: MessageWriter<ClientSendMsg>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         let (d, _) = decode_from_slice(&message, standard()).unwrap();
@@ -327,6 +330,14 @@ pub fn client_receive_message(
                     start_turn_msg.write(StartTurnMsg);
                 }
             },
+            ServerMessage::RequestUpdate => {
+                client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
+                    end_turn: state.end_turn,
+                    map: map.clone(),
+                    player: player.clone(),
+                    missions: missions.clone(),
+                }));
+            }
         }
     }
 }

@@ -19,7 +19,7 @@ impl PlayAudioMsg {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            volume: -5.,
+            volume: -30.,
         }
     }
 }
@@ -32,14 +32,17 @@ pub struct ChangeAudioMsg(pub Option<AudioState>);
 
 pub fn setup_music_btn(mut commands: Commands, assets: Local<WorldAssets>) {
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(3.),
-            height: Val::Percent(3.),
-            right: Val::Percent(0.),
-            top: Val::Percent(2.),
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(3.),
+                height: Val::Percent(3.),
+                right: Val::Percent(0.),
+                top: Val::Percent(2.),
+                ..default()
+            },
+            ZIndex(5),
+        ))
         .with_children(|parent| {
             parent.spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp)).observe(
                 |_: On<Pointer<Click>>, mut commands: Commands| {
@@ -55,7 +58,7 @@ pub fn play_music(assets: Local<WorldAssets>, audio: Res<Audio>) {
     audio
         .play(assets.audio("music"))
         .fade_in(AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2)))
-        .with_volume(-1.)
+        .with_volume(-30.)
         .looped();
 }
 
