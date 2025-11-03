@@ -26,8 +26,8 @@ pub trait Combat {
     fn hull(&self) -> usize;
     fn shield(&self) -> usize;
     fn damage(&self) -> usize;
-    fn rapid_fire(&self) -> Army {
-        Army::new()
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+        HashMap::new()
     }
     fn speed(&self) -> f32 {
         0.
@@ -192,9 +192,9 @@ impl Combat for Unit {
         }
     }
 
-    fn rapid_fire(&self) -> Army {
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
-            Unit::Building(_) => Army::new(),
+            Unit::Building(_) => HashMap::new(),
             Unit::Ship(s) => s.rapid_fire(),
             Unit::Defense(d) => d.rapid_fire(),
         }

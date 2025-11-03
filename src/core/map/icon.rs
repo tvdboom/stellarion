@@ -105,36 +105,35 @@ impl Description for Icon {
     fn description(&self) -> &str {
         match self {
             Icon::Colonize => {
-                "After a successful attack that contains at least one Colony Ship will colonize \
-                the target planet. The Colony Ship will be consumed in the process. If the planet \
-                is empty, a level 1 Mine will be built automatically. A colonized planet produces \
-                resources and can be developed with buildings."
+                "A successful attack that contains at least one Colony Ship, colonizes the target \
+                planet (the player gains ownership). The Colony Ship is consumed in the process. \
+                If the planet is empty, a level 1 Mine is automatically built. An owned planet \
+                produces resources and can be developed with buildings."
             },
             Icon::Attack => {
                 "Attack a planet with your combat ships. If the attack is successful, the ships \
-                remain on the conquered planet, but do not colonize it. If the planet was owned \
-                by another player, they will lose control of it. Buildings on the target planet \
-                remain."
+                remain on the conquered planet, gaining control, but not ownership over it. If \
+                the planet was owned by another player, they lose ownership. Buildings on the \
+                target planet remain."
             },
             Icon::Spy => {
-                "Send only Probes to gather intelligence on an enemy planet. Probes return to the \
-                origin planet after one round of combat. The more Probes return, the better the \
-                returned intelligence. Spying missions aren't detected by the Sensor Phalanx."
+                "Send only Probes to gather intelligence on an enemy planet. Probes leave combat \
+                after the first round, and report on the enemy units. The more Probes return, the \
+                better the intelligence. Spying missions aren't detected by the Sensor Phalanx."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary Missiles ignore any ships \
-                and the Planetary Shield at the target planet, and directly hit the defenses. \
-                At the end of combat, all surviving missiles are automatically destroyed. Once \
-                launched, a missile strike always hits the destination planet, even if it has \
-                been colonized by the user."
+                and the Planetary Shield at the target planet, directly hitting any defenses. \
+                At the end of combat, all surviving missiles are destroyed. Once launched, a \
+                missile strike always hits the destination planet, even if it has been colonized \
+                by the player. Missile Strikes don't report any intelligence about the enemy units."
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
-                if there are no enemy ships left, every War Sun will try to destroy the target \
-                planet with a 10% chance, decreased with 1% for every round afterwards. Regardless \
-                of the result, the fleet will return after combat. A destroyed planet can not be \
-                colonized again."
+                if there are no enemy ships left, every War Sun tries to destroy the target planet \
+                with a 10% chance, decreased with 1% for every round afterwards. Regardless of the \
+                result, the fleet returns after combat. A destroyed planet can't be colonized again."
             },
             Icon::Deploy => "Send a fleet to another one of your planets.",
             _ => unreachable!(),

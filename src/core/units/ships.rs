@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
 use crate::core::units::defense::Defense;
-use crate::core::units::{Army, Combat, Description, Price, Unit};
+use crate::core::units::{Combat, Description, Price, Unit};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Ship {
@@ -44,15 +46,16 @@ impl Description for Ship {
             Ship::Probe => {
                 "The Probe is an espionage craft, used to analyze enemy defenses. By default, \
                 this ship only takes part in the first round of any attack (this behavior can be \
-                changed). After the first round, it goes back to the planet of origin, reporting \
-                on the enemy units. The more Probes return, the better the intelligence. Probes \
-                are the fastest ships in the game. Probes don't have damage, but can be used as \
-                fodder in combat."
+                changed when sending a mission). After the first round, it reports on the enemy \
+                units (prior to any combat) and returns to the planet of origin. The more Probes \
+                survive, the better the intelligence. Probes don't have damage, but can be used \
+                as fodder in combat. Probes are the fastest ships in the game."
             },
             Ship::ColonyShip => {
-                "This ship is used to colonize planets. The Colony Ship does not fight and is \
-                automatically destroyed if the fight is lost. Upon colonizing a planet, the \
-                ship is deconstructed. Colony ships are very slow and consume a lot of fuel."
+                "This ship is used to colonize (gain ownership) planets. The Colony Ship does \
+                not take part in any combat and is automatically destroyed if the fight is lost. \
+                Upon colonizing a planet, the ship is deconstructed. Colony ships are very slow \
+                and consume a lot of fuel."
             },
             Ship::LightFighter => {
                 "Given their relatively low armor and simple weapons systems, Light Fighters \
@@ -77,11 +80,12 @@ impl Description for Ship {
             },
             Ship::Bomber => {
                 "The Bomber is used primarily to destroy planetary defense. Its high Rapid Fire \
-                against most defensive structures makes it effective for planetary assaults."
+                against most defensive structures makes it effective for planetary assaults. It's \
+                the only ship with Rapid Fire against the Plasma Turret."
             },
             Ship::Battleship => {
-                "The Battleship is the mean between the Cruiser and the Dreadnought. Its rapid \
-                fire capabilities makes him highly effective against medium-sized ships."
+                "The Battleship is the mean between the Cruiser and the Dreadnought. Its Rapid \
+                Fire capabilities makes him highly effective against medium-sized ships."
             },
             Ship::Dreadnought => {
                 "Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
@@ -162,17 +166,19 @@ impl Combat for Ship {
         }
     }
 
-    fn rapid_fire(&self) -> Army {
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
-            Ship::Probe | Ship::ColonyShip => Army::new(),
-            Ship::LightFighter | Ship::HeavyFighter => Army::from([(Unit::Ship(Ship::Probe), 80)]),
-            Ship::Destroyer => Army::from([
+            Ship::Probe | Ship::ColonyShip => HashMap::new(),
+            Ship::LightFighter | Ship::HeavyFighter => {
+                HashMap::from([(Unit::Ship(Ship::Probe), 80)])
+            },
+            Ship::Destroyer => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 70),
                 (Unit::Defense(Defense::RocketLauncher), 70),
             ]),
-            Ship::Cruiser => Army::from([(Unit::Ship(Ship::Probe), 80)]),
-            Ship::Bomber => Army::from([
+            Ship::Cruiser => HashMap::from([(Unit::Ship(Ship::Probe), 80)]),
+            Ship::Bomber => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
@@ -181,19 +187,19 @@ impl Combat for Ship {
                 (Unit::Defense(Defense::IonCannon), 40),
                 (Unit::Defense(Defense::PlasmaTurret), 40),
             ]),
-            Ship::Battleship => Army::from([
+            Ship::Battleship => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::HeavyFighter), 70),
                 (Unit::Ship(Ship::Destroyer), 60),
                 (Unit::Ship(Ship::Cruiser), 50),
             ]),
-            Ship::Dreadnought => Army::from([
+            Ship::Dreadnought => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::Bomber), 40),
                 (Unit::Ship(Ship::Battleship), 40),
                 (Unit::Ship(Ship::Dreadnought), 30),
             ]),
-            Ship::WarSun => Army::from([
+            Ship::WarSun => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 80),
                 (Unit::Ship(Ship::HeavyFighter), 80),

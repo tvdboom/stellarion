@@ -1582,8 +1582,8 @@ fn draw_unit_hover(ui: &mut Ui, unit: &Unit, msg: Option<String>, images: &Image
 
                 egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(ui, |ui| {
                     let mut counter = 0;
-                    for rf_unit in Unit::all().iter().take(2).flatten() {
-                        if let Some(rf) = unit.rapid_fire().get(&rf_unit) {
+                    for rf_unit in Unit::all().iter().flatten() {
+                        if let Some(rf) = unit.rapid_fire().get(rf_unit) {
                             ui.horizontal(|ui| {
                                 ui.set_width(115.);
                                 ui.spacing_mut().item_spacing.x = 8.;

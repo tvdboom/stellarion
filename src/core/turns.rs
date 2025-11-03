@@ -14,6 +14,7 @@ use crate::core::missions::{Mission, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
+use crate::core::states::{GameState};
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -125,6 +126,7 @@ pub fn resolve_turn(
     mut missions: ResMut<Missions>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
+    mut next_game_state: ResMut<NextState<GameState>>,
 ) {
     let n_clients = server.map(|s| s.clients_id().len()).unwrap_or(0);
     if state.end_turn && host.turn_ended.len() == n_clients {
@@ -327,6 +329,16 @@ pub fn resolve_turn(
                 .collect::<Vec<_>>()
         };
 
+        // Update which players lost the game
+        let n_lost = all_players
+            .iter_mut()
+            .map(|p| {
+                p.lost = !p.owns(map.get(p.home_planet));
+                p
+            })
+            .filter(|p| p.lost)
+            .count();
+
         for p in all_players {
             // Update the host
             if p.id == 0 {
@@ -340,6 +352,7 @@ pub fn resolve_turn(
                         map: map.clone(),
                         player: p.clone(),
                         missions: Missions(filter_missions(&all_missions, &p)),
+                        end_game: p.lost || (n_lost == n_clients && n_clients > 0),
                     },
                     Some(p.id),
                 ));
@@ -347,7 +360,12 @@ pub fn resolve_turn(
         }
 
         host.turn_ended.clear();
-        start_turn_msg.write(StartTurnMsg);
+
+        if player.lost || (n_lost == n_clients && n_clients > 0) {
+            next_game_state.set(GameState::EndGame);
+        } else {
+            start_turn_msg.write(StartTurnMsg);
+        }
     }
 }
 

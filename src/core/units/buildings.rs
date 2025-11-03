@@ -41,7 +41,7 @@ impl Description for Building {
             },
             Building::MissileSilo => {
                 "A Missile Silo is a building that launches and stores missiles. For each level \
-                of the silo, 10 missile slots are made available (every missile take up 1 slot)."
+                of the silo, 10 missile slots are made available (every missile takes up 1 slot)."
             },
             Building::PlanetaryShield => {
                 "The Planetary Shield is a defensive structure with high shield power but no \

@@ -50,7 +50,7 @@ impl Description for CombatStats {
                 "The amount of deuterium a unit requires to travel 1 AU."
             },
             CombatStats::RapidFire => {
-                "The chance to fire again this round when targeting specific units."
+                "The percentage probability to fire again this round when targeting specific units."
             },
         }
     }
@@ -259,9 +259,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
         round += 1;
     }
-
-    // Remove any surviving Interplanetary Missiles
-    attack_army.retain(|u| u.unit != Unit::Defense(Defense::InterplanetaryMissile));
 
     // Calculate the surviving units
     let mut surviving_attacker = attack_army.iter().fold(Army::new(), |mut army, cu| {

@@ -91,6 +91,7 @@ pub enum ServerMessage {
         map: Map,
         player: Player,
         missions: Missions,
+        end_game: bool,
     },
 }
 
@@ -266,6 +267,7 @@ pub fn client_receive_message(
     mut client: ResMut<RenetClient>,
     mut settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
@@ -312,12 +314,18 @@ pub fn client_receive_message(
                 map,
                 player,
                 missions,
+                end_game,
             } => {
                 settings.turn = turn;
                 commands.insert_resource(map);
                 commands.insert_resource(player);
                 commands.insert_resource(missions);
-                start_turn_msg.write(StartTurnMsg);
+
+                if end_game {
+                    next_game_state.set(GameState::EndGame);
+                } else {
+                    start_turn_msg.write(StartTurnMsg);
+                }
             },
         }
     }

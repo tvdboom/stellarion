@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
-use crate::core::units::{Combat, Description, Price};
+use crate::core::units::{Army, Combat, Description, Price, Unit};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {
@@ -72,17 +74,21 @@ impl Description for Defense {
                 against it. "
             },
             Defense::AntiballisticMissile => {
-                "Antiballistic Missiles are the only way to destroy attacking interplanetary \
-                missiles. Each Antiballistic Missile has a 50% chance of destroying one incoming \
-                Interplanetary Missile. Antiballistic Missiles are launched automatically whenever \
-                an approaching Interplanetary Missile is detected. Otherwise, they do not take \
-                part in any attacks."
+                "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \
+                destroy them prior to the combat. Each Antiballistic Missile has a 50% chance of \
+                destroying one incoming Interplanetary Missile. Antiballistic Missiles are launched \
+                automatically whenever an approaching enemy missile is detected. Otherwise, they \
+                do not take part in any attacks. Antiballistic Missiles are much cheaper than \
+                Interplanetary Missiles."
             },
             Defense::InterplanetaryMissile => {
-                "Interplanetary Missiles are designed to destroy enemy defenses. Before a missile \
-                can hit the defense itself, all the enemy's Antiballistic Missiles must be \
-                destroyed. Interplanetary Missiles ignore enemy ships and the Planetary Shield. \
-                They don't consume fuel."
+                "Interplanetary Missiles are designed to destroy enemy defenses. They ignore enemy \
+                ships and the Planetary Shield. All the enemy's Antiballistic Missiles are launched \
+                and resolved before defenses are hit. Interplanetary Missiles have a very good \
+                price-to-stat ratio and don't consume fuel. They don't have Hull points, meaning \
+                the combat is always resolved in one round, but their Damage is capable of \
+                destroying every defense unit in one round and their Rapid Fire capabilities \
+                ensures the total inflicted destruction can be huge."
             },
         }
     }
@@ -97,7 +103,7 @@ impl Price for Defense {
             Defense::GaussCannon => Resources::new(80, 80, 0),
             Defense::IonCannon => Resources::new(130, 130, 100),
             Defense::PlasmaTurret => Resources::new(220, 130, 130),
-            Defense::AntiballisticMissile => Resources::new(80, 0, 20),
+            Defense::AntiballisticMissile => Resources::new(50, 0, 20),
             Defense::InterplanetaryMissile => Resources::new(105, 20, 100),
         }
     }
@@ -113,7 +119,7 @@ impl Combat for Defense {
             Defense::IonCannon => 500,
             Defense::PlasmaTurret => 600,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 800,
+            Defense::InterplanetaryMissile => 0,
         }
     }
 
@@ -139,7 +145,21 @@ impl Combat for Defense {
             Defense::IonCannon => 100,
             Defense::PlasmaTurret => 120,
             Defense::AntiballisticMissile => 0,
-            Defense::InterplanetaryMissile => 120,
+            Defense::InterplanetaryMissile => 800,
+        }
+    }
+
+    fn rapid_fire(&self) -> HashMap<Unit, usize> {
+        match self {
+            Defense::InterplanetaryMissile => HashMap::from([
+                (Unit::Defense(Defense::RocketLauncher), 95),
+                (Unit::Defense(Defense::LightLaser), 90),
+                (Unit::Defense(Defense::HeavyLaser), 80),
+                (Unit::Defense(Defense::GaussCannon), 70),
+                (Unit::Defense(Defense::IonCannon), 60),
+                (Unit::Defense(Defense::PlasmaTurret), 50),
+            ]),
+            _ => Army::new(),
         }
     }
 

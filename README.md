@@ -1,7 +1,7 @@
 <div align="center">
 
 # Stellarion
-### A multiplayer space-themed rts game written in Rust
+### A multiplayer space-themed strategy game written in Rust
 
 <br><br>
 [![Play](https://gist.githubusercontent.com/cxmeel/0dbc95191f239b631c3874f4ccf114e2/raw/play.svg)](https://tvdboom.itch.io/stellarion)
@@ -17,18 +17,34 @@
 
 ## 📜 Introduction
 
-Stellarion is a real-time strategy game where you control an ant colony. Grow your colony,
-expand your nest, gather resources, and fight for survival against scorpions, termites, wasps and
-other ant colonies.
+Stellarion is a turn-based strategy game, where players build interstellar empires. Expand your 
+colonies, manage resources, and command fleets that engage in strategic battles for dominance of 
+the galaxy.
 
 <br>
 
 ## 🎮 Gameplay
 
-The goal of the game is to conquer all enemy's home planets. If your home planet is conquered, 
-you lose the game.
+The goal of the game is to conquer or destroy the enemy's home planet. If you lose your home 
+planet, you lose the game.
+
+<br>
 
 ### Planets
+
+#### Resources
+
+The game presents three resource types:
+
+- **Metal:** Metal is the most basic resource, used in almost all constructions and ships.
+- **Crystal:** Crystal is a more advanced resource, essential for high-level buildings and ships.
+- **Deuterium:** Deuterium is the least frequent resource in the galaxy, primarily used for 
+  high-level ships and as fuel.
+
+Planets produce a varying amount of each of these resources. Be aware of your home planet's 
+resource production! It should influence the type of strategy you might want to consider for the
+game. For example, a home planet with a lack of deuterium forces the player into early expansion 
+to be able to fuel its fleet later.
 
 #### Owned vs controlled planets
 
@@ -40,9 +56,28 @@ ownership and control.
 
 An owned planet produces resources for its owner. Buildings can only be build and used on owned
 planets. For example, a player controlling (but not owning) a planet, cannot use the Phalanx to
-see incoming attacks nor use the Jump Gate to move its fleet.
+see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned planet always 
+gives full intelligence on the attacking units to the planet's owner. Also when the fight is lost.
+If losing combat on a controlled planet, no intelligence is gained.
 
-### Combat
+<br>
+
+### Units
+
+You can build three types of units on an owned planet:
+
+- **Buildings:** Buildings are used for varied reasons. Core buildings like the Mine, Shipyard
+  and Factory are essential to expand your empire. Advanced buildings like the Jump gate or 
+  Sensor Phalanx should be built more strategically.
+- **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
+  them better or worse suited for certain strategies. Some ships are also stronger or weaker against
+  other specific ship types, so try to build your fleet according to your enemy's composition.
+- **Defenses:** Defenses are stationary combat units. They have better price-to-stats ratios than
+  ships, but are fixed to the planet. Be careful with stacking defenses! War Suns are capable of
+  destroying a planet with any defense army. Missile capabilities are also included with the defense
+  units.
+
+#### Combat
 
 In combat, there are two sides: the attacker and the defender. There is the possibility that 
 the attacker has launched his fleets against a planet with no defense or ships, in which case 

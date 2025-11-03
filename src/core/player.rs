@@ -3,10 +3,12 @@ use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::{MissionReport, Side};
-use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
+use crate::core::constants::{PROBES_PER_PRODUCTION_LEVEL, SILO_CAPACITY_FACTOR};
+use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
+use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
 pub struct PlanetInfo {
@@ -21,6 +23,7 @@ pub struct Player {
     pub home_planet: PlanetId,
     pub resources: Resources,
     pub reports: Vec<MissionReport>,
+    pub lost: bool,
 }
 
 impl Default for Player {
@@ -34,6 +37,7 @@ impl Default for Player {
                 deuterium: 1500,
             },
             reports: Vec::new(),
+            lost: false,
         }
     }
 }
@@ -104,7 +108,7 @@ impl Player {
 
         // Add missions that were sent from the planet but haven't arrived yet
         reports.extend(missions.into_iter().filter_map(|m| {
-            (m.owner == self.id && m.origin == id).then_some(PlanetInfo {
+            (m.origin == id && m.owner == self.id).then_some(PlanetInfo {
                 turn: m.send,
                 owner: m.origin_owned,
                 army: Unit::all()
@@ -114,6 +118,25 @@ impl Player {
                     .collect(),
             })
         }));
+
+        // Clean reports where no units can be seen (e.g., if combat is lost)
+        reports.retain(|r| !r.army.is_empty());
+
+        // If there are no reports, add missile strikes reports,
+        // which say something about the silo's level
+        if reports.is_empty() {
+            reports.extend(missions.into_iter().filter_map(|m| {
+                (m.origin == id && m.owner != self.id && m.objective == Icon::MissileStrike)
+                    .then_some(PlanetInfo {
+                        turn: m.send,
+                        owner: m.origin_owned,
+                        army: Army::from([(
+                            Unit::Building(Building::MissileSilo),
+                            (m.army.amount(&Unit::interplanetary_missile()) + 9) / SILO_CAPACITY_FACTOR,
+                        )]),
+                    })
+            }));
+        }
 
         reports.into_iter().max_by_key(|i| i.turn)
     }

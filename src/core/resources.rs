@@ -19,8 +19,8 @@ impl Description for ResourceName {
     fn description(&self) -> &str {
         match self {
             ResourceName::Metal => "Metal is the most basic resource, used in almost all constructions and ships.",
-            ResourceName::Crystal => "Crystal is a more advanced resource, essential for high-tech buildings and ships.",
-            ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used for high-tech ships and as fuel.",
+            ResourceName::Crystal => "Crystal is a more advanced resource, essential for high-level buildings and ships.",
+            ResourceName::Deuterium => "Deuterium is a rare and valuable resource, primarily used for high-level ships and as fuel.",
         }
     }
 }
