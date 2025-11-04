@@ -66,7 +66,7 @@ pub struct VoronoiCmp(pub PlanetId);
 #[derive(Component)]
 pub struct VoronoiEdgeCmp {
     pub planet: PlanetId,
-    pub key: usize,
+    pub key: (i32, i32, i32, i32),
 }
 
 #[derive(Component)]
@@ -82,6 +82,16 @@ fn set_button_index(button_q: &mut ImageNode, index: usize) {
     if let Some(texture) = &mut button_q.texture_atlas {
         texture.index = index;
     }
+}
+
+fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
+    let precision = 5.0;
+    let mut a = ((v1.x / precision).round() as i32, (v1.y / precision).round() as i32);
+    let mut b = ((v2.x / precision).round() as i32, (v2.y / precision).round() as i32);
+    if a > b {
+        std::mem::swap(&mut a, &mut b);
+    } // Make direction irrelevant
+    (a.0, a.1, b.0, b.1)
 }
 
 pub fn draw_map(
@@ -481,7 +491,7 @@ pub fn draw_map(
                         Visibility::Hidden,
                         VoronoiEdgeCmp {
                             planet: planet_id,
-                            key: (v1.length() + v2.length() + v1.distance(v2)) as usize,
+                            key: edge_key(v1, v2),
                         },
                         MapCmp,
                     ));
@@ -507,6 +517,7 @@ pub fn draw_map(
         },
         Visibility::Hidden,
         EndTurnLabelCmp,
+        MapCmp,
     ));
 
     commands
@@ -644,10 +655,19 @@ pub fn update_voronoi(
 }
 
 pub fn update_end_turn(
+    button_c: Single<&mut Visibility, With<EndTurnButtonCmp>>,
     button_q: Single<&mut Text, With<EndTurnButtonLabelCmp>>,
-    label_q: Single<&mut Visibility, With<EndTurnLabelCmp>>,
+    label_q: Single<&mut Visibility, (With<EndTurnLabelCmp>, Without<EndTurnButtonCmp>)>,
     state: Res<UiState>,
+    player: Res<Player>,
 ) {
+    let mut button_v = button_c.into_inner();
+    *button_v = if !player.spectator {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+
     let mut button_t = button_q.into_inner();
     button_t.0 = if state.end_turn {
         "Continue turn".to_string()
@@ -656,7 +676,7 @@ pub fn update_end_turn(
     };
 
     let mut label_v = label_q.into_inner();
-    *label_v = if state.end_turn {
+    *label_v = if state.end_turn && !player.spectator {
         Visibility::Inherited
     } else {
         Visibility::Hidden

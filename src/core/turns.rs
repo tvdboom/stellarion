@@ -296,7 +296,9 @@ pub fn resolve_turn(
                     // Attach mission report to relevant players
                     all_players
                         .iter_mut()
-                        .filter(|p| p.owns(destination) || p.id == report.mission.owner)
+                        .filter(|p| {
+                            report.planet.controlled == Some(p.id) || report.mission.owner == p.id
+                        })
                         .for_each(|p| p.reports.push(report.clone()));
                 }
 
@@ -333,10 +335,10 @@ pub fn resolve_turn(
         let n_lost = all_players
             .iter_mut()
             .map(|p| {
-                p.lost = !p.owns(map.get(p.home_planet));
+                p.spectator = !p.owns(map.get(p.home_planet));
                 p
             })
-            .filter(|p| p.lost)
+            .filter(|p| p.spectator)
             .count();
 
         for p in all_players {
@@ -352,7 +354,7 @@ pub fn resolve_turn(
                         map: map.clone(),
                         player: p.clone(),
                         missions: Missions(filter_missions(&all_missions, &p)),
-                        end_game: p.lost || (n_lost == n_clients && n_clients > 0),
+                        end_game: p.spectator || (n_lost == n_clients && n_clients > 0),
                     },
                     Some(p.id),
                 ));
@@ -362,7 +364,8 @@ pub fn resolve_turn(
         host.turn_ended.clear();
         host.received.clear();
 
-        if player.lost || (n_lost == n_clients && n_clients > 0) {
+        if player.spectator || (n_lost == n_clients && n_clients > 0) {
+            player.spectator = true;
             next_game_state.set(GameState::EndGame);
         } else {
             start_turn_msg.write(StartTurnMsg);

@@ -123,7 +123,8 @@ Things to keep in mind:
 - Attacks on the same planet on the same turn are merged per player and per objective. Missile
   strikes are resolved first, followed by spying missions, and then the remaining, which are
   grouped together following objective priority `Destroy` > `Colonize` > `Attack`.
-- An attacking player receives no enemy unit information if all its units are destroyed.
+- An attacking player receives no enemy unit information if all its units are destroyed. If there
+  are scout probes, he can only see the number of enemy units prior to combat.
 - A defender player receives no enemy unit information if all its units are destroyed and he
   doesn't own the planet.
 

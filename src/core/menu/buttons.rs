@@ -36,6 +36,7 @@ pub enum MenuBtn {
     FindGame,
     Back,
     Continue,
+    Spectate,
     SaveGame,
     Settings,
     Quit,
@@ -179,6 +180,9 @@ pub fn on_click_menu_button(
             _ => unreachable!(),
         },
         MenuBtn::Continue => {
+            next_game_state.set(GameState::Playing);
+        },
+        MenuBtn::Spectate => {
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {

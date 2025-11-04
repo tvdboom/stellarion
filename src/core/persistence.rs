@@ -3,7 +3,7 @@ use std::io;
 use std::io::{Read, Write};
 
 use bevy::prelude::*;
-use bevy_renet::renet::{DefaultChannel, RenetServer};
+use bevy_renet::renet::{ClientId, DefaultChannel, RenetServer};
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,14 +91,37 @@ pub fn load_game(
 
                             // Update player and planets to use the new player id
                             player.id = *new_id;
-                            data.map.planets.iter_mut().for_each(|p| {
-                                if p.owned.is_some_and(|id| id == old_id) {
-                                    p.owned = Some(*new_id);
+
+                            let upd = |v: &mut Option<ClientId>| {
+                                if *v == Some(old_id) {
+                                    *v = Some(*new_id)
                                 }
-                                if p.controlled.is_some_and(|id| id == old_id) {
-                                    p.controlled = Some(*new_id);
+                            };
+                            let upd_id = |v: &mut ClientId| {
+                                if *v == old_id {
+                                    *v = *new_id
                                 }
-                            });
+                            };
+
+                            for p in &mut data.map.planets {
+                                upd(&mut p.owned);
+                                upd(&mut p.controlled);
+                            }
+                            for r in &mut player.reports {
+                                upd_id(&mut r.mission.owner);
+                                [
+                                    &mut r.mission.origin_owned,
+                                    &mut r.planet.owned,
+                                    &mut r.planet.controlled,
+                                    &mut r.destination_owned,
+                                ]
+                                .into_iter()
+                                .for_each(|f| upd(f));
+                            }
+                            for m in data.missions.iter_mut() {
+                                upd_id(&mut m.owner);
+                                upd(&mut m.origin_owned);
+                            }
 
                             server_send_msg.write(ServerSendMsg::new(
                                 ServerMessage::LoadGame {

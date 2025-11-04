@@ -277,8 +277,22 @@ pub fn setup_end_game(
         "defeat"
     };
 
-    commands.spawn((add_root_node(false), MenuCmp)).with_children(|parent| {
-        parent.spawn(ImageNode::new(assets.image(image)));
-        spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
-    });
+    commands
+        .spawn((add_root_node(true), ImageNode::new(assets.image(image)), MenuCmp))
+        .with_children(|parent| {
+            parent
+                .spawn(Node {
+                    width: Val::Percent(100.),
+                    height: Val::Percent(100.),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::FlexEnd,
+                    padding: UiRect::ZERO.with_bottom(Val::Percent(10.)),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    spawn_menu_button(parent, MenuBtn::Spectate, &assets, &window);
+                    spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
+                });
+        });
 }

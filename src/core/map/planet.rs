@@ -12,8 +12,6 @@ use crate::core::constants::{
 };
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
-use crate::core::units::defense::Defense;
-use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
 
 pub type PlanetId = usize;
@@ -102,15 +100,6 @@ impl Planet {
             (Unit::Building(Building::Mine), 1),
             (Unit::Building(Building::Shipyard), 1),
             (Unit::Building(Building::Factory), 1),
-            // Remove!!
-            (Unit::Ship(Ship::Probe), 88),
-            (Unit::Ship(Ship::LightFighter), 15),
-            (Unit::Ship(Ship::ColonyShip), 5),
-            (Unit::Ship(Ship::Cruiser), 11),
-            (Unit::Ship(Ship::WarSun), 50),
-            (Unit::Defense(Defense::RocketLauncher), 79),
-            (Unit::Defense(Defense::AntiballisticMissile), 40),
-            (Unit::Defense(Defense::InterplanetaryMissile), 80),
         ]);
     }
 

@@ -1,6 +1,8 @@
 use bevy_renet::renet::ClientId;
+use rand::prelude::IndexedMutRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
+use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::core::map::icon::Icon;
@@ -12,7 +14,7 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
 
-#[derive(PartialEq)]
+#[derive(EnumIter, Debug, PartialEq)]
 pub enum Side {
     Attacker,
     Defender,
@@ -94,7 +96,13 @@ impl MissionReport {
         match self.mission.objective {
             Icon::Spy if self.scout_probes > 0 => None,
             _ => {
-                if self.surviving_attacker.iter().any(|(_, c)| *c > 0) {
+                if self.surviving_attacker.iter().any(|(u, c)| {
+                    if *u == Unit::probe() {
+                        *c > self.scout_probes
+                    } else {
+                        *c > 0
+                    }
+                }) {
                     Some(self.mission.owner)
                 } else {
                     self.planet.controlled
@@ -175,7 +183,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         }
     }
 
-    let planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
+    let colony_ships = mission.army.amount(&Unit::colony_ship());
+    let mut planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
 
     let mut attack_army: Vec<CombatUnit> = mission
         .army
@@ -209,6 +218,11 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     let mut returning_probes = 0;
     let mut planet_destroyed = false;
     while (!attack_army.is_empty() && !defend_army.is_empty()) || round == 1 {
+        if attack_army.is_empty() && defend_army.is_empty() {
+            // If there are no combat units, skip the battle
+            break;
+        }
+
         logs.push_str(&format!(
             "{}Round {round}",
             if round == 1 {
@@ -224,9 +238,69 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             ));
         }
 
-        for army in [&mut attack_army, &mut defend_army] {
+        for side in Side::iter() {
+            let mut destroyed = Army::new();
+            let (army, enemy_army) = if side == Side::Attacker {
+                (&mut attack_army, &mut defend_army)
+            } else {
+                (&mut defend_army, &mut attack_army)
+            };
+
+            if !army.is_empty() && !enemy_army.is_empty() {
+                logs.push_str(format!("\n- {side:?} shoots:").as_str());
+            }
+
             // Reset all shields
-            army.iter_mut().for_each(|u| u.shield = u.unit.shield());
+            enemy_army.iter_mut().for_each(|u| u.shield = u.unit.shield());
+
+            for unit in army {
+                'shoot: loop {
+                    let target = if let Some(target) = enemy_army.choose_mut(&mut rng()) {
+                        if target.unit.is_defense() && planetary_shield > 0 {
+                            planetary_shield =
+                                planetary_shield.saturating_sub(target.unit.damage());
+
+                            if planetary_shield == 0 {
+                                logs.push_str("\n >> Planetary Shield destroyed.");
+                            }
+
+                            break 'shoot;
+                        }
+
+                        target
+                    } else {
+                        break 'shoot; // No targets left
+                    };
+
+                    // Target could already been destroyed by another shot
+                    if target.hull > 0 {
+                        let mut damage = unit.unit.damage();
+
+                        if target.shield > 0 {
+                            damage = damage.saturating_sub(target.shield);
+                            target.shield = target.shield.saturating_sub(damage);
+                        }
+
+                        if damage > 0 {
+                            target.hull = target.hull.saturating_sub(damage);
+
+                            if target.hull == 0 {
+                                *destroyed.entry(target.unit).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    if *unit.unit.rapid_fire().get(&target.unit).unwrap_or(&101) as f32 / 100.
+                        > rng().random::<f32>()
+                    {
+                        break 'shoot;
+                    }
+                }
+            }
+
+            for (u, c) in destroyed {
+                logs.push_str(format!("\n >> {c} enemy {}s destroyed.", u.to_name()).as_str());
+            }
         }
 
         // Remove units that are destroyed after both armies have fired
@@ -252,6 +326,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 if rng().random::<f32>() < 0.1 - 0.01 * round as f32 {
                     defend_army = vec![];
                     planet_destroyed = true;
+                    logs.push_str("\n- Planet destroyed.");
                 }
             }
         }
@@ -270,11 +345,14 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         army
     });
 
-    if !attack_army.is_empty() {
+    if !attack_army.is_empty() || surviving_defense.is_empty() {
         // Add the non-combat ships to the attacker
-        *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
-            mission.army.amount(&Unit::colony_ship());
+        *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) = colony_ships;
     } else {
+        if colony_ships > 0 {
+            logs.push_str(&format!("\n- {colony_ships} attacking colony ships destroyed."));
+        }
+
         // Add non-combat ships and the remaining missiles to the defender
         *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
             destination.army.amount(&Unit::colony_ship());

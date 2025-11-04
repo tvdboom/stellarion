@@ -3,7 +3,8 @@ use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Response,
-    RichText, ScrollArea, Sense, Separator, Stroke, StrokeKind, TextStyle, Ui, UiBuilder,
+    RichText, ScrollArea, Sense, Separator, Stroke, StrokeKind, TextStyle, TextWrapMode, Ui,
+    UiBuilder,
 };
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
@@ -22,13 +23,14 @@ use crate::core::missions::{Mission, MissionId, Missions, SendMissionMsg};
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
+use crate::core::states::GameState;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::{toggle, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Amount, Combat, Description, Price, Unit};
+use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
@@ -414,6 +416,11 @@ fn draw_new_mission(
 ) {
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
+
+    // Block selection of any unit when in spectator mode
+    if player.spectator {
+        state.mission_info.army = Army::new();
+    }
 
     state.mission_info.owner = player.id;
 
@@ -942,8 +949,7 @@ fn draw_active_missions(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         if mission.owner == player.id {
-                            let resp =
-                                ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                            let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
                             resp.on_hover_ui(|ui| {
                                 ui.set_min_width(350.);
@@ -1139,8 +1145,11 @@ fn draw_mission_reports(
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 40.);
 
-            let report =
-                player.reports.iter().find(|r| state.mission_report == Some(r.mission.id)).unwrap();
+            let report = player
+                .reports
+                .iter()
+                .find(|r| state.mission_report == Some(r.mission.id))
+                .unwrap_or(player.reports.last().unwrap());
 
             ui.horizontal(|ui| {
                 let action = |r1: Response,
@@ -1184,8 +1193,7 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         if report.mission.owner == player.id {
-                            let resp =
-                                ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                            let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
                             resp.on_hover_ui(|ui| {
                                 ui.set_min_width(350.);
@@ -1250,10 +1258,12 @@ fn draw_mission_reports(
                         let resp =
                             ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
 
-                        if report.can_see(&Side::Defender, player.id) {
+                        if report.can_see(&Side::Defender, player.id) && !logs.is_empty() {
                             resp.on_hover_ui(|ui| {
-                                ui.set_min_width(350.);
-                                ui.small(format!("Combat logs\n===========\n\n{logs}"));
+                                ScrollArea::vertical().show(ui, |ui| {
+                                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                                    ui.small(format!("Combat logs\n===========\n\n{logs}"));
+                                });
                             });
                         }
                     }
@@ -1812,6 +1822,7 @@ pub fn draw_ui(
     missions: Res<Missions>,
     mut state: ResMut<UiState>,
     settings: Res<Settings>,
+    game_state: Res<State<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     images: Res<ImageIds>,
     window: Single<&Window>,
@@ -1819,15 +1830,17 @@ pub fn draw_ui(
     let (camera, camera_t) = camera_q.into_inner();
     let (width, height) = (window.width(), window.height());
 
-    draw_panel(
-        &mut contexts,
-        "resources",
-        "thin panel",
-        (window.width() * 0.5 - 525., window.height() * 0.01),
-        (1050., 70.),
-        &images,
-        |ui| draw_resources(ui, &settings, &map, &player, &images),
-    );
+    if *game_state.get() != GameState::EndGame {
+        draw_panel(
+            &mut contexts,
+            "resources",
+            "thin panel",
+            (window.width() * 0.5 - 525., window.height() * 0.01),
+            (1050., 70.),
+            &images,
+            |ui| draw_resources(ui, &settings, &map, &player, &images),
+        );
+    }
 
     // Store whether the next panel should be shown on the right side or not
     let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
@@ -1970,7 +1983,7 @@ pub fn draw_ui(
             },
         );
     } else if let Some(id) = state.planet_selected {
-        if settings.show_menu {
+        if settings.show_menu && !player.spectator {
             state.end_turn = false;
 
             // Hide shop if hovering another planet

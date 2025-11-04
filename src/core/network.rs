@@ -9,10 +9,10 @@ use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
 use serde::{Deserialize, Serialize};
 
-use crate::core::audio::PlayAudioMsg;
 use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
+use crate::core::messages::MessageMsg;
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -149,10 +149,10 @@ pub fn server_update(
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut server: ResMut<RenetServer>,
     mut server_ev: MessageReader<ServerEvent>,
-    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
+    mut message: MessageWriter<MessageMsg>,
 ) {
     for ev in server_ev.read() {
         if *app_state != AppState::Game {
@@ -176,14 +176,15 @@ pub fn server_update(
                 ServerEvent::ClientConnected {
                     client_id,
                 } => {
-                    println!("Client {client_id} connected");
+                    message.write(MessageMsg::info(format!("Client {client_id} connected")));
                 },
                 ServerEvent::ClientDisconnected {
                     client_id,
                     reason,
                 } => {
-                    println!("Client {client_id} disconnected. Reason: {reason}");
-                    play_audio_ev.write(PlayAudioMsg::new("error"));
+                    message.write(MessageMsg::error(format!(
+                        "Client {client_id} disconnected. Reason: {reason}."
+                    )));
                     next_game_state.set(GameState::InGameMenu);
                 },
             }
@@ -320,20 +321,22 @@ pub fn client_receive_message(
             ServerMessage::StartTurn {
                 turn,
                 map,
-                player,
+                mut player,
                 missions,
                 end_game,
             } => {
                 settings.turn = turn;
-                commands.insert_resource(map);
-                commands.insert_resource(player);
-                commands.insert_resource(missions);
 
                 if end_game {
+                    player.spectator = true;
                     next_game_state.set(GameState::EndGame);
                 } else {
                     start_turn_msg.write(StartTurnMsg);
                 }
+
+                commands.insert_resource(map);
+                commands.insert_resource(player);
+                commands.insert_resource(missions);
             },
             ServerMessage::RequestUpdate => {
                 client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {

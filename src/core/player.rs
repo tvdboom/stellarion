@@ -23,7 +23,7 @@ pub struct Player {
     pub home_planet: PlanetId,
     pub resources: Resources,
     pub reports: Vec<MissionReport>,
-    pub lost: bool,
+    pub spectator: bool,
 }
 
 impl Default for Player {
@@ -37,7 +37,7 @@ impl Default for Player {
                 deuterium: 1500,
             },
             reports: Vec::new(),
-            lost: false,
+            spectator: false,
         }
     }
 }
@@ -89,7 +89,18 @@ impl Player {
                         .flatten()
                         .filter_map(|u| {
                             if can_see {
-                                Some((u.clone(), r.surviving_defender.amount(u)))
+                                if r.winner() == r.planet.controlled {
+                                    Some((u.clone(), r.surviving_defender.amount(u)))
+                                } else {
+                                    Some((
+                                        u.clone(),
+                                        if *u == Unit::probe() {
+                                            r.surviving_defender.amount(u) - r.scout_probes
+                                        } else {
+                                            r.surviving_defender.amount(u)
+                                        },
+                                    ))
+                                }
                             } else if r.mission.owner == self.id
                                 && r.scout_probes
                                     > (u.production() - 1) * PROBES_PER_PRODUCTION_LEVEL

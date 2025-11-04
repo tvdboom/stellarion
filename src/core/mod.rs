@@ -153,13 +153,10 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    update_voronoi,
-                    update_end_turn,
-                    update_planet_info,
-                    send_mission,
-                    update_missions,
-                )
-                    .in_set(InPlayingGameSet),
+                    update_end_turn.in_set(InGameSet),
+                    (update_voronoi, update_planet_info, send_mission, update_missions)
+                        .in_set(InPlayingGameSet),
+                ),
             )
             .add_systems(
                 PostUpdate,
