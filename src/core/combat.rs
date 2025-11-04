@@ -159,11 +159,37 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         };
     }
 
+    // Bring missiles down with antiballistic
+    let mut n_missiles = mission.army.amount(&Unit::interplanetary_missile());
+    let mut n_antiballistic =
+        destination.army.amount(&Unit::Defense(Defense::AntiballisticMissile));
+
+    let mut missiles_fired = 0;
+    let mut missiles_hit = 0;
+    while n_antiballistic > 0 && n_missiles > 0 {
+        n_antiballistic -= 1;
+        missiles_fired += 1;
+        if rng().random::<f32>() < 0.5 {
+            missiles_hit += 1;
+            n_missiles -= 1;
+        }
+    }
+
+    let planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
+
     let mut attack_army: Vec<CombatUnit> = mission
         .army
         .iter()
         .filter(|(u, _)| **u != Unit::colony_ship())
-        .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
+        .flat_map(|(unit, count)| {
+            std::iter::repeat(CombatUnit::new(unit)).take(
+                if *unit != Unit::interplanetary_missile() {
+                    *count
+                } else {
+                    *count - missiles_hit
+                },
+            )
+        })
         .collect();
 
     let mut defend_army: Vec<CombatUnit> = destination
@@ -176,33 +202,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         })
         .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
         .collect();
-
-    // Bring missiles down with antiballistic
-    let mut n_antiballistic = destination
-        .army
-        .iter()
-        .filter_map(|(u, c)| (*u == Unit::Defense(Defense::AntiballisticMissile)).then_some(c))
-        .count();
-
-    let planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
-
-    let mut missiles_fired = 0;
-    let mut missiles_hit = 0;
-    while n_antiballistic > 0 {
-        if let Some(pos) = attack_army
-            .iter()
-            .position(|cu| cu.unit == Unit::Defense(Defense::AntiballisticMissile))
-        {
-            n_antiballistic -= 1;
-            missiles_fired += 1;
-            if rng().random::<f32>() < 0.5 {
-                missiles_hit += 1;
-                attack_army.remove(pos);
-            }
-        } else {
-            break; // No Interplanetary Missiles left
-        }
-    }
 
     let mut logs = String::new();
 
@@ -221,7 +220,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
         if missiles_fired > 0 && round == 1 {
             logs.push_str(&format!(
-                "\n- {missiles_fired} Antiballistic Missiles destroyed {missiles_hit} incoming Interplanetary Missiles."
+                "\n- {missiles_fired} Antiballistic Missiles intercepted {missiles_hit} incoming Interplanetary Missiles."
             ));
         }
 

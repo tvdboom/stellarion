@@ -144,7 +144,7 @@ fn draw_army_grid(
 
                 ui.add_text_on_image(
                     text,
-                    if lost > 0 {
+                    if can_see && lost > 0 {
                         Color32::RED
                     } else {
                         Color32::WHITE
@@ -942,13 +942,8 @@ fn draw_active_missions(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         if mission.owner == player.id {
-                            let size = [20., 20.];
-                            let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
-
-                            let resp = ui.put(
-                                egui::Rect::from_min_size(pos, size.into()),
-                                egui::Image::new(SizedTexture::new(images.get("logs"), size)),
-                            );
+                            let resp =
+                                ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
                             resp.on_hover_ui(|ui| {
                                 ui.set_min_width(350.);
@@ -1189,13 +1184,8 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand);
 
                         if report.mission.owner == player.id {
-                            let size = [20., 20.];
-                            let pos = resp1.rect.right_top() - egui::vec2(size[0] + 5., -5.);
-
-                            let resp = ui.put(
-                                egui::Rect::from_min_size(pos, size.into()),
-                                egui::Image::new(SizedTexture::new(images.get("logs"), size)),
-                            );
+                            let resp =
+                                ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
                             resp.on_hover_ui(|ui| {
                                 ui.set_min_width(350.);
@@ -1256,19 +1246,11 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    if report.can_see(&Side::Defender, player.id) {
-                        if let Some(logs) = &report.logs {
-                            let size = [20., 20.];
-                            let pos = resp4.rect.right_top() - egui::vec2(size[0] + 5., -5.);
+                    if let Some(logs) = &report.logs {
+                        let resp =
+                            ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
 
-                            let resp = ui.put(
-                                egui::Rect::from_min_size(pos, size.into()),
-                                egui::Image::new(SizedTexture::new(
-                                    images.get(report.image(player)),
-                                    size,
-                                )),
-                            );
-
+                        if report.can_see(&Side::Defender, player.id) {
                             resp.on_hover_ui(|ui| {
                                 ui.set_min_width(350.);
                                 ui.small(format!("Combat logs\n===========\n\n{logs}"));

@@ -141,7 +141,7 @@ pub fn save_game(
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
-    host: Res<Host>,
+    mut host: ResMut<Host>,
     mut message: MessageWriter<MessageMsg>,
     mut state: Local<SaveState>,
 ) {
@@ -157,9 +157,14 @@ pub fn save_game(
                 }
             },
             SaveState::WaitingForClients => {
-
+                // Wait until all clients have sent an update
+                if host.received.len() == server.clients_id().len() {
+                    host.received.clear();
+                    *state = SaveState::SaveGame;
+                }
             },
             SaveState::SaveGame => {
+                // Save the game
                 if let Some(mut file_path) = FileDialog::new().save_file() {
                     if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
                         file_path.set_extension("bin");
@@ -176,11 +181,11 @@ pub fn save_game(
 
                     save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
 
-                    *state = SaveState::WaitingForRequest;
-
                     message.write(MessageMsg::info("Game saved."));
                 }
-            }
+
+                *state = SaveState::WaitingForRequest;
+            },
         }
     }
 }

@@ -42,6 +42,9 @@ pub struct Host {
 
     /// Keeps track of which clients have ended their turn
     pub turn_ended: HashSet<ClientId>,
+
+    /// Keeps track of which clients send an update
+    pub received: HashSet<ClientId>,
 }
 
 #[derive(Message)]
@@ -242,6 +245,8 @@ pub fn server_receive_message(
                         } else {
                             host.turn_ended.remove(&id);
                         }
+
+                        host.received.insert(id);
                     }
                 },
             }
@@ -261,10 +266,6 @@ pub fn client_send_message(
 
 pub fn client_receive_message(
     mut commands: Commands,
-    state: Res<UiState>,
-    map: Res<Map>,
-    player: Res<Player>,
-    missions: Res<Missions>,
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut client: ResMut<RenetClient>,
     mut settings: ResMut<Settings>,
@@ -272,6 +273,10 @@ pub fn client_receive_message(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut client_send_msg: MessageWriter<ClientSendMsg>,
+    state: Option<Res<UiState>>,
+    map: Option<Res<Map>>,
+    player: Option<Res<Player>>,
+    missions: Option<Res<Missions>>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         let (d, _) = decode_from_slice(&message, standard()).unwrap();
@@ -332,12 +337,12 @@ pub fn client_receive_message(
             },
             ServerMessage::RequestUpdate => {
                 client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {
-                    end_turn: state.end_turn,
-                    map: map.clone(),
-                    player: player.clone(),
-                    missions: missions.clone(),
+                    end_turn: state.as_ref().unwrap().end_turn,
+                    map: (*map.as_ref().unwrap()).clone(),
+                    player: (*player.as_ref().unwrap()).clone(),
+                    missions: (*missions.as_ref().unwrap()).clone(),
                 }));
-            }
+            },
         }
     }
 }

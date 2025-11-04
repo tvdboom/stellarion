@@ -360,6 +360,7 @@ pub fn resolve_turn(
         }
 
         host.turn_ended.clear();
+        host.received.clear();
 
         if player.lost || (n_lost == n_clients && n_clients > 0) {
             next_game_state.set(GameState::EndGame);
