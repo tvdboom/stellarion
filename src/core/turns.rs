@@ -144,8 +144,21 @@ pub fn resolve_turn(
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
+    // Collect all players and missions
+    let mut all_players =
+        std::iter::once(player.clone()).chain(host.clients.values().cloned()).collect::<Vec<_>>();
+
+    let mut all_missions = missions
+        .iter()
+        .filter(|m| m.owner == player.id)
+        .chain(host.missions.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let playing = all_players.iter().filter(|p| !p.spectator).count();
     let n_clients = server.map(|s| s.clients_id().len()).unwrap_or(0);
-    if state.end_turn && host.turn_ended.len() == n_clients {
+
+    if (state.end_turn || player.spectator) && host.turn_ended.len() == n_clients && playing > 0 {
         settings.turn += 1;
 
         // Apply purchases and reset jump gates
@@ -153,18 +166,6 @@ pub fn resolve_turn(
             p.produce();
             p.jump_gate = 0;
         });
-
-        // Collect all players and missions
-        let mut all_players = std::iter::once(player.clone())
-            .chain(host.clients.values().cloned())
-            .collect::<Vec<_>>();
-
-        let mut all_missions = missions
-            .iter()
-            .filter(|m| m.owner == player.id)
-            .chain(host.missions.iter())
-            .cloned()
-            .collect::<Vec<_>>();
 
         // Produce resources
         for player in &mut all_players {
@@ -348,31 +349,53 @@ pub fn resolve_turn(
             .filter(|p| p.spectator)
             .count();
 
-        for p in all_players {
-            // Update the host
-            if p.id == 0 {
-                missions.0 = filter_missions(&all_missions, &map, &p);
-                *player = p;
+        // If there are still players playing, cleanup resources from players that lost
+        let playing = all_players.iter().filter(|p| !p.spectator).count();
+        if playing >= 2 {
+            // Remove all units, buys and missions from this player
+            all_players.iter_mut().filter(|p| p.spectator).for_each(|p| {
+                map.planets.iter_mut().filter(|pl| pl.controlled() == Some(p.id)).for_each(|p| {
+                    p.clean();
+                });
+                all_missions.retain(|m| !m.owner == p.id);
+            });
+        }
+
+        for p in &mut all_players {
+            // Update spectator if the player is the winner
+            p.spectator = p.spectator || (n_lost == n_clients && n_clients > 0);
+
+            let new_missions = if p.spectator {
+                all_missions.clone()
             } else {
+                filter_missions(&all_missions, &map, &p)
+            };
+
+            if p.id == 0 {
+                // Update the host
+                *player = p.clone();
+                missions.0 = new_missions;
+            } else {
+                // Update the host resource
+                host.clients.get_mut(&p.id).map(|pl| *pl = p.clone());
+
                 // Update the clients
                 server_send_msg.write(ServerSendMsg::new(
                     ServerMessage::StartTurn {
                         turn: settings.turn,
                         map: map.clone(),
                         player: p.clone(),
-                        missions: Missions(filter_missions(&all_missions, &map, &p)),
-                        end_game: p.spectator || (n_lost == n_clients && n_clients > 0),
+                        missions: Missions(new_missions),
                     },
                     Some(p.id),
                 ));
             }
         }
 
-        host.turn_ended.clear();
-        host.received.clear();
+        host.turn_ended.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
+        host.received.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
 
-        if player.spectator || (n_lost == n_clients && n_clients > 0) {
-            player.spectator = true;
+        if player.spectator {
             next_game_state.set(GameState::EndGame);
         } else {
             start_turn_msg.write(StartTurnMsg);

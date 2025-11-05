@@ -301,7 +301,9 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             }
 
             if destroyed.is_empty() {
-                logs.push_str("\n >> No units destroyed.");
+                if !logs.contains("No defending army") {
+                    logs.push_str("\n >> No units destroyed.");
+                }
             } else {
                 for (u, c) in destroyed {
                     logs.push_str(format!("\n >> {c} {} destroyed.", u.to_name()).as_str());

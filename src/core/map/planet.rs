@@ -103,6 +103,13 @@ impl Planet {
         ]);
     }
 
+    pub fn clean(&mut self) {
+        self.owned = None;
+        self.controlled = None;
+        self.army = Army::new();
+        self.buy = Vec::new();
+    }
+
     pub fn controlled(&self) -> Option<ClientId> {
         if self.owned.is_some() {
             self.owned

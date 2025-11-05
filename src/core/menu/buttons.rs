@@ -57,7 +57,7 @@ pub fn on_click_menu_button(
     btn_q: Query<(Option<&DisabledButton>, &MenuBtn)>,
     server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     ip: Res<Ip>,
     mut load_game_ev: MessageWriter<LoadGameMsg>,
     mut save_game_ev: MessageWriter<SaveGameMsg>,
@@ -79,6 +79,7 @@ pub fn on_click_menu_button(
             // Alter home planet's stats
             map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet(0);
 
+            settings.turn = 1;
             commands.insert_resource(UiState::default());
             commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(map);
@@ -129,6 +130,7 @@ pub fn on_click_menu_button(
                 });
             }
 
+            settings.turn = 1;
             commands.insert_resource(UiState::default());
             commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(map);

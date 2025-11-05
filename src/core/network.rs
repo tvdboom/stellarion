@@ -94,7 +94,6 @@ pub enum ServerMessage {
         map: Map,
         player: Player,
         missions: Missions,
-        end_game: bool,
     },
     RequestUpdate,
 }
@@ -231,7 +230,8 @@ pub fn server_receive_message(
 
                         // Replace the planets controlled by the client on the host's map
                         for planet in map.planets.iter_mut().filter(|p| new_player.controls(p)) {
-                            *planet = new_map.planets.iter().find(|p| p.id == planet.id).unwrap().clone();
+                            *planet =
+                                new_map.planets.iter().find(|p| p.id == planet.id).unwrap().clone();
                         }
 
                         // Insert the client's missions in the host's list
@@ -329,14 +329,12 @@ pub fn client_receive_message(
             ServerMessage::StartTurn {
                 turn,
                 map,
-                mut player,
+                player,
                 missions,
-                end_game,
             } => {
                 settings.turn = turn;
 
-                if end_game {
-                    player.spectator = true;
+                if player.spectator {
                     next_game_state.set(GameState::EndGame);
                 } else {
                     start_turn_msg.write(StartTurnMsg);

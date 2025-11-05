@@ -128,11 +128,15 @@ pub fn load_game(
                                     turn: data.settings.turn,
                                     map: data.map.clone(),
                                     player: player.clone(),
-                                    missions: Missions(filter_missions(
-                                        &data.missions,
-                                        &data.map,
-                                        &player,
-                                    )),
+                                    missions: if !player.spectator {
+                                        Missions(filter_missions(
+                                            &data.missions,
+                                            &data.map,
+                                            &player,
+                                        ))
+                                    } else {
+                                        Missions(data.missions.clone())
+                                    },
                                 },
                                 Some(*new_id),
                             ));
@@ -148,11 +152,11 @@ pub fn load_game(
             commands.insert_resource(UiState::default());
             commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(data.settings);
-            commands.insert_resource(Missions(filter_missions(
-                &data.missions,
-                &data.map,
-                &data.host,
-            )));
+            commands.insert_resource(if !data.host.spectator {
+                Missions(filter_missions(&data.missions, &data.map, &data.host))
+            } else {
+                Missions(data.missions.clone())
+            });
             commands.insert_resource(data.map);
             commands.insert_resource(data.host);
             commands.insert_resource(Host::default());

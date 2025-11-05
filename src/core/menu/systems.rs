@@ -60,6 +60,7 @@ pub fn setup_menu(
                 })
                 .with_children(|parent| match app_state.get() {
                     AppState::MainMenu => {
+                        #[cfg(debug_assertions)]
                         spawn_menu_button(parent, MenuBtn::Singleplayer, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::StartGame, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);

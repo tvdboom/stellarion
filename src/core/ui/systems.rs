@@ -382,7 +382,10 @@ fn draw_mission_fleet_hover(
                 ui.add_enabled_ui(n > 0, |ui| {
                     let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
                     ui.add_text_on_image(
-                        if mission.owner != player.id && unit.production() > phalanx {
+                        if mission.owner != player.id
+                            && unit.production() > phalanx
+                            && !player.spectator
+                        {
                             "?".to_string()
                         } else {
                             n.to_string()
@@ -1859,7 +1862,7 @@ pub fn draw_ui(
         // Check whether there is a report on this planet
         let info = player.last_info(planet.id, &missions.0);
 
-        if player.controls(planet) {
+        if player.controls(planet) || player.spectator {
             let (window_w, window_h) = (205., 630.);
 
             draw_panel(
