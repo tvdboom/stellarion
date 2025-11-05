@@ -71,7 +71,7 @@ impl Player {
                 // Mission send from this planet
                 PlanetInfo {
                     turn: r.mission.send,
-                    owner: r.planet.owned,
+                    owner: r.mission.origin_owned,
                     army: Unit::all()
                         .iter()
                         .flatten()
@@ -94,10 +94,12 @@ impl Player {
                                 } else {
                                     Some((
                                         u.clone(),
-                                        if *u == Unit::probe() {
-                                            r.surviving_defender.amount(u) - r.scout_probes
-                                        } else {
+                                        if u.is_building() {
                                             r.surviving_defender.amount(u)
+                                        } else if *u == Unit::probe() {
+                                            r.surviving_attacker.amount(u) - r.scout_probes
+                                        } else {
+                                            r.surviving_attacker.amount(u)
                                         },
                                     ))
                                 }
@@ -131,7 +133,7 @@ impl Player {
         }));
 
         // Clean reports where no units can be seen (e.g., if combat is lost)
-        reports.retain(|r| !r.army.is_empty());
+        reports.retain(|r| r.army.iter().any(|(_, c)| *c > 0));
 
         // If there are no reports, add missile strikes reports,
         // which say something about the silo's level

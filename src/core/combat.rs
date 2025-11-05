@@ -248,6 +248,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
             if !army.is_empty() && !enemy_army.is_empty() {
                 logs.push_str(format!("\n- {side:?} shoots:").as_str());
+            } else if side == Side::Attacker {
+                logs.push_str("\n- No defending army.");
             }
 
             // Reset all shields
@@ -298,8 +300,12 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 }
             }
 
-            for (u, c) in destroyed {
-                logs.push_str(format!("\n >> {c} enemy {}s destroyed.", u.to_name()).as_str());
+            if destroyed.is_empty() {
+                logs.push_str("\n >> No units destroyed.");
+            } else {
+                for (u, c) in destroyed {
+                    logs.push_str(format!("\n >> {c} {} destroyed.", u.to_name()).as_str());
+                }
             }
         }
 

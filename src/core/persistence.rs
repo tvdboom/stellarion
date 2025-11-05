@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::Missions;
+use crate::core::missions::{Mission, Missions};
 use crate::core::network::{Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
-use crate::core::turns::PreviousEndTurnState;
+use crate::core::turns::{filter_missions, PreviousEndTurnState};
 use crate::core::ui::systems::UiState;
 
 #[derive(Default)]
@@ -34,7 +34,7 @@ pub struct SaveAll {
     pub map: Map,
     pub host: Player,
     pub clients: Vec<Player>,
-    pub missions: Missions,
+    pub missions: Vec<Mission>,
 }
 
 #[derive(Message)]
@@ -128,7 +128,11 @@ pub fn load_game(
                                     turn: data.settings.turn,
                                     map: data.map.clone(),
                                     player: player.clone(),
-                                    missions: data.missions.clone(),
+                                    missions: Missions(filter_missions(
+                                        &data.missions,
+                                        &data.map,
+                                        &player,
+                                    )),
                                 },
                                 Some(*new_id),
                             ));
@@ -144,9 +148,13 @@ pub fn load_game(
             commands.insert_resource(UiState::default());
             commands.insert_resource(PreviousEndTurnState::default());
             commands.insert_resource(data.settings);
+            commands.insert_resource(Missions(filter_missions(
+                &data.missions,
+                &data.map,
+                &data.host,
+            )));
             commands.insert_resource(data.map);
             commands.insert_resource(data.host);
-            commands.insert_resource(data.missions);
             commands.insert_resource(Host::default());
 
             next_app_state.set(AppState::Game);
@@ -193,13 +201,20 @@ pub fn save_game(
                         file_path.set_extension("bin");
                     }
 
+                    let all_missions = missions
+                        .iter()
+                        .filter(|m| m.owner == player.id)
+                        .chain(host.missions.iter())
+                        .cloned()
+                        .collect::<Vec<_>>();
+
                     let file_path_str = file_path.to_string_lossy().to_string();
                     let data = SaveAll {
                         settings: settings.clone(),
                         map: map.clone(),
                         host: player.clone(),
                         clients: host.clients.values().cloned().collect(),
-                        missions: missions.clone(),
+                        missions: all_missions,
                     };
 
                     save_to_bin(&file_path_str, &data).expect("Failed to save the game.");

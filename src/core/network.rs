@@ -13,7 +13,7 @@ use crate::core::map::map::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::menu::buttons::LobbyTextCmp;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{Mission, MissionId, Missions};
+use crate::core::missions::{Mission, Missions};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
@@ -38,7 +38,7 @@ pub struct Host {
     pub clients: HashMap<ClientId, Player>,
 
     /// All missions in the game with real stats
-    pub missions: HashMap<MissionId, Mission>,
+    pub missions: Vec<Mission>,
 
     /// Keeps track of which clients have ended their turn
     pub turn_ended: HashSet<ClientId>,
@@ -124,6 +124,7 @@ pub fn new_renet_client(ip: &String) -> (RenetClient, NetcodeClientTransport) {
     let transport = NetcodeClientTransport::new(current_time, authentication, socket).unwrap();
     let client = RenetClient::new(ConnectionConfig::default());
 
+    println!("Client created.");
     (client, transport)
 }
 
@@ -142,6 +143,7 @@ pub fn new_renet_server() -> (RenetServer, NetcodeServerTransport) {
     let transport = NetcodeServerTransport::new(server_config, socket).unwrap();
     let server = RenetServer::new(ConnectionConfig::default());
 
+    println!("Server created.");
     (server, transport)
 }
 
@@ -155,6 +157,26 @@ pub fn server_update(
     mut message: MessageWriter<MessageMsg>,
 ) {
     for ev in server_ev.read() {
+        match ev {
+            ServerEvent::ClientConnected {
+                client_id,
+            } => {
+                message.write(MessageMsg::info(format!("Client {client_id} connected")));
+            },
+            ServerEvent::ClientDisconnected {
+                client_id,
+                reason,
+            } => {
+                message.write(MessageMsg::error(format!(
+                    "Client {client_id} disconnected. Reason: {reason}."
+                )));
+
+                if *app_state == AppState::Game {
+                    next_game_state.set(GameState::InGameMenu);
+                }
+            },
+        }
+
         if *app_state != AppState::Game {
             let n_players = server.clients_id().len() + 1;
 
@@ -170,23 +192,6 @@ pub fn server_update(
                     text.0 = format!("There are {n_players} players in the lobby.\nWaiting for other players to join {}...", get_local_ip());
                     next_app_state.set(AppState::ConnectedLobby);
                 }
-            }
-        } else {
-            match ev {
-                ServerEvent::ClientConnected {
-                    client_id,
-                } => {
-                    message.write(MessageMsg::info(format!("Client {client_id} connected")));
-                },
-                ServerEvent::ClientDisconnected {
-                    client_id,
-                    reason,
-                } => {
-                    message.write(MessageMsg::error(format!(
-                        "Client {client_id} disconnected. Reason: {reason}."
-                    )));
-                    next_game_state.set(GameState::InGameMenu);
-                },
             }
         }
     }
@@ -225,14 +230,17 @@ pub fn server_receive_message(
                         let map = map.as_mut().unwrap();
 
                         // Replace the planets controlled by the client on the host's map
-                        for planet in new_map.planets.iter().filter(|p| new_player.controls(p)) {
-                            *map.planets.iter_mut().find(|p| p.id == planet.id).unwrap() =
-                                planet.clone();
+                        for planet in map.planets.iter_mut().filter(|p| new_player.controls(p)) {
+                            *planet = new_map.planets.iter().find(|p| p.id == planet.id).unwrap().clone();
                         }
 
                         // Insert the client's missions in the host's list
                         for mission in new_missions.iter().filter(|m| m.owner == id) {
-                            host.missions.insert(mission.id, mission.clone());
+                            if let Some(m) = host.missions.iter_mut().find(|m| m.id == mission.id) {
+                                *m = mission.clone();
+                            } else {
+                                host.missions.push(mission.clone());
+                            }
                         }
 
                         // Replace the client itself in the host's list

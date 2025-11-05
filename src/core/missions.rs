@@ -29,10 +29,6 @@ impl Missions {
     pub fn iter(&self) -> std::slice::Iter<'_, Mission> {
         self.0.iter()
     }
-
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Mission> {
-        self.0.iter_mut()
-    }
 }
 
 #[derive(Message)]

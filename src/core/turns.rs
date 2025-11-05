@@ -96,6 +96,22 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
     }
 }
 
+/// Select the missions a player is able to see
+pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> Vec<Mission> {
+    missions
+        .iter()
+        .filter(|m| {
+            let destination = map.get(m.destination);
+            let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
+            m.owner == player.id
+                || (player.owns(destination)
+                    && 0.6 * phalanx as f32 >= m.distance(&map)
+                    && m.objective != Icon::Spy)
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
 pub fn check_turn_ended(
     state: Res<UiState>,
     mut prev_state: ResMut<PreviousEndTurnState>,
@@ -143,8 +159,12 @@ pub fn resolve_turn(
             .chain(host.clients.values().cloned())
             .collect::<Vec<_>>();
 
-        let mut all_missions =
-            missions.0.iter().cloned().chain(host.missions.values().cloned()).collect::<Vec<_>>();
+        let mut all_missions = missions
+            .iter()
+            .filter(|m| m.owner == player.id)
+            .chain(host.missions.iter())
+            .cloned()
+            .collect::<Vec<_>>();
 
         // Produce resources
         for player in &mut all_players {
@@ -303,9 +323,9 @@ pub fn resolve_turn(
                 }
 
                 // Update all missions whose destination changed
-                all_missions.retain_mut(|m| {
-                    check_mission(m, &map, settings.turn);
-                    !arrived.iter().map(|m| m.id).contains(&m.id)
+                all_missions.retain_mut(|mission| {
+                    check_mission(mission, &map, settings.turn);
+                    !arrived.iter().map(|m| m.id).contains(&mission.id)
                 });
             }
         }
@@ -315,21 +335,8 @@ pub fn resolve_turn(
         all_missions.iter_mut().for_each(|m| m.advance(&map));
         all_missions.extend(new_missions);
 
-        // Select the missions every player is able to see
-        let filter_missions = |missions: &Vec<Mission>, player: &Player| {
-            missions
-                .iter()
-                .filter(|m| {
-                    let destination = map.get(m.destination);
-                    let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
-                    m.owner == player.id
-                        || (player.owns(destination)
-                            && 0.6 * phalanx as f32 >= m.distance(&map)
-                            && m.objective != Icon::Spy)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        // Reset missions in the host
+        host.missions = vec![];
 
         // Update which players lost the game
         let n_lost = all_players
@@ -344,7 +351,7 @@ pub fn resolve_turn(
         for p in all_players {
             // Update the host
             if p.id == 0 {
-                missions.0 = filter_missions(&all_missions, &p);
+                missions.0 = filter_missions(&all_missions, &map, &p);
                 *player = p;
             } else {
                 // Update the clients
@@ -353,7 +360,7 @@ pub fn resolve_turn(
                         turn: settings.turn,
                         map: map.clone(),
                         player: p.clone(),
-                        missions: Missions(filter_missions(&all_missions, &p)),
+                        missions: Missions(filter_missions(&all_missions, &map, &p)),
                         end_game: p.spectator || (n_lost == n_clients && n_clients > 0),
                     },
                     Some(p.id),

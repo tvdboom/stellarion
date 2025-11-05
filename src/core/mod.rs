@@ -116,12 +116,7 @@ impl Plugin for GamePlugin {
                     client_receive_message.run_if(resource_exists::<RenetClient>),
                 ),
             )
-            .add_systems(
-                Update,
-                server_update
-                    .run_if(resource_exists::<RenetServer>)
-                    .run_if(not(in_state(AppState::Game))),
-            )
+            .add_systems(Update, server_update.run_if(resource_exists::<RenetServer>))
             .add_systems(
                 Last,
                 (
@@ -139,7 +134,7 @@ impl Plugin for GamePlugin {
 
         app
             // Ui
-            .add_systems(OnEnter(AppState::Game), (add_ui_images, set_ui_style))
+            .add_systems(OnEnter(AppState::MultiPlayerMenu), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
             // Utilities
             .add_systems(

@@ -62,7 +62,11 @@ pub fn check_keys(
         player.resources += 1000usize;
         map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).for_each(|p| {
             for unit in Unit::all().iter().flatten() {
-                *p.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
+                if unit.is_building() {
+                    *p.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
+                } else {
+                    *p.army.entry(*unit).or_insert(0) += 10;
+                }
             }
         });
     }
