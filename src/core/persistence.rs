@@ -77,6 +77,8 @@ pub fn load_game(
             let file_path_str = file_path.to_string_lossy().to_string();
             let mut data = load_from_bin(&file_path_str).expect("Failed to load the game.");
 
+            let mut start_game = true;
+
             let ids = data.clients.iter().map(|p| p.id).collect::<Vec<_>>();
 
             let n_opponents = ids.len();
@@ -84,6 +86,7 @@ pub fn load_game(
                 if let Some(server) = &server {
                     let n_clients = server.clients_id().len();
                     if n_clients != n_opponents {
+                        start_game = false;
                         message.write(MessageMsg::error(format!("The loaded game has {n_opponents} opponents but the server has {n_clients} clients.")));
                     } else {
                         for (new_id, old_id) in server.clients_id().iter().zip(ids) {
@@ -143,27 +146,30 @@ pub fn load_game(
                         }
                     }
                 } else {
+                    start_game = false;
                     message.write(MessageMsg::error(format!("The loaded game contains {n_opponents} opponents but there is no server initiated.")));
                 }
             }
 
-            next_audio_state.set(data.settings.audio);
+            if start_game {
+                next_audio_state.set(data.settings.audio);
 
-            commands.insert_resource(UiState::default());
-            commands.insert_resource(PreviousEndTurnState::default());
-            commands.insert_resource(data.settings);
-            commands.insert_resource(if !data.host.spectator {
-                Missions(filter_missions(&data.missions, &data.map, &data.host))
-            } else {
-                Missions(data.missions.clone())
-            });
-            commands.insert_resource(data.map);
-            commands.insert_resource(data.host);
-            commands.insert_resource(Host::default());
+                commands.insert_resource(UiState::default());
+                commands.insert_resource(PreviousEndTurnState::default());
+                commands.insert_resource(data.settings);
+                commands.insert_resource(if !data.host.spectator {
+                    Missions(filter_missions(&data.missions, &data.map, &data.host))
+                } else {
+                    Missions(data.missions.clone())
+                });
+                commands.insert_resource(data.map);
+                commands.insert_resource(data.host);
+                commands.insert_resource(Host::default());
 
-            next_app_state.set(AppState::Game);
+                next_app_state.set(AppState::Game);
 
-            message.write(MessageMsg::info("Game loaded."));
+                message.write(MessageMsg::info("Game loaded."));
+            }
         }
     }
 }

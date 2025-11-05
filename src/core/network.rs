@@ -329,19 +329,19 @@ pub fn client_receive_message(
             ServerMessage::StartTurn {
                 turn,
                 map,
-                player,
+                player: new_player,
                 missions,
             } => {
                 settings.turn = turn;
 
-                if player.spectator {
+                if new_player.spectator && !(*player.as_ref().unwrap()).spectator {
                     next_game_state.set(GameState::EndGame);
                 } else {
                     start_turn_msg.write(StartTurnMsg);
                 }
 
                 commands.insert_resource(map);
-                commands.insert_resource(player);
+                commands.insert_resource(new_player);
                 commands.insert_resource(missions);
             },
             ServerMessage::RequestUpdate => {

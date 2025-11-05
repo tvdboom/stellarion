@@ -144,6 +144,8 @@ pub fn resolve_turn(
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
+    let is_spectator = player.spectator;
+
     // Collect all players and missions
     let mut all_players =
         std::iter::once(player.clone()).chain(host.clients.values().cloned()).collect::<Vec<_>>();
@@ -357,7 +359,7 @@ pub fn resolve_turn(
                 map.planets.iter_mut().filter(|pl| pl.controlled() == Some(p.id)).for_each(|p| {
                     p.clean();
                 });
-                all_missions.retain(|m| !m.owner == p.id);
+                all_missions.retain(|m| m.owner != p.id);
             });
         }
 
@@ -395,7 +397,8 @@ pub fn resolve_turn(
         host.turn_ended.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
         host.received.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
 
-        if player.spectator {
+        // Only change the screen to end game the first time
+        if player.spectator && !is_spectator {
             next_game_state.set(GameState::EndGame);
         } else {
             start_turn_msg.write(StartTurnMsg);

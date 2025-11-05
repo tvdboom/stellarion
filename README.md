@@ -15,24 +15,14 @@
 
 <br>
 
-## 📜 Introduction
+## 📜 Overview
 
 Stellarion is a turn-based strategy game, where players build interstellar empires. Expand your 
 colonies, manage resources, and command fleets that engage in strategic battles for dominance of 
-the galaxy.
-
-<br>
-
-## 🎮 Gameplay
-
-The goal of the game is to conquer or destroy the enemy's home planet. If you lose your home 
+the galaxy. The goal of the game is to conquer or destroy the enemy's home planet. If you lose your home 
 planet, you lose the game.
 
-<br>
-
-### Planets
-
-#### Resources
+### Resources
 
 The game presents three resource types:
 
@@ -46,7 +36,7 @@ resource production! It should influence the type of strategy you might want to 
 game. For example, a home planet with a lack of deuterium forces the player into early expansion 
 to be able to fuel its fleet later.
 
-#### Owned vs controlled planets
+### Planets
 
 A planet is owned by a player if it's the player's home planet or if it has been colonized by a
 Colony Ship. A planet is controlled by a player if the player has military presence on it. If a
@@ -59,8 +49,6 @@ planets. For example, a player controlling (but not owning) a planet, cannot use
 see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned planet always 
 gives full intelligence on the attacking units to the planet's owner. Also when the fight is lost.
 If losing combat on a controlled planet, no intelligence is gained.
-
-<br>
 
 ### Units
 
@@ -77,7 +65,7 @@ You can build three types of units on an owned planet:
   destroying a planet with any defense army. Missile capabilities are also included with the defense
   units.
 
-#### Combat
+### Combat
 
 In combat, there are two sides: the attacker and the defender. There is the possibility that 
 the attacker has launched his fleets against a planet with no defense or ships, in which case 
@@ -93,24 +81,24 @@ randomly choose a target enemy unit.
 
 For each shooting unit:
 
-- If it's the first round of a missile strike, the defender's Antiballistic Missiles will fire
-  sequentially until they are depleted or no Interplanetary Missiles remain.
-- A random enemy unit is chosen as target. If the unit is a defense and the planet has a 
-  Planetary Shield with remaining shield, the Planetary Shield is chosen as target instead.
-- If the damage is lower than the enemy's shield, the shield absorbs the shot, and the unit does 
-  not lose hull: S = S - W.
-- Else, if W > S, the shield only absorbs part of the shot and the rest of the damage is dealt to 
-  the hull: H = H - (W - S) and S = 0.
-- If the shooting unit has rapid fire against the target unit, it has a chance of RF% of choosing 
-  another target at random, and repeating the above steps for that new target.
-- All ships with H=0 (no hull points left) are destroyed.
-- If the objective is to destroy the planet and there are no enemy ships left, each attacking 
-  War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet is
-  immediately destroyed and all defenses and buildings with it.
-- If it's the first round of combat and there are any Probes on the attacker's side, they leave 
-  combat and fly back to the origin planet (if `combat probes` option disabled).
-- If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 
-  side winning.
+1. If it's the first round of a missile strike, the defender's Antiballistic Missiles will fire
+   sequentially until they are depleted or no Interplanetary Missiles remain.
+2. A random enemy unit is chosen as target. If the unit is a defense unit and the planet has a 
+   Planetary Shield with remaining shield, the Planetary Shield is chosen as target instead.
+3. If the damage is lower than the enemy's shield, the shield absorbs the shot, and the unit does 
+   not lose hull: S = S - W.
+4. Else, if W > S, the shield only absorbs part of the shot and the rest of the damage is dealt to 
+   the hull: H = H - (W - S) and S = 0.
+5. If the shooting unit has rapid fire against the target unit, it has a chance of RF% of choosing 
+   another target at random, and repeating the above steps for that new target.
+6. All ships with H=0 (no hull points left) are destroyed.
+7. If the objective is to destroy the planet and there are no enemy ships left, each attacking 
+   War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet is
+   immediately destroyed and all defenses and buildings with it.
+8. If it's the first round of combat and there are any Probes on the attacker's side, they leave 
+   combat and fly back to the origin planet (if `combat probes` option disabled).
+9. If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 
+   side winning.
 
 
 Things to keep in mind:
@@ -142,5 +130,5 @@ Things to keep in mind:
 - `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.
 - `H`: Enable/disable information tooltips on hover.
-- `M`: Show/hide the shop panel.
+- `B`: Show/hide the shop panel.
 - `M`: Show/hide the mission panel.

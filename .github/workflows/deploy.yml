@@ -1,0 +1,46 @@
+name: Build and deploy game
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Rust toolchain
+        uses: hecrj/setup-rust-action@v2.0.1
+        with:
+          rust-version: stable
+
+      - name: Build artifact
+        run: cargo build --release
+
+      - name: Copy files to output folder
+        run: |
+          mkdir -p output
+          cp -r $GITHUB_WORKSPACE/assets/ output/assets
+          cp target/release/*.exe output/
+          cd output
+          zip -r ../stellarion.zip .
+
+      - name: Deploy to itch.io
+        uses: manleydev/butler-publish-itchio-action@master
+        env:
+          BUTLER_CREDENTIALS: ${{ secrets.BUTLER_CREDENTIALS }}
+          CHANNEL: windows
+          ITCH_GAME: stellarion
+          ITCH_USER: tvdboom
+          PACKAGE: stellarion.zip
