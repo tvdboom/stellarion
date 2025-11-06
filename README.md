@@ -62,8 +62,7 @@ You can build three types of units on an owned planet:
   other specific ship types, so try to build your fleet according to your enemy's composition.
 - **Defenses:** Defenses are stationary combat units. They have better price-to-stats ratios than
   ships, but are fixed to the planet. Be careful with stacking defenses! War Suns are capable of
-  destroying a planet with any defense army. Missile capabilities are also included with the defense
-  units.
+  destroying a planet with any defense army. Missiles are also included with the defense units.
 
 ### Combat
 
