@@ -6,11 +6,8 @@ on:
       - master
 
 jobs:
-  build-deploy:
+  build:
     runs-on: windows-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     permissions:
       pages: write
@@ -40,6 +37,25 @@ jobs:
           cp target/release/stellarion.exe output/
           cd output
           zip -r ../stellarion.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stellarion-zip
+          path: stellarion.zip
+
+  # Separate job since butler only works on linux and we need
+  # to run cargo build on windows to generate the .exe
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: stellarion-zip
+          path: .
 
       - name: Deploy to itch.io
         uses: manleydev/butler-publish-itchio-action@master
