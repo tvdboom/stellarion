@@ -220,15 +220,15 @@ impl Combat for Ship {
     fn speed(&self) -> f32 {
         match self {
             Ship::Probe => 1.8,
-            Ship::ColonyShip => 0.5,
-            Ship::LightFighter => 1.5,
-            Ship::HeavyFighter => 1.3,
-            Ship::Destroyer => 1.2,
-            Ship::Cruiser => 1.1,
-            Ship::Bomber => 0.8,
-            Ship::Battleship => 0.9,
-            Ship::Dreadnought => 0.8,
-            Ship::WarSun => 0.7,
+            Ship::ColonyShip => 1.0,
+            Ship::LightFighter => 1.6,
+            Ship::HeavyFighter => 1.6,
+            Ship::Destroyer => 1.5,
+            Ship::Cruiser => 1.4,
+            Ship::Bomber => 1.2,
+            Ship::Battleship => 1.3,
+            Ship::Dreadnought => 1.2,
+            Ship::WarSun => 1.1,
         }
     }
 

@@ -48,6 +48,10 @@ impl Resources {
             ResourceName::Deuterium => self.deuterium,
         }
     }
+
+    pub fn min(&self) -> usize {
+        self.metal.min(self.crystal).min(self.deuterium)
+    }
 }
 
 impl PartialOrd for Resources {
@@ -74,60 +78,56 @@ impl Sum for Resources {
         iter.fold(Self::default(), |acc, x| acc + x)
     }
 }
+impl Resources {
+    #[inline]
+    fn safe_op<F>(self, rhs: Resources, f: F) -> Self
+    where
+        F: Fn(usize, usize) -> usize,
+    {
+        Self {
+            metal: f(self.metal, rhs.metal),
+            crystal: f(self.crystal, rhs.crystal),
+            deuterium: f(self.deuterium, rhs.deuterium),
+        }
+    }
+
+    #[inline]
+    fn safe_scalar<F>(self, rhs: usize, f: F) -> Self
+    where
+        F: Fn(usize, usize) -> usize,
+    {
+        Self {
+            metal: f(self.metal, rhs),
+            crystal: f(self.crystal, rhs),
+            deuterium: f(self.deuterium, rhs),
+        }
+    }
+}
 
 macro_rules! resources_binary_ops {
     ($($trait:ident, $method:ident, $op:tt);*;) => {
         $(
-            // Binary operations with Resources
             impl $trait<Self> for Resources {
                 type Output = Self;
 
                 fn $method(self, rhs: Resources) -> Self::Output {
-                    Self {
-                        metal: self.metal $op rhs.metal,
-                        crystal: self.crystal $op rhs.crystal,
-                        deuterium: self.deuterium $op rhs.deuterium,
+                    if stringify!($trait) == "Div" {
+                        self.safe_op(rhs, |a, b| if b == 0 { usize::MAX } else { a / b })
+                    } else {
+                        self.safe_op(rhs, |a, b| a $op b)
                     }
                 }
             }
 
-            // Binary operations with Resources reference
-            impl $trait<&Self> for Resources {
-                type Output = Self;
-
-                fn $method(self, rhs: &Resources) -> Self::Output {
-                    Self {
-                        metal: self.metal $op rhs.metal,
-                        crystal: self.crystal $op rhs.crystal,
-                        deuterium: self.deuterium $op rhs.deuterium,
-                    }
-                }
-            }
-
-            // Binary operations with usize
             impl<T: Into<usize>> $trait<T> for Resources {
                 type Output = Self;
 
                 fn $method(self, rhs: T) -> Self::Output {
-                    let u = rhs.into();
-                    Self {
-                        metal: self.metal $op u,
-                        crystal: self.crystal $op u,
-                        deuterium: self.deuterium $op u,
-                    }
-                }
-            }
-
-            // Binary operations with usize on reference
-            impl<T: Into<usize>> $trait<T> for &Resources {
-                type Output = Resources;
-
-                fn $method(self, rhs: T) -> Resources {
-                    let float = rhs.into();
-                    Resources {
-                        metal: self.metal $op float,
-                        crystal: self.crystal $op float,
-                        deuterium: self.deuterium $op float,
+                    let rhs = rhs.into();
+                    if stringify!($trait) == "Div" {
+                        self.safe_scalar(rhs, |a, b| if b == 0 { usize::MAX } else { a / b })
+                    } else {
+                        self.safe_scalar(rhs, |a, b| a $op b)
                     }
                 }
             }

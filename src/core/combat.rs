@@ -1,5 +1,5 @@
 use bevy_renet::renet::ClientId;
-use rand::prelude::IndexedMutRandom;
+use rand::prelude::{IndexedMutRandom, IteratorRandom};
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -257,7 +257,10 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
             for unit in army {
                 'shoot: loop {
-                    let target = if let Some(target) = enemy_army.choose_mut(&mut rng()) {
+                    let target = if matches!(unit.unit, Unit::Defense(d) if d.is_missile()) {
+                        // Interplanetary Missiles only shoot on defenses
+                        enemy_army.iter_mut().filter(|u| u.unit.is_defense()).choose(&mut rng())
+                    } else if let Some(target) = enemy_army.choose_mut(&mut rng()) {
                         if target.unit.is_defense() && planetary_shield > 0 {
                             planetary_shield =
                                 planetary_shield.saturating_sub(target.unit.damage());
@@ -266,12 +269,18 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                                 logs.push_str("\n >> Planetary Shield destroyed.");
                             }
 
-                            break 'shoot;
+                            None
+                        } else {
+                            Some(target)
                         }
+                    } else {
+                        None
+                    };
 
+                    let target = if let Some(target) = target {
                         target
                     } else {
-                        break 'shoot; // No targets left
+                        break 'shoot; // No unit to target
                     };
 
                     // Target could already been destroyed by another shot

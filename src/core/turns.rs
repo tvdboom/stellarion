@@ -280,31 +280,31 @@ pub fn resolve_turn(
                                 .as_str(),
                             );
                             new_missions.push(return_m);
-                        } else {
-                            if report.planet_colonized {
-                                *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
-                                destination.colonize(mission.owner);
+                        } else if report.planet_colonized {
+                            *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
+                            destination.colonize(mission.owner);
 
-                                report.mission.logs.push_str(
-                                    format!(
-                                        "\n- ({}) Planet {} colonized.",
-                                        settings.turn, destination.name
-                                    )
-                                    .as_str(),
-                                );
+                            report.mission.logs.push_str(
+                                format!(
+                                    "\n- ({}) Planet {} colonized.",
+                                    settings.turn, destination.name
+                                )
+                                .as_str(),
+                            );
 
-                                // If the planet has no buildings, build a level 1 mine
-                                if !destination.has_buildings() {
-                                    destination.army.insert(Unit::Building(Building::Mine), 1);
-                                }
+                            // If the planet has no buildings, build a level 1 mine
+                            if !destination.has_buildings() {
+                                destination.army.insert(Unit::Building(Building::Mine), 1);
                             }
+                        }
 
-                            // Clear defenders from planet
-                            if mission.objective != Icon::Deploy {
-                                destination.army.retain(|u, _| u.is_building());
-                            }
+                        // Clear defenders from planet
+                        if mission.objective != Icon::Deploy {
+                            destination.army.retain(|u, _| u.is_building());
+                        }
 
-                            // Take control of the planet and dock the surviving fleet
+                        // Take control of the planet and dock the surviving fleet
+                        if mission.objective != Icon::Destroy {
                             destination.control(mission.owner);
                             destination.dock(mission.army.clone());
                         }

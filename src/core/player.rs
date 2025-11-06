@@ -89,7 +89,9 @@ impl Player {
                         .flatten()
                         .filter_map(|u| {
                             if can_see {
-                                if r.winner() == r.planet.controlled {
+                                if r.winner() == r.planet.controlled
+                                    || r.mission.objective == Icon::Destroy
+                                {
                                     Some((u.clone(), r.surviving_defender.amount(u)))
                                 } else {
                                     Some((

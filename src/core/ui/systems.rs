@@ -166,7 +166,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     ui.add_space(10.);
 
     ui.horizontal_centered(|ui| {
-        ui.add_space(80.);
+        ui.add_space(90.);
 
         let response = ui
             .scope(|ui| {
@@ -190,7 +190,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
             });
         }
 
-        ui.add_space(120.);
+        ui.add_space(90.);
 
         for resource in ResourceName::iter() {
             let response = ui
@@ -1073,11 +1073,7 @@ fn draw_mission_reports(
                             ui.add_space(7.);
 
                             ui.add_image(
-                                images.get(if report.mission.owner == player.id {
-                                    report.mission.objective.to_lowername()
-                                } else {
-                                    Icon::Attacked.to_lowername()
-                                }),
+                                images.get(report.mission.objective.to_lowername()),
                                 [25., 25.],
                             );
 
@@ -1223,11 +1219,7 @@ fn draw_mission_reports(
                             ui.spacing_mut().item_spacing.x = 4.;
 
                             ui.add_image(
-                                images.get(if report.mission.owner == player.id {
-                                    report.mission.objective.to_lowername()
-                                } else {
-                                    Icon::Attacked.to_lowername()
-                                }),
+                                images.get(report.mission.objective.to_lowername()),
                                 [25., 25.],
                             )
                             .on_hover_ui(|ui| {
@@ -1689,12 +1681,33 @@ fn draw_shop(
                             planet.buy.push(unit.clone());
                         }
 
-                        if !unit.is_building()
-                            && response.secondary_clicked()
-                            && player.resources >= unit.price() * 5usize
-                        {
-                            player.resources -= unit.price() * 5usize;
-                            planet.buy.extend([unit.clone(); 5]);
+                        if !unit.is_building() && response.secondary_clicked() {
+                            // Buy 5 new units (or maximum possible)
+                            let n = match unit {
+                                Unit::Ship(s) => {
+                                    let max_n_p = (planet.max_fleet_production()
+                                        - planet.fleet_production())
+                                        / s.production();
+                                    let max_n_r = (player.resources / s.price()).min();
+                                    5.min(max_n_p).min(max_n_r)
+                                },
+                                Unit::Defense(d) => {
+                                    let max_n_p = (planet.max_battery_production()
+                                        - planet.battery_production())
+                                        / d.production();
+                                    let max_n_r = (player.resources / d.price()).min();
+                                    let max_n_m = if d.is_missile() {
+                                        planet.max_missile_capacity() - planet.missile_capacity()
+                                    } else {
+                                        5
+                                    };
+                                    5.min(max_n_p).min(max_n_r).min(max_n_m)
+                                },
+                                _ => unreachable!(),
+                            };
+
+                            player.resources -= unit.price() * n;
+                            planet.buy.extend(vec![unit.clone(); n]);
                         }
 
                         if count > 0 {
