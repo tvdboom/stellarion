@@ -25,6 +25,9 @@ jobs:
         with:
           rust-version: stable
 
+      - name: Install Linux audio dependencies
+        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+
       - name: Build artifact
         run: cargo build --release
 

@@ -59,7 +59,7 @@ pub fn check_keys(
 
     // Hack to add resources and bump building levels to max
     if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
-        player.resources += 1000usize;
+        player.resources += 10_000usize;
         map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).for_each(|p| {
             for unit in Unit::all().iter().flatten() {
                 if unit.is_building() {

@@ -59,9 +59,9 @@ impl Planet {
     pub const SIZE: f32 = 100.;
 
     pub fn new(id: PlanetId, name: String, position: Vec2) -> Self {
-        let low = 0..3;
+        let low = 1..3;
         let medium = 2..4;
-        let high = 2..5;
+        let high = 3..5;
 
         let configs: &[(PlanetKind, [&Range<usize>; 3])] = &[
             (PlanetKind::Desert, [&high, &low, &low]),

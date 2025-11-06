@@ -152,12 +152,12 @@ impl Combat for Defense {
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
             Defense::InterplanetaryMissile => HashMap::from([
-                (Unit::Defense(Defense::RocketLauncher), 95),
-                (Unit::Defense(Defense::LightLaser), 90),
-                (Unit::Defense(Defense::HeavyLaser), 80),
-                (Unit::Defense(Defense::GaussCannon), 70),
-                (Unit::Defense(Defense::IonCannon), 60),
-                (Unit::Defense(Defense::PlasmaTurret), 50),
+                (Unit::Defense(Defense::RocketLauncher), 90),
+                (Unit::Defense(Defense::LightLaser), 80),
+                (Unit::Defense(Defense::HeavyLaser), 70),
+                (Unit::Defense(Defense::GaussCannon), 60),
+                (Unit::Defense(Defense::IonCannon), 50),
+                (Unit::Defense(Defense::PlasmaTurret), 40),
             ]),
             _ => Army::new(),
         }

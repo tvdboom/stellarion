@@ -239,6 +239,10 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         }
 
         for side in Side::iter() {
+            if mission.objective == Icon::MissileStrike && side == Side::Defender {
+                continue;
+            }
+            
             let mut destroyed = Army::new();
             let (army, enemy_army) = if side == Side::Attacker {
                 (&mut attack_army, &mut defend_army)

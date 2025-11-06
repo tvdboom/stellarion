@@ -147,7 +147,7 @@ impl Combat for Ship {
             Ship::Bomber => 40,
             Ship::Battleship => 40,
             Ship::Dreadnought => 50,
-            Ship::WarSun => 100,
+            Ship::WarSun => 70,
         }
     }
 
@@ -162,7 +162,7 @@ impl Combat for Ship {
             Ship::Bomber => 60,
             Ship::Battleship => 80,
             Ship::Dreadnought => 100,
-            Ship::WarSun => 250,
+            Ship::WarSun => 150,
         }
     }
 
