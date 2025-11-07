@@ -52,7 +52,7 @@ impl Description for Building {
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
-                A Phalanx of level N scans the space at 0.6 * N AU from the planet, and it only \
+                A Phalanx of level N scans the space at 0.7 * N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
                 revealed. Spying missions are not detected by the Phalanx."
             },

@@ -110,16 +110,6 @@ impl Planet {
         self.buy = Vec::new();
     }
 
-    pub fn controlled(&self) -> Option<ClientId> {
-        if self.owned.is_some() {
-            self.owned
-        } else if self.has_fleet() {
-            self.controlled
-        } else {
-            None
-        }
-    }
-
     pub fn colonize(&mut self, client_id: ClientId) {
         self.owned = Some(client_id);
         self.controlled = Some(client_id);

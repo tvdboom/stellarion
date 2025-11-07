@@ -60,7 +60,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
     // If the destination planet is friendly, the mission changes to deploy
     // (the planet could have been colonized by another mission)
     // Except missile strikes, which always attack the destination planet
-    if destination.controlled() == Some(mission.owner)
+    if destination.controlled == Some(mission.owner)
         && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike)
     {
         mission.objective = Icon::Deploy;
@@ -70,7 +70,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
     }
 
     // If deploying to a planet that's no longer under control, convert to attack
-    if destination.controlled() != Some(mission.owner) && mission.objective == Icon::Deploy {
+    if destination.controlled != Some(mission.owner) && mission.objective == Icon::Deploy {
         mission.objective = Icon::Attack;
         mission.logs.push_str(
             format!("\n- ({}) Objective changed to {}.", turn, Icon::Attack.to_name()).as_str(),
@@ -105,7 +105,7 @@ pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> V
             let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
             m.owner == player.id
                 || (player.owns(destination)
-                    && 0.6 * phalanx as f32 >= m.distance(&map)
+                    && 0.7 * phalanx as f32 >= m.distance(&map)
                     && m.objective != Icon::Spy)
         })
         .cloned()
@@ -179,157 +179,179 @@ pub fn resolve_turn(
         let mut players_shuffled = all_players.clone();
         players_shuffled.shuffle(&mut rng());
 
+        let planet_ids = map.planets.iter().map(|p| p.id).collect::<Vec<_>>();
+
         let mut new_missions = vec![];
         for player in players_shuffled {
-            // We loop since a player can change a destination which affects other of its own missions
-            loop {
-                // Select only arriving missions owned by this player
-                let arrived = all_missions
-                    .iter()
-                    .filter(|m| m.owner == player.id && m.turns_to_destination(&map) < 2)
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                if arrived.is_empty() {
-                    break; // No more missions to check for this player
-                }
-
-                // Resolve missions that reached destination
-                for mut mission in regroup_missions(&arrived) {
-                    let new_origin = map.get(mission.check_origin(&map)).clone();
-                    let destination = map.get_mut(mission.destination);
-
-                    let mut report = combat(settings.turn, &mission, destination);
-
-                    report.mission.logs.push_str(
-                        format!("\n- ({}) Mission arrived in {}.", settings.turn, destination.name)
-                            .as_str(),
-                    );
-
-                    if report.scout_probes > 0 {
-                        if mission.objective == Icon::Spy {
-                            report.mission.logs.push_str(
-                                format!(
-                                    "\n- ({}) Spied on planet {}.",
-                                    settings.turn, destination.name
-                                )
-                                .as_str(),
-                            );
-
-                            let mut return_m = Mission {
-                                id: rand::random(),
-                                destination: new_origin.id,
-                                objective: Icon::Deploy,
-                                ..report.mission.clone()
-                            };
-                            return_m.logs.push_str(
-                                format!(
-                                    "\n- ({}) Returning to planet {}.",
-                                    settings.turn, new_origin.name
-                                )
-                                .as_str(),
-                            );
-                            new_missions.push(return_m);
-                        } else {
-                            // Send probes back that left combat after one round
-                            new_missions.push(Mission::new(
-                                settings.turn,
-                                mission.owner,
-                                destination,
-                                &new_origin,
-                                Icon::Deploy,
-                                HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
-                                false,
-                                false,
-                            ));
-                        }
-                    }
-
-                    if report.winner() == Some(mission.owner) {
-                        if report.mission.objective == Icon::Destroy {
-                            if report.planet_destroyed {
-                                destination.destroy();
-                                report.mission.logs.push_str(
-                                    format!(
-                                        "\n- ({}) Planet {} destroyed.",
-                                        settings.turn, destination.name
-                                    )
-                                    .as_str(),
-                                );
-                            } else {
-                                report.mission.logs.push_str(
-                                    format!(
-                                        "\n- ({}) Failed to destroy planet {}.",
-                                        settings.turn, destination.name
-                                    )
-                                    .as_str(),
-                                );
-                            }
-
-                            let mut return_m = Mission {
-                                id: rand::random(),
-                                destination: new_origin.id,
-                                objective: Icon::Deploy,
-                                ..report.mission.clone()
-                            };
-                            return_m.logs.push_str(
-                                format!(
-                                    "\n- ({}) Returning to planet {}.",
-                                    settings.turn, new_origin.name
-                                )
-                                .as_str(),
-                            );
-                            new_missions.push(return_m);
-                        } else if report.planet_colonized {
-                            *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
-                            destination.colonize(mission.owner);
-
-                            report.mission.logs.push_str(
-                                format!(
-                                    "\n- ({}) Planet {} colonized.",
-                                    settings.turn, destination.name
-                                )
-                                .as_str(),
-                            );
-
-                            // If the planet has no buildings, build a level 1 mine
-                            if !destination.has_buildings() {
-                                destination.army.insert(Unit::Building(Building::Mine), 1);
-                            }
-                        }
-
-                        // Clear defenders from planet
-                        if mission.objective != Icon::Deploy {
-                            destination.army.retain(|u, _| u.is_building());
-                        }
-
-                        // Take control of the planet and dock the surviving fleet
-                        if mission.objective != Icon::Destroy {
-                            destination.control(mission.owner);
-                            destination.dock(mission.army.clone());
-                        }
-                    } else {
-                        // Merge surviving defenders with planet
-                        destination.army = report.surviving_defender.clone();
-                    }
-
-                    // Update the ownership in the report
-                    report.destination_owned = destination.owned;
-
-                    // Attach mission report to relevant players
-                    all_players
-                        .iter_mut()
-                        .filter(|p| {
-                            report.planet.controlled == Some(p.id) || report.mission.owner == p.id
+            for planet_id in &planet_ids {
+                // We loop since a player can change a destination which affects other of its own missions
+                loop {
+                    // Select only arriving missions owned by this player
+                    let arrived = all_missions
+                        .iter()
+                        .filter(|m| {
+                            m.owner == player.id
+                                && m.destination == *planet_id
+                                && m.turns_to_destination(&map) < 2
                         })
-                        .for_each(|p| p.reports.push(report.clone()));
-                }
+                        .cloned()
+                        .collect::<Vec<_>>();
 
-                // Update all missions whose destination changed
-                all_missions.retain_mut(|mission| {
-                    check_mission(mission, &map, settings.turn);
-                    !arrived.iter().map(|m| m.id).contains(&mission.id)
-                });
+                    if arrived.is_empty() {
+                        break; // No more missions to check for this player
+                    }
+
+                    // Resolve missions that reached destination
+                    for mut mission in regroup_missions(&arrived) {
+                        let new_origin = map.get(mission.check_origin(&map)).clone();
+                        let destination = map.get_mut(mission.destination);
+
+                        let mut report = combat(settings.turn, &mission, destination);
+
+                        report.mission.logs.push_str(
+                            format!(
+                                "\n- ({}) Mission arrived in {}.",
+                                settings.turn, destination.name
+                            )
+                            .as_str(),
+                        );
+
+                        if report.scout_probes > 0 {
+                            if mission.objective == Icon::Spy {
+                                report.mission.logs.push_str(
+                                    format!(
+                                        "\n- ({}) Spied on planet {}.",
+                                        settings.turn, destination.name
+                                    )
+                                    .as_str(),
+                                );
+
+                                new_missions.push(Mission::new(
+                                    settings.turn,
+                                    report.mission.owner,
+                                    destination,
+                                    &new_origin,
+                                    Icon::Deploy,
+                                    report.surviving_attacker.clone(),
+                                    false,
+                                    false,
+                                    Some(
+                                        report.mission.logs.clone()
+                                            + format!(
+                                                "\n- ({}) Returning to planet {}.",
+                                                settings.turn, new_origin.name
+                                            )
+                                            .as_str(),
+                                    ),
+                                ));
+                            } else {
+                                // Send probes back that left combat after one round
+                                new_missions.push(Mission::new(
+                                    settings.turn,
+                                    mission.owner,
+                                    destination,
+                                    &new_origin,
+                                    Icon::Deploy,
+                                    HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
+                                    false,
+                                    false,
+                                    None,
+                                ));
+                            }
+                        }
+
+                        if report.winner() == Some(mission.owner) {
+                            if report.mission.objective == Icon::Destroy {
+                                if report.planet_destroyed {
+                                    destination.destroy();
+                                    report.mission.logs.push_str(
+                                        format!(
+                                            "\n- ({}) Planet {} destroyed.",
+                                            settings.turn, destination.name
+                                        )
+                                        .as_str(),
+                                    );
+                                } else {
+                                    report.mission.logs.push_str(
+                                        format!(
+                                            "\n- ({}) Failed to destroy planet {}.",
+                                            settings.turn, destination.name
+                                        )
+                                        .as_str(),
+                                    );
+                                }
+
+                                new_missions.push(Mission::new(
+                                    settings.turn,
+                                    report.mission.owner,
+                                    destination,
+                                    &new_origin,
+                                    Icon::Deploy,
+                                    report.surviving_attacker.clone(),
+                                    false,
+                                    false,
+                                    Some(
+                                        report.mission.logs.clone()
+                                            + format!(
+                                                "\n- ({}) Returning to planet {}.",
+                                                settings.turn, new_origin.name
+                                            )
+                                            .as_str(),
+                                    ),
+                                ));
+                            } else if report.planet_colonized {
+                                *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
+                                destination.colonize(mission.owner);
+
+                                report.mission.logs.push_str(
+                                    format!(
+                                        "\n- ({}) Planet {} colonized.",
+                                        settings.turn, destination.name
+                                    )
+                                    .as_str(),
+                                );
+
+                                // If the planet has no buildings, build a level 1 mine
+                                if !destination.has_buildings() {
+                                    destination.army.insert(Unit::Building(Building::Mine), 1);
+                                }
+                            }
+
+                            // Clear defenders from planet
+                            if mission.objective != Icon::Deploy {
+                                destination.army.retain(|u, _| u.is_building());
+                            }
+
+                            // Take control of the planet and dock the surviving fleet
+                            if mission.objective != Icon::Destroy {
+                                destination.control(mission.owner);
+                                destination.dock(mission.army.clone());
+                            }
+                        } else {
+                            // Merge surviving defenders with planet
+                            destination.army = report.surviving_defender.clone();
+                        }
+
+                        // Update the ownership in the report
+                        report.destination_owned = destination.owned;
+                        report.destination_controlled = destination.controlled;
+
+                        // Attach mission report to relevant players
+                        all_players
+                            .iter_mut()
+                            .filter(|p| {
+                                report.planet.controlled == Some(p.id)
+                                    || report.mission.owner == p.id
+                            })
+                            .for_each(|p| p.reports.push(report.clone()));
+                    }
+
+                    // Update all missions whose destination changed
+                    all_missions.retain_mut(|mission| {
+                        check_mission(mission, &map, settings.turn);
+                        !arrived.iter().map(|m| m.id).contains(&mission.id)
+                    });
+                }
             }
         }
 
@@ -356,7 +378,7 @@ pub fn resolve_turn(
         if playing >= 2 {
             // Remove all units, buys and missions from this player
             all_players.iter_mut().filter(|p| p.spectator).for_each(|p| {
-                map.planets.iter_mut().filter(|pl| pl.controlled() == Some(p.id)).for_each(|p| {
+                map.planets.iter_mut().filter(|pl| pl.controlled == Some(p.id)).for_each(|p| {
                     p.clean();
                 });
                 all_missions.retain(|m| m.owner != p.id);

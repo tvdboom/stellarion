@@ -11,9 +11,15 @@ use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
+#[derive(Clone)]
 pub struct PlanetInfo {
+    /// Turn this information was valid
     pub turn: usize,
-    pub owner: Option<ClientId>,
+
+    /// Whether the planet was controlled
+    pub controlled: bool,
+
+    /// The army present on the planet this turn
     pub army: Army,
 }
 
@@ -56,7 +62,7 @@ impl Player {
     }
 
     pub fn controls(&self, planet: &Planet) -> bool {
-        planet.controlled() == Some(self.id)
+        planet.controlled == Some(self.id)
     }
 
     pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
@@ -67,23 +73,48 @@ impl Player {
         let mut reports = vec![];
 
         for r in self.reports.iter() {
-            reports.push(if r.mission.origin == id && r.mission.owner == self.id {
-                // Mission send from this planet
-                PlanetInfo {
-                    turn: r.mission.send,
-                    owner: r.mission.origin_owned,
-                    army: Unit::all()
+            reports.push(if r.mission.origin == id {
+                if r.mission.owner == self.id && r.mission.origin_controlled == Some(self.id) {
+                    // Own mission send from this planet
+                    let army: Army = Unit::all()
                         .iter()
                         .flatten()
                         .map(|u| (*u, r.mission.origin_army.amount(u) - r.mission.army.amount(&u)))
-                        .collect(),
+                        .collect();
+
+                    PlanetInfo {
+                        turn: r.mission.send,
+                        controlled: army.has_army(),
+                        army,
+                    }
+                } else if r.mission.owner != self.id {
+                    // Enemy mission send from this planet
+                    // Only missile strikes tell something about the army (silo's level)
+                    PlanetInfo {
+                        turn: r.mission.send,
+                        controlled: true,
+                        army: if r.mission.objective == Icon::MissileStrike {
+                            Army::from([(
+                                Unit::Building(Building::MissileSilo),
+                                (r.mission.army.amount(&Unit::interplanetary_missile())
+                                    + SILO_CAPACITY_FACTOR
+                                    - 1)
+                                    / SILO_CAPACITY_FACTOR,
+                            )])
+                        } else {
+                            Army::new()
+                        },
+                    }
+                } else {
+                    // Mission send from this planet by player, but the planet was in enemy control
+                    continue;
                 }
             } else if r.mission.destination == id {
                 // Mission arrived at this planet
                 let can_see = r.can_see(&Side::Defender, self.id);
                 PlanetInfo {
                     turn: r.turn,
-                    owner: r.destination_owned,
+                    controlled: r.destination_controlled.is_some(),
                     army: Unit::all()
                         .iter()
                         .flatten()
@@ -121,39 +152,52 @@ impl Player {
             });
         }
 
-        // Add missions that were sent from the planet but haven't arrived yet
-        reports.extend(missions.into_iter().filter_map(|m| {
-            (m.origin == id && m.owner == self.id).then_some(PlanetInfo {
-                turn: m.send,
-                owner: m.origin_owned,
-                army: Unit::all()
-                    .iter()
-                    .flatten()
-                    .map(|u| (u.clone(), m.origin_army.amount(u) - m.army.amount(u)))
-                    .collect(),
-            })
-        }));
+        // Add missions that haven't arrived yet
+        for m in missions.into_iter() {
+            if m.origin == id {
+                if m.owner == self.id && m.origin_controlled == Some(self.id) {
+                    let army: Army = Unit::all()
+                        .iter()
+                        .flatten()
+                        .map(|u| (u.clone(), m.origin_army.amount(u) - m.army.amount(u)))
+                        .collect();
 
-        // Clean reports where no units can be seen (e.g., if combat is lost)
-        reports.retain(|r| r.army.iter().any(|(_, c)| *c > 0));
-
-        // If there are no reports, add missile strikes reports,
-        // which say something about the silo's level
-        if reports.is_empty() {
-            reports.extend(missions.into_iter().filter_map(|m| {
-                (m.origin == id && m.owner != self.id && m.objective == Icon::MissileStrike)
-                    .then_some(PlanetInfo {
+                    reports.push(PlanetInfo {
                         turn: m.send,
-                        owner: m.origin_owned,
-                        army: Army::from([(
-                            Unit::Building(Building::MissileSilo),
-                            (m.army.amount(&Unit::interplanetary_missile()) + 9)
-                                / SILO_CAPACITY_FACTOR,
-                        )]),
-                    })
-            }));
+                        controlled: army.has_army(),
+                        army,
+                    });
+                } else if m.owner != self.id {
+                    reports.push(PlanetInfo {
+                        turn: m.send,
+                        controlled: true,
+                        army: if m.objective == Icon::MissileStrike {
+                            Army::from([(
+                                Unit::Building(Building::MissileSilo),
+                                (m.army.amount(&Unit::interplanetary_missile())
+                                    + SILO_CAPACITY_FACTOR
+                                    - 1)
+                                    / SILO_CAPACITY_FACTOR,
+                            )])
+                        } else {
+                            Army::new()
+                        },
+                    });
+                }
+            }
         }
 
-        reports.into_iter().max_by_key(|i| i.turn)
+        // Select the latest report and take the highest building level from every report
+        reports.iter().max_by_key(|r| r.turn).cloned().map(|mut best| {
+            for building in Unit::buildings() {
+                if let Some(highest) =
+                    reports.iter().map(|r| r.army.amount(&building)).filter(|a| *a > 0).max()
+                {
+                    best.army.insert(building, highest);
+                }
+            }
+
+            best
+        })
     }
 }

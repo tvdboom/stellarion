@@ -212,7 +212,7 @@ pub fn draw_map(
                             map.get(
                                 state
                                     .planet_selected
-                                    .filter(|&p| player.owns(map.get(p)))
+                                    .filter(|&p| player.controls(map.get(p)))
                                     .unwrap_or(player.home_planet),
                             ),
                             map.get(planet_id),
@@ -220,6 +220,7 @@ pub fn draw_map(
                             state.mission_info.army.clone(),
                             state.mission_info.combat_probes,
                             state.mission_info.jump_gate,
+                            None,
                         );
                     }
                 },
@@ -317,6 +318,7 @@ pub fn draw_map(
                                                 state.mission_info.army.clone(),
                                                 state.mission_info.combat_probes,
                                                 state.mission_info.jump_gate,
+                                                None,
                                             );
                                         } else if icon.is_mission() {
                                             state.mission = true;
@@ -385,6 +387,7 @@ pub fn draw_map(
                                                     },
                                                     state.mission_info.combat_probes,
                                                     state.mission_info.jump_gate,
+                                                    None,
                                                 );
                                         }
                                     }
@@ -595,12 +598,12 @@ pub fn update_voronoi(
         let planet = map.get(cell.0);
 
         let visible = settings.show_cells
-            && (player.owns(planet)
-                || player.last_info(planet.id, &missions.0).is_some_and(|i| i.owner.is_some()));
+            && (player.controls(planet)
+                || player.last_info(planet.id, &missions.0).is_some_and(|i| i.controlled));
 
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
-                material.color = if player.owns(planet) {
+                material.color = if player.controls(planet) {
                     Color::srgba(0., 0.3, 0.5, 0.05)
                 } else {
                     Color::srgba(0.5, 0.1, 0., 0.05)
@@ -619,9 +622,9 @@ pub fn update_voronoi(
     let mut counts_own = HashMap::new();
 
     for (_, _, edge) in &edge_q {
-        if player.owns(map.get(edge.planet)) {
+        if player.controls(map.get(edge.planet)) {
             *counts_own.entry(edge.key).or_default() += 1;
-        } else if player.last_info(edge.planet, &missions.0).is_some_and(|i| i.owner.is_some()) {
+        } else if player.last_info(edge.planet, &missions.0).is_some_and(|i| i.controlled) {
             *counts_enemy.entry(edge.key).or_default() += 1;
         }
     }

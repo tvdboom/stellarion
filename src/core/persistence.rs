@@ -117,6 +117,7 @@ pub fn load_game(
                                     &mut r.planet.owned,
                                     &mut r.planet.controlled,
                                     &mut r.destination_owned,
+                                    &mut r.destination_controlled,
                                 ]
                                 .into_iter()
                                 .for_each(|f| upd(f));

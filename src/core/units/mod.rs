@@ -41,11 +41,15 @@ pub type Army = HashMap<Unit, usize>;
 
 pub trait Amount {
     fn amount(&self, unit: &Unit) -> usize;
+    fn has_army(&self) -> bool;
 }
 
 impl Amount for Army {
     fn amount(&self, unit: &Unit) -> usize {
         *self.get(unit).unwrap_or(&0)
+    }
+    fn has_army(&self) -> bool {
+        self.iter().any(|(_, c)| *c > 0)
     }
 }
 

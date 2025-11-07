@@ -165,8 +165,20 @@ fn draw_army_grid(
 fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, images: &ImageIds) {
     ui.add_space(10.);
 
+    // Measure total horizontal width required
+    let mut text = settings.turn.to_string();
+    for r in ResourceName::iter() {
+        text += &player.resources.get(&r).to_string();
+    }
+
+    let size_x = ui
+        .painter()
+        .layout_no_wrap(text, TextStyle::Heading.resolve(ui.style()), Color32::WHITE)
+        .size()
+        .x + 90. + 35. * 2. + 65. * 4. + ui.spacing().item_spacing.x * 9.;
+
     ui.horizontal_centered(|ui| {
-        ui.add_space(90.);
+        ui.add_space((ui.available_width() - size_x) * 0.5);
 
         let response = ui
             .scope(|ui| {
@@ -427,7 +439,7 @@ fn draw_new_mission(
 
     state.mission_info.owner = player.id;
 
-    if origin.controlled() == destination.controlled() {
+    if origin.controlled == destination.controlled {
         state.mission_info.objective = Icon::Deploy;
     } else if state.mission_info.objective == Icon::Deploy {
         state.mission_info.objective = Icon::default();
@@ -806,7 +818,7 @@ fn draw_new_mission(
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     ui.add_space(40.);
 
-                    let army_check = state.mission_info.army.values().sum::<usize>() > 0;
+                    let army_check = state.mission_info.army.has_army();
                     let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
                     let objective_check = match state.mission_info.objective {
                         Icon::Deploy => state.mission_info.army.iter().any(|(u, c)| u.is_ship() && *c > 0),
@@ -870,6 +882,7 @@ fn draw_new_mission(
                                 state.mission_info.army.clone(),
                                 state.mission_info.combat_probes,
                                 state.mission_info.jump_gate,
+                                None,
                             );
 
                             send_mission.write(SendMissionMsg::new(mission));
@@ -1897,7 +1910,8 @@ pub fn draw_ui(
 
             !right_side
         } else if let Some(info) = info {
-            if !planet.is_destroyed {
+            // Don't use has_army since no units is also valid information
+            if !planet.is_destroyed && !info.army.is_empty() {
                 let (window_w, window_h) = (205., 630.);
 
                 draw_panel(

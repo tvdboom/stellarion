@@ -50,6 +50,7 @@ pub struct Mission {
     pub owner: ClientId,
     pub origin: PlanetId,
     pub origin_owned: Option<ClientId>,
+    pub origin_controlled: Option<ClientId>,
     pub origin_army: Army,
     pub destination: PlanetId,
     pub send: usize,
@@ -71,12 +72,14 @@ impl Mission {
         army: Army,
         probes_stay: bool,
         jump_gate: bool,
+        logs: Option<String>,
     ) -> Self {
         Mission {
             id: rand::random(),
             owner,
             origin: origin.id,
             origin_owned: origin.owned,
+            origin_controlled: origin.controlled,
             origin_army: origin.army.clone(),
             destination: destination.id,
             send: turn,
@@ -89,7 +92,7 @@ impl Mission {
             army,
             combat_probes: probes_stay,
             jump_gate,
-            logs: format!("- ({turn}) Mission send to {}.", destination.name),
+            logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
         }
     }
 
@@ -174,15 +177,16 @@ impl Mission {
         self.combat_probes = other.combat_probes || self.combat_probes;
     }
 
-    /// Return the origin planet if still owned by the player,
+    /// Return the origin planet if still controlled by the player,
     /// else go to the nearest friendly planet
     pub fn check_origin(&self, map: &Map) -> PlanetId {
         let origin = map.get(self.origin);
-        if origin.controlled() == Some(self.owner) {
+        if origin.controlled == Some(self.owner) {
             origin.id
         } else {
             map.planets
                 .iter()
+                .filter(|p| p.controlled == Some(self.owner))
                 .min_by_key(|p| OrderedFloat(p.position.distance(self.position)))
                 .map(|p| p.id)
                 .unwrap()
@@ -296,6 +300,11 @@ pub fn send_mission(
         origin.army.iter_mut().for_each(|(u, c)| {
             *c -= mission.army.amount(u);
         });
+
+        // Update control of the planet
+        if !origin.army.has_army() {
+            origin.controlled = None;
+        }
 
         missions.0.push(mission.clone());
 

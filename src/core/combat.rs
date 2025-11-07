@@ -87,6 +87,9 @@ pub struct MissionReport {
     /// Owner of the planet after mission resolution
     pub destination_owned: Option<ClientId>,
 
+    /// Controller of the planet after mission resolution
+    pub destination_controlled: Option<ClientId>,
+
     /// Combat logs (if combat took place)
     pub logs: Option<String>,
 }
@@ -113,7 +116,7 @@ impl MissionReport {
 
     pub fn image(&self, player: &Player) -> &str {
         match self.mission.objective {
-            Icon::MissileStrike => "won",
+            Icon::MissileStrike => "missile",
             Icon::Spy if self.scout_probes > 0 => "eye",
             _ if self.winner() == Some(player.id) => "won",
             _ => "lost",
@@ -126,9 +129,10 @@ impl MissionReport {
                 self.mission.owner == player_id
                     || self.planet.owned == Some(player_id)
                     || self.winner() == Some(player_id)
+                    || self.mission.objective == Icon::Spy // Spy winner returns None
             },
             Side::Defender => {
-                self.planet.controlled() == Some(player_id) || self.winner() == Some(player_id)
+                self.planet.controlled == Some(player_id) || self.winner() == Some(player_id)
             },
         }
     }
@@ -163,6 +167,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             planet_colonized: false,
             planet_destroyed: false,
             destination_owned: destination.owned,
+            destination_controlled: destination.controlled,
             logs: None,
         };
     }
@@ -242,7 +247,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             if mission.objective == Icon::MissileStrike && side == Side::Defender {
                 continue;
             }
-            
+
             let mut destroyed = Army::new();
             let (army, enemy_army) = if side == Side::Attacker {
                 (&mut attack_army, &mut defend_army)
@@ -405,6 +410,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
+        destination_controlled: None, // Filled in turns.rs as well
         logs: Some(logs),
     }
 }
