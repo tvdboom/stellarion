@@ -12,8 +12,8 @@ use crate::core::units::{Description, Unit};
     Component, EnumIter, Copy, Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize,
 )]
 pub enum Icon {
-    #[default]
     Colonize,
+    #[default]
     Attack,
     Spy,
     MissileStrike,
@@ -75,24 +75,26 @@ impl Icon {
         }
     }
 
-    pub fn condition(&self, planet: &Planet) -> bool {
+    pub fn condition(&self, origin: &Planet) -> bool {
         match self {
-            Icon::Buildings => planet.has_buildings(),
-            Icon::Fleet => planet.has_fleet(),
-            Icon::Defenses => planet.has_defense(),
-            Icon::Colonize => planet.has(&Unit::Ship(Ship::ColonyShip)),
-            Icon::Attack => planet.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
-            Icon::Spy => planet.has(&Unit::Ship(Ship::Probe)),
-            Icon::MissileStrike => planet.has(&Unit::Defense(Defense::InterplanetaryMissile)),
-            Icon::Destroy => planet.has(&Unit::Ship(Ship::WarSun)),
-            Icon::Deploy => planet.has_fleet(),
+            Icon::Buildings => origin.has_buildings(),
+            Icon::Fleet => origin.has_fleet(),
+            Icon::Defenses => origin.has_defense(),
+            Icon::Colonize => origin.has(&Unit::Ship(Ship::ColonyShip)),
+            Icon::Attack => origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
+            Icon::Spy => origin.has(&Unit::Ship(Ship::Probe)),
+            Icon::MissileStrike => origin.has(&Unit::Defense(Defense::InterplanetaryMissile)),
+            Icon::Destroy => origin.has(&Unit::Ship(Ship::WarSun)),
+            Icon::Deploy => origin.has_fleet(),
             _ => unreachable!(),
         }
     }
 
     pub fn requirement(&self) -> &str {
         match self {
-            Icon::Colonize => "No Colony Ship on the origin planet.",
+            Icon::Colonize => {
+                "No Colony Ship on the origin planet or maximum planets owned reached."
+            },
             Icon::Attack => "No combat ships on the origin planet.",
             Icon::Spy => "No Probes on the origin planet.",
             Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",

@@ -167,6 +167,13 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
 
     // Measure total horizontal width required
     let mut text = settings.turn.to_string();
+
+    let n_owned = map.planets.iter().filter(|p| p.owned == Some(player.id)).count();
+    let n_max_owned =
+        (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+
+    text += &n_owned.to_string();
+    text += &n_max_owned.to_string();
     for r in ResourceName::iter() {
         text += &player.resources.get(&r).to_string();
     }
@@ -176,10 +183,10 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
         .layout_no_wrap(text, TextStyle::Heading.resolve(ui.style()), Color32::WHITE)
         .size()
         .x
-        + 90.
-        + 35. * 2.
-        + 65. * 4.
-        + ui.spacing().item_spacing.x * 9.;
+        + 80.
+        + 35. * 3.
+        + 65. * 5.
+        + ui.spacing().item_spacing.x * 12.5;
 
     ui.horizontal_centered(|ui| {
         ui.add_space((ui.available_width() - size_x) * 0.5);
@@ -206,7 +213,35 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
             });
         }
 
-        ui.add_space(90.);
+        ui.add_space(35.);
+
+        let response = ui
+            .scope(|ui| {
+                ui.add_image(images.get("owned"), [65., 40.]);
+                ui.heading(format!("{n_owned}/{n_max_owned}"));
+            })
+            .response;
+
+        if settings.show_hover {
+            response.on_hover_ui(|ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.add_image(images.get("owned"), [130., 90.]);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("Planets owned / Max. colonizable");
+                        ui.separator();
+                        ui.small(
+                            "The current number of planets owned and the maximum number \
+                            of planets than can be colonized this game. Planets cannot be \
+                            abandoned, so be careful with what to colonize.",
+                        );
+                    });
+                });
+            });
+        }
+
+        ui.add_space(80.);
 
         for resource in ResourceName::iter() {
             let response = ui
@@ -436,6 +471,10 @@ fn draw_new_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
+    let n_owned = map.planets.iter().filter(|p| p.owned == Some(player.id)).count();
+    let n_max_owned =
+        (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+
     // Block selection of any unit when in spectator mode to be unable to send missions
     if player.spectator {
         state.mission_info.army = Army::new();
@@ -443,8 +482,13 @@ fn draw_new_mission(
 
     state.mission_info.owner = player.id;
 
+    if state.mission_info.objective == Icon::Colonize && n_owned >= n_max_owned {
+        state.mission_info.objective = Icon::Deploy;
+    }
+
     if origin.controlled == destination.controlled {
-        if destination.owned != Some(player.id) {
+        // Check for ownership since you can colonize a controlled planet
+        if destination.owned == Some(player.id) || state.mission_info.objective != Icon::Colonize {
             state.mission_info.objective = Icon::Deploy;
         }
     } else if state.mission_info.objective == Icon::Deploy {
@@ -669,7 +713,7 @@ fn draw_new_mission(
                     };
 
                     for icon in Icon::objectives(player.owns(destination), player.controls(destination)) {
-                        ui.add_enabled_ui(icon.condition(origin), |ui| {
+                        ui.add_enabled_ui(icon.condition(origin) || (icon == Icon::Colonize && n_owned >= n_max_owned), |ui| {
                             let button = ui
                                 .add(
                                     egui::Button::image(SizedTexture::new(
@@ -1870,8 +1914,8 @@ pub fn draw_ui(
             &mut contexts,
             "resources",
             "thin panel",
-            (window.width() * 0.5 - 525., window.height() * 0.01),
-            (1050., 70.),
+            (window.width() * 0.5 - 625., window.height() * 0.01),
+            (1250., 70.),
             &images,
             |ui| draw_resources(ui, &settings, &map, &player, &images),
         );

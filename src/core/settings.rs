@@ -7,6 +7,7 @@ use crate::core::states::AudioState;
 pub struct Settings {
     pub audio: AudioState,
     pub n_planets: usize,
+    pub p_colonizable: usize,
     pub show_cells: bool,
     pub show_info: bool,
     pub show_hover: bool,
@@ -19,6 +20,7 @@ impl Default for Settings {
         Self {
             audio: AudioState::default(),
             n_planets: 10,
+            p_colonizable: 25,
             show_cells: true,
             show_info: false,
             show_hover: true,

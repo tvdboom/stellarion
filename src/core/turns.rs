@@ -54,27 +54,35 @@ fn regroup_missions(missions: &Vec<Mission>) -> Vec<Mission> {
 
 /// Check if a mission objective has to change because the destination
 /// planet changed owner or was destroyed
-fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
+fn check_mission(mission: &mut Mission, map: &Map, turn: usize, settings: &Settings) {
+    let old_objective = mission.objective;
     let destination = map.get(mission.destination);
 
     // If the destination planet is friendly, the mission changes to deploy
     // (the planet could have been colonized by another mission)
     // Except missile strikes, which always attack the destination planet
-    if destination.controlled == Some(mission.owner)
-        && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike)
+    if (destination.controlled == Some(mission.owner)
+        && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike | Icon::Colonize))
+        || (destination.owned == Some(mission.owner) && mission.objective == Icon::Colonize)
     {
         mission.objective = Icon::Deploy;
-        mission.logs.push_str(
-            format!("\n- ({}) Objective changed to {}.", turn, Icon::Deploy.to_name()).as_str(),
-        );
     }
 
     // If deploying to a planet that's no longer under control, convert to attack
     if destination.controlled != Some(mission.owner) && mission.objective == Icon::Deploy {
         mission.objective = Icon::Attack;
-        mission.logs.push_str(
-            format!("\n- ({}) Objective changed to {}.", turn, Icon::Attack.to_name()).as_str(),
-        );
+    }
+
+    // If colonizing and the max. number of planets colonized is reached, change to deploy or attack
+    let n_owned = map.planets.iter().filter(|p| p.owned == Some(mission.owner)).count();
+    let n_max_owned =
+        (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+    if mission.objective == Icon::Colonize && n_owned >= n_max_owned {
+        mission.objective = if destination.controlled != Some(mission.owner) {
+            Icon::Attack
+        } else {
+            Icon::Deploy
+        };
     }
 
     // If going towards a planet that has been destroyed, deploy back to planet of origin,
@@ -90,8 +98,12 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize) {
             )
             .as_str(),
         );
+    }
+
+    if old_objective != mission.objective {
         mission.logs.push_str(
-            format!("\n- ({}) Objective changed to {}.", turn, Icon::Deploy.to_name()).as_str(),
+            format!("\n- ({}) Objective changed to {}.", turn, mission.objective.to_name())
+                .as_str(),
         );
     }
 }
@@ -318,7 +330,10 @@ pub fn resolve_turn(
                             }
 
                             // Clear defenders from planet
-                            if mission.objective != Icon::Deploy {
+                            if !(mission.objective == Icon::Deploy
+                                || (mission.objective == Icon::Colonize
+                                    && destination.controlled == Some(mission.owner)))
+                            {
                                 destination.army.retain(|u, _| u.is_building());
                             }
 
@@ -348,7 +363,7 @@ pub fn resolve_turn(
 
                     // Update all missions whose destination changed
                     all_missions.retain_mut(|mission| {
-                        check_mission(mission, &map, settings.turn);
+                        check_mission(mission, &map, settings.turn, &settings);
                         !arrived.iter().map(|m| m.id).contains(&mission.id)
                     });
                 }

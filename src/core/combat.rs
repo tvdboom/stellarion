@@ -156,7 +156,9 @@ impl CombatUnit {
 }
 
 pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionReport {
-    if mission.objective == Icon::Deploy {
+    if mission.objective == Icon::Deploy
+        || (mission.objective == Icon::Colonize && destination.controlled == Some(mission.owner))
+    {
         return MissionReport {
             turn,
             mission: mission.clone(),
@@ -164,7 +166,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             scout_probes: 0,
             surviving_attacker: mission.army.clone(),
             surviving_defender: destination.army.clone(),
-            planet_colonized: false,
+            planet_colonized: mission.objective == Icon::Colonize,
             planet_destroyed: false,
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,

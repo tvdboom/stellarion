@@ -712,12 +712,12 @@ pub fn update_planet_info(
                     },
                     Icon::Fleet => {
                         // Shows when having an army on a not-owned planet, but hides when hovered
-                        if !player.owns(planet) {
-                            player.controls(planet)
-                                && (selected || icon.condition(planet) || settings.show_info)
-                        } else {
-                            player.controls(planet) && !selected && !settings.show_info
-                        }
+                        player.controls(planet)
+                            && if player.owns(planet) {
+                                selected || icon.condition(planet) || settings.show_info
+                            } else {
+                                icon.condition(planet) && !selected && !settings.show_info
+                            }
                     },
                     _ => {
                         // Show icon if there is a mission with this objective towards this

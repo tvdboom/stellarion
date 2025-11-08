@@ -79,6 +79,7 @@ impl ClientSendMsg {
 pub enum ServerMessage {
     LoadGame {
         turn: usize,
+        p_colonizable: usize,
         map: Map,
         player: Player,
         missions: Missions,
@@ -312,11 +313,13 @@ pub fn client_receive_message(
             },
             ServerMessage::LoadGame {
                 turn,
+                p_colonizable,
                 map,
                 player,
                 missions,
             } => {
                 settings.turn = turn;
+                settings.p_colonizable = p_colonizable;
 
                 commands.insert_resource(UiState::default());
                 commands.insert_resource(PreviousEndTurnState::default());

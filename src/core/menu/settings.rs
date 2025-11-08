@@ -15,9 +15,23 @@ pub enum SettingsBtn {
     Five,
     Ten,
     Twenty,
+    TwentyFive,
+    Fifty,
+    Hundred,
     Mute,
     NoMusic,
     Sound,
+}
+
+impl SettingsBtn {
+    pub fn label(&self) -> String {
+        match self {
+            SettingsBtn::TwentyFive => "25%".to_string(),
+            SettingsBtn::Fifty => "50%".to_string(),
+            SettingsBtn::Hundred => "100%".to_string(),
+            _ => self.to_title(),
+        }
+    }
 }
 
 fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
@@ -25,6 +39,9 @@ fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
         SettingsBtn::Five => game_settings.n_planets == 5,
         SettingsBtn::Ten => game_settings.n_planets == 10,
         SettingsBtn::Twenty => game_settings.n_planets == 20,
+        SettingsBtn::TwentyFive => game_settings.p_colonizable == 25,
+        SettingsBtn::Fifty => game_settings.p_colonizable == 50,
+        SettingsBtn::Hundred => game_settings.p_colonizable == 100,
         SettingsBtn::Mute => game_settings.audio == AudioState::Mute,
         SettingsBtn::NoMusic => game_settings.audio == AudioState::NoMusic,
         SettingsBtn::Sound => game_settings.audio == AudioState::Sound,
@@ -54,6 +71,9 @@ pub fn on_click_label_button(
         SettingsBtn::Five => game_settings.n_planets = 5,
         SettingsBtn::Ten => game_settings.n_planets = 10,
         SettingsBtn::Twenty => game_settings.n_planets = 20,
+        SettingsBtn::TwentyFive => game_settings.p_colonizable = 25,
+        SettingsBtn::Fifty => game_settings.p_colonizable = 50,
+        SettingsBtn::Hundred => game_settings.p_colonizable = 100,
         SettingsBtn::Mute => {
             game_settings.audio = AudioState::Mute;
             change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Mute)));
@@ -128,7 +148,7 @@ pub fn spawn_label(
                     .observe(on_click_label_button)
                     .with_children(|parent| {
                         parent.spawn(add_text(
-                            item.to_title(),
+                            item.label(),
                             "bold",
                             SUBTITLE_TEXT_SIZE,
                             assets,

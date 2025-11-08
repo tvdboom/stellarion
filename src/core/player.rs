@@ -74,20 +74,19 @@ impl Player {
 
         for r in self.reports.iter() {
             reports.push(if r.mission.origin == id {
-                if r.mission.owner == self.id && r.mission.origin_controlled == Some(self.id) {
-                    // Own mission send from this planet
-                    let army: Army = Unit::all()
+                if r.mission.owner == self.id {
+                    // Own mission send from this planet (and it's no longer controlled)
+                    let army: Army = Unit::buildings()
                         .iter()
-                        .flatten()
-                        .map(|u| (*u, r.mission.origin_army.amount(u) - r.mission.army.amount(&u)))
+                        .map(|u| (*u, r.mission.origin_army.amount(u)))
                         .collect();
 
                     PlanetInfo {
                         turn: r.mission.send,
-                        controlled: army.has_army(),
+                        controlled: false,
                         army,
                     }
-                } else if r.mission.owner != self.id {
+                } else {
                     // Enemy mission send from this planet
                     // Only missile strikes tell something about the army (silo's level)
                     PlanetInfo {
@@ -105,9 +104,6 @@ impl Player {
                             Army::new()
                         },
                     }
-                } else {
-                    // Mission send from this planet by player, but the planet was in enemy control
-                    continue;
                 }
             } else if r.mission.destination == id {
                 // Mission arrived at this planet

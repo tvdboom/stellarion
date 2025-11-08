@@ -80,7 +80,11 @@ impl Mission {
             origin: origin.id,
             origin_owned: origin.owned,
             origin_controlled: origin.controlled,
-            origin_army: origin.army.clone(),
+            origin_army: if origin.controlled == Some(owner) {
+                origin.army.clone()
+            } else {
+                Army::new()
+            },
             destination: destination.id,
             send: turn,
             position: {

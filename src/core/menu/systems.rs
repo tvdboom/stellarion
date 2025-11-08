@@ -149,6 +149,18 @@ pub fn setup_menu(
                                 );
                                 spawn_label(
                                     parent,
+                                    "Max. colonizable",
+                                    vec![
+                                        SettingsBtn::TwentyFive,
+                                        SettingsBtn::Fifty,
+                                        SettingsBtn::Hundred,
+                                    ],
+                                    &settings,
+                                    &assets,
+                                    &window,
+                                );
+                                spawn_label(
+                                    parent,
                                     "Audio",
                                     vec![
                                         SettingsBtn::Mute,

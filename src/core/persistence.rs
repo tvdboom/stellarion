@@ -130,6 +130,7 @@ pub fn load_game(
                             server_send_msg.write(ServerSendMsg::new(
                                 ServerMessage::LoadGame {
                                     turn: data.settings.turn,
+                                    p_colonizable: data.settings.p_colonizable,
                                     map: data.map.clone(),
                                     player: player.clone(),
                                     missions: if !player.spectator {
