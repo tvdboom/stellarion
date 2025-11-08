@@ -15,6 +15,7 @@ use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::{Amount, Army, Combat};
+use crate::utils::NameFromEnum;
 
 pub type MissionId = u64;
 
@@ -170,6 +171,15 @@ impl Mission {
     }
 
     pub fn merge(&mut self, other: &Mission) {
+        // The planet of origin becomes the one that send the
+        // largest army (measured by production amount)
+        if self.army.total_production() < other.army.total_production() {
+            self.origin = other.origin;
+            self.origin_owned = other.origin_owned;
+            self.origin_controlled = other.origin_controlled;
+            self.origin_army = other.origin_army.clone();
+        }
+
         // Select objective based on priority
         self.objective =
             [self.objective, other.objective].into_iter().max_by_key(|o| o.priority()).unwrap();
@@ -179,6 +189,11 @@ impl Mission {
         }
 
         self.combat_probes = other.combat_probes || self.combat_probes;
+
+        self.logs.push_str(
+            format!("\n- Merged with other mission with objective {}.", other.objective.to_name())
+                .as_str(),
+        );
     }
 
     /// Return the origin planet if still controlled by the player,

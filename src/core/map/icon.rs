@@ -93,7 +93,7 @@ impl Icon {
     pub fn requirement(&self) -> &str {
         match self {
             Icon::Colonize => {
-                "No Colony Ship on the origin planet or maximum planets owned reached."
+                "No Colony Ship on the origin planet or maximum number of colonized planets reached."
             },
             Icon::Attack => "No combat ships on the origin planet.",
             Icon::Spy => "No Probes on the origin planet.",

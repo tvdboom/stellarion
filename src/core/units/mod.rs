@@ -42,6 +42,7 @@ pub type Army = HashMap<Unit, usize>;
 pub trait Amount {
     fn amount(&self, unit: &Unit) -> usize;
     fn has_army(&self) -> bool;
+    fn total_production(&self) -> usize;
 }
 
 impl Amount for Army {
@@ -50,6 +51,9 @@ impl Amount for Army {
     }
     fn has_army(&self) -> bool {
         self.iter().any(|(_, c)| *c > 0)
+    }
+    fn total_production(&self) -> usize {
+        self.iter().filter_map(|(u, c)| (*c > 0).then_some(u.production())).sum()
     }
 }
 

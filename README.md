@@ -40,8 +40,8 @@ to be able to fuel its fleet later.
 
 A planet is owned by a player if it's the player's home planet or if it has been colonized by a
 Colony Ship. A planet is controlled by a player if the player has military presence on it. If a
-planet is owned, it is also controlled by the owner. If a player wins a combat on a planet, but
-doesn't colonize it, he gains controls over that planet and the previous owner loses both 
+planet is owned, it is also controlled by the owner. If a player attacks and wins another planet,
+but doesn't colonize it, he gains controls over that planet and the previous owner loses both 
 ownership and control.
 
 An owned planet produces resources for its owner. Buildings can only be build and used on owned
@@ -49,6 +49,10 @@ planets. For example, a player controlling (but not owning) a planet, cannot use
 see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned planet always 
 gives full intelligence on the attacking units to the planet's owner. Also when the fight is lost.
 If losing combat on a controlled planet, no intelligence is gained.
+
+There is a limit to the amount of planets that can be owned by a player each game. Be careful
+with choosing the planets to colonize, since it cannot be abandoned later. Only if the planet is
+destroyed, it frees up the spot.
 
 ### Units
 
@@ -107,7 +111,8 @@ Things to keep in mind:
   reinforcements will arrive before or after an attack when they both arrive at the destination
   planet the same turn. If reinforcements arrive after the planet has been conquered, the objective
   automatically is transformed in an attack.
-- Attacks on the same planet on the same turn are merged per player and per objective. Missile
+- Attacks on the same planet on the same turn are merged per player and per objective. The planet
+  of origin becomes the planet that send the largest army. The order of resolution becomes: Missile
   strikes are resolved first, followed by spying missions, and then the remaining, which are
   grouped together following objective priority `Destroy` > `Colonize` > `Attack`.
 - An attacking player receives no enemy unit information if all its units are destroyed. If there

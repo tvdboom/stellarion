@@ -687,6 +687,10 @@ pub fn update_planet_info(
     settings: Res<Settings>,
     assets: Local<WorldAssets>,
 ) {
+    let n_owned = map.planets.iter().filter(|p| p.owned == Some(player.id)).count();
+    let n_max_owned =
+        (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+
     for (planet_e, mut planet_s, planet_c) in &mut planet_q {
         let planet = map.get(planet_c.id);
 
@@ -745,7 +749,9 @@ pub fn update_planet_info(
                                             player.controls(p) && player.controls(planet)
                                         },
                                         Icon::Colonize => {
-                                            player.controls(p) && !player.owns(planet)
+                                            player.controls(p)
+                                                && !player.owns(planet)
+                                                && n_owned < n_max_owned
                                         },
                                         _ => player.controls(p) && !player.controls(planet),
                                     }

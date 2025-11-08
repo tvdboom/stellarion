@@ -229,11 +229,11 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
                         ui.add_image(images.get("owned"), [130., 90.]);
                     });
                     ui.vertical(|ui| {
-                        ui.label("Planets owned / Max. colonizable");
+                        ui.label("Planets colonized / Max. colonizable");
                         ui.separator();
                         ui.small(
-                            "The current number of planets owned and the maximum number \
-                            of planets than can be colonized this game. Planets cannot be \
+                            "The current number of planets colonized (owned) and the maximum \
+                            number of planets than can be colonized this game. Planets cannot be \
                             abandoned, so be careful with what to colonize.",
                         );
                     });
@@ -713,7 +713,7 @@ fn draw_new_mission(
                     };
 
                     for icon in Icon::objectives(player.owns(destination), player.controls(destination)) {
-                        ui.add_enabled_ui(icon.condition(origin) || (icon == Icon::Colonize && n_owned >= n_max_owned), |ui| {
+                        ui.add_enabled_ui(icon.condition(origin) && !(icon == Icon::Colonize && n_owned >= n_max_owned), |ui| {
                             let button = ui
                                 .add(
                                     egui::Button::image(SizedTexture::new(
