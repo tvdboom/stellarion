@@ -74,8 +74,8 @@ impl Planet {
 
         let resources = Resources::new(
             rng().random_range(ranges[0].clone()) * 100,
-            rng().random_range(ranges[1].clone()) * 100,
-            rng().random_range(ranges[2].clone()) * 100,
+            rng().random_range(ranges[1].clone()) * 70,
+            rng().random_range(ranges[2].clone()) * 50,
         );
 
         Self {

@@ -103,31 +103,31 @@ pub fn check_keys(
     }
 
     // Move between owned planets
-    if ctrl_pressed && keyboard.just_pressed(KeyCode::Tab) {
-        if let Some(selected) = state.planet_selected {
-            let planets: Vec<_> = map
-                .planets
-                .iter()
-                .sorted_by(|a, b| a.name.cmp(&b.name))
-                .filter_map(|p| player.owns(p).then_some(p.id))
-                .collect();
+    if ctrl_pressed {
+        if keyboard.just_pressed(KeyCode::Tab) {
+            if let Some(selected) = state.planet_selected {
+                let planets: Vec<_> = map
+                    .planets
+                    .iter()
+                    .sorted_by(|a, b| a.name.cmp(&b.name))
+                    .filter_map(|p| player.owns(p).then_some(p.id))
+                    .collect();
 
-            if let Some(pos) = planets.iter().position(|id| *id == selected) {
-                let len = planets.len();
+                if let Some(pos) = planets.iter().position(|id| *id == selected) {
+                    let len = planets.len();
 
-                let new_index = if shift_pressed {
-                    (pos + len - 1) % len
-                } else {
-                    (pos + 1) % len
-                };
+                    let new_index = if shift_pressed {
+                        (pos + len - 1) % len
+                    } else {
+                        (pos + 1) % len
+                    };
 
-                state.planet_selected = Some(planets[new_index]);
+                    state.planet_selected = Some(planets[new_index]);
+                }
             }
         }
-    }
-
-    // Move between mission or shop tabs
-    if state.mission {
+    } else if state.mission {
+        // Move between mission or shop tabs
         if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,

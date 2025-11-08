@@ -302,7 +302,7 @@ pub fn send_mission(
         });
 
         // Update control of the planet
-        if !origin.army.has_army() {
+        if !origin.has_fleet() && origin.owned != Some(player.id) {
             origin.controlled = None;
         }
 

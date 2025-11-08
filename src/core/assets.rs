@@ -89,6 +89,7 @@ impl FromWorld for WorldAssets {
             ("button hover", assets.load("images/ui/button hover.png")),
             // Resources
             ("turn", assets.load("images/resources/turn.png")),
+            ("owned", assets.load("images/resources/owned.png")),
             ("metal", assets.load("images/resources/metal.png")),
             ("crystal", assets.load("images/resources/crystal.png")),
             ("deuterium", assets.load("images/resources/deuterium.png")),

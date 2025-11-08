@@ -175,7 +175,11 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
         .painter()
         .layout_no_wrap(text, TextStyle::Heading.resolve(ui.style()), Color32::WHITE)
         .size()
-        .x + 90. + 35. * 2. + 65. * 4. + ui.spacing().item_spacing.x * 9.;
+        .x
+        + 90.
+        + 35. * 2.
+        + 65. * 4.
+        + ui.spacing().item_spacing.x * 9.;
 
     ui.horizontal_centered(|ui| {
         ui.add_space((ui.available_width() - size_x) * 0.5);
@@ -432,7 +436,7 @@ fn draw_new_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
-    // Block selection of any unit when in spectator mode
+    // Block selection of any unit when in spectator mode to be unable to send missions
     if player.spectator {
         state.mission_info.army = Army::new();
     }
@@ -440,7 +444,9 @@ fn draw_new_mission(
     state.mission_info.owner = player.id;
 
     if origin.controlled == destination.controlled {
-        state.mission_info.objective = Icon::Deploy;
+        if destination.owned != Some(player.id) {
+            state.mission_info.objective = Icon::Deploy;
+        }
     } else if state.mission_info.objective == Icon::Deploy {
         state.mission_info.objective = Icon::default();
     }
@@ -662,7 +668,7 @@ fn draw_new_mission(
                         });
                     };
 
-                    for icon in Icon::objectives(player.controls(destination)) {
+                    for icon in Icon::objectives(player.owns(destination), player.controls(destination)) {
                         ui.add_enabled_ui(icon.condition(origin), |ui| {
                             let button = ui
                                 .add(

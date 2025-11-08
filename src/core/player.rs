@@ -39,8 +39,8 @@ impl Default for Player {
             home_planet: 0,
             resources: Resources {
                 metal: 1500,
-                crystal: 1500,
-                deuterium: 1500,
+                crystal: 1200,
+                deuterium: 1000,
             },
             reports: Vec::new(),
             spectator: false,

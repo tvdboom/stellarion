@@ -302,24 +302,6 @@ pub fn draw_map(
                                         } else if icon == Icon::Attacked {
                                             state.mission = true;
                                             state.mission_tab = MissionTab::IncomingAttacks;
-                                        } else if icon == Icon::Fleet {
-                                            state.mission = true;
-                                            state.mission_info = Mission::new(
-                                                settings.turn,
-                                                player.id,
-                                                map.get(planet_id),
-                                                map.get(
-                                                    state
-                                                        .planet_selected
-                                                        .filter(|&id| player.controls(map.get(id)))
-                                                        .unwrap_or(player.home_planet),
-                                                ),
-                                                Icon::Deploy,
-                                                state.mission_info.army.clone(),
-                                                state.mission_info.combat_probes,
-                                                state.mission_info.jump_gate,
-                                                None,
-                                            );
                                         } else if icon.is_mission() {
                                             state.mission = true;
                                             state.mission_tab = MissionTab::NewMission;
@@ -729,9 +711,13 @@ pub fn update_planet_info(
                             && (selected || icon.condition(planet) || settings.show_info)
                     },
                     Icon::Fleet => {
-                        // A player can have a fleet on a not-owned planet
-                        player.controls(planet)
-                            && (selected || icon.condition(planet) || settings.show_info)
+                        // Shows when having an army on a not-owned planet, but hides when hovered
+                        if !player.owns(planet) {
+                            player.controls(planet)
+                                && (selected || icon.condition(planet) || settings.show_info)
+                        } else {
+                            player.controls(planet) && !selected && !settings.show_info
+                        }
                     },
                     _ => {
                         // Show icon if there is a mission with this objective towards this
@@ -757,6 +743,9 @@ pub fn update_planet_info(
                                     && match icon {
                                         Icon::Deploy => {
                                             player.controls(p) && player.controls(planet)
+                                        },
+                                        Icon::Colonize => {
+                                            player.controls(p) && !player.owns(planet)
                                         },
                                         _ => player.controls(p) && !player.controls(planet),
                                     }

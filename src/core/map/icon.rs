@@ -65,9 +65,11 @@ impl Icon {
         }
     }
 
-    pub fn objectives(to_own_planet: bool) -> Vec<Icon> {
-        if to_own_planet {
+    pub fn objectives(to_owned_planet: bool, to_controlled_planet: bool) -> Vec<Icon> {
+        if to_owned_planet {
             vec![Icon::Deploy]
+        } else if to_controlled_planet {
+            vec![Icon::Colonize, Icon::Deploy]
         } else {
             vec![Icon::Colonize, Icon::Attack, Icon::Spy, Icon::MissileStrike, Icon::Destroy]
         }
@@ -78,12 +80,12 @@ impl Icon {
             Icon::Buildings => planet.has_buildings(),
             Icon::Fleet => planet.has_fleet(),
             Icon::Defenses => planet.has_defense(),
-            Icon::Deploy => planet.has_fleet(),
             Icon::Colonize => planet.has(&Unit::Ship(Ship::ColonyShip)),
             Icon::Attack => planet.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
             Icon::Spy => planet.has(&Unit::Ship(Ship::Probe)),
             Icon::MissileStrike => planet.has(&Unit::Defense(Defense::InterplanetaryMissile)),
             Icon::Destroy => planet.has(&Unit::Ship(Ship::WarSun)),
+            Icon::Deploy => planet.has_fleet(),
             _ => unreachable!(),
         }
     }
@@ -105,7 +107,7 @@ impl Description for Icon {
     fn description(&self) -> &str {
         match self {
             Icon::Colonize => {
-                "A successful attack that contains at least one Colony Ship, colonizes the target \
+                "A successful mission that contains at least one Colony Ship, colonizes the target \
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \
                 If the planet is empty, a level 1 Mine is automatically built. An owned planet \
                 produces resources and can be developed with buildings."
