@@ -21,7 +21,7 @@ pub enum PlanetKind {
     Desert,
     Gas,
     Ice,
-    Normal,
+    Water,
 }
 
 impl PlanetKind {
@@ -30,7 +30,7 @@ impl PlanetKind {
             PlanetKind::Desert => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
             PlanetKind::Gas => vec![7, 10, 11, 14, 18, 37, 43, 45],
             PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40],
-            PlanetKind::Normal => vec![25, 32, 34, 52, 62],
+            PlanetKind::Water => vec![25, 32, 34, 52, 62],
         }
     }
 }
@@ -67,7 +67,7 @@ impl Planet {
             (PlanetKind::Desert, [&high, &low, &low]),
             (PlanetKind::Gas, [&low, &low, &high]),
             (PlanetKind::Ice, [&low, &high, &low]),
-            (PlanetKind::Normal, [&medium, &medium, &low]),
+            (PlanetKind::Water, [&medium, &medium, &low]),
         ];
 
         let (kind, ranges) = configs.iter().choose(&mut rng()).unwrap();
@@ -97,7 +97,9 @@ impl Planet {
     pub fn make_home_planet(&mut self, client_id: ClientId) {
         self.colonize(client_id);
         self.army = Army::from([
-            (Unit::Building(Building::Mine), 1),
+            (Unit::Building(Building::MetalMine), 1),
+            (Unit::Building(Building::CrystalMine), 1),
+            (Unit::Building(Building::DeuteriumSynthesizer), 1),
             (Unit::Building(Building::Shipyard), 1),
             (Unit::Building(Building::Factory), 1),
         ]);
@@ -131,7 +133,12 @@ impl Planet {
     }
 
     pub fn resource_production(&self) -> Resources {
-        self.resources * self.army.amount(&Unit::Building(Building::Mine))
+        Resources::new(
+            self.resources.metal * self.army.amount(&Unit::Building(Building::MetalMine)),
+            self.resources.crystal * self.army.amount(&Unit::Building(Building::CrystalMine)),
+            self.resources.deuterium
+                * self.army.amount(&Unit::Building(Building::DeuteriumSynthesizer)),
+        )
     }
 
     pub fn fleet_production(&self) -> usize {

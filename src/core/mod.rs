@@ -166,9 +166,6 @@ impl Plugin for GamePlugin {
 
         // Persistence
         #[cfg(not(target_arch = "wasm32"))]
-        app.add_systems(
-            Update,
-            (load_game, save_game.in_set(InGameSet)).run_if(resource_exists::<RenetServer>),
-        );
+        app.add_systems(Update, (load_game, save_game.in_set(InGameSet)));
     }
 }

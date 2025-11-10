@@ -165,7 +165,7 @@ impl Combat for Defense {
 
     fn speed(&self) -> f32 {
         match self {
-            Defense::InterplanetaryMissile => 2.,
+            Defense::InterplanetaryMissile => 3.,
             _ => 0.,
         }
     }

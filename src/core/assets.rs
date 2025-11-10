@@ -94,7 +94,9 @@ impl FromWorld for WorldAssets {
             ("crystal", assets.load("images/resources/crystal.png")),
             ("deuterium", assets.load("images/resources/deuterium.png")),
             // Buildings
-            ("mine", assets.load("images/buildings/mine.png")),
+            ("metal mine", assets.load("images/buildings/metal mine.png")),
+            ("crystal mine", assets.load("images/buildings/crystal mine.png")),
+            ("deuterium synthesizer", assets.load("images/buildings/deuterium synthesizer.png")),
             ("shipyard", assets.load("images/buildings/shipyard.png")),
             ("factory", assets.load("images/buildings/factory.png")),
             ("missile silo", assets.load("images/buildings/missile silo.png")),
@@ -153,6 +155,12 @@ impl FromWorld for WorldAssets {
             ("speed", assets.load("images/combat/speed.png")),
             ("fuel consumption", assets.load("images/combat/fuel consumption.png")),
             ("rapid fire", assets.load("images/combat/rapid fire.png")),
+            // Planets
+            ("unknown", assets.load("images/planets/unknown.png")),
+            ("desert", assets.load("images/planets/desert.png")),
+            ("gas", assets.load("images/planets/gas.png")),
+            ("ice", assets.load("images/planets/ice.png")),
+            ("water", assets.load("images/planets/water.png")),
         ]);
 
         for i in 0..65 {

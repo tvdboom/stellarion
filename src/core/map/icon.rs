@@ -44,6 +44,10 @@ impl Icon {
         )
     }
 
+    pub fn is_hidden(&self) -> bool {
+        matches!(self, Icon::Spy | Icon::MissileStrike)
+    }
+
     pub fn shop(&self) -> Shop {
         match self {
             Icon::Buildings => Shop::Buildings,
@@ -111,8 +115,9 @@ impl Description for Icon {
             Icon::Colonize => {
                 "A successful mission that contains at least one Colony Ship, colonizes the target \
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \
-                If the planet is empty, a level 1 Mine is automatically built. An owned planet \
-                produces resources and can be developed with buildings."
+                If the planet is empty, a level 1 Metal Mine, Crystal Mine and Deuterium Synthesizer \
+                are automatically built. An owned planet produces resources and can be developed \
+                with buildings."
             },
             Icon::Attack => {
                 "Attack a planet with your combat ships. If the attack is successful, the ships \
@@ -123,7 +128,8 @@ impl Description for Icon {
             Icon::Spy => {
                 "Send only Probes to gather intelligence on an enemy planet. Probes leave combat \
                 after the first round, and report on the enemy units. The more Probes return, the \
-                better the intelligence. Spying missions aren't detected by the Sensor Phalanx."
+                better the intelligence. Spying missions aren't detected by the Sensor Phalanx \
+                and don't reveal the planet of origin."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
@@ -131,7 +137,9 @@ impl Description for Icon {
                 and the Planetary Shield at the target planet, directly hitting any defenses. \
                 At the end of combat, all surviving missiles are destroyed. Once launched, a \
                 missile strike always hits the destination planet, even if it has been colonized \
-                by the player. Missile Strikes don't report any intelligence about the enemy units."
+                by the player. Missile Strikes don't report any intelligence about the enemy \
+                units. They cannot be detected by the Sensor Phalanx and don't reveal the planet \
+                of origin."
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
@@ -139,7 +147,7 @@ impl Description for Icon {
                 with a 10% chance, decreased with 1% for every round afterwards. Regardless of the \
                 result, the fleet returns after combat. A destroyed planet can't be colonized again."
             },
-            Icon::Deploy => "Send a fleet to another one of your planets.",
+            Icon::Deploy => "Send a fleet to another planet you control.",
             _ => unreachable!(),
         }
     }

@@ -38,14 +38,14 @@ pub fn setup_menu(
         .with_children(|parent| {
             parent
                 .spawn(Node {
-                    top: Val::VMin(5.),
+                    top: Val::VMin(10.),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
                     position_type: PositionType::Absolute,
                     ..default()
                 })
                 .with_children(|parent| {
-                    parent.spawn(add_text(TITLE, "medium", 60., &assets, &window));
+                    parent.spawn(add_text(TITLE, "bold", 60., &assets, &window));
                 });
 
             parent
@@ -66,6 +66,11 @@ pub fn setup_menu(
                         spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);
                         #[cfg(not(target_arch = "wasm32"))]
                         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
+                    }
+                    AppState::SinglePlayerMenu => {
+                        spawn_menu_button(parent, MenuBtn::NewGame, &assets, &window);
+                        spawn_menu_button(parent, MenuBtn::LoadGame, &assets, &window);
+                        spawn_menu_button(parent, MenuBtn::Back, &assets, &window);
                     }
                     AppState::MultiPlayerMenu => {
                         parent.spawn((

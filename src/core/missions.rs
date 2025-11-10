@@ -71,7 +71,7 @@ impl Mission {
         destination: &Planet,
         objective: Icon,
         army: Army,
-        probes_stay: bool,
+        combat_probes: bool,
         jump_gate: bool,
         logs: Option<String>,
     ) -> Self {
@@ -95,7 +95,7 @@ impl Mission {
             },
             objective,
             army,
-            combat_probes: probes_stay,
+            combat_probes,
             jump_gate,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
         }

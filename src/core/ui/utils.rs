@@ -57,7 +57,14 @@ pub trait CustomUi {
     ) -> Response;
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
     fn add_icon_on_image(&mut self, id: impl Into<TextureId>, rect: Rect) -> Response;
-    fn add_text_on_image(&mut self, text: String, color: Color32, rect: Rect);
+    fn add_text_on_image(
+        &mut self,
+        text: String,
+        color: Color32,
+        style: TextStyle,
+        pos: Pos2,
+        align: Align2,
+    ) -> Rect;
     fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R;
 }
 
@@ -90,28 +97,48 @@ impl CustomUi for Ui {
         self.put(Rect::from_min_size(pos, size.into()), Image::new(SizedTexture::new(id, size)))
     }
 
-    fn add_text_on_image(&mut self, text: String, color: Color32, rect: Rect) {
-        let pos = rect.left_bottom() + vec2(2., -2.);
+    fn add_text_on_image(
+        &mut self,
+        text: String,
+        color: Color32,
+        style: TextStyle,
+        mut pos: Pos2,
+        align: Align2,
+    ) -> Rect {
+        let margin = match style {
+            TextStyle::Body => Vec2::new(2., 0.),
+            _ => Vec2::new(5., -5.),
+        };
 
-        let galley = self.painter().layout_no_wrap(
-            text.clone(),
-            TextStyle::Button.resolve(self.style()),
-            color,
-        );
+        let galley = self.painter().layout_no_wrap(text, style.resolve(self.style()), color);
+        let size = galley.size();
 
-        // Background rect (with padding)
-        let bg = Rect::from_min_size(pos - vec2(2., galley.size().y), galley.size() + vec2(6., 4.));
+        if style == TextStyle::Heading {
+            pos = pos + vec2(3., -3.);
+        }
+
+        let top_left = match align {
+            Align2::LEFT_TOP => pos,
+            Align2::LEFT_BOTTOM => pos - vec2(0., size.y + 2. * margin.y),
+            Align2::RIGHT_TOP => pos - vec2(size.x + 2. * margin.x, 0.),
+            Align2::RIGHT_BOTTOM => pos - vec2(size.x + 2. * margin.x, size.y + 2. * margin.y),
+            Align2::CENTER_TOP => pos - vec2(size.x / 2., 0.),
+            Align2::CENTER_BOTTOM => pos - vec2(size.x / 2., size.y + 2. * margin.y),
+            Align2::CENTER_CENTER => pos - size / 2.,
+            Align2::LEFT_CENTER => pos - vec2(0., size.y / 2.),
+            Align2::RIGHT_CENTER => pos - vec2(size.x + 2. * margin.x, size.y / 2.),
+        } + margin;
+
+        // Adjust heading since it has more y padding
+        let bg_rect = Rect::from_min_size(top_left - margin, size + 2. * margin);
 
         // Draw semi-transparent background
-        self.painter().rect_filled(bg, 4., Color32::from_rgba_premultiplied(0, 0, 0, 128));
+        self.painter().rect_filled(bg_rect, 6., Color32::from_rgba_premultiplied(0, 0, 0, 128));
 
-        self.painter().text(
-            pos,
-            Align2::LEFT_BOTTOM,
-            text,
-            TextStyle::Button.resolve(self.style()),
-            color,
-        );
+        // Draw galley
+        self.painter().galley(top_left, galley, Color32::WHITE);
+
+        bg_rect
     }
 
     fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {

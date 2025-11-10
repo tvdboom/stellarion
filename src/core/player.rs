@@ -3,12 +3,11 @@ use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::{MissionReport, Side};
-use crate::core::constants::{PROBES_PER_PRODUCTION_LEVEL, SILO_CAPACITY_FACTOR};
+use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
-use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
 #[derive(Clone)]
@@ -86,24 +85,15 @@ impl Player {
                         controlled: false,
                         army,
                     }
-                } else {
+                } else if !r.mission.objective.is_hidden() {
                     // Enemy mission send from this planet
-                    // Only missile strikes tell something about the army (silo's level)
                     PlanetInfo {
                         turn: r.mission.send,
                         controlled: true,
-                        army: if r.mission.objective == Icon::MissileStrike {
-                            Army::from([(
-                                Unit::Building(Building::MissileSilo),
-                                (r.mission.army.amount(&Unit::interplanetary_missile())
-                                    + SILO_CAPACITY_FACTOR
-                                    - 1)
-                                    / SILO_CAPACITY_FACTOR,
-                            )])
-                        } else {
-                            Army::new()
-                        },
+                        army: Army::new(),
                     }
+                } else {
+                    continue;
                 }
             } else if r.mission.destination == id {
                 // Mission arrived at this planet
@@ -163,21 +153,12 @@ impl Player {
                         controlled: army.has_army(),
                         army,
                     });
-                } else if m.owner != self.id {
+                } else if m.owner != self.id && !m.objective.is_hidden() {
+                    // Enemy mission
                     reports.push(PlanetInfo {
                         turn: m.send,
                         controlled: true,
-                        army: if m.objective == Icon::MissileStrike {
-                            Army::from([(
-                                Unit::Building(Building::MissileSilo),
-                                (m.army.amount(&Unit::interplanetary_missile())
-                                    + SILO_CAPACITY_FACTOR
-                                    - 1)
-                                    / SILO_CAPACITY_FACTOR,
-                            )])
-                        } else {
-                            Army::new()
-                        },
+                        army: Army::new(),
                     });
                 }
             }

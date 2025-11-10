@@ -28,7 +28,7 @@ pub const MESSAGE_DURATION: u64 = 5;
 pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;
 pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
 pub const SILO_CAPACITY_FACTOR: usize = 10;
-pub const PROBES_PER_PRODUCTION_LEVEL: usize = 10;
+pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
 
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;

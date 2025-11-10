@@ -106,8 +106,8 @@ impl Description for Ship {
 impl Price for Ship {
     fn price(&self) -> Resources {
         match self {
-            Ship::Probe => Resources::new(0, 10, 0),
-            Ship::ColonyShip => Resources::new(100, 200, 100),
+            Ship::Probe => Resources::new(0, 20, 0),
+            Ship::ColonyShip => Resources::new(100, 400, 200),
             Ship::LightFighter => Resources::new(30, 10, 0),
             Ship::HeavyFighter => Resources::new(60, 40, 0),
             Ship::Destroyer => Resources::new(60, 70, 20),
@@ -219,16 +219,16 @@ impl Combat for Ship {
 
     fn speed(&self) -> f32 {
         match self {
-            Ship::Probe => 1.8,
-            Ship::ColonyShip => 1.0,
-            Ship::LightFighter => 1.6,
-            Ship::HeavyFighter => 1.6,
-            Ship::Destroyer => 1.5,
-            Ship::Cruiser => 1.4,
-            Ship::Bomber => 1.2,
-            Ship::Battleship => 1.3,
-            Ship::Dreadnought => 1.2,
-            Ship::WarSun => 1.1,
+            Ship::Probe => 2.7,
+            Ship::ColonyShip => 1.5,
+            Ship::LightFighter => 2.4,
+            Ship::HeavyFighter => 2.4,
+            Ship::Destroyer => 2.2,
+            Ship::Cruiser => 2.0,
+            Ship::Bomber => 1.7,
+            Ship::Battleship => 1.9,
+            Ship::Dreadnought => 1.8,
+            Ship::WarSun => 1.6,
         }
     }
 

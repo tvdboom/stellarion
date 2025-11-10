@@ -337,12 +337,12 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
         if round == 1 {
             // Send probes back if there are still remaining enemies or objective is spying
-            let probes = attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::Probe)).count();
+            let probes = attack_army.iter().filter(|u| u.unit == Unit::probe()).count();
             if ((!mission.combat_probes && !defend_army.is_empty())
                 || mission.objective == Icon::Spy)
                 && probes > 0
             {
-                attack_army.retain(|u| u.unit != Unit::Ship(Ship::Probe));
+                attack_army.retain(|u| u.unit != Unit::probe());
                 returning_probes = probes;
                 logs.push_str(&format!("\n- {probes} probes leaving combat."));
             }

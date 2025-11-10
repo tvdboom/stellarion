@@ -9,7 +9,9 @@ use crate::core::units::{Description, Price};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Building {
-    Mine,
+    MetalMine,
+    CrystalMine,
+    DeuteriumSynthesizer,
     Shipyard,
     Factory,
     MissileSilo,
@@ -25,9 +27,18 @@ impl Building {
 impl Description for Building {
     fn description(&self) -> &str {
         match self {
-            Building::Mine => {
-                "The Mine is the building that produces resources. The amount of resources \
-                mined each turn is equal to the planet's base resources times the Mine's level."
+            Building::MetalMine => {
+                "The Metal Mine is the building that produces metal. The amount of metal produced \
+                each turn is equal to the planet's base metal times the mine's level."
+            },
+            Building::CrystalMine => {
+                "The Crystal Mine is the building that produces crystal. The amount of crystal \
+                produced each turn is equal to the planet's base crystal times the mine's level."
+            },
+            Building::DeuteriumSynthesizer => {
+                "The Deuterium Synthesizer is the building that produces deuterium. The amount \
+                of deuterium produced each turn is equal to the planet's base deuterium times the \
+                synthesizer's level."
             },
             Building::Shipyard => {
                 "The Shipyard is responsible for the construction of all ships. At higher levels, \
@@ -52,7 +63,7 @@ impl Description for Building {
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
-                A Phalanx of level N scans the space at 0.7 * N AU from the planet, and it only \
+                A Phalanx of level N scans the space at N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
                 revealed. Spying missions are not detected by the Phalanx."
             },
@@ -69,7 +80,9 @@ impl Description for Building {
 impl Price for Building {
     fn price(&self) -> Resources {
         match self {
-            Building::Mine => Resources::new(500, 100, 0),
+            Building::MetalMine => Resources::new(0, 200, 200),
+            Building::CrystalMine => Resources::new(300, 0, 200),
+            Building::DeuteriumSynthesizer => Resources::new(300, 200, 0),
             Building::Shipyard => Resources::new(400, 200, 100),
             Building::Factory => Resources::new(300, 200, 100),
             Building::MissileSilo => Resources::new(300, 300, 300),

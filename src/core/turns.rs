@@ -17,7 +17,6 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
-use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 use crate::utils::NameFromEnum;
 
@@ -117,8 +116,8 @@ pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> V
             let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
             m.owner == player.id
                 || (player.owns(destination)
-                    && 0.7 * phalanx as f32 >= m.distance(&map)
-                    && m.objective != Icon::Spy)
+                    && phalanx as f32 >= m.distance(&map)
+                    && !m.objective.is_hidden())
         })
         .cloned()
         .collect::<Vec<_>>()
@@ -264,7 +263,7 @@ pub fn resolve_turn(
                                     destination,
                                     &new_origin,
                                     Icon::Deploy,
-                                    HashMap::from([(Unit::Ship(Ship::Probe), report.scout_probes)]),
+                                    HashMap::from([(Unit::probe(), report.scout_probes)]),
                                     false,
                                     false,
                                     None,
@@ -323,9 +322,15 @@ pub fn resolve_turn(
                                     .as_str(),
                                 );
 
-                                // If the planet has no buildings, build a level 1 mine
+                                // If the planet has no buildings, build level 1 resource buildings
                                 if !destination.has_buildings() {
-                                    destination.army.insert(Unit::Building(Building::Mine), 1);
+                                    destination.army.insert(Unit::Building(Building::MetalMine), 1);
+                                    destination
+                                        .army
+                                        .insert(Unit::Building(Building::CrystalMine), 1);
+                                    destination
+                                        .army
+                                        .insert(Unit::Building(Building::DeuteriumSynthesizer), 1);
                                 }
                             }
 

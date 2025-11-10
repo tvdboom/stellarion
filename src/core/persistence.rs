@@ -188,6 +188,34 @@ pub fn save_game(
     mut message: MessageWriter<MessageMsg>,
     mut state: Local<SaveState>,
 ) {
+    let save_game = |message: &mut MessageWriter<MessageMsg>| {
+        if let Some(mut file_path) = FileDialog::new().save_file() {
+            if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
+                file_path.set_extension("bin");
+            }
+
+            let all_missions = missions
+                .iter()
+                .filter(|m| m.owner == player.id)
+                .chain(host.missions.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let file_path_str = file_path.to_string_lossy().to_string();
+            let data = SaveAll {
+                settings: settings.clone(),
+                map: map.clone(),
+                host: player.clone(),
+                clients: host.clients.values().cloned().collect(),
+                missions: all_missions,
+            };
+
+            save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
+
+            message.write(MessageMsg::info("Game saved."));
+        }
+    };
+
     if let Some(mut server) = server {
         match *state {
             SaveState::WaitingForRequest => {
@@ -207,35 +235,13 @@ pub fn save_game(
                 }
             },
             SaveState::SaveGame => {
-                // Save the game
-                if let Some(mut file_path) = FileDialog::new().save_file() {
-                    if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
-                        file_path.set_extension("bin");
-                    }
-
-                    let all_missions = missions
-                        .iter()
-                        .filter(|m| m.owner == player.id)
-                        .chain(host.missions.iter())
-                        .cloned()
-                        .collect::<Vec<_>>();
-
-                    let file_path_str = file_path.to_string_lossy().to_string();
-                    let data = SaveAll {
-                        settings: settings.clone(),
-                        map: map.clone(),
-                        host: player.clone(),
-                        clients: host.clients.values().cloned().collect(),
-                        missions: all_missions,
-                    };
-
-                    save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
-
-                    message.write(MessageMsg::info("Game saved."));
-                }
-
+                save_game(&mut message);
                 *state = SaveState::WaitingForRequest;
             },
+        }
+    } else {
+        for _ in save_game_ev.read() {
+            save_game(&mut message);
         }
     }
 }

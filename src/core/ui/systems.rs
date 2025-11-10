@@ -61,6 +61,7 @@ pub struct UiState {
     pub mission: bool,
     pub mission_tab: MissionTab,
     pub mission_info: Mission,
+    pub jump_gate_history: bool,
     pub mission_hover: Option<MissionId>,
     pub mission_report: Option<MissionId>,
     pub end_turn: bool,
@@ -151,7 +152,9 @@ fn draw_army_grid(
                     } else {
                         Color32::WHITE
                     },
-                    response.rect,
+                    TextStyle::Body,
+                    response.rect.left_bottom(),
+                    Align2::LEFT_BOTTOM,
                 );
             });
 
@@ -326,7 +329,13 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 
                     ui.add_enabled_ui(n > 0, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-                        ui.add_text_on_image(n.to_string(), Color32::WHITE, response.rect);
+                        ui.add_text_on_image(
+                            n.to_string(),
+                            Color32::WHITE,
+                            TextStyle::Body,
+                            response.rect.left_bottom(),
+                            Align2::LEFT_BOTTOM,
+                        );
                     })
                     .response
                     .on_hover_ui(|ui| {
@@ -379,7 +388,13 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
 
                     ui.add_enabled_ui(text != "0", |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50., 50.]);
-                        ui.add_text_on_image(text, Color32::WHITE, response.rect);
+                        ui.add_text_on_image(
+                            text,
+                            Color32::WHITE,
+                            TextStyle::Body,
+                            response.rect.left_bottom(),
+                            Align2::LEFT_BOTTOM,
+                        );
                     })
                     .response
                     .on_hover_ui(|ui| {
@@ -442,7 +457,9 @@ fn draw_mission_fleet_hover(
                             n.to_string()
                         },
                         Color32::WHITE,
-                        response.rect,
+                        TextStyle::Body,
+                        response.rect.left_bottom(),
+                        Align2::LEFT_BOTTOM,
                     );
                 })
                 .response
@@ -480,7 +497,17 @@ fn draw_new_mission(
         state.mission_info.army = Army::new();
     }
 
-    state.mission_info.owner = player.id;
+    state.mission_info = Mission::new(
+        settings.turn,
+        player.id,
+        origin,
+        destination,
+        state.mission_info.objective,
+        state.mission_info.army.clone(),
+        state.mission_info.combat_probes,
+        state.mission_info.jump_gate,
+        None,
+    );
 
     if state.mission_info.objective == Icon::Colonize && n_owned >= n_max_owned {
         state.mission_info.objective = Icon::Deploy;
@@ -540,10 +567,18 @@ fn draw_new_mission(
                 ui.cell(100., |ui| {
                     ui.vertical(|ui| {
                         ui.add_space(15.);
+
+                        let controlled= map.planets
+                            .iter()
+                            .filter(|p| player.controls(p))
+                            .sorted_by(|a, b| a.name.cmp(&b.name))
+                            .collect::<Vec<_>>();
+
                         ComboBox::from_id_salt("origin")
+                            .height(60. * controlled.len().max(5) as f32)
                             .selected_text(&map.get(state.mission_info.origin).name)
                             .show_ui(ui, |ui| {
-                                for planet in map.planets.iter().filter(|p| player.controls(p)).sorted_by(|a, b| a.name.cmp(&b.name)) {
+                                for planet in controlled {
                                     ui.selectable_value(
                                         &mut state.mission_info.origin,
                                         planet.id,
@@ -664,7 +699,7 @@ fn draw_new_mission(
                                             *state.mission_info.army.entry(*unit).or_insert(0) = 0;
                                         }
 
-                                        ui.add_text_on_image(n.to_string(), Color32::WHITE, response.rect);
+                                        ui.add_text_on_image(n.to_string(), Color32::WHITE, TextStyle::Body, response.rect.left_bottom(), Align2::LEFT_BOTTOM);
 
                                         let value =
                                             state.mission_info.army.entry(*unit).or_insert(0);
@@ -762,7 +797,7 @@ fn draw_new_mission(
                 let fuel = state.mission_info.fuel_consumption(map);
 
                 ui.horizontal(|ui| {
-                    ui.small("Objective:");
+                    ui.small("🎯 Objective:");
 
                     ui.spacing_mut().item_spacing.x = 4.;
                     ui.add_image(
@@ -772,9 +807,9 @@ fn draw_new_mission(
                     ui.small(state.mission_info.objective.to_name());
                 });
 
-                ui.small(format!("Distance: {distance:.1} AU"));
+                ui.small(format!("📏 Distance: {distance:.1} AU"));
                 ui.small(format!(
-                    "Speed: {}",
+                    "🚀 Speed: {}",
                     if speed == 0. || speed == f32::MAX {
                         "---".to_string()
                     } else {
@@ -782,7 +817,7 @@ fn draw_new_mission(
                     }
                 ));
                 ui.small(format!(
-                    "Duration: {}",
+                    "⏱ Duration: {}",
                     if duration == 0 {
                         "---".to_string()
                     } else {
@@ -794,13 +829,15 @@ fn draw_new_mission(
                         )
                     }
                 ));
-                ui.small(format!("Fuel consumption: {fuel}"));
+                ui.small(format!("⛽ Fuel consumption: {fuel}")).on_hover_ui(|ui| {
+                    ui.small("Amount of deuterium it costs to send this mission.");
+                });
 
                 if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
                     let probes = state.mission_info.army.amount(&Unit::probe());
                     ui.add_enabled_ui(probes > 0, |ui| {
                         ui.horizontal(|ui| {
-                            ui.small("Combat Probes:");
+                            ui.small("⚔ Combat Probes:");
                             ui.add(toggle(&mut state.mission_info.combat_probes)).on_hover_cursor(CursorIcon::PointingHand);
                         });
                     })
@@ -834,28 +871,25 @@ fn draw_new_mission(
 
                         let jump_cost = state.mission_info.jump_cost();
                         let can_jump = origin.jump_gate + jump_cost <= origin.max_jump_capacity();
+
                         if !can_jump {
                             state.mission_info.jump_gate = false;
+                        } else if state.mission_info.jump_gate != state.jump_gate_history {
+                            state.mission_info.jump_gate = state.jump_gate_history;
                         }
 
-                        ui.add_enabled_ui(can_jump, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.small(format!("Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
-                                ui.add(toggle(&mut state.mission_info.jump_gate)).on_hover_cursor(CursorIcon::PointingHand);
-                            });
+                        ui.horizontal(|ui| {
+                            ui.small(format!("🌀 Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
+                            if ui.add(toggle(&mut state.mission_info.jump_gate)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                state.jump_gate_history = !state.jump_gate_history;
+                            }
                         })
                         .response
                         .on_hover_ui(|ui| {
                             ui.small(
-                                "Whether to send this mission through the Jump Gate. \
-                                Missions through the Jump Gate always take 1 turn and cost \
-                                no fuel."
-                            );
-                        })
-                        .on_disabled_hover_ui(|ui| {
-                            ui.small(
-                                "The selected fleet has a higher jump cost than the Gate \
-                                can transfer this turn."
+                                "Whether to send this mission through the Jump Gate. Missions \
+                                through the Jump Gate always take 1 turn and cost no fuel. The \
+                                armies total jump cost can't surpass the Gate's limit."
                             );
                         });
                     }
@@ -1008,31 +1042,44 @@ fn draw_active_missions(
                     let origin = map.get(mission.origin);
                     let destination = map.get(mission.destination);
 
-                    let resp1 = ui.cell(70., |ui| {
-                        let resp1 = ui
-                            .add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand);
+                    if mission.owner == player.id || !mission.objective.is_hidden() {
+                        let resp1 = ui.cell(70., |ui| {
+                            let resp1 = ui
+                                .add_image(
+                                    images.get(format!("planet{}", origin.image)),
+                                    [70., 70.],
+                                )
+                                .interact(Sense::click())
+                                .on_hover_cursor(CursorIcon::PointingHand);
 
-                        if mission.owner == player.id {
-                            let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                            if mission.owner == player.id {
+                                let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
-                            resp.on_hover_ui(|ui| {
-                                ui.set_min_width(350.);
-                                ui.small(format!("Mission logs\n===========\n\n{}", mission.logs));
-                            });
-                        }
+                                resp.on_hover_ui(|ui| {
+                                    ui.set_min_width(350.);
+                                    ui.small(format!(
+                                        "Mission logs\n===========\n\n{}",
+                                        mission.logs
+                                    ));
+                                });
+                            }
 
-                        resp1
-                    });
+                            resp1
+                        });
 
-                    let resp2 = ui.cell(100., |ui| {
-                        ui.small(&origin.name)
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                    });
+                        let resp2 = ui.cell(100., |ui| {
+                            ui.small(&origin.name)
+                                .interact(Sense::click())
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                        });
 
-                    action(resp1, resp2, origin, &mut changed_hover, state);
+                        action(resp1, resp2, origin, &mut changed_hover, state);
+                    } else {
+                        ui.cell(70., |ui| {
+                            ui.add_image(images.get("unknown"), [70., 70.]);
+                        });
+                        ui.cell(100., |ui| ui.small("Unknown"));
+                    }
 
                     let response = ui.cell(100., |ui| {
                         ui.horizontal(|ui| {
@@ -1248,34 +1295,44 @@ fn draw_mission_reports(
                     let origin = map.get(report.mission.origin);
                     let destination = map.get(report.mission.destination);
 
-                    let resp1 = ui.cell(70., |ui| {
-                        let resp1 = ui
-                            .add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand);
+                    if report.mission.owner == player.id || !report.mission.objective.is_hidden() {
+                        let resp1 = ui.cell(70., |ui| {
+                            let resp1 = ui
+                                .add_image(
+                                    images.get(format!("planet{}", origin.image)),
+                                    [70., 70.],
+                                )
+                                .interact(Sense::click())
+                                .on_hover_cursor(CursorIcon::PointingHand);
 
-                        if report.mission.owner == player.id {
-                            let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                            if report.mission.owner == player.id {
+                                let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
 
-                            resp.on_hover_ui(|ui| {
-                                ui.set_min_width(350.);
-                                ui.small(format!(
-                                    "Mission logs\n===========\n\n{}",
-                                    report.mission.logs
-                                ));
-                            });
-                        }
+                                resp.on_hover_ui(|ui| {
+                                    ui.set_min_width(350.);
+                                    ui.small(format!(
+                                        "Mission logs\n===========\n\n{}",
+                                        report.mission.logs
+                                    ));
+                                });
+                            }
 
-                        resp1
-                    });
+                            resp1
+                        });
 
-                    let resp2 = ui.cell(100., |ui| {
-                        ui.small(&origin.name)
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                    });
+                        let resp2 = ui.cell(100., |ui| {
+                            ui.small(&origin.name)
+                                .interact(Sense::click())
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                        });
 
-                    action(resp1, resp2, origin, &mut changed_hover, state);
+                        action(resp1, resp2, origin, &mut changed_hover, state);
+                    } else {
+                        ui.cell(70., |ui| {
+                            ui.add_image(images.get("unknown"), [70., 70.]);
+                        });
+                        ui.cell(100., |ui| ui.small("Unknown"));
+                    }
 
                     ui.cell(100., |ui| {
                         ui.horizontal(|ui| {
@@ -1789,41 +1846,31 @@ fn draw_shop(
                             };
 
                             if let Some(text) = text {
-                                ui.painter().text(
-                                    response.rect.right_top() + egui::vec2(-7., 4.),
-                                    Align2::RIGHT_TOP,
+                                ui.add_text_on_image(
                                     text,
-                                    TextStyle::Body.resolve(ui.style()),
                                     Color32::WHITE,
+                                    TextStyle::Body,
+                                    response.rect.right_top() - egui::Vec2::new(3., -3.),
+                                    Align2::RIGHT_TOP,
                                 );
                             }
                         }
 
-                        ui.painter().text(
-                            response.rect.left_bottom() + egui::vec2(7., -4.),
-                            Align2::LEFT_BOTTOM,
+                        let rect = ui.add_text_on_image(
                             count.to_string(),
-                            TextStyle::Heading.resolve(ui.style()),
                             Color32::WHITE,
+                            TextStyle::Heading,
+                            response.rect.left_bottom(),
+                            Align2::LEFT_BOTTOM,
                         );
 
                         if bought > 0 {
-                            let offset_x = ui
-                                .painter()
-                                .layout_no_wrap(
-                                    count.to_string(),
-                                    TextStyle::Heading.resolve(ui.style()),
-                                    Color32::WHITE,
-                                )
-                                .size()
-                                .x;
-
-                            ui.painter().text(
-                                response.rect.left_bottom() + egui::vec2(8. + offset_x, -12.),
-                                Align2::LEFT_BOTTOM,
+                            ui.add_text_on_image(
                                 format!(" (+{})", bought),
-                                TextStyle::Body.resolve(ui.style()),
                                 Color32::WHITE,
+                                TextStyle::Body,
+                                rect.right_bottom() - egui::Vec2::new(6., 7.),
+                                Align2::LEFT_BOTTOM,
                             );
                         }
 

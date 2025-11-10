@@ -6,6 +6,7 @@ use strum_macros::EnumIter;
 pub enum AppState {
     #[default]
     MainMenu,
+    SinglePlayerMenu,
     MultiPlayerMenu,
     Lobby,
     ConnectedLobby,
