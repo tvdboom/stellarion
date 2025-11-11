@@ -125,6 +125,7 @@ impl FromWorld for WorldAssets {
             ("war sun", assets.load("images/ships/war sun.png")),
             // Mission
             ("overview", assets.load("images/mission/overview.png")),
+            ("abandon", assets.load("images/mission/abandon.png")),
             ("attacked", assets.load("images/mission/attacked.png")),
             ("buildings", assets.load("images/mission/buildings.png")),
             ("fleet", assets.load("images/mission/fleet.png")),
@@ -157,7 +158,7 @@ impl FromWorld for WorldAssets {
             ("rapid fire", assets.load("images/combat/rapid fire.png")),
             // Planets
             ("unknown", assets.load("images/planets/unknown.png")),
-            ("desert", assets.load("images/planets/desert.png")),
+            ("dry", assets.load("images/planets/dry.png")),
             ("gas", assets.load("images/planets/gas.png")),
             ("ice", assets.load("images/planets/ice.png")),
             ("water", assets.load("images/planets/water.png")),

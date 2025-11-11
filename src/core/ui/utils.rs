@@ -48,6 +48,25 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
     }
 }
 
+pub trait CustomResponse {
+    fn on_hover_small(self, text: impl Into<RichText>) -> Self;
+    fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self;
+}
+
+impl CustomResponse for Response {
+    fn on_hover_small(self, text: impl Into<RichText>) -> Self {
+        self.on_hover_ui(|ui| {
+            ui.small(text);
+        })
+    }
+
+    fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self {
+        self.on_disabled_hover_ui(|ui| {
+            ui.small(text);
+        })
+    }
+}
+
 pub trait CustomUi {
     fn add_image(&mut self, texture: impl Into<TextureId>, size: impl Into<Vec2>) -> Response;
     fn add_image_button(

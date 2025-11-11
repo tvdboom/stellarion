@@ -18,7 +18,7 @@ pub type PlanetId = usize;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum PlanetKind {
-    Desert,
+    Dry,
     Gas,
     Ice,
     Water,
@@ -27,10 +27,68 @@ pub enum PlanetKind {
 impl PlanetKind {
     pub fn indices(self) -> Vec<usize> {
         match self {
-            PlanetKind::Desert => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
+            PlanetKind::Dry => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
             PlanetKind::Gas => vec![7, 10, 11, 14, 18, 37, 43, 45],
             PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40],
             PlanetKind::Water => vec![25, 32, 34, 52, 62],
+        }
+    }
+
+    pub fn diameter(&self) -> usize {
+        let mut rng = rng();
+        let value = match self {
+            PlanetKind::Dry | PlanetKind::Water => rng.random_range(6000..17000),
+            PlanetKind::Gas => rng.random_range(32000..190000),
+            PlanetKind::Ice => rng.random_range(4000..10000),
+        };
+
+        (value / 100) * 100
+    }
+
+    pub fn temperature(&self) -> (i16, i16) {
+        let mut rng = rng();
+        match self {
+            PlanetKind::Dry => {
+                let low = rng.random_range(80..240);
+                let high = rng.random_range(low..=240);
+                (low, high)
+            },
+            PlanetKind::Gas => {
+                let low = rng.random_range(-110..-60);
+                let high = rng.random_range(low..=-60);
+                (low, high)
+            },
+            PlanetKind::Ice => {
+                let low = rng.random_range(-260..-130);
+                let high = rng.random_range(low..=-130);
+                (low, high)
+            },
+            PlanetKind::Water => {
+                let low = rng.random_range(-10..40);
+                let high = rng.random_range(low..=40);
+                (low, high)
+            },
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            PlanetKind::Dry => {
+                "Arid desert world with scorching days and cold nights. Dry planets often \
+                produce high quantities of metal, but have scarcity of other resources."
+            },
+            PlanetKind::Water => {
+                "Habitable planet covered by oceans and continents. Water worlds have \
+                balanced resource reserves."
+            },
+            PlanetKind::Gas => {
+                "Massive gas giant with thick clouds and strong storms. Produce few metal \
+                and crystal but have often large reservers of deuterium."
+            },
+            PlanetKind::Ice => {
+                "Frozen world with glaciers, snowfields, and icy terrain. Tend to contain \
+                high quantities of crystal, but have scarcity of other resources."
+            },
         }
     }
 }
@@ -42,6 +100,8 @@ pub struct Planet {
     pub name: String,
     pub kind: PlanetKind,
     pub image: usize,
+    pub diameter: usize,
+    pub temperature: (i16, i16),
     pub position: Vec2,
     pub resources: Resources,
     pub jump_gate: usize,
@@ -64,7 +124,7 @@ impl Planet {
         let high = 3..5;
 
         let configs: &[(PlanetKind, [&Range<usize>; 3])] = &[
-            (PlanetKind::Desert, [&high, &low, &low]),
+            (PlanetKind::Dry, [&high, &low, &low]),
             (PlanetKind::Gas, [&low, &low, &high]),
             (PlanetKind::Ice, [&low, &high, &low]),
             (PlanetKind::Water, [&medium, &medium, &low]),
@@ -83,6 +143,8 @@ impl Planet {
             name,
             kind: *kind,
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
+            diameter: kind.diameter(),
+            temperature: kind.temperature(),
             position,
             resources,
             jump_gate: 0,
@@ -122,6 +184,14 @@ impl Planet {
         if self.owned != Some(client_id) {
             self.owned = None;
         }
+    }
+
+    pub fn destroy_probability(&self) -> f32 {
+        let min_d = 4000.;
+        let max_d = 190000.;
+        let min_prob = 0.1;
+        let max_prob = 0.15;
+        min_prob + (self.diameter as f32 - min_d) * (max_prob - min_prob) / (max_d - min_d)
     }
 
     /// Resources and production ===================================== >>

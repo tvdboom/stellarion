@@ -19,6 +19,7 @@ use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::PlanetCmp;
+use crate::core::messages::MessageMsg;
 use crate::core::missions::{Mission, MissionId, Missions, SendMissionMsg};
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::ResourceName;
@@ -26,12 +27,12 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
-use crate::core::ui::utils::{toggle, CustomUi, ImageIds};
+use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::utils::NameFromEnum;
+use crate::utils::{format_thousands, NameFromEnum};
 
 #[derive(Component)]
 pub struct UiCmp;
@@ -52,6 +53,7 @@ pub enum MissionTab {
     IncomingAttacks,
     MissionReports,
 }
+
 #[derive(Resource, Default)]
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
@@ -138,12 +140,8 @@ fn draw_army_grid(
             ui.add_enabled_ui(text != "0", |ui| {
                 let response = ui
                     .add_image(images.get(unit.to_lowername()), [55., 55.])
-                    .on_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    })
-                    .on_disabled_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    });
+                    .on_hover_small(unit.to_name())
+                    .on_disabled_hover_small(unit.to_name());
 
                 ui.add_text_on_image(
                     text,
@@ -297,6 +295,99 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     });
 }
 
+fn draw_planet_overview(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    player: &Player,
+    message: &mut MessageWriter<MessageMsg>,
+    images: &ImageIds,
+) {
+    ui.add_space(19.);
+
+    let size = ui.available_size() - egui::vec2(15., 5.);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::click());
+
+    let image = egui::Image::new(SizedTexture::new(images.get(planet.kind.to_lowername()), size));
+    image.paint_at(ui, rect.translate(egui::vec2(8., 0.)));
+
+    // Now overlay elements on top
+    ui.scope_builder(UiBuilder::new().max_rect(rect.shrink(5.)), |ui| {
+        ui.vertical_centered(|ui| {
+            ui.heading(&planet.name);
+        });
+
+        ui.add_space(10.);
+
+        ui.with_layout(Layout::top_down(Align::RIGHT), |ui| {
+            ui.spacing_mut().item_spacing.y = 6.;
+            ui.small(format!("🌎 Kind: {}", planet.kind.to_name()))
+                .on_hover_small(planet.kind.description());
+            ui.small(format!("📐 Diameter: {}km", format_thousands(planet.diameter)))
+                .on_hover_small("Larger planets are harder to destroy.");
+            ui.small(format!(
+                "❄ Temperature: {}°C to {}°C",
+                planet.temperature.0, planet.temperature.1
+            ));
+            ui.small(format!(
+                "🗺 Coordinates: ({}, {})",
+                planet.position.x.round(),
+                planet.position.y.round()
+            ))
+            .on_hover_small("Position of the planet relative to the system's center.");
+        });
+    });
+
+    let owned = player.owns(planet) && player.home_planet != planet.id;
+    let controlled = player.controls(planet) && !player.owns(planet);
+
+    let size = egui::vec2(40., 40.);
+    let pos = rect.left_bottom() - egui::vec2(-20., size.y + 7.);
+    let rect = egui::Rect::from_min_size(pos, size);
+
+    if owned {
+        ui.add_enabled_ui(planet.buy.is_empty(), |ui| {
+            let response = ui.interact(rect, ui.id(), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_ui(|ui| {
+                    ui.set_min_width(150.);
+                    ui.small("Abandon this planet. The buildings on the planet remain.");
+                })
+                .on_disabled_hover_ui(|ui| {
+                    ui.set_min_width(150.);
+                    ui.small("A planet can't be abandoned when there are units being built.");
+                });
+
+            ui.add_image_painter(images.get("abandon"), rect);
+
+            if response.clicked() {
+                planet.owned = None;
+                message.write(MessageMsg::info(format!("Planet {} abandoned.", planet.name)));
+            }
+        });
+    } else if controlled {
+        ui.add_enabled_ui(planet.army.amount(&Unit::colony_ship()) > 0, |ui| {
+            let response = ui.interact(rect, ui.id(), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_ui(|ui| {
+                    ui.set_min_width(150.);
+                    ui.small("Colonize this planet.");
+                })
+                .on_disabled_hover_ui(|ui| {
+                    ui.set_min_width(150.);
+                    ui.small("A Colony Ship is required on this planet to colonize it.");
+                });
+
+            ui.add_image_painter(images.get("colonize"), rect);
+
+            if response.clicked() {
+                *planet.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
+                planet.colonize(player.id);
+                message.write(MessageMsg::info(format!("Planet {} colonized.", planet.name)));
+            }
+        });
+    }
+}
+
 fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
@@ -338,12 +429,8 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
                         );
                     })
                     .response
-                    .on_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    })
-                    .on_disabled_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    });
+                    .on_hover_small(unit.to_name())
+                    .on_disabled_hover_small(unit.to_name());
                 }
             });
         }
@@ -365,9 +452,7 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
         ui.small(text);
     })
     .response
-    .on_hover_ui(|ui| {
-        ui.small(format!("Intelligence from turn {}.", info.turn));
-    });
+    .on_hover_small(format!("Intelligence from turn {}.", info.turn));
 
     ui.add_space(10.);
 
@@ -397,12 +482,8 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
                         );
                     })
                     .response
-                    .on_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    })
-                    .on_disabled_hover_ui(|ui| {
-                        ui.small(unit.to_name());
-                    });
+                    .on_hover_small(unit.to_name())
+                    .on_disabled_hover_small(unit.to_name());
                 }
             });
         }
@@ -463,12 +544,8 @@ fn draw_mission_fleet_hover(
                     );
                 })
                 .response
-                .on_hover_ui(|ui| {
-                    ui.small(unit.to_name());
-                })
-                .on_disabled_hover_ui(|ui| {
-                    ui.small(unit.to_name());
-                });
+                .on_hover_small(unit.to_name())
+                .on_disabled_hover_small(unit.to_name());
             }
         });
     });
@@ -555,7 +632,8 @@ fn draw_new_mission(
 
         let mut changed_hover = false;
         egui::Grid::new("mission_origin_destination").spacing([30., 0.]).striped(false).show(
-            ui, |ui| {
+            ui,
+            |ui| {
                 let response = ui.cell(70., |ui| {
                     ui.add_image(images.get(format!("planet{}", origin.image)), [70., 70.])
                         .interact(Sense::click())
@@ -568,7 +646,8 @@ fn draw_new_mission(
                     ui.vertical(|ui| {
                         ui.add_space(15.);
 
-                        let controlled= map.planets
+                        let controlled = map
+                            .planets
                             .iter()
                             .filter(|p| player.controls(p))
                             .sorted_by(|a, b| a.name.cmp(&b.name))
@@ -591,15 +670,12 @@ fn draw_new_mission(
                     });
                 });
 
-                let (rect, mut response) = ui.cell(50., |ui| {
-                    ui.allocate_exact_size([50., 50.].into(), Sense::click())
-                });
+                let (rect, mut response) =
+                    ui.cell(50., |ui| ui.allocate_exact_size([50., 50.].into(), Sense::click()));
 
-                response = response
-                    .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_ui(|ui| {
-                        ui.small("Click to select all units on the origin planet. Right-click to unselect all.");
-                    });
+                response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_small(
+                    "Click to select all units on the origin planet. Right-click to unselect all.",
+                );
 
                 let image = if response.hovered() && !response.is_pointer_button_down_on() {
                     images.get(format!("{} hover", state.mission_info.image(player)))
@@ -610,7 +686,8 @@ fn draw_new_mission(
                 ui.add_image_painter(image, rect);
 
                 if response.clicked() {
-                    state.mission_info.army = army.iter().map(|u| (*u, origin.army.amount(u))).collect();
+                    state.mission_info.army =
+                        army.iter().map(|u| (*u, origin.army.amount(u))).collect();
                 } else if response.secondary_clicked() {
                     state.mission_info.army.clear();
                 }
@@ -621,7 +698,12 @@ fn draw_new_mission(
                         ComboBox::from_id_salt("destination")
                             .selected_text(&map.get(state.mission_info.destination).name)
                             .show_ui(ui, |ui| {
-                                for planet in map.planets.iter().filter(|p| !p.is_destroyed).sorted_by(|a, b| a.name.cmp(&b.name)) {
+                                for planet in map
+                                    .planets
+                                    .iter()
+                                    .filter(|p| !p.is_destroyed)
+                                    .sorted_by(|a, b| a.name.cmp(&b.name))
+                                {
                                     ui.selectable_value(
                                         &mut state.mission_info.destination,
                                         planet.id,
@@ -641,7 +723,8 @@ fn draw_new_mission(
                 });
 
                 action(response, destination, &mut changed_hover, state);
-            });
+            },
+        );
 
         // If not hovering anything, reset hover selection
         if is_hovered && !changed_hover {
@@ -684,12 +767,8 @@ fn draw_new_mission(
                                             )
                                             .interact(Sense::click())
                                             .on_hover_cursor(CursorIcon::PointingHand)
-                                            .on_hover_ui(|ui| {
-                                                ui.small(unit.to_name());
-                                            })
-                                            .on_disabled_hover_ui(|ui| {
-                                                ui.small(unit.to_name());
-                                            });
+                                            .on_hover_small(unit.to_name())
+                                            .on_disabled_hover_small(unit.to_name());
 
                                         if response.clicked() {
                                             *state.mission_info.army.entry(*unit).or_insert(0) = n;
@@ -829,9 +908,7 @@ fn draw_new_mission(
                         )
                     }
                 ));
-                ui.small(format!("⛽ Fuel consumption: {fuel}")).on_hover_ui(|ui| {
-                    ui.small("Amount of deuterium it costs to send this mission.");
-                });
+                ui.small(format!("⛽ Fuel consumption: {fuel}")).on_hover_small("Amount of deuterium it costs to send this mission.");
 
                 if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
                     let probes = state.mission_info.army.amount(&Unit::probe());
@@ -842,19 +919,14 @@ fn draw_new_mission(
                         });
                     })
                     .response
-                    .on_hover_ui(|ui| {
-                        ui.small(
-                            "Normally, Probes leave combat after the first round and return \
+                    .on_hover_small("Normally, Probes leave combat after the first round and return \
                             to the planet of origin. Enabling this option makes the Probes stay \
                             during the whole combat, serving as extra fodder and having the \
                             advantage that they stay with the rest of the fleet when victorious, \
                             at risk of getting no enemy unit information when losing combat. \
                             Probes always stay if the combat takes only one round."
-                        );
-                    })
-                    .on_disabled_hover_ui(|ui| {
-                        ui.small("No Probes selected for this mission.");
-                    });
+                    )
+                    .on_disabled_hover_small("No Probes selected for this mission.");
 
                     if probes == 0 {
                         state.mission_info.combat_probes = false;
@@ -885,13 +957,9 @@ fn draw_new_mission(
                             }
                         })
                         .response
-                        .on_hover_ui(|ui| {
-                            ui.small(
-                                "Whether to send this mission through the Jump Gate. Missions \
+                        .on_hover_small("Whether to send this mission through the Jump Gate. Missions \
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
-                                armies total jump cost can't surpass the Gate's limit."
-                            );
-                        });
+                                armies total jump cost can't surpass the Gate's limit.");
                     }
                 } else {
                     state.mission_info.jump_gate = false;
@@ -1342,18 +1410,17 @@ fn draw_mission_reports(
                                 images.get(report.mission.objective.to_lowername()),
                                 [25., 25.],
                             )
-                            .on_hover_ui(|ui| {
-                                ui.small(report.mission.objective.to_name());
-                            });
+                            .on_hover_small(report.mission.objective.to_name());
 
                             ui.add_image(
                                 images.get(format!("{} hover", report.mission.image(player))),
                                 [50., 50.],
                             );
 
-                            ui.small(report.turn.to_string()).on_hover_ui(|ui| {
-                                ui.small(format!("The mission arrived in turn {}.", report.turn));
-                            });
+                            ui.small(report.turn.to_string()).on_hover_small(format!(
+                                "The mission arrived in turn {}.",
+                                report.turn
+                            ));
                         });
                     });
 
@@ -1416,9 +1483,7 @@ fn draw_mission_reports(
                             ui.small(format!("Scouts: {}", report.scout_probes));
                         })
                         .response
-                        .on_hover_ui(|ui| {
-                            ui.small("Number of Probes that left combat after the first round.");
-                        });
+                        .on_hover_small("Number of Probes that left combat after the first round.");
                     }
                 });
 
@@ -1943,6 +2008,7 @@ pub fn draw_ui(
     planet_q: Query<(&Transform, &PlanetCmp)>,
     camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut send_mission: MessageWriter<SendMissionMsg>,
+    mut message: MessageWriter<MessageMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     missions: Res<Missions>,
@@ -1970,24 +2036,58 @@ pub fn draw_ui(
 
     // Store whether the next panel should be shown on the right side or not
     let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
-        let (planet, planet_pos) = planet_q
+        let (t, _) = planet_q
             .iter()
-            .find_map(|(t, p)| {
-                (p.id == id).then_some((
-                    map.get(id),
-                    camera.world_to_viewport(camera_t, t.translation).unwrap(),
-                ))
-            })
+            .find(|(_, p)| p.id == id)
+            .unwrap();
+
+        let planet_pos = camera
+            .world_to_viewport(camera_t, t.translation)
             .unwrap();
 
         let right_side = planet_pos.x < width * 0.5;
 
+        let (window_w, window_h) = (205., 630.);
+
+        let planet_mut = map.get_mut(id);
+        let planet = &planet_mut.clone();
+
+        let mut draw_planet_info = |contexts, extension| {
+            let (window_w2, window_h2) = (518., 216.);
+
+            draw_panel(
+                contexts,
+                "planet overview",
+                "panel",
+                (
+                    if right_side {
+                        width * 0.998
+                            - window_w2
+                            - if extension {
+                                window_w
+                            } else {
+                                0.
+                            }
+                    } else {
+                        width * 0.002
+                            + if extension {
+                                window_w
+                            } else {
+                                0.
+                            }
+                    },
+                    height * 0.5 - window_h * 0.5 + 27.,
+                ),
+                (window_w2, window_h2),
+                &images,
+                |ui| draw_planet_overview(ui, planet_mut, &player, &mut message, &images),
+            );
+        };
+
         // Check whether there is a report on this planet
-        let info = player.last_info(planet.id, &missions.0);
+        let info = player.last_info(id, &missions.0);
 
         if player.controls(planet) || player.spectator {
-            let (window_w, window_h) = (205., 630.);
-
             draw_panel(
                 &mut contexts,
                 "overview",
@@ -2005,12 +2105,10 @@ pub fn draw_ui(
                 |ui| draw_overview(ui, planet, &images),
             );
 
-            !right_side
+            draw_planet_info(&mut contexts, true);
         } else if let Some(info) = info {
             // Don't use has_army since no units is also valid information
             if !planet.is_destroyed && !info.army.is_empty() {
-                let (window_w, window_h) = (205., 630.);
-
                 draw_panel(
                     &mut contexts,
                     "report overview",
@@ -2028,13 +2126,15 @@ pub fn draw_ui(
                     |ui| draw_report_overview(ui, planet, &info, &images),
                 );
 
-                !right_side
+                draw_planet_info(&mut contexts, true);
             } else {
-                right_side
+                draw_planet_info(&mut contexts, false);
             }
         } else {
-            right_side
+            draw_planet_info(&mut contexts, false);
         }
+
+        !right_side
     } else {
         true
     };

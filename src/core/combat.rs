@@ -351,7 +351,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         // Try to destroy planet
         if mission.objective == Icon::Destroy && !defend_army.iter().any(|u| u.unit.is_ship()) {
             for _ in attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::WarSun)) {
-                if rng().random::<f32>() < 0.1 - 0.01 * round as f32 {
+                if rng().random::<f32>() < destination.destroy_probability() - 0.01 * round as f32 {
                     defend_army = vec![];
                     planet_destroyed = true;
                     logs.push_str("\n- Planet destroyed.");

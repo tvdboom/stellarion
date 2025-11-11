@@ -17,6 +17,22 @@ pub fn get_local_ip() -> IpAddr {
     "127.0.0.1".parse().unwrap()
 }
 
+/// Add dots to thousands
+pub fn format_thousands(n: usize) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().rev().collect();
+    let mut result = Vec::new();
+
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push('.');
+        }
+        result.push(*c);
+    }
+
+    result.iter().rev().collect()
+}
+
 /// Helper function to extract only the variant name (removes tuple/struct fields)
 fn extract_variant_name(text: String) -> String {
     text.split_once('(')
