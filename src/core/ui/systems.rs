@@ -234,8 +234,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
                         ui.separator();
                         ui.small(
                             "The current number of planets colonized (owned) and the maximum \
-                            number of planets than can be colonized this game. Planets cannot be \
-                            abandoned, so be careful with what to colonize.",
+                            number of planets than can be colonized this game.",
                         );
                     });
                 });
@@ -322,8 +321,16 @@ fn draw_planet_overview(
             ui.spacing_mut().item_spacing.y = 6.;
             ui.small(format!("🌎 Kind: {}", planet.kind.to_name()))
                 .on_hover_small(planet.kind.description());
-            ui.small(format!("📐 Diameter: {}km", format_thousands(planet.diameter)))
-                .on_hover_small("Larger planets are harder to destroy.");
+            ui.small(format!(
+                "📐 Diameter: {}km ({:.0}%)",
+                format_thousands(planet.diameter),
+                planet.destroy_probability() * 100.,
+            ))
+            .on_hover_small(
+                "Smaller planets are easier to destroy than larger ones, since it's easier \
+                to reach the core with a death ray. The percentage indicates the initial \
+                probability a War Sun has of destroying this planet after a combat round.",
+            );
             ui.small(format!(
                 "❄ Temperature: {}°C to {}°C",
                 planet.temperature.0, planet.temperature.1
@@ -346,7 +353,8 @@ fn draw_planet_overview(
 
     if owned {
         ui.add_enabled_ui(planet.buy.is_empty(), |ui| {
-            let response = ui.interact(rect, ui.id(), Sense::click())
+            let response = ui
+                .interact(rect, ui.id(), Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_ui(|ui| {
                     ui.set_min_width(150.);
@@ -360,13 +368,14 @@ fn draw_planet_overview(
             ui.add_image_painter(images.get("abandon"), rect);
 
             if response.clicked() {
-                planet.owned = None;
+                planet.abandon();
                 message.write(MessageMsg::info(format!("Planet {} abandoned.", planet.name)));
             }
         });
     } else if controlled {
         ui.add_enabled_ui(planet.army.amount(&Unit::colony_ship()) > 0, |ui| {
-            let response = ui.interact(rect, ui.id(), Sense::click())
+            let response = ui
+                .interact(rect, ui.id(), Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_ui(|ui| {
                     ui.set_min_width(150.);
@@ -2036,14 +2045,9 @@ pub fn draw_ui(
 
     // Store whether the next panel should be shown on the right side or not
     let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
-        let (t, _) = planet_q
-            .iter()
-            .find(|(_, p)| p.id == id)
-            .unwrap();
+        let (t, _) = planet_q.iter().find(|(_, p)| p.id == id).unwrap();
 
-        let planet_pos = camera
-            .world_to_viewport(camera_t, t.translation)
-            .unwrap();
+        let planet_pos = camera.world_to_viewport(camera_t, t.translation).unwrap();
 
         let right_side = planet_pos.x < width * 0.5;
 

@@ -38,7 +38,7 @@ impl PlanetKind {
         let mut rng = rng();
         let value = match self {
             PlanetKind::Dry | PlanetKind::Water => rng.random_range(6000..17000),
-            PlanetKind::Gas => rng.random_range(32000..190000),
+            PlanetKind::Gas => rng.random_range(17000..140000),
             PlanetKind::Ice => rng.random_range(4000..10000),
         };
 
@@ -186,12 +186,22 @@ impl Planet {
         }
     }
 
+    pub fn abandon(&mut self) {
+        self.owned = None;
+        if !self.has_fleet() {
+            self.controlled = None;
+        }
+    }
+
     pub fn destroy_probability(&self) -> f32 {
-        let min_d = 4000.;
-        let max_d = 190000.;
-        let min_prob = 0.1;
-        let max_prob = 0.15;
-        min_prob + (self.diameter as f32 - min_d) * (max_prob - min_prob) / (max_d - min_d)
+        match self.diameter {
+            4000..6000 => 0.15,
+            6000..9000 => 0.14,
+            9000..13000 => 0.13,
+            13000..20000 => 0.12,
+            20000..100000 => 0.11,
+            _ => 0.10,
+        }
     }
 
     /// Resources and production ===================================== >>

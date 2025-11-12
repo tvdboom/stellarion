@@ -50,9 +50,8 @@ see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned
 gives full intelligence on the attacking units to the planet's owner. Also when the fight is lost.
 If losing combat on a controlled planet, no intelligence is gained.
 
-There is a limit to the amount of planets that can be owned by a player each game. Be careful
-with choosing the planets to colonize, since it cannot be abandoned later. Only if the planet is
-destroyed, it frees up the spot.
+There is a limit to the amount of planets that can be owned by a player each game. Spots are only
+freed if a planet is abandoned or destroyed.
 
 ### Units
 
