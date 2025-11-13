@@ -92,6 +92,9 @@ pub struct MissionReport {
 
     /// Combat logs (if combat took place)
     pub logs: Option<String>,
+
+    /// Whether to show this report in the report mission tab
+    pub hidden: bool,
 }
 
 impl MissionReport {
@@ -171,6 +174,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             logs: None,
+            hidden: false,
         };
     }
 
@@ -414,5 +418,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
         logs: Some(logs),
+        hidden: false,
     }
 }

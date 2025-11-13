@@ -81,7 +81,9 @@ impl Mission {
             origin: origin.id,
             origin_owned: origin.owned,
             origin_controlled: origin.controlled,
-            origin_army: if origin.controlled == Some(owner) {
+            // Hide origin army if leaving an enemy planet (missions returning after attack)
+            // Show when leaving a controlled or empty planet
+            origin_army: if origin.controlled.map_or(true, |id| id == owner) {
                 origin.army.clone()
             } else {
                 Army::new()

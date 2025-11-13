@@ -75,15 +75,14 @@ impl Player {
             reports.push(if r.mission.origin == id {
                 if r.mission.owner == self.id {
                     // Own mission send from this planet (and it's no longer controlled)
-                    let army: Army = Unit::buildings()
-                        .iter()
-                        .map(|u| (*u, r.mission.origin_army.amount(u)))
-                        .collect();
-
                     PlanetInfo {
                         turn: r.mission.send,
                         controlled: false,
-                        army,
+                        army: Unit::all()
+                            .iter()
+                            .flatten()
+                            .map(|u| (u.clone(), r.mission.origin_army.amount(u)))
+                            .collect(),
                     }
                 } else if !r.mission.objective.is_hidden() {
                     // Enemy mission send from this planet

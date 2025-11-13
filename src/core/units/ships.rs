@@ -95,9 +95,9 @@ impl Description for Ship {
             },
             Ship::WarSun => {
                 "The War Sun is the most advanced ship in the game. It has the highest damage, \
-                shield strength, and health of all ships, but what makes it unique, is that it \
-                can destroy entire planets. Some consider that building a War Sun the ultimate \
-                achievement in the universe."
+                shield strength, and health of all ships. Additionally, it's equipped with a Death \
+                Ray, a weapon capable of destroying an entire planet. Some consider that building \
+                a War Sun the ultimate achievement in the universe."
             },
         }
     }

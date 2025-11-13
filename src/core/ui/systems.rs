@@ -297,7 +297,8 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
 fn draw_planet_overview(
     ui: &mut Ui,
     planet: &mut Planet,
-    player: &Player,
+    player: &mut Player,
+    turn: usize,
     message: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
 ) {
@@ -319,7 +320,7 @@ fn draw_planet_overview(
 
         ui.with_layout(Layout::top_down(Align::RIGHT), |ui| {
             ui.spacing_mut().item_spacing.y = 6.;
-            ui.small(format!("🌎 Kind: {}", planet.kind.to_name()))
+            ui.small(format!("🌎 Planet Kind: {}", planet.kind.to_name()))
                 .on_hover_small(planet.kind.description());
             ui.small(format!(
                 "📐 Diameter: {}km ({:.0}%)",
@@ -328,8 +329,9 @@ fn draw_planet_overview(
             ))
             .on_hover_small(
                 "Smaller planets are easier to destroy than larger ones, since it's easier \
-                to reach the core with a death ray. The percentage indicates the initial \
-                probability a War Sun has of destroying this planet after a combat round.",
+                to reach their core with a Death Ray, the weapon used by War Suns. The percentage \
+                indicates the initial probability a War Sun has of destroying this planet after \
+                a combat round.",
             );
             ui.small(format!(
                 "❄ Temperature: {}°C to {}°C",
@@ -369,6 +371,37 @@ fn draw_planet_overview(
 
             if response.clicked() {
                 planet.abandon();
+
+                // Inject hidden report to show last_info that the planet is abandoned
+                if planet.controlled == None {
+                    let mission = Mission::new(
+                        turn,
+                        player.id,
+                        planet,
+                        planet,
+                        Icon::default(),
+                        Army::new(),
+                        false,
+                        false,
+                        None,
+                    );
+
+                    player.reports.push(MissionReport {
+                        turn,
+                        mission,
+                        planet: planet.clone(),
+                        scout_probes: 0,
+                        surviving_attacker: Army::new(),
+                        surviving_defender: Army::new(),
+                        planet_colonized: false,
+                        planet_destroyed: false,
+                        destination_owned: None,
+                        destination_controlled: None,
+                        logs: None,
+                        hidden: true,
+                    });
+                }
+
                 message.write(MessageMsg::info(format!("Planet {} abandoned.", planet.name)));
             }
         });
@@ -1226,7 +1259,9 @@ fn draw_mission_reports(
     is_hovered: bool,
     images: &ImageIds,
 ) {
-    if player.reports.len() == 0 {
+    let reports = player.reports.iter().filter(|r| !r.hidden).collect::<Vec<_>>();
+
+    if reports.len() == 0 {
         ui.add_space(20.);
         ui.vertical_centered(|ui| {
             ui.label(format!("No {}.", state.mission_tab.to_lowername()));
@@ -1247,7 +1282,7 @@ fn draw_mission_reports(
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 5.;
 
-                for report in player.reports.iter().rev() {
+                for report in reports.iter().rev() {
                     let destination = map.get(report.mission.destination);
 
                     let (rect, mut response) =
@@ -2053,10 +2088,9 @@ pub fn draw_ui(
 
         let (window_w, window_h) = (205., 630.);
 
-        let planet_mut = map.get_mut(id);
-        let planet = &planet_mut.clone();
+        let planet = map.get_mut(id);
 
-        let mut draw_planet_info = |contexts, extension| {
+        let mut draw_planet_info = |contexts, planet, player, extension| {
             let (window_w2, window_h2) = (518., 216.);
 
             draw_panel(
@@ -2084,7 +2118,7 @@ pub fn draw_ui(
                 ),
                 (window_w2, window_h2),
                 &images,
-                |ui| draw_planet_overview(ui, planet_mut, &player, &mut message, &images),
+                |ui| draw_planet_overview(ui, planet, player, settings.turn, &mut message, &images),
             );
         };
 
@@ -2109,7 +2143,7 @@ pub fn draw_ui(
                 |ui| draw_overview(ui, planet, &images),
             );
 
-            draw_planet_info(&mut contexts, true);
+            draw_planet_info(&mut contexts, planet, &mut player, true);
         } else if let Some(info) = info {
             // Don't use has_army since no units is also valid information
             if !planet.is_destroyed && !info.army.is_empty() {
@@ -2130,12 +2164,12 @@ pub fn draw_ui(
                     |ui| draw_report_overview(ui, planet, &info, &images),
                 );
 
-                draw_planet_info(&mut contexts, true);
+                draw_planet_info(&mut contexts, planet, &mut player, true);
             } else {
-                draw_planet_info(&mut contexts, false);
+                draw_planet_info(&mut contexts, planet, &mut player, false);
             }
         } else {
-            draw_planet_info(&mut contexts, false);
+            draw_planet_info(&mut contexts, planet, &mut player, false);
         }
 
         !right_side
