@@ -105,6 +105,24 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
+    pub fn is_resource_building(&self) -> bool {
+        matches!(
+            self,
+            Unit::Building(Building::MetalMine)
+                | Unit::Building(Building::CrystalMine)
+                | Unit::Building(Building::DeuteriumSynthesizer)
+        )
+    }
+
+    pub fn is_industrial_building(&self) -> bool {
+        matches!(
+            self,
+            Unit::Building(Building::Shipyard)
+                | Unit::Building(Building::Factory)
+                | Unit::Building(Building::MissileSilo)
+        )
+    }
+
     pub fn is_combat_ship(&self) -> bool {
         match self {
             Unit::Ship(s) if !matches!(s, Ship::Probe | Ship::ColonyShip) => true,

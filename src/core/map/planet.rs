@@ -71,6 +71,14 @@ impl PlanetKind {
         }
     }
 
+    pub fn temperature_emoji(&self) -> &str {
+        match self {
+            PlanetKind::Dry => "🔥",
+            PlanetKind::Gas | PlanetKind::Ice => "❄",
+            PlanetKind::Water => "☀",
+        }
+    }
+
     pub fn description(&self) -> &str {
         match self {
             PlanetKind::Dry => {

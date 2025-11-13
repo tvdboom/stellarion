@@ -205,8 +205,9 @@ pub fn draw_map(
                         }
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
                         state.mission = true;
+                        state.planet_selected = None;
                         state.mission_tab = MissionTab::NewMission;
-                        state.mission_info = Mission::new(
+                        state.mission_info = Mission::from_mission(
                             settings.turn,
                             player.id,
                             map.get(
@@ -216,11 +217,7 @@ pub fn draw_map(
                                     .unwrap_or(player.home_planet),
                             ),
                             map.get(planet_id),
-                            state.mission_info.objective,
-                            state.mission_info.army.clone(),
-                            state.mission_info.combat_probes,
-                            state.mission_info.jump_gate,
-                            None,
+                            &state.mission_info,
                         );
                     }
                 },
@@ -301,9 +298,11 @@ pub fn draw_map(
                                             state.shop = icon.shop();
                                         } else if icon == Icon::Attacked {
                                             state.mission = true;
+                                            state.planet_selected = None;
                                             state.mission_tab = MissionTab::IncomingAttacks;
                                         } else if icon.is_mission() {
                                             state.mission = true;
+                                            state.planet_selected = None;
                                             state.mission_tab = MissionTab::NewMission;
 
                                             // The origin is determined as follows: the selected
@@ -367,6 +366,7 @@ pub fn draw_map(
                                                             .collect(),
                                                         _ => unreachable!(),
                                                     },
+                                                    state.mission_info.bombing.clone(),
                                                     state.mission_info.combat_probes,
                                                     state.mission_info.jump_gate,
                                                     None,
@@ -687,9 +687,7 @@ pub fn update_planet_info(
     settings: Res<Settings>,
     assets: Local<WorldAssets>,
 ) {
-    let n_owned = map.planets.iter().filter(|p| p.owned == Some(player.id)).count();
-    let n_max_owned =
-        (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
 
     for (planet_e, mut planet_s, planet_c) in &mut planet_q {
         let planet = map.get(planet_c.id);
@@ -734,14 +732,7 @@ pub fn update_planet_info(
                         });
 
                         let has_condition = {
-                            let mut planets: Box<dyn Iterator<Item = &Planet>> =
-                                if let Some(id) = state.planet_selected {
-                                    Box::new(std::iter::once(map.get(id)))
-                                } else {
-                                    Box::new(map.planets.iter())
-                                };
-
-                            planets.any(|p| {
+                            map.planets.iter().any(|p| {
                                 p.id != planet.id
                                     && icon.condition(p)
                                     && match icon {

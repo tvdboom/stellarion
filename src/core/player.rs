@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::core::combat::{MissionReport, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
+use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
+use crate::core::settings::Settings;
 use crate::core::units::{Amount, Army, Unit};
 
 #[derive(Clone)]
@@ -68,6 +70,14 @@ impl Player {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
+    pub fn planets_owned(&self, map: &Map, settings: &Settings) -> (usize, usize) {
+        let n_owned = map.planets.iter().filter(|p| p.owned == Some(self.id)).count();
+        let n_max_owned =
+            (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+
+        (n_owned, n_max_owned)
+    }
+
     pub fn last_info(&self, id: PlanetId, missions: &Vec<Mission>) -> Option<PlanetInfo> {
         let mut reports = vec![];
 
@@ -81,7 +91,7 @@ impl Player {
                         army: Unit::all()
                             .iter()
                             .flatten()
-                            .map(|u| (u.clone(), r.mission.origin_army.amount(u)))
+                            .map(|u| (*u, r.mission.origin_army.amount(u)))
                             .collect(),
                     }
                 } else if !r.mission.objective.is_hidden() {
@@ -108,10 +118,10 @@ impl Player {
                                 if r.winner() == r.planet.controlled
                                     || r.mission.objective == Icon::Destroy
                                 {
-                                    Some((u.clone(), r.surviving_defender.amount(u)))
+                                    Some((*u, r.surviving_defender.amount(u)))
                                 } else {
                                     Some((
-                                        u.clone(),
+                                        *u,
                                         if u.is_building() {
                                             r.surviving_defender.amount(u)
                                         } else if *u == Unit::probe() {
@@ -125,7 +135,7 @@ impl Player {
                                 && r.scout_probes
                                     > (u.production() - 1) * PROBES_PER_PRODUCTION_LEVEL
                             {
-                                Some((u.clone(), r.planet.army.amount(u)))
+                                Some((*u, r.planet.army.amount(u)))
                             } else {
                                 None
                             }
@@ -144,7 +154,7 @@ impl Player {
                     let army: Army = Unit::all()
                         .iter()
                         .flatten()
-                        .map(|u| (u.clone(), m.origin_army.amount(u) - m.army.amount(u)))
+                        .map(|u| (*u, m.origin_army.amount(u) - m.army.amount(u)))
                         .collect();
 
                     reports.push(PlanetInfo {

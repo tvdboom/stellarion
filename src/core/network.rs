@@ -37,7 +37,7 @@ pub struct Host {
     /// Maps client IDs to their respective players
     pub clients: HashMap<ClientId, Player>,
 
-    /// All missions in the game with real stats
+    /// Client missions in the game with real stats
     pub missions: Vec<Mission>,
 
     /// Keeps track of which clients have ended their turn

@@ -7,7 +7,7 @@ use strum_macros::EnumIter;
 
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
-use crate::core::missions::Mission;
+use crate::core::missions::{BombingRaid, Mission};
 use crate::core::player::Player;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -194,6 +194,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         }
     }
 
+    let mut buildings: Army =
+        destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
     let colony_ships = mission.army.amount(&Unit::colony_ship());
     let mut planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
 
@@ -352,6 +354,33 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             }
         }
 
+        // Resolve bombing raids
+        if mission.bombing != BombingRaid::None && planetary_shield == 0 {
+            for _ in attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::Bomber)) {
+                let mut rng = rng();
+                if rng.random::<f32>() < 0.1 {
+                    let f = match mission.bombing {
+                        BombingRaid::Economic => {
+                            |u: &Unit, c: &&mut usize| u.is_resource_building() && **c > 0
+                        },
+                        BombingRaid::Industrial => {
+                            |u: &Unit, c: &&mut usize| u.is_industrial_building() && **c > 0
+                        },
+                        _ => unreachable!(),
+                    };
+
+                    if let Some((u, c)) =
+                        buildings.iter_mut().filter(|(u, c)| f(u, c)).choose(&mut rng)
+                    {
+                        *c -= 1;
+                        logs.push_str(
+                            format!("\n >> {} reduced to level {}.", u.to_name(), c).as_str(),
+                        );
+                    }
+                }
+            }
+        }
+
         // Try to destroy planet
         if mission.objective == Icon::Destroy && !defend_army.iter().any(|u| u.unit.is_ship()) {
             for _ in attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::WarSun)) {
@@ -399,11 +428,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
     // Add the buildings to the surviving defense
     if !planet_destroyed {
-        surviving_defense = surviving_defense
-            .iter()
-            .chain(destination.army.iter().filter(|(u, _)| u.is_building()))
-            .map(|(u, &v)| (u.clone(), v))
-            .collect();
+        surviving_defense =
+            surviving_defense.iter().chain(buildings.iter()).map(|(u, v)| (*u, *v)).collect();
     }
 
     MissionReport {

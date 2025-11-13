@@ -3,6 +3,7 @@ use bevy::window::SystemCursorIcon;
 use bevy_egui::egui::emath::OrderedFloat;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::constants::MISSION_Z;
@@ -14,7 +15,7 @@ use crate::core::map::utils::cursor;
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::core::units::{Amount, Army, Combat};
+use crate::core::units::{Amount, Army, Combat, Description};
 use crate::utils::NameFromEnum;
 
 pub type MissionId = u64;
@@ -45,6 +46,31 @@ impl SendMissionMsg {
     }
 }
 
+#[derive(EnumIter, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum BombingRaid {
+    #[default]
+    None,
+    Economic,
+    Industrial,
+}
+
+impl Description for BombingRaid {
+    fn description(&self) -> &str {
+        match self {
+            BombingRaid::None => "No bombing raid.",
+            BombingRaid::Economic => {
+                "Bombers target resource production buildings: Metal Mine, Crystal Mine and \
+                Deuterium Synthesizer."
+            },
+            BombingRaid::Industrial => {
+                "Bombers target unit production buildings: Shipyard, Factory and Missile Silo. \
+                Reducing a Silo's level does not destroy the enemy's missiles that surpass the \
+                new capacity limit."
+            },
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Mission {
     pub id: MissionId,
@@ -58,6 +84,7 @@ pub struct Mission {
     pub position: Vec2,
     pub objective: Icon,
     pub army: Army,
+    pub bombing: BombingRaid,
     pub combat_probes: bool,
     pub jump_gate: bool,
     pub logs: String,
@@ -71,6 +98,7 @@ impl Mission {
         destination: &Planet,
         objective: Icon,
         army: Army,
+        bombing: BombingRaid,
         combat_probes: bool,
         jump_gate: bool,
         logs: Option<String>,
@@ -97,10 +125,32 @@ impl Mission {
             },
             objective,
             army,
+            bombing,
             combat_probes,
             jump_gate,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
         }
+    }
+
+    pub fn from_mission(
+        turn: usize,
+        owner: ClientId,
+        origin: &Planet,
+        destination: &Planet,
+        mission: &Mission,
+    ) -> Self {
+        Self::new(
+            turn,
+            owner,
+            origin,
+            destination,
+            mission.objective,
+            mission.army.clone(),
+            mission.bombing.clone(),
+            mission.combat_probes,
+            mission.jump_gate,
+            None,
+        )
     }
 
     pub fn image(&self, player: &Player) -> &str {
@@ -263,6 +313,7 @@ pub fn update_missions(
                 .observe(move |event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
                     if event.button == PointerButton::Primary {
                         state.mission = true;
+                        state.planet_selected = None;
                         state.mission_tab = if owner == player_id {
                             MissionTab::ActiveMissions
                         } else {

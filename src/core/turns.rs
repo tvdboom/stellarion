@@ -10,7 +10,7 @@ use crate::core::combat::combat;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{Mission, Missions};
+use crate::core::missions::{BombingRaid, Mission, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -244,6 +244,7 @@ pub fn resolve_turn(
                                     &new_origin,
                                     Icon::Deploy,
                                     report.surviving_attacker.clone(),
+                                    BombingRaid::None,
                                     false,
                                     false,
                                     Some(
@@ -264,6 +265,7 @@ pub fn resolve_turn(
                                     &new_origin,
                                     Icon::Deploy,
                                     HashMap::from([(Unit::probe(), report.scout_probes)]),
+                                    BombingRaid::None,
                                     false,
                                     false,
                                     None,
@@ -299,6 +301,7 @@ pub fn resolve_turn(
                                     &new_origin,
                                     Icon::Deploy,
                                     report.surviving_attacker.clone(),
+                                    BombingRaid::None,
                                     false,
                                     false,
                                     Some(

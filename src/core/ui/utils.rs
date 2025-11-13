@@ -50,7 +50,9 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
 
 pub trait CustomResponse {
     fn on_hover_small(self, text: impl Into<RichText>) -> Self;
+    fn on_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self;
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self;
+    fn on_disabled_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self;
 }
 
 impl CustomResponse for Response {
@@ -60,9 +62,45 @@ impl CustomResponse for Response {
         })
     }
 
+    fn on_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self {
+        let rich_text = text.into();
+        let width = ui
+            .painter()
+            .layout_no_wrap(
+                rich_text.text().to_string(),
+                TextStyle::Small.resolve(ui.style()),
+                Color32::WHITE,
+            )
+            .size()
+            .x;
+
+        self.on_hover_ui(|ui| {
+            ui.set_width(width);
+            ui.small(rich_text);
+        })
+    }
+
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
             ui.small(text);
+        })
+    }
+
+    fn on_disabled_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self {
+        let rich_text = text.into();
+        let width = ui
+            .painter()
+            .layout_no_wrap(
+                rich_text.text().to_string(),
+                TextStyle::Small.resolve(ui.style()),
+                Color32::WHITE,
+            )
+            .size()
+            .x;
+
+        self.on_disabled_hover_ui(|ui| {
+            ui.set_width(width);
+            ui.small(rich_text);
         })
     }
 }

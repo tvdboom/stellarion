@@ -94,12 +94,14 @@ pub fn check_keys(
     // Toggle mission panel
     if keyboard.just_pressed(KeyCode::KeyM) {
         state.mission = !state.mission;
+        state.planet_selected = None;
     }
 
     // Go back to home planet
     if keyboard.just_pressed(KeyCode::Space) {
         state.planet_selected = Some(player.home_planet);
         state.to_selected = true;
+        state.mission = false;
     }
 
     // Move between owned planets
