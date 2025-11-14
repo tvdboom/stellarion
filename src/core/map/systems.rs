@@ -154,6 +154,7 @@ pub fn draw_map(
         )
         .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.mission = false;
+            state.combat_report = None;
         });
 
     for planet in &map.planets {
@@ -560,6 +561,7 @@ pub fn draw_map(
         .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.planet_selected = None;
             state.mission = false;
+            state.combat_report = None;
             state.end_turn = !state.end_turn;
         });
 }

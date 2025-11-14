@@ -33,9 +33,10 @@ pub fn check_keys_menu(
     if keyboard.just_pressed(KeyCode::Escape) {
         match game_state.get() {
             GameState::Playing => {
-                if state.mission || state.planet_selected.is_some() {
-                    state.mission = false;
+                if state.planet_selected.is_some() || state.mission {
                     state.planet_selected = None;
+                    state.mission = false;
+                    state.combat_report = None;
                 } else {
                     next_game_state.set(GameState::InGameMenu)
                 }
@@ -93,8 +94,9 @@ pub fn check_keys(
 
     // Toggle mission panel
     if keyboard.just_pressed(KeyCode::KeyM) {
-        state.mission = !state.mission;
         state.planet_selected = None;
+        state.mission = !state.mission;
+        state.combat_report = None;
     }
 
     // Go back to home planet

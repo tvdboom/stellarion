@@ -50,9 +50,9 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
 
 pub trait CustomResponse {
     fn on_hover_small(self, text: impl Into<RichText>) -> Self;
-    fn on_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self;
+    fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self;
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self;
-    fn on_disabled_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self;
+    fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self;
 }
 
 impl CustomResponse for Response {
@@ -62,21 +62,10 @@ impl CustomResponse for Response {
         })
     }
 
-    fn on_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self {
-        let rich_text = text.into();
-        let width = ui
-            .painter()
-            .layout_no_wrap(
-                rich_text.text().to_string(),
-                TextStyle::Small.resolve(ui.style()),
-                Color32::WHITE,
-            )
-            .size()
-            .x;
-
+    fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
-            ui.set_width(width);
-            ui.small(rich_text);
+            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+            ui.small(text);
         })
     }
 
@@ -86,21 +75,10 @@ impl CustomResponse for Response {
         })
     }
 
-    fn on_disabled_hover_small_sized(self, ui: &Ui, text: impl Into<RichText>) -> Self {
-        let rich_text = text.into();
-        let width = ui
-            .painter()
-            .layout_no_wrap(
-                rich_text.text().to_string(),
-                TextStyle::Small.resolve(ui.style()),
-                Color32::WHITE,
-            )
-            .size()
-            .x;
-
+    fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
-            ui.set_width(width);
-            ui.small(rich_text);
+            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+            ui.small(text);
         })
     }
 }
@@ -112,6 +90,7 @@ pub trait CustomUi {
         texture: impl Into<TextureId>,
         size: impl Into<Vec2>,
     ) -> Response;
+    fn add_custom_button(&mut self, text: impl ToString, images: &ImageIds) -> Response;
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
     fn add_icon_on_image(&mut self, id: impl Into<TextureId>, rect: Rect) -> Response;
     fn add_text_on_image(
@@ -136,6 +115,30 @@ impl CustomUi for Ui {
         size: impl Into<Vec2>,
     ) -> Response {
         self.add(Button::image(SizedTexture::new(texture, size)))
+    }
+
+    fn add_custom_button(&mut self, text: impl ToString, images: &ImageIds) -> Response {
+        let (rect, mut response) = self.allocate_exact_size([180., 50.].into(), Sense::click());
+
+        response = response.on_hover_cursor(CursorIcon::PointingHand);
+
+        let image = if response.hovered() && !response.is_pointer_button_down_on() {
+            images.get("button hover")
+        } else {
+            images.get("button")
+        };
+
+        self.add_image_painter(image, rect);
+
+        self.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            text,
+            TextStyle::Button.resolve(self.style()),
+            Color32::WHITE,
+        );
+
+        response
     }
 
     fn add_image_painter(&mut self, image: TextureId, rect: Rect) {

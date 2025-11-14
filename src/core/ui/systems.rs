@@ -3,8 +3,7 @@ use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::{
     emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Order,
-    Response, RichText, ScrollArea, Sense, Separator, Stroke, StrokeKind, TextStyle, TextWrapMode,
-    Ui, UiBuilder,
+    Response, RichText, ScrollArea, Sense, Separator, Stroke, StrokeKind, TextStyle, Ui, UiBuilder,
 };
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
@@ -12,7 +11,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
-use crate::core::combat::{CombatStats, MissionReport, Side};
+use crate::core::combat::{CombatStats, MissionReport, ReportId, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -64,6 +63,7 @@ pub struct UiState {
     pub jump_gate_history: bool,
     pub mission_hover: Option<MissionId>,
     pub mission_report: Option<MissionId>,
+    pub combat_report: Option<ReportId>,
     pub end_turn: bool,
 }
 
@@ -81,8 +81,10 @@ fn draw_panel<R>(
             fill: Color32::TRANSPARENT,
             ..default()
         })
-        .order(if name == "mission" {
+        .order(if name == "combat report" {
             Order::Foreground
+        } else if name == "planet overview" {
+            Order::Background
         } else {
             Order::Middle
         })
@@ -142,9 +144,9 @@ fn draw_army_grid(
 
             ui.add_enabled_ui(text != "0", |ui| {
                 let response = ui
-                    .add_image(images.get(unit.to_lowername()), [55., 55.])
-                    .on_hover_small_sized(ui, unit.to_name())
-                    .on_disabled_hover_small_sized(ui, unit.to_name());
+                    .add_image(images.get(unit.to_lowername()), [65., 65.])
+                    .on_hover_small_ext(unit.to_name())
+                    .on_disabled_hover_small_ext(unit.to_name());
 
                 ui.add_text_on_image(
                     text,
@@ -351,7 +353,7 @@ fn draw_planet_overview(
                 planet.position.x.round(),
                 planet.position.y.round()
             ))
-            .on_hover_small_sized(ui, "Position of the planet relative to the system's center.");
+            .on_hover_small_ext("Position of the planet relative to the system's center.");
         });
     });
 
@@ -367,12 +369,8 @@ fn draw_planet_overview(
             let mut response = ui
                 .interact(rect, ui.id(), Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_small_sized(
-                    ui,
-                    "Abandon this planet. The buildings on the planet remain.",
-                )
-                .on_disabled_hover_small_sized(
-                    ui,
+                .on_hover_small_ext("Abandon this planet. The buildings on the planet remain.")
+                .on_disabled_hover_small_ext(
                     "A planet can't be abandoned when there are units being built.",
                 );
 
@@ -394,6 +392,7 @@ fn draw_planet_overview(
                     );
 
                     player.reports.push(MissionReport {
+                        id: rand::random(),
                         turn: settings.turn,
                         mission,
                         planet: planet.clone(),
@@ -405,6 +404,7 @@ fn draw_planet_overview(
                         destination_owned: None,
                         destination_controlled: None,
                         logs: None,
+                        combat_report: None,
                         hidden: true,
                     });
                 }
@@ -418,15 +418,12 @@ fn draw_planet_overview(
             |ui| {
                 let mut response = ui
                     .interact(rect, ui.id(), Sense::click())
-                    .on_hover_small_sized(ui, "Colonize this planet.")
-                    .on_disabled_hover_small_sized(
-                        ui,
-                        if n_owned >= n_max_owned {
-                            "Maximum number of colonized planets reached."
-                        } else {
-                            "A Colony Ship is required on this planet to colonize it."
-                        },
-                    );
+                    .on_hover_small_ext("Colonize this planet.")
+                    .on_disabled_hover_small_ext(if n_owned >= n_max_owned {
+                        "Maximum number of colonized planets reached."
+                    } else {
+                        "A Colony Ship is required on this planet to colonize it."
+                    });
 
                 if response.enabled() {
                     response = response.on_hover_cursor(CursorIcon::PointingHand);
@@ -656,8 +653,10 @@ fn draw_new_mission(
         _ => Unit::ships(),
     };
 
+    ui.add_space(10.);
+
     ui.horizontal_top(|ui| {
-        ui.add_space(85.);
+        ui.add_space(135.);
 
         let action = |r: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
             if r.clicked() {
@@ -781,19 +780,19 @@ fn draw_new_mission(
     });
 
     ui.add_space(-10.);
-    ui.add(Separator::default().shrink(50.));
+    ui.add(Separator::default().shrink(70.));
 
     if state.mission_info.origin == state.mission_info.destination {
-        ui.add_space(20.);
+        ui.add_space(30.);
         ui.vertical_centered(|ui| {
             ui.colored_label(Color32::RED, "The origin and destination planets must be different.");
         });
     } else {
         ui.horizontal(|ui| {
-            ui.add_space(95.);
+            ui.add_space(130.);
 
             ui.vertical(|ui| {
-                ui.set_width(260.);
+                ui.set_width(280.);
 
                 egui::Grid::new("units").striped(false).num_columns(2).spacing([25., 8.]).show(
                     ui,
@@ -811,7 +810,7 @@ fn draw_new_mission(
                                         let response = ui
                                             .add_image(
                                                 images.get(unit.to_lowername()),
-                                                [55., 55.],
+                                                [65., 65.],
                                             )
                                             .interact(Sense::click())
                                             .on_hover_cursor(CursorIcon::PointingHand)
@@ -828,6 +827,8 @@ fn draw_new_mission(
 
                                         ui.add_text_on_image(n.to_string(), Color32::WHITE, TextStyle::Body, response.rect.left_bottom(), Align2::LEFT_BOTTOM);
 
+                                        ui.style_mut().drag_value_text_style = TextStyle::Body;
+                                        ui.spacing_mut().interact_size.x = 50.;
                                         let value =
                                             state.mission_info.army.entry(*unit).or_insert(0);
                                         ui.add(egui::DragValue::new(value).speed(0.2).range(0..=n));
@@ -843,9 +844,11 @@ fn draw_new_mission(
                 );
             });
 
-            ui.add_space(10.);
+            ui.add_space(15.);
 
             ui.vertical(|ui| {
+                ui.add_space(20.);
+
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.;
                     ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
@@ -967,13 +970,17 @@ fn draw_new_mission(
                         });
                     })
                     .response
-                    .on_hover_small("Normally, Probes leave combat after the first round and return \
+                    .on_hover_ui(|ui| {
+                        ui.set_width(300.);
+                        ui.small(
+                            "Normally, Probes leave combat after the first round and return \
                             to the planet of origin. Enabling this option makes the Probes stay \
                             during the whole combat, serving as extra fodder and having the \
                             advantage that they stay with the rest of the fleet when victorious, \
                             at risk of getting no enemy unit information when losing combat. \
                             Probes always stay if the combat takes only one round."
-                    )
+                        );
+                    })
                     .on_disabled_hover_small("No Probes selected for this mission.");
 
                     if probes == 0 {
@@ -1055,10 +1062,17 @@ fn draw_new_mission(
                     state.mission_info.jump_gate = false;
                 }
 
-                ui.add_space(if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) || has_gate { 5. } else { 45. });
+                ui.add_space(
+                    if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
+                        20.
+                    } else if has_gate {
+                        65.
+                    } else {
+                        102.
+                    });
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    ui.add_space(40.);
+                    ui.add_space(50.);
 
                     let army_check = state.mission_info.army.has_army();
                     let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
@@ -1083,11 +1097,8 @@ fn draw_new_mission(
                     };
 
                     ui.add_enabled_ui(army_check && fuel_check && objective_check, |ui| {
-                        let (rect, mut response) =
-                            ui.allocate_exact_size([180., 50.].into(), Sense::click());
-
-                        response = response
-                            .on_hover_cursor(CursorIcon::PointingHand)
+                        let response = ui
+                            .add_custom_button("Send mission", images)
                             .on_disabled_hover_ui(|ui| {
                                 if !army_check {
                                     ui.small("No ships selected for the mission.");
@@ -1097,22 +1108,6 @@ fn draw_new_mission(
                                     ui.small("The ship requirements for the mission objective is not met.");
                                 }
                             });
-
-                        let image = if response.hovered() && !response.is_pointer_button_down_on() {
-                            images.get("button hover")
-                        } else {
-                            images.get("button")
-                        };
-
-                        ui.add_image_painter(image, rect);
-
-                        ui.painter().text(
-                            rect.center(),
-                            Align2::CENTER_CENTER,
-                            "Send mission",
-                            TextStyle::Button.resolve(ui.style()),
-                            Color32::WHITE,
-                        );
 
                         if response.clicked() || (response.enabled() && keyboard.just_pressed(KeyCode::Enter)) {
                             let mission = Mission::from_mission(
@@ -1145,7 +1140,7 @@ fn draw_active_missions(
     images: &ImageIds,
 ) {
     if missions.len() == 0 {
-        ui.add_space(20.);
+        ui.add_space(40.);
         ui.vertical_centered(|ui| {
             ui.label(format!("No {}.", state.mission_tab.to_lowername()));
         });
@@ -1157,14 +1152,14 @@ fn draw_active_missions(
         .iter()
         .sorted_by(|a, b| a.turns_to_destination(map).cmp(&b.turns_to_destination(map)));
 
-    ui.add_space(20.);
+    ui.add_space(30.);
 
     ScrollArea::vertical()
         .max_width(ui.available_width() - 45.)
         .max_height(ui.available_height() - 50.)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add_space(115.);
+                ui.add_space(165.);
 
                 let action = |r1: Response,
                               r2: Response,
@@ -1316,7 +1311,7 @@ fn draw_mission_reports(
     let reports = player.reports.iter().filter(|r| !r.hidden).collect::<Vec<_>>();
 
     if reports.len() == 0 {
-        ui.add_space(20.);
+        ui.add_space(30.);
         ui.vertical_centered(|ui| {
             ui.label(format!("No {}.", state.mission_tab.to_lowername()));
         });
@@ -1326,9 +1321,9 @@ fn draw_mission_reports(
     ui.add_space(10.);
 
     ui.horizontal(|ui| {
-        ui.set_height(497.);
+        ui.set_height(547.);
 
-        ui.add_space(20.);
+        ui.add_space(30.);
 
         ScrollArea::vertical().show(ui, |ui| {
             ui.set_width(150.);
@@ -1374,7 +1369,7 @@ fn draw_mission_reports(
                                 [40., 40.],
                             );
 
-                            if report.logs.is_some() {
+                            if report.combat_report.is_some() {
                                 let size = [20., 20.];
                                 let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
                                 ui.put(
@@ -1415,7 +1410,6 @@ fn draw_mission_reports(
 
         ui.add_space(-10.);
         ui.separator();
-        ui.add_space(-5.);
 
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 40.);
@@ -1454,7 +1448,7 @@ fn draw_mission_reports(
                     }
                 };
 
-                ui.add_space(15.);
+                ui.add_space(55.);
 
                 let mut changed_hover = false;
                 egui::Grid::new("active report").spacing([10., 0.]).striped(false).show(ui, |ui| {
@@ -1534,18 +1528,8 @@ fn draw_mission_reports(
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
-                    if let Some(logs) = &report.logs {
-                        let resp =
-                            ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
-
-                        if report.can_see(&Side::Defender, player.id) && !logs.is_empty() {
-                            resp.on_hover_ui(|ui| {
-                                ScrollArea::vertical().show(ui, |ui| {
-                                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                                    ui.small(format!("Combat logs\n===========\n\n{logs}"));
-                                });
-                            });
-                        }
+                    if report.combat_report.is_some() {
+                        ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
                     }
 
                     action(resp3, resp4, destination, &mut changed_hover, state);
@@ -1561,8 +1545,6 @@ fn draw_mission_reports(
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.set_height(395.);
-
                 ui.vertical(|ui| {
                     ui.set_width(120.);
 
@@ -1581,7 +1563,9 @@ fn draw_mission_reports(
                             ui.small(format!("Scouts: {}", report.scout_probes));
                         })
                         .response
-                        .on_hover_small("Number of Probes that left combat after the first round.");
+                        .on_hover_small_ext(
+                            "Number of attacking Probes that left combat after the first round.",
+                        );
                     }
                 });
 
@@ -1590,6 +1574,8 @@ fn draw_mission_reports(
                 ui.add_space(-10.);
 
                 ui.vertical(|ui| {
+                    ui.set_height(450.);
+
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.;
 
@@ -1622,6 +1608,16 @@ fn draw_mission_reports(
                             ui.small(label);
                         });
                     }
+
+                    ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+                        if report.combat_report.is_some()
+                            && report.can_see(&Side::Defender, player.id)
+                        {
+                            if ui.add_custom_button("Combat details", images).clicked() {
+                                state.combat_report = Some(report.id);
+                            }
+                        }
+                    });
                 });
             });
         });
@@ -1640,11 +1636,11 @@ fn draw_mission(
     keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
 ) {
-    ui.add_space(12.);
+    ui.add_space(17.);
     ui.horizontal(|ui| {
         ui.style_mut().spacing.button_padding = egui::vec2(6., 0.);
 
-        ui.add_space(45.);
+        ui.add_space(105.);
         for tab in MissionTab::iter() {
             ui.selectable_value(&mut state.mission_tab, tab, tab.to_title());
         }
@@ -1684,6 +1680,58 @@ fn draw_mission(
             draw_mission_reports(ui, state, map, player, is_hovered, images)
         },
     }
+}
+
+fn draw_combat_report(
+    ui: &mut Ui,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+) {
+    let report = player.reports.iter().find(|r| r.id == state.combat_report.unwrap()).unwrap();
+    let combat_report = report.combat_report.as_ref().unwrap();
+
+    let origin = map.get(report.mission.origin);
+    let destination = map.get(report.mission.destination);
+
+    ui.add_space(5.);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.;
+
+        ui.add_space(70.);
+
+        ui.add_image(images.get(format!("planet{}", origin.image)), [40., 40.]);
+
+        ui.small(&origin.name);
+
+        ui.add_image(images.get(report.mission.objective.to_lowername()), [25., 25.]);
+
+        ui.add_image(images.get(report.mission.image(player)), [50., 50.]);
+
+        ui.small(report.turn.to_string());
+
+        ui.small(&destination.name);
+
+        let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
+
+        let size = [20., 20.];
+        let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
+        ui.put(
+            egui::Rect::from_min_size(pos, size.into()),
+            egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
+        );
+    });
+
+    ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+        ui.add_space(50.);
+        ui.horizontal(|ui| {
+            ui.add_space(40.);
+            if ui.add_custom_button("Close details", images).clicked() {
+                state.combat_report = None;
+            }
+        });
+    });
 }
 
 fn draw_mission_info_hover(
@@ -2270,7 +2318,7 @@ pub fn draw_ui(
     if state.mission {
         state.end_turn = false;
 
-        let (window_w, window_h) = (750., 590.);
+        let (window_w, window_h) = (850., 640.);
 
         let is_hovered = contexts.ctx().unwrap().is_pointer_over_area();
         draw_panel(
@@ -2318,5 +2366,21 @@ pub fn draw_ui(
                 }
             }
         }
+    }
+
+    if state.combat_report.is_some() {
+        state.end_turn = false;
+
+        let (window_w, window_h) = (1100., 700.);
+
+        draw_panel(
+            &mut contexts,
+            "combat report",
+            "panel",
+            (width * 0.5 - window_w * 0.5, height * 0.9 - window_h),
+            (window_w, window_h),
+            &images,
+            |ui| draw_combat_report(ui, &mut state, &map, &player, &images),
+        );
     }
 }

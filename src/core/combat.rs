@@ -14,6 +14,8 @@ use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
 
+pub type ReportId = u64;
+
 #[derive(EnumIter, Debug, PartialEq)]
 pub enum Side {
     Attacker,
@@ -59,7 +61,13 @@ impl Description for CombatStats {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct CombatReport {}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MissionReport {
+    /// Unique identifier for the report
+    pub id: ReportId,
+
     /// Turn the report was generated
     pub turn: usize,
 
@@ -69,7 +77,7 @@ pub struct MissionReport {
     /// Planet as it was before the mission resolution
     pub planet: Planet,
 
-    /// Number of probes that left after one round of combat
+    /// Number of attacking probes that left after one round of combat
     pub scout_probes: usize,
 
     /// Surviving units from the attacker
@@ -92,6 +100,9 @@ pub struct MissionReport {
 
     /// Combat logs (if combat took place)
     pub logs: Option<String>,
+
+    /// Combat report (if combat took place)
+    pub combat_report: Option<CombatReport>,
 
     /// Whether to show this report in the report mission tab
     pub hidden: bool,
@@ -163,6 +174,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         || (mission.objective == Icon::Colonize && destination.controlled == Some(mission.owner))
     {
         return MissionReport {
+            id: rand::random(),
             turn,
             mission: mission.clone(),
             planet: destination.clone(),
@@ -173,6 +185,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             planet_destroyed: false,
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
+            combat_report: None,
             logs: None,
             hidden: false,
         };
@@ -433,6 +446,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     }
 
     MissionReport {
+        id: rand::random(),
         turn,
         mission: mission.clone(),
         planet: destination.clone(),
@@ -444,6 +458,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
         logs: Some(logs),
+        combat_report: Some(CombatReport {}),
         hidden: false,
     }
 }
