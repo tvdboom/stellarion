@@ -1,10 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{
-    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Order,
-    Response, RichText, ScrollArea, Sense, Separator, Stroke, StrokeKind, TextStyle, Ui, UiBuilder,
-};
+use bevy_egui::egui::{emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Order, Response, RichText, ScrollArea, Sense, Separator, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder};
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -64,6 +61,7 @@ pub struct UiState {
     pub mission_hover: Option<MissionId>,
     pub mission_report: Option<MissionId>,
     pub combat_report: Option<ReportId>,
+    pub combat_report_round: usize,
     pub end_turn: bool,
 }
 
@@ -1066,9 +1064,9 @@ fn draw_new_mission(
                     if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
                         20.
                     } else if has_gate {
-                        65.
+                        64.
                     } else {
-                        102.
+                        104.
                     });
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -1615,6 +1613,7 @@ fn draw_mission_reports(
                         {
                             if ui.add_custom_button("Combat details", images).clicked() {
                                 state.combat_report = Some(report.id);
+                                state.combat_report_round = 1;
                             }
                         }
                     });
@@ -1690,37 +1689,56 @@ fn draw_combat_report(
     images: &ImageIds,
 ) {
     let report = player.reports.iter().find(|r| r.id == state.combat_report.unwrap()).unwrap();
-    let combat_report = report.combat_report.as_ref().unwrap();
+    let combat = report.combat_report.as_ref().unwrap();
 
     let origin = map.get(report.mission.origin);
     let destination = map.get(report.mission.destination);
 
     ui.add_space(5.);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.;
+    ui.scope(|ui| {
+        ui.set_height(55.);
 
-        ui.add_space(70.);
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.;
 
-        ui.add_image(images.get(format!("planet{}", origin.image)), [40., 40.]);
+            ui.add_space(70.);
 
-        ui.small(&origin.name);
+            ui.add_image(images.get(format!("planet{}", origin.image)), [40., 40.]);
+            ui.small(&origin.name);
 
-        ui.add_image(images.get(report.mission.objective.to_lowername()), [25., 25.]);
+            ui.add_space(25.);
 
-        ui.add_image(images.get(report.mission.image(player)), [50., 50.]);
+            ui.add_image(images.get(report.mission.objective.to_lowername()), [25., 25.]);
+            ui.add_image(images.get(report.mission.image(player)), [50., 50.]);
+            ui.small(report.turn.to_string());
 
-        ui.small(report.turn.to_string());
+            ui.add_space(25.);
 
-        ui.small(&destination.name);
+            ui.small(&destination.name);
+            let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
 
-        let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
+            let size = [20., 20.];
+            let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
+            ui.put(
+                egui::Rect::from_min_size(pos, size.into()),
+                egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
+            );
 
-        let size = [20., 20.];
-        let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
-        ui.put(
-            egui::Rect::from_min_size(pos, size.into()),
-            egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
-        );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(70.);
+
+                ui.add(
+                    Slider::new(&mut state.combat_report_round, 1..=combat.rounds.len())
+                        .step_by(1f64)
+                        .show_value(false)
+                )
+                .on_hover_cursor(CursorIcon::PointingHand);
+
+                ui.add_space(20.);
+
+                ui.small(format!("Round: {}/{}", state.combat_report_round, combat.rounds.len()));
+            });
+        });
     });
 
     ui.with_layout(Layout::bottom_up(Align::Max), |ui| {

@@ -201,11 +201,13 @@ pub fn draw_map(
                         state.planet_selected = Some(planet_id);
                         state.to_selected = true;
                         state.mission = false;
+                        state.combat_report = None;
                         if player.owns(planet) {
                             state.mission_info.origin = planet_id;
                         }
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
                         state.mission = true;
+                        state.combat_report = None;
                         state.planet_selected = None;
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info = Mission::from_mission(

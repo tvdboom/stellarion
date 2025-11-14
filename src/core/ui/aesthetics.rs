@@ -101,7 +101,7 @@ pub trait Aesthetics {
                 x: 40.0,
                 y: 20.0,
             },
-            slider_width: 100.0,
+            slider_width: 200.0,
             combo_width: 130.0,
             text_edit_width: 280.0,
             icon_width: 14.0,

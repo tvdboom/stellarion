@@ -61,7 +61,13 @@ impl Description for CombatStats {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct CombatReport {}
+pub struct RoundReport {
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CombatReport {
+    pub rounds: Vec<RoundReport>
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MissionReport {
@@ -445,6 +451,10 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             surviving_defense.iter().chain(buildings.iter()).map(|(u, v)| (*u, *v)).collect();
     }
 
+    let combat = CombatReport {
+        rounds: vec![RoundReport{}.clone(); 5]
+    };
+
     MissionReport {
         id: rand::random(),
         turn,
@@ -458,7 +468,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
         logs: Some(logs),
-        combat_report: Some(CombatReport {}),
+        combat_report: Some(combat),
         hidden: false,
     }
 }
