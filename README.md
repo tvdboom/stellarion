@@ -127,7 +127,7 @@ Things to keep in mind:
 - `w-a-s-d`: Move the map.
 - `scroll`: Zoom in/out the map.
 - `space`: Center the map on your home planet and select it.
-- `tab / mouse forward-backward`: Cycle through the shop/mission menu.
+- `tab / mouse forward-backward`: Cycle through the shop/mission menu or rounds in a combat report.
 - `ctrl + tab`: Cycle through your owned planets (if any selected).
 - `Q`: Toggle the audio settings.
 - `C`: Show/hide the player's control domain.

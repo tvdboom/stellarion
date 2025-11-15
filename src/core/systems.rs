@@ -108,7 +108,7 @@ pub fn check_keys(
 
     // Move between owned planets
     if ctrl_pressed {
-        if keyboard.just_pressed(KeyCode::Tab) {
+        if keyboard.just_pressed(KeyCode::Tab) && !state.mission && state.combat_report.is_none() {
             if let Some(selected) = state.planet_selected {
                 let planets: Vec<_> = map
                     .planets
@@ -129,6 +129,18 @@ pub fn check_keys(
                     state.planet_selected = Some(planets[new_index]);
                 }
             }
+        }
+    } else if let Some(id) = state.combat_report {
+        let report = player.reports.iter().find(|r| r.id == id).unwrap();
+        let max_rounds = report.combat_report.as_ref().unwrap().rounds.len();
+
+        // Move between rounds
+        if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
+            state.combat_report_round = (state.combat_report_round + 1).min(max_rounds);
+        } else if mouse.just_pressed(MouseButton::Back)
+            || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
+        {
+            state.combat_report_round = (state.combat_report_round - 1).max(1);
         }
     } else if state.mission {
         // Move between mission or shop tabs

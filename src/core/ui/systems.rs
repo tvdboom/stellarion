@@ -1,7 +1,11 @@
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::{emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Order, Response, RichText, ScrollArea, Sense, Separator, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder};
+use bevy_egui::egui::{
+    emath, Align, Align2, Color32, ComboBox, CursorIcon, FontData, FontFamily, Layout, Order,
+    Response, RichText, ScrollArea, Sense, Separator, Slider, Stroke, StrokeKind, TextStyle, Ui,
+    UiBuilder,
+};
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -401,7 +405,6 @@ fn draw_planet_overview(
                         planet_destroyed: false,
                         destination_owned: None,
                         destination_controlled: None,
-                        logs: None,
                         combat_report: None,
                         hidden: true,
                     });
@@ -651,6 +654,11 @@ fn draw_new_mission(
         _ => Unit::ships(),
     };
 
+    let speed = state.mission_info.speed();
+    let distance = state.mission_info.distance(map);
+    let duration = state.mission_info.duration(map);
+    let fuel = state.mission_info.fuel_consumption(map);
+
     ui.add_space(10.);
 
     ui.horizontal_top(|ui| {
@@ -806,10 +814,7 @@ fn draw_new_mission(
                                         ui.set_width(110.);
 
                                         let response = ui
-                                            .add_image(
-                                                images.get(unit.to_lowername()),
-                                                [65., 65.],
-                                            )
+                                            .add_image(images.get(unit.to_lowername()), [65., 65.])
                                             .interact(Sense::click())
                                             .on_hover_cursor(CursorIcon::PointingHand)
                                             .on_hover_small(unit.to_name())
@@ -823,7 +828,13 @@ fn draw_new_mission(
                                             *state.mission_info.army.entry(*unit).or_insert(0) = 0;
                                         }
 
-                                        ui.add_text_on_image(n.to_string(), Color32::WHITE, TextStyle::Body, response.rect.left_bottom(), Align2::LEFT_BOTTOM);
+                                        ui.add_text_on_image(
+                                            n.to_string(),
+                                            Color32::WHITE,
+                                            TextStyle::Body,
+                                            response.rect.left_bottom(),
+                                            Align2::LEFT_BOTTOM,
+                                        );
 
                                         ui.style_mut().drag_value_text_style = TextStyle::Body;
                                         ui.spacing_mut().interact_size.x = 50.;
@@ -875,54 +886,54 @@ fn draw_new_mission(
                         });
                     };
 
-                    for icon in Icon::objectives(player.owns(destination), player.controls(destination)) {
-                        ui.add_enabled_ui(icon.condition(origin) && !(icon == Icon::Colonize && n_owned >= n_max_owned), |ui| {
-                            let button = ui
-                                .add(
-                                    egui::Button::image(SizedTexture::new(
-                                        images.get(icon.to_lowername()),
-                                        [40., 40.],
-                                    ))
+                    for icon in
+                        Icon::objectives(player.owns(destination), player.controls(destination))
+                    {
+                        ui.add_enabled_ui(
+                            icon.condition(origin)
+                                && !(icon == Icon::Colonize && n_owned >= n_max_owned),
+                            |ui| {
+                                let button = ui
+                                    .add(
+                                        egui::Button::image(SizedTexture::new(
+                                            images.get(icon.to_lowername()),
+                                            [40., 40.],
+                                        ))
                                         .corner_radius(5.),
-                                )
-                                .on_hover_ui(|ui| on_hover(ui, &icon, false))
-                                .on_disabled_hover_ui(|ui| on_hover(ui, &icon, true))
-                                .on_hover_cursor(CursorIcon::PointingHand);
+                                    )
+                                    .on_hover_ui(|ui| on_hover(ui, &icon, false))
+                                    .on_disabled_hover_ui(|ui| on_hover(ui, &icon, true))
+                                    .on_hover_cursor(CursorIcon::PointingHand);
 
-                            if button.clicked() {
-                                match icon {
-                                    Icon::Spy => state
-                                        .mission_info
-                                        .army
-                                        .retain(|u, _| matches!(u, Unit::Ship(Ship::Probe))),
-                                    Icon::MissileStrike => {
-                                        state.mission_info.army.retain(|u, _| {
-                                            matches!(
-                                                u,
-                                                Unit::Defense(Defense::InterplanetaryMissile)
-                                            )
-                                        })
-                                    },
-                                    _ => {
-                                        state
+                                if button.clicked() {
+                                    match icon {
+                                        Icon::Spy => state
                                             .mission_info
                                             .army
-                                            .remove(&Unit::Defense(Defense::InterplanetaryMissile));
-                                    },
-                                }
+                                            .retain(|u, _| matches!(u, Unit::Ship(Ship::Probe))),
+                                        Icon::MissileStrike => {
+                                            state.mission_info.army.retain(|u, _| {
+                                                matches!(
+                                                    u,
+                                                    Unit::Defense(Defense::InterplanetaryMissile)
+                                                )
+                                            })
+                                        },
+                                        _ => {
+                                            state.mission_info.army.remove(&Unit::Defense(
+                                                Defense::InterplanetaryMissile,
+                                            ));
+                                        },
+                                    }
 
-                                state.mission_info.objective = icon;
-                            }
-                        });
+                                    state.mission_info.objective = icon;
+                                }
+                            },
+                        );
                     }
                 });
 
                 ui.add_space(5.);
-
-                let speed = state.mission_info.speed();
-                let distance = state.mission_info.distance(map);
-                let duration = state.mission_info.duration(map);
-                let fuel = state.mission_info.fuel_consumption(map);
 
                 ui.horizontal(|ui| {
                     ui.small("🎯 Objective:");
@@ -952,19 +963,28 @@ fn draw_new_mission(
                         format!(
                             "+{} turn{} ({})",
                             duration,
-                            if duration == 1 { "" } else { "s" },
+                            if duration == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
                             settings.turn + duration,
                         )
                     }
                 ));
-                ui.small(format!("⛽ Fuel consumption: {fuel}")).on_hover_small("Amount of deuterium it costs to send this mission.");
+                ui.small(format!("⛽ Fuel consumption: {fuel}"))
+                    .on_hover_small("Amount of deuterium it costs to send this mission.");
 
-                if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
+                if matches!(
+                    state.mission_info.objective,
+                    Icon::Colonize | Icon::Attack | Icon::Destroy
+                ) {
                     let probes = state.mission_info.army.amount(&Unit::probe());
                     ui.add_enabled_ui(probes > 0, |ui| {
                         ui.horizontal(|ui| {
                             ui.small("⚔ Combat Probes:");
-                            ui.add(toggle(&mut state.mission_info.combat_probes)).on_hover_cursor(CursorIcon::PointingHand);
+                            ui.add(toggle(&mut state.mission_info.combat_probes))
+                                .on_hover_cursor(CursorIcon::PointingHand);
                         });
                     })
                     .response
@@ -976,7 +996,7 @@ fn draw_new_mission(
                             during the whole combat, serving as extra fodder and having the \
                             advantage that they stay with the rest of the fleet when victorious, \
                             at risk of getting no enemy unit information when losing combat. \
-                            Probes always stay if the combat takes only one round."
+                            Probes always stay if the combat takes only one round.",
                         );
                     })
                     .on_disabled_hover_small("No Probes selected for this mission.");
@@ -991,7 +1011,8 @@ fn draw_new_mission(
                             ui.small("💣 Bombing raid:");
 
                             ui.style_mut().spacing.button_padding.y = 1.5;
-                            ui.style_mut().text_styles.get_mut(&TextStyle::Button).unwrap().size = 18.;
+                            ui.style_mut().text_styles.get_mut(&TextStyle::Button).unwrap().size =
+                                18.;
 
                             ComboBox::from_id_salt("bombing")
                                 .width(125.)
@@ -1019,7 +1040,7 @@ fn draw_new_mission(
                         "Command Bombers to bomb enemy buildings. Every round of combat, \
                         every bomber has a 10% chance to decrease a target building's level by \
                         one. The Planetary Shield must first be destroyed before bombing can \
-                        take place."
+                        take place.",
                     )
                     .on_disabled_hover_small("No Bombers selected for this mission.");
 
@@ -1028,14 +1049,12 @@ fn draw_new_mission(
                     }
                 }
 
-                let mut has_gate = false;
                 if state.mission_info.objective == Icon::Deploy {
                     if player.owns(origin)
                         && player.owns(destination)
                         && origin.army.amount(&Unit::Building(Building::JumpGate)) > 0
-                        && destination.army.amount(&Unit::Building(Building::JumpGate)) > 0 {
-                        has_gate = true;
-
+                        && destination.army.amount(&Unit::Building(Building::JumpGate)) > 0
+                    {
                         let jump_cost = state.mission_info.jump_cost();
                         let can_jump = origin.jump_gate + jump_cost <= origin.max_jump_capacity();
 
@@ -1046,82 +1065,87 @@ fn draw_new_mission(
                         }
 
                         ui.horizontal(|ui| {
-                            ui.small(format!("🌀 Jump Gate ({}/{}):", jump_cost, origin.max_jump_capacity() - origin.jump_gate));
-                            if ui.add(toggle(&mut state.mission_info.jump_gate)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                            ui.small(format!(
+                                "🌀 Jump Gate ({}/{}):",
+                                jump_cost,
+                                origin.max_jump_capacity() - origin.jump_gate
+                            ));
+                            if ui
+                                .add(toggle(&mut state.mission_info.jump_gate))
+                                .on_hover_cursor(CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 state.jump_gate_history = !state.jump_gate_history;
                             }
                         })
                         .response
-                        .on_hover_small("Whether to send this mission through the Jump Gate. Missions \
+                        .on_hover_small(
+                            "Whether to send this mission through the Jump Gate. Missions \
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
-                                armies total jump cost can't surpass the Gate's limit.");
+                                armies total jump cost can't surpass the Gate's limit.",
+                        );
                     }
                 } else {
                     state.mission_info.jump_gate = false;
                 }
+            });
+        });
 
-                ui.add_space(
-                    if matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy) {
-                        20.
-                    } else if has_gate {
-                        64.
-                    } else {
-                        104.
-                    });
+        ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+            ui.add_space(60.);
 
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    ui.add_space(50.);
+            let army_check = state.mission_info.army.has_army();
+            let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
+            let objective_check = match state.mission_info.objective {
+                Icon::Deploy => state.mission_info.army.iter().any(|(u, c)| u.is_ship() && *c > 0),
+                Icon::Colonize => state.mission_info.army.amount(&Unit::colony_ship()) > 0,
+                Icon::Attack => {
+                    state.mission_info.army.iter().any(|(u, n)| *n > 0 && u.is_combat_ship())
+                },
+                Icon::Spy => {
+                    state.mission_info.army.amount(&Unit::probe()) == state.mission_info.total()
+                },
+                Icon::MissileStrike => {
+                    state.mission_info.army.amount(&Unit::interplanetary_missile())
+                        == state.mission_info.total()
+                },
+                Icon::Destroy => state.mission_info.army.amount(&Unit::Ship(Ship::WarSun)) > 0,
+                _ => unreachable!(),
+            };
 
-                    let army_check = state.mission_info.army.has_army();
-                    let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
-                    let objective_check = match state.mission_info.objective {
-                        Icon::Deploy => state.mission_info.army.iter().any(|(u, c)| u.is_ship() && *c > 0),
-                        Icon::Colonize => state.mission_info.army.amount(&Unit::colony_ship()) > 0,
-                        Icon::Attack => state
-                            .mission_info
-                            .army
-                            .iter()
-                            .any(|(u, n)| *n > 0 && u.is_combat_ship()),
-                        Icon::Spy => {
-                            state.mission_info.army.amount(&Unit::probe())
-                                == state.mission_info.total()
-                        },
-                        Icon::MissileStrike => {
-                            state.mission_info.army.amount(&Unit::interplanetary_missile())
-                                == state.mission_info.total()
-                        },
-                        Icon::Destroy => state.mission_info.army.amount(&Unit::Ship(Ship::WarSun)) > 0,
-                        _ => unreachable!(),
-                    };
+            ui.horizontal(|ui| {
+                ui.add_space(40.);
 
-                    ui.add_enabled_ui(army_check && fuel_check && objective_check, |ui| {
-                        let response = ui
-                            .add_custom_button("Send mission", images)
-                            .on_disabled_hover_ui(|ui| {
-                                if !army_check {
-                                    ui.small("No ships selected for the mission.");
-                                } else if !fuel_check {
-                                    ui.small("Not enough fuel (deuterium) for the mission.");
-                                } else {
-                                    ui.small("The ship requirements for the mission objective is not met.");
-                                }
-                            });
+                ui.add_enabled_ui(army_check && fuel_check && objective_check, |ui| {
+                    let response =
+                        ui.add_custom_button("Send mission", images).on_disabled_hover_ui(|ui| {
+                            if !army_check {
+                                ui.small("No ships selected for the mission.");
+                            } else if !fuel_check {
+                                ui.small("Not enough fuel (deuterium) for the mission.");
+                            } else {
+                                ui.small(
+                                    "The ship requirements for the mission objective is not met.",
+                                );
+                            }
+                        });
 
-                        if response.clicked() || (response.enabled() && keyboard.just_pressed(KeyCode::Enter)) {
-                            let mission = Mission::from_mission(
-                                settings.turn,
-                                player.id,
-                                origin,
-                                destination,
-                                &state.mission_info,
-                            );
+                    if response.clicked()
+                        || (response.enabled() && keyboard.just_pressed(KeyCode::Enter))
+                    {
+                        let mission = Mission::from_mission(
+                            settings.turn,
+                            player.id,
+                            origin,
+                            destination,
+                            &state.mission_info,
+                        );
 
-                            send_mission.write(SendMissionMsg::new(mission));
-                            state.planet_selected = None;
-                            state.mission = false;
-                            state.mission_info = Mission::default();
-                        }
-                    });
+                        send_mission.write(SendMissionMsg::new(mission));
+                        state.planet_selected = None;
+                        state.mission = false;
+                        state.mission_info = Mission::default();
+                    }
                 });
             });
         });
@@ -1690,6 +1714,7 @@ fn draw_combat_report(
 ) {
     let report = player.reports.iter().find(|r| r.id == state.combat_report.unwrap()).unwrap();
     let combat = report.combat_report.as_ref().unwrap();
+    let round = combat.rounds.get(state.combat_report_round - 1).unwrap();
 
     let origin = map.get(report.mission.origin);
     let destination = map.get(report.mission.destination);
@@ -1730,7 +1755,7 @@ fn draw_combat_report(
                 ui.add(
                     Slider::new(&mut state.combat_report_round, 1..=combat.rounds.len())
                         .step_by(1f64)
-                        .show_value(false)
+                        .show_value(false),
                 )
                 .on_hover_cursor(CursorIcon::PointingHand);
 
@@ -1738,6 +1763,45 @@ fn draw_combat_report(
 
                 ui.small(format!("Round: {}/{}", state.combat_report_round, combat.rounds.len()));
             });
+        });
+    });
+
+    ui.add_space(30.);
+
+    ui.horizontal(|ui| {
+        ui.add_space(30.);
+
+        ui.vertical(|ui| {
+            let total_shield_damage = round
+                .attacker
+                .iter()
+                .flat_map(|u| &u.shots)
+                .map(|a| a.shield_damage)
+                .sum::<usize>();
+            let total_hull_damage =
+                round.attacker.iter().flat_map(|u| &u.shots).map(|a| a.hull_damage).sum::<usize>();
+            let rapid_fire =
+                round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.rapid_fire).count();
+            let enemies_killed =
+                round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
+            let planetary_shield_damage = round
+                .attacker
+                .iter()
+                .flat_map(|u| &u.shots)
+                .map(|a| a.planetary_shield_damage)
+                .sum::<usize>();
+
+            let n_shots = round.attacker.iter().map(|u| u.shots.len()).sum::<usize>();
+
+            ui.small(format!("🛡 Total shield damage: {total_shield_damage}"));
+            ui.small(format!("🛰️ Total hull damage: {total_hull_damage}"));
+            ui.small(format!("⚔ Total damage: {}", total_shield_damage + total_hull_damage));
+            ui.small(format!("💥 Rapid fire: {:.0}%", rapid_fire as f32 / n_shots as f32 * 100.));
+            ui.small(format!("🌐 Planetary shield damage: {planetary_shield_damage}"));
+            ui.small(format!("💣 Enemies killed: {enemies_killed}"));
+
+            let total_killed = round.attacker.iter().filter(|u| u.hull == 0).count();
+            ui.small(format!("☠ Total killed: {total_killed}"));
         });
     });
 

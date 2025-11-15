@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
+use crate::core::constants::PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
@@ -61,15 +62,6 @@ impl Description for CombatStats {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct RoundReport {
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct CombatReport {
-    pub rounds: Vec<RoundReport>
-}
-
-#[derive(Clone, Serialize, Deserialize)]
 pub struct MissionReport {
     /// Unique identifier for the report
     pub id: ReportId,
@@ -103,9 +95,6 @@ pub struct MissionReport {
 
     /// Controller of the planet after mission resolution
     pub destination_controlled: Option<ClientId>,
-
-    /// Combat logs (if combat took place)
-    pub logs: Option<String>,
 
     /// Combat report (if combat took place)
     pub combat_report: Option<CombatReport>,
@@ -158,21 +147,47 @@ impl MissionReport {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct CombatReport {
+    pub rounds: Vec<RoundReport>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct RoundReport {
+    pub attacker: Vec<CombatUnit>,
+    pub defender: Vec<CombatUnit>,
+    pub planetary_shield: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CombatUnit {
+    pub id: u64,
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
+    pub shots: Vec<ShotReport>,
 }
 
 impl CombatUnit {
     pub fn new(unit: &Unit) -> Self {
         Self {
+            id: rand::random(),
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
+            shots: vec![],
         }
     }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ShotReport {
+    pub defender: u64,
+    pub shield_damage: usize,
+    pub hull_damage: usize,
+    pub killed: bool,
+    pub planetary_shield_damage: usize,
+    pub rapid_fire: bool,
 }
 
 pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionReport {
@@ -192,21 +207,20 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             combat_report: None,
-            logs: None,
             hidden: false,
         };
     }
+
+    let mut combat_report = CombatReport::default();
 
     // Bring missiles down with antiballistic
     let mut n_missiles = mission.army.amount(&Unit::interplanetary_missile());
     let mut n_antiballistic =
         destination.army.amount(&Unit::Defense(Defense::AntiballisticMissile));
 
-    let mut missiles_fired = 0;
     let mut missiles_hit = 0;
     while n_antiballistic > 0 && n_missiles > 0 {
         n_antiballistic -= 1;
-        missiles_fired += 1;
         if rng().random::<f32>() < 0.5 {
             missiles_hit += 1;
             n_missiles -= 1;
@@ -216,7 +230,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
     let colony_ships = mission.army.amount(&Unit::colony_ship());
-    let mut planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield));
+    let mut planetary_shield = destination.army.amount(&Unit::Building(Building::PlanetaryShield))
+        * PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
 
     let mut attack_army: Vec<CombatUnit> = mission
         .army
@@ -244,8 +259,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
         .collect();
 
-    let mut logs = String::new();
-
     let mut round = 1;
     let mut returning_probes = 0;
     let mut planet_destroyed = false;
@@ -255,56 +268,35 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             break;
         }
 
-        logs.push_str(&format!(
-            "{}Round {round}",
-            if round == 1 {
-                ""
-            } else {
-                "\n\n"
-            }
-        ));
-
-        if missiles_fired > 0 && round == 1 {
-            logs.push_str(&format!(
-                "\n- {missiles_fired} Antiballistic Missiles intercepted {missiles_hit} incoming Interplanetary Missiles."
-            ));
-        }
-
         for side in Side::iter() {
             if mission.objective == Icon::MissileStrike && side == Side::Defender {
                 continue;
             }
 
-            let mut destroyed = Army::new();
-            let (army, enemy_army) = if side == Side::Attacker {
-                (&mut attack_army, &mut defend_army)
-            } else {
-                (&mut defend_army, &mut attack_army)
+            let (army, enemy_army) = match side {
+                Side::Attacker => (&mut attack_army, &mut defend_army),
+                Side::Defender => (&mut defend_army, &mut attack_army),
             };
 
-            if !army.is_empty() && !enemy_army.is_empty() {
-                logs.push_str(format!("\n- {side:?} shoots:").as_str());
-            } else if side == Side::Attacker {
-                logs.push_str("\n- No defending army.");
-            }
-
-            // Reset all shields
+            // Reset all attacker's shots and defender's shields
+            army.iter_mut().for_each(|u| u.shots = vec![]);
             enemy_army.iter_mut().for_each(|u| u.shield = u.unit.shield());
 
             for unit in army {
+                let mut damage = unit.unit.damage();
+
                 'shoot: loop {
+                    let mut shot_report = ShotReport::default();
+
                     let target = if matches!(unit.unit, Unit::Defense(d) if d.is_missile()) {
                         // Interplanetary Missiles only shoot on defenses
                         enemy_army.iter_mut().filter(|u| u.unit.is_defense()).choose(&mut rng())
                     } else if let Some(target) = enemy_army.choose_mut(&mut rng()) {
+                        // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense() && planetary_shield > 0 {
-                            planetary_shield =
-                                planetary_shield.saturating_sub(target.unit.damage());
-
-                            if planetary_shield == 0 {
-                                logs.push_str("\n >> Planetary Shield destroyed.");
-                            }
-
+                            shot_report.planetary_shield_damage = damage.min(planetary_shield);
+                            planetary_shield -= shot_report.planetary_shield_damage;
+                            println!("sii {}", shot_report.planetary_shield_damage);
                             None
                         } else {
                             Some(target)
@@ -314,25 +306,27 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                     };
 
                     let target = if let Some(target) = target {
+                        shot_report.defender = target.id;
                         target
                     } else {
+                        unit.shots.push(shot_report);
                         break 'shoot; // No unit to target
                     };
 
                     // Target could already been destroyed by another shot
                     if target.hull > 0 {
-                        let mut damage = unit.unit.damage();
-
                         if target.shield > 0 {
-                            damage = damage.saturating_sub(target.shield);
-                            target.shield = target.shield.saturating_sub(damage);
+                            shot_report.shield_damage = damage.min(target.shield);
+                            damage -= shot_report.shield_damage;
+                            target.shield -= shot_report.shield_damage;
                         }
 
                         if damage > 0 {
-                            target.hull = target.hull.saturating_sub(damage);
+                            shot_report.hull_damage = damage.min(target.hull);
+                            target.hull -= shot_report.hull_damage;
 
                             if target.hull == 0 {
-                                *destroyed.entry(target.unit).or_insert(0) += 1;
+                                shot_report.killed = true;
                             }
                         }
                     }
@@ -340,21 +334,22 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                     if *unit.unit.rapid_fire().get(&target.unit).unwrap_or(&101) as f32 / 100.
                         > rng().random::<f32>()
                     {
+                        unit.shots.push(shot_report);
                         break 'shoot;
                     }
-                }
-            }
 
-            if destroyed.is_empty() {
-                if !logs.contains("No defending army") {
-                    logs.push_str("\n >> No units destroyed.");
-                }
-            } else {
-                for (u, c) in destroyed {
-                    logs.push_str(format!("\n >> {c} {} destroyed.", u.to_name()).as_str());
+                    shot_report.rapid_fire = true;
+                    unit.shots.push(shot_report);
                 }
             }
         }
+
+        // Save snapshot of the state of the armies this turn
+        let round_report = RoundReport {
+            attacker: attack_army.clone(),
+            defender: defend_army.clone(),
+            planetary_shield,
+        };
 
         // Remove units that are destroyed after both armies have fired
         attack_army.retain(|u| u.hull > 0);
@@ -369,7 +364,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             {
                 attack_army.retain(|u| u.unit != Unit::probe());
                 returning_probes = probes;
-                logs.push_str(&format!("\n- {probes} probes leaving combat."));
             }
         }
 
@@ -388,13 +382,10 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                         _ => unreachable!(),
                     };
 
-                    if let Some((u, c)) =
+                    if let Some((_, c)) =
                         buildings.iter_mut().filter(|(u, c)| f(u, c)).choose(&mut rng)
                     {
                         *c -= 1;
-                        logs.push_str(
-                            format!("\n >> {} reduced to level {}.", u.to_name(), c).as_str(),
-                        );
                     }
                 }
             }
@@ -406,11 +397,11 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 if rng().random::<f32>() < destination.destroy_probability() - 0.01 * round as f32 {
                     defend_army = vec![];
                     planet_destroyed = true;
-                    logs.push_str("\n- Planet destroyed.");
                 }
             }
         }
 
+        combat_report.rounds.push(round_report);
         round += 1;
     }
 
@@ -429,10 +420,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         // Add the non-combat ships to the attacker
         *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) = colony_ships;
     } else {
-        if colony_ships > 0 {
-            logs.push_str(&format!("\n- {colony_ships} attacking colony ships destroyed."));
-        }
-
         // Add non-combat ships and the remaining missiles to the defender
         *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
             destination.army.amount(&Unit::colony_ship());
@@ -451,10 +438,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             surviving_defense.iter().chain(buildings.iter()).map(|(u, v)| (*u, *v)).collect();
     }
 
-    let combat = CombatReport {
-        rounds: vec![RoundReport{}.clone(); 5]
-    };
-
     MissionReport {
         id: rand::random(),
         turn,
@@ -467,8 +450,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         planet_destroyed,
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
-        logs: Some(logs),
-        combat_report: Some(combat),
+        combat_report: Some(combat_report),
         hidden: false,
     }
 }
