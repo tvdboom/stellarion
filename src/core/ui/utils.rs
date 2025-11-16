@@ -44,7 +44,7 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
             ui.painter().circle(center, 0.75 * radius, visuals.bg_fill, visuals.fg_stroke);
         }
 
-        response
+        response.on_hover_cursor(CursorIcon::PointingHand)
     }
 }
 

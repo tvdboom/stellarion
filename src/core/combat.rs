@@ -161,7 +161,6 @@ pub struct RoundReport {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CombatUnit {
-    pub id: u64,
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
@@ -171,7 +170,6 @@ pub struct CombatUnit {
 impl CombatUnit {
     pub fn new(unit: &Unit) -> Self {
         Self {
-            id: rand::random(),
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
@@ -182,7 +180,7 @@ impl CombatUnit {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ShotReport {
-    pub defender: u64,
+    pub unit: Option<Unit>,
     pub shield_damage: usize,
     pub hull_damage: usize,
     pub killed: bool,
@@ -296,7 +294,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                         if target.unit.is_defense() && planetary_shield > 0 {
                             shot_report.planetary_shield_damage = damage.min(planetary_shield);
                             planetary_shield -= shot_report.planetary_shield_damage;
-                            println!("sii {}", shot_report.planetary_shield_damage);
                             None
                         } else {
                             Some(target)
@@ -306,7 +303,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                     };
 
                     let target = if let Some(target) = target {
-                        shot_report.defender = target.id;
+                        shot_report.unit = Some(target.unit.clone());
                         target
                     } else {
                         unit.shots.push(shot_report);

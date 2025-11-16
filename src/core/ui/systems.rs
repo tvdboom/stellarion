@@ -65,6 +65,7 @@ pub struct UiState {
     pub mission_hover: Option<MissionId>,
     pub mission_report: Option<MissionId>,
     pub combat_report: Option<ReportId>,
+    pub combat_report_total: bool,
     pub combat_report_round: usize,
     pub end_turn: bool,
 }
@@ -85,8 +86,6 @@ fn draw_panel<R>(
         })
         .order(if name == "combat report" {
             Order::Foreground
-        } else if name == "planet overview" {
-            Order::Background
         } else {
             Order::Middle
         })
@@ -379,6 +378,8 @@ fn draw_planet_overview(
             if response.enabled() {
                 response = response.on_hover_cursor(CursorIcon::PointingHand);
             }
+
+            ui.add_image_painter(images.get("abandon"), rect);
 
             if response.clicked() {
                 planet.abandon();
@@ -983,8 +984,7 @@ fn draw_new_mission(
                     ui.add_enabled_ui(probes > 0, |ui| {
                         ui.horizontal(|ui| {
                             ui.small("⚔ Combat Probes:");
-                            ui.add(toggle(&mut state.mission_info.combat_probes))
-                                .on_hover_cursor(CursorIcon::PointingHand);
+                            ui.add(toggle(&mut state.mission_info.combat_probes));
                         });
                     })
                     .response
@@ -1070,11 +1070,7 @@ fn draw_new_mission(
                                 jump_cost,
                                 origin.max_jump_capacity() - origin.jump_gate
                             ));
-                            if ui
-                                .add(toggle(&mut state.mission_info.jump_gate))
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if ui.add(toggle(&mut state.mission_info.jump_gate)).clicked() {
                                 state.jump_gate_history = !state.jump_gate_history;
                             }
                         })
@@ -1720,26 +1716,29 @@ fn draw_combat_report(
     let destination = map.get(report.mission.destination);
 
     ui.add_space(5.);
-    ui.scope(|ui| {
+
+    ui.horizontal(|ui| {
         ui.set_height(55.);
+        ui.spacing_mut().item_spacing.x = 8.;
 
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.;
+        ui.add_space(70.);
 
-            ui.add_space(70.);
+        ui.add_image(images.get(format!("planet{}", origin.image)), [40., 40.]);
+        ui.small(&origin.name);
 
-            ui.add_image(images.get(format!("planet{}", origin.image)), [40., 40.]);
-            ui.small(&origin.name);
+        ui.add_space(25.);
 
-            ui.add_space(25.);
+        ui.add_image(images.get(report.mission.objective.to_lowername()), [25., 25.]);
+        ui.add_image(images.get(report.mission.image(player)), [50., 50.]);
+        ui.small(report.turn.to_string());
 
-            ui.add_image(images.get(report.mission.objective.to_lowername()), [25., 25.]);
-            ui.add_image(images.get(report.mission.image(player)), [50., 50.]);
-            ui.small(report.turn.to_string());
+        ui.add_space(25.);
 
-            ui.add_space(25.);
+        ui.small(&destination.name);
 
-            ui.small(&destination.name);
+        ui.vertical(|ui| {
+            ui.add_space(6.); // Correction due to weird downward shift
+
             let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
 
             let size = [20., 20.];
@@ -1748,60 +1747,167 @@ fn draw_combat_report(
                 egui::Rect::from_min_size(pos, size.into()),
                 egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
             );
+        });
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(70.);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(70.);
 
+            ui.add_enabled_ui(!state.combat_report_total, |ui| {
                 ui.add(
                     Slider::new(&mut state.combat_report_round, 1..=combat.rounds.len())
                         .step_by(1f64)
                         .show_value(false),
                 )
-                .on_hover_cursor(CursorIcon::PointingHand);
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_small("Combat round for which to show the details.");
 
-                ui.add_space(20.);
+                ui.add_space(10.);
 
                 ui.small(format!("Round: {}/{}", state.combat_report_round, combat.rounds.len()));
             });
+
+            ui.add_space(30.);
+
+            ui.add(toggle(&mut state.combat_report_total)).on_hover_small(
+                "If enabled, the panel shows the total details over the \
+                    whole combat. If disabled, it shows the details per round.",
+            );
+
+            ui.add_space(10.);
+
+            ui.small("Total details:")
         });
     });
-
-    ui.add_space(30.);
 
     ui.horizontal(|ui| {
         ui.add_space(30.);
 
         ui.vertical(|ui| {
-            let total_shield_damage = round
-                .attacker
-                .iter()
-                .flat_map(|u| &u.shots)
-                .map(|a| a.shield_damage)
-                .sum::<usize>();
-            let total_hull_damage =
-                round.attacker.iter().flat_map(|u| &u.shots).map(|a| a.hull_damage).sum::<usize>();
-            let rapid_fire =
-                round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.rapid_fire).count();
-            let enemies_killed =
-                round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
-            let planetary_shield_damage = round
-                .attacker
-                .iter()
-                .flat_map(|u| &u.shots)
-                .map(|a| a.planetary_shield_damage)
-                .sum::<usize>();
+            ui.set_width(ui.available_width() * 0.5);
 
-            let n_shots = round.attacker.iter().map(|u| u.shots.len()).sum::<usize>();
+            ui.vertical_centered(|ui| {
+                ui.label("Attacker");
+            });
 
-            ui.small(format!("🛡 Total shield damage: {total_shield_damage}"));
-            ui.small(format!("🛰️ Total hull damage: {total_hull_damage}"));
-            ui.small(format!("⚔ Total damage: {}", total_shield_damage + total_hull_damage));
-            ui.small(format!("💥 Rapid fire: {:.0}%", rapid_fire as f32 / n_shots as f32 * 100.));
-            ui.small(format!("🌐 Planetary shield damage: {planetary_shield_damage}"));
-            ui.small(format!("💣 Enemies killed: {enemies_killed}"));
+            ui.add_space(10.);
 
-            let total_killed = round.attacker.iter().filter(|u| u.hull == 0).count();
-            ui.small(format!("☠ Total killed: {total_killed}"));
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width() * 0.5);
+
+                    let total_shield_damage = round
+                        .attacker
+                        .iter()
+                        .flat_map(|u| &u.shots)
+                        .map(|a| a.shield_damage)
+                        .sum::<usize>();
+                    let total_hull_damage = round
+                        .attacker
+                        .iter()
+                        .flat_map(|u| &u.shots)
+                        .map(|a| a.hull_damage)
+                        .sum::<usize>();
+                    let rapid_fire = round
+                        .attacker
+                        .iter()
+                        .flat_map(|u| &u.shots)
+                        .filter(|a| a.rapid_fire)
+                        .count();
+                    let enemies_killed =
+                        round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
+                    let planetary_shield_damage = round
+                        .attacker
+                        .iter()
+                        .flat_map(|u| &u.shots)
+                        .map(|a| a.planetary_shield_damage)
+                        .sum::<usize>();
+
+                    let n_shots = round.attacker.iter().map(|u| u.shots.len()).sum::<usize>();
+
+                    ui.small(format!("🛡 Total shield damage: {total_shield_damage}"));
+                    ui.small(format!("️ Total hull damage: {total_hull_damage}"));
+                    ui.small(format!(
+                        "⚔ Total damage: {}",
+                        total_shield_damage + total_hull_damage
+                    ));
+                    ui.small(format!(
+                        "💥 Rapid fire: {:.0}%",
+                        rapid_fire as f32 / n_shots as f32 * 100.
+                    ));
+                    ui.small(format!("🌐 Planetary shield damage: {planetary_shield_damage}"));
+                    ui.small(format!("💣 Enemies killed: {enemies_killed}"));
+
+                    let total_killed = round.attacker.iter().filter(|u| u.hull == 0).count();
+                    ui.small(format!("☠ Total killed: {total_killed}"));
+                });
+
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width() * 0.5);
+
+                    ui.spacing_mut().item_spacing.y = 12.;
+                    for unit in Unit::all().iter().flatten() {
+                        let n = round.attacker.iter().filter(|u| u.unit == *unit).count();
+                        let lost = round
+                            .defender
+                            .iter()
+                            .flat_map(|u| &u.shots)
+                            .filter(|s| s.unit == Some(*unit) && s.killed)
+                            .count();
+
+                        if n > 0 {
+                            let mut response = ui
+                                .add_image(images.get(unit.to_lowername()), [60., 60.])
+                                .on_hover_small_ext(unit.to_name());
+
+                            ui.add_text_on_image(
+                                if lost > 0 {
+                                    format!("{lost}/{n}")
+                                } else {
+                                    n.to_string()
+                                },
+                                if lost > 0 {
+                                    Color32::RED
+                                } else {
+                                    Color32::WHITE
+                                },
+                                TextStyle::Body,
+                                response.rect.left_bottom(),
+                                Align2::LEFT_BOTTOM,
+                            );
+
+                            // Draw health bar
+                            let painter = ui.painter();
+                            let rect = response.rect;
+                            let bar_rect = egui::Rect::from_min_max(
+                                egui::pos2(rect.left(), rect.bottom() + 2.),
+                                egui::pos2(rect.right(), rect.bottom() + 2. + 8.),
+                            );
+
+                            // background (dark)
+                            painter.rect_filled(bar_rect, 0.0, Color32::from_gray(40));
+
+                            // green part (health)
+                            let filled_width = bar_rect.width() * 0.65;
+                            let filled = egui::Rect::from_min_max(
+                                bar_rect.min,
+                                egui::pos2(bar_rect.min.x + filled_width, bar_rect.max.y),
+                            );
+
+                            painter.rect_filled(filled, 0.0, Color32::GREEN);
+                        }
+                    }
+                });
+            });
+        });
+
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+
+            ui.vertical_centered(|ui| {
+                ui.label("Defender");
+            });
+
+            ui.add_space(10.);
         });
     });
 
