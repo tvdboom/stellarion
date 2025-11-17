@@ -71,3 +71,34 @@ impl<T: Debug> NameFromEnum for T {
         name
     }
 }
+
+pub trait SafeDiv: Sized + PartialEq + Copy {
+    fn safe_div(self, b: Self) -> Self;
+}
+
+impl SafeDiv for f32 {
+    #[inline]
+    fn safe_div(self, b: Self) -> Self {
+        if b == 0.0 {
+            0.0
+        } else {
+            self / b
+        }
+    }
+}
+
+pub trait FmtNumb {
+    fn fmt(self) -> String;
+}
+
+impl FmtNumb for usize {
+    fn fmt(self) -> String {
+        match self {
+            n if n > 1_000_000_000_000 => format!("{:.2}T", self as f32 / 1_000_000_000.),
+            n if n > 1_000_000_000 => format!("{:.2}B", self as f32 / 1_000_000_000.),
+            n if n > 1_000_000 => format!("{:.2}M", self as f32 / 1_000_000.),
+            n if n >= 1_000 => format!("{:.1}k", self as f32 / 1_000.),
+            _ => self.to_string(),
+        }
+    }
+}

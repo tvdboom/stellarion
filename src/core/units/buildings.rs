@@ -58,12 +58,12 @@ impl Description for Building {
                 "The Planetary Shield is a defensive structure with high shield power but no \
                 damage. Enemy ships must first destroy the Planetary Shield before they can \
                 attack the planet's buildings or defenses (not ships!). Each level of the \
-                building increases the shield with 50. This shield does not regenerate after \
+                building increases the shield with 100. This shield does not regenerate after \
                 every combat round. Interplanetary Missiles ignore the Planetary Shield."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
-                A Phalanx of level N scans the space at N AU from the planet, and it only \
+                A Phalanx of level N scans the space at 0.7 * N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
                 revealed. Spying missions are not detected by the Phalanx."
             },

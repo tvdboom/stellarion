@@ -165,9 +165,10 @@ impl CustomUi for Ui {
         mut pos: Pos2,
         align: Align2,
     ) -> Rect {
-        let margin = match style {
-            TextStyle::Body => Vec2::new(2., 0.),
-            _ => Vec2::new(5., -5.),
+        let (margin, cr) = match style {
+            TextStyle::Small => (Vec2::new(1., 0.), 2.),
+            TextStyle::Body => (Vec2::new(2.5, -1.5), 4.),
+            _ => (Vec2::new(5., -5.), 6.),
         };
 
         let galley = self.painter().layout_no_wrap(text, style.resolve(self.style()), color);
@@ -193,7 +194,7 @@ impl CustomUi for Ui {
         let bg_rect = Rect::from_min_size(top_left - margin, size + 2. * margin);
 
         // Draw semi-transparent background
-        self.painter().rect_filled(bg_rect, 6., Color32::from_rgba_premultiplied(0, 0, 0, 128));
+        self.painter().rect_filled(bg_rect, cr, Color32::from_rgba_premultiplied(0, 0, 0, 128));
 
         // Draw galley
         self.painter().galley(top_left, galley, Color32::WHITE);

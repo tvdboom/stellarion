@@ -29,7 +29,8 @@ pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;
 pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
 pub const SILO_CAPACITY_FACTOR: usize = 10;
 pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
-pub const PLANETARY_SHIELD_STRENGTH_PER_LEVEL: usize = 50;
+pub const PLANETARY_SHIELD_STRENGTH_PER_LEVEL: usize = 100;
+pub const PHALANX_DISTANCE: f32 = 0.7;
 
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;

@@ -17,7 +17,7 @@ use crate::core::units::{Amount, Army, Combat, Description, Unit};
 
 pub type ReportId = u64;
 
-#[derive(EnumIter, Debug, PartialEq)]
+#[derive(EnumIter, Clone, Debug, PartialEq)]
 pub enum Side {
     Attacker,
     Defender,
@@ -161,6 +161,7 @@ pub struct RoundReport {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CombatUnit {
+    pub id: u64,
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
@@ -170,6 +171,7 @@ pub struct CombatUnit {
 impl CombatUnit {
     pub fn new(unit: &Unit) -> Self {
         Self {
+            id: rand::random(),
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
@@ -236,13 +238,13 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         .iter()
         .filter(|(u, _)| **u != Unit::colony_ship())
         .flat_map(|(unit, count)| {
-            std::iter::repeat(CombatUnit::new(unit)).take(
-                if *unit != Unit::interplanetary_missile() {
-                    *count
-                } else {
-                    *count - missiles_hit
-                },
-            )
+            let n = if *unit != Unit::interplanetary_missile() {
+                *count
+            } else {
+                *count - missiles_hit
+            };
+
+            (0..n).map(|_| CombatUnit::new(unit))
         })
         .collect();
 
@@ -254,7 +256,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 && **u != Unit::colony_ship()
                 && !matches!(u, Unit::Defense(d) if d.is_missile())
         })
-        .flat_map(|(unit, count)| std::iter::repeat(CombatUnit::new(unit)).take(*count))
+        .flat_map(|(unit, count)| (0..*count).map(|_| CombatUnit::new(unit)))
         .collect();
 
     let mut round = 1;
@@ -283,12 +285,22 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             for unit in army {
                 let mut damage = unit.unit.damage();
 
+                if damage == 0 {
+                    // Skip the shooting (for probes for example)
+                    continue;
+                }
+
                 'shoot: loop {
                     let mut shot_report = ShotReport::default();
 
                     let target = if matches!(unit.unit, Unit::Defense(d) if d.is_missile()) {
                         // Interplanetary Missiles only shoot on defenses
                         enemy_army.iter_mut().filter(|u| u.unit.is_defense()).choose(&mut rng())
+                    } else if unit.unit == Unit::Ship(Ship::Bomber) && planetary_shield > 0 {
+                        // Bombers always target the planetary shield first
+                        shot_report.planetary_shield_damage = damage.min(planetary_shield);
+                        planetary_shield -= shot_report.planetary_shield_damage;
+                        None
                     } else if let Some(target) = enemy_army.choose_mut(&mut rng()) {
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense() && planetary_shield > 0 {
@@ -447,7 +459,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
         planet_destroyed,
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
-        combat_report: Some(combat_report),
+        combat_report: (!combat_report.rounds.is_empty()).then_some(combat_report),
         hidden: false,
     }
 }

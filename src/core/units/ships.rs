@@ -83,7 +83,8 @@ impl Description for Ship {
                 high Rapid Fire against most defensive structures makes it very effective for \
                 planetary assaults. It's the only ship with Rapid Fire against the Plasma Turret. \
                 Having Bombers in an offensive mission enables bombing raids, which destabilize \
-                the enemy's economy or industrial capabilities."
+                the enemy's economy or industrial capabilities. Bombers always target the Planetary \
+                Shield before any other unit (if there is one)."
             },
             Ship::Battleship => {
                 "The Battleship is the mean between the Cruiser and the Dreadnought. Its Rapid \
@@ -161,7 +162,7 @@ impl Combat for Ship {
             Ship::HeavyFighter => 15,
             Ship::Destroyer => 40,
             Ship::Cruiser => 70,
-            Ship::Bomber => 60,
+            Ship::Bomber => 70,
             Ship::Battleship => 80,
             Ship::Dreadnought => 100,
             Ship::WarSun => 150,

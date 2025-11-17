@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::egui::load::SizedTexture;
@@ -12,7 +14,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
-use crate::core::combat::{CombatStats, MissionReport, ReportId, Side};
+use crate::core::combat::{CombatStats, CombatUnit, MissionReport, ReportId, RoundReport, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -30,7 +32,7 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::utils::{format_thousands, NameFromEnum};
+use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv};
 
 #[derive(Component)]
 pub struct UiCmp;
@@ -67,6 +69,7 @@ pub struct UiState {
     pub combat_report: Option<ReportId>,
     pub combat_report_total: bool,
     pub combat_report_round: usize,
+    pub combat_report_hover: Option<(Unit, Side)>,
     pub end_turn: bool,
 }
 
@@ -167,6 +170,164 @@ fn draw_army_grid(
             }
         }
     });
+}
+
+fn draw_combat_army_grid(
+    ui: &mut Ui,
+    name: &str,
+    state: &mut UiState,
+    round: &RoundReport,
+    units: Vec<Unit>,
+    side: Side,
+    images: &ImageIds,
+) -> bool {
+    let (own, mut enemy) = match side {
+        Side::Attacker => (&round.attacker, round.defender.clone()),
+        Side::Defender => (&round.defender, round.attacker.clone()),
+    };
+
+    if let Some((u, s)) = &state.combat_report_hover {
+        if *s != side {
+            enemy = enemy.into_iter().filter(|cu| cu.unit == *u).collect::<Vec<_>>();
+        }
+    }
+
+    let mut any_hovered = false;
+    egui::Grid::new(name).striped(false).num_columns(2).spacing([8., 25.]).show(ui, |ui| {
+        for (i, (unit, n)) in units
+            .into_iter()
+            .filter_map(|u| {
+                let mut seen = HashSet::new();
+                let n = own.iter().filter(|cu| cu.unit == u && seen.insert(cu.id)).count();
+                (n > 0).then_some((u, n))
+            })
+            .enumerate()
+        {
+            let all_cu = own.iter().filter(|cu| cu.unit == unit).count();
+            let shots = enemy
+                .iter()
+                .flat_map(|u| &u.shots)
+                .filter(|s| s.unit == Some(unit))
+                .collect::<Vec<_>>();
+            let n_shots = shots.len();
+            let lost = shots.iter().filter(|s| s.killed).count();
+
+            ui.add_enabled_ui(
+                state.combat_report_hover.as_ref().map_or(true, |(u, s)| *s != side || *u == unit),
+                |ui| {
+                    let response = ui
+                        .add_image(images.get(unit.to_lowername()), [70.; 2])
+                        .on_hover_small_ext(unit.to_name());
+
+                    if response.hovered() {
+                        any_hovered = true;
+                        state.combat_report_hover = Some((unit, side.clone()));
+                    }
+
+                    ui.add_text_on_image(
+                        format!("⭐{n_shots}"),
+                        Color32::WHITE,
+                        TextStyle::Small,
+                        response.rect.right_top() - egui::Vec2::new(2., -3.),
+                        Align2::RIGHT_TOP,
+                    );
+
+                    ui.add_text_on_image(
+                        if lost > 0 {
+                            format!("{lost}/{n}")
+                        } else {
+                            n.to_string()
+                        },
+                        if lost > 0 {
+                            Color32::RED
+                        } else {
+                            Color32::WHITE
+                        },
+                        TextStyle::Body,
+                        response.rect.left_bottom(),
+                        Align2::LEFT_BOTTOM,
+                    );
+
+                    let mut shield = own
+                        .iter()
+                        .filter(|cu| cu.unit == unit)
+                        .map(|cu| {
+                            if lost == n {
+                                0.
+                            } else {
+                                cu.shield as f32
+                            }
+                        })
+                        .sum::<f32>()
+                        .safe_div((all_cu * unit.shield()) as f32);
+
+                    let mut hull = own
+                        .iter()
+                        .filter(|cu| cu.unit == unit)
+                        .fold(HashMap::<_, f32>::new(), |mut map, cu| {
+                            let val = if lost == n {
+                                0.
+                            } else {
+                                cu.hull as f32
+                            };
+                            map.entry(cu.id).and_modify(|m| *m = (*m).min(val)).or_insert(val);
+                            map
+                        })
+                        .values()
+                        .sum::<f32>()
+                        .safe_div((n * unit.hull()) as f32);
+
+                    if let Some((hu, hs)) = &state.combat_report_hover {
+                        if *hs != side {
+                            let (s_sum, h_sum) = enemy
+                                .iter()
+                                .filter(|cu| cu.unit == *hu)
+                                .flat_map(|cu| cu.shots.iter())
+                                .filter(|s| s.unit.is_some_and(|u| u == unit))
+                                .fold((0.0, 0.0), |(s_acc, h_acc), s| {
+                                    (s_acc + s.shield_damage as f32, h_acc + s.hull_damage as f32)
+                                });
+
+                            shield = s_sum.safe_div((n * unit.shield()) as f32);
+                            hull = h_sum.safe_div((n * unit.hull()) as f32);
+                        }
+                    }
+
+                    for (i, (value, color)) in [shield, hull]
+                        .into_iter()
+                        .zip([Color32::from_rgb(80, 140, 255), Color32::GREEN])
+                        .enumerate()
+                    {
+                        let bar = egui::Rect::from_min_max(
+                            egui::pos2(
+                                response.rect.left(),
+                                response.rect.bottom() + i as f32 * 10.,
+                            ),
+                            egui::pos2(
+                                response.rect.right(),
+                                response.rect.bottom() + (i + 1) as f32 * 10.,
+                            ),
+                        );
+
+                        ui.painter().rect_filled(bar, 0., Color32::from_gray(40));
+
+                        let filled = egui::Rect::from_min_max(
+                            bar.min,
+                            egui::pos2(bar.min.x + bar.width() * value, bar.max.y),
+                        );
+
+                        ui.painter().rect_filled(filled, 0., color);
+                    }
+                },
+            );
+
+            if i % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+
+    any_hovered
 }
 
 fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, images: &ImageIds) {
@@ -1563,8 +1724,10 @@ fn draw_mission_reports(
             ui.separator();
 
             ui.horizontal(|ui| {
+                ui.set_height(357.);
+
                 ui.vertical(|ui| {
-                    ui.set_width(120.);
+                    ui.set_width(140.);
 
                     let army = match report.mission.objective {
                         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
@@ -1710,7 +1873,6 @@ fn draw_combat_report(
 ) {
     let report = player.reports.iter().find(|r| r.id == state.combat_report.unwrap()).unwrap();
     let combat = report.combat_report.as_ref().unwrap();
-    let round = combat.rounds.get(state.combat_report_round - 1).unwrap();
 
     let origin = map.get(report.mission.origin);
     let destination = map.get(report.mission.destination);
@@ -1735,19 +1897,14 @@ fn draw_combat_report(
         ui.add_space(25.);
 
         ui.small(&destination.name);
+        let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
 
-        ui.vertical(|ui| {
-            ui.add_space(6.); // Correction due to weird downward shift
-
-            let resp = ui.add_image(images.get(format!("planet{}", destination.image)), [40., 40.]);
-
-            let size = [20., 20.];
-            let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
-            ui.put(
-                egui::Rect::from_min_size(pos, size.into()),
-                egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
-            );
-        });
+        let size = [20., 20.];
+        let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
+        ui.put(
+            egui::Rect::from_min_size(pos, size.into()),
+            egui::Image::new(SizedTexture::new(images.get(report.image(player)), size)),
+        );
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(70.);
@@ -1769,147 +1926,190 @@ fn draw_combat_report(
             ui.add_space(30.);
 
             ui.add(toggle(&mut state.combat_report_total)).on_hover_small(
-                "If enabled, the panel shows the total details over the \
-                    whole combat. If disabled, it shows the details per round.",
+                "If enabled, the panel shows the total statistics over the whole combat \
+                (sum over all rounds). If disabled, it shows the statistics per round.",
             );
 
             ui.add_space(10.);
 
-            ui.small("Total details:")
+            ui.small("Total:")
         });
     });
+
+    let draw_stats = |ui: &mut Ui, units: Vec<&CombatUnit>, side: Side| {
+        let shield_damage =
+            units.iter().flat_map(|u| &u.shots).map(|a| a.shield_damage).sum::<usize>();
+        let hull_damage = units.iter().flat_map(|u| &u.shots).map(|a| a.hull_damage).sum::<usize>();
+        let rapid_fire = units.iter().flat_map(|u| &u.shots).filter(|a| a.rapid_fire).count();
+        let n_shots = units.iter().map(|u| u.shots.len()).sum::<usize>();
+        let enemies_killed = units.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
+        let ps_damage =
+            units.iter().flat_map(|u| &u.shots).map(|a| a.planetary_shield_damage).sum::<usize>();
+
+        let draw_row = |ui: &mut Ui, icon: &str, val: String, hover: &str| {
+            ui.vertical_centered(|ui| {
+                ui.label(icon).on_hover_small(hover);
+            });
+            ui.label(if units.is_empty() {
+                "--".to_string()
+            } else {
+                val
+            })
+            .on_hover_small(hover);
+            ui.end_row();
+        };
+
+        egui::Grid::new("stats_grid").striped(false).num_columns(2).spacing([2., 6.]).show(
+            ui,
+            |ui| {
+                draw_row(ui, "🛡", shield_damage.fmt(), "Damage dealt to shields.");
+                draw_row(ui, "🔰", hull_damage.fmt(), "Damage dealt to hulls.");
+                if side == Side::Attacker {
+                    draw_row(ui, "🌐", ps_damage.fmt(), "Damage dealt to the planetary shield.");
+                }
+                draw_row(
+                    ui,
+                    "⚔",
+                    (shield_damage + hull_damage + ps_damage).fmt(),
+                    "Total damage dealt.",
+                );
+                draw_row(
+                    ui,
+                    "💥",
+                    format!("{:.0}%", rapid_fire as f32 / n_shots as f32 * 100.),
+                    "Percentage of shots that gained rapid fire.",
+                );
+                draw_row(ui, "☠", enemies_killed.fmt(), "Number of enemy units destroyed.");
+            },
+        );
+    };
+
+    let mut any_hovered = false;
+
+    let round = if state.combat_report_total {
+        combat.rounds.iter().fold(RoundReport::default(), |mut rr, r| {
+            rr.attacker.extend(r.attacker.clone());
+            rr.defender.extend(r.defender.clone());
+            rr.planetary_shield += r.planetary_shield;
+            rr
+        })
+    } else {
+        combat.rounds.get(state.combat_report_round - 1).unwrap().clone()
+    };
 
     ui.horizontal(|ui| {
         ui.add_space(30.);
 
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() * 0.5);
-
-            ui.vertical_centered(|ui| {
-                ui.label("Attacker");
-            });
+            ui.set_width(ui.available_width() * 0.27);
 
             ui.add_space(10.);
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() * 0.5);
+                    ui.set_width(120.);
 
-                    let total_shield_damage = round
+                    ui.add_space(100.);
+
+                    let units = round
                         .attacker
                         .iter()
-                        .flat_map(|u| &u.shots)
-                        .map(|a| a.shield_damage)
-                        .sum::<usize>();
-                    let total_hull_damage = round
-                        .attacker
-                        .iter()
-                        .flat_map(|u| &u.shots)
-                        .map(|a| a.hull_damage)
-                        .sum::<usize>();
-                    let rapid_fire = round
-                        .attacker
-                        .iter()
-                        .flat_map(|u| &u.shots)
-                        .filter(|a| a.rapid_fire)
-                        .count();
-                    let enemies_killed =
-                        round.attacker.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
-                    let planetary_shield_damage = round
-                        .attacker
-                        .iter()
-                        .flat_map(|u| &u.shots)
-                        .map(|a| a.planetary_shield_damage)
-                        .sum::<usize>();
+                        .filter(|cu| {
+                            state
+                                .combat_report_hover
+                                .as_ref()
+                                .map_or(true, |(u, s)| *u == cu.unit && *s == Side::Attacker)
+                        })
+                        .collect::<Vec<_>>();
 
-                    let n_shots = round.attacker.iter().map(|u| u.shots.len()).sum::<usize>();
-
-                    ui.small(format!("🛡 Total shield damage: {total_shield_damage}"));
-                    ui.small(format!("️ Total hull damage: {total_hull_damage}"));
-                    ui.small(format!(
-                        "⚔ Total damage: {}",
-                        total_shield_damage + total_hull_damage
-                    ));
-                    ui.small(format!(
-                        "💥 Rapid fire: {:.0}%",
-                        rapid_fire as f32 / n_shots as f32 * 100.
-                    ));
-                    ui.small(format!("🌐 Planetary shield damage: {planetary_shield_damage}"));
-                    ui.small(format!("💣 Enemies killed: {enemies_killed}"));
-
-                    let total_killed = round.attacker.iter().filter(|u| u.hull == 0).count();
-                    ui.small(format!("☠ Total killed: {total_killed}"));
+                    draw_stats(ui, units, Side::Attacker);
                 });
 
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() * 0.5);
+                ui.vertical_centered(|ui| {
+                    ui.label("Attacker");
 
-                    ui.spacing_mut().item_spacing.y = 12.;
-                    for unit in Unit::all().iter().flatten() {
-                        let n = round.attacker.iter().filter(|u| u.unit == *unit).count();
-                        let lost = round
-                            .defender
-                            .iter()
-                            .flat_map(|u| &u.shots)
-                            .filter(|s| s.unit == Some(*unit) && s.killed)
-                            .count();
-
-                        if n > 0 {
-                            let mut response = ui
-                                .add_image(images.get(unit.to_lowername()), [60., 60.])
-                                .on_hover_small_ext(unit.to_name());
-
-                            ui.add_text_on_image(
-                                if lost > 0 {
-                                    format!("{lost}/{n}")
-                                } else {
-                                    n.to_string()
-                                },
-                                if lost > 0 {
-                                    Color32::RED
-                                } else {
-                                    Color32::WHITE
-                                },
-                                TextStyle::Body,
-                                response.rect.left_bottom(),
-                                Align2::LEFT_BOTTOM,
-                            );
-
-                            // Draw health bar
-                            let painter = ui.painter();
-                            let rect = response.rect;
-                            let bar_rect = egui::Rect::from_min_max(
-                                egui::pos2(rect.left(), rect.bottom() + 2.),
-                                egui::pos2(rect.right(), rect.bottom() + 2. + 8.),
-                            );
-
-                            // background (dark)
-                            painter.rect_filled(bar_rect, 0.0, Color32::from_gray(40));
-
-                            // green part (health)
-                            let filled_width = bar_rect.width() * 0.65;
-                            let filled = egui::Rect::from_min_max(
-                                bar_rect.min,
-                                egui::pos2(bar_rect.min.x + filled_width, bar_rect.max.y),
-                            );
-
-                            painter.rect_filled(filled, 0.0, Color32::GREEN);
-                        }
-                    }
+                    let hovered = draw_combat_army_grid(
+                        ui,
+                        "combat_attacker",
+                        state,
+                        &round,
+                        Unit::ships(),
+                        Side::Attacker,
+                        images,
+                    );
+                    any_hovered = any_hovered || hovered;
                 });
+
+                ui.set_height(555.);
+                ui.add(Separator::default().shrink(45.));
             });
         });
 
         ui.vertical(|ui| {
             ui.set_width(ui.available_width());
 
-            ui.vertical_centered(|ui| {
-                ui.label("Defender");
-            });
-
             ui.add_space(10.);
+
+            ui.horizontal(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.set_width(ui.available_width() - 280.);
+
+                    ui.label("Defender");
+
+                    if round.defender.is_empty() {
+                        ui.add_space(30.);
+                        ui.small("No defending units.");
+                    } else {
+                        ui.horizontal_top(|ui| {
+                            let hovered1 = draw_combat_army_grid(
+                                ui,
+                                "combat_defender1",
+                                state,
+                                &round,
+                                Unit::ships(),
+                                Side::Defender,
+                                images,
+                            );
+                            let hovered2 = draw_combat_army_grid(
+                                ui,
+                                "combat_defender2",
+                                state,
+                                &round,
+                                Unit::defenses(),
+                                Side::Defender,
+                                images,
+                            );
+                            any_hovered = any_hovered || hovered1 || hovered2;
+                        });
+                    }
+                });
+
+                ui.horizontal_top(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(100.);
+
+                            let units = round
+                                .defender
+                                .iter()
+                                .filter(|cu| {
+                                    state.combat_report_hover.as_ref().map_or(true, |(u, s)| {
+                                        *u == cu.unit && *s == Side::Defender
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+
+                            draw_stats(ui, units, Side::Defender);
+                        });
+                    });
+                });
+            });
         });
     });
+
+    if !any_hovered {
+        state.combat_report_hover = None;
+    }
 
     ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
         ui.add_space(50.);
@@ -1918,6 +2118,10 @@ fn draw_combat_report(
             if ui.add_custom_button("Close details", images).clicked() {
                 state.combat_report = None;
             }
+
+            ui.add_space(335.);
+
+            ui.small("Hover over a unit to show the statistics for that unit only.");
         });
     });
 }

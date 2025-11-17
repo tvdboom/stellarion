@@ -7,6 +7,7 @@ use rand::rng;
 use rand::seq::SliceRandom;
 
 use crate::core::combat::combat;
+use crate::core::constants::PHALANX_DISTANCE;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::messages::MessageMsg;
@@ -116,7 +117,7 @@ pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> V
             let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
             m.owner == player.id
                 || (player.owns(destination)
-                    && phalanx as f32 >= m.distance(&map)
+                    && PHALANX_DISTANCE * phalanx as f32 >= m.distance(&map)
                     && !m.objective.is_hidden())
         })
         .cloned()
