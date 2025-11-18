@@ -36,17 +36,19 @@ pub fn setup_menu(
             MenuCmp,
         ))
         .with_children(|parent| {
-            parent
-                .spawn(Node {
-                    top: Val::VMin(10.),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    position_type: PositionType::Absolute,
-                    ..default()
-                })
-                .with_children(|parent| {
-                    parent.spawn(add_text(TITLE, "bold", 60., &assets, &window));
-                });
+            if *app_state.get() != AppState::Settings {
+                parent
+                    .spawn(Node {
+                        top: Val::VMin(10.),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    })
+                    .with_children(|parent| {
+                        parent.spawn(add_text(TITLE, "bold", 60., &assets, &window));
+                    });
+            }
 
             parent
                 .spawn(Node {
@@ -171,6 +173,17 @@ pub fn setup_menu(
                                         SettingsBtn::Mute,
                                         SettingsBtn::NoMusic,
                                         SettingsBtn::Sound,
+                                    ],
+                                    &settings,
+                                    &assets,
+                                    &window,
+                                );
+                                spawn_label(
+                                    parent,
+                                    "Autosave",
+                                    vec![
+                                        SettingsBtn::True,
+                                        SettingsBtn::False,
                                     ],
                                     &settings,
                                     &assets,

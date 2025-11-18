@@ -28,7 +28,9 @@ use strum::IntoEnumIterator;
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::map::map::{Map, MapCmp};
-use crate::core::map::systems::{draw_map, update_end_turn, update_planet_info, update_voronoi};
+use crate::core::map::systems::{
+    draw_map, run_animations, update_end_turn, update_planet_info, update_voronoi,
+};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
 use crate::core::messages::MessageMsg;
@@ -148,7 +150,7 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    update_end_turn.in_set(InGameSet),
+                    (update_end_turn, run_animations).in_set(InGameSet),
                     (update_voronoi, update_planet_info, send_mission, update_missions)
                         .in_set(InPlayingGameSet),
                 ),

@@ -21,6 +21,8 @@ pub enum SettingsBtn {
     Mute,
     NoMusic,
     Sound,
+    True,
+    False,
 }
 
 impl SettingsBtn {
@@ -45,6 +47,8 @@ fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
         SettingsBtn::Mute => game_settings.audio == AudioState::Mute,
         SettingsBtn::NoMusic => game_settings.audio == AudioState::NoMusic,
         SettingsBtn::Sound => game_settings.audio == AudioState::Sound,
+        SettingsBtn::True => game_settings.autosave == true,
+        SettingsBtn::False => game_settings.autosave == false,
     }
 }
 
@@ -86,6 +90,8 @@ pub fn on_click_label_button(
             game_settings.audio = AudioState::Sound;
             change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Sound)));
         },
+        SettingsBtn::True => game_settings.autosave = true,
+        SettingsBtn::False => game_settings.autosave = false,
     }
 
     // Reset the color of the other buttons

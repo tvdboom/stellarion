@@ -15,7 +15,7 @@ use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::combat::{CombatStats, CombatUnit, MissionReport, ReportId, RoundReport, Side};
-use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
+use crate::core::constants::{ENEMY_COLOR_UI, OWN_COLOR_UI, PROBES_PER_PRODUCTION_LEVEL};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
@@ -194,7 +194,7 @@ fn draw_combat_army_grid(
 
     let mut any_hovered = false;
     egui::Grid::new(name).striped(false).num_columns(2).spacing([8., 25.]).show(ui, |ui| {
-        for (i, (unit, n)) in units
+        for (i, (unit, count)) in units
             .into_iter()
             .filter_map(|u| {
                 let mut seen = HashSet::new();
@@ -203,7 +203,6 @@ fn draw_combat_army_grid(
             })
             .enumerate()
         {
-            let all_cu = own.iter().filter(|cu| cu.unit == unit).count();
             let shots = enemy
                 .iter()
                 .flat_map(|u| &u.shots)
@@ -224,19 +223,21 @@ fn draw_combat_army_grid(
                         state.combat_report_hover = Some((unit, side.clone()));
                     }
 
-                    ui.add_text_on_image(
-                        format!("⭐{n_shots}"),
-                        Color32::WHITE,
-                        TextStyle::Small,
-                        response.rect.right_top() - egui::Vec2::new(2., -3.),
-                        Align2::RIGHT_TOP,
-                    );
+                    if n_shots > 0 {
+                        ui.add_text_on_image(
+                            format!("💥{n_shots}"),
+                            Color32::WHITE,
+                            TextStyle::Small,
+                            response.rect.right_top() - egui::Vec2::new(2., -3.),
+                            Align2::RIGHT_TOP,
+                        );
+                    }
 
                     ui.add_text_on_image(
                         if lost > 0 {
-                            format!("{lost}/{n}")
+                            format!("{lost}/{count}")
                         } else {
-                            n.to_string()
+                            count.to_string()
                         },
                         if lost > 0 {
                             Color32::RED
@@ -248,24 +249,23 @@ fn draw_combat_army_grid(
                         Align2::LEFT_BOTTOM,
                     );
 
-                    let mut shield = own
+                    let all_cu: Vec<_> = own.iter().filter(|cu| cu.unit == unit).collect();
+                    let mut shield = all_cu
                         .iter()
-                        .filter(|cu| cu.unit == unit)
                         .map(|cu| {
-                            if lost == n {
+                            if lost == count {
                                 0.
                             } else {
                                 cu.shield as f32
                             }
                         })
                         .sum::<f32>()
-                        .safe_div((all_cu * unit.shield()) as f32);
+                        .safe_div((all_cu.len() * unit.shield()) as f32);
 
-                    let mut hull = own
+                    let mut hull = all_cu
                         .iter()
-                        .filter(|cu| cu.unit == unit)
                         .fold(HashMap::<_, f32>::new(), |mut map, cu| {
-                            let val = if lost == n {
+                            let val = if lost == count {
                                 0.
                             } else {
                                 cu.hull as f32
@@ -275,7 +275,7 @@ fn draw_combat_army_grid(
                         })
                         .values()
                         .sum::<f32>()
-                        .safe_div((n * unit.hull()) as f32);
+                        .safe_div((count * unit.hull()) as f32);
 
                     if let Some((hu, hs)) = &state.combat_report_hover {
                         if *hs != side {
@@ -284,12 +284,13 @@ fn draw_combat_army_grid(
                                 .filter(|cu| cu.unit == *hu)
                                 .flat_map(|cu| cu.shots.iter())
                                 .filter(|s| s.unit.is_some_and(|u| u == unit))
-                                .fold((0.0, 0.0), |(s_acc, h_acc), s| {
+                                .fold((0., 0.), |(s_acc, h_acc), s| {
                                     (s_acc + s.shield_damage as f32, h_acc + s.hull_damage as f32)
                                 });
 
-                            shield = s_sum.safe_div((n * unit.shield()) as f32);
-                            hull = h_sum.safe_div((n * unit.hull()) as f32);
+                            // Total shield when hover is not well-defined -> clamp to range for now
+                            shield = s_sum.safe_div((count * unit.shield()) as f32).min(1.);
+                            hull = h_sum.safe_div((count * unit.hull()) as f32);
                         }
                     }
 
@@ -1721,7 +1722,27 @@ fn draw_mission_reports(
             });
 
             ui.add_space(-10.);
-            ui.separator();
+            ui.horizontal(|ui| {
+                ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
+
+                let (a_color, d_color) = if report.mission.owner == player.id {
+                    (OWN_COLOR_UI, ENEMY_COLOR_UI)
+                } else {
+                    (ENEMY_COLOR_UI, OWN_COLOR_UI)
+                };
+
+                ui.vertical(|ui| {
+                    ui.set_width(140.);
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = a_color;
+                    ui.separator();
+                });
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = d_color;
+                    ui.separator();
+                });
+            });
+            ui.add_space(-10.);
 
             ui.horizontal(|ui| {
                 ui.set_height(357.);
@@ -1940,6 +1961,7 @@ fn draw_combat_report(
         let shield_damage =
             units.iter().flat_map(|u| &u.shots).map(|a| a.shield_damage).sum::<usize>();
         let hull_damage = units.iter().flat_map(|u| &u.shots).map(|a| a.hull_damage).sum::<usize>();
+        let shots_missed = units.iter().flat_map(|u| &u.shots).filter(|a| a.missed).count();
         let rapid_fire = units.iter().flat_map(|u| &u.shots).filter(|a| a.rapid_fire).count();
         let n_shots = units.iter().map(|u| u.shots.len()).sum::<usize>();
         let enemies_killed = units.iter().flat_map(|u| &u.shots).filter(|a| a.killed).count();
@@ -1975,8 +1997,15 @@ fn draw_combat_report(
                 );
                 draw_row(
                     ui,
-                    "💥",
-                    format!("{:.0}%", rapid_fire as f32 / n_shots as f32 * 100.),
+                    "❌",
+                    format!("{:.0}%", (shots_missed as f32).safe_div(n_shots as f32) * 100.),
+                    "Percentage of shots that missed a target. A shot misses when it \
+                    fires on a unit that was already destroyed this round.",
+                );
+                draw_row(
+                    ui,
+                    "🔥",
+                    format!("{:.0}%", (rapid_fire as f32).safe_div(n_shots as f32) * 100.),
                     "Percentage of shots that gained rapid fire.",
                 );
                 draw_row(ui, "☠", enemies_killed.fmt(), "Number of enemy units destroyed.");
@@ -1997,19 +2026,46 @@ fn draw_combat_report(
         combat.rounds.get(state.combat_report_round - 1).unwrap().clone()
     };
 
+    let (attacker_w, defender_w) = (ui.available_width() * 0.27, ui.available_width() * 0.6);
+
     ui.horizontal(|ui| {
-        ui.add_space(30.);
+        ui.add_space(50.);
+
+        ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
+
+        let (a_color, d_color) = if report.mission.owner == player.id {
+            (OWN_COLOR_UI, ENEMY_COLOR_UI)
+        } else {
+            (ENEMY_COLOR_UI, OWN_COLOR_UI)
+        };
 
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() * 0.27);
+            ui.set_width(attacker_w);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label("Attacker");
+            });
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = a_color;
+            ui.separator();
+        });
+        ui.vertical(|ui| {
+            ui.set_width(defender_w);
+            ui.label("Defender");
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = d_color;
+            ui.separator();
+        });
+    });
+
+    ui.horizontal(|ui| {
+        ui.add_space(50.);
+
+        ui.vertical(|ui| {
+            ui.set_width(attacker_w);
 
             ui.add_space(10.);
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(120.);
-
-                    ui.add_space(100.);
 
                     let units = round
                         .attacker
@@ -2025,9 +2081,7 @@ fn draw_combat_report(
                     draw_stats(ui, units, Side::Attacker);
                 });
 
-                ui.vertical_centered(|ui| {
-                    ui.label("Attacker");
-
+                ui.vertical(|ui| {
                     let hovered = draw_combat_army_grid(
                         ui,
                         "combat_attacker",
@@ -2040,21 +2094,19 @@ fn draw_combat_report(
                     any_hovered = any_hovered || hovered;
                 });
 
-                ui.set_height(555.);
-                ui.add(Separator::default().shrink(45.));
+                ui.set_height(470.);
+                ui.separator();
             });
         });
 
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width(defender_w);
 
             ui.add_space(10.);
 
             ui.horizontal(|ui| {
-                ui.vertical_centered(|ui| {
+                ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - 280.);
-
-                    ui.label("Defender");
 
                     if round.defender.is_empty() {
                         ui.add_space(30.);
@@ -2087,8 +2139,6 @@ fn draw_combat_report(
                 ui.horizontal_top(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            ui.add_space(100.);
-
                             let units = round
                                 .defender
                                 .iter()
@@ -2632,6 +2682,7 @@ pub fn draw_ui(
             );
 
             draw_planet_info(&mut contexts, id, &mut map, &mut player, true);
+            !right_side
         } else if let Some(info) = info {
             // Don't use has_army since no units is also valid information
             if !planet.is_destroyed && !info.army.is_empty() {
@@ -2653,14 +2704,19 @@ pub fn draw_ui(
                 );
 
                 draw_planet_info(&mut contexts, id, &mut map, &mut player, true);
-            } else {
+                !right_side
+            } else if !planet.is_destroyed {
                 draw_planet_info(&mut contexts, id, &mut map, &mut player, false);
+                !right_side
+            } else {
+                right_side
             }
-        } else {
+        } else if !planet.is_destroyed {
             draw_planet_info(&mut contexts, id, &mut map, &mut player, false);
+            !right_side
+        } else {
+            right_side
         }
-
-        !right_side
     } else {
         true
     };

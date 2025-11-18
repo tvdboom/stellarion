@@ -13,7 +13,7 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, PLANET_Z, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PLANET_Z, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
@@ -52,6 +52,13 @@ impl MissionCmp {
             id,
         }
     }
+}
+
+#[derive(Component)]
+pub struct ExplosionCmp {
+    pub timer: Timer,
+    pub last_index: usize,
+    pub planet: PlanetId,
 }
 
 #[derive(Component)]
@@ -208,7 +215,6 @@ pub fn draw_map(
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
                         state.mission = true;
                         state.combat_report = None;
-                        state.planet_selected = None;
                         state.mission_tab = MissionTab::NewMission;
                         state.mission_info = Mission::from_mission(
                             settings.turn,
@@ -222,25 +228,26 @@ pub fn draw_map(
                             map.get(planet_id),
                             &state.mission_info,
                         );
+                        state.planet_selected = None;
                     }
                 },
             )
             .with_children(|parent| {
+                parent.spawn((
+                    Text2d::new(&planet.name),
+                    TextFont {
+                        font: assets.font("bold"),
+                        font_size: TITLE_TEXT_SIZE,
+                        ..default()
+                    },
+                    TextColor(WHITE.into()),
+                    Transform::from_xyz(0., Planet::SIZE * 0.6, 0.9),
+                    Pickable::IGNORE,
+                    PlanetNameCmp,
+                ));
+
                 // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
-                    parent.spawn((
-                        Text2d::new(&planet.name),
-                        TextFont {
-                            font: assets.font("bold"),
-                            font_size: TITLE_TEXT_SIZE,
-                            ..default()
-                        },
-                        TextColor(WHITE.into()),
-                        Transform::from_xyz(0., Planet::SIZE * 0.6, 0.9),
-                        Pickable::IGNORE,
-                        PlanetNameCmp,
-                    ));
-
                     for (i, icon) in Icon::iter().enumerate() {
                         parent
                             .spawn((
@@ -523,7 +530,7 @@ pub fn draw_map(
             ImageNode::from_atlas_image(
                 texture.image.clone(),
                 TextureAtlas {
-                    layout: texture.layout.clone(),
+                    layout: texture.atlas.layout.clone(),
                     index: 0,
                 },
             ),
@@ -590,9 +597,9 @@ pub fn update_voronoi(
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
                 material.color = if player.controls(planet) {
-                    Color::srgba(0., 0.3, 0.5, 0.05)
+                    OWN_COLOR.with_alpha(0.05)
                 } else {
-                    Color::srgba(0.5, 0.1, 0., 0.05)
+                    ENEMY_COLOR.with_alpha(0.05)
                 };
             }
         }
@@ -622,9 +629,9 @@ pub fn update_voronoi(
         }
 
         let (visible, color) = if *counts_own.get(&edge.key).unwrap_or(&2) <= 1 {
-            (true, Color::srgba(0., 0.3, 0.5, 0.5))
+            (true, OWN_COLOR.with_alpha(0.5))
         } else if *counts_enemy.get(&edge.key).unwrap_or(&2) <= 1 {
-            (true, Color::srgba(0.5, 0.1, 0., 0.5))
+            (true, ENEMY_COLOR.with_alpha(0.5))
         } else {
             (false, Color::default())
         };
@@ -781,6 +788,32 @@ pub fn update_planet_info(
                 } else {
                     Visibility::Hidden
                 };
+            }
+        }
+    }
+}
+
+pub fn run_animations(
+    mut commands: Commands,
+    mut animation_q: Query<(Entity, &mut Sprite, &mut ExplosionCmp)>,
+    mut map: ResMut<Map>,
+    time: Res<Time>,
+) {
+    for (animation_e, mut sprite, mut animation) in &mut animation_q {
+        animation.timer.tick(time.delta());
+
+        let planet = map.get_mut(animation.planet);
+
+        if animation.timer.just_finished() {
+            if let Some(atlas) = &mut sprite.texture_atlas {
+                atlas.index += 1;
+
+                // Change planet's image at a third of the animation
+                if atlas.index == animation.last_index / 3 {
+                    planet.image = 0;
+                } else if atlas.index == animation.last_index {
+                    commands.entity(animation_e).try_despawn();
+                }
             }
         }
     }

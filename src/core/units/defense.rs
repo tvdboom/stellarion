@@ -125,12 +125,12 @@ impl Combat for Defense {
 
     fn shield(&self) -> usize {
         match self {
-            Defense::RocketLauncher => 2,
+            Defense::RocketLauncher => 1,
             Defense::LightLaser => 2,
             Defense::HeavyLaser => 3,
-            Defense::GaussCannon => 25,
-            Defense::IonCannon => 50,
-            Defense::PlasmaTurret => 70,
+            Defense::GaussCannon => 7,
+            Defense::IonCannon => 12,
+            Defense::PlasmaTurret => 20,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 0,
         }

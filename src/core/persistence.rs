@@ -1,3 +1,4 @@
+use std::env::current_dir;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
@@ -19,6 +20,7 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState};
 use crate::core::turns::{filter_missions, PreviousEndTurnState};
 use crate::core::ui::systems::UiState;
+use crate::TITLE;
 
 #[derive(Default)]
 pub enum SaveState {
@@ -41,7 +43,7 @@ pub struct SaveAll {
 pub struct LoadGameMsg;
 
 #[derive(Message)]
-pub struct SaveGameMsg;
+pub struct SaveGameMsg(pub bool);
 
 fn save_to_bin(file_path: &str, data: &SaveAll) -> io::Result<()> {
     let mut file = File::create(file_path)?;
@@ -187,9 +189,19 @@ pub fn save_game(
     mut host: ResMut<Host>,
     mut message: MessageWriter<MessageMsg>,
     mut state: Local<SaveState>,
+    mut autosave: Local<bool>,
 ) {
-    let save_game = |message: &mut MessageWriter<MessageMsg>| {
-        if let Some(mut file_path) = FileDialog::new().save_file() {
+    let save_game = |autosave: bool, message: &mut MessageWriter<MessageMsg>| {
+        let file_path = if autosave {
+            let today = chrono::Local::now().format("%d%m%Y");
+            let mut path = current_dir().expect("Failed to get current directory.");
+            path.push(format!("{TITLE}_{today}"));
+            Some(path)
+        } else {
+            FileDialog::new().save_file()
+        };
+
+        if let Some(mut file_path) = file_path {
             if !file_path.extension().map(|e| e == "bin").unwrap_or(false) {
                 file_path.set_extension("bin");
             }
@@ -212,18 +224,21 @@ pub fn save_game(
 
             save_to_bin(&file_path_str, &data).expect("Failed to save the game.");
 
-            message.write(MessageMsg::info("Game saved."));
+            if !autosave {
+                message.write(MessageMsg::info("Game saved."));
+            }
         }
     };
 
     if let Some(mut server) = server {
         match *state {
             SaveState::WaitingForRequest => {
-                for _ in save_game_ev.read() {
+                for SaveGameMsg(save) in save_game_ev.read() {
                     // Request an update of every player's state
                     let msg = encode_to_vec(&ServerMessage::RequestUpdate, standard()).unwrap();
                     server.broadcast_message(DefaultChannel::ReliableOrdered, msg);
 
+                    *autosave = *save;
                     *state = SaveState::WaitingForClients;
                 }
             },
@@ -235,13 +250,13 @@ pub fn save_game(
                 }
             },
             SaveState::SaveGame => {
-                save_game(&mut message);
+                save_game(*autosave, &mut message);
                 *state = SaveState::WaitingForRequest;
             },
         }
     } else {
-        for _ in save_game_ev.read() {
-            save_game(&mut message);
+        for SaveGameMsg(autosave) in save_game_ev.read() {
+            save_game(*autosave, &mut message);
         }
     }
 }

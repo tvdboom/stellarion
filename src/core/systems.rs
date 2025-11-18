@@ -59,14 +59,15 @@ pub fn check_keys(
     let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
 
     // Hack to add resources and bump building levels to max
+    #[cfg(debug_assertions)]
     if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
-        player.resources += 10_000usize;
+        player.resources += 1_000usize;
         map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).for_each(|p| {
             for unit in Unit::all().iter().flatten() {
                 if unit.is_building() {
                     *p.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
                 } else {
-                    *p.army.entry(*unit).or_insert(0) += 10;
+                    *p.army.entry(*unit).or_insert(0) += 3;
                 }
             }
         });

@@ -126,12 +126,12 @@ impl Planet {
     // Pixel size of a planet on the screen
     pub const SIZE: f32 = 100.;
 
-    pub fn new(id: PlanetId, name: String, position: Vec2) -> Self {
-        let low = 1..3;
-        let medium = 2..4;
-        let high = 3..5;
+    pub fn new(id: PlanetId, name: String, position: Vec2, resource_factor: f32) -> Self {
+        let low = 1.0..3.0;
+        let medium = 2.0..4.0;
+        let high = 3.0..5.0;
 
-        let configs: &[(PlanetKind, [&Range<usize>; 3])] = &[
+        let configs: &[(PlanetKind, [&Range<f32>; 3])] = &[
             (PlanetKind::Dry, [&high, &low, &low]),
             (PlanetKind::Gas, [&low, &low, &high]),
             (PlanetKind::Ice, [&low, &high, &low]),
@@ -141,9 +141,9 @@ impl Planet {
         let (kind, ranges) = configs.iter().choose(&mut rng()).unwrap();
 
         let resources = Resources::new(
-            rng().random_range(ranges[0].clone()) * 100,
-            rng().random_range(ranges[1].clone()) * 70,
-            rng().random_range(ranges[2].clone()) * 50,
+            (rng().random_range(ranges[0].clone()) * 10. * resource_factor).round() as usize * 10,
+            (rng().random_range(ranges[1].clone()) * 7. * resource_factor).round() as usize * 10,
+            (rng().random_range(ranges[2].clone()) * 5. * resource_factor).round() as usize * 10,
         );
 
         Self {
@@ -285,9 +285,8 @@ impl Planet {
         }
     }
 
-    /// Destroy this planet
+    /// Destroy this planet (image is changed when resolving the animation)
     pub fn destroy(&mut self) {
-        self.image = 0;
         self.owned = None;
         self.controlled = None;
         self.army = HashMap::new();

@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use itertools::Itertools;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
@@ -36,15 +37,37 @@ impl Map {
             }
         }
 
-        let names = PLANET_NAMES.iter().cloned().choose_multiple(&mut rng(), n_planets);
+        // Compute total distance per planet to the three closest planets
+        let mut sum_closest = Vec::with_capacity(positions.len());
+        for (i, p) in positions.iter().enumerate() {
+            sum_closest.push(
+                positions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, pos)| (j != i).then_some(p.distance(*pos)))
+                    .sorted_by(|a, b| b.partial_cmp(a).unwrap())
+                    .take(4)
+                    .sum::<f32>(),
+            );
+        }
 
+        // Normalize totals and compute the resource factor for every planet
+        let mean = sum_closest.iter().sum::<f32>() / sum_closest.len() as f32;
+        let max_dev = sum_closest.iter().map(|&x| (x - mean).abs()).fold(0.0, f32::max).max(1e-6);
+        let factors = sum_closest
+            .iter()
+            .map(|td| (1. + (td - mean) / max_dev).clamp(1., 2.))
+            .collect::<Vec<_>>();
+
+        let names = PLANET_NAMES.iter().choose_multiple(&mut rng(), n_planets);
         Self {
             rect,
             planets: names
                 .iter()
                 .zip(positions)
+                .zip(factors)
                 .enumerate()
-                .map(|(id, (name, pos))| Planet::new(id, name.to_string(), pos))
+                .map(|(id, ((name, pos), f))| Planet::new(id, name.to_string(), pos, f))
                 .collect(),
         }
     }

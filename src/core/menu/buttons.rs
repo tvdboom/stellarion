@@ -187,7 +187,7 @@ pub fn on_click_menu_button(
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {
-            save_game_ev.write(SaveGameMsg);
+            save_game_ev.write(SaveGameMsg(false));
         },
         MenuBtn::Settings => {
             next_app_state.set(AppState::Settings);

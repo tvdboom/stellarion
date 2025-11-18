@@ -94,9 +94,8 @@ pub trait FmtNumb {
 impl FmtNumb for usize {
     fn fmt(self) -> String {
         match self {
-            n if n > 1_000_000_000_000 => format!("{:.2}T", self as f32 / 1_000_000_000.),
-            n if n > 1_000_000_000 => format!("{:.2}B", self as f32 / 1_000_000_000.),
             n if n > 1_000_000 => format!("{:.2}M", self as f32 / 1_000_000.),
+            n if n > 100_000 => format!("{:.0}k", self as f32 / 100_000.),
             n if n >= 1_000 => format!("{:.1}k", self as f32 / 1_000.),
             _ => self.to_string(),
         }

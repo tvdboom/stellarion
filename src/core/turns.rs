@@ -6,13 +6,18 @@ use itertools::Itertools;
 use rand::rng;
 use rand::seq::SliceRandom;
 
+use crate::core::assets::WorldAssets;
+use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::combat;
-use crate::core::constants::PHALANX_DISTANCE;
+use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
+use crate::core::map::planet::Planet;
+use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, Missions};
 use crate::core::network::{ClientMessage, ClientSendMsg, Host, ServerMessage, ServerSendMsg};
+use crate::core::persistence::SaveGameMsg;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::GameState;
@@ -453,12 +458,17 @@ pub fn resolve_turn(
 }
 
 pub fn start_turn(
+    mut commands: Commands,
     mut start_turn_msg: MessageReader<StartTurnMsg>,
+    planet_q: Query<(&Transform, &PlanetCmp)>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
     map: Res<Map>,
     player: Res<Player>,
+    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
     mut message: MessageWriter<MessageMsg>,
+    mut save_game_ev: MessageWriter<SaveGameMsg>,
+    assets: Local<WorldAssets>,
 ) {
     for _ in start_turn_msg.read() {
         *state = UiState {
@@ -466,15 +476,61 @@ pub fn start_turn(
             ..default()
         };
 
+        if settings.autosave {
+            save_game_ev.write(SaveGameMsg(true));
+        }
+
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
 
-        let new_reports =
-            player.reports.iter().filter(|r| r.turn == settings.turn).collect::<Vec<_>>();
+        // Spawn explosion animation for newly destroyed planets
+        map.planets.iter().filter(|p| p.is_destroyed && p.image != 0).for_each(|p| {
+            let (planet_t, _) = planet_q.iter().find(|(_, pc)| pc.id == p.id).unwrap();
+
+            let texture = assets.texture("explosion");
+            commands.spawn((
+                Sprite {
+                    image: texture.image,
+                    texture_atlas: Some(texture.atlas),
+                    custom_size: Some(Vec2::splat(1.5 * Planet::SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(planet_t.translation.x, planet_t.translation.y, EXPLOSION_Z),
+                ExplosionCmp {
+                    timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+                    last_index: texture.last_index,
+                    planet: p.id,
+                },
+            ));
+
+            play_audio_ev.write(PlayAudioMsg::new("explosion"));
+        });
+
+        let new_reports = player
+            .reports
+            .iter()
+            .filter(|r| r.turn == settings.turn && !r.hidden)
+            .collect::<Vec<_>>();
         if !new_reports.is_empty() {
             for report in &new_reports {
+                let origin = map.get(report.mission.origin);
                 let destination = map.get(report.mission.destination);
 
                 match report.mission.objective {
+                    Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
+                        if report.mission.army.len() == 1
+                            && report.mission.army.contains_key(&Unit::probe())
+                        {
+                            message.write(MessageMsg::info(format!(
+                                "Probes returned from planet {}.",
+                                origin.name
+                            )));
+                        } else {
+                            message.write(MessageMsg::info(format!(
+                                "Fleet returned from planet {}.",
+                                origin.name
+                            )));
+                        }
+                    },
                     Icon::Deploy => {
                         message.write(MessageMsg::info(format!(
                             "Deployed fleet to planet {}.",
@@ -556,7 +612,6 @@ pub fn start_turn(
                 }
             }
 
-            state.mission = true;
             state.mission_tab = MissionTab::MissionReports;
             state.mission_report = Some(player.reports.last().unwrap().mission.id);
         }

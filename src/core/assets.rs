@@ -7,7 +7,8 @@ use bevy_kira_audio::AudioSource;
 #[derive(Clone)]
 pub struct TextureInfo {
     pub image: Handle<Image>,
-    pub layout: Handle<TextureAtlasLayout>,
+    pub atlas: TextureAtlas,
+    pub last_index: usize,
 }
 
 pub struct WorldAssets {
@@ -56,6 +57,7 @@ impl FromWorld for WorldAssets {
             ("error", assets.load("audio/error.ogg")),
             ("defeat", assets.load("audio/defeat.ogg")),
             ("music", assets.load("audio/music.ogg")),
+            ("explosion", assets.load("audio/explosion.ogg")),
         ]);
 
         let fonts = HashMap::from([
@@ -162,6 +164,8 @@ impl FromWorld for WorldAssets {
             ("gas", assets.load("images/planets/gas.png")),
             ("ice", assets.load("images/planets/ice.png")),
             ("water", assets.load("images/planets/water.png")),
+            // Animations
+            ("explosion", assets.load("images/animations/explosion.png")),
         ]);
 
         for i in 0..65 {
@@ -172,13 +176,31 @@ impl FromWorld for WorldAssets {
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
 
         let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
-        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([(
-            "long button",
-            TextureInfo {
-                image: images["long button"].clone(),
-                layout: texture.add(long_button),
-            },
-        )]);
+        let explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 256), 8, 6, None, None);
+        let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
+            (
+                "long button",
+                TextureInfo {
+                    image: images["long button"].clone(),
+                    atlas: TextureAtlas {
+                        layout: texture.add(long_button),
+                        index: 1,
+                    },
+                    last_index: 1,
+                },
+            ),
+            (
+                "explosion",
+                TextureInfo {
+                    image: images["explosion"].clone(),
+                    atlas: TextureAtlas {
+                        layout: texture.add(explosion),
+                        index: 1,
+                    },
+                    last_index: 48,
+                },
+            ),
+        ]);
 
         Self {
             audio,

@@ -1,4 +1,5 @@
 use bevy::color::Color;
+use bevy_egui::egui::Color32;
 
 /// Window
 pub const WIDTH: f32 = 1600.;
@@ -15,7 +16,7 @@ pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
 
 /// Camera
 pub const MIN_ZOOM: f32 = 0.5;
-pub const MAX_ZOOM: f32 = 1.2;
+pub const MAX_ZOOM: f32 = 1.4;
 pub const ZOOM_FACTOR: f32 = 1.1;
 pub const LERP_FACTOR: f32 = 0.05;
 
@@ -37,6 +38,11 @@ pub const BACKGROUND_Z: f32 = 0.;
 pub const VORONOI_Z: f32 = 1.;
 pub const MISSION_Z: f32 = 2.;
 pub const PLANET_Z: f32 = 3.;
+pub const EXPLOSION_Z: f32 = 4.;
+pub const OWN_COLOR: Color = Color::srgb(0., 0.3, 0.5);
+pub const OWN_COLOR_UI: Color32 = Color32::from_rgb(102, 128, 255);
+pub const ENEMY_COLOR: Color = Color::srgb(0.5, 0.1, 0.);
+pub const ENEMY_COLOR_UI: Color32 = Color32::from_rgb(255, 64, 32);
 
 pub const PLANET_NAMES: [&str; 80] = [
     "Aegis", "Arcadia", "Arctur", "Avalon", "Bellax", "Boreal", "Calypso", "Ceryn", "Cindra",

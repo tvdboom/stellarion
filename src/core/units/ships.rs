@@ -75,7 +75,7 @@ impl Description for Ship {
                 speed make them excellent as fast strike ships."
             },
             Ship::Cruiser => {
-                "Cruisers are the backbone of any military fleet. Heavy armor, powerful weapon
+                "Cruisers are the backbone of any military fleet. Heavy armor, powerful weapon \
                 systems, and a high speed make this ship a tough opponent to fight against."
             },
             Ship::Bomber => {

@@ -44,6 +44,7 @@ bevy_kira_audio = "0.24.0"
 bevy_renet = "3.0.0"
 bimap = "0.6.3"
 bincode = { version = "2.0.1", features = ["serde"] }
+chrono = "0.4.42"
 egui-notify = "0.21.0"
 # Used by `rand` and requires feture flag for `wasm` target
 getrandom = { version = "0.3.4", features = ["wasm_js"] }

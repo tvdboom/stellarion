@@ -185,6 +185,7 @@ pub struct ShotReport {
     pub unit: Option<Unit>,
     pub shield_damage: usize,
     pub hull_damage: usize,
+    pub missed: bool,
     pub killed: bool,
     pub planetary_shield_damage: usize,
     pub rapid_fire: bool,
@@ -207,7 +208,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             combat_report: None,
-            hidden: false,
+            hidden: mission.origin_controlled != Some(mission.owner), // Hide returning probes or fleets
         };
     }
 
@@ -338,6 +339,8 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                                 shot_report.killed = true;
                             }
                         }
+                    } else {
+                        shot_report.missed = true;
                     }
 
                     if *unit.unit.rapid_fire().get(&target.unit).unwrap_or(&101) as f32 / 100.
