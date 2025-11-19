@@ -81,12 +81,35 @@ impl Unit {
         vec![Self::buildings(), Self::ships(), Self::defenses()]
     }
 
+    pub fn resource_buildings() -> Vec<Self> {
+        vec![
+            Unit::Building(Building::MetalMine),
+            Unit::Building(Building::CrystalMine),
+            Unit::Building(Building::DeuteriumSynthesizer),
+        ]
+    }
+
+    pub fn industrial_buildings() -> Vec<Self> {
+        vec![
+            Unit::Building(Building::Shipyard),
+            Unit::Building(Building::Factory),
+            Unit::Building(Building::MissileSilo),
+        ]
+    }
+
+    pub fn planetary_shield() -> Self {
+        Unit::Building(Building::PlanetaryShield)
+    }
     pub fn probe() -> Self {
         Unit::Ship(Ship::Probe)
     }
 
     pub fn colony_ship() -> Self {
         Unit::Ship(Ship::ColonyShip)
+    }
+
+    pub fn antiballistic_missile() -> Self {
+        Unit::Defense(Defense::AntiballisticMissile)
     }
 
     pub fn interplanetary_missile() -> Self {
@@ -106,21 +129,11 @@ impl Unit {
     }
 
     pub fn is_resource_building(&self) -> bool {
-        matches!(
-            self,
-            Unit::Building(Building::MetalMine)
-                | Unit::Building(Building::CrystalMine)
-                | Unit::Building(Building::DeuteriumSynthesizer)
-        )
+        Self::resource_buildings().contains(self)
     }
 
     pub fn is_industrial_building(&self) -> bool {
-        matches!(
-            self,
-            Unit::Building(Building::Shipyard)
-                | Unit::Building(Building::Factory)
-                | Unit::Building(Building::MissileSilo)
-        )
+        Self::industrial_buildings().contains(self)
     }
 
     pub fn is_combat_ship(&self) -> bool {

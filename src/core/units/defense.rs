@@ -75,10 +75,10 @@ impl Description for Defense {
             },
             Defense::AntiballisticMissile => {
                 "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \
-                destroy them prior to the combat. Each Antiballistic Missile has a 50% chance of \
+                destroy them prior to impact. Each Antiballistic Missile has a 50% chance of \
                 destroying one incoming Interplanetary Missile. Antiballistic Missiles are launched \
                 automatically whenever an approaching enemy missile is detected. Otherwise, they \
-                do not take part in any attacks. Antiballistic Missiles are much cheaper than \
+                do not take part in any combat. Antiballistic Missiles are much cheaper than \
                 Interplanetary Missiles."
             },
             Defense::InterplanetaryMissile => {
@@ -97,12 +97,12 @@ impl Description for Defense {
 impl Price for Defense {
     fn price(&self) -> Resources {
         match self {
-            Defense::RocketLauncher => Resources::new(15, 0, 0),
-            Defense::LightLaser => Resources::new(10, 5, 0),
-            Defense::HeavyLaser => Resources::new(40, 10, 0),
+            Defense::RocketLauncher => Resources::new(25, 0, 0),
+            Defense::LightLaser => Resources::new(30, 5, 0),
+            Defense::HeavyLaser => Resources::new(45, 10, 0),
             Defense::GaussCannon => Resources::new(80, 80, 0),
-            Defense::IonCannon => Resources::new(130, 130, 100),
-            Defense::PlasmaTurret => Resources::new(220, 130, 130),
+            Defense::IonCannon => Resources::new(130, 130, 80),
+            Defense::PlasmaTurret => Resources::new(220, 140, 140),
             Defense::AntiballisticMissile => Resources::new(50, 0, 20),
             Defense::InterplanetaryMissile => Resources::new(105, 20, 100),
         }
@@ -115,9 +115,9 @@ impl Combat for Defense {
             Defense::RocketLauncher => 80,
             Defense::LightLaser => 100,
             Defense::HeavyLaser => 180,
-            Defense::GaussCannon => 350,
+            Defense::GaussCannon => 370,
             Defense::IonCannon => 500,
-            Defense::PlasmaTurret => 600,
+            Defense::PlasmaTurret => 630,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 0,
         }
@@ -125,12 +125,12 @@ impl Combat for Defense {
 
     fn shield(&self) -> usize {
         match self {
-            Defense::RocketLauncher => 1,
-            Defense::LightLaser => 2,
-            Defense::HeavyLaser => 3,
-            Defense::GaussCannon => 7,
-            Defense::IonCannon => 12,
-            Defense::PlasmaTurret => 20,
+            Defense::RocketLauncher => 2,
+            Defense::LightLaser => 6,
+            Defense::HeavyLaser => 10,
+            Defense::GaussCannon => 20,
+            Defense::IonCannon => 40,
+            Defense::PlasmaTurret => 60,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 0,
         }
@@ -139,7 +139,7 @@ impl Combat for Defense {
     fn damage(&self) -> usize {
         match self {
             Defense::RocketLauncher => 8,
-            Defense::LightLaser => 10,
+            Defense::LightLaser => 14,
             Defense::HeavyLaser => 20,
             Defense::GaussCannon => 80,
             Defense::IonCannon => 100,

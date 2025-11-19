@@ -111,12 +111,12 @@ impl Price for Ship {
         match self {
             Ship::Probe => Resources::new(0, 20, 0),
             Ship::ColonyShip => Resources::new(100, 400, 200),
-            Ship::LightFighter => Resources::new(30, 10, 0),
-            Ship::HeavyFighter => Resources::new(60, 40, 0),
-            Ship::Destroyer => Resources::new(60, 70, 20),
-            Ship::Cruiser => Resources::new(100, 100, 0),
-            Ship::Bomber => Resources::new(100, 200, 35),
-            Ship::Battleship => Resources::new(150, 200, 100),
+            Ship::LightFighter => Resources::new(30, 15, 0),
+            Ship::HeavyFighter => Resources::new(60, 30, 0),
+            Ship::Destroyer => Resources::new(60, 50, 20),
+            Ship::Cruiser => Resources::new(100, 90, 0),
+            Ship::Bomber => Resources::new(80, 200, 35),
+            Ship::Battleship => Resources::new(150, 170, 100),
             Ship::Dreadnought => Resources::new(250, 200, 150),
             Ship::WarSun => Resources::new(1000, 500, 250),
         }
@@ -128,9 +128,9 @@ impl Combat for Ship {
         match self {
             Ship::Probe => 10,
             Ship::ColonyShip => 0,
-            Ship::LightFighter => 40,
+            Ship::LightFighter => 30,
             Ship::HeavyFighter => 100,
-            Ship::Destroyer => 270,
+            Ship::Destroyer => 150,
             Ship::Cruiser => 350,
             Ship::Bomber => 350,
             Ship::Battleship => 500,
@@ -143,14 +143,14 @@ impl Combat for Ship {
         match self {
             Ship::Probe => 0,
             Ship::ColonyShip => 0,
-            Ship::LightFighter => 1,
-            Ship::HeavyFighter => 3,
+            Ship::LightFighter => 2,
+            Ship::HeavyFighter => 6,
             Ship::Destroyer => 10,
             Ship::Cruiser => 20,
             Ship::Bomber => 40,
             Ship::Battleship => 40,
-            Ship::Dreadnought => 50,
-            Ship::WarSun => 70,
+            Ship::Dreadnought => 60,
+            Ship::WarSun => 90,
         }
     }
 
@@ -160,10 +160,10 @@ impl Combat for Ship {
             Ship::ColonyShip => 0,
             Ship::LightFighter => 5,
             Ship::HeavyFighter => 15,
-            Ship::Destroyer => 40,
+            Ship::Destroyer => 30,
             Ship::Cruiser => 70,
             Ship::Bomber => 70,
-            Ship::Battleship => 80,
+            Ship::Battleship => 90,
             Ship::Dreadnought => 100,
             Ship::WarSun => 150,
         }
