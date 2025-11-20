@@ -18,7 +18,7 @@ use crate::core::constants::{
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::map::utils::cursor;
+use crate::core::map::utils::{cursor, set_button_index};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
@@ -84,12 +84,6 @@ pub struct EndTurnButtonCmp;
 
 #[derive(Component)]
 pub struct EndTurnButtonLabelCmp;
-
-fn set_button_index(button_q: &mut ImageNode, index: usize) {
-    if let Some(texture) = &mut button_q.texture_atlas {
-        texture.index = index;
-    }
-}
 
 fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
     let precision = 5.0;
@@ -496,7 +490,6 @@ pub fn draw_map(
     }
 
     // Spawn end turn button
-    let texture = assets.texture("long button");
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -515,6 +508,7 @@ pub fn draw_map(
         MapCmp,
     ));
 
+    let texture = assets.texture("long button");
     commands
         .spawn((
             Node {

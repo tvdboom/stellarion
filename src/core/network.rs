@@ -280,7 +280,6 @@ pub fn client_receive_message(
     mut client: ResMut<RenetClient>,
     mut settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
-    mut next_game_state: ResMut<NextState<GameState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut client_send_msg: MessageWriter<ClientSendMsg>,
     state: Option<Res<UiState>>,
@@ -337,11 +336,7 @@ pub fn client_receive_message(
             } => {
                 settings.turn = turn;
 
-                if new_player.spectator && !(*player.as_ref().unwrap()).spectator {
-                    next_game_state.set(GameState::EndGame);
-                } else {
-                    start_turn_msg.write(StartTurnMsg);
-                }
+                start_turn_msg.write(StartTurnMsg::new(false, false));
 
                 map.as_mut().map(|m| **m = new_map);
                 player.as_mut().map(|p| **p = new_player);

@@ -8,7 +8,7 @@ use rand::seq::SliceRandom;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
-use crate::core::combat::combat;
+use crate::core::combat::{combat, Side};
 use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -27,7 +27,19 @@ use crate::core::units::{Amount, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Message)]
-pub struct StartTurnMsg;
+pub struct StartTurnMsg {
+    pub skip_battle: bool,
+    pub skip_end_game: bool,
+}
+
+impl StartTurnMsg {
+    pub fn new(skip_battle: bool, skip_end_game: bool) -> Self {
+        Self {
+            skip_battle,
+            skip_end_game,
+        }
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct PreviousEndTurnState(bool);
@@ -159,10 +171,7 @@ pub fn resolve_turn(
     mut missions: ResMut<Missions>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
-    mut next_game_state: ResMut<NextState<GameState>>,
 ) {
-    let is_spectator = player.spectator;
-
     // Collect all players and missions
     let mut all_players =
         std::iter::once(player.clone()).chain(host.clients.values().cloned()).collect::<Vec<_>>();
@@ -174,10 +183,11 @@ pub fn resolve_turn(
         .cloned()
         .collect::<Vec<_>>();
 
-    let playing = all_players.iter().filter(|p| !p.spectator).count();
+    let n_playing = all_players.iter().filter(|p| !p.spectator).count();
     let n_clients = server.map(|s| s.clients_id().len()).unwrap_or(0);
 
-    if (state.end_turn || player.spectator) && host.turn_ended.len() == n_clients && playing > 0 {
+    if (state.end_turn || player.spectator) && host.turn_ended.len() == n_playing.saturating_sub(1)
+    {
         settings.turn += 1;
 
         // Apply purchases and reset jump gates
@@ -450,12 +460,7 @@ pub fn resolve_turn(
         host.turn_ended.retain(|id| spectators.contains(id));
         host.received.retain(|id| spectators.contains(id));
 
-        // Only change the screen to end game the first time
-        if player.spectator && !is_spectator {
-            next_game_state.set(GameState::EndGame);
-        } else {
-            start_turn_msg.write(StartTurnMsg);
-        }
+        start_turn_msg.write(StartTurnMsg::new(false, false));
     }
 }
 
@@ -470,13 +475,33 @@ pub fn start_turn(
     mut play_audio_ev: MessageWriter<PlayAudioMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut save_game_ev: MessageWriter<SaveGameMsg>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     assets: Local<WorldAssets>,
 ) {
-    for _ in start_turn_msg.read() {
+    for msg in start_turn_msg.read() {
         *state = UiState {
             mission_report: state.mission_report,
             ..default()
         };
+
+        let new_reports = player
+            .reports
+            .iter()
+            .filter(|r| r.turn == settings.turn && !r.hidden)
+            .collect::<Vec<_>>();
+
+        if new_reports
+            .iter()
+            .any(|r| r.combat_report.is_some() && r.can_see(&Side::Defender, player.id))
+        {
+            if !msg.skip_battle {
+                next_game_state.set(GameState::InCombat);
+                break;
+            } else if !msg.skip_end_game && player.spectator {
+                next_game_state.set(GameState::EndGame);
+                break;
+            }
+        }
 
         if settings.autosave {
             save_game_ev.write(SaveGameMsg(true));
@@ -507,11 +532,6 @@ pub fn start_turn(
             play_audio_ev.write(PlayAudioMsg::new("explosion"));
         });
 
-        let new_reports = player
-            .reports
-            .iter()
-            .filter(|r| r.turn == settings.turn && !r.hidden)
-            .collect::<Vec<_>>();
         if !new_reports.is_empty() {
             for report in &new_reports {
                 let origin = map.get(report.mission.origin);

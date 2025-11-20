@@ -2769,7 +2769,7 @@ pub fn draw_ui(
 ) {
     let (width, height) = (window.width(), window.height());
 
-    if *game_state.get() != GameState::EndGame {
+    if !matches!(game_state.get(), GameState::InCombat | GameState::EndGame) {
         draw_panel(
             &mut contexts,
             "resources",

@@ -65,7 +65,9 @@ pub fn check_keys_menu(
                             next_game_state.set(GameState::InGameMenu)
                         }
                     },
-                    GameState::InGameMenu => next_game_state.set(GameState::Playing),
+                    GameState::InCombat | GameState::InGameMenu => {
+                        next_game_state.set(GameState::Playing)
+                    },
                     GameState::EndGame => next_app_state.set(AppState::MainMenu),
                 }
             },

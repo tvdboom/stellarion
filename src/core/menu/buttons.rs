@@ -185,7 +185,7 @@ pub fn on_click_menu_button(
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::Spectate => {
-            start_turn_msg.write(StartTurnMsg);
+            start_turn_msg.write(StartTurnMsg::new(true, true));
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {

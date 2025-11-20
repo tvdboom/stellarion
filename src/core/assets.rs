@@ -81,6 +81,7 @@ impl FromWorld for WorldAssets {
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),
+            ("combat", assets.load("images/bg/combat.png")),
             ("defeat", assets.load("images/bg/defeat.png")),
             ("victory", assets.load("images/bg/victory.png")),
             // Ui
@@ -161,8 +162,10 @@ impl FromWorld for WorldAssets {
             // Planets
             ("unknown", assets.load("images/planets/unknown.png")),
             ("dry", assets.load("images/planets/dry.png")),
+            ("dry large", assets.load("images/planets/dry large.png")),
             ("gas", assets.load("images/planets/gas.png")),
             ("ice", assets.load("images/planets/ice.png")),
+            ("ice large", assets.load("images/planets/ice large.png")),
             ("water", assets.load("images/planets/water.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
