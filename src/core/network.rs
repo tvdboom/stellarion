@@ -284,9 +284,9 @@ pub fn client_receive_message(
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut client_send_msg: MessageWriter<ClientSendMsg>,
     state: Option<Res<UiState>>,
-    map: Option<Res<Map>>,
-    player: Option<Res<Player>>,
-    missions: Option<Res<Missions>>,
+    mut map: Option<ResMut<Map>>,
+    mut player: Option<ResMut<Player>>,
+    mut missions: Option<ResMut<Missions>>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         let (d, _) = decode_from_slice(&message, standard()).unwrap();
@@ -331,9 +331,9 @@ pub fn client_receive_message(
             },
             ServerMessage::StartTurn {
                 turn,
-                map,
+                map: new_map,
                 player: new_player,
-                missions,
+                missions: new_missions,
             } => {
                 settings.turn = turn;
 
@@ -343,9 +343,9 @@ pub fn client_receive_message(
                     start_turn_msg.write(StartTurnMsg);
                 }
 
-                commands.insert_resource(map);
-                commands.insert_resource(new_player);
-                commands.insert_resource(missions);
+                map.as_mut().map(|m| **m = new_map);
+                player.as_mut().map(|p| **p = new_player);
+                missions.as_mut().map(|m| **m = new_missions);
             },
             ServerMessage::RequestUpdate => {
                 client_send_msg.write(ClientSendMsg::new(ClientMessage::EndTurn {

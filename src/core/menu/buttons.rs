@@ -19,7 +19,7 @@ use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::turns::PreviousEndTurnState;
+use crate::core::turns::{PreviousEndTurnState, StartTurnMsg};
 use crate::core::ui::systems::UiState;
 use crate::utils::NameFromEnum;
 
@@ -61,6 +61,7 @@ pub fn on_click_menu_button(
     ip: Res<Ip>,
     mut load_game_ev: MessageWriter<LoadGameMsg>,
     mut save_game_ev: MessageWriter<SaveGameMsg>,
+    mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
@@ -184,6 +185,7 @@ pub fn on_click_menu_button(
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::Spectate => {
+            start_turn_msg.write(StartTurnMsg);
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {

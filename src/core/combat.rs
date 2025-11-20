@@ -1,5 +1,5 @@
 use bevy_renet::renet::ClientId;
-use rand::prelude::{IndexedMutRandom, IteratorRandom};
+use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -155,6 +155,7 @@ pub struct RoundReport {
     pub attacker: Vec<CombatUnit>,
     pub defender: Vec<CombatUnit>,
     pub planetary_shield: usize,
+    pub antiballistic_fired: usize,
     pub buildings: Army,
     pub destroy_probability: f32,
 }
@@ -229,7 +230,15 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     let mut defend_army: Vec<CombatUnit> = destination
         .army
         .iter()
-        .filter(|(u, _)| !u.is_building() && **u != Unit::colony_ship())
+        .filter(|(u, _)| {
+            !u.is_building()
+                && **u != Unit::colony_ship()
+                && if mission.objective == Icon::MissileStrike {
+                    **u != Unit::interplanetary_missile()
+                } else {
+                    !u.is_missile()
+                }
+        })
         .flat_map(|(unit, count)| (0..*count).map(|_| CombatUnit::new(unit)))
         .collect();
 
@@ -264,18 +273,18 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                         if cu.unit == Unit::antiballistic_missile()
                             && !used_antiballistic.contains(&cu.id)
                         {
+                            used_antiballistic.push(cu.id);
+
                             let mut shot = ShotReport::default();
                             shot.unit = Some(Unit::interplanetary_missile());
 
                             if rng().random::<f32>() < 0.5 {
                                 shot.killed = true;
+                                cu.shots.push(shot);
                                 continue 'unit;
-                            } else {
-                                shot.missed = true;
                             }
 
                             cu.shots.push(shot);
-                            used_antiballistic.push(cu.id);
                         }
                     }
                 }
@@ -283,23 +292,31 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 let mut damage = unit.unit.damage();
 
                 if damage == 0 {
-                    // Skip the shooting (for probes for example)
-                    continue;
+                    // Skip the shooting (for probes or antiballistic missiles)
+                    continue 'unit;
                 }
 
                 'shoot: loop {
                     let mut shot_report = ShotReport::default();
 
-                    let target = if matches!(unit.unit, Unit::Defense(d) if d.is_missile()) {
+                    let target = if unit.unit == Unit::interplanetary_missile() {
                         // Interplanetary Missiles only shoot on defenses
-                        enemy_army.iter_mut().filter(|u| u.unit.is_defense()).choose(&mut rng())
-                    } else if unit.unit == Unit::Ship(Ship::Bomber) && planetary_shield > 0 {
+                        enemy_army
+                            .iter_mut()
+                            .filter(|u| u.unit.is_defense() && !u.unit.is_missile())
+                            .choose(&mut rng())
+                    } else if unit.unit == Unit::Ship(Ship::Bomber)
+                        && planetary_shield > 0
+                        && side == Side::Attacker
+                    {
                         // Bombers always target the planetary shield first
                         shot_report.planetary_shield_damage = damage.min(planetary_shield);
                         planetary_shield -= shot_report.planetary_shield_damage;
                         shot_report.unit = Some(Unit::planetary_shield());
                         None
-                    } else if let Some(target) = enemy_army.choose_mut(&mut rng()) {
+                    } else if let Some(target) =
+                        enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut rng())
+                    {
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense() && planetary_shield > 0 {
                             shot_report.planetary_shield_damage = damage.min(planetary_shield);
@@ -360,7 +377,6 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
                 attack_army.iter_mut().filter(|u| u.unit == Unit::Ship(Ship::Bomber) && u.hull > 0)
             {
                 let mut rng = rng();
-                let mut shot = ShotReport::default();
 
                 let f = match mission.bombing {
                     BombingRaid::Economic => {
@@ -374,16 +390,14 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
                 if let Some((u, c)) = buildings.iter_mut().filter(|(u, c)| f(u, c)).choose(&mut rng)
                 {
+                    let mut shot = ShotReport::default();
                     shot.unit = Some(*u);
                     if rng.random::<f32>() < 0.1 {
                         *c -= 1;
                         shot.killed = true;
-                    } else {
-                        shot.missed = true;
                     }
+                    cu.shots.push(shot);
                 }
-
-                cu.shots.push(shot);
             }
         }
 
@@ -392,6 +406,7 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
             attacker: attack_army.clone(),
             defender: defend_army.clone(),
             planetary_shield,
+            antiballistic_fired: used_antiballistic.len(),
             buildings: buildings.clone(),
             destroy_probability: 0.,
         };
@@ -414,14 +429,20 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
 
         // Try to destroy planet
         if mission.objective == Icon::Destroy && !defend_army.iter().any(|u| u.unit.is_ship()) {
-            for _ in attack_army.iter().filter(|u| u.unit == Unit::Ship(Ship::WarSun)) {
-                round_report.destroy_probability =
-                    destination.destroy_probability() - 0.01 * round as f32;
-                if rng().random::<f32>() < round_report.destroy_probability {
+            let war_suns = attack_army
+                .iter()
+                .filter(|u| u.unit == Unit::Ship(Ship::WarSun))
+                .collect::<Vec<_>>();
+            let destroy_probability = destination.destroy_probability() - 0.01 * round as f32;
+            for _ in war_suns.iter() {
+                if rng().random::<f32>() < destroy_probability {
                     defend_army = vec![];
                     planet_destroyed = true;
                 }
             }
+
+            round_report.destroy_probability =
+                1. - (1. - destroy_probability).powi(war_suns.len() as i32);
         }
 
         combat_report.rounds.push(round_report);

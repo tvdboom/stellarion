@@ -445,8 +445,10 @@ pub fn resolve_turn(
             }
         }
 
-        host.turn_ended.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
-        host.received.retain(|id| all_players.iter().find(|p| p.id == *id).unwrap().spectator);
+        let spectators =
+            all_players.iter().filter_map(|p| p.spectator.then_some(p.id)).collect::<Vec<_>>();
+        host.turn_ended.retain(|id| spectators.contains(id));
+        host.received.retain(|id| spectators.contains(id));
 
         // Only change the screen to end game the first time
         if player.spectator && !is_spectator {

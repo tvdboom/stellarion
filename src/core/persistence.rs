@@ -4,7 +4,7 @@ use std::io;
 use std::io::{Read, Write};
 
 use bevy::prelude::*;
-use bevy_renet::renet::{ClientId, DefaultChannel, RenetServer};
+use bevy_renet::renet::{ClientId, RenetServer};
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
 #[cfg(not(target_arch = "wasm32"))]
@@ -180,8 +180,9 @@ pub fn load_game(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
-    server: Option<ResMut<RenetServer>>,
+    server: Option<Res<RenetServer>>,
     mut save_game_ev: MessageReader<SaveGameMsg>,
+    mut server_send_msg: MessageWriter<ServerSendMsg>,
     settings: Res<Settings>,
     map: Res<Map>,
     player: Res<Player>,
@@ -230,13 +231,19 @@ pub fn save_game(
         }
     };
 
-    if let Some(mut server) = server {
+    if let Some(server) = server {
         match *state {
             SaveState::WaitingForRequest => {
                 for SaveGameMsg(save) in save_game_ev.read() {
                     // Request an update of every player's state
-                    let msg = encode_to_vec(&ServerMessage::RequestUpdate, standard()).unwrap();
-                    server.broadcast_message(DefaultChannel::ReliableOrdered, msg);
+                    server_send_msg.write(ServerSendMsg::new(ServerMessage::RequestUpdate, None));
+
+                    let spectators = host
+                        .clients
+                        .values()
+                        .filter_map(|p| p.spectator.then_some(p.id))
+                        .collect::<Vec<_>>();
+                    host.received.retain(|id| spectators.contains(id));
 
                     *autosave = *save;
                     *state = SaveState::WaitingForClients;
@@ -245,7 +252,6 @@ pub fn save_game(
             SaveState::WaitingForClients => {
                 // Wait until all clients have sent an update
                 if host.received.len() == server.clients_id().len() {
-                    host.received.clear();
                     *state = SaveState::SaveGame;
                 }
             },

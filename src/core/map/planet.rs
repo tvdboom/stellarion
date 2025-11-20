@@ -246,10 +246,7 @@ impl Planet {
     }
 
     pub fn missile_capacity(&self) -> usize {
-        self.army
-            .iter()
-            .filter_map(|(u, c)| matches!(u, Unit::Defense(d) if d.is_missile()).then_some(c))
-            .sum()
+        self.army.iter().filter_map(|(u, c)| u.is_missile().then_some(c)).sum()
     }
 
     pub fn max_missile_capacity(&self) -> usize {

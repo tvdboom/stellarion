@@ -128,6 +128,10 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
+    pub fn is_missile(&self) -> bool {
+        matches!(self, Unit::Defense(d) if d.is_missile())
+    }
+
     pub fn is_resource_building(&self) -> bool {
         Self::resource_buildings().contains(self)
     }

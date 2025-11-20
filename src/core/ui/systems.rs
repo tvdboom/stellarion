@@ -197,8 +197,14 @@ fn draw_combat_army_grid(
     let total_ps =
         round.buildings.amount(&Unit::planetary_shield()) * PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
 
+    let n_columns = if name.contains("building") {
+        1
+    } else {
+        2
+    };
+
     let mut any_hovered = false;
-    egui::Grid::new(name).striped(false).num_columns(2).spacing([8., 25.]).show(ui, |ui| {
+    egui::Grid::new(name).striped(false).num_columns(n_columns).spacing([8., 25.]).show(ui, |ui| {
         for (i, (unit, count)) in units
             .into_iter()
             .filter_map(|u| {
@@ -218,7 +224,11 @@ fn draw_combat_army_grid(
                 .filter(|s| s.unit == Some(unit))
                 .collect::<Vec<_>>();
             let n_shots = shots.len();
-            let lost = shots.iter().filter(|s| s.killed).count();
+            let lost = match unit {
+                Unit::Defense(Defense::InterplanetaryMissile) => count,
+                Unit::Defense(Defense::AntiballisticMissile) => round.antiballistic_fired,
+                _ => shots.iter().filter(|s| s.killed).count(),
+            };
 
             ui.add_enabled_ui(
                 state.combat_report_hover.as_ref().map_or(true, |(u, s)| *s != side || *u == unit),
@@ -260,7 +270,7 @@ fn draw_combat_army_grid(
 
                     let (hull, shield) = if unit.is_building() {
                         if unit == Unit::planetary_shield() {
-                            let mut ps = round.planetary_shield as f32 / total_ps as f32;
+                            let mut ps = round.planetary_shield as f32;
                             if let Some((hu, hs)) = &state.combat_report_hover {
                                 if *hs != side {
                                     ps = enemy
@@ -274,7 +284,7 @@ fn draw_combat_army_grid(
                                 }
                             }
 
-                            (f32::NAN, ps)
+                            (f32::NAN, ps / total_ps as f32)
                         } else {
                             (f32::NAN, f32::NAN)
                         }
@@ -360,7 +370,7 @@ fn draw_combat_army_grid(
                 },
             );
 
-            if i % 2 == 1 {
+            if n_columns == 1 || i % 2 == 1 {
                 ui.end_row();
             }
         }
@@ -1996,12 +2006,20 @@ fn draw_combat_report(
     });
 
     let round = if state.combat_report_total {
-        combat.rounds.iter().fold(RoundReport::default(), |mut rr, r| {
+        let mut rr = combat.rounds.iter().fold(RoundReport::default(), |mut rr, r| {
             rr.attacker.extend(r.attacker.clone());
             rr.defender.extend(r.defender.clone());
             rr.planetary_shield += r.planetary_shield;
+            rr.antiballistic_fired += r.antiballistic_fired;
+            if rr.buildings.is_empty() {
+                rr.buildings = r.buildings.clone()
+            }
             rr
-        })
+        });
+
+        rr.destroy_probability =
+            1. - combat.rounds.iter().fold(1., |acc, p| acc * (1. - p.destroy_probability));
+        rr
     } else {
         combat.rounds.get(state.combat_report_round - 1).unwrap().clone()
     };
@@ -2023,11 +2041,13 @@ fn draw_combat_report(
             .collect::<Vec<_>>();
         let b_shots = shots
             .iter()
-            .filter(|s| matches!(s.unit, Some(u) if u.is_building()))
+            .filter(
+                |s| matches!(s.unit, Some(u) if u.is_building() && u != Unit::planetary_shield()),
+            )
             .collect::<Vec<_>>();
         let shots_missed = u_shots.iter().filter(|s| s.missed).count();
-        let missiles_missed = m_shots.iter().filter(|s| s.missed).count();
-        let bombs_missed = b_shots.iter().filter(|s| s.missed).count();
+        let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
+        let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
 
         let rapid_fire = shots.iter().filter(|a| a.rapid_fire).count();
         let enemies_killed = shots.iter().filter(|a| a.killed).count();
@@ -2078,21 +2098,18 @@ fn draw_combat_report(
                         "🚀",
                         format!(
                             "{:.0}%",
-                            (missiles_missed as f32).safe_div(m_shots.len() as f32) * 100.
+                            (missiles_hit as f32).safe_div(m_shots.len() as f32) * 100.
                         ),
-                        "Percentage of Antiballistic Missiles that failed to intercept \
-                        an incoming Interplanetary Missile.",
+                        "Percentage of Antiballistic Missiles that intercepted an \
+                        incoming Interplanetary Missile.",
                     );
                 }
                 if report.mission.bombing != BombingRaid::None && side == Side::Attacker {
                     draw_row(
                         ui,
                         "💣",
-                        format!(
-                            "{:.0}%",
-                            (bombs_missed as f32).safe_div(b_shots.len() as f32) * 100.
-                        ),
-                        "Percentage of bombs that missed hitting enemy buildings.",
+                        format!("{:.0}%", (bombs_hit as f32).safe_div(b_shots.len() as f32) * 100.),
+                        "Percentage of bombs that hit enemy buildings.",
                     );
                 }
                 draw_row(ui, "💀", enemies_killed.fmt(), "Number of enemy units destroyed.");
@@ -2100,7 +2117,7 @@ fn draw_combat_report(
                     draw_row(
                         ui,
                         "☠",
-                        format!("{:.1}%", round.destroy_probability * 100.),
+                        format!("{:.0}%", round.destroy_probability * 100.),
                         "Probability of successfully destroying the planet.",
                     );
                 }
@@ -2113,7 +2130,7 @@ fn draw_combat_report(
     let (attacker_w, defender_w) = (ui.available_width() * 0.27, ui.available_width() * 0.6);
 
     ui.horizontal(|ui| {
-        ui.add_space(50.);
+        ui.add_space(60.);
 
         ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
 
@@ -2140,7 +2157,7 @@ fn draw_combat_report(
     });
 
     ui.horizontal(|ui| {
-        ui.add_space(50.);
+        ui.add_space(60.);
 
         ui.vertical(|ui| {
             ui.set_width(attacker_w);
@@ -2166,12 +2183,18 @@ fn draw_combat_report(
                 });
 
                 ui.vertical(|ui| {
+                    ui.set_width(ui.available_width() - 12.);
+
                     let hovered = draw_combat_army_grid(
                         ui,
                         "combat_attacker",
                         state,
                         &round,
-                        Unit::ships(),
+                        if report.mission.objective == Icon::MissileStrike {
+                            vec![Unit::interplanetary_missile()]
+                        } else {
+                            Unit::ships()
+                        },
                         Side::Attacker,
                         images,
                     );
@@ -2190,11 +2213,10 @@ fn draw_combat_report(
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 280.);
+                    ui.set_width(520.);
 
                     if round.defender.is_empty() {
-                        ui.add_space(30.);
-                        ui.small("No defending units.");
+                        ui.label("No defending units.");
                     } else {
                         ui.horizontal_top(|ui| {
                             let hovered1 = if round.defender.iter().any(|cu| cu.unit.is_ship()) {
@@ -2249,7 +2271,7 @@ fn draw_combat_report(
                                 {
                                     Unit::resource_buildings()
                                 },
-                                BombingRaid::Economic
+                                BombingRaid::Industrial
                                     if report
                                         .planet
                                         .army
@@ -2309,7 +2331,7 @@ fn draw_combat_report(
                 state.combat_report = None;
             }
 
-            ui.add_space(335.);
+            ui.add_space(310.);
 
             ui.small("Hover over a unit to show the statistics for that unit only.");
         });
@@ -2959,7 +2981,7 @@ pub fn draw_ui(
     if state.combat_report.is_some() {
         state.end_turn = false;
 
-        let (window_w, window_h) = (1100., 700.);
+        let (window_w, window_h) = (1070., 700.);
 
         draw_panel(
             &mut contexts,

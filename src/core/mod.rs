@@ -139,10 +139,7 @@ impl Plugin for GamePlugin {
             .add_systems(OnExit(AppState::MainMenu), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
             // Utilities
-            .add_systems(
-                Update,
-                (check_keys_menu.in_set(InGameSet), check_keys.in_set(InPlayingGameSet)),
-            )
+            .add_systems(Update, (check_keys_menu, check_keys.in_set(InPlayingGameSet)))
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), draw_map)

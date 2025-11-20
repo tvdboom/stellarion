@@ -260,7 +260,7 @@ impl Mission {
                 .filter(|p| p.controlled == Some(self.owner))
                 .min_by_key(|p| OrderedFloat(p.position.distance(self.position)))
                 .map(|p| p.id)
-                .unwrap()
+                .unwrap_or(origin.id)
         }
     }
 }

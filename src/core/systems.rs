@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::WindowResized;
+use bevy_renet::netcode::NetcodeServerTransport;
+use bevy_renet::renet::{RenetClient, RenetServer};
 use itertools::Itertools;
 
 use crate::core::map::map::Map;
@@ -23,26 +25,51 @@ pub fn on_resize_system(
 }
 
 pub fn check_keys_menu(
+    mut commands: Commands,
+    app_state: Res<State<AppState>>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
-    mut state: ResMut<UiState>,
+    server: Option<ResMut<RenetServer>>,
+    mut client: Option<ResMut<RenetClient>>,
+    state: Option<ResMut<UiState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    // Open in-game menu or exit mission/planet selection
     if keyboard.just_pressed(KeyCode::Escape) {
-        match game_state.get() {
-            GameState::Playing => {
-                if state.planet_selected.is_some() || state.mission {
-                    state.planet_selected = None;
-                    state.mission = false;
-                    state.combat_report = None;
-                } else {
-                    next_game_state.set(GameState::InGameMenu)
+        match app_state.get() {
+            AppState::SinglePlayerMenu | AppState::MultiPlayerMenu | AppState::Settings => {
+                next_app_state.set(AppState::MainMenu)
+            },
+            AppState::Lobby | AppState::ConnectedLobby => {
+                if let Some(client) = client.as_mut() {
+                    client.disconnect();
+                    commands.remove_resource::<RenetClient>();
+                } else if let Some(mut server) = server {
+                    server.disconnect_all();
+                    commands.remove_resource::<RenetServer>();
+                    commands.remove_resource::<NetcodeServerTransport>();
+                }
+
+                next_app_state.set(AppState::MultiPlayerMenu)
+            },
+            AppState::Game => {
+                // Open in-game menu or exit mission/planet selection
+                match game_state.get() {
+                    GameState::Playing => {
+                        let mut state = state.unwrap();
+                        if state.planet_selected.is_some() || state.mission {
+                            state.planet_selected = None;
+                            state.mission = false;
+                            state.combat_report = None;
+                        } else {
+                            next_game_state.set(GameState::InGameMenu)
+                        }
+                    },
+                    GameState::InGameMenu => next_game_state.set(GameState::Playing),
+                    GameState::EndGame => next_app_state.set(AppState::MainMenu),
                 }
             },
-            GameState::InGameMenu => next_game_state.set(GameState::Playing),
-            GameState::EndGame => next_app_state.set(AppState::MainMenu),
+            _ => (),
         }
     }
 }
@@ -60,9 +87,16 @@ pub fn check_keys(
 
     // Hack to add resources and bump building levels to max
     #[cfg(debug_assertions)]
-    if ctrl_pressed && shift_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
+    if ctrl_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
         player.resources += 1_000usize;
-        map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).for_each(|p| {
+
+        let mut planets = if shift_pressed {
+            map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).collect::<Vec<_>>()
+        } else {
+            map.planets.iter_mut().collect::<Vec<_>>()
+        };
+
+        planets.iter_mut().for_each(|p| {
             for unit in Unit::all().iter().flatten() {
                 if unit.is_building() {
                     *p.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;

@@ -36,8 +36,8 @@ pub const PHALANX_DISTANCE: f32 = 0.7;
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;
 pub const VORONOI_Z: f32 = 1.;
-pub const MISSION_Z: f32 = 2.;
-pub const PLANET_Z: f32 = 3.;
+pub const PLANET_Z: f32 = 2.;
+pub const MISSION_Z: f32 = 3.;
 pub const EXPLOSION_Z: f32 = 4.;
 pub const OWN_COLOR: Color = Color::srgb(0., 0.3, 0.5);
 pub const OWN_COLOR_UI: Color32 = Color32::from_rgb(102, 128, 255);
