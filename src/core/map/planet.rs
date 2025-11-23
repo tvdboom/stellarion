@@ -21,6 +21,7 @@ pub enum PlanetKind {
     Dry,
     Gas,
     Ice,
+    Metallic,
     Water,
 }
 
@@ -29,7 +30,8 @@ impl PlanetKind {
         match self {
             PlanetKind::Dry => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
             PlanetKind::Gas => vec![7, 10, 11, 14, 18, 37, 43, 45],
-            PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40],
+            PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40, 50],
+            PlanetKind::Metallic => vec![53, 54, 55, 56, 57, 58, 60, 61, 63],
             PlanetKind::Water => vec![25, 32, 34, 52, 62],
         }
     }
@@ -39,7 +41,7 @@ impl PlanetKind {
         let value = match self {
             PlanetKind::Dry | PlanetKind::Water => rng.random_range(6000..17000),
             PlanetKind::Gas => rng.random_range(17000..140000),
-            PlanetKind::Ice => rng.random_range(4000..10000),
+            PlanetKind::Ice | PlanetKind::Metallic => rng.random_range(4000..10000),
         };
 
         (value / 100) * 100
@@ -63,6 +65,11 @@ impl PlanetKind {
                 let high = rng.random_range(low..=-130);
                 (low, high)
             },
+            PlanetKind::Metallic => {
+                let low = rng.random_range(-70..10);
+                let high = rng.random_range(low..=10);
+                (low, high)
+            },
             PlanetKind::Water => {
                 let low = rng.random_range(-10..40);
                 let high = rng.random_range(low..=40);
@@ -74,7 +81,7 @@ impl PlanetKind {
     pub fn temperature_emoji(&self) -> &str {
         match self {
             PlanetKind::Dry => "🔥",
-            PlanetKind::Gas | PlanetKind::Ice => "❄",
+            PlanetKind::Gas | PlanetKind::Ice | PlanetKind::Metallic => "❄",
             PlanetKind::Water => "☀",
         }
     }
@@ -92,6 +99,11 @@ impl PlanetKind {
             PlanetKind::Gas => {
                 "Massive gas giant with thick clouds and strong storms. Produce few metal \
                 and crystal but have often large reservers of deuterium."
+            },
+            PlanetKind::Metallic => {
+                "Dense, metal-rich world with exposed ore veins and reflective plains. \
+                Metallic planets yield large amounts of refined metals but offer very \
+                little other resources."
             },
             PlanetKind::Ice => {
                 "Frozen world with glaciers, snowfields, and icy terrain. Tend to contain \
@@ -135,6 +147,7 @@ impl Planet {
             (PlanetKind::Dry, [&high, &low, &low]),
             (PlanetKind::Gas, [&low, &low, &high]),
             (PlanetKind::Ice, [&low, &high, &low]),
+            (PlanetKind::Metallic, [&high, &low, &low]),
             (PlanetKind::Water, [&medium, &medium, &low]),
         ];
 

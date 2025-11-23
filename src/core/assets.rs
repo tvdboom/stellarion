@@ -164,9 +164,13 @@ impl FromWorld for WorldAssets {
             ("dry", assets.load("images/planets/dry.png")),
             ("dry large", assets.load("images/planets/dry large.png")),
             ("gas", assets.load("images/planets/gas.png")),
+            ("gas large", assets.load("images/planets/gas large.png")),
             ("ice", assets.load("images/planets/ice.png")),
             ("ice large", assets.load("images/planets/ice large.png")),
+            ("metallic", assets.load("images/planets/metallic.png")),
+            ("metallic large", assets.load("images/planets/metallic large.png")),
             ("water", assets.load("images/planets/water.png")),
+            ("water large", assets.load("images/planets/water large.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
         ]);
