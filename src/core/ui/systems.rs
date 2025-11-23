@@ -2823,7 +2823,11 @@ pub fn draw_ui(
         let planet = map.get(id);
 
         // Check whether there is a report on this planet
-        let info = player.last_info(id, &missions.0);
+        let info = if planet.is_destroyed {
+            None
+        } else {
+            player.last_info(id, &missions.0)
+        };
 
         if player.controls(planet) || player.spectator {
             draw_panel(

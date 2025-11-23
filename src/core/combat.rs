@@ -8,6 +8,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
+use crate::core::audio::PlayAudioMsg;
 use crate::core::constants::{BUTTON_TEXT_SIZE, PLANETARY_SHIELD_STRENGTH_PER_LEVEL};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::MapCmp;
@@ -510,9 +511,14 @@ pub fn combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionRe
     }
 }
 
-pub fn setup_in_combat(mut commands: Commands, assets: Local<WorldAssets>) {
-    let texture = assets.texture("long button");
+pub fn setup_in_combat(
+    mut commands: Commands,
+    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
+    assets: Local<WorldAssets>,
+) {
+    play_audio_ev.write(PlayAudioMsg::new("horn"));
 
+    let texture = assets.texture("long button");
     commands
         .spawn((add_root_node(true), ImageNode::new(assets.image("combat")), MenuCmp))
         .with_children(|parent| {

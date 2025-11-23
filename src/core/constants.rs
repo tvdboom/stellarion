@@ -39,6 +39,7 @@ pub const VORONOI_Z: f32 = 1.;
 pub const PLANET_Z: f32 = 2.;
 pub const MISSION_Z: f32 = 3.;
 pub const EXPLOSION_Z: f32 = 4.;
+pub const BG_COLOR: Color32 = Color32::from_rgb(12, 16, 20);
 pub const OWN_COLOR: Color = Color::srgb(0., 0.3, 0.5);
 pub const OWN_COLOR_UI: Color32 = Color32::from_rgb(102, 128, 255);
 pub const ENEMY_COLOR: Color = Color::srgb(0.5, 0.1, 0.);

@@ -150,7 +150,7 @@ impl Player {
         // Add missions that haven't arrived yet
         for m in missions.into_iter() {
             if m.origin == id {
-                if m.owner == self.id && m.origin_controlled == Some(self.id) {
+                if m.owner == self.id && m.origin_controlled.unwrap_or(self.id) == self.id {
                     let army: Army = Unit::all()
                         .iter()
                         .flatten()
@@ -159,7 +159,7 @@ impl Player {
 
                     reports.push(PlanetInfo {
                         turn: m.send,
-                        controlled: army.has_army(),
+                        controlled: false, // It's no longer controlled or we wouldn't need last_info
                         army,
                     });
                 } else if m.owner != self.id && !m.objective.is_hidden() {

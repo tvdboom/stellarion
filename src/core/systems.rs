@@ -9,6 +9,7 @@ use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
+use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, Shop, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::Unit;
@@ -32,7 +33,8 @@ pub fn check_keys_menu(
     mut next_app_state: ResMut<NextState<AppState>>,
     server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
-    state: Option<ResMut<UiState>>,
+    mut state: Option<ResMut<UiState>>,
+    mut start_turn_msg: MessageWriter<StartTurnMsg>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     if keyboard.just_pressed(KeyCode::Escape) {
@@ -56,7 +58,7 @@ pub fn check_keys_menu(
                 // Open in-game menu or exit mission/planet selection
                 match game_state.get() {
                     GameState::Playing => {
-                        let mut state = state.unwrap();
+                        let state = state.as_mut().unwrap();
                         if state.planet_selected.is_some() || state.mission {
                             state.planet_selected = None;
                             state.mission = false;
@@ -72,6 +74,21 @@ pub fn check_keys_menu(
                 }
             },
             _ => (),
+        }
+    }
+
+    if keyboard.just_pressed(KeyCode::Enter) && *app_state.get() == AppState::Game {
+        if *game_state.get() == GameState::Playing {
+            let mut state = state.unwrap();
+            if !state.mission {
+                state.planet_selected = None;
+                state.mission = false;
+                state.combat_report = None;
+                state.end_turn = !state.end_turn;
+            }
+        } else if *game_state.get() == GameState::InCombat {
+            start_turn_msg.write(StartTurnMsg::new(true, false));
+            next_game_state.set(GameState::Playing)
         }
     }
 }

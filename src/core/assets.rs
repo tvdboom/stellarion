@@ -57,6 +57,8 @@ impl FromWorld for WorldAssets {
             ("error", assets.load("audio/error.ogg")),
             ("defeat", assets.load("audio/defeat.ogg")),
             ("music", assets.load("audio/music.ogg")),
+            ("horn", assets.load("audio/horn.ogg")),
+            ("drums", assets.load("audio/drums.ogg")),
             ("explosion", assets.load("audio/explosion.ogg")),
         ]);
 

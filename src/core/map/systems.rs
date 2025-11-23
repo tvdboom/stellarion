@@ -585,6 +585,7 @@ pub fn update_voronoi(
         let planet = map.get(cell.0);
 
         let visible = settings.show_cells
+            && !planet.is_destroyed
             && (player.controls(planet)
                 || player.last_info(planet.id, &missions.0).is_some_and(|i| i.controlled));
 
@@ -609,10 +610,13 @@ pub fn update_voronoi(
     let mut counts_own = HashMap::new();
 
     for (_, _, edge) in &edge_q {
-        if player.controls(map.get(edge.planet)) {
-            *counts_own.entry(edge.key).or_default() += 1;
-        } else if player.last_info(edge.planet, &missions.0).is_some_and(|i| i.controlled) {
-            *counts_enemy.entry(edge.key).or_default() += 1;
+        let planet = map.get(edge.planet);
+        if !planet.is_destroyed {
+            if player.controls(planet) {
+                *counts_own.entry(edge.key).or_default() += 1;
+            } else if player.last_info(edge.planet, &missions.0).is_some_and(|i| i.controlled) {
+                *counts_enemy.entry(edge.key).or_default() += 1;
+            }
         }
     }
 
