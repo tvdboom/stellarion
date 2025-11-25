@@ -1,9 +1,10 @@
 use bevy::color::Color;
 use bevy_egui::egui::Color32;
 
-/// Window
+/// General
 pub const WIDTH: f32 = 1600.;
 pub const HEIGHT: f32 = 900.;
+pub const MESSAGE_DURATION: u64 = 5;
 
 /// Menu
 pub const SUBTITLE_TEXT_SIZE: f32 = 10.;
@@ -19,11 +20,6 @@ pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 1.4;
 pub const ZOOM_FACTOR: f32 = 1.1;
 pub const LERP_FACTOR: f32 = 0.05;
-
-/// Settings
-pub const MIN_PLANETS: u32 = 10;
-pub const MAX_PLANETS: u32 = 50;
-pub const MESSAGE_DURATION: u64 = 5;
 
 /// GAME
 pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;

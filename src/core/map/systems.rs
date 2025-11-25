@@ -17,7 +17,7 @@ use crate::core::constants::{
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
-use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::planet::PlanetId;
 use crate::core::map::utils::{cursor, set_button_index};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
@@ -164,15 +164,8 @@ pub fn draw_map(
         commands
             .spawn((
                 Sprite {
-                    image: assets.image(format!(
-                        "planet{}",
-                        if planet.is_destroyed {
-                            0
-                        } else {
-                            planet.image
-                        }
-                    )),
-                    custom_size: Some(Vec2::splat(Planet::SIZE)),
+                    image: assets.image(planet.image()),
+                    custom_size: Some(Vec2::splat(planet.size())),
                     ..default()
                 },
                 Transform {
@@ -235,7 +228,7 @@ pub fn draw_map(
                         ..default()
                     },
                     TextColor(WHITE.into()),
-                    Transform::from_xyz(0., Planet::SIZE * 0.6, 0.9),
+                    Transform::from_xyz(0., planet.size() * 0.7, 0.9),
                     Pickable::IGNORE,
                     PlanetNameCmp,
                 ));
@@ -251,8 +244,8 @@ pub fn draw_map(
                                     ..default()
                                 },
                                 Transform::from_translation(Vec3::new(
-                                    Planet::SIZE * 0.4,
-                                    Planet::SIZE * 0.35 - i as f32 * Icon::SIZE,
+                                    planet.size() * 0.45,
+                                    planet.size() * 0.4 - i as f32 * Icon::SIZE,
                                     0.8,
                                 )),
                                 Pickable::default(),
@@ -381,41 +374,43 @@ pub fn draw_map(
                             );
                     }
 
-                    for (i, resource) in ResourceName::iter().enumerate() {
-                        parent
-                            .spawn((
-                                Sprite {
-                                    image: assets.image(resource.to_lowername().as_str()),
-                                    custom_size: Some(Vec2::new(
-                                        Planet::SIZE * 0.45,
-                                        Planet::SIZE * 0.3,
-                                    )),
-                                    ..default()
-                                },
-                                Transform {
-                                    translation: Vec3::new(
-                                        -Planet::SIZE,
-                                        Planet::SIZE * (0.27 - i as f32 * 0.25),
-                                        0.7,
-                                    ),
-                                    scale: Vec3::splat(0.6),
-                                    ..default()
-                                },
-                                Pickable::IGNORE,
-                                PlanetResourcesCmp,
-                            ))
-                            .with_children(|parent| {
-                                parent.spawn((
-                                    Text2d::new(planet.resources.get(&resource).to_string()),
-                                    TextFont {
-                                        font: assets.font("bold"),
-                                        font_size: 25.,
+                    if !planet.is_moon() {
+                        for (i, resource) in ResourceName::iter().enumerate() {
+                            parent
+                                .spawn((
+                                    Sprite {
+                                        image: assets.image(resource.to_lowername().as_str()),
+                                        custom_size: Some(Vec2::new(
+                                            planet.size() * 0.45,
+                                            planet.size() * 0.3,
+                                        )),
                                         ..default()
                                     },
-                                    TextColor(WHITE.into()),
-                                    Transform::from_xyz(55., 0., 0.),
-                                ));
-                            });
+                                    Transform {
+                                        translation: Vec3::new(
+                                            -planet.size() * 1.1,
+                                            planet.size() * (0.27 - i as f32 * 0.25),
+                                            0.7,
+                                        ),
+                                        scale: Vec3::splat(0.6),
+                                        ..default()
+                                    },
+                                    Pickable::IGNORE,
+                                    PlanetResourcesCmp,
+                                ))
+                                .with_children(|parent| {
+                                    parent.spawn((
+                                        Text2d::new(planet.resources.get(&resource).to_string()),
+                                        TextFont {
+                                            font: assets.font("bold"),
+                                            font_size: 25.,
+                                            ..default()
+                                        },
+                                        TextColor(WHITE.into()),
+                                        Transform::from_xyz(55., 0., 0.),
+                                    ));
+                                });
+                        }
                     }
                 }
             });
@@ -702,7 +697,7 @@ pub fn update_planet_info(
         let planet = map.get(planet_c.id);
 
         // Update destroyed planet image
-        planet_s.image = assets.image(format!("planet{}", planet.image));
+        planet_s.image = assets.image(planet.image());
 
         let selected =
             state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
@@ -717,8 +712,13 @@ pub fn update_planet_info(
                             && m.objective != Icon::Deploy
                             && m.destination == planet.id
                     }),
-                    Icon::Buildings | Icon::Defenses => {
+                    Icon::Buildings => {
                         player.owns(planet)
+                            && (selected || icon.condition(planet) || settings.show_info)
+                    },
+                    Icon::Defenses => {
+                        player.owns(planet)
+                            && !planet.is_moon()
                             && (selected || icon.condition(planet) || settings.show_info)
                     },
                     Icon::Fleet => {
@@ -751,7 +751,13 @@ pub fn update_planet_info(
                                         Icon::Colonize => {
                                             player.controls(p)
                                                 && !player.owns(planet)
+                                                && !planet.is_moon()
                                                 && n_owned < n_max_owned
+                                        },
+                                        Icon::MissileStrike => {
+                                            player.controls(p)
+                                                && !player.controls(planet)
+                                                && !planet.is_moon()
                                         },
                                         _ => player.controls(p) && !player.controls(planet),
                                     }
@@ -763,7 +769,7 @@ pub fn update_planet_info(
                 };
 
                 *icon_v = if visible && !planet.is_destroyed {
-                    icon_t.translation.y = Planet::SIZE * 0.35 - count as f32 * Icon::SIZE;
+                    icon_t.translation.y = planet.size() * 0.4 - count as f32 * Icon::SIZE;
                     count += 1;
                     Visibility::Inherited
                 } else {

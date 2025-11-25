@@ -32,6 +32,10 @@ impl Icon {
         matches!(self, Icon::Buildings | Icon::Fleet | Icon::Defenses)
     }
 
+    pub fn on_planet_only(&self) -> bool {
+        matches!(self, Icon::Colonize | Icon::MissileStrike)
+    }
+
     pub fn is_mission(&self) -> bool {
         matches!(
             self,
@@ -97,11 +101,14 @@ impl Icon {
     pub fn requirement(&self) -> &str {
         match self {
             Icon::Colonize => {
-                "No Colony Ship on the origin planet or maximum number of colonized planets reached."
+                "No Colony Ship on the origin planet, maximum number of colonized planets \
+                reached or destination is a moon."
             },
             Icon::Attack => "No combat ships on the origin planet.",
             Icon::Spy => "No Probes on the origin planet.",
-            Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",
+            Icon::MissileStrike => {
+                "No Interplanetary Missiles on the origin planet or destination is a moon."
+            },
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
             _ => unreachable!(),

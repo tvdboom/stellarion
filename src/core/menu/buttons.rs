@@ -82,26 +82,31 @@ pub fn on_click_menu_button(
         },
         MenuBtn::NewGame => {
             if *app_state.get() == AppState::SinglePlayerMenu {
-                let mut map = Map::new(settings.n_planets);
+                let mut map = Map::new(settings.n_planets, settings.p_moons);
 
                 // Alter home planet's stats
-                map.planets.iter_mut().find(|p| p.id == 0).unwrap().make_home_planet(0);
+                let home_planet = map.planets().iter().choose(&mut rng()).map(|p| p.id).unwrap();
+                map.planets.iter_mut().find(|p| p.id == home_planet).unwrap().make_home_planet(0);
 
                 commands.insert_resource(map);
-                commands.insert_resource(Player::new(0, 0));
+                commands.insert_resource(Player::new(0, home_planet));
             } else {
                 let server = server.unwrap();
 
                 let clients = server.clients_id();
                 let n_players = clients.len() + 1;
 
-                let mut map = Map::new(settings.n_planets * n_players);
+                let mut map = Map::new(settings.n_planets * n_players, settings.p_moons);
 
                 // Determine home planets
                 let mut home_planets: Vec<(PlanetId, Vec2)> = vec![];
                 while home_planets.len() < n_players {
-                    let candidate =
-                        map.planets.iter().choose(&mut rng()).map(|p| (p.id, p.position)).unwrap();
+                    let candidate = map
+                        .planets()
+                        .iter()
+                        .choose(&mut rng())
+                        .map(|p| (p.id, p.position))
+                        .unwrap();
 
                     if home_planets.iter().all(|&p| p.1.distance(candidate.1) > Planet::SIZE * 5.) {
                         home_planets.push(candidate);

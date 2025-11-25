@@ -9,6 +9,7 @@ use crate::core::units::{Description, Price};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Building {
+    LunarBase,
     MetalMine,
     CrystalMine,
     DeuteriumSynthesizer,
@@ -18,6 +19,7 @@ pub enum Building {
     PlanetaryShield,
     SensorPhalanx,
     JumpGate,
+    Laboratory,
 }
 
 impl Building {
@@ -27,6 +29,10 @@ impl Building {
 impl Description for Building {
     fn description(&self) -> &str {
         match self {
+            Building::LunarBase => {
+                "The Lunar Base can only be constructed on a moon. Every level of the base allows \
+                the construction of one level of another building on this moon."
+            },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
                 each turn is equal to the planet's base metal times the mine's level."
@@ -73,6 +79,11 @@ impl Description for Building {
                 always take 1 turn and costs no fuel, independent of the fleet's composition. \
                 Upgrading the Jump Gate increases the number of ships it can transport per turn."
             },
+            Building::Laboratory => {
+                "The Laboratory allows to convert resources of one type to another. The higher \
+                the level of the laboratory, the cheaper the conversion becomes. The Laboratory \
+                can only be constructed on a moon."
+            },
         }
     }
 }
@@ -80,6 +91,7 @@ impl Description for Building {
 impl Price for Building {
     fn price(&self) -> Resources {
         match self {
+            Building::LunarBase => Resources::new(200, 200, 200),
             Building::MetalMine => Resources::new(0, 200, 200),
             Building::CrystalMine => Resources::new(300, 0, 200),
             Building::DeuteriumSynthesizer => Resources::new(300, 200, 0),
@@ -89,6 +101,7 @@ impl Price for Building {
             Building::PlanetaryShield => Resources::new(200, 100, 200),
             Building::SensorPhalanx => Resources::new(400, 300, 300),
             Building::JumpGate => Resources::new(500, 300, 500),
+            Building::Laboratory => Resources::new(200, 200, 400),
         }
     }
 }

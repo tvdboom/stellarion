@@ -18,6 +18,9 @@ pub enum SettingsBtn {
     TwentyFive,
     Fifty,
     Hundred,
+    Zero,
+    Thirty,
+    Sixty,
     Mute,
     NoMusic,
     Sound,
@@ -31,6 +34,9 @@ impl SettingsBtn {
             SettingsBtn::TwentyFive => "25%".to_string(),
             SettingsBtn::Fifty => "50%".to_string(),
             SettingsBtn::Hundred => "100%".to_string(),
+            SettingsBtn::Zero => "0%".to_string(),
+            SettingsBtn::Thirty => "30%".to_string(),
+            SettingsBtn::Sixty => "60%".to_string(),
             _ => self.to_title(),
         }
     }
@@ -44,6 +50,9 @@ fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
         SettingsBtn::TwentyFive => game_settings.p_colonizable == 25,
         SettingsBtn::Fifty => game_settings.p_colonizable == 50,
         SettingsBtn::Hundred => game_settings.p_colonizable == 100,
+        SettingsBtn::Zero => game_settings.p_moons == 0,
+        SettingsBtn::Thirty => game_settings.p_moons == 30,
+        SettingsBtn::Sixty => game_settings.p_moons == 60,
         SettingsBtn::Mute => game_settings.audio == AudioState::Mute,
         SettingsBtn::NoMusic => game_settings.audio == AudioState::NoMusic,
         SettingsBtn::Sound => game_settings.audio == AudioState::Sound,
@@ -78,6 +87,9 @@ pub fn on_click_label_button(
         SettingsBtn::TwentyFive => game_settings.p_colonizable = 25,
         SettingsBtn::Fifty => game_settings.p_colonizable = 50,
         SettingsBtn::Hundred => game_settings.p_colonizable = 100,
+        SettingsBtn::Zero => game_settings.p_moons = 0,
+        SettingsBtn::Thirty => game_settings.p_moons = 30,
+        SettingsBtn::Sixty => game_settings.p_moons = 60,
         SettingsBtn::Mute => {
             game_settings.audio = AudioState::Mute;
             change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Mute)));

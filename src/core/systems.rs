@@ -37,6 +37,8 @@ pub fn check_keys_menu(
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
+    let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+
     if keyboard.just_pressed(KeyCode::Escape) {
         match app_state.get() {
             AppState::SinglePlayerMenu | AppState::MultiPlayerMenu | AppState::Settings => {
@@ -77,7 +79,7 @@ pub fn check_keys_menu(
         }
     }
 
-    if keyboard.just_pressed(KeyCode::Enter) && *app_state.get() == AppState::Game {
+    if ctrl_pressed && keyboard.just_pressed(KeyCode::Enter) && *app_state.get() == AppState::Game {
         if *game_state.get() == GameState::Playing {
             let mut state = state.unwrap();
             if !state.mission {
@@ -160,7 +162,7 @@ pub fn check_keys(
         state.mission = false;
     }
 
-    // Move between owned planets
+    // Move between owned planets / moons
     if ctrl_pressed {
         if keyboard.just_pressed(KeyCode::Tab) && !state.mission && state.combat_report.is_none() {
             if let Some(selected) = state.planet_selected {
@@ -168,7 +170,9 @@ pub fn check_keys(
                     .planets
                     .iter()
                     .sorted_by(|a, b| a.name.cmp(&b.name))
-                    .filter_map(|p| player.owns(p).then_some(p.id))
+                    .filter_map(|p| {
+                        (player.owns(p) || (p.is_moon() && player.controls(p))).then_some(p.id)
+                    })
                     .collect();
 
                 if let Some(pos) = planets.iter().position(|id| *id == selected) {
@@ -216,18 +220,31 @@ pub fn check_keys(
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {
+        let planet = map.planets.get(state.planet_selected.unwrap()).unwrap();
         if mouse.just_pressed(MouseButton::Back)
             || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
             state.shop = match &state.shop {
-                Shop::Buildings => Shop::Defenses,
+                Shop::Buildings => {
+                    if planet.is_moon() {
+                        Shop::Fleet
+                    } else {
+                        Shop::Defenses
+                    }
+                },
                 Shop::Fleet => Shop::Buildings,
                 Shop::Defenses => Shop::Fleet,
             };
         } else if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
             state.shop = match &state.shop {
                 Shop::Buildings => Shop::Fleet,
-                Shop::Fleet => Shop::Defenses,
+                Shop::Fleet => {
+                    if planet.is_moon() {
+                        Shop::Buildings
+                    } else {
+                        Shop::Defenses
+                    }
+                },
                 Shop::Defenses => Shop::Buildings,
             };
         }

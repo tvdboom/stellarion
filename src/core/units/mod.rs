@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
-use crate::core::combat::CombatStats;
+use crate::core::combat::stats::CombatStats;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -81,6 +81,34 @@ impl Unit {
         vec![Self::buildings(), Self::ships(), Self::defenses()]
     }
 
+    pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
+        if !is_moon {
+            vec![
+                Self::buildings()
+                    .into_iter()
+                    .filter(|u| {
+                        !matches!(
+                            u,
+                            Unit::Building(Building::LunarBase)
+                                | Unit::Building(Building::Laboratory)
+                        )
+                    })
+                    .collect(),
+                Self::ships(),
+                Self::defenses(),
+            ]
+        } else {
+            vec![
+                vec![
+                    Unit::Building(Building::LunarBase),
+                    Unit::Building(Building::Shipyard),
+                    Unit::Building(Building::Laboratory),
+                ],
+                Self::ships(),
+            ]
+        }
+    }
+
     pub fn resource_buildings() -> Vec<Self> {
         vec![
             Unit::Building(Building::MetalMine),
@@ -100,6 +128,7 @@ impl Unit {
     pub fn planetary_shield() -> Self {
         Unit::Building(Building::PlanetaryShield)
     }
+
     pub fn probe() -> Self {
         Unit::Ship(Ship::Probe)
     }

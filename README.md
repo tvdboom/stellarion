@@ -8,10 +8,11 @@
 <br><br>
 </div>
 
-<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/s1.png?raw=true" alt="Early game">
-<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/s2.png?raw=true" alt="Traits">
-<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/s3.png?raw=true" alt="Late game">
-<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/s4.png?raw=true" alt="Overview">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/map.png?raw=true" alt="Map">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/shop.png?raw=true" alt="Shop">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/mission.png?raw=true" alt="Mission">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/report.png?raw=true" alt="Report">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/combat.png?raw=true" alt="Combat">
 
 <br>
 
@@ -36,7 +37,7 @@ resource production! It should influence the type of strategy you might want to 
 game. For example, a home planet with a lack of deuterium forces the player into early expansion 
 to be able to fuel its fleet later.
 
-### Planets
+### Planets & Moons
 
 A planet is owned by a player if it's the player's home planet or if it has been colonized by a
 Colony Ship. A planet is controlled by a player if the player has military presence on it. If a
@@ -53,12 +54,16 @@ If losing combat on a controlled planet, no intelligence is gained.
 There is a limit to the amount of planets that can be owned by a player. Spots are only freed 
 if a planet is abandoned, conquered or destroyed.
 
+Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets,
+players can build on a controlled moon. Moons can only build a limited amount of buildings, whose
+level is also limited by the level of the Lunar Base. Moons don't have defenses.
+
 ### Units
 
 You can build three types of units on an owned planet:
 
-- **Buildings:** Buildings are used for varied reasons. Core buildings like the Mine, Shipyard
-  and Factory are essential to expand your empire. Advanced buildings like the Jump gate or 
+- **Buildings:** Buildings are used for varied reasons. Core buildings like the mines, Shipyard
+  or Factory are essential to expand your empire. Advanced buildings like the Jump gate or 
   Sensor Phalanx should be built more strategically.
 - **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
   them better or worse suited for certain strategies. Some ships are also stronger or weaker against
@@ -124,6 +129,8 @@ Things to keep in mind:
 ### Mouse + Key bindings
 
 - `escape`: Enter/exit the in-game menu.
+- `enter`: Send mission (when in tab).
+- `ctrl + enter`: Finish turn.
 - `w-a-s-d`: Move the map.
 - `scroll`: Zoom in/out the map.
 - `space`: Center the map on your home planet and select it.

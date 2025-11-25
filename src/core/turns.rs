@@ -8,11 +8,11 @@ use rand::seq::SliceRandom;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
-use crate::core::combat::{combat, Side};
+use crate::core::combat::combat::resolve_combat;
+use crate::core::combat::report::Side;
 use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
-use crate::core::map::planet::Planet;
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, Missions};
@@ -41,8 +41,15 @@ impl StartTurnMsg {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct PreviousEndTurnState(bool);
+
+impl Default for PreviousEndTurnState {
+    /// Start on true to immediately trigger a message to the host when starting the game
+    fn default() -> Self {
+        PreviousEndTurnState(true)
+    }
+}
 
 /// Merge missions per objective and return ordered by objective priority
 fn regroup_missions(missions: &Vec<Mission>) -> Vec<Mission> {
@@ -233,7 +240,7 @@ pub fn resolve_turn(
                         let new_origin = map.get(mission.check_origin(&map)).clone();
                         let destination = map.get_mut(mission.destination);
 
-                        let mut report = combat(settings.turn, &mission, destination);
+                        let mut report = resolve_combat(settings.turn, &mission, destination);
 
                         report.mission.logs.push_str(
                             format!(
@@ -480,6 +487,7 @@ pub fn start_turn(
 ) {
     for msg in start_turn_msg.read() {
         *state = UiState {
+            lab: state.lab,
             mission_report: state.mission_report,
             ..default()
         };
@@ -518,7 +526,7 @@ pub fn start_turn(
                 Sprite {
                     image: texture.image,
                     texture_atlas: Some(texture.atlas),
-                    custom_size: Some(Vec2::splat(1.5 * Planet::SIZE)),
+                    custom_size: Some(Vec2::splat(1.5 * p.size())),
                     ..default()
                 },
                 Transform::from_xyz(planet_t.translation.x, planet_t.translation.y, EXPLOSION_Z),

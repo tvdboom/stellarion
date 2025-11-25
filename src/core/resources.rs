@@ -8,11 +8,42 @@ use strum_macros::EnumIter;
 
 use crate::core::units::Description;
 
-#[derive(Component, EnumIter, Clone, Debug)]
+#[derive(Component, EnumIter, Clone, Copy, Debug, Default, PartialEq)]
 pub enum ResourceName {
+    #[default]
     Metal,
     Crystal,
     Deuterium,
+}
+
+impl ResourceName {
+    pub fn next(&self, skip: Option<ResourceName>) -> ResourceName {
+        let mut next = match self {
+            ResourceName::Metal => ResourceName::Crystal,
+            ResourceName::Crystal => ResourceName::Deuterium,
+            ResourceName::Deuterium => ResourceName::Metal,
+        };
+
+        if skip == Some(next) {
+            next = next.next(None);
+        }
+
+        next
+    }
+
+    pub fn prev(&self, skip: Option<ResourceName>) -> ResourceName {
+        let mut prev = match self {
+            ResourceName::Metal => ResourceName::Deuterium,
+            ResourceName::Crystal => ResourceName::Metal,
+            ResourceName::Deuterium => ResourceName::Metal,
+        };
+
+        if skip == Some(prev) {
+            prev = prev.prev(None);
+        }
+
+        prev
+    }
 }
 
 impl Description for ResourceName {
@@ -46,6 +77,14 @@ impl Resources {
             ResourceName::Metal => self.metal,
             ResourceName::Crystal => self.crystal,
             ResourceName::Deuterium => self.deuterium,
+        }
+    }
+
+    pub fn get_mut(&mut self, resource: &ResourceName) -> &mut usize {
+        match resource {
+            ResourceName::Metal => &mut self.metal,
+            ResourceName::Crystal => &mut self.crystal,
+            ResourceName::Deuterium => &mut self.deuterium,
         }
     }
 

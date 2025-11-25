@@ -132,13 +132,9 @@ pub fn setup_menu(
                             .spawn((Node {
                                 width: Val::Percent(40.),
                                 flex_direction: FlexDirection::Column,
-                                margin: UiRect::ZERO.with_top(Val::Percent(-2.)),
-                                padding: UiRect {
-                                    top: Val::Percent(1.),
-                                    left: Val::Percent(2.5),
-                                    right: Val::Percent(2.5),
-                                    bottom: Val::Percent(1.),
-                                },
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                margin: UiRect::ZERO.with_top(Val::Percent(-7.)),
                                 ..default()
                             },))
                             .with_children(|parent| {
@@ -161,6 +157,18 @@ pub fn setup_menu(
                                         SettingsBtn::TwentyFive,
                                         SettingsBtn::Fifty,
                                         SettingsBtn::Hundred,
+                                    ],
+                                    &settings,
+                                    &assets,
+                                    &window,
+                                );
+                                spawn_label(
+                                    parent,
+                                    "Moons per planet",
+                                    vec![
+                                        SettingsBtn::Zero,
+                                        SettingsBtn::Thirty,
+                                        SettingsBtn::Sixty,
                                     ],
                                     &settings,
                                     &assets,

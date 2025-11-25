@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
-use crate::core::combat::{MissionReport, Side};
+use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -71,11 +71,11 @@ impl Player {
     }
 
     pub fn planets_owned(&self, map: &Map, settings: &Settings) -> (usize, usize) {
-        let n_owned = map.planets.iter().filter(|p| p.owned == Some(self.id)).count();
-        let n_max_owned =
-            (map.planets.len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+        let n_owned = map.planets().iter().filter(|p| p.owned == Some(self.id)).count();
+        let n_max =
+            (map.planets().len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
 
-        (n_owned, n_max_owned)
+        (n_owned, n_max)
     }
 
     pub fn last_info(&self, id: PlanetId, missions: &Vec<Mission>) -> Option<PlanetInfo> {

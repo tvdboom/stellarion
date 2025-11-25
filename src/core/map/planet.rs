@@ -6,6 +6,7 @@ use bevy_renet::renet::ClientId;
 use rand::prelude::IteratorRandom;
 use rand::{rng, Rng};
 use serde::{Deserialize, Serialize};
+use strum_macros::EnumIter;
 
 use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR,
@@ -16,16 +17,34 @@ use crate::core::units::{Amount, Army, Unit};
 
 pub type PlanetId = usize;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlanetKind {
+    // Planets
     Dry,
     Gas,
     Ice,
     Metallic,
     Water,
+
+    // Moons
+    Blue,
+    Brown,
+    Gray,
+    Red,
+    Yellow,
 }
 
 impl PlanetKind {
+    pub fn moons() -> Vec<Self> {
+        vec![
+            PlanetKind::Blue,
+            PlanetKind::Brown,
+            PlanetKind::Gray,
+            PlanetKind::Red,
+            PlanetKind::Yellow,
+        ]
+    }
+
     pub fn indices(self) -> Vec<usize> {
         match self {
             PlanetKind::Dry => vec![2, 3, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21],
@@ -33,6 +52,11 @@ impl PlanetKind {
             PlanetKind::Ice => vec![1, 4, 6, 17, 22, 23, 26, 27, 28, 35, 36, 38, 40, 50],
             PlanetKind::Metallic => vec![53, 54, 55, 56, 57, 58, 60, 61, 63],
             PlanetKind::Water => vec![25, 32, 34, 52, 62],
+            PlanetKind::Blue => vec![1],
+            PlanetKind::Brown => vec![2],
+            PlanetKind::Gray => vec![3],
+            PlanetKind::Red => vec![4],
+            PlanetKind::Yellow => vec![5],
         }
     }
 
@@ -42,6 +66,7 @@ impl PlanetKind {
             PlanetKind::Dry | PlanetKind::Water => rng.random_range(6000..17000),
             PlanetKind::Gas => rng.random_range(17000..140000),
             PlanetKind::Ice | PlanetKind::Metallic => rng.random_range(4000..10000),
+            _ => rng.random_range(1000..5000),
         };
 
         (value / 100) * 100
@@ -75,14 +100,19 @@ impl PlanetKind {
                 let high = rng.random_range(low..=40);
                 (low, high)
             },
+            _ => {
+                let low = rng.random_range(-170..-30);
+                let high = rng.random_range(low..=-30);
+                (low, high)
+            },
         }
     }
 
     pub fn temperature_emoji(&self) -> &str {
         match self {
             PlanetKind::Dry => "🔥",
-            PlanetKind::Gas | PlanetKind::Ice | PlanetKind::Metallic => "❄",
             PlanetKind::Water => "☀",
+            _ => "❄",
         }
     }
 
@@ -108,6 +138,10 @@ impl PlanetKind {
             PlanetKind::Ice => {
                 "Frozen world with glaciers, snowfields, and icy terrain. Tend to contain \
                 high quantities of crystal, but have scarcity of other resources."
+            },
+            _ => {
+                "Moons are small natural satellites. Their low gravity and limited atmospheres \
+                make them unfit for colonization. Moons produce no resources."
             },
         }
     }
@@ -138,31 +172,43 @@ impl Planet {
     // Pixel size of a planet on the screen
     pub const SIZE: f32 = 100.;
 
-    pub fn new(id: PlanetId, name: String, position: Vec2, resource_factor: f32) -> Self {
-        let low = 1.0..3.0;
-        let medium = 2.0..4.0;
-        let high = 3.0..5.0;
+    pub fn new(
+        id: PlanetId,
+        name: String,
+        position: Vec2,
+        is_moon: bool,
+        resource_factor: f32,
+    ) -> Self {
+        let (kind, resources) = if !is_moon {
+            let low = 10.0..20.0;
+            let medium = 20.0..30.0;
+            let high = 30.0..40.0;
 
-        let configs: &[(PlanetKind, [&Range<f32>; 3])] = &[
-            (PlanetKind::Dry, [&high, &low, &low]),
-            (PlanetKind::Gas, [&low, &low, &high]),
-            (PlanetKind::Ice, [&low, &high, &low]),
-            (PlanetKind::Metallic, [&high, &low, &low]),
-            (PlanetKind::Water, [&medium, &medium, &low]),
-        ];
+            let configs: &[(PlanetKind, [&Range<f32>; 3])] = &[
+                (PlanetKind::Dry, [&high, &low, &low]),
+                (PlanetKind::Gas, [&low, &low, &high]),
+                (PlanetKind::Ice, [&low, &high, &low]),
+                (PlanetKind::Metallic, [&high, &low, &low]),
+                (PlanetKind::Water, [&medium, &medium, &low]),
+            ];
 
-        let (kind, ranges) = configs.iter().choose(&mut rng()).unwrap();
+            let (kind, ranges) = configs.iter().choose(&mut rng()).unwrap();
 
-        let resources = Resources::new(
-            (rng().random_range(ranges[0].clone()) * 10. * resource_factor).round() as usize * 10,
-            (rng().random_range(ranges[1].clone()) * 7. * resource_factor).round() as usize * 10,
-            (rng().random_range(ranges[2].clone()) * 5. * resource_factor).round() as usize * 10,
-        );
+            let resources = Resources::new(
+                (rng().random_range(ranges[0].clone()) * resource_factor).round() as usize * 10,
+                (rng().random_range(ranges[1].clone()) * resource_factor).round() as usize * 10,
+                (rng().random_range(ranges[2].clone()) * resource_factor).round() as usize * 10,
+            );
+
+            (kind.clone(), resources)
+        } else {
+            (PlanetKind::moons().into_iter().choose(&mut rng()).unwrap(), Resources::default())
+        };
 
         Self {
             id,
             name,
-            kind: *kind,
+            kind,
             image: *kind.indices().iter().choose(&mut rng()).unwrap(),
             diameter: kind.diameter(),
             temperature: kind.temperature(),
@@ -174,6 +220,26 @@ impl Planet {
             controlled: None,
             army: Army::new(),
             buy: vec![],
+        }
+    }
+
+    pub fn is_moon(&self) -> bool {
+        PlanetKind::moons().contains(&self.kind)
+    }
+
+    pub fn image(&self) -> String {
+        if self.is_moon() {
+            format!("moon{}", self.image)
+        } else {
+            format!("planet{}", self.image)
+        }
+    }
+
+    pub fn size(&self) -> f32 {
+        if self.is_moon() {
+            Self::SIZE * 0.7
+        } else {
+            Self::SIZE
         }
     }
 
@@ -209,6 +275,7 @@ impl Planet {
 
     pub fn abandon(&mut self) {
         self.owned = None;
+        self.army.retain(|u, _| !u.is_defense());
         if !self.has_fleet() {
             self.controlled = None;
         }
@@ -216,6 +283,9 @@ impl Planet {
 
     pub fn destroy_probability(&self) -> f32 {
         match self.diameter {
+            1000..2000 => 0.18,
+            2000..3000 => 0.17,
+            3000..4000 => 0.16,
             4000..6000 => 0.15,
             6000..9000 => 0.14,
             9000..13000 => 0.13,

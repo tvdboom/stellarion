@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use bevy_kira_audio::AudioSource;
+use strum::IntoEnumIterator;
+
+use crate::core::map::planet::PlanetKind;
+use crate::utils::NameFromEnum;
 
 #[derive(Clone)]
 pub struct TextureInfo {
@@ -80,6 +84,8 @@ impl FromWorld for WorldAssets {
             ("eye", assets.load("images/icons/eye.png")),
             ("missile", assets.load("images/icons/missile.png")),
             ("logs", assets.load("images/icons/logs.png")),
+            ("convert", assets.load("images/icons/convert.png")),
+            ("convert hover", assets.load("images/icons/convert hover.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),
@@ -99,6 +105,7 @@ impl FromWorld for WorldAssets {
             ("crystal", assets.load("images/resources/crystal.png")),
             ("deuterium", assets.load("images/resources/deuterium.png")),
             // Buildings
+            ("lunar base", assets.load("images/buildings/lunar base.png")),
             ("metal mine", assets.load("images/buildings/metal mine.png")),
             ("crystal mine", assets.load("images/buildings/crystal mine.png")),
             ("deuterium synthesizer", assets.load("images/buildings/deuterium synthesizer.png")),
@@ -108,6 +115,7 @@ impl FromWorld for WorldAssets {
             ("planetary shield", assets.load("images/buildings/planetary shield.png")),
             ("jump gate", assets.load("images/buildings/jump gate.png")),
             ("sensor phalanx", assets.load("images/buildings/sensor phalanx.png")),
+            ("laboratory", assets.load("images/buildings/laboratory.png")),
             // Defense
             ("rocket launcher", assets.load("images/defense/rocket launcher.png")),
             ("light laser", assets.load("images/defense/light laser.png")),
@@ -163,23 +171,26 @@ impl FromWorld for WorldAssets {
             ("rapid fire", assets.load("images/combat/rapid fire.png")),
             // Planets
             ("unknown", assets.load("images/planets/unknown.png")),
-            ("dry", assets.load("images/planets/dry.png")),
-            ("dry large", assets.load("images/planets/dry large.png")),
-            ("gas", assets.load("images/planets/gas.png")),
-            ("gas large", assets.load("images/planets/gas large.png")),
-            ("ice", assets.load("images/planets/ice.png")),
-            ("ice large", assets.load("images/planets/ice large.png")),
-            ("metallic", assets.load("images/planets/metallic.png")),
-            ("metallic large", assets.load("images/planets/metallic large.png")),
-            ("water", assets.load("images/planets/water.png")),
-            ("water large", assets.load("images/planets/water large.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
         ]);
 
         for i in 0..65 {
             let name = Box::leak(Box::new(format!("planet{}", i))).as_str();
-            images.insert(&name, assets.load(&format!("images/planets/planet{}.png", i)));
+            images.insert(&name, assets.load(&format!("images/planets/planet{i}.png")));
+        }
+
+        for i in 0..6 {
+            let name = Box::leak(Box::new(format!("moon{}", i))).as_str();
+            images.insert(&name, assets.load(&format!("images/planets/moon{i}.png")));
+        }
+
+        for kind in PlanetKind::iter() {
+            let name = Box::leak(Box::new(kind.to_lowername())).as_str();
+            images.insert(&name, assets.load(&format!("images/planets/{name}.png")));
+
+            let name = Box::leak(Box::new(format!("{} large", kind.to_lowername()))).as_str();
+            images.insert(&name, assets.load(&format!("images/planets/{name}.png")));
         }
 
         let mut texture = world.get_resource_mut::<Assets<TextureAtlasLayout>>().unwrap();
