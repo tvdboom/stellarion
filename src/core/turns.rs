@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bevy_renet::renet::RenetServer;
 use itertools::Itertools;
 use rand::rng;
 use rand::seq::SliceRandom;
@@ -10,10 +9,9 @@ use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::combat::resolve_combat;
 use crate::core::combat::report::Side;
-use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE, RADAR_DISTANCE};
+use crate::core::constants::EXPLOSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
-use crate::core::map::planet::Planet;
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, Missions};
@@ -24,7 +22,7 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
-use crate::core::units::{Amount, Unit};
+use crate::core::units::Unit;
 use crate::utils::NameFromEnum;
 
 #[derive(Message)]
@@ -138,21 +136,9 @@ pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> V
     missions
         .iter()
         .filter(|m| {
-            let destination = map.get(m.destination);
-            let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
             m.owner == player.id
-                || (player.owns(destination)
-                    && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + destination.size() * 0.5
-                        >= destination.position.distance(m.position)
-                    && !m.objective.is_hidden())
-                || map.moons().into_iter().any(|moon| {
-                    player.controls(moon)
-                        && RADAR_DISTANCE
-                            * moon.army.amount(&Unit::Building(Building::OrbitalRadar)) as f32
-                            * Planet::SIZE
-                            + moon.size() * 0.5
-                            >= moon.position.distance(m.position)
-                })
+                || m.is_seen_by_phalanx(map, player).is_some()
+                || m.is_seen_by_radar(map, player).is_some()
         })
         .cloned()
         .collect::<Vec<_>>()
@@ -180,7 +166,6 @@ pub fn check_turn_ended(
 
 pub fn resolve_turn(
     mut host: ResMut<Host>,
-    server: Option<ResMut<RenetServer>>,
     mut settings: ResMut<Settings>,
     state: Res<UiState>,
     mut map: ResMut<Map>,
@@ -200,10 +185,11 @@ pub fn resolve_turn(
         .cloned()
         .collect::<Vec<_>>();
 
-    let n_playing = all_players.iter().filter(|p| !p.spectator).count();
-    let n_clients = server.map(|s| s.clients_id().len()).unwrap_or(0);
+    let clients_playing = host.clients.values().filter(|c| !c.spectator).count();
 
-    if (state.end_turn || player.spectator) && host.turn_ended.len() == n_playing.saturating_sub(1)
+    if (state.end_turn || player.spectator)
+        && host.turn_ended.len() == clients_playing
+        && clients_playing > 0
     {
         settings.turn += 1;
 
@@ -420,18 +406,17 @@ pub fn resolve_turn(
         host.missions = vec![];
 
         // Update which players lost the game
-        let n_lost = all_players
+        let n_playing = all_players
             .iter_mut()
             .map(|p| {
                 p.spectator = !p.owns(map.get(p.home_planet));
                 p
             })
-            .filter(|p| p.spectator)
+            .filter(|p| !p.spectator)
             .count();
 
         // If there are still players playing, cleanup resources from players that lost
-        let playing = all_players.iter().filter(|p| !p.spectator).count();
-        if playing >= 2 {
+        if n_playing > 1 {
             // Remove all units, buys and missions from this player
             all_players.iter_mut().filter(|p| p.spectator).for_each(|p| {
                 map.planets.iter_mut().filter(|pl| pl.controlled == Some(p.id)).for_each(|p| {
@@ -439,12 +424,12 @@ pub fn resolve_turn(
                 });
                 all_missions.retain(|m| m.owner != p.id);
             });
+        } else {
+            // Game is over -> convert everyone to spectator
+            all_players.iter_mut().for_each(|p| p.spectator = true);
         }
 
         for p in &mut all_players {
-            // Update spectator if the player is the winner
-            p.spectator = p.spectator || (n_lost == n_clients && n_clients > 0);
-
             let new_missions = if p.spectator {
                 all_missions.clone()
             } else {
@@ -472,10 +457,8 @@ pub fn resolve_turn(
             }
         }
 
-        let spectators =
-            all_players.iter().filter_map(|p| p.spectator.then_some(p.id)).collect::<Vec<_>>();
-        host.turn_ended.retain(|id| spectators.contains(id));
-        host.received.retain(|id| spectators.contains(id));
+        host.turn_ended.clear();
+        host.received.clear();
 
         start_turn_msg.write(StartTurnMsg::new(false, false));
     }

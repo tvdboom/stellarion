@@ -258,7 +258,7 @@ impl Planet {
     pub fn clean(&mut self) {
         self.owned = None;
         self.controlled = None;
-        self.army = Army::new();
+        self.army.retain(|u, _| u.is_building());
         self.buy = Vec::new();
     }
 

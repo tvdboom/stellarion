@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
-use crate::core::constants::MISSION_Z;
+use crate::core::constants::{MISSION_Z, PHALANX_DISTANCE, RADAR_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
@@ -15,7 +15,8 @@ use crate::core::map::utils::cursor;
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::core::units::{Amount, Army, Combat, Description};
+use crate::core::units::buildings::Building;
+use crate::core::units::{Amount, Army, Combat, Description, Unit};
 use crate::utils::NameFromEnum;
 
 pub type MissionId = u64;
@@ -262,6 +263,28 @@ impl Mission {
                 .map(|p| p.id)
                 .unwrap_or(origin.id)
         }
+    }
+
+    /// If a player can see this mission by Sensor Phalanx, return the level of the radar
+    pub fn is_seen_by_phalanx(&self, map: &Map, player: &Player) -> Option<usize> {
+        let destination = map.get(self.destination);
+        let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
+        (player.owns(destination)
+            && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + destination.size() * 0.5
+                >= destination.position.distance(self.position)
+            && !self.objective.is_hidden())
+        .then_some(phalanx)
+    }
+
+    /// If a player can see this mission by Orbital Radar, return the level of the radar
+    pub fn is_seen_by_radar(&self, map: &Map, player: &Player) -> Option<usize> {
+        map.moons().into_iter().find_map(|moon| {
+            let radar = moon.army.amount(&Unit::Building(Building::OrbitalRadar));
+            (player.controls(moon)
+                && RADAR_DISTANCE * radar as f32 * Planet::SIZE + moon.size() * 0.5
+                    >= moon.position.distance(self.position))
+            .then_some(radar)
+        })
     }
 }
 

@@ -29,6 +29,7 @@ pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
 pub const PLANETARY_SHIELD_STRENGTH_PER_LEVEL: usize = 100;
 pub const PHALANX_DISTANCE: f32 = 0.8;
 pub const RADAR_DISTANCE: f32 = 1.0;
+pub const CRAWLER_HEALING_PER_ROUND: usize = 30;
 
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;

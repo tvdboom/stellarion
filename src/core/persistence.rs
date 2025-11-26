@@ -231,27 +231,22 @@ pub fn save_game(
         }
     };
 
-    if let Some(server) = server {
+    if server.is_some() {
         match *state {
             SaveState::WaitingForRequest => {
                 for SaveGameMsg(save) in save_game_ev.read() {
                     // Request an update of every player's state
                     server_send_msg.write(ServerSendMsg::new(ServerMessage::RequestUpdate, None));
 
-                    let spectators = host
-                        .clients
-                        .values()
-                        .filter_map(|p| p.spectator.then_some(p.id))
-                        .collect::<Vec<_>>();
-                    host.received.retain(|id| spectators.contains(id));
+                    host.received.clear();
 
                     *autosave = *save;
                     *state = SaveState::WaitingForClients;
                 }
             },
             SaveState::WaitingForClients => {
-                // Wait until all clients have sent an update
-                if host.received.len() == server.clients_id().len() {
+                // Wait until all playing clients have sent an update
+                if host.received.len() == host.clients.values().filter(|c| !c.spectator).count() {
                     *state = SaveState::SaveGame;
                 }
             },

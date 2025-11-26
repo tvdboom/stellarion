@@ -178,11 +178,13 @@ impl Combat for Ship {
             Ship::Destroyer => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 70),
+                (Unit::Defense(Defense::Crawler), 70),
                 (Unit::Defense(Defense::RocketLauncher), 70),
             ]),
             Ship::Cruiser => HashMap::from([(Unit::Ship(Ship::Probe), 80)]),
             Ship::Bomber => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::Crawler), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 60),
@@ -211,6 +213,7 @@ impl Combat for Ship {
                 (Unit::Ship(Ship::Bomber), 50),
                 (Unit::Ship(Ship::Battleship), 50),
                 (Unit::Ship(Ship::Dreadnought), 40),
+                (Unit::Defense(Defense::Crawler), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 60),

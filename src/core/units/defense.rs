@@ -28,10 +28,10 @@ impl Defense {
         match self {
             Defense::Crawler => 1,
             Defense::RocketLauncher => 1,
-            Defense::LightLaser => 1,
+            Defense::LightLaser => 2,
             Defense::HeavyLaser => 2,
             Defense::GaussCannon => 3,
-            Defense::IonCannon => 4,
+            Defense::IonCannon => 3,
             Defense::PlasmaTurret => 4,
             Defense::SpaceDock => 5,
             Defense::AntiballisticMissile => 1,
@@ -189,6 +189,7 @@ impl Combat for Defense {
                 (Unit::Ship(Ship::WarSun), 30),
             ]),
             Defense::InterplanetaryMissile => HashMap::from([
+                (Unit::Defense(Defense::Crawler), 90),
                 (Unit::Defense(Defense::RocketLauncher), 90),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 70),

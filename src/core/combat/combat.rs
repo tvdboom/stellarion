@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
-use crate::core::constants::PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
+use crate::core::constants::{CRAWLER_HEALING_PER_ROUND, PLANETARY_SHIELD_STRENGTH_PER_LEVEL};
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
@@ -30,6 +30,7 @@ pub struct CombatUnit {
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
+    pub healed: usize,
     pub shots: Vec<ShotReport>,
 }
 
@@ -40,6 +41,7 @@ impl CombatUnit {
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
+            healed: 0,
             shots: vec![],
         }
     }
@@ -227,11 +229,25 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         }
 
         // Repair defense turrets
-        for cu in defend_army
-            .iter_mut()
+        let n_crawlers = defend_army
+            .iter()
             .filter(|u| u.unit == Unit::Defense(Defense::Crawler) && u.hull > 0)
-        {
-            
+            .count();
+
+        for _ in 0..n_crawlers {
+            let pool = defend_army.iter_mut().filter(|u| {
+                u.unit.is_defense()
+                    && !u.unit.is_missile()
+                    && u.unit != Unit::Defense(Defense::Crawler)
+                    && u.hull > 0
+                    && u.hull < u.unit.hull()
+            });
+
+            if let Some(target) = pool.choose(&mut rng) {
+                let heal = (target.unit.hull() - target.hull).min(CRAWLER_HEALING_PER_ROUND);
+                target.healed = heal;
+                target.hull += heal;
+            }
         }
 
         // Resolve bombing raids

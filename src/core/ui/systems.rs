@@ -788,9 +788,6 @@ fn draw_mission_fleet_hover(
         _ => Unit::ships(),
     };
 
-    let phalanx =
-        map.get(mission.destination).army.amount(&Unit::Building(Building::SensorPhalanx));
-
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -815,8 +812,15 @@ fn draw_mission_fleet_hover(
                     let response = ui.add_image(images.get(unit.to_lowername()), [50.; 2]);
                     ui.add_text_on_image(
                         if mission.owner != player.id
-                            && unit.production() > phalanx
                             && !player.spectator
+                            && mission
+                                .is_seen_by_phalanx(map, player)
+                                .map(|lvl| unit.production() > lvl)
+                                .unwrap_or(true)
+                            && mission
+                                .is_seen_by_radar(map, player)
+                                .map(|lvl| unit.production() > lvl)
+                                .unwrap_or(true)
                         {
                             "?".to_string()
                         } else {
@@ -1453,7 +1457,10 @@ fn draw_active_missions(
                             let origin = map.get(mission.origin);
                             let destination = map.get(mission.destination);
 
-                            if mission.owner == player.id || !mission.objective.is_hidden() {
+                            if mission.owner == player.id
+                                || !mission.objective.is_hidden()
+                                || mission.is_seen_by_radar(map, player).is_some()
+                            {
                                 let resp1 = ui.cell(70., |ui| {
                                     let resp1 = ui
                                         .add_image(images.get(origin.image()), [60.; 2])
@@ -2072,6 +2079,7 @@ fn draw_combat_report(
             )
             .collect::<Vec<_>>();
         let shots_missed = u_shots.iter().filter(|s| s.missed).count();
+        let total_healed = units.iter().map(|cu| cu.healed).sum::<usize>();
         let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
         let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
 
@@ -2105,6 +2113,14 @@ fn draw_combat_report(
                     (shield_damage + hull_damage + ps_damage).fmt(),
                     "Total damage dealt.",
                 );
+                if side == Side::Defender {
+                    draw_row(
+                        ui,
+                        "❤",
+                        total_healed.to_string(),
+                        "Total hull points healed by Crawlers.",
+                    );
+                }
                 draw_row(
                     ui,
                     "❌",
