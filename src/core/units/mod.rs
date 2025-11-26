@@ -81,7 +81,7 @@ impl Unit {
         vec![Self::buildings(), Self::ships(), Self::defenses()]
     }
 
-    pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
+    pub fn all_valid(is_moon: bool, is_home_planet: bool) -> Vec<Vec<Self>> {
         if !is_moon {
             vec![
                 Self::buildings()
@@ -91,7 +91,8 @@ impl Unit {
                             u,
                             Unit::Building(Building::LunarBase)
                                 | Unit::Building(Building::Laboratory)
-                        )
+                                | Unit::Building(Building::OrbitalRadar)
+                        ) && (is_home_planet || *u != Unit::Building(Building::Senate))
                     })
                     .collect(),
                 Self::ships(),
@@ -103,6 +104,7 @@ impl Unit {
                     Unit::Building(Building::LunarBase),
                     Unit::Building(Building::Shipyard),
                     Unit::Building(Building::Laboratory),
+                    Unit::Building(Building::OrbitalRadar),
                 ],
                 Self::ships(),
             ]

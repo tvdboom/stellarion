@@ -317,7 +317,7 @@ pub fn update_missions(
                         state.mission_tab = if owner == player_id {
                             MissionTab::ActiveMissions
                         } else {
-                            MissionTab::IncomingAttacks
+                            MissionTab::EnemyMissions
                         }
                     }
                 });
@@ -374,7 +374,7 @@ pub fn send_mission(
         });
 
         // Update control of the planet
-        if !origin.has_fleet() && origin.owned != Some(player.id) {
+        if !origin.has_fleet() && origin.owned != Some(player.id) && !origin.is_moon() {
             origin.controlled = None;
         }
 

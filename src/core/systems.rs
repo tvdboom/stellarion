@@ -205,8 +205,8 @@ pub fn check_keys(
         if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::ActiveMissions,
-                MissionTab::ActiveMissions => MissionTab::IncomingAttacks,
-                MissionTab::IncomingAttacks => MissionTab::MissionReports,
+                MissionTab::ActiveMissions => MissionTab::EnemyMissions,
+                MissionTab::EnemyMissions => MissionTab::MissionReports,
                 MissionTab::MissionReports => MissionTab::NewMission,
             };
         } else if mouse.just_pressed(MouseButton::Back)
@@ -215,8 +215,8 @@ pub fn check_keys(
             state.mission_tab = match &state.mission_tab {
                 MissionTab::NewMission => MissionTab::MissionReports,
                 MissionTab::ActiveMissions => MissionTab::NewMission,
-                MissionTab::IncomingAttacks => MissionTab::ActiveMissions,
-                MissionTab::MissionReports => MissionTab::IncomingAttacks,
+                MissionTab::EnemyMissions => MissionTab::ActiveMissions,
+                MissionTab::MissionReports => MissionTab::EnemyMissions,
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {

@@ -5,16 +5,19 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
+use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Combat, Description, Price, Unit};
 
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Defense {
+    Crawler,
     RocketLauncher,
     LightLaser,
     HeavyLaser,
     GaussCannon,
     IonCannon,
     PlasmaTurret,
+    SpaceDock,
     AntiballisticMissile,
     InterplanetaryMissile,
 }
@@ -23,12 +26,14 @@ impl Defense {
     /// Minimum level of the factory/silo to build this defense
     pub fn production(&self) -> usize {
         match self {
+            Defense::Crawler => 1,
             Defense::RocketLauncher => 1,
             Defense::LightLaser => 1,
             Defense::HeavyLaser => 2,
             Defense::GaussCannon => 3,
             Defense::IonCannon => 4,
-            Defense::PlasmaTurret => 5,
+            Defense::PlasmaTurret => 4,
+            Defense::SpaceDock => 5,
             Defense::AntiballisticMissile => 1,
             Defense::InterplanetaryMissile => 2,
         }
@@ -42,6 +47,11 @@ impl Defense {
 impl Description for Defense {
     fn description(&self) -> &str {
         match self {
+            Defense::Crawler => {
+                "Crawlers are robots that perform repairing operations on damaged defenses. \
+                They have no damage, and are targeted during combat as any other unit. After every \
+                combat round, each crawler repairs 30 hull points from a random defense turret."
+            },
             Defense::RocketLauncher => {
                 "The Rocket Launcher is the weakest defense you can build. They are used as \
                 fodder to protect the better, more expensive, defences."
@@ -69,10 +79,18 @@ impl Description for Defense {
                 This makes them useful against Cruisers and Destroyer-dominated fleets."
             },
             Defense::PlasmaTurret => {
-                "The Plasma Turret is the most powerful defense in the game. It is fairly \
-                expensive, but well worth its price. The bomber is the only ship with Rapid Fire \
-                against it. "
+                "The Plasma Turret is a high-energy ground battery that uses superheated plasma \
+                bolts to pierce even the thickest armor. Its high cost is justified by its \
+                massive destructive potential. Only the Space Dock can offer more protection \
+                against enemy attacks. The bomber is the only ship with Rapid Fire against it."
             },
+            Defense::SpaceDock => {
+                "The Space Dock is a colossal orbital-support facility that hovers close to a \
+                planet's surface. Its the most powerful of the defenses, and the only unit with \
+                Rapid Fire against the War Sun. Although it can't move, a Space Dock counts as a \
+                ship during combat (preventing War Suns from firing their Death Rays). Only one \
+                can be build per planet."
+            }
             Defense::AntiballisticMissile => {
                 "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \
                 destroy them prior to impact. Each Antiballistic Missile has a 50% chance of \
@@ -97,12 +115,14 @@ impl Description for Defense {
 impl Price for Defense {
     fn price(&self) -> Resources {
         match self {
+            Defense::Crawler => Resources::new(25, 0, 0),
             Defense::RocketLauncher => Resources::new(25, 0, 0),
             Defense::LightLaser => Resources::new(30, 5, 0),
             Defense::HeavyLaser => Resources::new(45, 10, 0),
             Defense::GaussCannon => Resources::new(80, 80, 0),
             Defense::IonCannon => Resources::new(130, 130, 80),
             Defense::PlasmaTurret => Resources::new(220, 140, 140),
+            Defense::SpaceDock => Resources::new(1000, 750, 650),
             Defense::AntiballisticMissile => Resources::new(50, 0, 20),
             Defense::InterplanetaryMissile => Resources::new(105, 20, 100),
         }
@@ -112,12 +132,14 @@ impl Price for Defense {
 impl Combat for Defense {
     fn hull(&self) -> usize {
         match self {
+            Defense::Crawler => 50,
             Defense::RocketLauncher => 80,
             Defense::LightLaser => 100,
             Defense::HeavyLaser => 180,
             Defense::GaussCannon => 370,
             Defense::IonCannon => 500,
             Defense::PlasmaTurret => 630,
+            Defense::SpaceDock => 2000,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 0,
         }
@@ -125,12 +147,14 @@ impl Combat for Defense {
 
     fn shield(&self) -> usize {
         match self {
+            Defense::Crawler => 0,
             Defense::RocketLauncher => 2,
             Defense::LightLaser => 6,
             Defense::HeavyLaser => 10,
             Defense::GaussCannon => 20,
             Defense::IonCannon => 40,
             Defense::PlasmaTurret => 60,
+            Defense::SpaceDock => 110,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 0,
         }
@@ -138,12 +162,14 @@ impl Combat for Defense {
 
     fn damage(&self) -> usize {
         match self {
+            Defense::Crawler => 0,
             Defense::RocketLauncher => 8,
             Defense::LightLaser => 14,
             Defense::HeavyLaser => 20,
             Defense::GaussCannon => 80,
             Defense::IonCannon => 100,
             Defense::PlasmaTurret => 120,
+            Defense::SpaceDock => 150,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 800,
         }
@@ -151,6 +177,17 @@ impl Combat for Defense {
 
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
+            Defense::SpaceDock => HashMap::from([
+                (Unit::Ship(Ship::Probe), 90),
+                (Unit::Ship(Ship::LightFighter), 80),
+                (Unit::Ship(Ship::HeavyFighter), 80),
+                (Unit::Ship(Ship::Destroyer), 70),
+                (Unit::Ship(Ship::Cruiser), 60),
+                (Unit::Ship(Ship::Bomber), 50),
+                (Unit::Ship(Ship::Battleship), 50),
+                (Unit::Ship(Ship::Dreadnought), 40),
+                (Unit::Ship(Ship::WarSun), 30),
+            ]),
             Defense::InterplanetaryMissile => HashMap::from([
                 (Unit::Defense(Defense::RocketLauncher), 90),
                 (Unit::Defense(Defense::LightLaser), 80),

@@ -13,17 +13,19 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PLANET_Z, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
+    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
-use crate::core::map::planet::PlanetId;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::{cursor, set_button_index};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::ui::systems::{MissionTab, UiState};
+use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 use crate::utils::NameFromEnum;
@@ -66,6 +68,9 @@ pub struct PlanetNameCmp;
 
 #[derive(Component)]
 pub struct PlanetResourcesCmp;
+
+#[derive(Component)]
+pub struct ScannerCmp(pub bool);
 
 #[derive(Component)]
 pub struct VoronoiCmp(pub PlanetId);
@@ -296,7 +301,7 @@ pub fn draw_map(
                                         } else if icon == Icon::Attacked {
                                             state.mission = true;
                                             state.planet_selected = None;
-                                            state.mission_tab = MissionTab::IncomingAttacks;
+                                            state.mission_tab = MissionTab::EnemyMissions;
                                         } else if icon.is_mission() {
                                             state.mission = true;
                                             state.planet_selected = None;
@@ -412,6 +417,22 @@ pub fn draw_map(
                                 });
                         }
                     }
+
+                    // Draw phalanx and orbital scanning radius
+                    parent.spawn((
+                        Mesh2d(meshes.add(Circle::new(0.))),
+                        MeshMaterial2d(materials.add(Color::srgba(0., 0.5, 0.3, 0.05))),
+                        Transform::from_xyz(0., 0., -0.1),
+                        Visibility::Hidden,
+                        ScannerCmp(true),
+                    ));
+                    parent.spawn((
+                        Mesh2d(meshes.add(Annulus::new(0., 0.))),
+                        MeshMaterial2d(materials.add(Color::srgba(0., 0.5, 0.3, 0.5))),
+                        Transform::from_xyz(0., 0., -0.1),
+                        Visibility::Hidden,
+                        ScannerCmp(false),
+                    ));
                 }
             });
 
@@ -450,7 +471,7 @@ pub fn draw_map(
 
                 commands.spawn((
                     Mesh2d(meshes.add(mesh)),
-                    MeshMaterial2d(materials.add(Color::srgba(0., 0.3, 0.5, 0.05))),
+                    MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.5))),
                     Visibility::Hidden,
                     VoronoiCmp(map.planets[i].id),
                     MapCmp,
@@ -471,7 +492,7 @@ pub fn draw_map(
 
                     commands.spawn((
                         Mesh2d(meshes.add(mesh)),
-                        MeshMaterial2d(materials.add(Color::srgba(0., 0.3, 0.5, 0.5))),
+                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.05))),
                         Visibility::Hidden,
                         VoronoiEdgeCmp {
                             planet: planet_id,
@@ -562,6 +583,163 @@ pub fn draw_map(
             state.combat_report = None;
             state.end_turn = !state.end_turn;
         });
+}
+
+pub fn update_planet_info(
+    mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
+    mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
+    mut name_q: Query<
+        &mut Visibility,
+        (With<PlanetNameCmp>, Without<Icon>, Without<PlanetResourcesCmp>, Without<ScannerCmp>),
+    >,
+    mut resources_q: Query<
+        &mut Visibility,
+        (With<PlanetResourcesCmp>, Without<Icon>, Without<PlanetNameCmp>, Without<ScannerCmp>),
+    >,
+    mut scanner_q: Query<
+        (&mut Visibility, &mut Mesh2d, &ScannerCmp),
+        (Without<Icon>, Without<PlanetNameCmp>, Without<PlanetResourcesCmp>),
+    >,
+    children_q: Query<&Children>,
+    map: Res<Map>,
+    player: Res<Player>,
+    missions: Res<Missions>,
+    state: Res<UiState>,
+    settings: Res<Settings>,
+    assets: Local<WorldAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+
+    for (planet_e, mut planet_s, planet_c) in &mut planet_q {
+        let planet = map.get(planet_c.id);
+
+        // Update destroyed planet image
+        planet_s.image = assets.image(planet.image());
+
+        let selected =
+            state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
+
+        // Show/hide planet icons
+        let mut count = 0;
+        for child in children_q.iter_descendants(planet_e) {
+            if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
+                let visible = match icon {
+                    Icon::Attacked => missions.iter().any(|m| {
+                        player.owns(planet)
+                            && m.objective != Icon::Deploy
+                            && m.destination == planet.id
+                    }),
+                    Icon::Buildings => {
+                        player.owns(planet)
+                            && (selected || icon.condition(planet) || settings.show_info)
+                    },
+                    Icon::Defenses => {
+                        player.owns(planet)
+                            && !planet.is_moon()
+                            && (selected || icon.condition(planet) || settings.show_info)
+                    },
+                    Icon::Fleet => {
+                        // Shows when having an army on a not-owned planet, but hides when hovered
+                        player.controls(planet)
+                            && if player.owns(planet) || planet.is_moon() {
+                                selected || icon.condition(planet) || settings.show_info
+                            } else {
+                                icon.condition(planet) && !selected && !settings.show_info
+                            }
+                    },
+                    _ => {
+                        // Show icon if there is a mission with this objective towards this
+                        // planet or, if there's selected planet, it fulfills the condition,
+                        // else if any of the player's planets fulfills the condition
+                        let has_mission = missions.iter().any(|m| {
+                            m.owner == player.id
+                                && m.objective == *icon
+                                && m.destination == planet.id
+                        });
+
+                        let has_condition = {
+                            map.planets.iter().any(|p| {
+                                p.id != planet.id
+                                    && icon.condition(p)
+                                    && match icon {
+                                        Icon::Deploy => {
+                                            player.controls(p) && player.controls(planet)
+                                        },
+                                        Icon::Colonize => {
+                                            player.controls(p)
+                                                && !player.owns(planet)
+                                                && !planet.is_moon()
+                                                && n_owned < n_max_owned
+                                        },
+                                        Icon::MissileStrike => {
+                                            player.controls(p)
+                                                && !player.controls(planet)
+                                                && !planet.is_moon()
+                                        },
+                                        _ => player.controls(p) && !player.controls(planet),
+                                    }
+                            })
+                        };
+
+                        has_mission || ((selected || settings.show_info) && has_condition)
+                    },
+                };
+
+                *icon_v = if visible && !planet.is_destroyed {
+                    icon_t.translation.y = planet.size() * 0.4 - count as f32 * Icon::SIZE;
+                    count += 1;
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+
+            // Show/hide planet resources and name
+            if let Ok(mut visibility) = name_q.get_mut(child) {
+                *visibility = if selected || settings.show_info {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+            if let Ok(mut visibility) = resources_q.get_mut(child) {
+                *visibility = if (selected || settings.show_info) && !planet.is_destroyed {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+
+            // Show/hide scanner indicator
+            if let Ok((mut visibility, mut mesh, scanner)) = scanner_q.get_mut(child) {
+                let mut radius = if state.phalanx_hover == Some(planet.id) {
+                    PHALANX_DISTANCE
+                        * Planet::SIZE
+                        * planet.army.amount(&Unit::Building(Building::SensorPhalanx)) as f32
+                } else if state.radar_hover == Some(planet.id) {
+                    RADAR_DISTANCE
+                        * Planet::SIZE
+                        * planet.army.amount(&Unit::Building(Building::OrbitalRadar)) as f32
+                } else {
+                    0.
+                };
+
+                if radius > 0. {
+                    radius += planet.size() * 0.5; // Start at the edge of the planet
+
+                    *visibility = Visibility::Inherited;
+                    if scanner.0 {
+                        *mesh = Mesh2d(meshes.add(Mesh::from(Circle::new(radius))));
+                    } else {
+                        *mesh = Mesh2d(meshes.add(Mesh::from(Annulus::new(radius - 2., radius))));
+                    }
+                } else {
+                    *visibility = Visibility::Hidden;
+                }
+            }
+        }
+    }
 }
 
 pub fn update_voronoi(
@@ -670,131 +848,6 @@ pub fn update_end_turn(
     } else {
         Visibility::Hidden
     };
-}
-
-pub fn update_planet_info(
-    mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
-    mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
-    mut name_q: Query<
-        &mut Visibility,
-        (With<PlanetNameCmp>, Without<Icon>, Without<PlanetResourcesCmp>),
-    >,
-    mut resources_q: Query<
-        &mut Visibility,
-        (With<PlanetResourcesCmp>, Without<Icon>, Without<PlanetNameCmp>),
-    >,
-    children_q: Query<&Children>,
-    map: Res<Map>,
-    player: Res<Player>,
-    missions: Res<Missions>,
-    state: Res<UiState>,
-    settings: Res<Settings>,
-    assets: Local<WorldAssets>,
-) {
-    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
-
-    for (planet_e, mut planet_s, planet_c) in &mut planet_q {
-        let planet = map.get(planet_c.id);
-
-        // Update destroyed planet image
-        planet_s.image = assets.image(planet.image());
-
-        let selected =
-            state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
-
-        // Show/hide planet icons
-        let mut count = 0;
-        for child in children_q.iter_descendants(planet_e) {
-            if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
-                let visible = match icon {
-                    Icon::Attacked => missions.iter().any(|m| {
-                        player.owns(planet)
-                            && m.objective != Icon::Deploy
-                            && m.destination == planet.id
-                    }),
-                    Icon::Buildings => {
-                        player.owns(planet)
-                            && (selected || icon.condition(planet) || settings.show_info)
-                    },
-                    Icon::Defenses => {
-                        player.owns(planet)
-                            && !planet.is_moon()
-                            && (selected || icon.condition(planet) || settings.show_info)
-                    },
-                    Icon::Fleet => {
-                        // Shows when having an army on a not-owned planet, but hides when hovered
-                        player.controls(planet)
-                            && if player.owns(planet) {
-                                selected || icon.condition(planet) || settings.show_info
-                            } else {
-                                icon.condition(planet) && !selected && !settings.show_info
-                            }
-                    },
-                    _ => {
-                        // Show icon if there is a mission with this objective towards this
-                        // planet or, if there's selected planet, it fulfills the condition,
-                        // else if any of the player's planets fulfills the condition
-                        let has_mission = missions.iter().any(|m| {
-                            m.owner == player.id
-                                && m.objective == *icon
-                                && m.destination == planet.id
-                        });
-
-                        let has_condition = {
-                            map.planets.iter().any(|p| {
-                                p.id != planet.id
-                                    && icon.condition(p)
-                                    && match icon {
-                                        Icon::Deploy => {
-                                            player.controls(p) && player.controls(planet)
-                                        },
-                                        Icon::Colonize => {
-                                            player.controls(p)
-                                                && !player.owns(planet)
-                                                && !planet.is_moon()
-                                                && n_owned < n_max_owned
-                                        },
-                                        Icon::MissileStrike => {
-                                            player.controls(p)
-                                                && !player.controls(planet)
-                                                && !planet.is_moon()
-                                        },
-                                        _ => player.controls(p) && !player.controls(planet),
-                                    }
-                            })
-                        };
-
-                        has_mission || ((selected || settings.show_info) && has_condition)
-                    },
-                };
-
-                *icon_v = if visible && !planet.is_destroyed {
-                    icon_t.translation.y = planet.size() * 0.4 - count as f32 * Icon::SIZE;
-                    count += 1;
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-            }
-
-            // Show/hide planet resources and name
-            if let Ok(mut visibility) = name_q.get_mut(child) {
-                *visibility = if selected || settings.show_info {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-            }
-
-            if let Ok(mut visibility) = resources_q.get_mut(child) {
-                *visibility = if (selected || settings.show_info) && !planet.is_destroyed {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-            }
-        }
-    }
 }
 
 pub fn run_animations(

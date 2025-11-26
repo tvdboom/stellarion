@@ -91,4 +91,8 @@ impl Map {
     pub fn planets(&self) -> Vec<&Planet> {
         self.planets.iter().filter(|p| !p.is_moon()).collect()
     }
+
+    pub fn moons(&self) -> Vec<&Planet> {
+        self.planets.iter().filter(|p| p.is_moon()).collect()
+    }
 }

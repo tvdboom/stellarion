@@ -9,6 +9,7 @@ use crate::core::constants::PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
 
@@ -94,6 +95,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         .flat_map(|(unit, count)| (0..*count).map(|_| CombatUnit::new(unit)))
         .collect();
 
+    let mut rng = rng();
+
     let mut round = 1;
     let mut returning_probes = 0;
     let mut used_antiballistic = vec![];
@@ -130,7 +133,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                             let mut shot = ShotReport::default();
                             shot.unit = Some(Unit::interplanetary_missile());
 
-                            if rng().random::<f32>() < 0.5 {
+                            if rng.random::<f32>() < 0.5 {
                                 shot.killed = true;
                                 cu.shots.push(shot);
                                 continue 'unit;
@@ -156,7 +159,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                         enemy_army
                             .iter_mut()
                             .filter(|u| u.unit.is_defense() && !u.unit.is_missile())
-                            .choose(&mut rng())
+                            .choose(&mut rng)
                     } else if unit.unit == Unit::Ship(Ship::Bomber)
                         && planetary_shield > 0
                         && side == Side::Attacker
@@ -167,7 +170,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                         shot_report.unit = Some(Unit::planetary_shield());
                         None
                     } else if let Some(target) =
-                        enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut rng())
+                        enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut rng)
                     {
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense() && planetary_shield > 0 {
@@ -211,7 +214,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                     }
 
                     if *unit.unit.rapid_fire().get(&target.unit).unwrap_or(&101) as f32 / 100.
-                        > rng().random::<f32>()
+                        > rng.random::<f32>()
                     {
                         unit.shots.push(shot_report);
                         break 'shoot;
@@ -223,13 +226,19 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
             }
         }
 
+        // Repair defense turrets
+        for cu in defend_army
+            .iter_mut()
+            .filter(|u| u.unit == Unit::Defense(Defense::Crawler) && u.hull > 0)
+        {
+            
+        }
+
         // Resolve bombing raids
         if mission.bombing != BombingRaid::None && planetary_shield == 0 {
             for cu in
                 attack_army.iter_mut().filter(|u| u.unit == Unit::Ship(Ship::Bomber) && u.hull > 0)
             {
-                let mut rng = rng();
-
                 let f = match mission.bombing {
                     BombingRaid::Economic => {
                         |u: &Unit, c: &&mut usize| u.is_resource_building() && **c > 0
@@ -280,14 +289,18 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         }
 
         // Try to destroy planet
-        if mission.objective == Icon::Destroy && !defend_army.iter().any(|u| u.unit.is_ship()) {
+        if mission.objective == Icon::Destroy
+            && !defend_army
+                .iter()
+                .any(|u| u.unit.is_ship() || u.unit == Unit::Defense(Defense::SpaceDock))
+        {
             let war_suns = attack_army
                 .iter()
                 .filter(|u| u.unit == Unit::Ship(Ship::WarSun))
                 .collect::<Vec<_>>();
             let destroy_probability = destination.destroy_probability() - 0.01 * round as f32;
             for _ in war_suns.iter() {
-                if rng().random::<f32>() < destroy_probability {
+                if rng.random::<f32>() < destroy_probability {
                     defend_army = vec![];
                     planet_destroyed = true;
                 }

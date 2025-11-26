@@ -19,7 +19,9 @@ pub enum Building {
     PlanetaryShield,
     SensorPhalanx,
     JumpGate,
+    Senate,
     Laboratory,
+    OrbitalRadar,
 }
 
 impl Building {
@@ -69,7 +71,7 @@ impl Description for Building {
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
-                A Phalanx of level N scans the space at 0.7 * N AU from the planet, and it only \
+                A Phalanx of level N scans the space at 0.8 * N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
                 revealed. Spying missions are not detected by the Phalanx."
             },
@@ -79,10 +81,21 @@ impl Description for Building {
                 always take 1 turn and costs no fuel, independent of the fleet's composition. \
                 Upgrading the Jump Gate increases the number of ships it can transport per turn."
             },
+            Building::Senate => {
+                "In the Senate resides the seat of governance of an empire. It is the most expensive \
+                 building and it can only be build on a home planet. Every level of the Senate..."
+            },
             Building::Laboratory => {
                 "The Laboratory allows to convert resources of one type to another. The higher \
                 the level of the laboratory, the cheaper the conversion becomes. The Laboratory \
                 can only be constructed on a moon."
+            },
+            Building::OrbitalRadar => {
+                "The Orbital Radar scans the universe for enemy fleets. A Radar of level N reveals \
+                missions at N AU from the moon, and it only sees units with production <= N. It \
+                works similar to the Sensor Phalanx, but has longer reach and detects any mission \
+                in range (including Spy and Missile Strike), and not only those targeting the moon. \
+                The Orbital radar can only be build on a moon."
             },
         }
     }
@@ -101,7 +114,9 @@ impl Price for Building {
             Building::PlanetaryShield => Resources::new(200, 100, 200),
             Building::SensorPhalanx => Resources::new(400, 300, 300),
             Building::JumpGate => Resources::new(500, 300, 500),
+            Building::Senate => Resources::new(1000, 1000, 1000),
             Building::Laboratory => Resources::new(200, 200, 400),
+            Building::OrbitalRadar => Resources::new(400, 300, 300),
         }
     }
 }

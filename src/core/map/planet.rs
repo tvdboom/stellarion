@@ -141,7 +141,8 @@ impl PlanetKind {
             },
             _ => {
                 "Moons are small natural satellites. Their low gravity and limited atmospheres \
-                make them unfit for colonization. Moons produce no resources."
+                make them unfit for colonization. Moons produce no resources, can only build a \
+                limited number of buildings, and cannot be bombed."
             },
         }
     }

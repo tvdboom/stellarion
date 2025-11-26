@@ -54,7 +54,7 @@ pub enum MissionTab {
     #[default]
     NewMission,
     ActiveMissions,
-    IncomingAttacks,
+    EnemyMissions,
     MissionReports,
 }
 
@@ -66,6 +66,8 @@ pub struct UiState {
     pub shop: Shop,
     pub lab: (ResourceName, ResourceName),
     pub lab_amount: usize,
+    pub phalanx_hover: Option<PlanetId>,
+    pub radar_hover: Option<PlanetId>,
     pub mission: bool,
     pub mission_tab: MissionTab,
     pub mission_info: Mission,
@@ -694,7 +696,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 
         ui.add_space(10.);
 
-        for units in Unit::all_valid(planet.is_moon()) {
+        for units in Unit::all_valid(planet.is_moon(), true) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -743,7 +745,7 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
         ui.add_space(10.);
-        for units in Unit::all_valid(planet.is_moon()) {
+        for units in Unit::all_valid(planet.is_moon(), true) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -1239,7 +1241,7 @@ fn draw_new_mission(
                     }
 
                     let bombers = state.mission_info.army.amount(&Unit::Ship(Ship::Bomber));
-                    ui.add_enabled_ui(bombers > 0, |ui| {
+                    ui.add_enabled_ui(bombers > 0 && !destination.is_moon(), |ui| {
                         ui.horizontal(|ui| {
                             ui.small("💣 Bombing raid:");
 
@@ -1275,7 +1277,11 @@ fn draw_new_mission(
                         one. The Planetary Shield must first be destroyed before bombing can \
                         take place.",
                     )
-                    .on_disabled_hover_small("No Bombers selected for this mission.");
+                    .on_disabled_hover_small(if destination.is_moon() {
+                        "Moons cannot be bombed."
+                    } else {
+                        "No Bombers selected for this mission."
+                    });
 
                     if bombers == 0 {
                         state.mission_info.bombing = BombingRaid::None;
@@ -1841,7 +1847,7 @@ fn draw_mission_reports(
                         ui.spacing_mut().item_spacing.x = 8.;
 
                         let destination = map.get(report.mission.destination);
-                        let units = Unit::all_valid(destination.is_moon());
+                        let units = Unit::all_valid(destination.is_moon(), true);
 
                         for (i, army) in [units.get(1), units.get(2), units.get(0)]
                             .into_iter()
@@ -1936,7 +1942,7 @@ fn draw_mission(
             is_hovered,
             images,
         ),
-        MissionTab::IncomingAttacks => draw_active_missions(
+        MissionTab::EnemyMissions => draw_active_missions(
             ui,
             missions.iter().filter(|m| m.owner != player.id).collect(),
             state,
@@ -2670,7 +2676,7 @@ fn draw_shop(
 
     ui.add_space(10.);
 
-    for row in Unit::all_valid(planet.is_moon())[idx].chunks(5) {
+    for row in Unit::all_valid(planet.is_moon(), planet.id == player.home_planet)[idx].chunks(5) {
         ui.horizontal(|ui| {
             ui.add_space(25.);
 
@@ -2722,7 +2728,8 @@ fn draw_shop(
                         d.production() <= planet.army.amount(&Unit::Building(Building::Factory)),
                         true,
                         planet.battery_production() + d.production()
-                            <= planet.max_battery_production(),
+                            <= planet.max_battery_production()
+                            && (*d != Defense::SpaceDock || count == 0),
                     ),
                 };
 
@@ -2738,12 +2745,29 @@ fn draw_shop(
                             response = response.on_hover_cursor(CursorIcon::PointingHand);
                         }
 
+                        // Check whether it's hovered (independent of enabled state)
+                        let hovered = ui.input(|i| {
+                            i.pointer
+                                .hover_pos()
+                                .map(|pos| response.rect.contains(pos))
+                                .unwrap_or(false)
+                        });
+
+                        if *unit == Unit::Building(Building::SensorPhalanx) {
+                            state.phalanx_hover = hovered.then_some(planet.id);
+                        } else if *unit == Unit::Building(Building::OrbitalRadar) {
+                            state.radar_hover = hovered.then_some(planet.id);
+                        }
+
                         if response.clicked() {
                             player.resources -= unit.price();
                             planet.buy.push(unit.clone());
                         }
 
-                        if !unit.is_building() && response.secondary_clicked() {
+                        if !unit.is_building()
+                            && *unit != Unit::Defense(Defense::SpaceDock)
+                            && response.secondary_clicked()
+                        {
                             // Buy 5 new units (or maximum possible)
                             let n = match unit {
                                 Unit::Ship(s) => {

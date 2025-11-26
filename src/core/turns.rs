@@ -10,9 +10,10 @@ use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::combat::resolve_combat;
 use crate::core::combat::report::Side;
-use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE};
+use crate::core::constants::{EXPLOSION_Z, PHALANX_DISTANCE, RADAR_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
+use crate::core::map::planet::Planet;
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, Missions};
@@ -141,8 +142,17 @@ pub fn filter_missions(missions: &Vec<Mission>, map: &Map, player: &Player) -> V
             let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
             m.owner == player.id
                 || (player.owns(destination)
-                    && PHALANX_DISTANCE * phalanx as f32 >= m.distance(&map)
+                    && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + destination.size() * 0.5
+                        >= destination.position.distance(m.position)
                     && !m.objective.is_hidden())
+                || map.moons().into_iter().any(|moon| {
+                    player.controls(moon)
+                        && RADAR_DISTANCE
+                            * moon.army.amount(&Unit::Building(Building::OrbitalRadar)) as f32
+                            * Planet::SIZE
+                            + moon.size() * 0.5
+                            >= moon.position.distance(m.position)
+                })
         })
         .cloned()
         .collect::<Vec<_>>()
