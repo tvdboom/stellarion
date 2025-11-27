@@ -10,6 +10,7 @@ use crate::core::units::{Description, Price};
 #[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Building {
     LunarBase,
+    DemolitionNexus,
     MetalMine,
     CrystalMine,
     DeuteriumSynthesizer,
@@ -17,9 +18,9 @@ pub enum Building {
     Factory,
     MissileSilo,
     PlanetaryShield,
+    Reactor,
     SensorPhalanx,
     JumpGate,
-    Senate,
     Laboratory,
     OrbitalRadar,
 }
@@ -32,8 +33,14 @@ impl Description for Building {
     fn description(&self) -> &str {
         match self {
             Building::LunarBase => {
-                "The Lunar Base can only be constructed on a moon. Every level of the base allows \
-                the construction of one level of another building on this moon."
+                "The Lunar Base increases the number of fields on the moon, allowing extra buildings \
+                to be built. Every level of the Base increases the number of fields by 1."
+            },
+            Building::DemolitionNexus => {
+                "A hardened subterranean safeguard facility designed to deny invaders the full \
+                value of your moon. When the moon is conquered by an enemy, one level of a random \
+                lunar building (excluding the Lunar Base) is destroyed for each level of the Nexus. \
+                The Demolition Nexus don't take up lunar fields."
             },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
@@ -69,6 +76,12 @@ impl Description for Building {
                 building increases the shield with 100. This shield does not regenerate after \
                 every combat round. Interplanetary Missiles ignore the Planetary Shield."
             },
+            Building::Reactor => {
+                "The Reactor is a high-output energy facility that enhances the efficiency of \
+                every ship launched from the planet. It optimizes fuel consumption through \
+                advanced power regulation and heat-recovery systems. Each level of the Reactor \
+                reduces the deuterium required for fleet travel with 10%."
+            },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
                 A Phalanx of level N scans the space at 0.8 * N AU from the planet, and it only \
@@ -80,10 +93,6 @@ impl Description for Building {
                 (at any distance in space). Thus, having only a single gate is useless. Jumps \
                 always take 1 turn and costs no fuel, independent of the fleet's composition. \
                 Upgrading the Jump Gate increases the number of ships it can transport per turn."
-            },
-            Building::Senate => {
-                "In the Senate resides the seat of governance of an empire. It is the most expensive \
-                 building and it can only be build on a home planet. Every level of the Senate..."
             },
             Building::Laboratory => {
                 "The Laboratory allows to convert resources of one type to another. The higher \
@@ -105,6 +114,7 @@ impl Price for Building {
     fn price(&self) -> Resources {
         match self {
             Building::LunarBase => Resources::new(200, 200, 200),
+            Building::DemolitionNexus => Resources::new(300, 50, 50),
             Building::MetalMine => Resources::new(0, 200, 200),
             Building::CrystalMine => Resources::new(300, 0, 200),
             Building::DeuteriumSynthesizer => Resources::new(300, 200, 0),
@@ -112,9 +122,9 @@ impl Price for Building {
             Building::Factory => Resources::new(300, 200, 100),
             Building::MissileSilo => Resources::new(300, 300, 300),
             Building::PlanetaryShield => Resources::new(200, 100, 200),
+            Building::Reactor => Resources::new(250, 150, 0),
             Building::SensorPhalanx => Resources::new(400, 300, 300),
             Building::JumpGate => Resources::new(500, 300, 500),
-            Building::Senate => Resources::new(1000, 1000, 1000),
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),
         }

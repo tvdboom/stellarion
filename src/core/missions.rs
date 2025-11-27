@@ -1,17 +1,21 @@
+use std::f32::consts::PI;
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy::window::SystemCursorIcon;
 use bevy_egui::egui::emath::OrderedFloat;
 use bevy_renet::renet::ClientId;
+use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
-use crate::core::constants::{MISSION_Z, PHALANX_DISTANCE, RADAR_DISTANCE};
+use crate::core::constants::{MISSION_Z, NEXUS_FACTOR, PHALANX_DISTANCE, RADAR_DISTANCE};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::MissionCmp;
-use crate::core::map::utils::cursor;
+use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -191,12 +195,17 @@ impl Mission {
         if self.jump_gate {
             0
         } else {
+            let origin = map.get(self.origin);
+            let reactor = origin.army.amount(&Unit::Building(Building::Reactor)) as f32;
+
             let distance = self.distance(map);
-            self.army
+            let fuel = self
+                .army
                 .iter()
                 .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
-                .sum::<f32>()
-                .ceil() as usize
+                .sum::<f32>();
+
+            (fuel * (1. - NEXUS_FACTOR * reactor)).ceil() as usize
         }
     }
 
@@ -309,6 +318,7 @@ pub fn update_missions(
             let direction = (-mission.position + destination.position).normalize();
             let angle = direction.y.atan2(direction.x);
 
+            let texture = assets.texture("flame");
             commands
                 .spawn((
                     Sprite {
@@ -324,6 +334,22 @@ pub fn update_missions(
                     Pickable::default(),
                     MissionCmp::new(id),
                     MapCmp,
+                    children![(
+                        Sprite::from_atlas_image(texture.image, texture.atlas),
+                        Transform {
+                            translation: Vec3::new(-25., 0., -0.1),
+                            scale: Vec3::splat(0.35),
+                            rotation: Quat::from_rotation_z(PI),
+                        },
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::Linear,
+                                Duration::from_millis(1000),
+                                SpriteFrameLens(texture.last_index),
+                            )
+                            .with_repeat_count(RepeatCount::Infinite),
+                        ),
+                    )],
                 ))
                 .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                 .observe(cursor::<Out>(SystemCursorIcon::Default))

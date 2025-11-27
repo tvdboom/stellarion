@@ -78,11 +78,15 @@ impl Player {
         (n_owned, n_max)
     }
 
-    pub fn last_info(&self, id: PlanetId, missions: &Vec<Mission>) -> Option<PlanetInfo> {
+    pub fn last_info(&self, planet: &Planet, missions: &Vec<Mission>) -> Option<PlanetInfo> {
         let mut reports = vec![];
 
+        if planet.is_destroyed {
+            return None;
+        }
+
         for r in self.reports.iter() {
-            reports.push(if r.mission.origin == id {
+            reports.push(if r.mission.origin == planet.id {
                 if r.mission.owner == self.id {
                     // Own mission send from this planet (and it's no longer controlled)
                     PlanetInfo {
@@ -104,7 +108,7 @@ impl Player {
                 } else {
                     continue;
                 }
-            } else if r.mission.destination == id {
+            } else if r.mission.destination == planet.id {
                 // Mission arrived at this planet
                 let can_see = r.can_see(&Side::Defender, self.id);
                 PlanetInfo {
@@ -149,7 +153,7 @@ impl Player {
 
         // Add missions that haven't arrived yet
         for m in missions.into_iter() {
-            if m.origin == id {
+            if m.origin == planet.id {
                 if m.owner == self.id && m.origin_controlled.unwrap_or(self.id) == self.id {
                     let army: Army = Unit::all()
                         .iter()

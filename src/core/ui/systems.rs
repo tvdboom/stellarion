@@ -18,7 +18,7 @@ use crate::core::combat::combat::CombatUnit;
 use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
-    ENEMY_COLOR_UI, OWN_COLOR_UI, PLANETARY_SHIELD_STRENGTH_PER_LEVEL, PROBES_PER_PRODUCTION_LEVEL,
+    ENEMY_COLOR_UI, OWN_COLOR_UI, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -200,8 +200,7 @@ fn draw_combat_army_grid(
         }
     }
 
-    let total_ps =
-        round.buildings.amount(&Unit::planetary_shield()) * PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
+    let total_ps = round.buildings.amount(&Unit::planetary_shield()) * PS_SHIELD_PER_LEVEL;
 
     let n_columns = if name.contains("building") {
         1
@@ -224,6 +223,10 @@ fn draw_combat_army_grid(
             })
             .enumerate()
         {
+            let n_repaired = own
+                .iter()
+                .filter_map(|cu| (cu.unit == unit).then_some(cu.n_repaired))
+                .sum::<usize>();
             let shots = enemy
                 .iter()
                 .flat_map(|u| &u.shots)
@@ -236,8 +239,14 @@ fn draw_combat_army_grid(
                 _ => shots.iter().filter(|s| s.killed).count(),
             };
 
+            let hovering_crawler =
+                matches!(state.combat_report_hover, Some((Unit::Defense(Defense::Crawler), _)));
+
             ui.add_enabled_ui(
-                state.combat_report_hover.as_ref().map_or(true, |(u, s)| *s != side || *u == unit),
+                state
+                    .combat_report_hover
+                    .as_ref()
+                    .map_or(true, |(u, s)| (*s != side || *u == Unit::crawler()) || *u == unit),
                 |ui| {
                     let response = ui
                         .add_image(images.get(unit.to_lowername()), [70.; 2])
@@ -248,9 +257,21 @@ fn draw_combat_army_grid(
                         state.combat_report_hover = Some((unit, side.clone()));
                     }
 
-                    if n_shots > 0 {
+                    let text = if hovering_crawler && side == Side::Defender {
+                        if n_repaired > 0 {
+                            Some(format!("❤{n_repaired}"))
+                        } else {
+                            None
+                        }
+                    } else if n_shots > 0 {
+                        Some(format!("💥{n_shots}"))
+                    } else {
+                        None
+                    };
+
+                    if let Some(text) = text {
                         ui.add_text_on_image(
-                            format!("💥{n_shots}"),
+                            text,
                             Color32::WHITE,
                             TextStyle::Small,
                             response.rect.right_top() - egui::Vec2::new(2., -3.),
@@ -274,7 +295,17 @@ fn draw_combat_army_grid(
                         Align2::LEFT_BOTTOM,
                     );
 
-                    let (hull, shield) = if unit.is_building() {
+                    let all_cu: Vec<_> = own.iter().filter(|cu| cu.unit == unit).collect();
+                    let (hull, shield) = if hovering_crawler && side == Side::Defender {
+                        (
+                            all_cu
+                                .iter()
+                                .map(|cu| cu.repaired as f32)
+                                .sum::<f32>()
+                                .safe_div((count * unit.hull()) as f32),
+                            0.,
+                        )
+                    } else if unit.is_building() {
                         if unit == Unit::planetary_shield() {
                             let mut ps = round.planetary_shield as f32;
                             if let Some((hu, hs)) = &state.combat_report_hover {
@@ -295,7 +326,6 @@ fn draw_combat_army_grid(
                             (f32::NAN, f32::NAN)
                         }
                     } else {
-                        let all_cu: Vec<_> = own.iter().filter(|cu| cu.unit == unit).collect();
                         let mut shield = all_cu
                             .iter()
                             .map(|cu| {
@@ -696,7 +726,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 
         ui.add_space(10.);
 
-        for units in Unit::all_valid(planet.is_moon(), true) {
+        for units in Unit::all_valid(planet.is_moon()) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -745,7 +775,7 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
         ui.add_space(10.);
-        for units in Unit::all_valid(planet.is_moon(), true) {
+        for units in Unit::all_valid(planet.is_moon()) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -1854,7 +1884,7 @@ fn draw_mission_reports(
                         ui.spacing_mut().item_spacing.x = 8.;
 
                         let destination = map.get(report.mission.destination);
-                        let units = Unit::all_valid(destination.is_moon(), true);
+                        let units = Unit::all_valid(destination.is_moon());
 
                         for (i, army) in [units.get(1), units.get(2), units.get(0)]
                             .into_iter()
@@ -2079,7 +2109,7 @@ fn draw_combat_report(
             )
             .collect::<Vec<_>>();
         let shots_missed = u_shots.iter().filter(|s| s.missed).count();
-        let total_healed = units.iter().map(|cu| cu.healed).sum::<usize>();
+        let total_repaired = units.iter().map(|cu| cu.repaired).sum::<usize>();
         let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
         let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
 
@@ -2117,8 +2147,8 @@ fn draw_combat_report(
                     draw_row(
                         ui,
                         "❤",
-                        total_healed.to_string(),
-                        "Total hull points healed by Crawlers.",
+                        total_repaired.to_string(),
+                        "Total hull points repaired by Crawlers.",
                     );
                 }
                 draw_row(
@@ -2671,10 +2701,10 @@ fn draw_shop(
         state.shop = Shop::default();
     }
 
-    let (production, idx) = match state.shop {
-        Shop::Buildings => (None, 0),
-        Shop::Fleet => (Some((planet.fleet_production(), planet.max_fleet_production())), 1),
-        Shop::Defenses => (Some((planet.battery_production(), planet.max_battery_production())), 2),
+    let (current, max, idx) = match state.shop {
+        Shop::Buildings => (planet.fields_consumed(), planet.max_fields(), 0),
+        Shop::Fleet => (planet.fleet_production(), planet.max_fleet_production(), 1),
+        Shop::Defenses => (planet.battery_production(), planet.max_battery_production(), 2),
     };
 
     ui.horizontal(|ui| {
@@ -2682,17 +2712,26 @@ fn draw_shop(
         ui.add_image(images.get(state.shop.to_lowername()), [20., 20.]);
         ui.small(state.shop.to_name());
 
-        if let Some((current, max)) = production {
+        if state.shop != Shop::Buildings || planet.is_moon() {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 ui.add_space(45.);
-                ui.small(format!("Production: {}/{}", current, max));
+                ui.small(format!(
+                    "{}: {}/{}",
+                    if planet.is_moon() {
+                        "Fields"
+                    } else {
+                        "Production"
+                    },
+                    current,
+                    max
+                ));
             });
         }
     });
 
     ui.add_space(10.);
 
-    for row in Unit::all_valid(planet.is_moon(), planet.id == player.home_planet)[idx].chunks(5) {
+    for row in Unit::all_valid(planet.is_moon())[idx].chunks(5) {
         ui.horizontal(|ui| {
             ui.add_space(25.);
 
@@ -2707,25 +2746,8 @@ fn draw_shop(
                         count < Building::MAX_LEVEL,
                         !planet.buy.contains(unit)
                             && (!planet.is_moon()
-                                || *unit == Unit::Building(Building::LunarBase)
-                                || planet.army.amount(&Unit::Building(Building::LunarBase))
-                                    > planet
-                                        .army
-                                        .iter()
-                                        .filter_map(|(u, c)| {
-                                            (u.is_building()
-                                                && *u != Unit::Building(Building::LunarBase))
-                                            .then_some(c)
-                                        })
-                                        .sum::<usize>()
-                                        + planet
-                                            .buy
-                                            .iter()
-                                            .filter(|u| {
-                                                u.is_building()
-                                                    && **u != Unit::Building(Building::LunarBase)
-                                            })
-                                            .count()),
+                                || !unit.consumes_field()
+                                || planet.fields_consumed() < planet.max_fields()),
                     ),
                     Unit::Ship(s) => (
                         s.production() <= planet.army.amount(&Unit::Building(Building::Shipyard)),
@@ -2781,7 +2803,7 @@ fn draw_shop(
                         }
 
                         if !unit.is_building()
-                            && *unit != Unit::Defense(Defense::SpaceDock)
+                            && *unit != Unit::space_dock()
                             && response.secondary_clicked()
                         {
                             // Buy 5 new units (or maximum possible)
@@ -3000,11 +3022,7 @@ pub fn draw_ui(
         };
 
         // Check whether there is a report on this planet
-        let info = if planet.is_destroyed {
-            None
-        } else {
-            player.last_info(id, &missions.0)
-        };
+        let info = player.last_info(planet, &missions.0);
 
         if player.controls(planet) || player.spectator {
             draw_panel(

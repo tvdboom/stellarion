@@ -268,6 +268,16 @@ impl Planet {
     }
 
     pub fn control(&mut self, client_id: ClientId) {
+        // Destroy buildings if Nexus built and new controller
+        if self.controlled != Some(client_id) {
+            for _ in 0..self.army.amount(&Unit::Building(Building::DemolitionNexus)) {
+                let pool = self.army.iter_mut().filter(|(u, c)| u.consumes_field() && **c > 0);
+                if let Some((_, c)) = pool.choose(&mut rng()) {
+                    *c -= 1;
+                }
+            }
+        }
+
         self.controlled = Some(client_id);
         if self.owned != Some(client_id) {
             self.owned = None;
@@ -311,6 +321,15 @@ impl Planet {
             self.resources.deuterium
                 * self.army.amount(&Unit::Building(Building::DeuteriumSynthesizer)),
         )
+    }
+
+    pub fn fields_consumed(&self) -> usize {
+        self.army.iter().filter_map(|(u, c)| u.consumes_field().then_some(c)).sum::<usize>()
+            + self.buy.iter().filter(|u| u.consumes_field()).count()
+    }
+
+    pub fn max_fields(&self) -> usize {
+        self.army.amount(&Unit::Building(Building::LunarBase))
     }
 
     pub fn fleet_production(&self) -> usize {
@@ -366,7 +385,7 @@ impl Planet {
         }
     }
 
-    /// Destroy this planet (image is changed when resolving the animation)
+    /// Destroy this planet (image changes when resolving the animation)
     pub fn destroy(&mut self) {
         self.owned = None;
         self.controlled = None;

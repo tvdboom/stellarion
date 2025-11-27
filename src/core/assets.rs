@@ -86,6 +86,16 @@ impl FromWorld for WorldAssets {
             ("logs", assets.load("images/icons/logs.png")),
             ("convert", assets.load("images/icons/convert.png")),
             ("convert hover", assets.load("images/icons/convert hover.png")),
+            ("dock", assets.load("images/icons/dock.png")),
+            ("dock hover", assets.load("images/icons/dock hover.png")),
+            ("dock enemy", assets.load("images/icons/dock enemy.png")),
+            ("dock enemy hover", assets.load("images/icons/dock enemy hover.png")),
+            ("mission", assets.load("images/icons/mission.png")),
+            ("mission jump", assets.load("images/icons/mission jump.png")),
+            ("mission enemy", assets.load("images/icons/mission enemy.png")),
+            ("mission hover", assets.load("images/icons/mission hover.png")),
+            ("mission jump hover", assets.load("images/icons/mission jump hover.png")),
+            ("mission enemy hover", assets.load("images/icons/mission enemy hover.png")),
             // Backgrounds
             ("bg", assets.load("images/bg/bg.png")),
             ("menu", assets.load("images/bg/menu.png")),
@@ -106,6 +116,7 @@ impl FromWorld for WorldAssets {
             ("deuterium", assets.load("images/resources/deuterium.png")),
             // Buildings
             ("lunar base", assets.load("images/buildings/lunar base.png")),
+            ("demolition nexus", assets.load("images/buildings/demolition nexus.png")),
             ("metal mine", assets.load("images/buildings/metal mine.png")),
             ("crystal mine", assets.load("images/buildings/crystal mine.png")),
             ("deuterium synthesizer", assets.load("images/buildings/deuterium synthesizer.png")),
@@ -113,8 +124,8 @@ impl FromWorld for WorldAssets {
             ("factory", assets.load("images/buildings/factory.png")),
             ("missile silo", assets.load("images/buildings/missile silo.png")),
             ("planetary shield", assets.load("images/buildings/planetary shield.png")),
+            ("reactor", assets.load("images/buildings/reactor.png")),
             ("jump gate", assets.load("images/buildings/jump gate.png")),
-            ("senate", assets.load("images/buildings/senate.png")),
             ("sensor phalanx", assets.load("images/buildings/sensor phalanx.png")),
             ("laboratory", assets.load("images/buildings/laboratory.png")),
             ("orbital radar", assets.load("images/buildings/orbital radar.png")),
@@ -159,12 +170,6 @@ impl FromWorld for WorldAssets {
             ("missile strike cover", assets.load("images/mission/missile strike cover.png")),
             ("destroy", assets.load("images/mission/destroy.png")),
             ("destroy cover", assets.load("images/mission/destroy cover.png")),
-            ("mission", assets.load("images/mission/mission.png")),
-            ("mission jump", assets.load("images/mission/mission jump.png")),
-            ("mission enemy", assets.load("images/mission/mission enemy.png")),
-            ("mission hover", assets.load("images/mission/mission hover.png")),
-            ("mission jump hover", assets.load("images/mission/mission jump hover.png")),
-            ("mission enemy hover", assets.load("images/mission/mission enemy hover.png")),
             // Combat
             ("hull", assets.load("images/combat/hull.png")),
             ("shield", assets.load("images/combat/shield.png")),
@@ -177,6 +182,7 @@ impl FromWorld for WorldAssets {
             ("unknown", assets.load("images/planets/unknown.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
+            ("flame", assets.load("images/animations/flame.png")),
         ]);
 
         for i in 0..65 {
@@ -201,6 +207,7 @@ impl FromWorld for WorldAssets {
 
         let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
         let explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 256), 8, 6, None, None);
+        let flame = TextureAtlasLayout::from_grid(UVec2::new(124, 54), 1, 12, None, None);
         let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
             (
                 "long button",
@@ -222,6 +229,17 @@ impl FromWorld for WorldAssets {
                         index: 1,
                     },
                     last_index: 48,
+                },
+            ),
+            (
+                "flame",
+                TextureInfo {
+                    image: images["flame"].clone(),
+                    atlas: TextureAtlas {
+                        layout: texture.add(flame),
+                        index: 1,
+                    },
+                    last_index: 8,
                 },
             ),
         ]);

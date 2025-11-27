@@ -45,8 +45,8 @@ planet is owned, it is also controlled by the owner. If a player attacks and win
 but doesn't colonize it, he gains controls over that planet and the previous owner loses both 
 ownership and control.
 
-An owned planet produces resources for its owner. Buildings can only be build and used on owned
-planets. For example, a player controlling (but not owning) a planet, cannot use the Phalanx to
+An owned planet produces resources for its owner. Buildings can only be build and used on owned 
+planets. For example, a player controlling (but not owning) a planet, cannot use the Phalanx to 
 see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned planet always 
 gives full intelligence on the attacking units to the planet's owner. Also when the fight is lost.
 If losing combat on a controlled planet, no intelligence is gained.
@@ -54,9 +54,10 @@ If losing combat on a controlled planet, no intelligence is gained.
 There is a limit to the amount of planets that can be owned by a player. Spots are only freed 
 if a planet is abandoned, conquered or destroyed.
 
-Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets,
-players can build on a controlled moon. Moons can only build a limited amount of buildings, whose
-level is also limited by the level of the Lunar Base. Moons don't have defenses.
+Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets, 
+players can build on a controlled moon. Moons only have a limited number of fields on which to 
+build. Increasing the level of the Lunar Base increases the number of fields. Moons don't have 
+defenses.
 
 ### Units
 
@@ -84,7 +85,8 @@ Every unit (ships + defenses) has four basic parameters that affect combat: hull
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
 unit starts with its shield at its initial value. The hull has the value of previous round 
 (initial value of the ship if it's the first round). In each round, all participating units 
-randomly choose a target enemy unit.
+randomly choose a target enemy unit. Shots are resolved per ship type in increasing production
+order, i.e., the lowest production units shoots first, and the highest production units shoot last.
 
 For each shooting unit:
 

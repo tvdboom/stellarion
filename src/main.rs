@@ -12,6 +12,7 @@ use bevy_egui::EguiPlugin;
 use bevy_kira_audio::AudioPlugin;
 use bevy_renet::netcode::{NetcodeClientPlugin, NetcodeServerPlugin};
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
+use bevy_tweening::TweeningPlugin;
 use winit::window::Icon;
 
 use crate::core::constants::{HEIGHT, WIDTH};
@@ -51,7 +52,7 @@ fn main() {
     )
     // Networking: systems are disabled until server/client resource is added
     .add_plugins((RenetServerPlugin, NetcodeServerPlugin, RenetClientPlugin, NetcodeClientPlugin))
-    .add_plugins((EguiPlugin::default(), MessagesPlugin::default(), AudioPlugin))
+    .add_plugins((EguiPlugin::default(), MessagesPlugin::default(), AudioPlugin, TweeningPlugin))
     .add_plugins(GamePlugin);
 
     #[cfg(target_os = "windows")]

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::color::palettes::css::WHITE;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
+use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
@@ -19,7 +21,7 @@ use crate::core::constants::{
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::map::utils::{cursor, set_button_index};
+use crate::core::map::utils::{cursor, set_button_index, TransformOrbitLens};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
@@ -68,6 +70,9 @@ pub struct PlanetNameCmp;
 
 #[derive(Component)]
 pub struct PlanetResourcesCmp;
+
+#[derive(Component)]
+pub struct SpaceDockCmp;
 
 #[derive(Component)]
 pub struct ScannerCmp(pub bool);
@@ -412,11 +417,32 @@ pub fn draw_map(
                                             ..default()
                                         },
                                         TextColor(WHITE.into()),
-                                        Transform::from_xyz(55., 0., 0.),
+                                        Transform::from_xyz(55., 0., 0.8),
                                     ));
                                 });
                         }
                     }
+
+                    // Draw space dock
+                    parent.spawn((
+                        Sprite {
+                            image: assets.image("dock"),
+                            custom_size: Some(Vec2::splat(planet.size() * 0.4)),
+                            ..default()
+                        },
+                        Transform::from_xyz(-planet.size() * 0.5, -planet.size() * 0.5, 0.7),
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::Linear,
+                                Duration::from_secs(12),
+                                TransformOrbitLens(planet.size() * 0.75),
+                            )
+                            .with_repeat_count(RepeatCount::Infinite),
+                        ),
+                        Pickable::IGNORE,
+                        Visibility::Hidden,
+                        SpaceDockCmp,
+                    ));
 
                     // Draw phalanx and orbital scanning radius
                     parent.spawn((
@@ -590,15 +616,38 @@ pub fn update_planet_info(
     mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
     mut name_q: Query<
         &mut Visibility,
-        (With<PlanetNameCmp>, Without<Icon>, Without<PlanetResourcesCmp>, Without<ScannerCmp>),
+        (
+            With<PlanetNameCmp>,
+            Without<Icon>,
+            Without<PlanetResourcesCmp>,
+            Without<ScannerCmp>,
+            Without<SpaceDockCmp>,
+        ),
     >,
     mut resources_q: Query<
         &mut Visibility,
-        (With<PlanetResourcesCmp>, Without<Icon>, Without<PlanetNameCmp>, Without<ScannerCmp>),
+        (
+            With<PlanetResourcesCmp>,
+            Without<Icon>,
+            Without<PlanetNameCmp>,
+            Without<ScannerCmp>,
+            Without<SpaceDockCmp>,
+        ),
+    >,
+    mut dock_q: Query<
+        (&mut Visibility, &mut Sprite),
+        (
+            With<SpaceDockCmp>,
+            Without<Icon>,
+            Without<PlanetNameCmp>,
+            Without<PlanetResourcesCmp>,
+            Without<ScannerCmp>,
+            Without<PlanetCmp>,
+        ),
     >,
     mut scanner_q: Query<
         (&mut Visibility, &mut Mesh2d, &ScannerCmp),
-        (Without<Icon>, Without<PlanetNameCmp>, Without<PlanetResourcesCmp>),
+        (Without<Icon>, Without<PlanetNameCmp>, Without<PlanetResourcesCmp>, Without<SpaceDockCmp>),
     >,
     children_q: Query<&Children>,
     map: Res<Map>,
@@ -711,6 +760,32 @@ pub fn update_planet_info(
                 };
             }
 
+            // Show hide the Space Dock
+            if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
+                let controls = player.controls(planet);
+                let has_dock = if controls {
+                    planet.army.amount(&Unit::space_dock()) > 0
+                } else {
+                    let info = player.last_info(planet, &missions.0);
+                    info.is_some_and(|i| i.army.amount(&Unit::space_dock()) > 0)
+                };
+
+                *visibility = if has_dock {
+                    sprite.image = assets.image(if controls && selected {
+                        "dock hover"
+                    } else if controls {
+                        "dock"
+                    } else if selected {
+                        "dock enemy hover"
+                    } else {
+                        "dock enemy"
+                    });
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+
             // Show/hide scanner indicator
             if let Ok((mut visibility, mut mesh, scanner)) = scanner_q.get_mut(child) {
                 let mut radius = if state.phalanx_hover == Some(planet.id) {
@@ -760,7 +835,7 @@ pub fn update_voronoi(
         let visible = settings.show_cells
             && !planet.is_destroyed
             && (player.controls(planet)
-                || player.last_info(planet.id, &missions.0).is_some_and(|i| i.controlled));
+                || player.last_info(planet, &missions.0).is_some_and(|i| i.controlled));
 
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
@@ -784,12 +859,10 @@ pub fn update_voronoi(
 
     for (_, _, edge) in &edge_q {
         let planet = map.get(edge.planet);
-        if !planet.is_destroyed {
-            if player.controls(planet) {
-                *counts_own.entry(edge.key).or_default() += 1;
-            } else if player.last_info(edge.planet, &missions.0).is_some_and(|i| i.controlled) {
-                *counts_enemy.entry(edge.key).or_default() += 1;
-            }
+        if player.controls(planet) {
+            *counts_own.entry(edge.key).or_default() += 1;
+        } else if player.last_info(planet, &missions.0).is_some_and(|i| i.controlled) {
+            *counts_enemy.entry(edge.key).or_default() += 1;
         }
     }
 

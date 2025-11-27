@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
-use crate::core::constants::{CRAWLER_HEALING_PER_ROUND, PLANETARY_SHIELD_STRENGTH_PER_LEVEL};
+use crate::core::constants::{CRAWLER_HEALING_PER_ROUND, PS_SHIELD_PER_LEVEL};
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
-use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
 
@@ -30,7 +29,8 @@ pub struct CombatUnit {
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
-    pub healed: usize,
+    pub repaired: usize,
+    pub n_repaired: usize,
     pub shots: Vec<ShotReport>,
 }
 
@@ -41,7 +41,8 @@ impl CombatUnit {
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
-            healed: 0,
+            repaired: 0,
+            n_repaired: 0,
             shots: vec![],
         }
     }
@@ -73,7 +74,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
     let mut planetary_shield =
-        destination.army.amount(&Unit::planetary_shield()) * PLANETARY_SHIELD_STRENGTH_PER_LEVEL;
+        destination.army.amount(&Unit::planetary_shield()) * PS_SHIELD_PER_LEVEL;
 
     let mut attack_army: Vec<CombatUnit> = mission
         .army
@@ -229,23 +230,18 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         }
 
         // Repair defense turrets
-        let n_crawlers = defend_army
-            .iter()
-            .filter(|u| u.unit == Unit::Defense(Defense::Crawler) && u.hull > 0)
-            .count();
+        let n_crawlers =
+            defend_army.iter().filter(|u| u.unit == Unit::crawler() && u.hull > 0).count();
 
         for _ in 0..n_crawlers {
-            let pool = defend_army.iter_mut().filter(|u| {
-                u.unit.is_defense()
-                    && !u.unit.is_missile()
-                    && u.unit != Unit::Defense(Defense::Crawler)
-                    && u.hull > 0
-                    && u.hull < u.unit.hull()
-            });
+            let pool = defend_army
+                .iter_mut()
+                .filter(|u| u.unit.is_turret() && u.hull > 0 && u.hull < u.unit.hull());
 
             if let Some(target) = pool.choose(&mut rng) {
                 let heal = (target.unit.hull() - target.hull).min(CRAWLER_HEALING_PER_ROUND);
-                target.healed = heal;
+                target.repaired += heal;
+                target.n_repaired += 1;
                 target.hull += heal;
             }
         }
@@ -306,9 +302,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
 
         // Try to destroy planet
         if mission.objective == Icon::Destroy
-            && !defend_army
-                .iter()
-                .any(|u| u.unit.is_ship() || u.unit == Unit::Defense(Defense::SpaceDock))
+            && !defend_army.iter().any(|u| u.unit.is_ship() || u.unit == Unit::space_dock())
         {
             let war_suns = attack_army
                 .iter()

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
@@ -81,33 +82,23 @@ impl Unit {
         vec![Self::buildings(), Self::ships(), Self::defenses()]
     }
 
-    pub fn all_valid(is_moon: bool, is_home_planet: bool) -> Vec<Vec<Self>> {
+    pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
         if !is_moon {
             vec![
                 Self::buildings()
                     .into_iter()
                     .filter(|u| {
-                        !matches!(
-                            u,
-                            Unit::Building(Building::LunarBase)
-                                | Unit::Building(Building::Laboratory)
-                                | Unit::Building(Building::OrbitalRadar)
-                        ) && (is_home_planet || *u != Unit::Building(Building::Senate))
+                        !Self::lunar_buildings()
+                            .iter()
+                            .filter(|u| **u != Unit::Building(Building::Shipyard))
+                            .contains(u)
                     })
                     .collect(),
                 Self::ships(),
                 Self::defenses(),
             ]
         } else {
-            vec![
-                vec![
-                    Unit::Building(Building::LunarBase),
-                    Unit::Building(Building::Shipyard),
-                    Unit::Building(Building::Laboratory),
-                    Unit::Building(Building::OrbitalRadar),
-                ],
-                Self::ships(),
-            ]
+            vec![Self::lunar_buildings(), Self::ships()]
         }
     }
 
@@ -127,6 +118,16 @@ impl Unit {
         ]
     }
 
+    pub fn lunar_buildings() -> Vec<Self> {
+        vec![
+            Unit::Building(Building::LunarBase),
+            Unit::Building(Building::DemolitionNexus),
+            Unit::Building(Building::Shipyard),
+            Unit::Building(Building::Laboratory),
+            Unit::Building(Building::OrbitalRadar),
+        ]
+    }
+
     pub fn planetary_shield() -> Self {
         Unit::Building(Building::PlanetaryShield)
     }
@@ -137,6 +138,14 @@ impl Unit {
 
     pub fn colony_ship() -> Self {
         Unit::Ship(Ship::ColonyShip)
+    }
+
+    pub fn crawler() -> Self {
+        Unit::Defense(Defense::Crawler)
+    }
+
+    pub fn space_dock() -> Self {
+        Unit::Defense(Defense::SpaceDock)
     }
 
     pub fn antiballistic_missile() -> Self {
@@ -159,8 +168,20 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
+    pub fn is_turret(&self) -> bool {
+        matches!(self, Unit::Defense(d) if *d != Defense::Crawler && *d != Defense::SpaceDock && !d.is_missile())
+    }
+
     pub fn is_missile(&self) -> bool {
         matches!(self, Unit::Defense(d) if d.is_missile())
+    }
+
+    pub fn consumes_field(&self) -> bool {
+        self.is_building()
+            && !matches!(
+                self,
+                Unit::Building(Building::LunarBase) | Unit::Building(Building::DemolitionNexus)
+            )
     }
 
     pub fn is_resource_building(&self) -> bool {

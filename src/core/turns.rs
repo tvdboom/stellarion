@@ -189,7 +189,7 @@ pub fn resolve_turn(
 
     if (state.end_turn || player.spectator)
         && host.turn_ended.len() == clients_playing
-        && clients_playing > 0
+        && (clients_playing > 0 || host.clients.len() == 0)
     {
         settings.turn += 1;
 
@@ -424,7 +424,7 @@ pub fn resolve_turn(
                 });
                 all_missions.retain(|m| m.owner != p.id);
             });
-        } else {
+        } else if all_players.len() > 1 {
             // Game is over -> convert everyone to spectator
             all_players.iter_mut().for_each(|p| p.spectator = true);
         }
