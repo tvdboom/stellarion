@@ -78,6 +78,7 @@ pub struct UiState {
     pub combat_report_total: bool,
     pub combat_report_round: usize,
     pub combat_report_hover: Option<(Unit, Side)>,
+    pub in_combat: Option<ReportId>,
     pub end_turn: bool,
 }
 
@@ -1170,7 +1171,7 @@ fn draw_new_mission(
                                     .add(
                                         egui::Button::image(SizedTexture::new(
                                             images.get(icon.to_lowername()),
-                                            [40., 40.],
+                                            [40.; 2],
                                         ))
                                         .corner_radius(5.),
                                     )
@@ -1652,7 +1653,7 @@ fn draw_mission_reports(
                                 ui.small(report.turn.to_string());
                             });
 
-                            let resp = ui.add_image(images.get(destination.image()), [40., 40.]);
+                            let resp = ui.add_image(images.get(destination.image()), [40.; 2]);
 
                             if report.combat_report.is_some() {
                                 let size = [20.; 2];
@@ -2923,6 +2924,110 @@ fn draw_shop(
     }
 }
 
+fn draw_combat_selection(
+    ui: &mut Ui,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    settings: &Settings,
+    next_game_state: &mut NextState<GameState>,
+    images: &ImageIds,
+) {
+    let reports = player
+        .reports
+        .iter()
+        .filter(|r| {
+            r.turn == settings.turn
+                && !r.hidden
+                && r.combat_report.is_some()
+                && r.can_see(&Side::Defender, player.id)
+        })
+        .collect::<Vec<_>>();
+
+    ui.add_space(5.);
+
+    ui.vertical_centered(|ui| ui.label("Select a battle"));
+
+    ui.vertical_centered(|ui| {
+        ui.add_space(5.);
+
+        ScrollArea::vertical().show(ui, |ui| {
+            ui.set_width(ui.available_width() - 30.);
+
+            ui.spacing_mut().item_spacing.y = 5.;
+
+            for report in reports.iter().rev() {
+                let destination = map.get(report.mission.destination);
+
+                let (rect, mut response) =
+                    ui.allocate_exact_size([ui.available_width(), 50.].into(), Sense::click());
+
+                ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.;
+
+                        let text = format!("Battle of {}", destination.name);
+                        let size_x = ui
+                            .painter()
+                            .layout_no_wrap(
+                                text.clone(),
+                                TextStyle::Small.resolve(ui.style()),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                            + 150.;
+
+                        ui.add_space((ui.available_width() - size_x) * 0.5);
+
+                        ui.small(text);
+
+                        ui.add_space(20.);
+
+                        ui.add_image(images.get(report.mission.objective.to_lowername()), [25.; 2]);
+
+                        ui.add_image(
+                            if state.mission_report == Some(report.mission.id)
+                                || (response.hovered() && !response.is_pointer_button_down_on())
+                            {
+                                images.get(format!("{} hover", report.mission.image(player)))
+                            } else {
+                                images.get(report.mission.image(player))
+                            },
+                            [50.; 2],
+                        );
+
+                        ui.add_image(images.get(destination.image()), [40.; 2]);
+                    });
+                });
+
+                response = response.on_hover_cursor(CursorIcon::PointingHand);
+
+                if response.hovered() {
+                    ui.painter().rect_stroke(
+                        rect,
+                        4.0,
+                        Stroke::new(
+                            1.5,
+                            if response.is_pointer_button_down_on() {
+                                Color32::from_rgb(95, 131, 175)
+                            } else {
+                                Color32::from_rgb(59, 66, 82)
+                            },
+                        ),
+                        StrokeKind::Outside,
+                    );
+                }
+
+                if response.clicked() {
+                    state.in_combat = Some(report.id);
+                    next_game_state.set(GameState::Combat);
+                }
+            }
+        });
+    });
+}
+
 pub fn set_ui_style(mut contexts: EguiContexts) {
     let context = contexts.ctx_mut().unwrap();
     context.set_style(NordDark.custom_style());
@@ -2958,13 +3063,14 @@ pub fn draw_ui(
     mut state: ResMut<UiState>,
     settings: Res<Settings>,
     game_state: Res<State<GameState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     images: Res<ImageIds>,
     window: Single<&Window>,
 ) {
     let (width, height) = (window.width(), window.height());
 
-    if !matches!(game_state.get(), GameState::InCombat | GameState::EndGame) {
+    if matches!(game_state.get(), GameState::Playing | GameState::GameMenu) {
         draw_panel(
             &mut contexts,
             "resources",
@@ -3190,6 +3296,30 @@ pub fn draw_ui(
             (window_w, window_h),
             &images,
             |ui| draw_combat_report(ui, &mut state, &map, &player, &images),
+        );
+    }
+
+    if *game_state.get() == GameState::CombatMenu {
+        let (window_w, window_h) = (380., 420.);
+
+        draw_panel(
+            &mut contexts,
+            "combat list",
+            "panel",
+            ((width - window_w) * 0.5, (height - window_h) * 0.5),
+            (window_w, window_h),
+            &images,
+            |ui| {
+                draw_combat_selection(
+                    ui,
+                    &mut state,
+                    &map,
+                    &player,
+                    &settings,
+                    &mut next_game_state,
+                    &images,
+                )
+            },
         );
     }
 }

@@ -27,13 +27,13 @@ use strum::IntoEnumIterator;
 
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
-use crate::core::combat::systems::{setup_in_combat, CombatCmp};
+use crate::core::combat::systems::{setup_combat, setup_combat_menu, CombatCmp, CombatMenuCmp};
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{
     draw_map, run_animations, update_end_turn, update_planet_info, update_voronoi,
 };
 use crate::core::menu::buttons::MenuCmp;
-use crate::core::menu::systems::{setup_end_game, setup_in_game_menu, setup_menu, update_ip};
+use crate::core::menu::systems::{setup_end_game, setup_game_menu, setup_menu, update_ip};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{update_missions, SendMissionMsg};
 use crate::core::network::*;
@@ -159,10 +159,12 @@ impl Plugin for GamePlugin {
             )
             .add_systems(Last, resolve_turn.run_if(resource_exists::<Host>).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
-            .add_systems(OnEnter(GameState::InCombat), (despawn::<MapCmp>, setup_in_combat).chain())
-            .add_systems(OnExit(GameState::InCombat), (despawn::<CombatCmp>, draw_map).chain())
-            .add_systems(OnEnter(GameState::InGameMenu), setup_in_game_menu)
-            .add_systems(OnExit(GameState::InGameMenu), despawn::<MenuCmp>)
+            .add_systems(OnEnter(GameState::CombatMenu), setup_combat_menu)
+            .add_systems(OnExit(GameState::CombatMenu), despawn::<CombatMenuCmp>)
+            .add_systems(OnEnter(GameState::Combat), setup_combat)
+            .add_systems(OnExit(GameState::Combat), despawn::<CombatCmp>)
+            .add_systems(OnEnter(GameState::GameMenu), setup_game_menu)
+            .add_systems(OnExit(GameState::GameMenu), despawn::<MenuCmp>)
             .add_systems(OnEnter(GameState::EndGame), setup_end_game)
             .add_systems(OnExit(GameState::EndGame), despawn::<MenuCmp>);
 

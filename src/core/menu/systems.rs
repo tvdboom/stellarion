@@ -288,7 +288,7 @@ pub fn update_ip(
     }
 }
 
-pub fn setup_in_game_menu(
+pub fn setup_game_menu(
     mut commands: Commands,
     host: Option<Res<Host>>,
     assets: Local<WorldAssets>,

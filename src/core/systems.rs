@@ -66,12 +66,13 @@ pub fn check_keys_menu(
                             state.mission = false;
                             state.combat_report = None;
                         } else {
-                            next_game_state.set(GameState::InGameMenu)
+                            next_game_state.set(GameState::GameMenu)
                         }
                     },
-                    GameState::InCombat | GameState::InGameMenu => {
+                    GameState::CombatMenu | GameState::GameMenu => {
                         next_game_state.set(GameState::Playing)
                     },
+                    GameState::Combat => next_game_state.set(GameState::CombatMenu),
                     GameState::EndGame => next_app_state.set(AppState::MainMenu),
                 }
             },
@@ -88,7 +89,7 @@ pub fn check_keys_menu(
                 state.combat_report = None;
                 state.end_turn = !state.end_turn;
             }
-        } else if *game_state.get() == GameState::InCombat {
+        } else if *game_state.get() == GameState::CombatMenu {
             start_turn_msg.write(StartTurnMsg::new(true, false));
             next_game_state.set(GameState::Playing)
         }

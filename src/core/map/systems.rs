@@ -21,7 +21,7 @@ use crate::core::constants::{
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::map::utils::{cursor, set_button_index, TransformOrbitLens};
+use crate::core::map::utils::{cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
@@ -91,9 +91,6 @@ pub struct EndTurnLabelCmp;
 
 #[derive(Component)]
 pub struct EndTurnButtonCmp;
-
-#[derive(Component)]
-pub struct EndTurnButtonLabelCmp;
 
 fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
     let precision = 5.0;
@@ -550,59 +547,8 @@ pub fn draw_map(
         MapCmp,
     ));
 
-    let texture = assets.texture("long button");
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(30.),
-                right: Val::Px(50.),
-                width: Val::Px(200.),
-                height: Val::Px(40.),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            ImageNode::from_atlas_image(
-                texture.image.clone(),
-                TextureAtlas {
-                    layout: texture.atlas.layout.clone(),
-                    index: 0,
-                },
-            ),
-            Pickable::default(),
-            EndTurnButtonCmp,
-            MapCmp,
-            children![(
-                Text::new("End turn"),
-                TextFont {
-                    font: assets.font("bold"),
-                    font_size: BUTTON_TEXT_SIZE,
-                    ..default()
-                },
-                EndTurnButtonLabelCmp,
-            )],
-        ))
-        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-        .observe(cursor::<Out>(SystemCursorIcon::Default))
-        .observe(
-            |_: On<Pointer<Over>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
-                set_button_index(&mut button_q.into_inner(), 1);
-            },
-        )
-        .observe(|_: On<Pointer<Out>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
-            set_button_index(&mut button_q.into_inner(), 0);
-        })
-        .observe(
-            |_: On<Pointer<Press>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
-                set_button_index(&mut button_q.into_inner(), 0);
-            },
-        )
-        .observe(
-            |_: On<Pointer<Release>>, button_q: Single<&mut ImageNode, With<EndTurnButtonCmp>>| {
-                set_button_index(&mut button_q.into_inner(), 1);
-            },
-        )
+    spawn_main_button(&mut commands, "End turn", &assets)
+        .insert((EndTurnButtonCmp, MapCmp))
         .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
             state.planet_selected = None;
             state.mission = false;
@@ -896,7 +842,7 @@ pub fn update_voronoi(
 
 pub fn update_end_turn(
     button_c: Single<&mut Visibility, With<EndTurnButtonCmp>>,
-    button_q: Single<&mut Text, With<EndTurnButtonLabelCmp>>,
+    button_q: Single<&mut Text, With<MainButtonLabelCmp>>,
     label_q: Single<&mut Visibility, (With<EndTurnLabelCmp>, Without<EndTurnButtonCmp>)>,
     state: Res<UiState>,
     player: Res<Player>,

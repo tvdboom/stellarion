@@ -18,8 +18,9 @@ pub enum AppState {
 pub enum GameState {
     #[default]
     Playing,
-    InCombat,
-    InGameMenu,
+    CombatMenu,
+    Combat,
+    GameMenu,
     EndGame,
 }
 

@@ -172,7 +172,7 @@ pub fn server_update(
                 )));
 
                 if *app_state == AppState::Game {
-                    next_game_state.set(GameState::InGameMenu);
+                    next_game_state.set(GameState::GameMenu);
                 }
             },
         }

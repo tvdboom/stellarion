@@ -24,7 +24,7 @@ pub fn add_root_node(block: bool) -> (Node, Pickable, ZIndex, UiCmp) {
     (
         Node {
             width: Val::Percent(100.),
-            height: Val::Percent(100.),
+            height: Val::Percent(105.),
             position_type: PositionType::Absolute,
             flex_direction: FlexDirection::Column,
             align_content: AlignContent::Center,

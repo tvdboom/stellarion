@@ -496,7 +496,7 @@ pub fn start_turn(
             .any(|r| r.combat_report.is_some() && r.can_see(&Side::Defender, player.id))
         {
             if !msg.skip_battle {
-                next_game_state.set(GameState::InCombat);
+                next_game_state.set(GameState::CombatMenu);
                 break;
             } else if !msg.skip_end_game && player.spectator {
                 next_game_state.set(GameState::EndGame);

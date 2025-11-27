@@ -154,11 +154,12 @@ impl Player {
         // Add missions that haven't arrived yet
         for m in missions.into_iter() {
             if m.origin == planet.id {
-                if m.owner == self.id && m.origin_controlled.unwrap_or(self.id) == self.id {
+                if m.owner == self.id {
+                    // Own mission send from this planet (and it's no longer controlled)
                     let army: Army = Unit::all()
                         .iter()
                         .flatten()
-                        .map(|u| (*u, m.origin_army.amount(u) - m.army.amount(u)))
+                        .map(|u| (*u, m.origin_army.amount(u)))
                         .collect();
 
                     reports.push(PlanetInfo {
@@ -166,7 +167,7 @@ impl Player {
                         controlled: false, // It's no longer controlled or we wouldn't need last_info
                         army,
                     });
-                } else if m.owner != self.id && !m.objective.is_hidden() {
+                } else if !m.objective.is_hidden() {
                     // Enemy mission
                     reports.push(PlanetInfo {
                         turn: m.send,
