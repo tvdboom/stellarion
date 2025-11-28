@@ -27,13 +27,17 @@ use strum::IntoEnumIterator;
 
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
-use crate::core::combat::systems::{setup_combat, setup_combat_menu, CombatCmp, CombatMenuCmp};
+use crate::core::combat::systems::{
+    exit_combat, exit_combat_menu, setup_combat, setup_combat_menu, CombatCmp, CombatMenuCmp,
+};
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{
     draw_map, run_animations, update_end_turn, update_planet_info, update_voronoi,
 };
 use crate::core::menu::buttons::MenuCmp;
-use crate::core::menu::systems::{setup_end_game, setup_game_menu, setup_menu, update_ip};
+use crate::core::menu::systems::{
+    setup_end_game, setup_game_menu, setup_game_settings, setup_menu, update_ip,
+};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{update_missions, SendMissionMsg};
 use crate::core::network::*;
@@ -63,8 +67,10 @@ impl Plugin for GamePlugin {
             .init_state::<AppState>()
             .init_state::<GameState>()
             .init_state::<AudioState>()
-            // Events
+            // Messages
             .add_message::<PlayAudioMsg>()
+            .add_message::<PauseAudioMsg>()
+            .add_message::<StopAudioMsg>()
             .add_message::<ChangeAudioMsg>()
             .add_message::<SaveGameMsg>()
             .add_message::<LoadGameMsg>()
@@ -77,6 +83,7 @@ impl Plugin for GamePlugin {
             .init_resource::<Ip>()
             .init_resource::<Settings>()
             .init_resource::<ImageIds>()
+            .init_resource::<PlayingAudio>()
             // Sets
             .configure_sets(First, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
@@ -108,9 +115,12 @@ impl Plugin for GamePlugin {
             .add_systems(Startup, setup_camera)
             .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InPlayingGameSet))
             // Audio
-            .add_systems(Startup, setup_music_btn)
-            .add_systems(OnEnter(AudioState::Sound), play_music)
-            .add_systems(Update, (change_audio, toggle_audio_keyboard, play_audio))
+            .add_systems(Startup, setup_audio)
+            .add_systems(OnEnter(GameState::Playing), play_music)
+            .add_systems(
+                Update,
+                (toggle_audio_keyboard, update_audio, play_audio, pause_audio, stop_audio),
+            )
             //Networking
             .add_systems(
                 First,
@@ -160,11 +170,16 @@ impl Plugin for GamePlugin {
             .add_systems(Last, resolve_turn.run_if(resource_exists::<Host>).in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::CombatMenu), setup_combat_menu)
-            .add_systems(OnExit(GameState::CombatMenu), despawn::<CombatMenuCmp>)
+            .add_systems(
+                OnExit(GameState::CombatMenu),
+                (despawn::<CombatMenuCmp>, exit_combat_menu),
+            )
             .add_systems(OnEnter(GameState::Combat), setup_combat)
-            .add_systems(OnExit(GameState::Combat), despawn::<CombatCmp>)
+            .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))
             .add_systems(OnEnter(GameState::GameMenu), setup_game_menu)
             .add_systems(OnExit(GameState::GameMenu), despawn::<MenuCmp>)
+            .add_systems(OnEnter(GameState::Settings), setup_game_settings)
+            .add_systems(OnExit(GameState::Settings), despawn::<MenuCmp>)
             .add_systems(OnEnter(GameState::EndGame), setup_end_game)
             .add_systems(OnExit(GameState::EndGame), despawn::<MenuCmp>);
 

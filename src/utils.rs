@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::net::{IpAddr, UdpSocket};
 
+use bevy::prelude::Color;
+use bevy_egui::egui;
 use regex::Regex;
 
 /// Get the local IP address
@@ -72,6 +74,7 @@ impl<T: Debug> NameFromEnum for T {
     }
 }
 
+/// Trait to safely divide by zero
 pub trait SafeDiv: Sized + PartialEq + Copy {
     fn safe_div(self, b: Self) -> Self;
 }
@@ -87,6 +90,7 @@ impl SafeDiv for f32 {
     }
 }
 
+/// Trait to convert a large number to a nice formatted string
 pub trait FmtNumb {
     fn fmt(self) -> String;
 }
@@ -99,5 +103,22 @@ impl FmtNumb for usize {
             n if n >= 1_000 => format!("{:.1}k", self as f32 / 1_000.),
             _ => self.to_string(),
         }
+    }
+}
+
+/// Trait to convert from bevy's Color to Egui's Color32
+pub trait ToColor32 {
+    fn to_color32(self) -> egui::Color32;
+}
+
+impl ToColor32 for Color {
+    fn to_color32(self) -> egui::Color32 {
+        let c = self.to_srgba();
+        egui::Color32::from_rgba_premultiplied(
+            (c.red * 255.0) as u8,
+            (c.green * 255.0) as u8,
+            (c.blue * 255.0) as u8,
+            (c.alpha * 255.0) as u8,
+        )
     }
 }

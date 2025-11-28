@@ -150,13 +150,13 @@ pub fn new_renet_server() -> (RenetServer, NetcodeServerTransport) {
 pub fn server_update(
     mut n_players_q: Query<&mut Text, With<LobbyTextCmp>>,
     mut server: ResMut<RenetServer>,
-    mut server_ev: MessageReader<ServerEvent>,
+    mut server_msg: MessageReader<ServerEvent>,
     app_state: Res<State<AppState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut message: MessageWriter<MessageMsg>,
 ) {
-    for ev in server_ev.read() {
+    for ev in server_msg.read() {
         match ev {
             ServerEvent::ClientConnected {
                 client_id,

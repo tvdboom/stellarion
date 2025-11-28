@@ -42,32 +42,32 @@ impl SettingsBtn {
     }
 }
 
-fn match_setting(setting: &SettingsBtn, game_settings: &Settings) -> bool {
-    match setting {
-        SettingsBtn::Five => game_settings.n_planets == 5,
-        SettingsBtn::Ten => game_settings.n_planets == 10,
-        SettingsBtn::Twenty => game_settings.n_planets == 20,
-        SettingsBtn::TwentyFive => game_settings.p_colonizable == 25,
-        SettingsBtn::Fifty => game_settings.p_colonizable == 50,
-        SettingsBtn::Hundred => game_settings.p_colonizable == 100,
-        SettingsBtn::Zero => game_settings.p_moons == 0,
-        SettingsBtn::Thirty => game_settings.p_moons == 30,
-        SettingsBtn::Sixty => game_settings.p_moons == 60,
-        SettingsBtn::Mute => game_settings.audio == AudioState::Mute,
-        SettingsBtn::NoMusic => game_settings.audio == AudioState::NoMusic,
-        SettingsBtn::Sound => game_settings.audio == AudioState::Sound,
-        SettingsBtn::True => game_settings.autosave == true,
-        SettingsBtn::False => game_settings.autosave == false,
+fn match_setting(button: &SettingsBtn, settings: &Settings) -> bool {
+    match button {
+        SettingsBtn::Five => settings.n_planets == 5,
+        SettingsBtn::Ten => settings.n_planets == 10,
+        SettingsBtn::Twenty => settings.n_planets == 20,
+        SettingsBtn::TwentyFive => settings.p_colonizable == 25,
+        SettingsBtn::Fifty => settings.p_colonizable == 50,
+        SettingsBtn::Hundred => settings.p_colonizable == 100,
+        SettingsBtn::Zero => settings.p_moons == 0,
+        SettingsBtn::Thirty => settings.p_moons == 30,
+        SettingsBtn::Sixty => settings.p_moons == 60,
+        SettingsBtn::Mute => settings.audio == AudioState::Mute,
+        SettingsBtn::NoMusic => settings.audio == AudioState::NoMusic,
+        SettingsBtn::Sound => settings.audio == AudioState::Sound,
+        SettingsBtn::True => settings.autosave == true,
+        SettingsBtn::False => settings.autosave == false,
     }
 }
 
 pub fn recolor_label<E: Debug + Clone + Reflect>(
     color: Color,
 ) -> impl Fn(On<Pointer<E>>, Query<(&mut BackgroundColor, &SettingsBtn)>, ResMut<Settings>) {
-    move |ev, mut bgcolor_q, game_settings| {
-        if let Ok((mut bgcolor, setting)) = bgcolor_q.get_mut(ev.entity) {
+    move |ev, mut bgcolor_q, settings| {
+        if let Ok((mut bgcolor, button)) = bgcolor_q.get_mut(ev.entity) {
             // Don't change the color of selected buttons
-            if !match_setting(&setting, &game_settings) {
+            if !match_setting(&button, &settings) {
                 bgcolor.0 = color;
             }
         };
@@ -77,38 +77,38 @@ pub fn recolor_label<E: Debug + Clone + Reflect>(
 pub fn on_click_label_button(
     event: On<Pointer<Click>>,
     mut btn_q: Query<(&mut BackgroundColor, &SettingsBtn)>,
-    mut game_settings: ResMut<Settings>,
-    mut change_audio_ev: MessageWriter<ChangeAudioMsg>,
+    mut settings: ResMut<Settings>,
+    mut change_audio_msg: MessageWriter<ChangeAudioMsg>,
 ) {
     match btn_q.get(event.entity).unwrap().1 {
-        SettingsBtn::Five => game_settings.n_planets = 5,
-        SettingsBtn::Ten => game_settings.n_planets = 10,
-        SettingsBtn::Twenty => game_settings.n_planets = 20,
-        SettingsBtn::TwentyFive => game_settings.p_colonizable = 25,
-        SettingsBtn::Fifty => game_settings.p_colonizable = 50,
-        SettingsBtn::Hundred => game_settings.p_colonizable = 100,
-        SettingsBtn::Zero => game_settings.p_moons = 0,
-        SettingsBtn::Thirty => game_settings.p_moons = 30,
-        SettingsBtn::Sixty => game_settings.p_moons = 60,
+        SettingsBtn::Five => settings.n_planets = 5,
+        SettingsBtn::Ten => settings.n_planets = 10,
+        SettingsBtn::Twenty => settings.n_planets = 20,
+        SettingsBtn::TwentyFive => settings.p_colonizable = 25,
+        SettingsBtn::Fifty => settings.p_colonizable = 50,
+        SettingsBtn::Hundred => settings.p_colonizable = 100,
+        SettingsBtn::Zero => settings.p_moons = 0,
+        SettingsBtn::Thirty => settings.p_moons = 30,
+        SettingsBtn::Sixty => settings.p_moons = 60,
         SettingsBtn::Mute => {
-            game_settings.audio = AudioState::Mute;
-            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Mute)));
+            settings.audio = AudioState::Mute;
+            change_audio_msg.write(ChangeAudioMsg(Some(AudioState::Mute)));
         },
         SettingsBtn::NoMusic => {
-            game_settings.audio = AudioState::NoMusic;
-            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::NoMusic)));
+            settings.audio = AudioState::NoMusic;
+            change_audio_msg.write(ChangeAudioMsg(Some(AudioState::NoMusic)));
         },
         SettingsBtn::Sound => {
-            game_settings.audio = AudioState::Sound;
-            change_audio_ev.write(ChangeAudioMsg(Some(AudioState::Sound)));
+            settings.audio = AudioState::Sound;
+            change_audio_msg.write(ChangeAudioMsg(Some(AudioState::Sound)));
         },
-        SettingsBtn::True => game_settings.autosave = true,
-        SettingsBtn::False => game_settings.autosave = false,
+        SettingsBtn::True => settings.autosave = true,
+        SettingsBtn::False => settings.autosave = false,
     }
 
     // Reset the color of the other buttons
     for (mut bgcolor, setting) in &mut btn_q {
-        if !match_setting(setting, &game_settings) {
+        if !match_setting(setting, &settings) {
             bgcolor.0 = NORMAL_BUTTON_COLOR;
         }
     }
@@ -118,7 +118,7 @@ pub fn spawn_label(
     parent: &mut ChildSpawnerCommands,
     title: &str,
     buttons: Vec<SettingsBtn>,
-    game_settings: &Settings,
+    settings: &Settings,
     assets: &WorldAssets,
     window: &Window,
 ) {
@@ -151,7 +151,7 @@ pub fn spawn_label(
                             margin: UiRect::all(Val::Percent(1.)),
                             ..default()
                         },
-                        BackgroundColor(if match_setting(item, game_settings) {
+                        BackgroundColor(if match_setting(item, settings) {
                             PRESSED_BUTTON_COLOR
                         } else {
                             NORMAL_BUTTON_COLOR

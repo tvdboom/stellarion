@@ -4,6 +4,8 @@ use bevy_renet::netcode::NetcodeServerTransport;
 use bevy_renet::renet::{RenetClient, RenetServer};
 use itertools::Itertools;
 
+use crate::core::camera::MainCamera;
+use crate::core::combat::systems::BackgroundImageCmp;
 use crate::core::map::map::Map;
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
@@ -17,10 +19,20 @@ use crate::core::units::Unit;
 pub fn on_resize_system(
     mut resize_reader: MessageReader<WindowResized>,
     mut text: Query<(&mut TextFont, &TextSize)>,
+    mut image_q: Query<&mut Sprite, With<BackgroundImageCmp>>,
+    camera: Single<&Projection, With<MainCamera>>,
 ) {
-    for ev in resize_reader.read() {
+    let Projection::Orthographic(projection) = camera.into_inner() else {
+        panic!("Expected Orthographic projection.");
+    };
+
+    for window in resize_reader.read() {
         for (mut text, size) in text.iter_mut() {
-            text.font_size = size.0 * ev.height / 460.
+            text.font_size = size.0 * window.height / 460.
+        }
+
+        for mut sprite in &mut image_q {
+            sprite.custom_size = Some(Vec2::new(projection.area.width(), projection.area.height()));
         }
     }
 }
@@ -74,6 +86,7 @@ pub fn check_keys_menu(
                     },
                     GameState::Combat => next_game_state.set(GameState::CombatMenu),
                     GameState::EndGame => next_app_state.set(AppState::MainMenu),
+                    GameState::Settings => next_game_state.set(GameState::GameMenu),
                 }
             },
             _ => (),

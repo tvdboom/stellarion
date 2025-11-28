@@ -5,6 +5,7 @@ use bevy_egui::egui::load::SizedTexture;
 use bevy_egui::egui::*;
 
 use crate::core::constants::BG_COLOR;
+use crate::utils::ToColor32;
 
 #[derive(Resource, Default)]
 pub struct ImageIds(pub HashMap<&'static str, TextureId>);
@@ -144,7 +145,7 @@ impl CustomUi for Ui {
     }
 
     fn add_image_painter(&mut self, image: TextureId, rect: Rect) {
-        self.painter().rect_filled(rect, 0.0, BG_COLOR);
+        self.painter().rect_filled(rect, 0.0, BG_COLOR.to_color32());
 
         self.painter().image(
             image,

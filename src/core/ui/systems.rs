@@ -17,9 +17,7 @@ use crate::core::assets::WorldAssets;
 use crate::core::combat::combat::CombatUnit;
 use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::stats::CombatStats;
-use crate::core::constants::{
-    ENEMY_COLOR_UI, OWN_COLOR_UI, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL,
-};
+use crate::core::constants::{ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
@@ -36,7 +34,7 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv};
+use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 #[derive(Component)]
 pub struct UiCmp;
@@ -188,6 +186,7 @@ fn draw_combat_army_grid(
     round: &RoundReport,
     units: Vec<Unit>,
     side: Side,
+    color: Color,
     images: &ImageIds,
 ) -> bool {
     let (own, mut enemy) = match side {
@@ -379,7 +378,7 @@ fn draw_combat_army_grid(
 
                     for (i, (value, color)) in [shield, hull]
                         .into_iter()
-                        .zip([Color32::from_rgb(80, 140, 255), Color32::GREEN])
+                        .zip([SHIELD_COLOR.to_color32(), color.to_color32()])
                         .enumerate()
                     {
                         if !value.is_nan() {
@@ -1829,19 +1828,19 @@ fn draw_mission_reports(
                 ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
 
                 let (a_color, d_color) = if report.mission.owner == player.id {
-                    (OWN_COLOR_UI, ENEMY_COLOR_UI)
+                    (OWN_COLOR, ENEMY_COLOR)
                 } else {
-                    (ENEMY_COLOR_UI, OWN_COLOR_UI)
+                    (ENEMY_COLOR, OWN_COLOR)
                 };
 
                 ui.vertical(|ui| {
                     ui.set_width(140.);
-                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = a_color;
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = a_color.to_color32();
                     ui.separator();
                 });
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width());
-                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = d_color;
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke.color = d_color.to_color32();
                     ui.separator();
                 });
             });
@@ -2202,29 +2201,29 @@ fn draw_combat_report(
 
     let (attacker_w, defender_w) = (ui.available_width() * 0.3, ui.available_width() * 0.6);
 
+    let (attack_c, defend_c) = if report.mission.owner == player.id {
+        (OWN_COLOR, ENEMY_COLOR)
+    } else {
+        (ENEMY_COLOR, OWN_COLOR)
+    };
+    
     ui.horizontal(|ui| {
         ui.add_space(40.);
 
         ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
-
-        let (a_color, d_color) = if report.mission.owner == player.id {
-            (OWN_COLOR_UI, ENEMY_COLOR_UI)
-        } else {
-            (ENEMY_COLOR_UI, OWN_COLOR_UI)
-        };
 
         ui.vertical(|ui| {
             ui.set_width(attacker_w);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label("Attacker");
             });
-            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = a_color;
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = attack_c.to_color32();
             ui.separator();
         });
         ui.vertical(|ui| {
             ui.set_width(defender_w);
             ui.label("Defender");
-            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = d_color;
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = defend_c.to_color32();
             ui.separator();
         });
     });
@@ -2269,6 +2268,7 @@ fn draw_combat_report(
                             Unit::ships()
                         },
                         Side::Attacker,
+                        attack_c,
                         images,
                     );
                     any_hovered = any_hovered || hovered;
@@ -2300,6 +2300,7 @@ fn draw_combat_report(
                                     &round,
                                     Unit::ships(),
                                     Side::Defender,
+                                    defend_c,
                                     images,
                                 )
                             } else {
@@ -2314,6 +2315,7 @@ fn draw_combat_report(
                                     &round,
                                     Unit::defenses(),
                                     Side::Defender,
+                                    defend_c,
                                     images,
                                 )
                             } else {
@@ -2330,6 +2332,7 @@ fn draw_combat_report(
                                     &round,
                                     vec![Unit::planetary_shield()],
                                     Side::Defender,
+                                    defend_c,
                                     images,
                                 );
                             }
@@ -2364,6 +2367,7 @@ fn draw_combat_report(
                                     &round,
                                     units,
                                     Side::Defender,
+                                    defend_c,
                                     images,
                                 );
                             }

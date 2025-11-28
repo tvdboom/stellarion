@@ -67,14 +67,14 @@ fn load_from_bin(file_path: &str) -> io::Result<SaveAll> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_game(
     mut commands: Commands,
-    mut load_game_ev: MessageReader<LoadGameMsg>,
+    mut load_game_msg: MessageReader<LoadGameMsg>,
     server: Option<Res<RenetServer>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
     mut message: MessageWriter<MessageMsg>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
 ) {
-    for _ in load_game_ev.read() {
+    for _ in load_game_msg.read() {
         if let Some(file_path) = FileDialog::new().pick_file() {
             let file_path_str = file_path.to_string_lossy().to_string();
             let mut data = load_from_bin(&file_path_str).expect("Failed to load the game.");
@@ -181,7 +181,7 @@ pub fn load_game(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
     server: Option<Res<RenetServer>>,
-    mut save_game_ev: MessageReader<SaveGameMsg>,
+    mut save_game_msg: MessageReader<SaveGameMsg>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
     settings: Res<Settings>,
     map: Res<Map>,
@@ -234,7 +234,7 @@ pub fn save_game(
     if server.is_some() {
         match *state {
             SaveState::WaitingForRequest => {
-                for SaveGameMsg(save) in save_game_ev.read() {
+                for SaveGameMsg(save) in save_game_msg.read() {
                     // Request an update of every player's state
                     server_send_msg.write(ServerSendMsg::new(ServerMessage::RequestUpdate, None));
 
@@ -256,7 +256,7 @@ pub fn save_game(
             },
         }
     } else {
-        for SaveGameMsg(autosave) in save_game_ev.read() {
+        for SaveGameMsg(autosave) in save_game_msg.read() {
             save_game(*autosave, &mut message);
         }
     }

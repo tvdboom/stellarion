@@ -6,7 +6,8 @@ use bevy::color::palettes::css::WHITE;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
-use bevy_tweening::{RepeatCount, Tween, TweenAnim};
+use bevy_tweening::lens::ColorMaterialColorLens;
+use bevy_tweening::{AnimTarget, RepeatCount, RepeatStrategy, Tween, TweenAnim};
 use itertools::Itertools;
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
@@ -15,8 +16,8 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
-    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, OWN_COLOR_BASE, PHALANX_DISTANCE,
+    PLANET_Z, RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
@@ -26,6 +27,7 @@ use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
+use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -72,6 +74,9 @@ pub struct PlanetNameCmp;
 pub struct PlanetResourcesCmp;
 
 #[derive(Component)]
+pub struct PlanetaryShieldCmp;
+
+#[derive(Component)]
 pub struct SpaceDockCmp;
 
 #[derive(Component)]
@@ -113,7 +118,7 @@ pub fn draw_map(
 ) {
     let (mut camera_t, mut projection) = camera.into_inner();
     let Projection::Orthographic(projection) = &mut *projection else {
-        panic!("Expected Orthographic projection");
+        panic!("Expected Orthographic projection.");
     };
 
     commands
@@ -149,7 +154,7 @@ pub fn draw_map(
                     let (mut camera_t, projection) = camera_q.into_inner();
 
                     let Projection::Orthographic(projection) = projection else {
-                        panic!("Expected Orthographic projection");
+                        panic!("Expected Orthographic projection.");
                     };
 
                     if !event.delta.x.is_nan() && !event.delta.y.is_nan() {
@@ -386,7 +391,7 @@ pub fn draw_map(
                             parent
                                 .spawn((
                                     Sprite {
-                                        image: assets.image(resource.to_lowername().as_str()),
+                                        image: assets.image(resource.to_lowername()),
                                         custom_size: Some(Vec2::new(
                                             planet.size() * 0.45,
                                             planet.size() * 0.3,
@@ -419,6 +424,32 @@ pub fn draw_map(
                                 });
                         }
                     }
+
+                    // Draw planetary shield
+                    let material =
+                        materials.add(ColorMaterial::from(OWN_COLOR_BASE.with_alpha(0.)));
+                    parent.spawn((
+                        Mesh2d(
+                            meshes.add(Annulus::new(planet.size() * 0.55, planet.size() * 0.57)),
+                        ),
+                        MeshMaterial2d(material.clone()),
+                        Transform::from_xyz(0., 0., 0.6),
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::Linear,
+                                Duration::from_secs(1),
+                                ColorMaterialColorLens {
+                                    start: OWN_COLOR_BASE.with_alpha(0.),
+                                    end: OWN_COLOR_BASE.with_alpha(1.),
+                                },
+                            )
+                            .with_repeat_count(RepeatCount::Infinite)
+                            .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
+                        ),
+                        AnimTarget::asset(&material),
+                        Visibility::Hidden,
+                        PlanetaryShieldCmp,
+                    ));
 
                     // Draw space dock
                     parent.spawn((
@@ -515,7 +546,7 @@ pub fn draw_map(
 
                     commands.spawn((
                         Mesh2d(meshes.add(mesh)),
-                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.05))),
+                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.01))),
                         Visibility::Hidden,
                         VoronoiEdgeCmp {
                             planet: planet_id,
@@ -568,6 +599,7 @@ pub fn update_planet_info(
             Without<PlanetResourcesCmp>,
             Without<ScannerCmp>,
             Without<SpaceDockCmp>,
+            Without<PlanetaryShieldCmp>,
         ),
     >,
     mut resources_q: Query<
@@ -577,6 +609,19 @@ pub fn update_planet_info(
             Without<Icon>,
             Without<PlanetNameCmp>,
             Without<ScannerCmp>,
+            Without<SpaceDockCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
+    >,
+    mut ps_q: Query<
+        (&mut Visibility, &mut TweenAnim),
+        (
+            With<PlanetaryShieldCmp>,
+            Without<Icon>,
+            Without<PlanetNameCmp>,
+            Without<PlanetResourcesCmp>,
+            Without<ScannerCmp>,
+            Without<PlanetCmp>,
             Without<SpaceDockCmp>,
         ),
     >,
@@ -589,11 +634,18 @@ pub fn update_planet_info(
             Without<PlanetResourcesCmp>,
             Without<ScannerCmp>,
             Without<PlanetCmp>,
+            Without<PlanetaryShieldCmp>,
         ),
     >,
     mut scanner_q: Query<
         (&mut Visibility, &mut Mesh2d, &ScannerCmp),
-        (Without<Icon>, Without<PlanetNameCmp>, Without<PlanetResourcesCmp>, Without<SpaceDockCmp>),
+        (
+            Without<Icon>,
+            Without<PlanetNameCmp>,
+            Without<PlanetResourcesCmp>,
+            Without<SpaceDockCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
     >,
     children_q: Query<&Children>,
     map: Res<Map>,
@@ -706,16 +758,34 @@ pub fn update_planet_info(
                 };
             }
 
-            // Show hide the Space Dock
-            if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
-                let controls = player.controls(planet);
-                let has_dock = if controls {
-                    planet.army.amount(&Unit::space_dock()) > 0
+            let controls = player.controls(planet);
+            let (has_ps, has_dock) = if controls {
+                (
+                    planet.army.amount(&Unit::planetary_shield()) > 0,
+                    planet.army.amount(&Unit::space_dock()) > 0,
+                )
+            } else {
+                if let Some(info) = player.last_info(planet, &missions.0) {
+                    (
+                        info.army.amount(&Unit::planetary_shield()) > 0,
+                        info.army.amount(&Unit::space_dock()) > 0,
+                    )
                 } else {
-                    let info = player.last_info(planet, &missions.0);
-                    info.is_some_and(|i| i.army.amount(&Unit::space_dock()) > 0)
-                };
+                    (false, false)
+                }
+            };
 
+            // Show/hide the Planetary Shield
+            if let Ok((mut visibility, tween)) = ps_q.get_mut(child) {
+                *visibility = if has_ps {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                }
+            }
+
+            // Show/hide the Space Dock
+            if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
                 *visibility = if has_dock {
                     sprite.image = assets.image(if controls && selected {
                         "dock hover"
@@ -786,9 +856,9 @@ pub fn update_voronoi(
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
                 material.color = if player.controls(planet) {
-                    OWN_COLOR.with_alpha(0.05)
+                    OWN_COLOR.with_alpha(0.01)
                 } else {
-                    ENEMY_COLOR.with_alpha(0.05)
+                    ENEMY_COLOR.with_alpha(0.01)
                 };
             }
         }
@@ -841,32 +911,38 @@ pub fn update_voronoi(
 }
 
 pub fn update_end_turn(
-    button_c: Single<&mut Visibility, With<EndTurnButtonCmp>>,
-    button_q: Single<&mut Text, With<MainButtonLabelCmp>>,
-    label_q: Single<&mut Visibility, (With<EndTurnLabelCmp>, Without<EndTurnButtonCmp>)>,
+    mut button_c: Query<&mut Visibility, With<EndTurnButtonCmp>>,
+    mut button_q: Query<&mut Text, With<MainButtonLabelCmp>>,
+    mut label_q: Query<&mut Visibility, (With<EndTurnLabelCmp>, Without<EndTurnButtonCmp>)>,
+    game_state: Res<State<GameState>>,
     state: Res<UiState>,
     player: Res<Player>,
 ) {
-    let mut button_v = button_c.into_inner();
-    *button_v = if !player.spectator {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    for mut button_v in &mut button_c {
+        *button_v = if !player.spectator {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
 
-    let mut button_t = button_q.into_inner();
-    button_t.0 = if state.end_turn {
-        "Continue turn".to_string()
-    } else {
-        "End turn".to_string()
-    };
+    if *game_state.get() == GameState::Playing {
+        for mut button_t in &mut button_q {
+            button_t.0 = if state.end_turn {
+                "Continue turn".to_string()
+            } else {
+                "End turn".to_string()
+            };
+        }
+    }
 
-    let mut label_v = label_q.into_inner();
-    *label_v = if state.end_turn && !player.spectator {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    for mut label_v in &mut label_q {
+        *label_v = if state.end_turn && !player.spectator {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 pub fn run_animations(

@@ -106,7 +106,7 @@ impl Lens<Transform> for TransformOrbitLens {
     }
 }
 
-/// Tween: circular motion
+/// Tween: sprite texture cycle
 #[derive(Debug, Clone, Copy)]
 pub struct SpriteFrameLens(pub usize);
 

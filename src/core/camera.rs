@@ -40,18 +40,18 @@ pub fn move_camera(
     mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
     map: Res<Map>,
     mut state: ResMut<UiState>,
-    mut scroll_ev: MessageReader<MouseWheel>,
+    mut scroll_msg: MessageReader<MouseWheel>,
     window: Single<&Window>,
 ) {
     let (camera, global_t, mut camera_t, mut projection) = camera_q.into_inner();
 
     let Projection::Orthographic(projection) = &mut *projection else {
-        panic!("Expected Orthographic projection");
+        panic!("Expected Orthographic projection.");
     };
 
     // Ignore scrolling if pointer is over UI
     if !context.ctx().unwrap().is_pointer_over_area() {
-        for ev in scroll_ev.read() {
+        for ev in scroll_msg.read() {
             // Get cursor position in window space
             if let Some(cursor_pos) = window.cursor_position() {
                 // Convert to world space
@@ -120,7 +120,7 @@ pub fn move_camera_keyboard(
 ) {
     let (mut camera_t, projection) = camera_q.single_mut().unwrap();
 
-    let scale = if let Projection::Orthographic(projection) = &projection {
+    let scale = if let Projection::Orthographic(projection) = projection {
         projection.scale
     } else {
         1.0

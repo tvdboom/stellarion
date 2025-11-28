@@ -1,5 +1,4 @@
 use bevy::color::Color;
-use bevy_egui::egui::Color32;
 
 /// General
 pub const WIDTH: f32 = 1600.;
@@ -14,6 +13,14 @@ pub const NORMAL_BUTTON_COLOR: Color = Color::srgb(0.15, 0.15, 0.15);
 pub const HOVERED_BUTTON_COLOR: Color = Color::srgb_u8(59, 66, 82);
 pub const PRESSED_BUTTON_COLOR: Color = Color::srgb_u8(95, 131, 175);
 pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
+
+/// Colors
+pub const BG_COLOR: Color = Color::srgb_u8(12, 16, 20);
+pub const SHIELD_COLOR: Color = Color::srgb_u8(0, 255, 255);
+pub const OWN_COLOR_BASE: Color = Color::srgb_u8(127, 157, 188);
+pub const OWN_COLOR: Color = Color::srgb_u8(102, 128, 255);
+pub const ENEMY_COLOR_BASE: Color = Color::srgb_u8(204, 81, 78);
+pub const ENEMY_COLOR: Color = Color::srgb_u8(255, 64, 32);
 
 /// Camera
 pub const MIN_ZOOM: f32 = 0.5;
@@ -38,11 +45,8 @@ pub const VORONOI_Z: f32 = 1.;
 pub const PLANET_Z: f32 = 2.;
 pub const MISSION_Z: f32 = 3.;
 pub const EXPLOSION_Z: f32 = 4.;
-pub const BG_COLOR: Color32 = Color32::from_rgb(12, 16, 20);
-pub const OWN_COLOR: Color = Color::srgb(0., 0.3, 0.5);
-pub const OWN_COLOR_UI: Color32 = Color32::from_rgb(102, 128, 255);
-pub const ENEMY_COLOR: Color = Color::srgb(0.5, 0.1, 0.);
-pub const ENEMY_COLOR_UI: Color32 = Color32::from_rgb(255, 64, 32);
+pub const COMBAT_BACKGROUND_Z: f32 = 10.;
+pub const COMBAT_SHIP_Z: f32 = 11.;
 
 pub const PLANET_NAMES: [&str; 80] = [
     "Aegis", "Arcadia", "Arctur", "Avalon", "Bellax", "Boreal", "Calypso", "Ceryn", "Cindra",

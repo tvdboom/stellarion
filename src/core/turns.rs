@@ -472,9 +472,9 @@ pub fn start_turn(
     mut state: ResMut<UiState>,
     map: Res<Map>,
     player: Res<Player>,
-    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
+    mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut message: MessageWriter<MessageMsg>,
-    mut save_game_ev: MessageWriter<SaveGameMsg>,
+    mut save_game_msg: MessageWriter<SaveGameMsg>,
     mut next_game_state: ResMut<NextState<GameState>>,
     assets: Local<WorldAssets>,
 ) {
@@ -505,7 +505,7 @@ pub fn start_turn(
         }
 
         if settings.autosave {
-            save_game_ev.write(SaveGameMsg(true));
+            save_game_msg.write(SaveGameMsg(true));
         }
 
         message.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
@@ -530,7 +530,7 @@ pub fn start_turn(
                 },
             ));
 
-            play_audio_ev.write(PlayAudioMsg::new("explosion"));
+            play_audio_msg.write(PlayAudioMsg::new("explosion"));
         });
 
         if !new_reports.is_empty() {

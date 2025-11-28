@@ -21,6 +21,7 @@ pub enum GameState {
     CombatMenu,
     Combat,
     GameMenu,
+    Settings,
     EndGame,
 }
 

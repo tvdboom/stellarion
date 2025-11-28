@@ -299,7 +299,50 @@ pub fn setup_game_menu(
         if host.is_some() {
             spawn_menu_button(parent, MenuBtn::SaveGame, &assets, &window);
         }
+        spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);
         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
+    });
+}
+
+pub fn setup_game_settings(
+    mut commands: Commands,
+    host: Option<Res<Host>>,
+    settings: Res<Settings>,
+    assets: Local<WorldAssets>,
+    window: Single<&Window>,
+) {
+    commands.spawn((add_root_node(true), MenuCmp)).with_children(|parent| {
+        parent
+            .spawn((Node {
+                width: Val::Percent(40.),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                margin: UiRect::ZERO.with_top(Val::Percent(-7.)),
+                ..default()
+            },))
+            .with_children(|parent| {
+                spawn_label(
+                    parent,
+                    "Audio",
+                    vec![SettingsBtn::Mute, SettingsBtn::NoMusic, SettingsBtn::Sound],
+                    &settings,
+                    &assets,
+                    &window,
+                );
+                if host.is_some() {
+                    spawn_label(
+                        parent,
+                        "Autosave",
+                        vec![SettingsBtn::True, SettingsBtn::False],
+                        &settings,
+                        &assets,
+                        &window,
+                    );
+                }
+            });
+
+        spawn_menu_button(parent, MenuBtn::Back, &assets, &window);
     });
 }
 

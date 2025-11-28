@@ -67,38 +67,34 @@ impl Messages {
 fn check_messages(
     contexts: EguiContexts,
     mut messages: ResMut<Messages>,
-    mut play_audio_ev: MessageWriter<PlayAudioMsg>,
-    mut message_ev: MessageReader<MessageMsg>,
+    mut play_audio_msg: MessageWriter<PlayAudioMsg>,
+    mut message_msg: MessageReader<MessageMsg>,
 ) {
     // Only make one sound per level per frame
     let (mut info, mut warning, mut error) = (true, true, true);
 
-    for MessageMsg {
-        message,
-        level,
-    } in message_ev.read()
-    {
-        match level {
+    for message in message_msg.read() {
+        match message.level {
             MessageLevel::Info => {
                 if info {
-                    play_audio_ev.write(PlayAudioMsg::new("message"));
+                    play_audio_msg.write(PlayAudioMsg::new("message"));
                     info = false;
                 }
-                messages.info(message);
+                messages.info(&message.message);
             },
             MessageLevel::Warning => {
                 if warning {
-                    play_audio_ev.write(PlayAudioMsg::new("warning"));
+                    play_audio_msg.write(PlayAudioMsg::new("warning"));
                     warning = false;
                 }
-                messages.warning(message);
+                messages.warning(&message.message);
             },
             MessageLevel::Error => {
                 if error {
-                    play_audio_ev.write(PlayAudioMsg::new("error"));
+                    play_audio_msg.write(PlayAudioMsg::new("error"));
                     error = false;
                 }
-                messages.error(message);
+                messages.error(&message.message);
             },
         };
     }

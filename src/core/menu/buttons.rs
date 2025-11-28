@@ -59,11 +59,12 @@ pub fn on_click_menu_button(
     mut client: Option<ResMut<RenetClient>>,
     mut settings: ResMut<Settings>,
     ip: Res<Ip>,
-    mut load_game_ev: MessageWriter<LoadGameMsg>,
-    mut save_game_ev: MessageWriter<SaveGameMsg>,
+    mut load_game_msg: MessageWriter<LoadGameMsg>,
+    mut save_game_msg: MessageWriter<SaveGameMsg>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut server_send_msg: MessageWriter<ServerSendMsg>,
     app_state: Res<State<AppState>>,
+    game_state: Res<State<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
@@ -146,7 +147,7 @@ pub fn on_click_menu_button(
             next_app_state.set(AppState::Game);
         },
         MenuBtn::LoadGame => {
-            load_game_ev.write(LoadGameMsg);
+            load_game_msg.write(LoadGameMsg);
         },
         MenuBtn::HostGame => {
             // Remove client resources if they exist
@@ -184,6 +185,9 @@ pub fn on_click_menu_button(
 
                 next_app_state.set(AppState::MultiPlayerMenu);
             },
+            AppState::Game => {
+                next_game_state.set(GameState::GameMenu);
+            },
             _ => unreachable!(),
         },
         MenuBtn::Continue => {
@@ -194,10 +198,14 @@ pub fn on_click_menu_button(
             next_game_state.set(GameState::Playing);
         },
         MenuBtn::SaveGame => {
-            save_game_ev.write(SaveGameMsg(false));
+            save_game_msg.write(SaveGameMsg(false));
         },
         MenuBtn::Settings => {
-            next_app_state.set(AppState::Settings);
+            if *game_state.get() == GameState::GameMenu {
+                next_game_state.set(GameState::Settings);
+            } else {
+                next_app_state.set(AppState::Settings);
+            }
         },
         MenuBtn::Quit => match *app_state.get() {
             AppState::Game => {
