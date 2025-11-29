@@ -1,12 +1,15 @@
 use std::time::Duration;
 
+use bevy::color::palettes::basic::WHITE;
 use bevy::prelude::*;
 use bevy_tweening::EntityCommandsTweeningExtensions;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
 use crate::core::camera::MainCamera;
-use crate::core::constants::{COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR, SHIELD_COLOR};
+use crate::core::constants::{
+    COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR, SHIELD_COLOR,
+};
 use crate::core::map::map::Map;
 use crate::core::map::utils::spawn_main_button;
 use crate::core::menu::utils::add_root_node;
@@ -96,7 +99,7 @@ pub fn setup_combat(
     let spacing = size * 1.1;
 
     let spawn_row = |commands: &mut Commands,
-                     units: Vec<Unit>,
+                     units: Vec<(Unit, usize)>,
                      y_start: f32,
                      y_end: f32,
                      color: Color| {
@@ -106,7 +109,7 @@ pub fn setup_combat(
         }
 
         let total_width = spacing * (total - 1.0);
-        for (i, u) in units.iter().enumerate() {
+        for (i, (u, c)) in units.iter().enumerate() {
             let x = -total_width * 0.5 + i as f32 * spacing;
 
             commands
@@ -118,8 +121,19 @@ pub fn setup_combat(
                     },
                     Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
                     Pickable::IGNORE,
+                    u.clone(),
                     CombatCmp,
                     children![
+                        (
+                            Text2d::new(c.to_string()),
+                            TextFont {
+                                font: assets.font("bold"),
+                                font_size: 30. * projection.scale,
+                                ..default()
+                            },
+                            TextColor(WHITE.into()),
+                            Transform::from_xyz(-size * 0.3, -size * 0.3, 0.1),
+                        ),
                         (
                             Sprite {
                                 color: Color::BLACK,
@@ -171,19 +185,28 @@ pub fn setup_combat(
     let attacking = Unit::all()
         .into_iter()
         .flatten()
-        .filter(|u| *u != Unit::colony_ship() && report.mission.army.amount(u) > 0)
+        .filter_map(|u| {
+            let amount = report.mission.army.amount(&u);
+            (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
+        })
         .collect::<Vec<_>>();
 
     spawn_row(&mut commands, attacking, pos.y + height * 0.8, pos.y + height * 0.4, attack_c);
 
     let defending_def = Unit::defenses()
         .into_iter()
-        .filter(|u| !u.is_missile() && report.planet.army.amount(u) > 0)
+        .filter_map(|u| {
+            let amount = report.planet.army.amount(&u);
+            (!u.is_missile() && amount > 0).then_some((u, amount))
+        })
         .collect::<Vec<_>>();
 
     let defending_ships = Unit::ships()
         .into_iter()
-        .filter(|u| *u != Unit::colony_ship() && report.planet.army.amount(u) > 0)
+        .filter_map(|u| {
+            let amount = report.planet.army.amount(&u);
+            (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
+        })
         .collect::<Vec<_>>();
 
     let ship_y = if defending_def.len() > 0 {

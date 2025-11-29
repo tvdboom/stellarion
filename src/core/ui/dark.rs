@@ -1,6 +1,8 @@
 use bevy_egui::egui::{Color32, Vec2};
 
+use crate::core::constants::OWN_COLOR;
 use crate::core::ui::aesthetics::Aesthetics;
+use crate::utils::ToColor32;
 
 pub struct NordDark;
 
@@ -10,7 +12,7 @@ impl Aesthetics for NordDark {
     }
 
     fn primary_accent_color_visuals(&self) -> Color32 {
-        Color32::from_rgb(94, 129, 172)
+        OWN_COLOR.to_color32()
     }
 
     fn bg_primary_color_visuals(&self) -> Color32 {

@@ -16,8 +16,8 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, OWN_COLOR_BASE, PHALANX_DISTANCE,
-    PLANET_Z, RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
+    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
@@ -426,8 +426,7 @@ pub fn draw_map(
                     }
 
                     // Draw planetary shield
-                    let material =
-                        materials.add(ColorMaterial::from(OWN_COLOR_BASE.with_alpha(0.)));
+                    let material = materials.add(ColorMaterial::from(OWN_COLOR.with_alpha(0.)));
                     parent.spawn((
                         Mesh2d(
                             meshes.add(Annulus::new(planet.size() * 0.55, planet.size() * 0.57)),
@@ -439,8 +438,8 @@ pub fn draw_map(
                                 EaseFunction::Linear,
                                 Duration::from_secs(1),
                                 ColorMaterialColorLens {
-                                    start: OWN_COLOR_BASE.with_alpha(0.),
-                                    end: OWN_COLOR_BASE.with_alpha(1.),
+                                    start: OWN_COLOR.with_alpha(0.),
+                                    end: OWN_COLOR.with_alpha(1.),
                                 },
                             )
                             .with_repeat_count(RepeatCount::Infinite)
@@ -454,7 +453,7 @@ pub fn draw_map(
                     // Draw space dock
                     parent.spawn((
                         Sprite {
-                            image: assets.image("dock"),
+                            image: assets.image("dock hover"),
                             custom_size: Some(Vec2::splat(planet.size() * 0.4)),
                             ..default()
                         },
@@ -546,7 +545,7 @@ pub fn draw_map(
 
                     commands.spawn((
                         Mesh2d(meshes.add(mesh)),
-                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.01))),
+                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.005))),
                         Visibility::Hidden,
                         VoronoiEdgeCmp {
                             planet: planet_id,
@@ -614,7 +613,7 @@ pub fn update_planet_info(
         ),
     >,
     mut ps_q: Query<
-        (&mut Visibility, &mut TweenAnim),
+        &mut Visibility,
         (
             With<PlanetaryShieldCmp>,
             Without<Icon>,
@@ -776,7 +775,7 @@ pub fn update_planet_info(
             };
 
             // Show/hide the Planetary Shield
-            if let Ok((mut visibility, tween)) = ps_q.get_mut(child) {
+            if let Ok(mut visibility) = ps_q.get_mut(child) {
                 *visibility = if has_ps {
                     Visibility::Inherited
                 } else {
@@ -787,14 +786,10 @@ pub fn update_planet_info(
             // Show/hide the Space Dock
             if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
                 *visibility = if has_dock {
-                    sprite.image = assets.image(if controls && selected {
+                    sprite.image = assets.image(if controls {
                         "dock hover"
-                    } else if controls {
-                        "dock"
-                    } else if selected {
-                        "dock enemy hover"
                     } else {
-                        "dock enemy"
+                        "dock enemy hover"
                     });
                     Visibility::Inherited
                 } else {
@@ -856,9 +851,9 @@ pub fn update_voronoi(
         if visible {
             if let Some(material) = materials.get_mut(&*cell_m) {
                 material.color = if player.controls(planet) {
-                    OWN_COLOR.with_alpha(0.01)
+                    OWN_COLOR.with_alpha(0.005)
                 } else {
-                    ENEMY_COLOR.with_alpha(0.01)
+                    ENEMY_COLOR.with_alpha(0.005)
                 };
             }
         }

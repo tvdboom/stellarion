@@ -17,7 +17,9 @@ use crate::core::assets::WorldAssets;
 use crate::core::combat::combat::CombatUnit;
 use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::stats::CombatStats;
-use crate::core::constants::{ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR};
+use crate::core::constants::{
+    ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
+};
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
 use crate::core::map::planet::{Planet, PlanetId};
@@ -2206,7 +2208,7 @@ fn draw_combat_report(
     } else {
         (ENEMY_COLOR, OWN_COLOR)
     };
-    
+
     ui.horizontal(|ui| {
         ui.add_space(40.);
 

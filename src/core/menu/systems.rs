@@ -208,7 +208,7 @@ pub fn setup_menu(
                 .spawn(Node {
                     position_type: PositionType::Absolute,
                     right: Val::Percent(3.),
-                    bottom: Val::Percent(3.),
+                    bottom: Val::Percent(6.),
                     ..default()
                 })
                 .with_children(|parent| {
