@@ -96,13 +96,16 @@ pub fn cursor<T: Debug + Clone + Reflect>(
 
 /// Tween: circular motion
 #[derive(Debug, Clone, Copy)]
-pub struct TransformOrbitLens(pub f32);
+pub struct TransformOrbitLens {
+    pub radius: f32,
+    pub offset: f32,
+}
 
 impl Lens<Transform> for TransformOrbitLens {
     fn lerp(&mut self, mut target: Mut<Transform>, ratio: f32) {
-        let angle = TAU * ratio;
-        target.translation.x = self.0 * angle.cos();
-        target.translation.y = self.0 * angle.sin();
+        let angle = self.offset + TAU * ratio;
+        target.translation.x = self.radius * angle.cos();
+        target.translation.y = self.radius * angle.sin();
     }
 }
 

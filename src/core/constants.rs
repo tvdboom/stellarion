@@ -18,7 +18,9 @@ pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
 pub const BG_COLOR: Color = Color::srgb_u8(12, 16, 20);
 pub const SHIELD_COLOR: Color = Color::srgb_u8(0, 255, 255);
 pub const OWN_COLOR: Color = Color::srgb_u8(102, 128, 255);
+pub const OWN_COLOR_BASE: Color = Color::srgb_u8(133, 155, 179);
 pub const ENEMY_COLOR: Color = Color::srgb_u8(255, 64, 32);
+pub const ENEMY_COLOR_BASE: Color = Color::srgb_u8(203, 81, 78);
 
 /// Camera
 pub const MIN_ZOOM: f32 = 0.5;

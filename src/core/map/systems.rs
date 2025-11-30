@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 use std::time::Duration;
 
 use bevy::asset::RenderAssetUsages;
@@ -9,6 +10,7 @@ use bevy::window::{CursorIcon, SystemCursorIcon};
 use bevy_tweening::lens::ColorMaterialColorLens;
 use bevy_tweening::{AnimTarget, RepeatCount, RepeatStrategy, Tween, TweenAnim};
 use itertools::Itertools;
+use rand::{rng, Rng};
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
 use voronator::VoronoiDiagram;
@@ -16,8 +18,8 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
-    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, ENEMY_COLOR_BASE, OWN_COLOR, OWN_COLOR_BASE,
+    PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
@@ -73,8 +75,34 @@ pub struct PlanetNameCmp;
 #[derive(Component)]
 pub struct PlanetResourcesCmp;
 
+/// Component for planetary shield visualization. It stores whether
+/// the player owns the shield to swap the tween animation if it changes
 #[derive(Component)]
-pub struct PlanetaryShieldCmp;
+pub struct PlanetaryShieldCmp {
+    pub owned: bool,
+}
+
+impl PlanetaryShieldCmp {
+    pub fn new() -> Self {
+        Self {
+            owned: true,
+        }
+    }
+
+    /// Tween that animates the Planetary Shield
+    pub fn tween(c1: Color, c2: Color) -> Tween {
+        Tween::new(
+            EaseFunction::Linear,
+            Duration::from_millis(500),
+            ColorMaterialColorLens {
+                start: c1,
+                end: c2,
+            },
+        )
+        .with_repeat_count(RepeatCount::Infinite)
+        .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
+    }
+}
 
 #[derive(Component)]
 pub struct SpaceDockCmp;
@@ -426,43 +454,38 @@ pub fn draw_map(
                     }
 
                     // Draw planetary shield
-                    let material = materials.add(ColorMaterial::from(OWN_COLOR.with_alpha(0.)));
+                    let material = materials.add(ColorMaterial::from(OWN_COLOR));
                     parent.spawn((
                         Mesh2d(
                             meshes.add(Annulus::new(planet.size() * 0.55, planet.size() * 0.57)),
                         ),
                         MeshMaterial2d(material.clone()),
                         Transform::from_xyz(0., 0., 0.6),
-                        TweenAnim::new(
-                            Tween::new(
-                                EaseFunction::Linear,
-                                Duration::from_secs(1),
-                                ColorMaterialColorLens {
-                                    start: OWN_COLOR.with_alpha(0.),
-                                    end: OWN_COLOR.with_alpha(1.),
-                                },
-                            )
-                            .with_repeat_count(RepeatCount::Infinite)
-                            .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
-                        ),
+                        TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR, OWN_COLOR_BASE)),
                         AnimTarget::asset(&material),
                         Visibility::Hidden,
-                        PlanetaryShieldCmp,
+                        PlanetaryShieldCmp::new(),
                     ));
 
-                    // Draw space dock
+                    // Draw space dock on random position around planet
+                    let r = planet.size() * 0.5;
+                    let angle = rng().random_range(0.0..TAU);
+
                     parent.spawn((
                         Sprite {
-                            image: assets.image("dock hover"),
+                            image: assets.image("dock"),
                             custom_size: Some(Vec2::splat(planet.size() * 0.4)),
                             ..default()
                         },
-                        Transform::from_xyz(-planet.size() * 0.5, -planet.size() * 0.5, 0.7),
+                        Transform::from_xyz(angle.cos() * r, angle.sin() * r, 0.7),
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::Linear,
                                 Duration::from_secs(12),
-                                TransformOrbitLens(planet.size() * 0.75),
+                                TransformOrbitLens {
+                                    radius: planet.size() * 0.75,
+                                    offset: angle,
+                                },
                             )
                             .with_repeat_count(RepeatCount::Infinite),
                         ),
@@ -613,9 +636,8 @@ pub fn update_planet_info(
         ),
     >,
     mut ps_q: Query<
-        &mut Visibility,
+        (&mut Visibility, &mut TweenAnim, &mut PlanetaryShieldCmp),
         (
-            With<PlanetaryShieldCmp>,
             Without<Icon>,
             Without<PlanetNameCmp>,
             Without<PlanetResourcesCmp>,
@@ -775,8 +797,22 @@ pub fn update_planet_info(
             };
 
             // Show/hide the Planetary Shield
-            if let Ok(mut visibility) = ps_q.get_mut(child) {
+            if let Ok((mut visibility, mut tween, mut ps)) = ps_q.get_mut(child) {
                 *visibility = if has_ps {
+                    if ps.owned != controls {
+                        ps.owned = controls;
+
+                        let tween_def = if controls {
+                            PlanetaryShieldCmp::tween(OWN_COLOR, OWN_COLOR_BASE)
+                        } else {
+                            PlanetaryShieldCmp::tween(ENEMY_COLOR, ENEMY_COLOR_BASE)
+                        };
+
+                        if let Err(err) = tween.set_tweenable(tween_def) {
+                            warn!("Failed to swap PS tween. Error: {err}");
+                        }
+                    }
+
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
@@ -787,9 +823,9 @@ pub fn update_planet_info(
             if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
                 *visibility = if has_dock {
                     sprite.image = assets.image(if controls {
-                        "dock hover"
+                        "dock"
                     } else {
-                        "dock enemy hover"
+                        "dock enemy"
                     });
                     Visibility::Inherited
                 } else {

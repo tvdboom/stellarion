@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bevy::color::palettes::basic::WHITE;
+use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
 use bevy_tweening::EntityCommandsTweeningExtensions;
 
@@ -104,9 +104,6 @@ pub fn setup_combat(
                      y_end: f32,
                      color: Color| {
         let total = units.len() as f32;
-        if total == 0.0 {
-            return;
-        }
 
         let total_width = spacing * (total - 1.0);
         for (i, (u, c)) in units.iter().enumerate() {
@@ -125,14 +122,29 @@ pub fn setup_combat(
                     CombatCmp,
                     children![
                         (
-                            Text2d::new(c.to_string()),
-                            TextFont {
-                                font: assets.font("bold"),
-                                font_size: 30. * projection.scale,
+                            Sprite {
+                                color: Color::BLACK,
+                                custom_size: Some(Vec2::new(
+                                    c.to_string().len() as f32 * size * 0.2,
+                                    size * 0.2
+                                )),
                                 ..default()
                             },
-                            TextColor(WHITE.into()),
-                            Transform::from_xyz(-size * 0.3, -size * 0.3, 0.1),
+                            Transform {
+                                translation: Vec3::new(-size * 0.3, -size * 0.3, 0.1),
+                                scale: Vec3::splat(0.2),
+                                ..default()
+                            },
+                            children![(
+                                Text2d::new(c.to_string()),
+                                TextFont {
+                                    font: assets.font("bold"),
+                                    font_size: 300. * projection.scale,
+                                    ..default()
+                                },
+                                TextColor(WHITE.into()),
+                                Transform::from_scale(Vec3::splat(0.1)),
+                            )]
                         ),
                         (
                             Sprite {

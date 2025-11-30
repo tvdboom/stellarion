@@ -86,32 +86,35 @@ impl Player {
         }
 
         for r in self.reports.iter() {
-            reports.push(if r.mission.origin == planet.id {
+            if r.mission.origin == planet.id {
                 if r.mission.owner == self.id {
-                    // Own mission send from this planet (and it's no longer controlled)
-                    PlanetInfo {
-                        turn: r.mission.send,
-                        controlled: false,
-                        army: Unit::all()
-                            .iter()
-                            .flatten()
-                            .map(|u| (*u, r.mission.origin_army.amount(u)))
-                            .collect(),
+                    // Ignore returning probes or from destroy mission
+                    if r.mission.origin_controlled == Some(self.id) {
+                        // Own mission send from this planet (and it's no longer controlled)
+                        reports.push(PlanetInfo {
+                            turn: r.mission.send,
+                            controlled: false,
+                            army: Unit::all()
+                                .iter()
+                                .flatten()
+                                .map(|u| {
+                                    (*u, r.mission.origin_army.amount(u) - r.mission.army.amount(u))
+                                })
+                                .collect(),
+                        });
                     }
                 } else if !r.mission.objective.is_hidden() {
                     // Enemy mission send from this planet
-                    PlanetInfo {
+                    reports.push(PlanetInfo {
                         turn: r.mission.send,
                         controlled: true,
                         army: Army::new(),
-                    }
-                } else {
-                    continue;
+                    });
                 }
             } else if r.mission.destination == planet.id {
                 // Mission arrived at this planet
                 let can_see = r.can_see(&Side::Defender, self.id);
-                PlanetInfo {
+                reports.push(PlanetInfo {
                     turn: r.turn,
                     controlled: r.destination_controlled.is_some(),
                     army: Unit::all()
@@ -145,28 +148,29 @@ impl Player {
                             }
                         })
                         .collect(),
-                }
-            } else {
-                continue;
-            });
+                });
+            }
         }
 
         // Add missions that haven't arrived yet
         for m in missions.into_iter() {
             if m.origin == planet.id {
                 if m.owner == self.id {
-                    // Own mission send from this planet (and it's no longer controlled)
-                    let army: Army = Unit::all()
-                        .iter()
-                        .flatten()
-                        .map(|u| (*u, m.origin_army.amount(u)))
-                        .collect();
+                    // Ignore returning probes or from destroy mission
+                    if m.origin_controlled == Some(self.id) {
+                        // Own mission send from this planet (and it's no longer controlled)
+                        let army: Army = Unit::all()
+                            .iter()
+                            .flatten()
+                            .map(|u| (*u, m.origin_army.amount(u) - m.army.amount(u)))
+                            .collect();
 
-                    reports.push(PlanetInfo {
-                        turn: m.send,
-                        controlled: false, // It's no longer controlled or we wouldn't need last_info
-                        army,
-                    });
+                        reports.push(PlanetInfo {
+                            turn: m.send,
+                            controlled: false, // It's no longer controlled or we wouldn't need last_info
+                            army,
+                        });
+                    }
                 } else if !m.objective.is_hidden() {
                     // Enemy mission
                     reports.push(PlanetInfo {
