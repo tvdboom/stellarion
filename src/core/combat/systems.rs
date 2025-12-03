@@ -2,12 +2,10 @@ use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
-use bevy_tweening::lens::SpriteColorLens;
 use bevy_tweening::{
     AnimCompletedEvent, EntityCommandsTweeningExtensions, RepeatCount, RepeatStrategy, Tween,
     TweenAnim,
 };
-use itertools::Itertools;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
@@ -34,9 +32,6 @@ pub struct CombatCmp;
 
 #[derive(Component)]
 pub struct BackgroundImageCmp;
-
-#[derive(Component)]
-pub struct InCombatPSCmp;
 
 #[derive(Component)]
 pub struct DisplayRoundCmp;
@@ -193,7 +188,7 @@ pub fn setup_combat(
                 ))
                 .move_to(
                     Vec3::new(pos.x + x, y_end, COMBAT_SHIP_Z),
-                    Duration::from_secs(2),
+                    Duration::from_millis(delay),
                     EaseFunction::QuadraticInOut,
                 );
         }
@@ -234,7 +229,7 @@ pub fn setup_combat(
         .collect::<Vec<_>>();
 
     let ship_y = if defending_def.len() > 0 {
-        0.15
+        0.1
     } else {
         0.36
     };
@@ -250,57 +245,45 @@ pub fn setup_combat(
 
     // Spawn Planetary Shield image
     if report.planet.army.amount(&Unit::planetary_shield()) > 0 {
-        let (bar_width, bar_height) = (50., 350.);
-
-        let fade_in = |color: Color| {
-            TweenAnim::new(Tween::new(
-                EaseFunction::QuarticIn,
-                Duration::from_millis(delay),
-                SpriteColorLens {
-                    start: color.with_alpha(0.),
-                    end: color.with_alpha(1.),
-                },
-            ))
-        };
-
-        commands.spawn((
-            Sprite {
-                image: assets.image("planetary shield"),
-                custom_size: Some(Vec2::splat(size)),
-                ..default()
-            },
-            Transform::from_xyz(
-                pos.x + (-width + size) * 0.5 + bar_width,
-                pos.y + (-height + size) * 0.5,
-                COMBAT_SHIP_Z,
-            ),
-            fade_in(Color::WHITE),
-            children![(
+        let (bar_width, bar_height) = (size * 12., size * 0.3);
+        commands
+            .spawn((
                 Sprite {
                     color: Color::BLACK,
                     custom_size: Some(Vec2::new(bar_width, bar_height)),
                     ..default()
                 },
-                Transform::from_xyz(
-                    -size * 0.5 - bar_width * 0.5,
-                    bar_height * 0.5 - size * 0.5,
-                    0.1
-                ),
-                fade_in(Color::BLACK),
-                children![(
-                    Sprite {
-                        color: SHIELD_COLOR,
-                        custom_size: Some(Vec2::new(bar_width - 4., bar_height - 4.)),
-                        ..default()
-                    },
-                    Transform::from_xyz(0., 0., 0.1),
-                    fade_in(SHIELD_COLOR),
-                )],
-            )],
-            Pickable::IGNORE,
-            InCombatPSCmp,
-            CombatCmp,
-        ));
+                Transform::from_xyz(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
+                children![
+                    (
+                        Sprite {
+                            color: SHIELD_COLOR,
+                            custom_size: Some(Vec2::new(bar_width * 0.997, bar_height * 0.9)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0., 0., 0.1),
+                    ),
+                    (
+                        Sprite {
+                            image: assets.image("planetary shield"),
+                            custom_size: Some(Vec2::splat(size)),
+                            ..default()
+                        },
+                        Transform::from_xyz(
+                            (-bar_width + size) * 0.5,
+                            (-bar_height - size) * 0.5,
+                            COMBAT_SHIP_Z,
+                        ),
+                    )
+                ],
+                Pickable::IGNORE,
+                CombatCmp,
+            ))
+            .move_to(
+                Vec3::new(pos.x, pos.y - height * 0.25, COMBAT_SHIP_Z),
+                Duration::from_millis(delay),
+                EaseFunction::QuadraticInOut,
+            );
     }
 
     spawn_main_button(&mut commands, "Exit combat", &assets)
@@ -335,9 +318,7 @@ pub fn animate_combat(
             if let Some(round_q) = round_q {
                 let entity = round_q.into_inner();
                 for message in anim_completed_msg.read() {
-                    println!("msg entity: {:?} - {:?}", message.anim_entity, entity);
                     if entity == message.anim_entity {
-                        println!("next");
                         next_combat_state.set(CombatState::DisplayRound);
                         state.combat_round += 1;
                         commands.entity(message.anim_entity).despawn();
@@ -354,11 +335,15 @@ pub fn animate_combat(
                             &assets,
                             &window
                         ),
-                        UiTransform::from_scale(Vec2::ZERO),
+                        UiTransform {
+                            translation: Val2::new(Val::ZERO, Val::Percent(-120.)),
+                            scale: Vec2::ZERO,
+                            ..default()
+                        },
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::QuadraticInOut,
-                                Duration::from_millis((2000. * settings.combat_speed) as u64),
+                                Duration::from_millis((1500. * settings.combat_speed) as u64),
                                 UiTransformScaleLens {
                                     start: Vec2::ZERO,
                                     end: Vec2::ONE,
@@ -367,8 +352,8 @@ pub fn animate_combat(
                             .with_repeat_count(RepeatCount::Finite(2))
                             .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
                         ),
+                        DisplayRoundCmp,
                     )],
-                    DisplayRoundCmp,
                     CombatCmp,
                 ));
             }

@@ -166,8 +166,9 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                     } else if unit.unit == Unit::Ship(Ship::Bomber)
                         && planetary_shield > 0
                         && side == Side::Attacker
+                        && mission.bombing != BombingRaid::None
                     {
-                        // Bombers always target the planetary shield first
+                        // Bombers always target the planetary shield first when bombing
                         shot_report.planetary_shield_damage = damage.min(planetary_shield);
                         planetary_shield -= shot_report.planetary_shield_damage;
                         shot_report.unit = Some(Unit::planetary_shield());
