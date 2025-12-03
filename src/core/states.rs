@@ -14,7 +14,7 @@ pub enum AppState {
     Game,
 }
 
-#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 pub enum GameState {
     #[default]
     Playing,
@@ -23,6 +23,15 @@ pub enum GameState {
     GameMenu,
     Settings,
     EndGame,
+}
+
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum CombatState {
+    #[default]
+    Setup,
+    DisplayRound,
+    FireAttacker,
+    FireDefender,
 }
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]

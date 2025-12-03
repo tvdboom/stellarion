@@ -19,20 +19,23 @@ use crate::core::units::Unit;
 pub fn on_resize_system(
     mut resize_reader: MessageReader<WindowResized>,
     mut text: Query<(&mut TextFont, &TextSize)>,
-    mut image_q: Query<&mut Sprite, With<BackgroundImageCmp>>,
+    mut bg_q: Query<&mut Sprite, With<BackgroundImageCmp>>,
     camera: Single<&Projection, With<MainCamera>>,
 ) {
     let Projection::Orthographic(projection) = camera.into_inner() else {
         panic!("Expected Orthographic projection.");
     };
 
+    let (width, height) = (projection.area.width(), projection.area.height());
+
     for window in resize_reader.read() {
         for (mut text, size) in text.iter_mut() {
             text.font_size = size.0 * window.height / 460.
         }
 
-        for mut sprite in &mut image_q {
-            sprite.custom_size = Some(Vec2::new(projection.area.width(), projection.area.height()));
+        // Resize background images to cover the whole screen
+        for mut bg_s in &mut bg_q {
+            bg_s.custom_size = Some(Vec2::new(width, height));
         }
     }
 }
@@ -106,6 +109,14 @@ pub fn check_keys_menu(
             start_turn_msg.write(StartTurnMsg::new(true, false));
             next_game_state.set(GameState::Playing)
         }
+    }
+}
+
+pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.just_released(KeyCode::ArrowRight) {
+        settings.combat_speed = (settings.combat_speed - 0.5).max(0.5);
+    } else if keyboard.just_released(KeyCode::ArrowLeft) {
+        settings.combat_speed = (settings.combat_speed + 0.5).min(2.0);
     }
 }
 

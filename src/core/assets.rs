@@ -180,6 +180,7 @@ impl FromWorld for WorldAssets {
             ("unknown", assets.load("images/planets/unknown.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
+            ("short explosion", assets.load("images/animations/short explosion.png")),
             ("flame", assets.load("images/animations/flame.png")),
         ]);
 
@@ -205,6 +206,7 @@ impl FromWorld for WorldAssets {
 
         let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
         let explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 256), 8, 6, None, None);
+        let short_explosion = TextureAtlasLayout::from_grid(UVec2::new(257, 251), 8, 6, None, None);
         let flame = TextureAtlasLayout::from_grid(UVec2::new(124, 54), 1, 12, None, None);
         let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
             (
@@ -227,6 +229,17 @@ impl FromWorld for WorldAssets {
                         index: 1,
                     },
                     last_index: 48,
+                },
+            ),
+            (
+                "short explosion",
+                TextureInfo {
+                    image: images["short explosion"].clone(),
+                    atlas: TextureAtlas {
+                        layout: texture.add(short_explosion),
+                        index: 1,
+                    },
+                    last_index: 32,
                 },
             ),
             (

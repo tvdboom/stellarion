@@ -79,6 +79,7 @@ pub struct UiState {
     pub combat_report_round: usize,
     pub combat_report_hover: Option<(Unit, Side)>,
     pub in_combat: Option<ReportId>,
+    pub combat_round: usize,
     pub end_turn: bool,
 }
 
@@ -2345,7 +2346,7 @@ fn draw_combat_report(
                                         .planet
                                         .army
                                         .iter()
-                                        .any(|(u, c)| u.is_resource_building() && *c > 0) =>
+                                        .any(|(u, c)| u.is_economic_building() && *c > 0) =>
                                 {
                                     Unit::resource_buildings()
                                 },

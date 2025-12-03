@@ -120,3 +120,16 @@ impl Lens<Sprite> for SpriteFrameLens {
         }
     }
 }
+
+/// Tween: UI node transform scale
+#[derive(Debug, Clone, Copy)]
+pub struct UiTransformScaleLens {
+    pub start: Vec2,
+    pub end: Vec2,
+}
+
+impl Lens<UiTransform> for UiTransformScaleLens {
+    fn lerp(&mut self, mut target: Mut<UiTransform>, ratio: f32) {
+        target.scale = self.start.lerp(self.end, ratio);
+    }
+}

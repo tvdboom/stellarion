@@ -28,7 +28,8 @@ use strum::IntoEnumIterator;
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::combat::systems::{
-    exit_combat, exit_combat_menu, setup_combat, setup_combat_menu, CombatCmp, CombatMenuCmp,
+    animate_combat, exit_combat, exit_combat_menu, setup_combat, setup_combat_menu, CombatCmp,
+    CombatMenuCmp,
 };
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{
@@ -45,8 +46,8 @@ use crate::core::network::*;
 use crate::core::persistence::{load_game, save_game};
 use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
-use crate::core::states::{AppState, AudioState, GameState};
-use crate::core::systems::{check_keys, check_keys_menu, on_resize_system};
+use crate::core::states::{AppState, AudioState, CombatState, GameState};
+use crate::core::systems::{check_keys, check_keys_combat, check_keys_menu, on_resize_system};
 use crate::core::turns::{check_turn_ended, resolve_turn, start_turn, StartTurnMsg};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
 use crate::core::ui::utils::ImageIds;
@@ -66,6 +67,7 @@ impl Plugin for GamePlugin {
             // States
             .init_state::<AppState>()
             .init_state::<GameState>()
+            .init_state::<CombatState>()
             .init_state::<AudioState>()
             // Messages
             .add_message::<PlayAudioMsg>()
@@ -150,7 +152,16 @@ impl Plugin for GamePlugin {
             .add_systems(OnExit(AppState::MainMenu), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
             // Utilities
-            .add_systems(Update, (check_keys_menu, check_keys.in_set(InPlayingGameSet)))
+            .add_systems(
+                Update,
+                (
+                    check_keys_menu,
+                    check_keys.in_set(InPlayingGameSet),
+                    check_keys_combat
+                        .run_if(in_state(GameState::CombatMenu).or(in_state(GameState::Combat)))
+                        .in_set(InGameSet),
+                ),
+            )
             .add_systems(PostUpdate, on_resize_system)
             // In-game states
             .add_systems(OnEnter(AppState::Game), draw_map)
@@ -175,6 +186,7 @@ impl Plugin for GamePlugin {
                 (despawn::<CombatMenuCmp>, exit_combat_menu),
             )
             .add_systems(OnEnter(GameState::Combat), setup_combat)
+            .add_systems(Update, animate_combat.run_if(in_state(GameState::Combat)))
             .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))
             .add_systems(OnEnter(GameState::GameMenu), setup_game_menu)
             .add_systems(OnExit(GameState::GameMenu), despawn::<MenuCmp>)

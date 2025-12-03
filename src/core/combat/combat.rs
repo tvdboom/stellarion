@@ -255,7 +255,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
             {
                 let f = match mission.bombing {
                     BombingRaid::Economic => {
-                        |u: &Unit, c: &&mut usize| u.is_resource_building() && **c > 0
+                        |u: &Unit, c: &&mut usize| u.is_economic_building() && **c > 0
                     },
                     BombingRaid::Industrial => {
                         |u: &Unit, c: &&mut usize| u.is_industrial_building() && **c > 0

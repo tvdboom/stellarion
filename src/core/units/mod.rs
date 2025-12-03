@@ -185,7 +185,7 @@ impl Unit {
             )
     }
 
-    pub fn is_resource_building(&self) -> bool {
+    pub fn is_economic_building(&self) -> bool {
         Self::resource_buildings().contains(self)
     }
 

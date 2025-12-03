@@ -18,8 +18,8 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, ENEMY_COLOR_BASE, OWN_COLOR, OWN_COLOR_BASE,
-    PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
+    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::{Map, MapCmp};
@@ -93,7 +93,7 @@ impl PlanetaryShieldCmp {
     pub fn tween(c1: Color, c2: Color) -> Tween {
         Tween::new(
             EaseFunction::Linear,
-            Duration::from_millis(500),
+            Duration::from_secs(1),
             ColorMaterialColorLens {
                 start: c1,
                 end: c2,
@@ -461,7 +461,7 @@ pub fn draw_map(
                         ),
                         MeshMaterial2d(material.clone()),
                         Transform::from_xyz(0., 0., 0.6),
-                        TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR, OWN_COLOR_BASE)),
+                        TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR, Color::WHITE)),
                         AnimTarget::asset(&material),
                         Visibility::Hidden,
                         PlanetaryShieldCmp::new(),
@@ -803,9 +803,9 @@ pub fn update_planet_info(
                         ps.owned = controls;
 
                         let tween_def = if controls {
-                            PlanetaryShieldCmp::tween(OWN_COLOR, OWN_COLOR_BASE)
+                            PlanetaryShieldCmp::tween(OWN_COLOR, Color::WHITE)
                         } else {
-                            PlanetaryShieldCmp::tween(ENEMY_COLOR, ENEMY_COLOR_BASE)
+                            PlanetaryShieldCmp::tween(ENEMY_COLOR, Color::WHITE)
                         };
 
                         if let Err(err) = tween.set_tweenable(tween_def) {

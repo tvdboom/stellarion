@@ -2,7 +2,12 @@ use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
-use bevy_tweening::EntityCommandsTweeningExtensions;
+use bevy_tweening::lens::SpriteColorLens;
+use bevy_tweening::{
+    AnimCompletedEvent, EntityCommandsTweeningExtensions, RepeatCount, RepeatStrategy, Tween,
+    TweenAnim,
+};
+use itertools::Itertools;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
@@ -11,10 +16,11 @@ use crate::core::constants::{
     COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR, SHIELD_COLOR,
 };
 use crate::core::map::map::Map;
-use crate::core::map::utils::spawn_main_button;
-use crate::core::menu::utils::add_root_node;
+use crate::core::map::utils::{spawn_main_button, UiTransformScaleLens};
+use crate::core::menu::utils::{add_root_node, add_text};
 use crate::core::player::Player;
-use crate::core::states::GameState;
+use crate::core::settings::Settings;
+use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::UiState;
 use crate::core::units::{Amount, Unit};
@@ -28,6 +34,12 @@ pub struct CombatCmp;
 
 #[derive(Component)]
 pub struct BackgroundImageCmp;
+
+#[derive(Component)]
+pub struct InCombatPSCmp;
+
+#[derive(Component)]
+pub struct DisplayRoundCmp;
 
 pub fn setup_combat_menu(
     mut commands: Commands,
@@ -58,6 +70,7 @@ pub fn exit_combat_menu(mut stop_audio_msg: MessageWriter<StopAudioMsg>) {
 
 pub fn setup_combat(
     mut commands: Commands,
+    settings: Res<Settings>,
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
@@ -95,8 +108,10 @@ pub fn setup_combat(
     ));
 
     // Spawn units =================================================== >>
-    let size = width / 15.;
-    let spacing = size * 1.1;
+    let delay = (2000. * settings.combat_speed) as u64;
+
+    let size = 120. * projection.scale;
+    let spacing = size * 1.2;
 
     let spawn_row = |commands: &mut Commands,
                      units: Vec<(Unit, usize)>,
@@ -108,6 +123,9 @@ pub fn setup_combat(
         let total_width = spacing * (total - 1.0);
         for (i, (u, c)) in units.iter().enumerate() {
             let x = -total_width * 0.5 + i as f32 * spacing;
+
+            let w = size * (0.3 + 0.2 * (1. - 1. / c.to_string().len() as f32));
+            let h = size * 0.3;
 
             commands
                 .spawn((
@@ -123,27 +141,20 @@ pub fn setup_combat(
                     children![
                         (
                             Sprite {
-                                color: Color::BLACK,
-                                custom_size: Some(Vec2::new(
-                                    c.to_string().len() as f32 * size * 0.2,
-                                    size * 0.2
-                                )),
+                                color: Color::BLACK.with_alpha(0.5),
+                                custom_size: Some(Vec2::new(w, h)),
                                 ..default()
                             },
-                            Transform {
-                                translation: Vec3::new(-size * 0.3, -size * 0.3, 0.1),
-                                scale: Vec3::splat(0.2),
-                                ..default()
-                            },
+                            Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + h * 0.5, 0.1),
                             children![(
                                 Text2d::new(c.to_string()),
                                 TextFont {
                                     font: assets.font("bold"),
-                                    font_size: 300. * projection.scale,
+                                    font_size: 600. * projection.scale,
                                     ..default()
                                 },
                                 TextColor(WHITE.into()),
-                                Transform::from_scale(Vec3::splat(0.1)),
+                                Transform::from_scale(Vec3::splat(0.05)),
                             )]
                         ),
                         (
@@ -209,12 +220,13 @@ pub fn setup_combat(
         .into_iter()
         .filter_map(|u| {
             let amount = report.planet.army.amount(&u);
-            (!u.is_missile() && amount > 0).then_some((u, amount))
+            (!u.is_missile() && u != Unit::space_dock() && amount > 0).then_some((u, amount))
         })
         .collect::<Vec<_>>();
 
     let defending_ships = Unit::ships()
         .into_iter()
+        .chain(vec![Unit::space_dock()])
         .filter_map(|u| {
             let amount = report.planet.army.amount(&u);
             (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
@@ -222,7 +234,7 @@ pub fn setup_combat(
         .collect::<Vec<_>>();
 
     let ship_y = if defending_def.len() > 0 {
-        0.18
+        0.15
     } else {
         0.36
     };
@@ -236,6 +248,61 @@ pub fn setup_combat(
         defend_c,
     );
 
+    // Spawn Planetary Shield image
+    if report.planet.army.amount(&Unit::planetary_shield()) > 0 {
+        let (bar_width, bar_height) = (50., 350.);
+
+        let fade_in = |color: Color| {
+            TweenAnim::new(Tween::new(
+                EaseFunction::QuarticIn,
+                Duration::from_millis(delay),
+                SpriteColorLens {
+                    start: color.with_alpha(0.),
+                    end: color.with_alpha(1.),
+                },
+            ))
+        };
+
+        commands.spawn((
+            Sprite {
+                image: assets.image("planetary shield"),
+                custom_size: Some(Vec2::splat(size)),
+                ..default()
+            },
+            Transform::from_xyz(
+                pos.x + (-width + size) * 0.5 + bar_width,
+                pos.y + (-height + size) * 0.5,
+                COMBAT_SHIP_Z,
+            ),
+            fade_in(Color::WHITE),
+            children![(
+                Sprite {
+                    color: Color::BLACK,
+                    custom_size: Some(Vec2::new(bar_width, bar_height)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    -size * 0.5 - bar_width * 0.5,
+                    bar_height * 0.5 - size * 0.5,
+                    0.1
+                ),
+                fade_in(Color::BLACK),
+                children![(
+                    Sprite {
+                        color: SHIELD_COLOR,
+                        custom_size: Some(Vec2::new(bar_width - 4., bar_height - 4.)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0., 0., 0.1),
+                    fade_in(SHIELD_COLOR),
+                )],
+            )],
+            Pickable::IGNORE,
+            InCombatPSCmp,
+            CombatCmp,
+        ));
+    }
+
     spawn_main_button(&mut commands, "Exit combat", &assets)
         .insert((ZIndex(6), CombatCmp))
         .observe(|_: On<Pointer<Click>>, mut next_game_state: ResMut<NextState<GameState>>| {
@@ -243,6 +310,77 @@ pub fn setup_combat(
         });
 }
 
-pub fn exit_combat(mut stop_audio_msg: MessageWriter<StopAudioMsg>) {
+pub fn animate_combat(
+    mut commands: Commands,
+    round_q: Option<Single<Entity, With<DisplayRoundCmp>>>,
+    settings: Res<Settings>,
+    mut state: ResMut<UiState>,
+    player: Res<Player>,
+    combat_state: Res<State<CombatState>>,
+    mut next_combat_state: ResMut<NextState<CombatState>>,
+    mut anim_completed_msg: MessageReader<AnimCompletedEvent>,
+    window: Single<&Window>,
+    assets: Local<WorldAssets>,
+) {
+    let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
+
+    match combat_state.get() {
+        CombatState::Setup => {
+            if !anim_completed_msg.is_empty() {
+                anim_completed_msg.clear();
+                next_combat_state.set(CombatState::DisplayRound);
+            }
+        },
+        CombatState::DisplayRound => {
+            if let Some(round_q) = round_q {
+                let entity = round_q.into_inner();
+                for message in anim_completed_msg.read() {
+                    println!("msg entity: {:?} - {:?}", message.anim_entity, entity);
+                    if entity == message.anim_entity {
+                        println!("next");
+                        next_combat_state.set(CombatState::DisplayRound);
+                        state.combat_round += 1;
+                        commands.entity(message.anim_entity).despawn();
+                    }
+                }
+            } else {
+                commands.spawn((
+                    add_root_node(false),
+                    children![(
+                        add_text(
+                            format!("Round {}", state.combat_round + 1),
+                            "bold",
+                            40.,
+                            &assets,
+                            &window
+                        ),
+                        UiTransform::from_scale(Vec2::ZERO),
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::QuadraticInOut,
+                                Duration::from_millis((2000. * settings.combat_speed) as u64),
+                                UiTransformScaleLens {
+                                    start: Vec2::ZERO,
+                                    end: Vec2::ONE,
+                                },
+                            )
+                            .with_repeat_count(RepeatCount::Finite(2))
+                            .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
+                        ),
+                    )],
+                    DisplayRoundCmp,
+                    CombatCmp,
+                ));
+            }
+        },
+        _ => (),
+    }
+}
+
+pub fn exit_combat(
+    mut next_combat_state: ResMut<NextState<CombatState>>,
+    mut stop_audio_msg: MessageWriter<StopAudioMsg>,
+) {
     stop_audio_msg.write(StopAudioMsg::new("horn"));
+    next_combat_state.set(CombatState::default());
 }
