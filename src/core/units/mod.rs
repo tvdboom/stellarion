@@ -83,10 +83,6 @@ impl Unit {
         vec![Self::buildings(), Self::ships(), Self::defenses()]
     }
 
-    pub fn all_combat() -> Vec<Self> {
-        Self::ships().into_iter().chain(Self::defenses()).collect()
-    }
-    
     pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
         if !is_moon {
             vec![

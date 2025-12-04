@@ -2,11 +2,13 @@ use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
+use bevy_tweening::lens::TransformScaleLens;
 use bevy_tweening::{
     AnimCompletedEvent, EntityCommandsTweeningExtensions, RepeatCount, RepeatStrategy, Tween,
     TweenAnim,
 };
-use bevy_tweening::lens::TransformPositionLens;
+use strum::IntoEnumIterator;
+
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
 use crate::core::camera::MainCamera;
@@ -35,7 +37,21 @@ pub struct CombatCmp;
 pub struct BackgroundImageCmp;
 
 #[derive(Component)]
+pub struct SpeedCmp;
+
+#[derive(Component)]
 pub struct DisplayRoundCmp;
+
+#[derive(Component, PartialEq)]
+pub enum FireCmp {
+    Idle,
+    Select,
+    PreFire,
+    Firing,
+    Deselect,
+    AfterFire,
+    Fired,
+}
 
 pub fn setup_combat_menu(
     mut commands: Commands,
@@ -72,6 +88,7 @@ pub fn setup_combat(
     player: Res<Player>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
+    window: Single<&Window>,
     assets: Local<WorldAssets>,
 ) {
     let (camera_t, projection) = camera.into_inner();
@@ -104,7 +121,7 @@ pub fn setup_combat(
     ));
 
     // Spawn units =================================================== >>
-    let delay = (2000. * settings.combat_speed) as u64;
+    let delay = (2000. * settings.combat_speed.recip()) as u64;
 
     let size = 120. * projection.scale;
     let spacing = size * 1.2;
@@ -135,6 +152,7 @@ pub fn setup_combat(
                     Pickable::IGNORE,
                     u.clone(),
                     side.clone(),
+                    FireCmp::Idle,
                     CombatCmp,
                     children![
                         (
@@ -212,7 +230,14 @@ pub fn setup_combat(
         })
         .collect::<Vec<_>>();
 
-    spawn_row(&mut commands, attacking, Side::Attacker, pos.y + height * 0.8, pos.y + height * 0.4, attack_c);
+    spawn_row(
+        &mut commands,
+        attacking,
+        Side::Attacker,
+        pos.y + height * 0.8,
+        pos.y + height * 0.4,
+        attack_c,
+    );
 
     let defending_def = Unit::defenses()
         .into_iter()
@@ -237,7 +262,14 @@ pub fn setup_combat(
         0.36
     };
 
-    spawn_row(&mut commands, defending_def, Side::Defender, pos.y - height * 0.7, pos.y - height * 0.36, defend_c);
+    spawn_row(
+        &mut commands,
+        defending_def,
+        Side::Defender,
+        pos.y - height * 0.7,
+        pos.y - height * 0.36,
+        defend_c,
+    );
     spawn_row(
         &mut commands,
         defending_ships,
@@ -248,8 +280,11 @@ pub fn setup_combat(
     );
 
     // Spawn Planetary Shield image
-    if report.planet.army.amount(&Unit::planetary_shield()) > 0 {
-        let (bar_width, bar_height) = (size * 12., size * 0.3);
+    let ps = report.planet.army.amount(&Unit::planetary_shield());
+    if ps > 0 {
+        let (bar_width, bar_height) = (size * 11., size * 0.3);
+        let w = size * 0.3;
+
         commands
             .spawn((
                 Sprite {
@@ -278,6 +313,24 @@ pub fn setup_combat(
                             (-bar_height - size) * 0.5,
                             COMBAT_SHIP_Z,
                         ),
+                        children![(
+                            Sprite {
+                                color: Color::BLACK.with_alpha(0.5),
+                                custom_size: Some(Vec2::splat(w)),
+                                ..default()
+                            },
+                            Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + w * 0.5, 0.1),
+                            children![(
+                                Text2d::new(ps.to_string()),
+                                TextFont {
+                                    font: assets.font("bold"),
+                                    font_size: 600. * projection.scale,
+                                    ..default()
+                                },
+                                TextColor(WHITE.into()),
+                                Transform::from_scale(Vec3::splat(0.05)),
+                            )]
+                        ),],
                     )
                 ],
                 Unit::planetary_shield(),
@@ -292,6 +345,18 @@ pub fn setup_combat(
             );
     }
 
+    commands.spawn((
+        Node {
+            bottom: Val::Px(10.),
+            left: Val::Px(10.),
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        add_text(format!("{}x", settings.combat_speed), "medium", 10., &assets, &window),
+        SpeedCmp,
+        CombatCmp,
+    ));
+
     spawn_main_button(&mut commands, "Exit combat", &assets)
         .insert((ZIndex(6), CombatCmp))
         .observe(|_: On<Pointer<Click>>, mut next_game_state: ResMut<NextState<GameState>>| {
@@ -301,8 +366,9 @@ pub fn setup_combat(
 
 pub fn animate_combat(
     mut commands: Commands,
+    mut speed_q: Single<&mut Text, With<SpeedCmp>>,
     round_q: Option<Single<Entity, With<DisplayRoundCmp>>>,
-    unit_q: Query<(Entity, &Transform, &Unit, &Side)>,
+    mut unit_q: Query<(Entity, &Transform, &mut FireCmp, &Unit, &Side)>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
     player: Res<Player>,
@@ -312,7 +378,42 @@ pub fn animate_combat(
     window: Single<&Window>,
     assets: Local<WorldAssets>,
 ) {
+    // Update speed indicator
+    speed_q.as_mut().0 = format!("{}x", settings.combat_speed);
+
+    // Units in order of firing
+    let units: Vec<_> = Unit::defenses()
+        .into_iter()
+        .filter(|u| *u != Unit::space_dock())
+        .chain(Unit::ships())
+        .chain(vec![Unit::space_dock()])
+        .collect();
+
     let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
+    let combat = report.combat_report.as_ref().unwrap();
+
+    if state.combat_round > combat.rounds.len() {
+        next_combat_state.set(CombatState::EndCombat);
+    } else if *combat_state.get() == CombatState::Fire
+        && unit_q.iter().all(|(_, _, f, _, _)| matches!(f, FireCmp::Idle | FireCmp::Fired))
+    {
+        // Select the next unit that should fire
+        for side in Side::iter() {
+            for unit in &units {
+                if let Some((_, _, mut f, _, _)) = unit_q
+                    .iter_mut()
+                    .find(|(_, _, f, u, s)| **f == FireCmp::Idle && *u == unit && **s == side)
+                {
+                    *f = FireCmp::Select;
+                    return;
+                }
+            }
+        }
+
+        // No more units to fire -> next round
+        state.combat_round += 1;
+        next_combat_state.set(CombatState::DisplayRound);
+    }
 
     match combat_state.get() {
         CombatState::Setup => {
@@ -326,11 +427,16 @@ pub fn animate_combat(
                 let entity = round_q.into_inner();
                 for message in anim_completed_msg.read() {
                     if entity == message.anim_entity {
-                        next_combat_state.set(CombatState::FireAttacker);
+                        next_combat_state.set(CombatState::Fire);
                         commands.entity(message.anim_entity).despawn();
                     }
                 }
             } else {
+                // Reset all firing components
+                unit_q.iter_mut().for_each(|(_, _, mut f, _, _)| {
+                    *f = FireCmp::Idle;
+                });
+
                 commands.spawn((
                     add_root_node(false),
                     children![(
@@ -349,7 +455,9 @@ pub fn animate_combat(
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::QuadraticInOut,
-                                Duration::from_millis((1500. * settings.combat_speed) as u64),
+                                Duration::from_millis(
+                                    (1500. * settings.combat_speed.recip()) as u64
+                                ),
                                 UiTransformScaleLens {
                                     start: Vec2::ZERO,
                                     end: Vec2::ONE,
@@ -364,45 +472,62 @@ pub fn animate_combat(
                 ));
             }
         },
-        CombatState::FireAttacker => {
-            if state.combat_unit_firing.is_none() {
-                for u in Unit::all_combat() {
-                    for (unit_e, unit_t, unit, side) in &unit_q {
-                        if u == *unit && *side == Side::Attacker {
-                            commands.entity(unit_e).insert(
-                                TweenAnim::new(
-                                    Tween::new(
-                                        EaseFunction::QuadraticInOut,
-                                        Duration::from_millis((500. * settings.combat_speed) as u64),
-                                        TransformScaleLens {
-                                            start: unit_t.translation,
-                                            end: Vec2::ONE,
-                                        },
-                                    )
-                                    .with_repeat_count(RepeatCount::Finite(2))
-                                    .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
-                                ),
-                            );
-                            state.combat_unit_firing = Some((*unit, Side::Attacker));
+        CombatState::Fire => {
+            for (unit_e, unit_t, mut fire, _, _) in &mut unit_q {
+                match *fire {
+                    FireCmp::Select => {
+                        commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
+                            EaseFunction::QuadraticInOut,
+                            Duration::from_millis((500. * settings.combat_speed.recip()) as u64),
+                            TransformScaleLens {
+                                start: unit_t.scale,
+                                end: unit_t.scale * 1.3,
+                            },
+                        )));
+                        *fire = FireCmp::PreFire;
+                    },
+                    FireCmp::PreFire => {
+                        for message in anim_completed_msg.read() {
+                            if unit_e == message.anim_entity {
+                                *fire = FireCmp::Firing;
+                            }
                         }
-                    }
-                }
-            } else {
-                for message in anim_completed_msg.read() {
-                    if let Ok((_, unit, side)) = unit_q.get(message.anim_entity) {
-                        state.combat_unit_firing = None;
-                    }
+                    },
+                    FireCmp::Firing => {
+                        *fire = FireCmp::Deselect;
+                    },
+                    FireCmp::Deselect => {
+                        commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
+                            EaseFunction::QuadraticInOut,
+                            Duration::from_millis((500. * settings.combat_speed.recip()) as u64),
+                            TransformScaleLens {
+                                start: unit_t.scale,
+                                end: unit_t.scale / 1.3,
+                            },
+                        )));
+                        *fire = FireCmp::AfterFire;
+                    },
+                    FireCmp::AfterFire => {
+                        for message in anim_completed_msg.read() {
+                            if unit_e == message.anim_entity {
+                                *fire = FireCmp::Fired;
+                            }
+                        }
+                    },
+                    _ => (),
                 }
             }
-        }
+        },
         _ => (),
     }
 }
 
 pub fn exit_combat(
+    mut state: ResMut<UiState>,
     mut next_combat_state: ResMut<NextState<CombatState>>,
     mut stop_audio_msg: MessageWriter<StopAudioMsg>,
 ) {
+    state.combat_round = 0;
     stop_audio_msg.write(StopAudioMsg::new("horn"));
     next_combat_state.set(CombatState::default());
 }

@@ -114,9 +114,9 @@ pub fn check_keys_menu(
 
 pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInput<KeyCode>>) {
     if keyboard.just_released(KeyCode::ArrowRight) {
-        settings.combat_speed = (settings.combat_speed - 0.5).max(0.5);
+        settings.combat_speed = (settings.combat_speed + 0.5).min(5.0);
     } else if keyboard.just_released(KeyCode::ArrowLeft) {
-        settings.combat_speed = (settings.combat_speed + 0.5).min(2.0);
+        settings.combat_speed = (settings.combat_speed - 0.5).max(0.5);
     }
 }
 

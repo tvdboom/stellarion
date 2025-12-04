@@ -30,8 +30,8 @@ pub enum CombatState {
     #[default]
     Setup,
     DisplayRound,
-    FireAttacker,
-    FireDefender,
+    Fire,
+    EndCombat,
 }
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
