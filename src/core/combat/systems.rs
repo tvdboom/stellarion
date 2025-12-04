@@ -6,10 +6,11 @@ use bevy_tweening::{
     AnimCompletedEvent, EntityCommandsTweeningExtensions, RepeatCount, RepeatStrategy, Tween,
     TweenAnim,
 };
-
+use bevy_tweening::lens::TransformPositionLens;
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
 use crate::core::camera::MainCamera;
+use crate::core::combat::report::Side;
 use crate::core::constants::{
     COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR, SHIELD_COLOR,
 };
@@ -110,6 +111,7 @@ pub fn setup_combat(
 
     let spawn_row = |commands: &mut Commands,
                      units: Vec<(Unit, usize)>,
+                     side: Side,
                      y_start: f32,
                      y_end: f32,
                      color: Color| {
@@ -132,6 +134,7 @@ pub fn setup_combat(
                     Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
                     Pickable::IGNORE,
                     u.clone(),
+                    side.clone(),
                     CombatCmp,
                     children![
                         (
@@ -209,7 +212,7 @@ pub fn setup_combat(
         })
         .collect::<Vec<_>>();
 
-    spawn_row(&mut commands, attacking, pos.y + height * 0.8, pos.y + height * 0.4, attack_c);
+    spawn_row(&mut commands, attacking, Side::Attacker, pos.y + height * 0.8, pos.y + height * 0.4, attack_c);
 
     let defending_def = Unit::defenses()
         .into_iter()
@@ -234,10 +237,11 @@ pub fn setup_combat(
         0.36
     };
 
-    spawn_row(&mut commands, defending_def, pos.y - height * 0.7, pos.y - height * 0.36, defend_c);
+    spawn_row(&mut commands, defending_def, Side::Defender, pos.y - height * 0.7, pos.y - height * 0.36, defend_c);
     spawn_row(
         &mut commands,
         defending_ships,
+        Side::Defender,
         pos.y - height * 0.7,
         pos.y - height * ship_y,
         defend_c,
@@ -276,6 +280,8 @@ pub fn setup_combat(
                         ),
                     )
                 ],
+                Unit::planetary_shield(),
+                Side::Defender,
                 Pickable::IGNORE,
                 CombatCmp,
             ))
@@ -296,6 +302,7 @@ pub fn setup_combat(
 pub fn animate_combat(
     mut commands: Commands,
     round_q: Option<Single<Entity, With<DisplayRoundCmp>>>,
+    unit_q: Query<(Entity, &Transform, &Unit, &Side)>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
     player: Res<Player>,
@@ -319,8 +326,7 @@ pub fn animate_combat(
                 let entity = round_q.into_inner();
                 for message in anim_completed_msg.read() {
                     if entity == message.anim_entity {
-                        next_combat_state.set(CombatState::DisplayRound);
-                        state.combat_round += 1;
+                        next_combat_state.set(CombatState::FireAttacker);
                         commands.entity(message.anim_entity).despawn();
                     }
                 }
@@ -358,6 +364,37 @@ pub fn animate_combat(
                 ));
             }
         },
+        CombatState::FireAttacker => {
+            if state.combat_unit_firing.is_none() {
+                for u in Unit::all_combat() {
+                    for (unit_e, unit_t, unit, side) in &unit_q {
+                        if u == *unit && *side == Side::Attacker {
+                            commands.entity(unit_e).insert(
+                                TweenAnim::new(
+                                    Tween::new(
+                                        EaseFunction::QuadraticInOut,
+                                        Duration::from_millis((500. * settings.combat_speed) as u64),
+                                        TransformScaleLens {
+                                            start: unit_t.translation,
+                                            end: Vec2::ONE,
+                                        },
+                                    )
+                                    .with_repeat_count(RepeatCount::Finite(2))
+                                    .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
+                                ),
+                            );
+                            state.combat_unit_firing = Some((*unit, Side::Attacker));
+                        }
+                    }
+                }
+            } else {
+                for message in anim_completed_msg.read() {
+                    if let Ok((_, unit, side)) = unit_q.get(message.anim_entity) {
+                        state.combat_unit_firing = None;
+                    }
+                }
+            }
+        }
         _ => (),
     }
 }

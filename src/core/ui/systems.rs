@@ -80,6 +80,7 @@ pub struct UiState {
     pub combat_report_hover: Option<(Unit, Side)>,
     pub in_combat: Option<ReportId>,
     pub combat_round: usize,
+    pub combat_unit_firing: Option<(Unit, Side)>,
     pub end_turn: bool,
 }
 
