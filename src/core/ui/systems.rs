@@ -18,7 +18,8 @@ use crate::core::combat::combat::CombatUnit;
 use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
-    ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
+    BG2_COLOR, ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL,
+    SHIELD_COLOR,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
@@ -396,7 +397,7 @@ fn draw_combat_army_grid(
                                 ),
                             );
 
-                            ui.painter().rect_filled(bar, 0., Color32::from_gray(40));
+                            ui.painter().rect_filled(bar, 0., BG2_COLOR.to_color32());
 
                             let filled = egui::Rect::from_min_max(
                                 bar.min,

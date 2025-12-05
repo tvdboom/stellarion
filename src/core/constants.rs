@@ -16,6 +16,7 @@ pub const DISABLED_BUTTON_COLOR: Color = Color::srgb(0.8, 0.5, 0.5);
 
 /// Colors
 pub const BG_COLOR: Color = Color::srgb_u8(12, 16, 20);
+pub const BG2_COLOR: Color = Color::srgb_u8(40, 40, 40);
 pub const SHIELD_COLOR: Color = Color::srgb_u8(0, 255, 255);
 pub const OWN_COLOR: Color = Color::srgb_u8(102, 128, 255);
 pub const ENEMY_COLOR: Color = Color::srgb_u8(255, 64, 32);
@@ -38,7 +39,11 @@ pub const RADAR_DISTANCE: f32 = 1.0;
 pub const CRAWLER_HEALING_PER_ROUND: usize = 30;
 
 /// Combat
-pub const IMAGE_SIZE: f32 = 120.;
+pub const UNIT_SIZE: f32 = 120.;
+pub const PS_WIDTH: f32 = 11.; // Times larger than the unit size
+pub const COMBAT_BACKGROUND_Z: f32 = 10.;
+pub const COMBAT_SHIP_Z: f32 = 11.;
+pub const COMBAT_EXPLOSION_Z: f32 = 12.;
 
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;
@@ -46,17 +51,23 @@ pub const VORONOI_Z: f32 = 1.;
 pub const PLANET_Z: f32 = 2.;
 pub const MISSION_Z: f32 = 3.;
 pub const EXPLOSION_Z: f32 = 4.;
-pub const COMBAT_BACKGROUND_Z: f32 = 10.;
-pub const COMBAT_SHIP_Z: f32 = 11.;
 
-pub const PLANET_NAMES: [&str; 80] = [
-    "Aegis", "Arcadia", "Arctur", "Avalon", "Bellax", "Boreal", "Calypso", "Ceryn", "Cindra",
-    "Cydon", "Daedal", "Dione", "Drakar", "Elysia", "Eos", "Erebus", "Eryos", "Faelor", "Fomir",
-    "Fortis", "Fornax", "Galix", "Ganymede", "Harrow", "Helion", "Hesper", "Hyperion", "Icarus",
-    "Ilios", "Io", "Janus", "Jareth", "Juno", "Keplar", "Kestrel", "Korren", "Lacara", "Lyra",
-    "Lyris", "Marduk", "Meris", "Morpheus", "Nereid", "Novan", "Noxus", "Nyx", "Oberon", "Orion",
-    "Orpheus", "Othra", "Pegas", "Perra", "Phaen", "Pyrron", "Quasar", "Quill", "Qor", "Ragnar",
-    "Rhea", "Riven", "Sable", "Selar", "Solar", "Styga", "Tethys", "Thalos", "Titan", "Umbra",
-    "Umbril", "Ulyss", "Vela", "Vesper", "Vortan", "Wyvern", "Xandar", "Xyra", "Yalen", "Ythra",
-    "Zaurak", "Zephyr",
+pub const PLANET_NAMES: [&str; 162] = [
+    "Abrax", "Aegis", "Aether", "Aleron", "Andros", "Arcadia", "Arctur", "Arvend", "Astrix",
+    "Atreon", "Avalon", "Auralis", "Bastor", "Belion", "Bellax", "Boreal", "Brelix", "Caelum",
+    "Calypso", "Caldor", "Cenrix", "Ceryn", "Cerion", "Cindra", "Cindor", "Cydon", "Cyrex",
+    "Cyther", "Daedal", "Dalian", "Darian", "Dione", "Drakar", "Dravos", "Drexis", "Eldros",
+    "Elios", "Elysia", "Elion", "Embris", "Enyra", "Eos", "Erebus", "Eriath", "Erndor", "Erynd",
+    "Faelor", "Falix", "Ferros", "Fomir", "Fortis", "Fornax", "Fynar", "Galix", "Galdor",
+    "Ganymede", "Ganyr", "Ghorin", "Glyra", "Hadron", "Harrow", "Helion", "Helyx", "Hesper",
+    "Horian", "Hyperion", "Hydra", "Icarus", "Ilios", "Ilmar", "Ilyon", "Inara", "Io", "Isyra",
+    "Jadex", "Janus", "Jareth", "Jorun", "Juno", "Kaelis", "Keplar", "Keldor", "Kestrel", "Korren",
+    "Kyros", "Lacara", "Lorian", "Lunex", "Lyra", "Lystr", "Lyris", "Maelis", "Marduk", "Marix",
+    "Melyra", "Meris", "Morpheus", "Mydor", "Naelis", "Naryn", "Nereid", "Novan", "Noxus", "Nydon",
+    "Nyx", "Oberon", "Olaris", "Onyx", "Ordan", "Orion", "Orpheus", "Oryth", "Othra", "Pelion",
+    "Pegas", "Perra", "Phaen", "Pylar", "Pyrron", "Qimar", "Qor", "Quasar", "Quill", "Quorin",
+    "Ragnar", "Ravon", "Relis", "Rhea", "Riven", "Rylar", "Sable", "Selar", "Selion", "Solar",
+    "Styga", "Syron", "Taryn", "Tethys", "Thalos", "Theron", "Titan", "Torix", "Umbra", "Umbril",
+    "Ularis", "Ulmar", "Ulyss", "Valen", "Vela", "Vesper", "Vortan", "Voryn", "Wyvern", "Xandar",
+    "Xelra", "Xyra", "Yalen", "Ylros", "Ythra", "Zaryn", "Zaurak", "Zephyr",
 ];

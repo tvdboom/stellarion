@@ -103,6 +103,15 @@ pub enum Side {
     Defender,
 }
 
+impl Side {
+    pub fn opposite(&self) -> Side {
+        match self {
+            Side::Attacker => Side::Defender,
+            Side::Defender => Side::Attacker,
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CombatReport {
     pub rounds: Vec<RoundReport>,
@@ -116,4 +125,13 @@ pub struct RoundReport {
     pub antiballistic_fired: usize,
     pub buildings: Army,
     pub destroy_probability: f32,
+}
+
+impl RoundReport {
+    pub fn units(&self, side: &Side) -> &Vec<CombatUnit> {
+        match side {
+            Side::Attacker => &self.attacker,
+            Side::Defender => &self.defender,
+        }
+    }
 }

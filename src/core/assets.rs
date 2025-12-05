@@ -64,6 +64,7 @@ impl FromWorld for WorldAssets {
             ("horn", assets.load("audio/horn.ogg")),
             ("drums", assets.load("audio/drums.ogg")),
             ("explosion", assets.load("audio/explosion.ogg")),
+            ("short explosion", assets.load("audio/short explosion.ogg")),
         ]);
 
         let fonts = HashMap::from([
@@ -206,7 +207,7 @@ impl FromWorld for WorldAssets {
 
         let long_button = TextureAtlasLayout::from_grid(UVec2::new(231, 25), 1, 2, None, None);
         let explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 256), 8, 6, None, None);
-        let short_explosion = TextureAtlasLayout::from_grid(UVec2::new(257, 251), 8, 6, None, None);
+        let short_explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 251), 8, 4, None, None);
         let flame = TextureAtlasLayout::from_grid(UVec2::new(124, 54), 1, 12, None, None);
         let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
             (

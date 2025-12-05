@@ -29,7 +29,7 @@ use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::combat::systems::{
     animate_combat, exit_combat, exit_combat_menu, run_combat_animations, setup_combat,
-    setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp,
+    setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
 };
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{
@@ -79,6 +79,7 @@ impl Plugin for GamePlugin {
             .add_message::<MessageMsg>()
             .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
+            .add_message::<SpawnShotMsg>()
             // Resources
             .init_resource::<Ip>()
             .init_resource::<Settings>()
@@ -192,6 +193,7 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (animate_combat, run_combat_animations, update_combat_stats)
+                    .chain()
                     .run_if(in_state(GameState::Combat)),
             )
             .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))

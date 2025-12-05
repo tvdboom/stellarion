@@ -12,7 +12,7 @@ use crate::core::missions::{BombingRaid, Mission};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Component, Clone, Default, Serialize, Deserialize)]
 pub struct ShotReport {
     pub unit: Option<Unit>,
     pub shield_damage: usize,
@@ -155,7 +155,7 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                 }
 
                 'shoot: loop {
-                    let mut shot_report = ShotReport::default();
+                    let mut shot = ShotReport::default();
 
                     let target = if unit.unit == Unit::interplanetary_missile() {
                         // Interplanetary Missiles only shoot on defenses
@@ -169,18 +169,18 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                         && mission.bombing != BombingRaid::None
                     {
                         // Bombers always target the planetary shield first when bombing
-                        shot_report.planetary_shield_damage = damage.min(planetary_shield);
-                        planetary_shield -= shot_report.planetary_shield_damage;
-                        shot_report.unit = Some(Unit::planetary_shield());
+                        shot.planetary_shield_damage = damage.min(planetary_shield);
+                        planetary_shield -= shot.planetary_shield_damage;
+                        shot.unit = Some(Unit::planetary_shield());
                         None
                     } else if let Some(target) =
                         enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut rng)
                     {
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense() && planetary_shield > 0 {
-                            shot_report.planetary_shield_damage = damage.min(planetary_shield);
-                            planetary_shield -= shot_report.planetary_shield_damage;
-                            shot_report.unit = Some(Unit::planetary_shield());
+                            shot.planetary_shield_damage = damage.min(planetary_shield);
+                            planetary_shield -= shot.planetary_shield_damage;
+                            shot.unit = Some(Unit::planetary_shield());
                             None
                         } else {
                             Some(target)
@@ -190,11 +190,11 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                     };
 
                     let target = if let Some(target) = target {
-                        shot_report.unit = Some(target.unit.clone());
+                        shot.unit = Some(target.unit.clone());
                         target
                     } else {
-                        if shot_report.unit.is_some() {
-                            unit.shots.push(shot_report);
+                        if shot.unit.is_some() {
+                            unit.shots.push(shot);
                         }
                         break 'shoot; // No unit to target
                     };
@@ -202,32 +202,32 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                     // Target could already been destroyed by another shot
                     if target.hull > 0 {
                         if target.shield > 0 {
-                            shot_report.shield_damage = damage.min(target.shield);
-                            damage -= shot_report.shield_damage;
-                            target.shield -= shot_report.shield_damage;
+                            shot.shield_damage = damage.min(target.shield);
+                            damage -= shot.shield_damage;
+                            target.shield -= shot.shield_damage;
                         }
 
                         if damage > 0 {
-                            shot_report.hull_damage = damage.min(target.hull);
-                            target.hull -= shot_report.hull_damage;
+                            shot.hull_damage = damage.min(target.hull);
+                            target.hull -= shot.hull_damage;
 
                             if target.hull == 0 {
-                                shot_report.killed = true;
+                                shot.killed = true;
                             }
                         }
                     } else {
-                        shot_report.missed = true;
+                        shot.missed = true;
                     }
 
                     if *unit.unit.rapid_fire().get(&target.unit).unwrap_or(&101) as f32 / 100.
                         > rng.random::<f32>()
                     {
-                        unit.shots.push(shot_report);
+                        unit.shots.push(shot);
                         break 'shoot;
                     }
 
-                    shot_report.rapid_fire = true;
-                    unit.shots.push(shot_report);
+                    shot.rapid_fire = true;
+                    unit.shots.push(shot);
                 }
             }
         }
