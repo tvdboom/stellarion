@@ -28,12 +28,12 @@ use strum::IntoEnumIterator;
 use crate::core::audio::*;
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
 use crate::core::combat::systems::{
-    animate_combat, exit_combat, exit_combat_menu, setup_combat, setup_combat_menu, CombatCmp,
-    CombatMenuCmp,
+    animate_combat, exit_combat, exit_combat_menu, run_combat_animations, setup_combat,
+    setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp,
 };
 use crate::core::map::map::{Map, MapCmp};
 use crate::core::map::systems::{
-    draw_map, run_animations, update_end_turn, update_planet_info, update_voronoi,
+    draw_map, run_map_animations, update_end_turn, update_planet_info, update_voronoi,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -42,9 +42,7 @@ use crate::core::menu::systems::{
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{update_missions, SendMissionMsg};
 use crate::core::network::*;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::persistence::{load_game, save_game};
-use crate::core::persistence::{LoadGameMsg, SaveGameMsg};
+use crate::core::persistence::{load_game, save_game, LoadGameMsg, SaveGameMsg};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
 use crate::core::systems::{check_keys, check_keys_combat, check_keys_menu, on_resize_system};
@@ -151,6 +149,11 @@ impl Plugin for GamePlugin {
             // Ui
             .add_systems(OnExit(AppState::MainMenu), (add_ui_images, set_ui_style))
             .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
+            // Persistence
+            .add_systems(
+                Update,
+                (load_game, save_game.run_if(resource_exists::<Host>).in_set(InGameSet)),
+            )
             // Utilities
             .add_systems(
                 Update,
@@ -169,7 +172,7 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    (update_end_turn, run_animations).in_set(InGameSet),
+                    (update_end_turn, run_map_animations).in_set(InGameSet),
                     (update_voronoi, update_planet_info, send_mission, update_missions)
                         .in_set(InPlayingGameSet),
                 ),
@@ -186,7 +189,11 @@ impl Plugin for GamePlugin {
                 (despawn::<CombatMenuCmp>, exit_combat_menu),
             )
             .add_systems(OnEnter(GameState::Combat), setup_combat)
-            .add_systems(Update, animate_combat.run_if(in_state(GameState::Combat)))
+            .add_systems(
+                Update,
+                (animate_combat, run_combat_animations, update_combat_stats)
+                    .run_if(in_state(GameState::Combat)),
+            )
             .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))
             .add_systems(OnEnter(GameState::GameMenu), setup_game_menu)
             .add_systems(OnExit(GameState::GameMenu), despawn::<MenuCmp>)
@@ -194,12 +201,5 @@ impl Plugin for GamePlugin {
             .add_systems(OnExit(GameState::Settings), despawn::<MenuCmp>)
             .add_systems(OnEnter(GameState::EndGame), setup_end_game)
             .add_systems(OnExit(GameState::EndGame), despawn::<MenuCmp>);
-
-        // Persistence
-        #[cfg(not(target_arch = "wasm32"))]
-        app.add_systems(
-            Update,
-            (load_game, save_game.run_if(resource_exists::<Host>).in_set(InGameSet)),
-        );
     }
 }

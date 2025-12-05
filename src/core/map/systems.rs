@@ -976,7 +976,7 @@ pub fn update_end_turn(
     }
 }
 
-pub fn run_animations(
+pub fn run_map_animations(
     mut commands: Commands,
     mut animation_q: Query<(Entity, &mut Sprite, &mut ExplosionCmp)>,
     mut map: ResMut<Map>,

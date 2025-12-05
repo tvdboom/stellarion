@@ -37,6 +37,9 @@ pub const PHALANX_DISTANCE: f32 = 0.8;
 pub const RADAR_DISTANCE: f32 = 1.0;
 pub const CRAWLER_HEALING_PER_ROUND: usize = 30;
 
+/// Combat
+pub const IMAGE_SIZE: f32 = 120.;
+
 /// Map
 pub const BACKGROUND_Z: f32 = 0.;
 pub const VORONOI_Z: f32 = 1.;

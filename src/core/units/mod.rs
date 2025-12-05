@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use bevy::prelude::Component;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -59,7 +58,7 @@ impl Amount for Army {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
     Ship(Ship),

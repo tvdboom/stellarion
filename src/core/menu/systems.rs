@@ -66,7 +66,6 @@ pub fn setup_menu(
                         spawn_menu_button(parent, MenuBtn::Singleplayer, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::StartGame, &assets, &window);
                         spawn_menu_button(parent, MenuBtn::Settings, &assets, &window);
-                        #[cfg(not(target_arch = "wasm32"))]
                         spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
                     }
                     AppState::SinglePlayerMenu => {

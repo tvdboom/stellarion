@@ -1,4 +1,3 @@
-use bevy::prelude::Component;
 use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
@@ -98,7 +97,7 @@ impl MissionReport {
 
 pub type ReportId = u64;
 
-#[derive(Component, EnumIter, Clone, Debug, PartialEq)]
+#[derive(EnumIter, Clone, Debug, PartialEq)]
 pub enum Side {
     Attacker,
     Defender,

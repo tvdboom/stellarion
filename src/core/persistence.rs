@@ -7,7 +7,6 @@ use bevy::prelude::*;
 use bevy_renet::renet::{ClientId, RenetServer};
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice, encode_to_vec};
-#[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +63,6 @@ fn load_from_bin(file_path: &str) -> io::Result<SaveAll> {
     Ok(data)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub fn load_game(
     mut commands: Commands,
     mut load_game_msg: MessageReader<LoadGameMsg>,
@@ -178,7 +176,6 @@ pub fn load_game(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub fn save_game(
     server: Option<Res<RenetServer>>,
     mut save_game_msg: MessageReader<SaveGameMsg>,

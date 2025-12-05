@@ -14,7 +14,8 @@ use crate::core::audio::{PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
 use crate::core::camera::MainCamera;
 use crate::core::combat::report::Side;
 use crate::core::constants::{
-    COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR, SHIELD_COLOR,
+    COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, ENEMY_COLOR, EXPLOSION_Z, IMAGE_SIZE, OWN_COLOR,
+    SHIELD_COLOR,
 };
 use crate::core::map::map::Map;
 use crate::core::map::utils::{spawn_main_button, UiTransformScaleLens};
@@ -24,8 +25,8 @@ use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::UiState;
-use crate::core::units::{Amount, Unit};
-use crate::utils::NameFromEnum;
+use crate::core::units::{Amount, Combat, Unit};
+use crate::utils::{scale_duration, NameFromEnum};
 
 #[derive(Component)]
 pub struct CombatMenuCmp;
@@ -42,8 +43,8 @@ pub struct SpeedCmp;
 #[derive(Component)]
 pub struct DisplayRoundCmp;
 
-#[derive(Component, PartialEq)]
-pub enum FireCmp {
+#[derive(PartialEq)]
+pub enum FireState {
     Idle,
     Select,
     PreFire,
@@ -51,6 +52,30 @@ pub enum FireCmp {
     Deselect,
     AfterFire,
     Fired,
+}
+
+#[derive(Component)]
+pub struct CombatUnitCmp {
+    pub unit: Unit,
+    pub side: Side,
+    pub fire: FireState,
+    pub shield: usize,
+    pub max_shield: usize,
+    pub hull: usize,
+    pub max_hull: usize,
+}
+
+#[derive(Component)]
+pub struct HullCmp;
+
+#[derive(Component)]
+pub struct ShieldCmp;
+
+#[derive(Component)]
+pub struct UnitExplosionCmp {
+    pub timer: Timer,
+    pub last_index: usize,
+    pub target_entity: Entity,
 }
 
 pub fn setup_combat_menu(
@@ -123,7 +148,7 @@ pub fn setup_combat(
     // Spawn units =================================================== >>
     let delay = (2000. * settings.combat_speed.recip()) as u64;
 
-    let size = 120. * projection.scale;
+    let size = IMAGE_SIZE * projection.scale;
     let spacing = size * 1.2;
 
     let spawn_row = |commands: &mut Commands,
@@ -150,9 +175,15 @@ pub fn setup_combat(
                     },
                     Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
                     Pickable::IGNORE,
-                    u.clone(),
-                    side.clone(),
-                    FireCmp::Idle,
+                    CombatUnitCmp {
+                        unit: u.clone(),
+                        side: side.clone(),
+                        fire: FireState::Idle,
+                        shield: c * u.shield(),
+                        max_shield: c * u.shield(),
+                        hull: c * u.hull(),
+                        max_hull: c * u.hull(),
+                    },
                     CombatCmp,
                     children![
                         (
@@ -187,6 +218,7 @@ pub fn setup_combat(
                                     ..default()
                                 },
                                 Transform::from_xyz(0., 0., 0.2),
+                                ShieldCmp,
                             )],
                         ),
                         (
@@ -203,6 +235,7 @@ pub fn setup_combat(
                                     ..default()
                                 },
                                 Transform::from_xyz(0., 0., 0.2),
+                                HullCmp,
                             )],
                         )
                     ],
@@ -333,8 +366,6 @@ pub fn setup_combat(
                         ),],
                     )
                 ],
-                Unit::planetary_shield(),
-                Side::Defender,
                 Pickable::IGNORE,
                 CombatCmp,
             ))
@@ -368,16 +399,24 @@ pub fn animate_combat(
     mut commands: Commands,
     mut speed_q: Single<&mut Text, With<SpeedCmp>>,
     round_q: Option<Single<Entity, With<DisplayRoundCmp>>>,
-    mut unit_q: Query<(Entity, &Transform, &mut FireCmp, &Unit, &Side)>,
+    mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
     player: Res<Player>,
     combat_state: Res<State<CombatState>>,
     mut next_combat_state: ResMut<NextState<CombatState>>,
     mut anim_completed_msg: MessageReader<AnimCompletedEvent>,
+    camera: Single<(&Transform, &Projection), With<MainCamera>>,
     window: Single<&Window>,
     assets: Local<WorldAssets>,
 ) {
+    let (camera_t, projection) = camera.into_inner();
+
+    let pos = camera_t.translation;
+    let Projection::Orthographic(projection) = projection else {
+        panic!("Expected Orthographic projection.");
+    };
+
     // Update speed indicator
     speed_q.as_mut().0 = format!("{}x", settings.combat_speed);
 
@@ -392,28 +431,60 @@ pub fn animate_combat(
     let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
     let combat = report.combat_report.as_ref().unwrap();
 
+    let size = IMAGE_SIZE * projection.scale;
+
+    let short_explosion = assets.texture("short explosion");
+
     if state.combat_round > combat.rounds.len() {
         next_combat_state.set(CombatState::EndCombat);
     } else if *combat_state.get() == CombatState::Fire
-        && unit_q.iter().all(|(_, _, f, _, _)| matches!(f, FireCmp::Idle | FireCmp::Fired))
+        && unit_q.iter().all(|(_, _, cu)| matches!(cu.fire, FireState::Idle | FireState::Fired))
     {
         // Select the next unit that should fire
         for side in Side::iter() {
             for unit in &units {
-                if let Some((_, _, mut f, _, _)) = unit_q
-                    .iter_mut()
-                    .find(|(_, _, f, u, s)| **f == FireCmp::Idle && *u == unit && **s == side)
-                {
-                    *f = FireCmp::Select;
+                if let Some((_, _, mut cu)) = unit_q.iter_mut().find(|(_, _, cu)| {
+                    cu.fire == FireState::Idle && cu.unit == *unit && cu.side == side
+                }) {
+                    cu.fire = FireState::Select;
                     return;
                 }
             }
         }
 
-        // No more units to fire -> next round
+        // No more units to fire -> resolve end round
+        for (unit_e, unit_t, cu) in &unit_q {
+            if cu.hull == 0 {
+                // Spawn destruction explosion
+                commands.spawn((
+                    Sprite {
+                        image: short_explosion.image.clone(),
+                        texture_atlas: Some(short_explosion.atlas.clone()),
+                        custom_size: Some(Vec2::splat(1.1 * size)),
+                        ..default()
+                    },
+                    Transform::from_xyz(unit_t.translation.x, unit_t.translation.y, EXPLOSION_Z),
+                    UnitExplosionCmp {
+                        timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+                        last_index: short_explosion.last_index,
+                        target_entity: unit_e.clone(),
+                    },
+                ));
+            } else if state.combat_round == 0 && cu.unit == Unit::probe() {
+                // Scout probes fly away
+                commands.entity(unit_e).move_to(
+                    Vec3::new(pos.x, pos.y + projection.area.height() * 0.7, COMBAT_SHIP_Z + 0.9),
+                    Duration::from_millis((2000. * settings.combat_speed.recip()) as u64),
+                    EaseFunction::QuadraticInOut,
+                );
+            }
+        }
+
         state.combat_round += 1;
         next_combat_state.set(CombatState::DisplayRound);
     }
+
+    let round = combat.rounds.get(state.combat_round).unwrap();
 
     match combat_state.get() {
         CombatState::Setup => {
@@ -428,13 +499,15 @@ pub fn animate_combat(
                 for message in anim_completed_msg.read() {
                     if entity == message.anim_entity {
                         next_combat_state.set(CombatState::Fire);
-                        commands.entity(message.anim_entity).despawn();
                     }
+
+                    // Despawn all animated entities (such as scout probes)
+                    commands.entity(message.anim_entity).despawn();
                 }
             } else {
                 // Reset all firing components
-                unit_q.iter_mut().for_each(|(_, _, mut f, _, _)| {
-                    *f = FireCmp::Idle;
+                unit_q.iter_mut().for_each(|(_, _, mut cu)| {
+                    cu.fire = FireState::Idle;
                 });
 
                 commands.spawn((
@@ -473,9 +546,9 @@ pub fn animate_combat(
             }
         },
         CombatState::Fire => {
-            for (unit_e, unit_t, mut fire, _, _) in &mut unit_q {
-                match *fire {
-                    FireCmp::Select => {
+            for (unit_e, unit_t, mut cu) in &mut unit_q {
+                match cu.fire {
+                    FireState::Select => {
                         commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
                             EaseFunction::QuadraticInOut,
                             Duration::from_millis((500. * settings.combat_speed.recip()) as u64),
@@ -484,19 +557,30 @@ pub fn animate_combat(
                                 end: unit_t.scale * 1.3,
                             },
                         )));
-                        *fire = FireCmp::PreFire;
+                        cu.fire = FireState::PreFire;
                     },
-                    FireCmp::PreFire => {
+                    FireState::PreFire => {
                         for message in anim_completed_msg.read() {
                             if unit_e == message.anim_entity {
-                                *fire = FireCmp::Firing;
+                                cu.fire = FireState::Firing;
                             }
                         }
                     },
-                    FireCmp::Firing => {
-                        *fire = FireCmp::Deselect;
+                    FireState::Firing => {
+                        let shots = match cu.side {
+                            Side::Attacker => &round.attacker,
+                            Side::Defender => &round.defender,
+                        }.iter().filter(|cu2| cu.unit == cu2.unit).flat_map(|cu2| &cu2.shots).collect::<Vec<_>>();
+
+                        for shot in shots {
+                            if let Some((_, _, cu)) = unit_q.iter().find(|(_, _, cu)| shot.unit == Some(cu.unit)) {
+
+                            }
+                        }
+
+                        cu.fire = FireState::Deselect;
                     },
-                    FireCmp::Deselect => {
+                    FireState::Deselect => {
                         commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
                             EaseFunction::QuadraticInOut,
                             Duration::from_millis((500. * settings.combat_speed.recip()) as u64),
@@ -505,12 +589,12 @@ pub fn animate_combat(
                                 end: unit_t.scale / 1.3,
                             },
                         )));
-                        *fire = FireCmp::AfterFire;
+                        cu.fire = FireState::AfterFire;
                     },
-                    FireCmp::AfterFire => {
+                    FireState::AfterFire => {
                         for message in anim_completed_msg.read() {
                             if unit_e == message.anim_entity {
-                                *fire = FireCmp::Fired;
+                                cu.fire = FireState::Fired;
                             }
                         }
                     },
@@ -519,6 +603,64 @@ pub fn animate_combat(
             }
         },
         _ => (),
+    }
+}
+
+pub fn update_combat_stats(
+    unit_q: Query<(Entity, &CombatUnitCmp)>,
+    mut shield_q: Query<(&mut Transform, &mut Sprite), With<ShieldCmp>>,
+    mut hull_q: Query<(&mut Transform, &mut Sprite), (With<HullCmp>, Without<ShieldCmp>)>,
+    children_q: Query<&Children>,
+    camera_q: Single<&Projection, With<MainCamera>>,
+) {
+    let Projection::Orthographic(projection) = camera_q.into_inner() else {
+        panic!("Expected Orthographic projection.");
+    };
+
+    let size = IMAGE_SIZE * projection.scale;
+
+    for (unit_e, cu) in &unit_q {
+        for child in children_q.iter_descendants(unit_e) {
+            if let Ok((mut shield_t, mut shield_s)) = shield_q.get_mut(child) {
+                if let Some(shield_size) = shield_s.custom_size.as_mut() {
+                    let full_size = size * 0.96;
+                    shield_size.x = full_size * cu.shield as f32 / cu.max_shield as f32;
+                    shield_t.translation.x = (shield_size.x - full_size) * 0.5;
+                }
+            }
+
+            if let Ok((mut hull_t, mut hull_s)) = hull_q.get_mut(child) {
+                if let Some(hull_size) = hull_s.custom_size.as_mut() {
+                    let full_size = size * 0.96;
+                    hull_size.x = full_size * cu.hull as f32 / cu.max_hull as f32;
+                    hull_t.translation.x = (hull_size.x - full_size) * 0.5;
+                }
+            }
+        }
+    }
+}
+
+pub fn run_combat_animations(
+    mut commands: Commands,
+    mut animation_q: Query<(Entity, &mut Sprite, &mut UnitExplosionCmp)>,
+    settings: Res<Settings>,
+    time: Res<Time>,
+) {
+    for (animation_e, mut sprite, mut animation) in &mut animation_q {
+        animation.timer.tick(scale_duration(time.delta(), settings.combat_speed));
+
+        if animation.timer.just_finished() {
+            if let Some(atlas) = &mut sprite.texture_atlas {
+                atlas.index += 1;
+
+                // Despawn image at 2/3 of the animation
+                if atlas.index == 2 * animation.last_index / 3 {
+                    commands.entity(animation.target_entity).despawn();
+                } else if atlas.index == animation.last_index {
+                    commands.entity(animation_e).try_despawn();
+                }
+            }
+        }
     }
 }
 

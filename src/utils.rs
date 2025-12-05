@@ -1,22 +1,22 @@
 use std::fmt::Debug;
 use std::net::{IpAddr, UdpSocket};
+use std::time::Duration;
 
 use bevy::prelude::Color;
 use bevy_egui::egui;
 use regex::Regex;
 
 /// Get the local IP address
-#[cfg(not(target_arch = "wasm32"))]
 pub fn get_local_ip() -> IpAddr {
     let socket = UdpSocket::bind("0.0.0.0:0").ok().expect("Socket not found.");
     socket.connect("8.8.8.8:80").ok().expect("Failed to connect to socket."); // Doesn't send data
     socket.local_addr().ok().map(|addr| addr.ip()).unwrap()
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn get_local_ip() -> IpAddr {
-    // WebAssembly in browsers cannot access local network interfaces
-    "127.0.0.1".parse().unwrap()
+/// Scale a Duration by a factor
+pub fn scale_duration(duration: Duration, scale: f32) -> Duration {
+    let sec = (duration.as_secs() as f32 + duration.subsec_nanos() as f32 * 1e-9) * scale;
+    Duration::new(sec.trunc() as u64, (sec.fract() * 1e9) as u32)
 }
 
 /// Add dots to thousands
