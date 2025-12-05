@@ -1,13 +1,14 @@
 use std::iter::Iterator;
 
-use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
 use crate::core::units::{Description, Price};
 
-#[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(
+    EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub enum Building {
     LunarBase,
     DemolitionNexus,

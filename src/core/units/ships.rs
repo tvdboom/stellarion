@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
@@ -8,7 +7,9 @@ use crate::core::resources::Resources;
 use crate::core::units::defense::Defense;
 use crate::core::units::{Combat, Description, Price, Unit};
 
-#[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(
+    EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub enum Ship {
     Probe,
     ColonyShip,

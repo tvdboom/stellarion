@@ -373,14 +373,12 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         planet_destroyed,
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
-        // todo: replace
-        // combat_report: combat_report
-        //     .rounds
-        //     .iter()
-        //     .flat_map(|r| &r.attacker)
-        //     .any(|cu| !cu.shots.is_empty())
-        //     .then_some(combat_report),
-        combat_report: Some(combat_report),
+        combat_report: combat_report
+            .rounds
+            .iter()
+            .flat_map(|r| &r.attacker)
+            .any(|cu| !cu.shots.is_empty())
+            .then_some(combat_report),
         hidden: false,
     }
 }

@@ -17,7 +17,7 @@ use crate::core::combat::combat::ShotReport;
 use crate::core::combat::report::Side;
 use crate::core::constants::{
     BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_EXPLOSION_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR,
-    PS_SHIELD_PER_LEVEL, PS_WIDTH, SHIELD_COLOR, UNIT_SIZE,
+    PS_SHIELD_PER_LEVEL, PS_WIDTH, SHIELD_COLOR, TITLE_TEXT_SIZE, UNIT_SIZE,
 };
 use crate::core::map::map::Map;
 use crate::core::map::utils::{spawn_main_button, UiTransformScaleLens};
@@ -492,7 +492,7 @@ pub fn animate_combat(
                     Sprite {
                         image: explosion.image.clone(),
                         texture_atlas: Some(explosion.atlas.clone()),
-                        custom_size: Some(Vec2::splat(1.1 * size)),
+                        custom_size: Some(Vec2::splat(1.5 * size)),
                         ..default()
                     },
                     Transform::from_xyz(
@@ -501,11 +501,12 @@ pub fn animate_combat(
                         COMBAT_EXPLOSION_Z,
                     ),
                     UnitExplosionCmp {
-                        timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+                        timer: Timer::from_seconds(0.05, TimerMode::Repeating),
                         delay: Timer::from_seconds(0., TimerMode::Once),
                         last_index: explosion.last_index,
                         target_entity: unit_e.clone(),
                     },
+                    CombatCmp,
                 ));
 
                 play_audio_msg.write(PlayAudioMsg::new("explosion"));
@@ -759,32 +760,62 @@ pub fn run_combat_animations(
         };
 
         if let Some((target_e, target_t)) = target {
-            commands.spawn((
-                Sprite {
-                    image: short_explosion.image.clone(),
-                    texture_atlas: Some(short_explosion.atlas.clone()),
-                    custom_size: Some(Vec2::splat(0.7 * size)),
-                    ..default()
-                },
-                Transform::from_xyz(
-                    rng.random_range(
-                        target_t.translation.x - size * 0.4..target_t.translation.x + size * 0.4,
-                    ),
-                    rng.random_range(
-                        target_t.translation.y - size * 0.4..target_t.translation.y + size * 0.4,
-                    ),
-                    COMBAT_EXPLOSION_Z,
-                ),
-                UnitExplosionCmp {
-                    timer: Timer::from_seconds(0.035, TimerMode::Repeating),
-                    delay: Timer::from_seconds(rng.random_range(0.0..0.5), TimerMode::Once),
-                    last_index: short_explosion.last_index,
-                    target_entity: target_e,
-                },
-                message.shot.clone(),
-            ));
+            let id = if !message.shot.missed {
+                play_audio_msg.write(PlayAudioMsg::new("short explosion"));
+                commands
+                    .spawn((
+                        Sprite {
+                            image: short_explosion.image.clone(),
+                            texture_atlas: Some(short_explosion.atlas.clone()),
+                            custom_size: Some(Vec2::splat(0.7 * size)),
+                            ..default()
+                        },
+                        UnitExplosionCmp {
+                            timer: Timer::from_seconds(0.035, TimerMode::Repeating),
+                            delay: Timer::from_seconds(rng.random_range(0.0..0.5), TimerMode::Once),
+                            last_index: short_explosion.last_index,
+                            target_entity: target_e,
+                        },
+                        message.shot.clone(),
+                        CombatCmp,
+                    ))
+                    .id()
+            } else {
+                commands
+                    .spawn((
+                        Text2d::new("Miss"),
+                        TextFont {
+                            font: assets.font("bold"),
+                            font_size: 15.,
+                            ..default()
+                        },
+                        TextColor(WHITE.into()),
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::QuadraticOut,
+                                Duration::from_millis((750. * settings.combat_speed.recip()) as u64),
+                                TransformScaleLens {
+                                    start: Vec3::splat(0.),
+                                    end: Vec3::splat(1.0),
+                                },
+                            )
+                            .with_repeat_count(RepeatCount::Finite(2))
+                            .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
+                        ),
+                        CombatCmp,
+                    ))
+                    .id()
+            };
 
-            play_audio_msg.write(PlayAudioMsg::new("short explosion"));
+            commands.entity(id).insert(Transform::from_xyz(
+                rng.random_range(
+                    target_t.translation.x - size * 0.4..target_t.translation.x + size * 0.4,
+                ),
+                rng.random_range(
+                    target_t.translation.y - size * 0.4..target_t.translation.y + size * 0.4,
+                ),
+                COMBAT_EXPLOSION_Z,
+            ));
         }
     }
 
@@ -801,19 +832,51 @@ pub fn run_combat_animations(
             if let Some(atlas) = &mut sprite.texture_atlas {
                 atlas.index += 1;
 
-                // Despawn image or resolve damage at 1/5 of the animation
-                if atlas.index == animation.last_index / 5 {
-                    if let Some(shot) = shot {
+                // Resolve damage at 1/5 of the animation
+                if let Some(shot) = shot {
+                    if atlas.index == animation.last_index / 5 {
                         if let Ok((_, _, mut cu)) = unit_q.get_mut(animation.target_entity) {
                             cu.shield -= shot.shield_damage;
                             cu.hull -= shot.hull_damage;
-                        } else if let Ok((_, mut ps)) = ps_q.get_mut(animation.target_entity) {
+                        } else if let Ok((ps_e, mut ps)) = ps_q.get_mut(animation.target_entity) {
                             ps.shield -= shot.planetary_shield_damage;
+
+                            if ps.shield == 0 {
+                                let explosion = assets.texture("explosion");
+
+                                let ps_t = ps_image_q.iter().next().unwrap().compute_transform();
+
+                                commands.spawn((
+                                    Sprite {
+                                        image: explosion.image.clone(),
+                                        texture_atlas: Some(explosion.atlas.clone()),
+                                        custom_size: Some(Vec2::splat(1.5 * size)),
+                                        ..default()
+                                    },
+                                    Transform::from_xyz(
+                                        ps_t.translation.x,
+                                        ps_t.translation.y,
+                                        COMBAT_EXPLOSION_Z,
+                                    ),
+                                    UnitExplosionCmp {
+                                        timer: Timer::from_seconds(0.05, TimerMode::Repeating),
+                                        delay: Timer::from_seconds(0., TimerMode::Once),
+                                        last_index: explosion.last_index,
+                                        target_entity: ps_e.clone(),
+                                    },
+                                    CombatCmp,
+                                ));
+
+                                play_audio_msg.write(PlayAudioMsg::new("explosion"));
+                            }
                         }
-                    } else {
-                        commands.entity(animation.target_entity).despawn();
                     }
-                } else if atlas.index == animation.last_index {
+                } else if atlas.index == 3 * animation.last_index / 5 {
+                    // Despawn the target entity at 3/5 of the animation
+                    commands.entity(animation.target_entity).despawn();
+                }
+
+                if atlas.index == animation.last_index {
                     commands.entity(animation_e).try_despawn();
                 }
             }

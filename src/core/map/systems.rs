@@ -33,7 +33,7 @@ use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Amount, Unit};
+use crate::core::units::{Amount, Army, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
@@ -371,11 +371,11 @@ pub fn draw_map(
                                                     map.get(planet_id),
                                                     icon,
                                                     match icon {
-                                                        Icon::Colonize => HashMap::from([(
+                                                        Icon::Colonize => Army::from([(
                                                             Unit::Ship(Ship::ColonyShip),
                                                             1,
                                                         )]),
-                                                        Icon::Spy => HashMap::from([(
+                                                        Icon::Spy => Army::from([(
                                                             Unit::probe(),
                                                             origin.army.amount(&Unit::probe()),
                                                         )]),
@@ -387,7 +387,7 @@ pub fn draw_map(
                                                                     .then_some((*u, *c))
                                                             })
                                                             .collect(),
-                                                        Icon::MissileStrike => HashMap::from([(
+                                                        Icon::MissileStrike => Army::from([(
                                                             Unit::interplanetary_missile(),
                                                             origin.army.amount(
                                                                 &Unit::interplanetary_missile(),

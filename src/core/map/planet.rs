@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Range;
 
 use bevy::math::Vec2;
@@ -389,7 +388,7 @@ impl Planet {
     pub fn destroy(&mut self) {
         self.owned = None;
         self.controlled = None;
-        self.army = HashMap::new();
+        self.army = Army::new();
         self.buy = Vec::new();
         self.is_destroyed = true;
     }

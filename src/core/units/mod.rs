@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub trait Combat {
     }
 }
 
-pub type Army = HashMap<Unit, usize>;
+pub type Army = BTreeMap<Unit, usize>;
 
 pub trait Amount {
     fn amount(&self, unit: &Unit) -> usize;
@@ -58,7 +58,7 @@ impl Amount for Army {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Unit {
     Building(Building),
     Ship(Ship),

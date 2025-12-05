@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use itertools::Itertools;
 use rand::rng;
@@ -22,7 +20,7 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
-use crate::core::units::Unit;
+use crate::core::units::{Army, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Message)]
@@ -283,7 +281,7 @@ pub fn resolve_turn(
                                     destination,
                                     &new_origin,
                                     Icon::Deploy,
-                                    HashMap::from([(Unit::probe(), report.scout_probes)]),
+                                    Army::from([(Unit::probe(), report.scout_probes)]),
                                     BombingRaid::None,
                                     false,
                                     false,

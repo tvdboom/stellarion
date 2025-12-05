@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Army, Combat, Description, Price, Unit};
+use crate::core::units::{Combat, Description, Price, Unit};
 
-#[derive(Component, EnumIter, Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(
+    EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub enum Defense {
     Crawler,
     RocketLauncher,
@@ -197,7 +198,7 @@ impl Combat for Defense {
                 (Unit::Defense(Defense::IonCannon), 50),
                 (Unit::Defense(Defense::PlasmaTurret), 40),
             ]),
-            _ => Army::new(),
+            _ => HashMap::new(),
         }
     }
 
