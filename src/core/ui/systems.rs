@@ -229,7 +229,7 @@ fn draw_combat_army_grid(
         {
             let n_repaired = own
                 .iter()
-                .filter_map(|cu| (cu.unit == unit).then_some(cu.n_repaired))
+                .filter_map(|cu| (cu.unit == unit).then_some(cu.repairs.len()))
                 .sum::<usize>();
             let shots = enemy
                 .iter()
@@ -304,7 +304,7 @@ fn draw_combat_army_grid(
                         (
                             all_cu
                                 .iter()
-                                .map(|cu| cu.repaired as f32)
+                                .map(|cu| cu.repairs.iter().sum::<usize>() as f32)
                                 .sum::<f32>()
                                 .safe_div((count * unit.hull()) as f32),
                             0.,
@@ -2113,7 +2113,7 @@ fn draw_combat_report(
             )
             .collect::<Vec<_>>();
         let shots_missed = u_shots.iter().filter(|s| s.missed).count();
-        let total_repaired = units.iter().map(|cu| cu.repaired).sum::<usize>();
+        let total_repaired = units.iter().map(|cu| cu.repairs.len()).sum::<usize>();
         let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
         let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
 

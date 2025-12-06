@@ -29,8 +29,7 @@ pub struct CombatUnit {
     pub unit: Unit,
     pub hull: usize,
     pub shield: usize,
-    pub repaired: usize,
-    pub n_repaired: usize,
+    pub repairs: Vec<usize>,
     pub shots: Vec<ShotReport>,
 }
 
@@ -41,8 +40,7 @@ impl CombatUnit {
             unit: unit.clone(),
             hull: unit.hull(),
             shield: unit.shield(),
-            repaired: 0,
-            n_repaired: 0,
+            repairs: vec![],
             shots: vec![],
         }
     }
@@ -98,6 +96,12 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         .flat_map(|(unit, count)| (0..*count).map(|_| CombatUnit::new(unit)))
         .collect();
 
+    // Sort armies by firing order
+    let firing_order = Unit::all_firing_order();
+    let rank: Army = firing_order.iter().enumerate().map(|(i, u)| (*u, i)).collect();
+    attack_army.sort_by_key(|cu| rank.get(&cu.unit).copied().unwrap_or(usize::MAX));
+    defend_army.sort_by_key(|cu| rank.get(&cu.unit).copied().unwrap_or(usize::MAX));
+
     let mut rng = rng();
 
     let mut round = 1;
@@ -120,8 +124,11 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                 Side::Defender => (&mut defend_army, &mut attack_army),
             };
 
-            // Reset all attacker's shots and defender's shields
-            army.iter_mut().for_each(|u| u.shots = vec![]);
+            // Reset all repairs, shots and defender's shields
+            army.iter_mut().for_each(|u| {
+                u.repairs = vec![];
+                u.shots = vec![];
+            });
             enemy_army.iter_mut().for_each(|u| u.shield = u.unit.shield());
 
             'unit: for unit in army {
@@ -243,8 +250,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
 
             if let Some(target) = pool.choose(&mut rng) {
                 let heal = (target.unit.hull() - target.hull).min(CRAWLER_HEALING_PER_ROUND);
-                target.repaired += heal;
-                target.n_repaired += 1;
+                target.repairs.push(heal);
+                println!("Healing {:?} for {}", target.unit, heal);
                 target.hull += heal;
             }
         }

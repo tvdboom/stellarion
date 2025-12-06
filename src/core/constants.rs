@@ -39,8 +39,9 @@ pub const RADAR_DISTANCE: f32 = 1.0;
 pub const CRAWLER_HEALING_PER_ROUND: usize = 30;
 
 /// Combat
+pub const SETUP_TIME: u64 = 2;
 pub const UNIT_SIZE: f32 = 120.;
-pub const PS_WIDTH: f32 = 11.; // Times larger than the unit size
+pub const PS_WIDTH: f32 = 11.;
 pub const COMBAT_BACKGROUND_Z: f32 = 10.;
 pub const COMBAT_SHIP_Z: f32 = 11.;
 pub const COMBAT_EXPLOSION_Z: f32 = 12.;

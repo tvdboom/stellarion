@@ -14,8 +14,19 @@ pub struct Settings {
     pub show_info: bool,
     pub show_hover: bool,
     pub show_menu: bool,
+    pub combat_paused: bool,
     pub combat_speed: f32,
     pub turn: usize,
+}
+
+impl Settings {
+    pub fn speed(&self) -> f32 {
+        if self.combat_paused {
+            0.
+        } else {
+            self.combat_speed
+        }
+    }
 }
 
 impl Default for Settings {
@@ -30,6 +41,7 @@ impl Default for Settings {
             show_info: false,
             show_hover: true,
             show_menu: true,
+            combat_paused: false,
             combat_speed: 1.0,
             turn: 1,
         }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub trait Combat {
     }
 }
 
-pub type Army = BTreeMap<Unit, usize>;
+pub type Army = HashMap<Unit, usize>;
 
 pub trait Amount {
     fn amount(&self, unit: &Unit) -> usize;
@@ -100,6 +100,16 @@ impl Unit {
         } else {
             vec![Self::lunar_buildings(), Self::ships()]
         }
+    }
+
+    pub fn all_firing_order() -> Vec<Self> {
+        Unit::ships()
+            .into_iter()
+            .chain(std::iter::once(Unit::space_dock()))
+            .chain(Unit::defenses())
+            .filter(|u| *u != Unit::crawler())
+            .chain(std::iter::once(Unit::crawler()))
+            .collect()
     }
 
     pub fn resource_buildings() -> Vec<Self> {

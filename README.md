@@ -86,7 +86,8 @@ damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of 
 unit starts with its shield at its initial value. The hull has the value of previous round 
 (initial value of the ship if it's the first round). In each round, all participating units 
 randomly choose a target enemy unit. Shots are resolved per ship type in increasing production
-order, i.e., the lowest production units shoots first, and the highest production units shoot last.
+order, i.e., the lowest production units shoots first, and the highest production units shoot last
+(ships fire before defenses).
 
 For each shooting unit:
 

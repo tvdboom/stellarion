@@ -63,6 +63,7 @@ impl FromWorld for WorldAssets {
             ("music", assets.load("audio/music.ogg")),
             ("horn", assets.load("audio/horn.ogg")),
             ("drums", assets.load("audio/drums.ogg")),
+            ("repair", assets.load("audio/repair.ogg")),
             ("explosion", assets.load("audio/explosion.ogg")),
             ("short explosion", assets.load("audio/short explosion.ogg")),
         ]);
@@ -85,6 +86,7 @@ impl FromWorld for WorldAssets {
             ("eye", assets.load("images/icons/eye.png")),
             ("missile", assets.load("images/icons/missile.png")),
             ("logs", assets.load("images/icons/logs.png")),
+            ("repair", assets.load("images/icons/repair.png")),
             ("convert", assets.load("images/icons/convert.png")),
             ("convert hover", assets.load("images/icons/convert hover.png")),
             ("dock", assets.load("images/icons/dock.png")),
