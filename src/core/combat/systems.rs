@@ -94,7 +94,10 @@ pub struct SpawnShotMsg {
 }
 
 #[derive(Component)]
-pub struct RepairCmp(usize);
+pub struct RepairCmp {
+    pub unit: Unit,
+    pub amount: usize,
+}
 
 #[derive(Component)]
 pub struct UnitExplosionCmp {
@@ -429,7 +432,7 @@ pub fn setup_combat(
 pub fn animate_combat(
     mut commands: Commands,
     mut speed_q: Single<&mut Text, With<SpeedCmp>>,
-    mut anim_q: Query<&mut TweenAnim>,
+    mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
     round_q: Option<Single<Entity, With<DisplayRoundCmp>>>,
     mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
     settings: Res<Settings>,
@@ -529,7 +532,7 @@ pub fn animate_combat(
             }
         }
 
-        next_combat_state.set(if state.combat_round == combat.rounds.len() {
+        next_combat_state.set(if state.combat_round == combat.rounds.len() - 1 {
             CombatState::EndCombat
         } else {
             state.combat_round += 1;
@@ -629,7 +632,6 @@ pub fn animate_combat(
                                 .iter()
                                 .flat_map(|cu2| cu2.repairs.iter().map(move |r| (cu2.unit, r)))
                                 .collect::<Vec<_>>();
-                            println!("repairs: {:?}", repaired);
 
                             for (unit, repair) in repaired {
                                 if *repair > 0 {
@@ -638,7 +640,6 @@ pub fn animate_combat(
                                         shot: ShotReport {
                                             unit: Some(unit),
                                             hull_damage: *repair,
-                                            planetary_shield_damage: usize::MAX, // Indicate it's a repair within the ShotReport struct
                                             ..default()
                                         },
                                         repair: true,
@@ -823,7 +824,10 @@ pub fn run_combat_animations(
                                 .with_cycle_completed_event(true),
                             ),
                         ),
-                        RepairCmp(message.shot.hull_damage),
+                        RepairCmp {
+                            unit: message.shot.unit.unwrap(),
+                            amount: message.shot.hull_damage,
+                        },
                     ))
                     .id()
             } else if message.shot.missed {
@@ -874,15 +878,25 @@ pub fn run_combat_animations(
             };
 
             commands.entity(id).insert((
-                Transform::from_xyz(
-                    rng.random_range(
-                        target_t.translation.x - size * 0.4..target_t.translation.x + size * 0.4,
+                Transform {
+                    translation: Vec3::new(
+                        rng.random_range(
+                            target_t.translation.x - size * 0.4
+                                ..target_t.translation.x + size * 0.4,
+                        ),
+                        rng.random_range(
+                            target_t.translation.y - size * 0.4
+                                ..target_t.translation.y + size * 0.4,
+                        ),
+                        COMBAT_EXPLOSION_Z,
                     ),
-                    rng.random_range(
-                        target_t.translation.y - size * 0.4..target_t.translation.y + size * 0.4,
-                    ),
-                    COMBAT_EXPLOSION_Z,
-                ),
+                    scale: Vec3::splat(if message.repair {
+                        0.
+                    } else {
+                        1.0
+                    }),
+                    ..default()
+                },
                 CombatCmp,
             ));
         }
@@ -891,8 +905,10 @@ pub fn run_combat_animations(
     // Resolve repairs
     for message in cycle_completed_msg.read() {
         if let Ok((repair_e, repair)) = repair_q.get_mut(message.anim_entity) {
-            if let Ok((_, _, mut cu)) = unit_q.get_mut(message.anim_entity) {
-                cu.hull += repair.0;
+            if let Some((_, _, mut cu)) =
+                unit_q.iter_mut().find(|(_, _, cu)| cu.unit == repair.unit)
+            {
+                cu.hull += repair.amount;
             }
 
             // Remove component to not trigger again when return cycle finishes

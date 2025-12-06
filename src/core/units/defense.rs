@@ -51,7 +51,8 @@ impl Description for Defense {
             Defense::Crawler => {
                 "Crawlers are robots that perform repairing operations on damaged defenses. \
                 They have no damage, and are targeted during combat as any other unit. After every \
-                combat round, each crawler repairs 30 hull points from a random defense turret."
+                combat round, each surviving crawler repairs 50 hull points from a random defense \
+                turret."
             },
             Defense::RocketLauncher => {
                 "The Rocket Launcher is the weakest defense you can build. They are used as \

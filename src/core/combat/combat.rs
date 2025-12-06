@@ -251,7 +251,6 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
             if let Some(target) = pool.choose(&mut rng) {
                 let heal = (target.unit.hull() - target.hull).min(CRAWLER_HEALING_PER_ROUND);
                 target.repairs.push(heal);
-                println!("Healing {:?} for {}", target.unit, heal);
                 target.hull += heal;
             }
         }

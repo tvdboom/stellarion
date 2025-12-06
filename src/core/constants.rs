@@ -36,7 +36,7 @@ pub const PS_SHIELD_PER_LEVEL: usize = 100;
 pub const NEXUS_FACTOR: f32 = 0.1;
 pub const PHALANX_DISTANCE: f32 = 0.8;
 pub const RADAR_DISTANCE: f32 = 1.0;
-pub const CRAWLER_HEALING_PER_ROUND: usize = 30;
+pub const CRAWLER_HEALING_PER_ROUND: usize = 50;
 
 /// Combat
 pub const SETUP_TIME: u64 = 2;
