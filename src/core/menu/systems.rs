@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_renet::renet::RenetServer;
 
 use crate::core::assets::WorldAssets;
+use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
 use crate::core::constants::{
     BUTTON_TEXT_SIZE, DISABLED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, TITLE_TEXT_SIZE,
 };
@@ -349,14 +350,17 @@ pub fn setup_end_game(
     mut commands: Commands,
     map: Res<Map>,
     player: Res<Player>,
+    mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     assets: Local<WorldAssets>,
     window: Single<&Window>,
 ) {
-    let image = if player.owns(map.get(player.home_planet)) {
-        "victory"
+    let (image, audio) = if player.owns(map.get(player.home_planet)) {
+        ("victory bg", "victory")
     } else {
-        "defeat"
+        ("defeat bg", "defeat")
     };
+
+    play_audio_msg.write(PlayAudioMsg::new(audio));
 
     commands
         .spawn((add_root_node(true), ImageNode::new(assets.image(image)), MenuCmp))
@@ -376,4 +380,8 @@ pub fn setup_end_game(
                     spawn_menu_button(parent, MenuBtn::Quit, &assets, &window);
                 });
         });
+}
+
+pub fn exit_end_game(mut mute_audio_msg: MessageWriter<MuteAudioMsg>) {
+    mute_audio_msg.write(MuteAudioMsg);
 }

@@ -59,6 +59,8 @@ impl FromWorld for WorldAssets {
             ("message", assets.load("audio/message.ogg")),
             ("warning", assets.load("audio/warning.ogg")),
             ("error", assets.load("audio/error.ogg")),
+            ("victory", assets.load("audio/victory.ogg")),
+            ("draw", assets.load("audio/draw.ogg")),
             ("defeat", assets.load("audio/defeat.ogg")),
             ("music", assets.load("audio/music.ogg")),
             ("horn", assets.load("audio/horn.ogg")),
@@ -66,6 +68,8 @@ impl FromWorld for WorldAssets {
             ("repair", assets.load("audio/repair.ogg")),
             ("explosion", assets.load("audio/explosion.ogg")),
             ("short explosion", assets.load("audio/short explosion.ogg")),
+            ("large explosion", assets.load("audio/large explosion.ogg")),
+            ("death ray", assets.load("audio/death ray.ogg")),
         ]);
 
         let fonts = HashMap::from([
@@ -102,7 +106,10 @@ impl FromWorld for WorldAssets {
             ("menu", assets.load("images/bg/menu.png")),
             ("combat", assets.load("images/bg/combat.png")),
             ("defeat", assets.load("images/bg/defeat.png")),
+            ("defeat bg", assets.load("images/bg/defeat bg.png")),
+            ("draw", assets.load("images/bg/draw.png")),
             ("victory", assets.load("images/bg/victory.png")),
+            ("victory bg", assets.load("images/bg/victory bg.png")),
             // Ui
             ("panel", assets.load("images/ui/panel.png")),
             ("thin panel", assets.load("images/ui/thin panel.png")),
@@ -185,6 +192,7 @@ impl FromWorld for WorldAssets {
             ("explosion", assets.load("images/animations/explosion.png")),
             ("short explosion", assets.load("images/animations/short explosion.png")),
             ("flame", assets.load("images/animations/flame.png")),
+            ("death ray", assets.load("images/animations/death ray.png")),
         ]);
 
         for i in 0..65 {
@@ -211,6 +219,8 @@ impl FromWorld for WorldAssets {
         let explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 256), 8, 6, None, None);
         let short_explosion = TextureAtlasLayout::from_grid(UVec2::new(256, 251), 8, 4, None, None);
         let flame = TextureAtlasLayout::from_grid(UVec2::new(124, 54), 1, 12, None, None);
+        let death_ray =
+            TextureAtlasLayout::from_grid(UVec2::new(190, 474), 9, 1, Some(UVec2::splat(2)), None);
         let textures: HashMap<&'static str, TextureInfo> = HashMap::from([
             (
                 "long button",
@@ -254,6 +264,17 @@ impl FromWorld for WorldAssets {
                         index: 1,
                     },
                     last_index: 8,
+                },
+            ),
+            (
+                "death ray",
+                TextureInfo {
+                    image: images["death ray"].clone(),
+                    atlas: TextureAtlas {
+                        layout: texture.add(death_ray),
+                        index: 1,
+                    },
+                    last_index: 9,
                 },
             ),
         ]);

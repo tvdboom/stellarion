@@ -1382,7 +1382,7 @@ fn draw_new_mission(
                     state.mission_info.army.amount(&Unit::interplanetary_missile())
                         == state.mission_info.total()
                 },
-                Icon::Destroy => state.mission_info.army.amount(&Unit::Ship(Ship::WarSun)) > 0,
+                Icon::Destroy => state.mission_info.army.amount(&Unit::war_sun()) > 0,
                 _ => unreachable!(),
             };
 

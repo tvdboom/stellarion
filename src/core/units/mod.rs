@@ -149,6 +149,9 @@ impl Unit {
     pub fn colony_ship() -> Self {
         Unit::Ship(Ship::ColonyShip)
     }
+    pub fn war_sun() -> Self {
+        Unit::Ship(Ship::WarSun)
+    }
 
     pub fn crawler() -> Self {
         Unit::Defense(Defense::Crawler)

@@ -71,7 +71,15 @@ impl MissionReport {
         }
     }
 
-    pub fn image(&self, player: &Player) -> &str {
+    pub fn status(&self, player: &Player) -> &'static str {
+        match self.winner() {
+            None => "draw",
+            Some(id) if id == player.id => "victory",
+            _ => "defeat",
+        }
+    }
+
+    pub fn image(&self, player: &Player) -> &'static str {
         match self.mission.objective {
             Icon::MissileStrike => "missile",
             Icon::Spy if self.scout_probes > 0 => "eye",

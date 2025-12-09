@@ -66,6 +66,9 @@ impl StopAudioMsg {
     }
 }
 
+#[derive(Message, Clone)]
+pub struct MuteAudioMsg;
+
 #[derive(Component)]
 pub struct MusicBtnCmp;
 
@@ -107,7 +110,7 @@ pub fn update_audio(
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut pause_audio_msg: MessageWriter<PauseAudioMsg>,
     mut stop_audio_msg: MessageWriter<StopAudioMsg>,
-    playing_audio: Res<PlayingAudio>,
+    mut mute_audio_msg: MessageWriter<MuteAudioMsg>,
     assets: Local<WorldAssets>,
 ) {
     for ev in change_audio_msg.read() {
@@ -120,13 +123,7 @@ pub fn update_audio(
         if let Ok(mut node) = btn_q.single_mut() {
             node.image = match settings.audio {
                 AudioState::Mute => {
-                    for name in playing_audio.0.keys() {
-                        if *name == "music" {
-                            pause_audio_msg.write(PauseAudioMsg::new(name));
-                        } else {
-                            stop_audio_msg.write(StopAudioMsg::new(name));
-                        }
-                    }
+                    mute_audio_msg.write(MuteAudioMsg);
                     next_audio_state.set(AudioState::Mute);
                     assets.image("mute")
                 },
@@ -167,7 +164,7 @@ pub fn update_audio(
     }
 }
 
-pub fn toggle_audio_keyboard(
+pub fn toggle_audio(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut change_audio_msg: MessageWriter<ChangeAudioMsg>,
 ) {
@@ -255,6 +252,23 @@ pub fn stop_audio(
             if let Some(instance) = audio_instances.get_mut(handle) {
                 instance.stop(PlayingAudio::TWEEN);
                 playing_audio.0.remove(message.name);
+            }
+        }
+    }
+}
+
+pub fn mute_audio(
+    mut mute_audio_msg: MessageReader<MuteAudioMsg>,
+    playing_audio: Res<PlayingAudio>,
+    mut pause_audio_msg: MessageWriter<PauseAudioMsg>,
+    mut stop_audio_msg: MessageWriter<StopAudioMsg>,
+) {
+    for _ in mute_audio_msg.read() {
+        for name in playing_audio.0.keys() {
+            if *name == "music" {
+                pause_audio_msg.write(PauseAudioMsg::new(name));
+            } else {
+                stop_audio_msg.write(StopAudioMsg::new(name));
             }
         }
     }

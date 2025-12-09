@@ -313,10 +313,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         if mission.objective == Icon::Destroy
             && !defend_army.iter().any(|u| u.unit.is_ship() || u.unit == Unit::space_dock())
         {
-            let war_suns = attack_army
-                .iter()
-                .filter(|u| u.unit == Unit::Ship(Ship::WarSun))
-                .collect::<Vec<_>>();
+            let war_suns =
+                attack_army.iter().filter(|u| u.unit == Unit::war_sun()).collect::<Vec<_>>();
             let destroy_probability = destination.destroy_probability() - 0.01 * round as f32;
             for _ in war_suns.iter() {
                 if rng.random::<f32>() < destroy_probability {
@@ -379,11 +377,12 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         planet_destroyed,
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
-        combat_report: combat_report
+        combat_report: (combat_report
             .rounds
             .iter()
-            .flat_map(|r| &r.attacker)
+            .flat_map(|r| r.attacker.iter().chain(r.defender.iter()))
             .any(|cu| !cu.shots.is_empty())
+            || mission.objective == Icon::Destroy)
             .then_some(combat_report),
         hidden: false,
     }

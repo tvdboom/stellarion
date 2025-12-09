@@ -31,6 +31,7 @@ pub enum CombatState {
     Setup,
     DisplayRound,
     Fire,
+    DeathRay,
     EndCombat,
 }
 

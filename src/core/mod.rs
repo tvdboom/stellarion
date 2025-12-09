@@ -37,7 +37,7 @@ use crate::core::map::systems::{
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
-    setup_end_game, setup_game_menu, setup_game_settings, setup_menu, update_ip,
+    exit_end_game, setup_end_game, setup_game_menu, setup_game_settings, setup_menu, update_ip,
 };
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{update_missions, SendMissionMsg};
@@ -71,6 +71,7 @@ impl Plugin for GamePlugin {
             .add_message::<PlayAudioMsg>()
             .add_message::<PauseAudioMsg>()
             .add_message::<StopAudioMsg>()
+            .add_message::<MuteAudioMsg>()
             .add_message::<ChangeAudioMsg>()
             .add_message::<SaveGameMsg>()
             .add_message::<LoadGameMsg>()
@@ -120,7 +121,7 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(GameState::Playing), play_music)
             .add_systems(
                 Update,
-                (toggle_audio_keyboard, update_audio, play_audio, pause_audio, stop_audio),
+                (toggle_audio, update_audio, play_audio, pause_audio, stop_audio, mute_audio),
             )
             //Networking
             .add_systems(
@@ -202,6 +203,6 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(GameState::Settings), setup_game_settings)
             .add_systems(OnExit(GameState::Settings), despawn::<MenuCmp>)
             .add_systems(OnEnter(GameState::EndGame), setup_end_game)
-            .add_systems(OnExit(GameState::EndGame), despawn::<MenuCmp>);
+            .add_systems(OnExit(GameState::EndGame), (despawn::<MenuCmp>, exit_end_game));
     }
 }

@@ -4,8 +4,6 @@ use strum_macros::EnumIter;
 
 use crate::core::map::planet::Planet;
 use crate::core::ui::systems::Shop;
-use crate::core::units::defense::Defense;
-use crate::core::units::ships::Ship;
 use crate::core::units::{Description, Unit};
 
 #[derive(
@@ -88,11 +86,11 @@ impl Icon {
             Icon::Buildings => origin.has_buildings(),
             Icon::Fleet => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
-            Icon::Colonize => origin.has(&Unit::Ship(Ship::ColonyShip)),
+            Icon::Colonize => origin.has(&Unit::colony_ship()),
             Icon::Attack => origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
-            Icon::Spy => origin.has(&Unit::Ship(Ship::Probe)),
-            Icon::MissileStrike => origin.has(&Unit::Defense(Defense::InterplanetaryMissile)),
-            Icon::Destroy => origin.has(&Unit::Ship(Ship::WarSun)),
+            Icon::Spy => origin.has(&Unit::probe()),
+            Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
+            Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
             _ => unreachable!(),
         }
