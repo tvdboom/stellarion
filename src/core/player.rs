@@ -111,7 +111,9 @@ impl Player {
                         army: Army::new(),
                     });
                 }
-            } else if r.mission.destination == planet.id {
+            } else if r.mission.destination == planet.id
+                && r.mission.objective != Icon::MissileStrike
+            {
                 // Mission arrived at this planet
                 let can_see = r.can_see(&Side::Defender, self.id);
                 reports.push(PlanetInfo {

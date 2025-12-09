@@ -2296,28 +2296,44 @@ fn draw_combat_report(
                         ui.label("No defending units.");
                     } else {
                         ui.horizontal_top(|ui| {
-                            let hovered1 = if round.defender.iter().any(|cu| cu.unit.is_ship()) {
-                                draw_combat_army_grid(
-                                    ui,
-                                    "combat_defender1",
-                                    state,
-                                    &round,
-                                    Unit::ships(),
-                                    Side::Defender,
-                                    defend_c,
-                                    images,
-                                )
+                            let hovered1 = if report.mission.objective != Icon::MissileStrike {
+                                if round.defender.iter().any(|cu| cu.unit.is_ship()) {
+                                    draw_combat_army_grid(
+                                        ui,
+                                        "combat_defender1",
+                                        state,
+                                        &round,
+                                        Unit::ships(),
+                                        Side::Defender,
+                                        defend_c,
+                                        images,
+                                    )
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             };
 
-                            let hovered2 = if round.defender.iter().any(|cu| cu.unit.is_defense()) {
+                            let defenses: Vec<Unit> = round
+                                .defender
+                                .iter()
+                                .filter_map(|cu| {
+                                    (cu.unit.is_defense()
+                                        && (report.mission.objective != Icon::MissileStrike
+                                            || cu.unit != Unit::space_dock()))
+                                    .then_some(cu.unit)
+                                })
+                                .unique_by(|u| *u) // Don't use .unique() to preserve order
+                                .collect();
+
+                            let hovered2 = if !defenses.is_empty() {
                                 draw_combat_army_grid(
                                     ui,
                                     "combat_defender2",
                                     state,
                                     &round,
-                                    Unit::defenses(),
+                                    defenses,
                                     Side::Defender,
                                     defend_c,
                                     images,
@@ -2328,7 +2344,9 @@ fn draw_combat_report(
 
                             any_hovered = any_hovered || hovered1 || hovered2;
 
-                            if report.planet.army.amount(&Unit::planetary_shield()) > 0 {
+                            if report.planet.army.amount(&Unit::planetary_shield()) > 0
+                                && report.mission.objective != Icon::MissileStrike
+                            {
                                 draw_combat_army_grid(
                                     ui,
                                     "combat_buildings1",

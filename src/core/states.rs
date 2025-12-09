@@ -29,6 +29,7 @@ pub enum GameState {
 pub enum CombatState {
     #[default]
     Setup,
+    AntiBallistic,
     DisplayRound,
     Fire,
     DeathRay,

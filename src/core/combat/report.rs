@@ -55,6 +55,7 @@ impl MissionReport {
     pub fn winner(&self) -> Option<ClientId> {
         match self.mission.objective {
             Icon::Spy if self.scout_probes > 0 => None,
+            Icon::MissileStrike => None,
             _ => {
                 if self.surviving_attacker.iter().any(|(u, c)| {
                     if *u == Unit::probe() {
@@ -94,7 +95,7 @@ impl MissionReport {
                 self.mission.owner == player_id
                     || self.planet.owned == Some(player_id)
                     || self.winner() == Some(player_id)
-                    || self.mission.objective == Icon::Spy // Spy winner returns None
+                    || matches!(self.mission.objective, Icon::Spy | Icon::MissileStrike)
             },
             Side::Defender => {
                 self.planet.controlled == Some(player_id) || self.winner() == Some(player_id)

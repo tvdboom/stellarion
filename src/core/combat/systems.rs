@@ -58,6 +58,15 @@ pub enum FireState {
     Fired,
 }
 
+impl FireState {
+    pub fn has_fired(&self) -> bool {
+        matches!(
+            self,
+            FireState::Firing | FireState::Deselect | FireState::AfterFire | FireState::Fired
+        )
+    }
+}
+
 #[derive(Component)]
 pub struct CombatUnitCmp {
     pub unit: Unit,
@@ -304,23 +313,32 @@ pub fn setup_combat(
         .into_iter()
         .filter_map(|u| {
             let amount = report.planet.army.amount(&u);
-            (!u.is_missile() && u != Unit::space_dock() && amount > 0).then_some((u, amount))
+            ((!u.is_missile()
+                || report.mission.objective == Icon::MissileStrike
+                    && u == Unit::antiballistic_missile())
+                && u != Unit::space_dock()
+                && amount > 0)
+                .then_some((u, amount))
         })
         .collect::<Vec<_>>();
 
-    let defending_ships = Unit::ships()
-        .into_iter()
-        .chain(vec![Unit::space_dock()])
-        .filter_map(|u| {
-            let amount = report.planet.army.amount(&u);
-            (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
-        })
-        .collect::<Vec<_>>();
-
-    let ship_y = if defending_def.len() > 0 {
-        0.1
+    let defending_ships = if report.mission.objective != Icon::MissileStrike {
+        Unit::ships()
+            .into_iter()
+            .chain(vec![Unit::space_dock()])
+            .filter_map(|u| {
+                let amount = report.planet.army.amount(&u);
+                (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
+            })
+            .collect::<Vec<_>>()
     } else {
+        Vec::new()
+    };
+
+    let ship_y = if defending_def.is_empty() {
         0.36
+    } else {
+        0.1
     };
 
     spawn_row(
@@ -342,7 +360,7 @@ pub fn setup_combat(
 
     // Spawn Planetary Shield image
     let ps = report.planet.army.amount(&Unit::planetary_shield());
-    if ps > 0 {
+    if ps > 0 && report.mission.objective != Icon::MissileStrike {
         let (bar_width, bar_height) = (size * PS_WIDTH, size * 0.3);
         let w = size * 0.3;
 
@@ -479,8 +497,10 @@ pub fn animate_combat(
 
     let explosion = assets.texture("explosion");
 
-    if matches!(combat_state.get(), CombatState::Fire | CombatState::DeathRay)
-        && unit_q.iter().all(|(_, _, cu)| matches!(cu.fire, FireState::Idle | FireState::Fired))
+    if matches!(
+        combat_state.get(),
+        CombatState::AntiBallistic | CombatState::Fire | CombatState::DeathRay
+    ) && unit_q.iter().all(|(_, _, cu)| matches!(cu.fire, FireState::Idle | FireState::Fired))
     {
         'side: for side in Side::iter() {
             // If all enemy units are destroyed, end combat prematurely
@@ -568,7 +588,17 @@ pub fn animate_combat(
         CombatState::Setup => {
             if !anim_completed_msg.is_empty() {
                 anim_completed_msg.clear();
-                next_combat_state.set(CombatState::DisplayRound);
+                next_combat_state.set(
+                    if let Some((_, _, mut cu)) = unit_q
+                        .iter_mut()
+                        .find(|(_, _, cu)| cu.unit == Unit::antiballistic_missile())
+                    {
+                        cu.fire = FireState::Select;
+                        CombatState::AntiBallistic
+                    } else {
+                        CombatState::DisplayRound
+                    },
+                );
             }
         },
         CombatState::DisplayRound => {
@@ -627,7 +657,7 @@ pub fn animate_combat(
                 ));
             }
         },
-        CombatState::Fire | CombatState::DeathRay => {
+        CombatState::AntiBallistic | CombatState::Fire | CombatState::DeathRay => {
             for (unit_e, unit_t, mut cu) in &mut unit_q {
                 match cu.fire {
                     FireState::Select => {
@@ -683,8 +713,7 @@ pub fn animate_combat(
                                                 },
                                                 Transform::from_xyz(
                                                     pos.x + rng.random_range(-5. * size..5. * size),
-                                                    pos.y
-                                                        - rng.random_range(2. * size..4. * size),
+                                                    pos.y - rng.random_range(2. * size..4. * size),
                                                     COMBAT_EXPLOSION_Z,
                                                 ),
                                                 TweenAnim::new(
@@ -854,6 +883,7 @@ pub fn update_combat_stats(
     settings: Res<Settings>,
     state: Res<UiState>,
     player: Res<Player>,
+    combat_state: Res<State<CombatState>>,
     camera_q: Single<&Projection, With<MainCamera>>,
     time: Res<Time>,
 ) {
@@ -868,15 +898,47 @@ pub fn update_combat_stats(
     let size = UNIT_SIZE * projection.scale;
     let speed = 3. * time.delta_secs() * settings.speed();
 
+    let antiballistic_fired = unit_q
+        .iter()
+        .any(|(_, cu)| cu.unit == Unit::antiballistic_missile() && cu.fire.has_fired());
+    let interplanetary_fired = unit_q
+        .iter()
+        .any(|(_, cu)| cu.unit == Unit::interplanetary_missile() && cu.fire.has_fired());
+
     for (unit_e, cu) in &unit_q {
         for child in children_q.iter_descendants(unit_e) {
             if let Ok(mut text) = count_q.get_mut(child) {
-                text.0 = round
+                let mut count = round
                     .units(&cu.side)
                     .iter()
-                    .filter(|cu2| cu.unit == cu2.unit)
-                    .count()
-                    .to_string();
+                    .filter(|cu2| {
+                        cu2.unit == cu.unit
+                            && (*combat_state.get() != CombatState::EndCombat
+                                || cu2.hull > 0
+                                || cu.unit.is_missile())
+                    })
+                    .count();
+
+                // Update the missile count immediately after antiballistic were fired
+                if cu.unit == Unit::antiballistic_missile() && antiballistic_fired {
+                    count -= round.antiballistic_fired;
+                }
+                if cu.unit == Unit::interplanetary_missile() {
+                    if interplanetary_fired {
+                        count = 0;
+                    } else if antiballistic_fired {
+                        count -= round
+                            .defender
+                            .iter()
+                            .filter(|cu| {
+                                cu.unit == Unit::antiballistic_missile()
+                                    && cu.shots.iter().any(|s| s.killed)
+                            })
+                            .count();
+                    }
+                }
+
+                text.0 = count.to_string();
             }
 
             if let Ok((mut shield_t, mut shield_s)) = shield_q.get_mut(child) {
@@ -952,6 +1014,7 @@ pub fn run_combat_animations(
                             custom_size: Some(Vec2::splat(0.5 * size)),
                             ..default()
                         },
+                        Transform::from_scale(Vec3::splat(0.)),
                         TweenAnim::new(
                             Delay::new(Duration::from_millis(rng.random_range(1..500))).then(
                                 Tween::new(
@@ -983,6 +1046,7 @@ pub fn run_combat_animations(
                             ..default()
                         },
                         TextColor(WHITE.into()),
+                        Transform::from_scale(Vec3::splat(0.)),
                         TweenAnim::new(
                             Delay::new(Duration::from_millis(rng.random_range(1..500))).then(
                                 Tween::new(

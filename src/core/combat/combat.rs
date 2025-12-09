@@ -147,6 +147,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                                 shot.killed = true;
                                 cu.shots.push(shot);
                                 continue 'unit;
+                            } else {
+                                shot.missed = true;
                             }
 
                             cu.shots.push(shot);
@@ -168,7 +170,11 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                         // Interplanetary Missiles only shoot on defenses
                         enemy_army
                             .iter_mut()
-                            .filter(|u| u.unit.is_defense() && !u.unit.is_missile())
+                            .filter(|u| {
+                                u.unit.is_defense()
+                                    && !u.unit.is_missile()
+                                    && u.unit != Unit::space_dock()
+                            })
                             .choose(&mut rng)
                     } else if unit.unit == Unit::Ship(Ship::Bomber)
                         && planetary_shield > 0
