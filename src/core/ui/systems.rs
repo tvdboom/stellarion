@@ -2324,7 +2324,6 @@ fn draw_combat_report(
                                             || cu.unit != Unit::space_dock()))
                                     .then_some(cu.unit)
                                 })
-                                .unique_by(|u| *u) // Don't use .unique() to preserve order
                                 .collect();
 
                             let hovered2 = if !defenses.is_empty() {
@@ -2333,7 +2332,10 @@ fn draw_combat_report(
                                     "combat_defender2",
                                     state,
                                     &round,
-                                    defenses,
+                                    Unit::defenses()
+                                        .into_iter()
+                                        .filter(|u| defenses.contains(u))
+                                        .collect(),
                                     Side::Defender,
                                     defend_c,
                                     images,

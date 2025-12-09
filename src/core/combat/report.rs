@@ -55,7 +55,14 @@ impl MissionReport {
     pub fn winner(&self) -> Option<ClientId> {
         match self.mission.objective {
             Icon::Spy if self.scout_probes > 0 => None,
-            Icon::MissileStrike => None,
+            Icon::MissileStrike => {
+                let round = self.combat_report.as_ref()?.rounds.first()?;
+                if round.missiles_shot() >= round.n_missiles() {
+                    self.planet.controlled
+                } else {
+                    None
+                }
+            },
             _ => {
                 if self.surviving_attacker.iter().any(|(u, c)| {
                     if *u == Unit::probe() {
@@ -142,5 +149,22 @@ impl RoundReport {
             Side::Attacker => &self.attacker,
             Side::Defender => &self.defender,
         }
+    }
+
+    pub fn n_missiles(&self) -> usize {
+        self.attacker.iter().filter(|cu| cu.unit == Unit::interplanetary_missile()).count()
+    }
+
+    pub fn n_antiballistic(&self) -> usize {
+        self.defender.iter().filter(|cu| cu.unit == Unit::antiballistic_missile()).count()
+    }
+
+    pub fn missiles_shot(&self) -> usize {
+        self.defender
+            .iter()
+            .filter(|cu| {
+                cu.unit == Unit::antiballistic_missile() && cu.shots.iter().any(|s| s.killed)
+            })
+            .count()
     }
 }

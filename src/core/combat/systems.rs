@@ -520,6 +520,8 @@ pub fn animate_combat(
                         && cu.unit == *unit
                         && cu.side == side
                         && (cu.unit.damage() > 0 || cu.unit == Unit::crawler())
+                        && (cu.unit != Unit::interplanetary_missile()
+                            || round.missiles_shot() < round.n_missiles())
                 }) {
                     cu.fire = FireState::Select;
                     return;
@@ -529,7 +531,11 @@ pub fn animate_combat(
 
         // No more units to fire -> resolve end round
         for (unit_e, unit_t, mut cu) in &mut unit_q {
-            if cu.hull == 0 && cu.unit != Unit::planetary_shield() {
+            if cu.hull == 0
+                && cu.unit != Unit::planetary_shield()
+                && (cu.unit != Unit::antiballistic_missile()
+                    || round.antiballistic_fired >= round.n_antiballistic())
+            {
                 // Spawn destruction explosion
                 commands.spawn((
                     Sprite {
