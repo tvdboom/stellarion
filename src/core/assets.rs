@@ -188,6 +188,7 @@ impl FromWorld for WorldAssets {
             ("rapid fire", assets.load("images/combat/rapid fire.png")),
             // Planets
             ("unknown", assets.load("images/planets/unknown.png")),
+            ("destroyed bg", assets.load("images/planets/destroyed bg.png")),
             // Animations
             ("explosion", assets.load("images/animations/explosion.png")),
             ("short explosion", assets.load("images/animations/short explosion.png")),

@@ -125,6 +125,9 @@ pub struct EndTurnLabelCmp;
 #[derive(Component)]
 pub struct EndTurnButtonCmp;
 
+#[derive(Component)]
+pub struct SpectatorLabelCmp;
+
 fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
     let precision = 5.0;
     let mut a = ((v1.x / precision).round() as i32, (v1.y / precision).round() as i32);
@@ -608,6 +611,26 @@ pub fn draw_map(
             state.combat_report = None;
             state.end_turn = !state.end_turn;
         });
+
+    // Spawn spectator mode label
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(30.),
+            right: Val::Px(60.),
+            ..default()
+        },
+        Text::new("Spectator Mode"),
+        TextFont {
+            font: assets.font("bold"),
+            font_size: 30.,
+            ..default()
+        },
+        TextColor(Color::WHITE.into()),
+        Visibility::Hidden,
+        SpectatorLabelCmp,
+        MapCmp,
+    ));
 }
 
 pub fn update_planet_info(
@@ -943,14 +966,26 @@ pub fn update_voronoi(
 
 pub fn update_end_turn(
     mut button_c: Query<&mut Visibility, With<EndTurnButtonCmp>>,
+    mut spectator_q: Query<&mut Visibility, (With<SpectatorLabelCmp>, Without<EndTurnButtonCmp>)>,
     mut button_q: Query<&mut Text, With<MainButtonLabelCmp>>,
-    mut label_q: Query<&mut Visibility, (With<EndTurnLabelCmp>, Without<EndTurnButtonCmp>)>,
+    mut label_q: Query<
+        &mut Visibility,
+        (With<EndTurnLabelCmp>, Without<SpectatorLabelCmp>, Without<EndTurnButtonCmp>),
+    >,
     game_state: Res<State<GameState>>,
     state: Res<UiState>,
     player: Res<Player>,
 ) {
     for mut button_v in &mut button_c {
         *button_v = if !player.spectator {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    for mut label_v in &mut spectator_q {
+        *label_v = if player.spectator && *game_state.get() == GameState::Playing {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -995,7 +1030,7 @@ pub fn run_map_animations(
                 if atlas.index == animation.last_index / 3 {
                     planet.image = 0;
                 } else if atlas.index == animation.last_index {
-                    commands.entity(animation_e).try_despawn();
+                    commands.entity(animation_e).despawn();
                 }
             }
         }

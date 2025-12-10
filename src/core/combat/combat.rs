@@ -190,7 +190,10 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                         enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut rng)
                     {
                         // If shooting on a defense, shoot on the planetary shield instead
-                        if target.unit.is_defense() && planetary_shield > 0 {
+                        if target.unit.is_defense()
+                            && target.unit != Unit::space_dock()
+                            && planetary_shield > 0
+                        {
                             shot.planetary_shield_damage = damage.min(planetary_shield);
                             planetary_shield -= shot.planetary_shield_damage;
                             shot.unit = Some(Unit::planetary_shield());
@@ -283,6 +286,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
                     if rng.random::<f32>() < 0.1 {
                         *c -= 1;
                         shot.killed = true;
+                    } else {
+                        shot.missed = true;
                     }
                     cu.shots.push(shot);
                 }
@@ -321,7 +326,8 @@ pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> M
         {
             let war_suns =
                 attack_army.iter().filter(|u| u.unit == Unit::war_sun()).collect::<Vec<_>>();
-            let destroy_probability = destination.destroy_probability() - 0.01 * round as f32;
+            let destroy_probability =
+                (destination.destroy_probability() - 0.01 * round as f32).max(0.);
             for _ in war_suns.iter() {
                 if rng.random::<f32>() < destroy_probability {
                     defend_army = vec![];

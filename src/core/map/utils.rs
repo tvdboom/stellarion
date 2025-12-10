@@ -121,6 +121,19 @@ impl Lens<Sprite> for SpriteFrameLens {
     }
 }
 
+/// Tween: sprite alpha
+#[derive(Debug, Clone, Copy)]
+pub struct SpriteAlphaLens {
+    pub start: f32,
+    pub end: f32,
+}
+
+impl Lens<Sprite> for SpriteAlphaLens {
+    fn lerp(&mut self, mut target: Mut<Sprite>, ratio: f32) {
+        target.color = target.color.with_alpha(self.start + (self.end - self.start) * ratio);
+    }
+}
+
 /// Tween: UI node transform scale
 #[derive(Debug, Clone, Copy)]
 pub struct UiTransformScaleLens {

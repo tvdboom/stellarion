@@ -4,8 +4,8 @@ use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
 use bevy_tweening::lens::{TransformPositionLens, TransformScaleLens};
 use bevy_tweening::{
-    AnimCompletedEvent, CycleCompletedEvent, Delay, EntityCommandsTweeningExtensions,
-    PlaybackState, RepeatCount, RepeatStrategy, Tween, TweenAnim,
+    AnimCompletedEvent, CycleCompletedEvent, Delay, PlaybackState, RepeatCount, RepeatStrategy,
+    Tween, TweenAnim,
 };
 use rand::{rng, Rng};
 use strum::IntoEnumIterator;
@@ -21,13 +21,17 @@ use crate::core::constants::{
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::map::Map;
-use crate::core::map::utils::{spawn_main_button, SpriteFrameLens, UiTransformScaleLens};
+use crate::core::map::utils::{
+    spawn_main_button, SpriteAlphaLens, SpriteFrameLens, UiTransformScaleLens,
+};
 use crate::core::menu::utils::{add_root_node, add_text};
+use crate::core::missions::BombingRaid;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::UiState;
+use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Combat, Unit};
 use crate::utils::{scale_duration, NameFromEnum};
 
@@ -127,17 +131,16 @@ pub fn setup_combat_menu(
 
     spawn_main_button(&mut commands, "Continue", &assets)
         .insert((ZIndex(6), CombatMenuCmp))
-        .observe(
-            |_: On<Pointer<Click>>,
-             mut start_turn_msg: MessageWriter<StartTurnMsg>,
-             mut next_game_state: ResMut<NextState<GameState>>| {
-                start_turn_msg.write(StartTurnMsg::new(true, false));
-                next_game_state.set(GameState::Playing);
-            },
-        );
+        .observe(|_: On<Pointer<Click>>, mut next_game_state: ResMut<NextState<GameState>>| {
+            next_game_state.set(GameState::Playing);
+        });
 }
 
-pub fn exit_combat_menu(mut stop_audio_msg: MessageWriter<StopAudioMsg>) {
+pub fn exit_combat_menu(
+    mut start_turn_msg: MessageWriter<StartTurnMsg>,
+    mut stop_audio_msg: MessageWriter<StopAudioMsg>,
+) {
+    start_turn_msg.write(StartTurnMsg::new(true, false));
     stop_audio_msg.write(StopAudioMsg::new("drums"));
 }
 
@@ -192,7 +195,6 @@ pub fn setup_combat(
                      y_end: f32,
                      color: Color| {
         let total = units.len() as f32;
-
         let total_width = spacing * (total - 1.0);
         for (i, (u, c)) in units.iter().enumerate() {
             let x = -total_width * 0.5 + i as f32 * spacing;
@@ -335,7 +337,12 @@ pub fn setup_combat(
         Vec::new()
     };
 
-    let ship_y = if defending_def.is_empty() {
+    let ps = report.planet.army.amount(&Unit::planetary_shield());
+    let draw_ps = ps > 0
+        && report.mission.objective != Icon::MissileStrike
+        && (!defending_def.is_empty() || report.mission.bombing != BombingRaid::None);
+
+    let ship_y = if defending_def.is_empty() && !draw_ps {
         0.36
     } else {
         0.1
@@ -359,8 +366,7 @@ pub fn setup_combat(
     );
 
     // Spawn Planetary Shield image
-    let ps = report.planet.army.amount(&Unit::planetary_shield());
-    if ps > 0 && report.mission.objective != Icon::MissileStrike {
+    if draw_ps {
         let (bar_width, bar_height) = (size * PS_WIDTH, size * 0.3);
         let w = size * 0.3;
 
@@ -377,8 +383,8 @@ pub fn setup_combat(
                 fire: FireState::Idle,
                 shield: ps * PS_SHIELD_PER_LEVEL,
                 max_shield: ps * PS_SHIELD_PER_LEVEL,
-                hull: 0,
-                max_hull: 0,
+                hull: ps,
+                max_hull: ps,
             },
             children![
                 (
@@ -415,7 +421,7 @@ pub fn setup_combat(
                             TextColor(WHITE.into()),
                             Transform::from_scale(Vec3::splat(0.05)),
                         )]
-                    ),],
+                    )],
                 )
             ],
             TweenAnim::new(Tween::new(
@@ -429,6 +435,87 @@ pub fn setup_combat(
             Pickable::IGNORE,
             CombatCmp,
         ));
+    }
+
+    // Spawn buildings when bombing
+    let buildings = match report.mission.bombing {
+        BombingRaid::Economic => Unit::resource_buildings()
+            .into_iter()
+            .filter_map(|u| {
+                let amount = report.planet.army.amount(&u);
+                (amount > 0).then_some((u, amount))
+            })
+            .collect::<Vec<_>>(),
+        BombingRaid::Industrial => Unit::industrial_buildings()
+            .into_iter()
+            .filter_map(|u| {
+                let amount = report.planet.army.amount(&u);
+                (amount > 0).then_some((u, amount))
+            })
+            .collect::<Vec<_>>(),
+        BombingRaid::None => Vec::new(),
+    };
+
+    if !buildings.is_empty() {
+        let size = size * 0.65;
+        let spacing = size * 1.1;
+        let total_width = spacing * (buildings.len() as f32 - 1.0);
+
+        for (i, (u, c)) in buildings.iter().enumerate() {
+            let x = -total_width * 0.5 + i as f32 * spacing;
+            let w = size * 0.5;
+
+            commands.spawn((
+                Sprite {
+                    image: assets.image(u.to_lowername()),
+                    custom_size: Some(Vec2::splat(size)),
+                    ..default()
+                },
+                Transform::from_xyz(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
+                CombatUnitCmp {
+                    unit: u.clone(),
+                    side: Side::Defender,
+                    fire: FireState::Idle,
+                    shield: 0,
+                    max_shield: 0,
+                    hull: *c,
+                    max_hull: *c,
+                },
+                children![(
+                    Sprite {
+                        color: Color::BLACK.with_alpha(0.5),
+                        custom_size: Some(Vec2::splat(w)),
+                        ..default()
+                    },
+                    Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + w * 0.5, 0.1),
+                    children![(
+                        Text2d::new(c.to_string()),
+                        TextFont {
+                            font: assets.font("bold"),
+                            font_size: 600. * projection.scale,
+                            ..default()
+                        },
+                        TextColor(WHITE.into()),
+                        Transform::from_scale(Vec3::splat(0.05)),
+                        CountCmp,
+                    )]
+                )],
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_secs(SETUP_TIME),
+                    TransformPositionLens {
+                        start: Vec3::new(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
+                        end: Vec3::new(
+                            pos.x + size * 8.25 + x,
+                            pos.y - height * 0.34,
+                            COMBAT_SHIP_Z,
+                        ),
+                    },
+                )),
+                Pickable::IGNORE,
+                CombatCmp,
+            ));
+        }
     }
 
     commands.spawn((
@@ -452,12 +539,10 @@ pub fn setup_combat(
 
 pub fn animate_combat(
     mut commands: Commands,
-    mut speed_q: Single<&mut Text, With<SpeedCmp>>,
-    mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
+    bg_q: Single<&mut Sprite, With<BackgroundImageCmp>>,
     text_q: Option<Single<Entity, With<DisplayTextCmp>>>,
     mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
     death_ray_q: Query<Entity, With<DeathRayCmp>>,
-    settings: Res<Settings>,
     mut state: ResMut<UiState>,
     player: Res<Player>,
     combat_state: Res<State<CombatState>>,
@@ -475,18 +560,6 @@ pub fn animate_combat(
         panic!("Expected Orthographic projection.");
     };
 
-    // Update speed indicator
-    speed_q.as_mut().0 = if settings.combat_paused {
-        anim_q.iter_mut().for_each(|mut t| t.playback_state = PlaybackState::Paused);
-        "Paused".to_string()
-    } else {
-        anim_q.iter_mut().for_each(|mut t| {
-            t.playback_state = PlaybackState::Playing;
-            t.speed = settings.combat_speed as f64;
-        });
-        format!("{}x", settings.combat_speed)
-    };
-
     let units: Vec<_> = Unit::all_firing_order();
 
     let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
@@ -499,7 +572,11 @@ pub fn animate_combat(
 
     if matches!(
         combat_state.get(),
-        CombatState::AntiBallistic | CombatState::Fire | CombatState::DeathRay
+        CombatState::AntiBallistic
+            | CombatState::Fire
+            | CombatState::Repair
+            | CombatState::Bomb
+            | CombatState::DeathRay
     ) && unit_q.iter().all(|(_, _, cu)| matches!(cu.fire, FireState::Idle | FireState::Fired))
     {
         'side: for side in Side::iter() {
@@ -507,7 +584,7 @@ pub fn animate_combat(
             // (to avoid all misses of the remainder of units)
             if unit_q
                 .iter()
-                .filter(|(_, _, cu)| cu.side == side.opposite())
+                .filter(|(_, _, cu)| cu.side == side.opposite() && !cu.unit.is_building())
                 .all(|(_, _, cu)| cu.hull == 0)
             {
                 break 'side;
@@ -529,8 +606,8 @@ pub fn animate_combat(
             }
         }
 
-        // No more units to fire -> resolve end round
-        for (unit_e, unit_t, mut cu) in &mut unit_q {
+        // No more units to fire -> explode destroyed units
+        for (unit_e, unit_t, cu) in &mut unit_q {
             if cu.hull == 0
                 && cu.unit != Unit::planetary_shield()
                 && (cu.unit != Unit::antiballistic_missile()
@@ -553,28 +630,76 @@ pub fn animate_combat(
                         timer: Timer::from_seconds(0.05, TimerMode::Repeating),
                         delay: Timer::from_seconds(0., TimerMode::Once),
                         last_index: explosion.last_index,
-                        target_entity: unit_e.clone(),
+                        target_entity: unit_e,
                     },
                     CombatCmp,
                 ));
 
                 play_audio_msg.write(PlayAudioMsg::new("explosion"));
-            } else if state.combat_round == 0
-                && cu.unit == Unit::probe()
-                && cu.side == Side::Attacker
-            {
-                // Scout probes fly away
-                commands.entity(unit_e).move_to(
-                    Vec3::new(pos.x, pos.y + projection.area.height() * 0.9, COMBAT_SHIP_Z + 0.9),
-                    Duration::from_secs(SETUP_TIME),
+            }
+        }
+
+        // Scout probes fly away
+        if state.combat_round == 0 && combat.rounds.len() > 1 {
+            if let Some((unit_e, unit_t, _)) = unit_q.iter_mut().find(|(_, _, cu)| {
+                cu.hull > 0 && cu.unit == Unit::probe() && cu.side == Side::Attacker
+            }) {
+                commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
                     EaseFunction::QuadraticIn,
-                );
-            } else if cu.unit == Unit::war_sun()
-                && cu.side == Side::Attacker
-                && report.mission.objective == Icon::Destroy
-                && round.destroy_probability > 0.
-                && *combat_state.get() == CombatState::Fire
+                    Duration::from_secs(SETUP_TIME),
+                    TransformPositionLens {
+                        start: unit_t.translation,
+                        end: Vec3::new(
+                            pos.x,
+                            pos.y + projection.area.height() * 0.9,
+                            COMBAT_SHIP_Z + 0.9,
+                        ),
+                    },
+                )));
+            }
+        }
+
+        // Crawlers repair defense turrets
+        if round.units(&Side::Defender).iter().any(|cu| cu.repairs.iter().any(|r| *r > 0))
+            && *combat_state.get() == CombatState::Fire
+        {
+            if let Some((_, _, mut cu)) =
+                unit_q.iter_mut().find(|(_, _, cu)| cu.hull > 0 && cu.unit == Unit::crawler())
             {
+                cu.fire = FireState::Select;
+                next_combat_state.set(CombatState::Repair);
+                return;
+            }
+        }
+
+        // Bombing raid
+        if report.mission.bombing != BombingRaid::None
+            && round
+                .units(&Side::Attacker)
+                .iter()
+                .any(|cu| cu.shots.iter().any(|s| s.unit.is_some_and(|u| u.is_building())))
+            && matches!(combat_state.get(), CombatState::Fire | CombatState::Repair)
+        {
+            if let Some((_, _, mut cu)) = unit_q.iter_mut().find(|(_, _, cu)| {
+                cu.hull > 0 && cu.unit == Unit::Ship(Ship::Bomber) && cu.side == Side::Attacker
+            }) {
+                cu.fire = FireState::Select;
+                next_combat_state.set(CombatState::Bomb);
+                return;
+            }
+        }
+
+        // Death ray
+        if report.mission.objective == Icon::Destroy
+            && round.destroy_probability > 0.
+            && matches!(
+                combat_state.get(),
+                CombatState::Fire | CombatState::Repair | CombatState::Bomb
+            )
+        {
+            if let Some((_, _, mut cu)) = unit_q.iter_mut().find(|(_, _, cu)| {
+                cu.hull > 0 && cu.unit == Unit::war_sun() && cu.side == Side::Attacker
+            }) {
                 cu.fire = FireState::Select;
                 next_combat_state.set(CombatState::DeathRay);
                 return;
@@ -663,23 +788,14 @@ pub fn animate_combat(
                 ));
             }
         },
-        CombatState::AntiBallistic | CombatState::Fire | CombatState::DeathRay => {
+        CombatState::AntiBallistic
+        | CombatState::Fire
+        | CombatState::Repair
+        | CombatState::Bomb
+        | CombatState::DeathRay => {
             for (unit_e, unit_t, mut cu) in &mut unit_q {
                 match cu.fire {
                     FireState::Select => {
-                        // Only animate crawlers if they actually healed something
-                        if cu.unit == Unit::crawler()
-                            && round
-                                .units(&cu.side)
-                                .iter()
-                                .flat_map(|cu2| cu2.repairs.iter().map(|r| r))
-                                .sum::<usize>()
-                                == 0
-                        {
-                            cu.fire = FireState::Fired;
-                            continue;
-                        }
-
                         commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
                             EaseFunction::QuadraticInOut,
                             Duration::from_millis(500),
@@ -697,6 +813,28 @@ pub fn animate_combat(
                             }
                         }
                     },
+                    FireState::Firing if *combat_state.get() == CombatState::Repair => {
+                        let repaired = round
+                            .units(&cu.side)
+                            .iter()
+                            .flat_map(|cu2| cu2.repairs.iter().map(move |r| (cu2.unit, r)))
+                            .collect::<Vec<_>>();
+
+                        for (unit, repair) in repaired {
+                            // Hack the repair info into the shot report for code simplicity
+                            spawn_shot_msg.write(SpawnShotMsg {
+                                shot: ShotReport {
+                                    unit: Some(unit),
+                                    hull_damage: *repair,
+                                    ..default()
+                                },
+                                repair: true,
+                                side: cu.side.clone(),
+                            });
+                        }
+
+                        cu.fire = FireState::Deselect;
+                    },
                     FireState::Firing if *combat_state.get() == CombatState::DeathRay => {
                         if let Some(ray_e) = death_ray_q.iter().next() {
                             for message in anim_completed_msg.read() {
@@ -706,7 +844,7 @@ pub fn animate_combat(
                                     {
                                         let mut rng = rng();
 
-                                        for _ in 0..rng.random_range(12..18) {
+                                        for _ in 0..100 {
                                             play_audio_msg
                                                 .write(PlayAudioMsg::new("large explosion"));
 
@@ -715,16 +853,25 @@ pub fn animate_combat(
                                                     image: explosion.image.clone(),
                                                     texture_atlas: Some(explosion.atlas.clone()),
                                                     custom_size: Some(Vec2::splat(5.0 * size)),
+                                                    color: Color::WHITE.with_alpha(0.0001),
                                                     ..default()
                                                 },
                                                 Transform::from_xyz(
-                                                    pos.x + rng.random_range(-5. * size..5. * size),
-                                                    pos.y - rng.random_range(2. * size..4. * size),
+                                                    pos.x + rng.random_range(-6. * size..6. * size),
+                                                    pos.y - rng.random_range(-6. * size..6. * size),
                                                     COMBAT_EXPLOSION_Z,
                                                 ),
                                                 TweenAnim::new(
                                                     Delay::new(Duration::from_millis(
-                                                        rng.random_range(0..2000),
+                                                        rng.random_range(0..3000),
+                                                    ))
+                                                    .then(Tween::new(
+                                                        EaseFunction::Linear,
+                                                        Duration::from_millis(1),
+                                                        SpriteAlphaLens {
+                                                            start: 0.0,
+                                                            end: 1.0,
+                                                        },
                                                     ))
                                                     .then(Tween::new(
                                                         EaseFunction::Linear,
@@ -767,42 +914,24 @@ pub fn animate_combat(
                         }
                     },
                     FireState::Firing => {
-                        if cu.unit == Unit::crawler() {
-                            let repaired = round
-                                .units(&cu.side)
-                                .iter()
-                                .flat_map(|cu2| cu2.repairs.iter().map(move |r| (cu2.unit, r)))
-                                .collect::<Vec<_>>();
+                        let shots = round
+                            .units(&cu.side)
+                            .iter()
+                            .filter(|cu2| cu.unit == cu2.unit)
+                            .flat_map(|cu2| &cu2.shots)
+                            .filter(|s| {
+                                s.unit.is_some_and(|u| {
+                                    u.is_building() && u != Unit::planetary_shield()
+                                }) == (*combat_state.get() == CombatState::Bomb)
+                            })
+                            .collect::<Vec<_>>();
 
-                            for (unit, repair) in repaired {
-                                if *repair > 0 {
-                                    // Hack the repair info into the shot report for code simplicity
-                                    spawn_shot_msg.write(SpawnShotMsg {
-                                        shot: ShotReport {
-                                            unit: Some(unit),
-                                            hull_damage: *repair,
-                                            ..default()
-                                        },
-                                        repair: true,
-                                        side: cu.side.clone(),
-                                    });
-                                }
-                            }
-                        } else {
-                            let shots = round
-                                .units(&cu.side)
-                                .iter()
-                                .filter(|cu2| cu.unit == cu2.unit)
-                                .flat_map(|cu2| &cu2.shots)
-                                .collect::<Vec<_>>();
-
-                            for shot in shots {
-                                spawn_shot_msg.write(SpawnShotMsg {
-                                    shot: shot.clone(),
-                                    repair: false,
-                                    side: cu.side.opposite(),
-                                });
-                            }
+                        for shot in shots {
+                            spawn_shot_msg.write(SpawnShotMsg {
+                                shot: shot.clone(),
+                                repair: false,
+                                side: cu.side.opposite(),
+                            });
                         }
 
                         cu.fire = FireState::Deselect;
@@ -863,9 +992,12 @@ pub fn animate_combat(
                 ));
             }
 
+            let mut bg = bg_q.into_inner();
             for message in anim_completed_msg.read() {
                 for ray_e in death_ray_q.iter() {
                     if ray_e == message.anim_entity {
+                        bg.image = assets.image("destroyed bg");
+
                         commands.entity(ray_e).despawn();
 
                         for (unit_e, _, cu) in &unit_q {
@@ -882,9 +1014,11 @@ pub fn animate_combat(
 
 pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp)>,
+    mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
     mut count_q: Query<&mut Text2d, With<CountCmp>>,
     mut shield_q: Query<(&mut Transform, &mut Sprite), With<ShieldCmp>>,
     mut hull_q: Query<(&mut Transform, &mut Sprite), (With<HullCmp>, Without<ShieldCmp>)>,
+    mut speed_q: Single<&mut Text, With<SpeedCmp>>,
     children_q: Query<&Children>,
     settings: Res<Settings>,
     state: Res<UiState>,
@@ -895,6 +1029,18 @@ pub fn update_combat_stats(
 ) {
     let Projection::Orthographic(projection) = camera_q.into_inner() else {
         panic!("Expected Orthographic projection.");
+    };
+
+    // Update speed indicator
+    speed_q.as_mut().0 = if settings.combat_paused {
+        anim_q.iter_mut().for_each(|mut t| t.playback_state = PlaybackState::Paused);
+        "Paused".to_string()
+    } else {
+        anim_q.iter_mut().for_each(|mut t| {
+            t.playback_state = PlaybackState::Playing;
+            t.speed = settings.combat_speed as f64;
+        });
+        format!("{}x", settings.combat_speed)
     };
 
     let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
@@ -914,35 +1060,41 @@ pub fn update_combat_stats(
     for (unit_e, cu) in &unit_q {
         for child in children_q.iter_descendants(unit_e) {
             if let Ok(mut text) = count_q.get_mut(child) {
-                let mut count = round
-                    .units(&cu.side)
-                    .iter()
-                    .filter(|cu2| {
-                        cu2.unit == cu.unit
-                            && (*combat_state.get() != CombatState::EndCombat
-                                || cu2.hull > 0
-                                || cu.unit.is_missile())
-                    })
-                    .count();
+                let count = if cu.unit.is_building() {
+                    cu.hull
+                } else {
+                    let mut count = round
+                        .units(&cu.side)
+                        .iter()
+                        .filter(|cu2| {
+                            cu2.unit == cu.unit
+                                && (*combat_state.get() != CombatState::EndCombat
+                                    || cu2.hull > 0
+                                    || cu.unit.is_missile())
+                        })
+                        .count();
 
-                // Update the missile count immediately after antiballistic were fired
-                if cu.unit == Unit::antiballistic_missile() && antiballistic_fired {
-                    count -= round.antiballistic_fired;
-                }
-                if cu.unit == Unit::interplanetary_missile() {
-                    if interplanetary_fired {
-                        count = 0;
-                    } else if antiballistic_fired {
-                        count -= round
-                            .defender
-                            .iter()
-                            .filter(|cu| {
-                                cu.unit == Unit::antiballistic_missile()
-                                    && cu.shots.iter().any(|s| s.killed)
-                            })
-                            .count();
+                    // Update the missile count immediately after antiballistic were fired
+                    if cu.unit == Unit::antiballistic_missile() && antiballistic_fired {
+                        count -= round.antiballistic_fired;
                     }
-                }
+                    if cu.unit == Unit::interplanetary_missile() {
+                        if interplanetary_fired {
+                            count = 0;
+                        } else if antiballistic_fired {
+                            count -= round
+                                .defender
+                                .iter()
+                                .filter(|cu| {
+                                    cu.unit == Unit::antiballistic_missile()
+                                        && cu.shots.iter().any(|s| s.killed)
+                                })
+                                .count();
+                        }
+                    }
+
+                    count
+                };
 
                 text.0 = count.to_string();
             }
@@ -976,9 +1128,12 @@ pub fn update_combat_stats(
 pub fn run_combat_animations(
     mut commands: Commands,
     mut animation_q: Query<(Entity, &mut Sprite, Option<&ShotReport>, &mut UnitExplosionCmp)>,
-    mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+    mut unit_q: Query<(Entity, &Sprite, &Transform, &mut CombatUnitCmp), Without<UnitExplosionCmp>>,
     mut repair_q: Query<(Entity, &RepairCmp)>,
-    ps_image_q: Query<&GlobalTransform, With<PSCombatImageCmp>>,
+    ps_image_q: Query<
+        (&Sprite, &GlobalTransform),
+        (With<PSCombatImageCmp>, Without<UnitExplosionCmp>),
+    >,
     mut cycle_completed_msg: MessageReader<CycleCompletedEvent>,
     mut spawn_shot_msg: MessageReader<SpawnShotMsg>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
@@ -993,24 +1148,28 @@ pub fn run_combat_animations(
         panic!("Expected Orthographic projection.");
     };
 
-    let size = UNIT_SIZE * projection.scale;
-
     let short_explosion = assets.texture("short explosion");
 
     // Spawn shot/repair explosions
     for message in spawn_shot_msg.read() {
         let target = unit_q
             .iter()
-            .find(|(_, _, cu)| message.shot.unit == Some(cu.unit) && cu.side == message.side)
-            .map(|(e, t, cu)| {
+            .find(|(_, _, _, cu)| message.shot.unit == Some(cu.unit) && cu.side == message.side)
+            .map(|(e, s, t, cu)| {
                 if cu.unit == Unit::planetary_shield() {
-                    (e, ps_image_q.iter().next().map(|t| t.compute_transform()).unwrap())
+                    let (s, t) = ps_image_q
+                        .iter()
+                        .next()
+                        .map(|(s, t)| (s.custom_size.unwrap().x, t.compute_transform()))
+                        .unwrap();
+
+                    (e, s, t)
                 } else {
-                    (e, *t)
+                    (e, s.custom_size.unwrap().x * projection.scale, *t)
                 }
             });
 
-        if let Some((target_e, target_t)) = target {
+        if let Some((target_e, size, target_t)) = target {
             let id = if message.repair {
                 play_audio_msg.write(PlayAudioMsg::new("repair"));
                 commands
@@ -1118,8 +1277,8 @@ pub fn run_combat_animations(
     // Resolve repairs
     for message in cycle_completed_msg.read() {
         if let Ok((repair_e, repair)) = repair_q.get_mut(message.anim_entity) {
-            if let Some((_, _, mut cu)) =
-                unit_q.iter_mut().find(|(_, _, cu)| cu.unit == repair.unit)
+            if let Some((_, _, _, mut cu)) =
+                unit_q.iter_mut().find(|(_, _, _, cu)| cu.unit == repair.unit)
             {
                 cu.hull += repair.amount;
             }
@@ -1145,15 +1304,21 @@ pub fn run_combat_animations(
                 // Resolve damage at 1/5 of the animation
                 if let Some(shot) = shot {
                     if atlas.index == animation.last_index / 5 {
-                        if let Ok((unit_e, _, mut cu)) = unit_q.get_mut(animation.target_entity) {
+                        if let Ok((unit_e, _, _, mut cu)) = unit_q.get_mut(animation.target_entity)
+                        {
                             if cu.unit == Unit::planetary_shield() {
                                 cu.shield -= shot.planetary_shield_damage;
 
                                 if cu.shield == 0 {
                                     let explosion = assets.texture("explosion");
 
-                                    let ps_t =
-                                        ps_image_q.iter().next().unwrap().compute_transform();
+                                    let (size, ps_t) = ps_image_q
+                                        .iter()
+                                        .next()
+                                        .map(|(s, t)| {
+                                            (s.custom_size.unwrap().x, t.compute_transform())
+                                        })
+                                        .unwrap();
 
                                     commands.spawn((
                                         Sprite {
@@ -1178,6 +1343,10 @@ pub fn run_combat_animations(
 
                                     play_audio_msg.write(PlayAudioMsg::new("explosion"));
                                 }
+                            } else if cu.unit.is_building() {
+                                if shot.killed {
+                                    cu.hull -= 1;
+                                }
                             } else {
                                 cu.shield -= shot.shield_damage;
                                 cu.hull -= shot.hull_damage;
@@ -1190,7 +1359,7 @@ pub fn run_combat_animations(
                 }
 
                 if atlas.index == animation.last_index {
-                    commands.entity(animation_e).try_despawn();
+                    commands.entity(animation_e).despawn();
                 }
             }
         }

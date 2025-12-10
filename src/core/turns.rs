@@ -273,8 +273,12 @@ pub fn resolve_turn(
                                             .as_str(),
                                     ),
                                 ));
-                            } else {
-                                // Send probes back that left combat after one round
+                            } else if report.mission.objective != Icon::Destroy
+                                || report.winner() != Some(mission.owner)
+                            {
+                                // Send probes back that left combat after one round. If the
+                                // mission was a destroy mission and won, the probes are sent
+                                // back with the returning fleet
                                 new_missions.push(Mission::new(
                                     settings.turn,
                                     mission.owner,
@@ -365,7 +369,22 @@ pub fn resolve_turn(
                             // Take control of the planet and dock the surviving fleet
                             if mission.objective != Icon::Destroy {
                                 destination.control(mission.owner);
-                                destination.dock(mission.army.clone());
+                                destination.dock(
+                                    report
+                                        .surviving_attacker
+                                        .iter()
+                                        .map(|(u, c)| {
+                                            (
+                                                *u,
+                                                if *u == Unit::probe() {
+                                                    c - report.scout_probes
+                                                } else {
+                                                    *c
+                                                },
+                                            )
+                                        })
+                                        .collect(),
+                                );
                             }
                         } else {
                             // Merge surviving defenders with planet
@@ -489,17 +508,18 @@ pub fn start_turn(
             .filter(|r| r.turn == settings.turn && !r.hidden)
             .collect::<Vec<_>>();
 
-        if new_reports
-            .iter()
-            .any(|r| r.combat_report.is_some() && r.can_see(&Side::Defender, player.id))
+        if !msg.skip_battle
+            && new_reports.iter().any(|r| {
+                r.combat_report.is_some()
+                    && r.can_see(&Side::Attacker, player.id)
+                    && r.can_see(&Side::Defender, player.id)
+            })
         {
-            if !msg.skip_battle {
-                next_game_state.set(GameState::CombatMenu);
-                break;
-            } else if !msg.skip_end_game && player.spectator {
-                next_game_state.set(GameState::EndGame);
-                break;
-            }
+            next_game_state.set(GameState::CombatMenu);
+            break;
+        } else if !msg.skip_end_game && player.spectator {
+            next_game_state.set(GameState::EndGame);
+            break;
         }
 
         if settings.autosave {

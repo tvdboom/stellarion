@@ -32,6 +32,8 @@ pub enum CombatState {
     AntiBallistic,
     DisplayRound,
     Fire,
+    Repair,
+    Bomb,
     DeathRay,
     EndCombat,
 }

@@ -1888,21 +1888,32 @@ fn draw_mission_reports(
                         ui.spacing_mut().item_spacing.x = 8.;
 
                         let destination = map.get(report.mission.destination);
-                        let units = Unit::all_valid(destination.is_moon());
 
-                        for (i, army) in [units.get(1), units.get(2), units.get(0)]
-                            .into_iter()
-                            .flatten()
-                            .enumerate()
-                        {
-                            draw_army_grid(
-                                ui,
-                                format!("defender_{i}").as_str(),
-                                army,
-                                report,
-                                player,
-                                images,
-                            );
+                        if !report.planet.army.has_army() {
+                            ui.label(format!(
+                                "Empty {}.",
+                                if destination.is_moon() {
+                                    "moon"
+                                } else {
+                                    "planet"
+                                }
+                            ));
+                        } else {
+                            let units = Unit::all_valid(destination.is_moon());
+                            for (i, army) in [units.get(1), units.get(2), units.get(0)]
+                                .into_iter()
+                                .flatten()
+                                .enumerate()
+                            {
+                                draw_army_grid(
+                                    ui,
+                                    format!("defender_{i}").as_str(),
+                                    army,
+                                    report,
+                                    player,
+                                    images,
+                                );
+                            }
                         }
                     });
 
@@ -2113,7 +2124,7 @@ fn draw_combat_report(
             )
             .collect::<Vec<_>>();
         let shots_missed = u_shots.iter().filter(|s| s.missed).count();
-        let total_repaired = units.iter().map(|cu| cu.repairs.len()).sum::<usize>();
+        let total_repaired = units.iter().map(|cu| cu.repairs.iter().sum::<usize>()).sum::<usize>();
         let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
         let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
 
@@ -2957,7 +2968,7 @@ fn draw_combat_selection(
     state: &mut UiState,
     map: &Map,
     player: &Player,
-    settings: &Settings,
+    settings: &mut Settings,
     next_game_state: &mut NextState<GameState>,
     images: &ImageIds,
 ) {
@@ -3049,6 +3060,7 @@ fn draw_combat_selection(
 
                 if response.clicked() {
                     state.in_combat = Some(report.id);
+                    settings.combat_paused = false;
                     next_game_state.set(GameState::Combat);
                 }
             }
@@ -3089,7 +3101,7 @@ pub fn draw_ui(
     mut player: ResMut<Player>,
     missions: Res<Missions>,
     mut state: ResMut<UiState>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -3343,7 +3355,7 @@ pub fn draw_ui(
                     &mut state,
                     &map,
                     &player,
-                    &settings,
+                    &mut settings,
                     &mut next_game_state,
                     &images,
                 )

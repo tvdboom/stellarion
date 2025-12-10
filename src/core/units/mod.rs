@@ -106,9 +106,11 @@ impl Unit {
         Unit::ships()
             .into_iter()
             .chain(std::iter::once(Unit::space_dock()))
-            .chain(Unit::defenses())
-            .filter(|u| *u != Unit::crawler())
-            .chain(std::iter::once(Unit::crawler()))
+            .chain(
+                Unit::defenses()
+                    .into_iter()
+                    .filter(|u| *u != Unit::crawler() && *u != Unit::space_dock()),
+            )
             .collect()
     }
 

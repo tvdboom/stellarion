@@ -150,8 +150,9 @@ impl Description for Icon {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
                 if there are no enemy ships left, every War Sun tries to destroy the target planet \
                 with a 10-15% chance (depending on the planet's size), decreased with 1% for every \
-                round afterwards. Regardless of the result, the fleet returns after combat. A \
-                destroyed planet can't be colonized again."
+                round afterwards (long battles reduce the destruction chance to zero). Regardless \
+                of the result, the fleet returns after combat. A destroyed planet can't be \
+                colonized again."
             },
             Icon::Deploy => "Send a fleet to another planet you control.",
             _ => unreachable!(),
