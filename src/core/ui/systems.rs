@@ -919,7 +919,7 @@ fn draw_new_mission(
             .find(|i| {
                 i.is_mission()
                     && i.condition(origin)
-                    && (!destination.is_moon() || !state.mission_info.objective.on_planet_only())
+                    && (!destination.is_moon() || !i.on_planet_only())
             })
             .unwrap_or_default();
     }
