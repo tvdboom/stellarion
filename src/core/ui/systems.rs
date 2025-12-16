@@ -3122,6 +3122,12 @@ pub fn draw_ui(
         );
     }
 
+    // Hide green circle after deselecting planet
+    if state.planet_selected.is_none() {
+        state.phalanx_hover = None;
+        state.radar_hover = None;
+    }
+
     // Store whether the next panel should be shown on the right side or not
     let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
         let right_side = state.planet_selected.is_some()

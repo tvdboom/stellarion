@@ -198,7 +198,12 @@ pub fn play_audio(
                         if !message.is_background || *audio_state.get() != AudioState::NoMusic {
                             instance.resume(PlayingAudio::TWEEN);
                         }
-                    } else {
+                    } else if !message.is_background || !matches!(
+                        instance.state(),
+                        PlaybackState::Playing { .. }
+                            | PlaybackState::WaitingToResume { .. }
+                            | PlaybackState::Resuming { .. }
+                    ) {
                         new_sound = true; // Audio finished playing
                     }
                 }

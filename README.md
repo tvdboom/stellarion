@@ -13,6 +13,7 @@
 <img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/mission.png?raw=true" alt="Mission">
 <img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/report.png?raw=true" alt="Report">
 <img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/combat.png?raw=true" alt="Combat">
+<img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/incombat.png?raw=true" alt="InCombat">
 
 <br>
 

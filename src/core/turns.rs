@@ -230,7 +230,7 @@ pub fn resolve_turn(
                     }
 
                     // Resolve missions that reached destination
-                    for mut mission in regroup_missions(&arrived) {
+                    for mission in regroup_missions(&arrived) {
                         let new_origin = map.get(mission.check_origin(&map)).clone();
                         let destination = map.get_mut(mission.destination);
 
@@ -335,7 +335,10 @@ pub fn resolve_turn(
                                     ),
                                 ));
                             } else if report.planet_colonized {
-                                *mission.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
+                                *report
+                                    .surviving_attacker
+                                    .entry(Unit::colony_ship())
+                                    .or_insert(1) -= 1;
                                 destination.colonize(mission.owner);
 
                                 report.mission.logs.push_str(
