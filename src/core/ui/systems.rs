@@ -2807,7 +2807,7 @@ fn draw_shop(
                         true,
                         planet.battery_production() + d.production()
                             <= planet.max_battery_production()
-                            && (*d != Defense::SpaceDock || count == 0),
+                            && (*d != Defense::SpaceDock || (count == 0 && bought == 0)),
                     ),
                 };
 

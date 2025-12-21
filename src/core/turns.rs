@@ -500,6 +500,7 @@ pub fn start_turn(
 ) {
     for msg in start_turn_msg.read() {
         *state = UiState {
+            mission_hover: None, // Reset hover since missions can no longer exist
             lab: state.lab,
             mission_report: state.mission_report,
             ..default()
