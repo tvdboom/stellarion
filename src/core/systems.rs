@@ -115,12 +115,10 @@ pub fn check_keys_menu(
 pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInput<KeyCode>>) {
     if keyboard.just_pressed(KeyCode::Space) {
         settings.combat_paused = !settings.combat_paused;
-    } else if !settings.combat_paused {
-        if keyboard.just_released(KeyCode::ArrowRight) {
-            settings.combat_speed = (settings.combat_speed * 2.).min(64.0);
-        } else if keyboard.just_released(KeyCode::ArrowLeft) {
-            settings.combat_speed = (settings.combat_speed * 0.5).max(0.25);
-        }
+    } else if keyboard.just_released(KeyCode::ArrowRight) {
+        settings.combat_speed = (settings.combat_speed * 2.).min(64.0);
+    } else if keyboard.just_released(KeyCode::ArrowLeft) {
+        settings.combat_speed = (settings.combat_speed * 0.5).max(0.25);
     }
 }
 

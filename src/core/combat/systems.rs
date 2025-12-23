@@ -1032,16 +1032,24 @@ pub fn update_combat_stats(
     };
 
     // Update speed indicator
-    speed_q.as_mut().0 = if settings.combat_paused {
-        anim_q.iter_mut().for_each(|mut t| t.playback_state = PlaybackState::Paused);
-        "Paused".to_string()
-    } else {
-        anim_q.iter_mut().for_each(|mut t| {
+    anim_q.iter_mut().for_each(|mut t| {
+        if settings.combat_paused {
+            t.playback_state = PlaybackState::Paused;
+        } else {
             t.playback_state = PlaybackState::Playing;
             t.speed = settings.combat_speed as f64;
-        });
-        format!("{}x", settings.combat_speed)
-    };
+        }
+    });
+
+    speed_q.as_mut().0 = format!(
+        "{}x{}",
+        settings.combat_speed,
+        if settings.combat_paused {
+            " - paused"
+        } else {
+            ""
+        }
+    );
 
     let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
     let combat = report.combat_report.as_ref().unwrap();
@@ -1108,7 +1116,8 @@ pub fn update_combat_stats(
                     };
                     shield_size.x = shield_size
                         .x
-                        .lerp(full_size * cu.shield as f32 / cu.max_shield as f32, speed);
+                        .lerp(full_size * cu.shield as f32 / cu.max_shield as f32, speed)
+                        .clamp(0., full_size);
                     shield_t.translation.x = (shield_size.x - full_size) * 0.5;
                 }
             }
@@ -1116,8 +1125,10 @@ pub fn update_combat_stats(
             if let Ok((mut hull_t, mut hull_s)) = hull_q.get_mut(child) {
                 if let Some(hull_size) = hull_s.custom_size.as_mut() {
                     let full_size = size * 0.96;
-                    hull_size.x =
-                        hull_size.x.lerp(full_size * cu.hull as f32 / cu.max_hull as f32, speed);
+                    hull_size.x = hull_size
+                        .x
+                        .lerp(full_size * cu.hull as f32 / cu.max_hull as f32, speed)
+                        .clamp(0., full_size);
                     hull_t.translation.x = (hull_size.x - full_size) * 0.5;
                 }
             }

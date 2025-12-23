@@ -331,7 +331,11 @@ pub fn draw_map(
                                     event.propagate(false);
 
                                     if event.button == PointerButton::Primary {
-                                        if icon.on_units() && player.owns(map.get(planet_id)) {
+                                        let planet = map.get(planet_id);
+                                        if icon.on_units()
+                                            && (player.owns(planet)
+                                                || (player.controls(planet) && planet.is_moon()))
+                                        {
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             settings.show_menu = true;
@@ -722,12 +726,7 @@ pub fn update_planet_info(
                             && m.destination == planet.id
                     }),
                     Icon::Buildings => {
-                        player.owns(planet)
-                            && (selected || icon.condition(planet) || settings.show_info)
-                    },
-                    Icon::Defenses => {
-                        player.owns(planet)
-                            && !planet.is_moon()
+                        (player.owns(planet) || (player.controls(planet) && planet.is_moon()))
                             && (selected || icon.condition(planet) || settings.show_info)
                     },
                     Icon::Fleet => {
@@ -738,6 +737,11 @@ pub fn update_planet_info(
                             } else {
                                 icon.condition(planet) && !selected && !settings.show_info
                             }
+                    },
+                    Icon::Defenses => {
+                        player.owns(planet)
+                            && !planet.is_moon()
+                            && (selected || icon.condition(planet) || settings.show_info)
                     },
                     _ => {
                         // Show icon if there is a mission with this objective towards this
