@@ -3,6 +3,7 @@
 mod core;
 mod utils;
 
+use std::io::Write;
 use bevy::asset::AssetMetaCheck;
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
@@ -13,6 +14,9 @@ use bevy_kira_audio::AudioPlugin;
 use bevy_renet::netcode::{NetcodeClientPlugin, NetcodeServerPlugin};
 use bevy_renet::{RenetClientPlugin, RenetServerPlugin};
 use bevy_tweening::TweeningPlugin;
+use std::fs::{File, OpenOptions};
+use std::panic;
+use std::sync::Mutex;
 use winit::window::Icon;
 
 use crate::core::constants::{HEIGHT, WIDTH};
@@ -21,7 +25,11 @@ use crate::core::GamePlugin;
 
 pub const TITLE: &str = "Stellarion";
 
+static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+
 fn main() {
+    init_panic_logger();
+
     let mut app = App::new();
 
     app.add_plugins(
@@ -31,7 +39,7 @@ fn main() {
                 primary_window: Some(Window {
                     title: TITLE.into(),
                     mode: WindowMode::Windowed,
-                    position: WindowPosition::Centered(MonitorSelection::Primary),
+                    position: WindowPosition::Centered(MonitorSelection::Current),
                     resolution: WindowResolution::new(WIDTH as u32, HEIGHT as u32),
 
                     // Tells Wasm to resize the window according to the available canvas
@@ -61,8 +69,28 @@ fn main() {
     app.run();
 }
 
+fn init_panic_logger() {
+    panic::set_hook(Box::new(|info| {
+        let mut guard = LOG_FILE.lock().unwrap();
+
+        if guard.is_none() {
+            *guard = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("stellarion-logs.txt")
+                .ok();
+        }
+
+        if let Some(file) = guard.as_mut() {
+            let _ = writeln!(file, "=== PANIC ===");
+            let _ = writeln!(file, "{}", info);
+            let _ = writeln!(file);
+        }
+    }));
+}
+
 #[cfg(target_os = "windows")]
-pub fn set_window_icon(_: NonSendMarker) {
+fn set_window_icon(_: NonSendMarker) {
     let image = image::open("assets/images/icons/planet.png").unwrap().into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();

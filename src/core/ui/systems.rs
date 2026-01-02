@@ -643,11 +643,7 @@ fn draw_planet_overview(
                 ui.add_image_painter(images.get("abandon"), rect);
 
                 if response.clicked() {
-                    planet.abandon();
-
-                    // Inject hidden report to show last_info that the planet is abandoned
-                    if planet.controlled == None {
-                        let mission = Mission::from_mission(
+                    let mission = Mission::from_mission(
                             settings.turn,
                             player.id,
                             planet,
@@ -655,6 +651,10 @@ fn draw_planet_overview(
                             &Mission::default(),
                         );
 
+                    planet.abandon();
+
+                    // Inject hidden report to show last_info that the planet is abandoned
+                    if planet.controlled == None {
                         player.reports.push(MissionReport {
                             id: rand::random(),
                             turn: settings.turn,

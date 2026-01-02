@@ -9,8 +9,8 @@ use regex::Regex;
 /// Get the local IP address
 pub fn get_local_ip() -> IpAddr {
     let socket = UdpSocket::bind("0.0.0.0:0").ok().expect("Socket not found.");
-    socket.connect("8.8.8.8:80").ok().expect("Failed to connect to socket."); // Doesn't send data
-    socket.local_addr().ok().map(|addr| addr.ip()).unwrap()
+    socket.connect("8.8.8.8:80").expect("Failed to connect to socket."); // Doesn't send data
+    socket.local_addr().map(|addr| addr.ip()).unwrap()
 }
 
 /// Scale a Duration by a factor
