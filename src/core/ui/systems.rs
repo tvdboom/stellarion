@@ -1,3 +1,5 @@
+//! Egui systems for the strategic HUD, shops, missions, and combat reports.
+
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -14,21 +16,22 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
-use crate::core::combat::combat::CombatUnit;
 use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
+use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
     BG2_COLOR, ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL,
     SHIELD_COLOR,
 };
 use crate::core::map::icon::Icon;
-use crate::core::map::map::Map;
+use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, MissionId, Missions, SendMissionMsg};
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
+use crate::core::simulation::TurnCommand;
 use crate::core::states::GameState;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
@@ -37,12 +40,15 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
+use crate::multiplayer::client::PendingTurnCommands;
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 #[derive(Component)]
+/// Marker for entities owned by the in-game UI projection.
 pub struct UiCmp;
 
 #[derive(Clone, Debug, Default, PartialEq)]
+/// Selected constructible-unit category in the local shop panel.
 pub enum Shop {
     #[default]
     Buildings,
@@ -51,6 +57,7 @@ pub enum Shop {
 }
 
 #[derive(EnumIter, Copy, Clone, Debug, Default, PartialEq)]
+/// Selected section of the local mission panel.
 pub enum MissionTab {
     #[default]
     NewMission,
@@ -60,6 +67,7 @@ pub enum MissionTab {
 }
 
 #[derive(Resource, Default)]
+/// Local-only panel, selection, hover, and report navigation state.
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
     pub planet_selected: Option<PlanetId>,
@@ -84,6 +92,7 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
+/// Draws the panel interface and emits any resulting local actions.
 fn draw_panel<R>(
     contexts: &mut EguiContexts,
     name: &str,
@@ -93,6 +102,9 @@ fn draw_panel<R>(
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) {
+    let Ok(context) = contexts.ctx_mut() else {
+        return;
+    };
     egui::Window::new(name)
         .frame(egui::Frame {
             fill: Color32::TRANSPARENT,
@@ -108,7 +120,7 @@ fn draw_panel<R>(
         .title_bar(false)
         .fixed_pos(pos)
         .fixed_size(size)
-        .show(contexts.ctx_mut().unwrap(), |ui| {
+        .show(context, |ui| {
             let response =
                 ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
 
@@ -116,10 +128,11 @@ fn draw_panel<R>(
         });
 }
 
+/// Draws the army grid interface and emits any resulting local actions.
 fn draw_army_grid(
     ui: &mut Ui,
     name: &str,
-    army: &Vec<Unit>,
+    army: &[Unit],
     report: &MissionReport,
     player: &Player,
     images: &ImageIds,
@@ -183,6 +196,7 @@ fn draw_army_grid(
     });
 }
 
+/// Draws the combat army grid interface and emits any resulting local actions.
 fn draw_combat_army_grid(
     ui: &mut Ui,
     name: &str,
@@ -250,7 +264,7 @@ fn draw_combat_army_grid(
                 state
                     .combat_report_hover
                     .as_ref()
-                    .map_or(true, |(u, s)| (*s != side || *u == Unit::crawler()) || *u == unit),
+                    .is_none_or(|(u, s)| (*s != side || *u == Unit::crawler()) || *u == unit),
                 |ui| {
                     let response = ui
                         .add_image(images.get(unit.to_lowername()), [70.; 2])
@@ -419,13 +433,14 @@ fn draw_combat_army_grid(
     any_hovered
 }
 
+/// Draws the resources interface and emits any resulting local actions.
 fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, images: &ImageIds) {
     ui.add_space(10.);
 
     // Measure total horizontal width required
     let mut text = settings.turn.to_string();
 
-    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
 
     text += &n_owned.to_string();
     text += &n_max_owned.to_string();
@@ -549,6 +564,7 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
     });
 }
 
+/// Draws the planet overview interface and emits any resulting local actions.
 fn draw_planet_overview(
     ui: &mut Ui,
     id: PlanetId,
@@ -556,9 +572,10 @@ fn draw_planet_overview(
     player: &mut Player,
     settings: &Settings,
     message: &mut MessageWriter<MessageMsg>,
+    pending: &mut PendingTurnCommands,
     images: &ImageIds,
 ) {
-    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
 
     let planet = map.get_mut(id);
 
@@ -644,18 +661,26 @@ fn draw_planet_overview(
 
                 if response.clicked() {
                     let mission = Mission::from_mission(
-                            settings.turn,
-                            player.id,
-                            planet,
-                            planet,
-                            &Mission::default(),
-                        );
+                        settings.turn,
+                        player.id,
+                        planet,
+                        planet,
+                        &Mission::default(),
+                    );
 
+                    if !pending.push(TurnCommand::AbandonPlanet {
+                        planet_id: planet.id,
+                    }) {
+                        message.write(MessageMsg::error(
+                            "This turn already contains the maximum number of commands.",
+                        ));
+                        return;
+                    }
                     planet.abandon();
 
                     // Inject hidden report to show last_info that the planet is abandoned
-                    if planet.controlled == None {
-                        player.reports.push(MissionReport {
+                    if planet.controlled.is_none() {
+                        player.push_report(MissionReport {
                             id: rand::random(),
                             turn: settings.turn,
                             mission,
@@ -695,7 +720,16 @@ fn draw_planet_overview(
                     ui.add_image_painter(images.get("colonize"), rect);
 
                     if response.clicked() {
-                        *planet.army.entry(Unit::colony_ship()).or_insert(1) -= 1;
+                        if !pending.push(TurnCommand::ColonizePlanet {
+                            planet_id: planet.id,
+                        }) {
+                            message.write(MessageMsg::error(
+                                "This turn already contains the maximum number of commands.",
+                            ));
+                            return;
+                        }
+                        let colony_ships = planet.army.entry(Unit::colony_ship()).or_insert(1);
+                        *colony_ships = colony_ships.saturating_sub(1);
                         planet.colonize(player.id);
                         message
                             .write(MessageMsg::info(format!("Planet {} colonized.", planet.name)));
@@ -706,6 +740,7 @@ fn draw_planet_overview(
     }
 }
 
+/// Draws the overview interface and emits any resulting local actions.
 fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     ui.add_space(17.);
 
@@ -756,6 +791,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
     });
 }
 
+/// Draws the report overview interface and emits any resulting local actions.
 fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images: &ImageIds) {
     ui.add_space(17.);
 
@@ -809,6 +845,7 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
     });
 }
 
+/// Draws the mission fleet hover interface and emits any resulting local actions.
 fn draw_mission_fleet_hover(
     ui: &mut Ui,
     mission: &Mission,
@@ -874,6 +911,7 @@ fn draw_mission_fleet_hover(
     });
 }
 
+/// Draws the new mission interface and emits any resulting local actions.
 fn draw_new_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
@@ -888,7 +926,7 @@ fn draw_new_mission(
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
 
-    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
 
     // Block selection of any unit when in spectator mode to be unable to send missions
     if player.spectator {
@@ -1284,8 +1322,11 @@ fn draw_new_mission(
                             ui.small("💣 Bombing raid:");
 
                             ui.style_mut().spacing.button_padding.y = 1.5;
-                            ui.style_mut().text_styles.get_mut(&TextStyle::Button).unwrap().size =
-                                18.;
+                            if let Some(style) =
+                                ui.style_mut().text_styles.get_mut(&TextStyle::Button)
+                            {
+                                style.size = 18.;
+                            }
 
                             ComboBox::from_id_salt("bombing")
                                 .width(125.)
@@ -1383,7 +1424,7 @@ fn draw_new_mission(
                         == state.mission_info.total()
                 },
                 Icon::Destroy => state.mission_info.army.amount(&Unit::war_sun()) > 0,
-                _ => unreachable!(),
+                _ => false,
             };
 
             ui.horizontal(|ui| {
@@ -1425,6 +1466,7 @@ fn draw_new_mission(
     }
 }
 
+/// Draws the active missions interface and emits any resulting local actions.
 fn draw_active_missions(
     ui: &mut Ui,
     missions: Vec<&Mission>,
@@ -1434,7 +1476,7 @@ fn draw_active_missions(
     is_hovered: bool,
     images: &ImageIds,
 ) {
-    if missions.len() == 0 {
+    if missions.is_empty() {
         ui.add_space(40.);
         ui.vertical_centered(|ui| {
             ui.label(format!("No {}.", state.mission_tab.to_lowername()));
@@ -1592,6 +1634,7 @@ fn draw_active_missions(
         });
 }
 
+/// Draws the mission reports interface and emits any resulting local actions.
 fn draw_mission_reports(
     ui: &mut Ui,
     state: &mut UiState,
@@ -1602,7 +1645,7 @@ fn draw_mission_reports(
 ) {
     let reports = player.reports.iter().filter(|r| !r.hidden).collect::<Vec<_>>();
 
-    if reports.len() == 0 {
+    if reports.is_empty() {
         ui.add_space(40.);
         ui.vertical_centered(|ui| {
             ui.label(format!("No {}.", state.mission_tab.to_lowername()));
@@ -1703,11 +1746,14 @@ fn draw_mission_reports(
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 40.);
 
-            let report = player
+            let Some(report) = player
                 .reports
                 .iter()
                 .find(|r| state.mission_report == Some(r.mission.id))
-                .unwrap_or(player.reports.last().unwrap());
+                .or_else(|| reports.last().copied())
+            else {
+                return;
+            };
 
             ui.horizontal(|ui| {
                 let action = |r1: Response,
@@ -1900,7 +1946,7 @@ fn draw_mission_reports(
                             ));
                         } else {
                             let units = Unit::all_valid(destination.is_moon());
-                            for (i, army) in [units.get(1), units.get(2), units.get(0)]
+                            for (i, army) in [units.get(1), units.get(2), units.first()]
                                 .into_iter()
                                 .flatten()
                                 .enumerate()
@@ -1938,11 +1984,10 @@ fn draw_mission_reports(
                         if report.combat_report.is_some()
                             && report.can_see(&Side::Attacker, player.id)
                             && report.can_see(&Side::Defender, player.id)
+                            && ui.add_custom_button("Combat details", images).clicked()
                         {
-                            if ui.add_custom_button("Combat details", images).clicked() {
-                                state.combat_report = Some(report.id);
-                                state.combat_report_round = 1;
-                            }
+                            state.combat_report = Some(report.id);
+                            state.combat_report_round = 1;
                         }
                     });
                 });
@@ -1951,9 +1996,10 @@ fn draw_mission_reports(
     });
 }
 
+/// Draws the mission interface and emits any resulting local actions.
 fn draw_mission(
     ui: &mut Ui,
-    missions: &Vec<Mission>,
+    missions: &[Mission],
     send_mission: &mut MessageWriter<SendMissionMsg>,
     settings: &Settings,
     state: &mut UiState,
@@ -2009,6 +2055,7 @@ fn draw_mission(
     }
 }
 
+/// Draws the combat report interface and emits any resulting local actions.
 fn draw_combat_report(
     ui: &mut Ui,
     state: &mut UiState,
@@ -2016,8 +2063,20 @@ fn draw_combat_report(
     player: &Player,
     images: &ImageIds,
 ) {
-    let report = player.reports.iter().find(|r| r.id == state.combat_report.unwrap()).unwrap();
-    let combat = report.combat_report.as_ref().unwrap();
+    let Some(report_id) = state.combat_report else {
+        return;
+    };
+    let Some((report, combat)) = player
+        .reports
+        .iter()
+        .find(|report| report.id == report_id)
+        .and_then(|report| report.combat_report.as_ref().map(|combat| (report, combat)))
+        .filter(|(_, combat)| !combat.rounds.is_empty())
+    else {
+        state.combat_report = None;
+        return;
+    };
+    state.combat_report_round = state.combat_report_round.clamp(1, combat.rounds.len());
 
     let origin = map.get(report.mission.origin);
     let destination = map.get(report.mission.destination);
@@ -2087,8 +2146,8 @@ fn draw_combat_report(
         let mut rr = combat.rounds.iter().fold(RoundReport::default(), |mut rr, r| {
             rr.attacker.extend(r.attacker.clone());
             rr.defender.extend(r.defender.clone());
-            rr.planetary_shield += r.planetary_shield;
-            rr.antiballistic_fired += r.antiballistic_fired;
+            rr.planetary_shield = rr.planetary_shield.saturating_add(r.planetary_shield);
+            rr.antiballistic_fired = rr.antiballistic_fired.saturating_add(r.antiballistic_fired);
             if rr.buildings.is_empty() {
                 rr.buildings = r.buildings.clone()
             }
@@ -2099,7 +2158,7 @@ fn draw_combat_report(
             1. - combat.rounds.iter().fold(1., |acc, p| acc * (1. - p.destroy_probability));
         rr
     } else {
-        combat.rounds.get(state.combat_report_round - 1).unwrap().clone()
+        combat.rounds[state.combat_report_round - 1].clone()
     };
 
     let draw_stats = |ui: &mut Ui, units: Vec<&CombatUnit>, side: Side| {
@@ -2262,7 +2321,7 @@ fn draw_combat_report(
                             state
                                 .combat_report_hover
                                 .as_ref()
-                                .map_or(true, |(u, s)| *u == cu.unit && *s == Side::Attacker)
+                                .is_none_or(|(u, s)| *u == cu.unit && *s == Side::Attacker)
                         })
                         .collect::<Vec<_>>();
 
@@ -2417,9 +2476,10 @@ fn draw_combat_report(
                                 .defender
                                 .iter()
                                 .filter(|cu| {
-                                    state.combat_report_hover.as_ref().map_or(true, |(u, s)| {
-                                        *u == cu.unit && *s == Side::Defender
-                                    })
+                                    state
+                                        .combat_report_hover
+                                        .as_ref()
+                                        .is_none_or(|(u, s)| *u == cu.unit && *s == Side::Defender)
                                 })
                                 .collect::<Vec<_>>();
 
@@ -2450,6 +2510,7 @@ fn draw_combat_report(
     });
 }
 
+/// Draws the mission info hover interface and emits any resulting local actions.
 fn draw_mission_info_hover(
     ui: &mut Ui,
     mission: &Mission,
@@ -2531,12 +2592,15 @@ fn draw_mission_info_hover(
     });
 }
 
+/// Draws the unit hover interface and emits any resulting local actions.
 fn draw_unit_hover(
     ui: &mut Ui,
     unit: &Unit,
     count: usize,
     state: &mut UiState,
     player: &mut Player,
+    planet_id: PlanetId,
+    pending: &mut PendingTurnCommands,
     msg: Option<String>,
     images: &ImageIds,
 ) {
@@ -2608,7 +2672,7 @@ fn draw_unit_hover(
                                         ui.style_mut().interaction.selectable_labels = true;
 
                                         ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-                                        ui.label(unit.get_stat(&stat))
+                                        ui.label(unit.get_stat(stat))
                                             .on_hover_cursor(CursorIcon::Default);
                                     })
                                     .response
@@ -2623,7 +2687,7 @@ fn draw_unit_hover(
                 let (from, to) = &mut state.lab;
 
                 if from == to {
-                    *to = ResourceName::iter().find(|r| r != from).unwrap();
+                    *to = from.next(None);
                 }
 
                 ui.separator();
@@ -2650,7 +2714,7 @@ fn draw_unit_hover(
                     ui.add(
                         egui::DragValue::new(&mut state.lab_amount)
                             .speed(100)
-                            .range(0..=player.resources.get(&from)),
+                            .range(0..=player.resources.get(from)),
                     );
 
                     let (rect, mut response) =
@@ -2674,9 +2738,18 @@ fn draw_unit_hover(
                             to.to_name()
                         ));
 
-                    if response.clicked() {
-                        *player.resources.get_mut(from) -= state.lab_amount;
-                        *player.resources.get_mut(to) += gain;
+                    if response.clicked()
+                        && pending.push(TurnCommand::ConvertResources {
+                            planet_id,
+                            from: *from,
+                            to: *to,
+                            amount: state.lab_amount,
+                        })
+                    {
+                        let source = player.resources.get_mut(from);
+                        *source = source.saturating_sub(state.lab_amount);
+                        let destination = player.resources.get_mut(to);
+                        *destination = destination.saturating_add(gain);
                     }
 
                     ui.label(gain.to_string());
@@ -2725,12 +2798,14 @@ fn draw_unit_hover(
     });
 }
 
+/// Draws the shop interface and emits any resulting local actions.
 fn draw_shop(
     ui: &mut Ui,
     state: &mut UiState,
     settings: &Settings,
     player: &mut Player,
     planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
     images: &ImageIds,
 ) {
     ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
@@ -2837,9 +2912,15 @@ fn draw_shop(
                             state.radar_hover = hovered.then_some(planet.id);
                         }
 
-                        if response.clicked() {
+                        if response.clicked()
+                            && pending.push(TurnCommand::BuyUnits {
+                                planet_id: planet.id,
+                                unit: *unit,
+                                count: 1,
+                            })
+                        {
                             player.resources -= unit.price();
-                            planet.buy.push(unit.clone());
+                            planet.buy.push(*unit);
                         }
 
                         if !unit.is_building()
@@ -2849,29 +2930,41 @@ fn draw_shop(
                             // Buy 5 new units (or maximum possible)
                             let n = match unit {
                                 Unit::Ship(s) => {
-                                    let max_n_p = (planet.max_fleet_production()
-                                        - planet.fleet_production())
+                                    let max_n_p = planet
+                                        .max_fleet_production()
+                                        .saturating_sub(planet.fleet_production())
                                         / s.production();
                                     let max_n_r = (player.resources / s.price()).min();
                                     5.min(max_n_p).min(max_n_r)
                                 },
                                 Unit::Defense(d) => {
-                                    let max_n_p = (planet.max_battery_production()
-                                        - planet.battery_production())
+                                    let max_n_p = planet
+                                        .max_battery_production()
+                                        .saturating_sub(planet.battery_production())
                                         / d.production();
                                     let max_n_r = (player.resources / d.price()).min();
                                     let max_n_m = if d.is_missile() {
-                                        planet.max_missile_capacity() - planet.missile_capacity()
+                                        planet
+                                            .max_missile_capacity()
+                                            .saturating_sub(planet.missile_capacity())
                                     } else {
                                         5
                                     };
                                     5.min(max_n_p).min(max_n_r).min(max_n_m)
                                 },
-                                _ => unreachable!(),
+                                Unit::Building(_) => 0,
                             };
 
-                            player.resources -= unit.price() * n;
-                            planet.buy.extend(vec![unit.clone(); n]);
+                            if n > 0
+                                && pending.push(TurnCommand::BuyUnits {
+                                    planet_id: planet.id,
+                                    unit: *unit,
+                                    count: n,
+                                })
+                            {
+                                player.resources -= unit.price() * n;
+                                planet.buy.extend(vec![*unit; n]);
+                            }
                         }
 
                         if count > 0 {
@@ -2924,7 +3017,10 @@ fn draw_shop(
                         if settings.show_hover {
                             response
                                 .on_hover_ui(|ui| {
-                                    draw_unit_hover(ui, unit, count, state, player, None, &images);
+                                    draw_unit_hover(
+                                        ui, unit, count, state, player, planet.id, pending, None,
+                                        images,
+                                    );
                                 })
                                 .on_disabled_hover_ui(|ui| {
                                     draw_unit_hover(
@@ -2933,6 +3029,8 @@ fn draw_shop(
                                         count,
                                         state,
                                         player,
+                                        planet.id,
+                                        pending,
                                         Some(if !resources_check {
                                             "Not enough resources.".to_string()
                                         } else if !building_check {
@@ -2945,14 +3043,15 @@ fn draw_shop(
                                                     Unit::Defense(d) if d.is_missile() =>
                                                         Building::MissileSilo.to_name(),
                                                     Unit::Defense(_) => Building::Factory.to_name(),
-                                                    _ => unreachable!(),
+                                                    Unit::Building(_) =>
+                                                        Building::Factory.to_name(),
                                                 },
                                                 unit.production()
                                             )
                                         } else {
                                             "Production limit reached.".to_string()
                                         }),
-                                        &images,
+                                        images,
                                     );
                                 });
                         }
@@ -2963,6 +3062,7 @@ fn draw_shop(
     }
 }
 
+/// Draws the combat selection interface and emits any resulting local actions.
 fn draw_combat_selection(
     ui: &mut Ui,
     state: &mut UiState,
@@ -3068,10 +3168,15 @@ fn draw_combat_selection(
     });
 }
 
-pub fn set_ui_style(mut contexts: EguiContexts) {
-    let context = contexts.ctx_mut().unwrap();
-    context.set_style(NordDark.custom_style());
-
+/// Installs the original Fira/Nord theme once the primary egui context exists.
+pub fn set_ui_style(mut contexts: EguiContexts, mut initialized: Local<bool>) {
+    if *initialized {
+        return;
+    }
+    let Ok(context) = contexts.ctx_mut() else {
+        return;
+    };
+    context.set_global_style(NordDark.custom_style());
     context.add_font(FontInsert::new(
         "firasans",
         FontData::from_static(include_bytes!("../../../assets/fonts/FiraSans-Bold.ttf")),
@@ -3080,19 +3185,22 @@ pub fn set_ui_style(mut contexts: EguiContexts) {
             priority: FontPriority::Highest,
         }],
     ));
+    *initialized = true;
 }
 
+/// Adds ui images to the current UI or asset registry.
 pub fn add_ui_images(
     mut contexts: EguiContexts,
     mut images: ResMut<ImageIds>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     for (k, v) in assets.images.iter() {
         let id = contexts.add_image(EguiTextureHandle::Strong(v.clone()));
-        images.0.insert(k, id);
+        images.0.insert(k.clone(), id);
     }
 }
 
+/// Draws the ui interface and emits any resulting local actions.
 pub fn draw_ui(
     mut contexts: EguiContexts,
     mut send_mission: MessageWriter<SendMissionMsg>,
@@ -3102,6 +3210,7 @@ pub fn draw_ui(
     missions: Res<Missions>,
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
+    mut pending: ResMut<PendingTurnCommands>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -3169,7 +3278,18 @@ pub fn draw_ui(
                 ),
                 (window_w2, window_h2),
                 &images,
-                |ui| draw_planet_overview(ui, id, map, player, &settings, &mut message, &images),
+                |ui| {
+                    draw_planet_overview(
+                        ui,
+                        id,
+                        map,
+                        player,
+                        &settings,
+                        &mut message,
+                        &mut pending,
+                        &images,
+                    )
+                },
             );
         };
 
@@ -3235,7 +3355,10 @@ pub fn draw_ui(
     };
 
     if let Some(mission_id) = state.mission_hover {
-        let mission = missions.get(mission_id);
+        let Some(mission) = missions.get(mission_id) else {
+            state.mission_hover = None;
+            return;
+        };
 
         let (window_w, window_h) = (110., 630.);
 
@@ -3281,7 +3404,7 @@ pub fn draw_ui(
 
         let (window_w, window_h) = (850., 640.);
 
-        let is_hovered = contexts.ctx().unwrap().is_pointer_over_area();
+        let is_hovered = contexts.ctx_mut().is_ok_and(|ctx| ctx.is_pointer_over_egui());
         draw_panel(
             &mut contexts,
             "mission",
@@ -3309,10 +3432,10 @@ pub fn draw_ui(
             state.end_turn = false;
 
             // Hide shop if hovering another planet
-            if !state.planet_hover.is_some_and(|planet_id| planet_id != id) {
+            if state.planet_hover.is_none_or(|planet_id| planet_id == id) {
                 let planet = map.get_mut(id);
 
-                if player.owns(&planet) || (planet.is_moon() && player.controls(&planet)) {
+                if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
                     let (window_w, window_h) = (735., 340.);
 
                     draw_panel(
@@ -3322,7 +3445,17 @@ pub fn draw_ui(
                         (width * 0.5 - window_w * 0.5, height * 0.995 - window_h),
                         (window_w, window_h),
                         &images,
-                        |ui| draw_shop(ui, &mut state, &settings, &mut player, planet, &images),
+                        |ui| {
+                            draw_shop(
+                                ui,
+                                &mut state,
+                                &settings,
+                                &mut player,
+                                planet,
+                                &mut pending,
+                                &images,
+                            )
+                        },
                     );
                 }
             }

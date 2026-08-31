@@ -1,49 +1,74 @@
+//! Persisted fleet missions, movement calculations, visibility, and Bevy adapters.
+
+#[cfg(feature = "app")]
 use std::f32::consts::PI;
+#[cfg(feature = "app")]
 use std::time::Duration;
 
 use bevy::prelude::*;
+#[cfg(feature = "app")]
 use bevy::window::SystemCursorIcon;
-use bevy_egui::egui::emath::OrderedFloat;
-use bevy_renet::renet::ClientId;
+#[cfg(feature = "app")]
 use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+#[cfg(feature = "app")]
 use crate::core::assets::WorldAssets;
-use crate::core::constants::{MISSION_Z, NEXUS_FACTOR, PHALANX_DISTANCE, RADAR_DISTANCE};
+#[cfg(feature = "app")]
+use crate::core::constants::MISSION_Z;
+use crate::core::constants::{NEXUS_FACTOR, PHALANX_DISTANCE, RADAR_DISTANCE};
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
-use crate::core::map::map::{Map, MapCmp};
+use crate::core::map::model::Map;
+#[cfg(feature = "app")]
+use crate::core::map::model::MapCmp;
 use crate::core::map::planet::{Planet, PlanetId};
+#[cfg(feature = "app")]
 use crate::core::map::systems::MissionCmp;
+#[cfg(feature = "app")]
 use crate::core::map::utils::{cursor, SpriteFrameLens};
+#[cfg(feature = "app")]
 use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
+#[cfg(feature = "app")]
+use crate::core::simulation::TurnCommand;
+#[cfg(feature = "app")]
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
+#[cfg(feature = "app")]
+use crate::multiplayer::client::PendingTurnCommands;
 use crate::utils::NameFromEnum;
 
+/// Stable identifier of a persisted fleet mission.
 pub type MissionId = u64;
 
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
+/// Bevy resource containing the selected player's currently visible missions.
 pub struct Missions(pub Vec<Mission>);
 
 impl Missions {
-    pub fn get(&self, mission_id: MissionId) -> &Mission {
-        self.0.iter().find(|m| m.id == mission_id).expect("Mission not found.")
+    /// Returns the mission with the requested stable identifier when it is still visible.
+    pub fn get(&self, mission_id: MissionId) -> Option<&Mission> {
+        self.0.iter().find(|mission| mission.id == mission_id)
     }
 
+    /// Iterates over the contained values without transferring ownership.
     pub fn iter(&self) -> std::slice::Iter<'_, Mission> {
         self.0.iter()
     }
 }
 
 #[derive(Message)]
+/// Bevy message carrying a mission selected in the local UI.
 pub struct SendMissionMsg {
+    /// Mission selected for dispatch by the local UI.
     pub mission: Mission,
 }
 
 impl SendMissionMsg {
+    /// Creates a new value from the supplied state.
     pub fn new(mission: Mission) -> Self {
         Self {
             mission,
@@ -52,14 +77,19 @@ impl SendMissionMsg {
 }
 
 #[derive(EnumIter, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Optional building category targeted by bombers after combat.
 pub enum BombingRaid {
     #[default]
+    /// Bomb the none building category after combat.
     None,
+    /// Bomb the economic building category after combat.
     Economic,
+    /// Bomb the industrial building category after combat.
     Industrial,
 }
 
 impl Description for BombingRaid {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             BombingRaid::None => "No bombing raid.",
@@ -77,28 +107,74 @@ impl Description for BombingRaid {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+/// Complete persisted fleet movement and objective state.
 pub struct Mission {
+    /// Stable identifier used to cross-reference this value.
     pub id: MissionId,
-    pub owner: ClientId,
+    /// Stable player slot that owns and can view this mission.
+    pub owner: PlayerId,
+    /// Stable planet from which the fleet was dispatched.
     pub origin: PlanetId,
-    pub origin_owned: Option<ClientId>,
-    pub origin_controlled: Option<ClientId>,
+    /// Owner of the origin when the mission was dispatched.
+    pub origin_owned: Option<PlayerId>,
+    /// Controller of the origin when the mission was dispatched.
+    pub origin_controlled: Option<PlayerId>,
+    /// Origin army snapshot used by later intelligence reports.
     pub origin_army: Army,
+    /// Stable planet toward which the mission is travelling.
     pub destination: PlanetId,
+    /// Turn on which the mission was dispatched.
     pub send: usize,
+    /// Current world-space position.
     pub position: Vec2,
+    /// Strategic objective applied on arrival.
     pub objective: Icon,
+    /// Units stationed on this world or travelling with this mission.
     pub army: Army,
+    /// Optional building category selected for post-combat bombing.
     pub bombing: BombingRaid,
+    /// Whether probes remain in fleet combat beyond reconnaissance.
     pub combat_probes: bool,
+    /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: bool,
+    /// Append-only human-readable mission history.
     pub logs: String,
 }
 
 impl Mission {
+    /// Creates a new value from the supplied state.
     pub fn new(
         turn: usize,
-        owner: ClientId,
+        owner: PlayerId,
+        origin: &Planet,
+        destination: &Planet,
+        objective: Icon,
+        army: Army,
+        bombing: BombingRaid,
+        combat_probes: bool,
+        jump_gate: bool,
+        logs: Option<String>,
+    ) -> Self {
+        Self::new_with_id(
+            rand::random::<u64>().max(1),
+            turn,
+            owner,
+            origin,
+            destination,
+            objective,
+            army,
+            bombing,
+            combat_probes,
+            jump_gate,
+            logs,
+        )
+    }
+
+    /// Creates a mission with an explicit deterministic identifier.
+    pub fn new_with_id(
+        id: MissionId,
+        turn: usize,
+        owner: PlayerId,
         origin: &Planet,
         destination: &Planet,
         objective: Icon,
@@ -109,7 +185,7 @@ impl Mission {
         logs: Option<String>,
     ) -> Self {
         Mission {
-            id: rand::random(),
+            id,
             owner,
             origin: origin.id,
             origin_owned: origin.owned,
@@ -119,7 +195,7 @@ impl Mission {
             send: turn,
             position: {
                 // Start at the edge of the origin planet
-                let direction = (-origin.position + destination.position).normalize();
+                let direction = (-origin.position + destination.position).normalize_or_zero();
                 origin.position + direction * Planet::SIZE * 0.7
             },
             objective,
@@ -131,14 +207,20 @@ impl Mission {
         }
     }
 
+    /// Creates this value from mission.
     pub fn from_mission(
         turn: usize,
-        owner: ClientId,
+        owner: PlayerId,
         origin: &Planet,
         destination: &Planet,
         mission: &Mission,
     ) -> Self {
-        Self::new(
+        Self::new_with_id(
+            if mission.id == 0 {
+                rand::random::<u64>().max(1)
+            } else {
+                mission.id
+            },
             turn,
             owner,
             origin,
@@ -152,6 +234,7 @@ impl Mission {
         )
     }
 
+    /// Returns the runtime image key for this value.
     pub fn image(&self, player: &Player) -> &str {
         match (self.owner == player.id, self.jump_gate) {
             (true, false) => "mission",
@@ -160,11 +243,13 @@ impl Mission {
         }
     }
 
+    /// Returns remaining world-space distance from the mission to its destination.
     pub fn distance(&self, map: &Map) -> f32 {
         // Minus 0.7 since the mission ends at the edge of the planet
         (self.position.distance(map.get(self.destination).position) / Planet::SIZE - 0.7).max(0.)
     }
 
+    /// Returns the movement or animation speed represented by this value.
     pub fn speed(&self) -> f32 {
         self.army
             .iter()
@@ -179,12 +264,18 @@ impl Mission {
             .unwrap_or(0.)
     }
 
+    /// Returns travel duration after applying ship speed and jump-gate rules.
     pub fn duration(&self, map: &Map) -> usize {
         let distance = self.distance(map);
         let speed = self.speed();
-        (speed != 0.).then(|| (distance / speed).ceil() as usize).unwrap_or(0)
+        if speed != 0. {
+            (distance / speed).ceil() as usize
+        } else {
+            0
+        }
     }
 
+    /// Returns the deuterium consumed for the supplied movement distance.
     pub fn fuel_consumption(&self, map: &Map) -> usize {
         if self.jump_gate {
             0
@@ -203,29 +294,39 @@ impl Mission {
         }
     }
 
+    /// Returns the army's total production-value score.
     pub fn total(&self) -> usize {
         self.army.values().sum()
     }
 
+    /// Moves the mission toward its destination without overshooting it.
     pub fn advance(&mut self, map: &Map) {
         let destination = map.get(self.destination);
 
         if self.jump_gate {
             self.position = destination.position;
         } else {
-            let direction = (-self.position + destination.position).normalize();
-            self.position += direction * self.speed() * Planet::SIZE;
+            let offset = destination.position - self.position;
+            let step = self.speed() * Planet::SIZE;
+            if offset.length() <= step {
+                self.position = destination.position;
+            } else {
+                self.position += offset.normalize_or_zero() * step;
+            }
         }
     }
 
+    /// Returns whole turns remaining before this mission arrives.
     pub fn turns_to_destination(&self, map: &Map) -> usize {
         (self.distance(map) / self.speed()).ceil() as usize
     }
 
+    /// Returns jump-gate capacity consumed by this mission's fleet.
     pub fn jump_cost(&self) -> usize {
         self.army.iter().map(|(u, c)| u.production() * c).sum()
     }
 
+    /// Merges compatible simultaneous arrivals into one deterministic mission.
     pub fn merge(&mut self, other: &Mission) {
         // The planet of origin becomes the one that send the
         // largest army (measured by production amount)
@@ -237,11 +338,13 @@ impl Mission {
         }
 
         // Select objective based on priority
-        self.objective =
-            [self.objective, other.objective].into_iter().max_by_key(|o| o.priority()).unwrap();
+        if other.objective.priority().unwrap_or(0) > self.objective.priority().unwrap_or(0) {
+            self.objective = other.objective;
+        }
 
         for (u, c) in &other.army {
-            *self.army.entry(*u).or_default() += c;
+            let count = self.army.entry(*u).or_default();
+            *count = count.saturating_add(*c);
         }
 
         self.combat_probes = other.combat_probes || self.combat_probes;
@@ -262,7 +365,11 @@ impl Mission {
             map.planets
                 .iter()
                 .filter(|p| p.controlled == Some(self.owner))
-                .min_by_key(|p| OrderedFloat(p.position.distance(self.position)))
+                .min_by(|left, right| {
+                    left.position
+                        .distance(self.position)
+                        .total_cmp(&right.position.distance(self.position))
+                })
                 .map(|p| p.id)
                 .unwrap_or(origin.id)
         }
@@ -291,6 +398,8 @@ impl Mission {
     }
 }
 
+#[cfg(feature = "app")]
+/// Advances the visible ECS mission projection after canonical turn installation.
 pub fn update_missions(
     mut commands: Commands,
     mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &MissionCmp)>,
@@ -298,7 +407,7 @@ pub fn update_missions(
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     let player_id = player.id;
 
@@ -392,28 +501,47 @@ pub fn update_missions(
     }
 }
 
+#[cfg(feature = "app")]
+/// Validates the selected mission UI, removes committed units/resources, and emits its command.
 pub fn send_mission(
     mut send_mission: MessageReader<SendMissionMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut missions: ResMut<Missions>,
+    mut pending: ResMut<PendingTurnCommands>,
 ) {
     for SendMissionMsg {
         mission,
     } in send_mission.read()
     {
-        player.resources.deuterium -= mission.fuel_consumption(&map);
+        if !pending.push(TurnCommand::SendMission {
+            mission_id: mission.id,
+            origin: mission.origin,
+            destination: mission.destination,
+            objective: mission.objective,
+            army: mission.army.clone(),
+            bombing: mission.bombing.clone(),
+            combat_probes: mission.combat_probes,
+            jump_gate: mission.jump_gate,
+        }) {
+            message.write(MessageMsg::error(
+                "This turn already contains the maximum number of commands.",
+            ));
+            continue;
+        }
+        player.resources.deuterium =
+            player.resources.deuterium.saturating_sub(mission.fuel_consumption(&map));
 
         let origin = map.get_mut(mission.origin);
 
         if mission.jump_gate {
-            origin.jump_gate += mission.jump_cost();
+            origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
         }
 
         // Subtract armies from the origin planet
         origin.army.iter_mut().for_each(|(u, c)| {
-            *c -= mission.army.amount(u);
+            *c = c.saturating_sub(mission.army.amount(u));
         });
 
         // Update control of the planet

@@ -1,19 +1,30 @@
+//! Combat statistic labels used by report and tooltip interfaces.
+
 use strum_macros::EnumIter;
 
 use crate::core::units::Description;
 
 #[derive(EnumIter, Debug, PartialEq)]
+/// Statistics available in unit and combat information panels.
 pub enum CombatStats {
+    /// The hull value.
     Hull,
+    /// The shield value.
     Shield,
+    /// The damage value.
     Damage,
+    /// The production value.
     Production,
+    /// The speed value.
     Speed,
+    /// The fuel consumption value.
     FuelConsumption,
+    /// The rapid fire value.
     RapidFire,
 }
 
 impl Description for CombatStats {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             CombatStats::Production => {

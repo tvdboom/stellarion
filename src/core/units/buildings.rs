@@ -1,3 +1,5 @@
+//! Planetary and lunar building kinds with their construction economics.
+
 use std::iter::Iterator;
 
 use serde::{Deserialize, Serialize};
@@ -9,28 +11,45 @@ use crate::core::units::{Description, Price};
 #[derive(
     EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
+/// Constructible economic, industrial, military, and lunar structures.
 pub enum Building {
+    /// The lunar base building.
     LunarBase,
+    /// The demolition nexus building.
     DemolitionNexus,
+    /// The metal mine building.
     MetalMine,
+    /// The crystal mine building.
     CrystalMine,
+    /// The deuterium synthesizer building.
     DeuteriumSynthesizer,
+    /// The shipyard building.
     Shipyard,
+    /// The factory building.
     Factory,
+    /// The missile silo building.
     MissileSilo,
+    /// The planetary shield building.
     PlanetaryShield,
+    /// The reactor building.
     Reactor,
+    /// The sensor phalanx building.
     SensorPhalanx,
+    /// The jump gate building.
     JumpGate,
+    /// The laboratory building.
     Laboratory,
+    /// The orbital radar building.
     OrbitalRadar,
 }
 
 impl Building {
+    /// Highest construction level supported for upgradeable buildings.
     pub const MAX_LEVEL: usize = 5;
 }
 
 impl Description for Building {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             Building::LunarBase => {
@@ -112,6 +131,7 @@ impl Description for Building {
 }
 
 impl Price for Building {
+    /// Returns the resource cost of producing this unit.
     fn price(&self) -> Resources {
         match self {
             Building::LunarBase => Resources::new(200, 200, 200),

@@ -1,3 +1,5 @@
+//! Bevy/Kira audio resources and systems for music, effects, and mute state.
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -5,12 +7,11 @@ use bevy::prelude::*;
 use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
-use crate::core::constants::{NORMAL_BUTTON_COLOR, PRESSED_BUTTON_COLOR};
-use crate::core::menu::settings::SettingsBtn;
 use crate::core::settings::Settings;
 use crate::core::states::{AudioState, GameState};
 
 #[derive(Resource, Default)]
+/// Tracked music and effect instances grouped by logical channel name.
 pub struct PlayingAudio(pub HashMap<&'static str, Handle<AudioInstance>>);
 
 impl PlayingAudio {
@@ -19,6 +20,7 @@ impl PlayingAudio {
 }
 
 #[derive(Message, Clone)]
+/// Message requesting playback of one named audio asset.
 pub struct PlayAudioMsg {
     pub name: &'static str,
     pub volume: f32,
@@ -26,6 +28,7 @@ pub struct PlayAudioMsg {
 }
 
 impl PlayAudioMsg {
+    /// Creates a new value from the supplied state.
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -34,6 +37,7 @@ impl PlayAudioMsg {
         }
     }
 
+    /// Marks an audio request as looping background music.
     pub fn background(mut self) -> Self {
         self.is_background = true;
         self
@@ -41,11 +45,13 @@ impl PlayAudioMsg {
 }
 
 #[derive(Message, Clone)]
+/// Message requesting that matching audio instances pause.
 pub struct PauseAudioMsg {
     pub name: &'static str,
 }
 
 impl PauseAudioMsg {
+    /// Creates a new value from the supplied state.
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -54,11 +60,13 @@ impl PauseAudioMsg {
 }
 
 #[derive(Message, Clone)]
+/// Message requesting that matching audio instances stop.
 pub struct StopAudioMsg {
     pub name: &'static str,
 }
 
 impl StopAudioMsg {
+    /// Creates a new value from the supplied state.
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -67,15 +75,19 @@ impl StopAudioMsg {
 }
 
 #[derive(Message, Clone)]
+/// Message requesting reapplication of the configured mute mode.
 pub struct MuteAudioMsg;
 
 #[derive(Component)]
+/// Marker for the menu button that displays current audio mode.
 pub struct MusicBtnCmp;
 
 #[derive(Message)]
+/// Message cycling to a new audio playback mode.
 pub struct ChangeAudioMsg(pub Option<AudioState>);
 
-pub fn setup_audio(mut commands: Commands, assets: Local<WorldAssets>) {
+/// Creates the audio entities and resources required on state entry.
+pub fn setup_audio(mut commands: Commands, assets: Res<WorldAssets>) {
     commands
         .spawn((
             Node {
@@ -99,10 +111,10 @@ pub fn setup_audio(mut commands: Commands, assets: Local<WorldAssets>) {
         });
 }
 
+/// Updates audio from the current canonical ECS projection.
 pub fn update_audio(
     mut change_audio_msg: MessageReader<ChangeAudioMsg>,
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
-    mut settings_btn: Query<(&mut BackgroundColor, &SettingsBtn)>,
     mut settings: ResMut<Settings>,
     game_state: Res<State<GameState>>,
     audio_state: Res<State<AudioState>>,
@@ -111,7 +123,7 @@ pub fn update_audio(
     mut pause_audio_msg: MessageWriter<PauseAudioMsg>,
     mut stop_audio_msg: MessageWriter<StopAudioMsg>,
     mut mute_audio_msg: MessageWriter<MuteAudioMsg>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     for ev in change_audio_msg.read() {
         settings.audio = ev.0.unwrap_or(match *audio_state.get() {
@@ -148,22 +160,10 @@ pub fn update_audio(
                 },
             };
         }
-
-        for (mut bgcolor, setting) in &mut settings_btn {
-            if matches!(setting, SettingsBtn::Mute | SettingsBtn::NoMusic | SettingsBtn::Sound) {
-                bgcolor.0 = if (*setting == SettingsBtn::Mute && settings.audio == AudioState::Mute)
-                    || (*setting == SettingsBtn::NoMusic && settings.audio == AudioState::NoMusic)
-                    || (*setting == SettingsBtn::Sound && settings.audio == AudioState::Sound)
-                {
-                    PRESSED_BUTTON_COLOR
-                } else {
-                    NORMAL_BUTTON_COLOR
-                };
-            }
-        }
     }
 }
 
+/// Cycles the configured mute/music/effects mode from keyboard input.
 pub fn toggle_audio(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut change_audio_msg: MessageWriter<ChangeAudioMsg>,
@@ -173,24 +173,26 @@ pub fn toggle_audio(
     }
 }
 
+/// Requests the looping gameplay music when entering active play.
 pub fn play_music(mut play_audio_msg: MessageWriter<PlayAudioMsg>) {
     play_audio_msg.write(PlayAudioMsg::new("music").background());
 }
 
+/// Starts queued audio handles with the requested channel and volume settings.
 pub fn play_audio(
     mut play_audio_msg: MessageReader<PlayAudioMsg>,
     audio_state: Res<State<AudioState>>,
     mut playing_audio: ResMut<PlayingAudio>,
     mut audio_instances: ResMut<Assets<AudioInstance>>,
     audio: Res<Audio>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     for message in play_audio_msg.read() {
         if *audio_state.get() != AudioState::Mute {
             let mut new_sound = false;
 
             if let Some(handle) = playing_audio.0.get(message.name) {
-                if let Some(instance) = audio_instances.get_mut(handle) {
+                if let Some(mut instance) = audio_instances.get_mut(handle) {
                     if matches!(
                         instance.state(),
                         PlaybackState::Paused { .. } | PlaybackState::Pausing { .. }
@@ -235,6 +237,7 @@ pub fn play_audio(
     }
 }
 
+/// Pauses matching active audio instances without discarding their positions.
 pub fn pause_audio(
     mut pause_audio_msg: MessageReader<PauseAudioMsg>,
     playing_audio: Res<PlayingAudio>,
@@ -242,13 +245,14 @@ pub fn pause_audio(
 ) {
     for message in pause_audio_msg.read() {
         if let Some(handle) = playing_audio.0.get(message.name) {
-            if let Some(instance) = audio_instances.get_mut(handle) {
+            if let Some(mut instance) = audio_instances.get_mut(handle) {
                 instance.pause(PlayingAudio::TWEEN);
             }
         }
     }
 }
 
+/// Stops matching active audio instances and removes their tracking handles.
 pub fn stop_audio(
     mut stop_audio_msg: MessageReader<StopAudioMsg>,
     mut playing_audio: ResMut<PlayingAudio>,
@@ -256,7 +260,7 @@ pub fn stop_audio(
 ) {
     for message in stop_audio_msg.read() {
         if let Some(handle) = playing_audio.0.get(message.name) {
-            if let Some(instance) = audio_instances.get_mut(handle) {
+            if let Some(mut instance) = audio_instances.get_mut(handle) {
                 instance.stop(PlayingAudio::TWEEN);
                 playing_audio.0.remove(message.name);
             }
@@ -264,6 +268,7 @@ pub fn stop_audio(
     }
 }
 
+/// Applies the current mute mode to music and effect channels.
 pub fn mute_audio(
     mut mute_audio_msg: MessageReader<MuteAudioMsg>,
     playing_audio: Res<PlayingAudio>,

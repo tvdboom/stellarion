@@ -1,12 +1,44 @@
 <div align="center">
 
 # Stellarion
-### A multiplayer space-themed strategy game written in Rust
+### A deterministic multiplayer space strategy game for browser and desktop
 
 <br><br>
 [![Play](https://gist.githubusercontent.com/cxmeel/0dbc95191f239b631c3874f4ccf114e2/raw/play.svg)](https://tvdboom.itch.io/stellarion)
 <br><br>
 </div>
+
+Stellarion runs as a Bevy/WebAssembly game on itch.io and as native Windows, Linux, and macOS downloads. Rust clients resolve the same simultaneous-turn rules deterministically; Supabase provides anonymous Auth, RLS-protected persistence, optimistic concurrency, recovery, and Realtime wake-ups. There is no dedicated game server or permanent host.
+
+## Quick start
+
+Without configuration, `cargo run -j12` starts against the credential-free in-memory backend. For real multiplayer:
+
+1. Create a fresh Supabase project.
+2. Apply the complete fresh-project state in `supabase/schema.sql`.
+3. Enable anonymous sign-ins.
+4. Copy `.env.example` to `.env` and export its values, or copy `stellarion-config.example.json` to `stellarion-config.json`.
+5. Run `cargo run -j12`.
+
+Only a Supabase project URL and `sb_publishable_...` public key belong in a client build. Never ship a secret/service-role key.
+
+Documentation:
+
+- [Multiplayer architecture](docs/ARCHITECTURE.md)
+- [Fresh Supabase setup](docs/SUPABASE_SETUP.md)
+- [KTX2 assets and deferred loading](docs/ASSETS.md)
+- [Native/WASM builds, itch.io, and CI](docs/BUILD_AND_RELEASE.md)
+- [Repository audit](docs/AUDIT.md)
+
+Common checks:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -j12 -- -D warnings
+cargo test --all-targets --all-features -j12
+cargo run --features asset-pipeline --bin build-assets -j12 -- --check --jobs 12
+cargo check --target wasm32-unknown-unknown --bin stellarion -j12
+```
 
 <img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/map.png?raw=true" alt="Map">
 <img src="https://github.com/tvdboom/stellarion/blob/master/assets/images/scenery/shop.png?raw=true" alt="Shop">

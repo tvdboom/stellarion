@@ -1,3 +1,5 @@
+//! Small Bevy entity-cleanup and interaction utilities shared by game states.
+
 use bevy::prelude::*;
 
 /// Generic system that despawns all entities with a specific component

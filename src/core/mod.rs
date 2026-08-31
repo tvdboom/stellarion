@@ -1,67 +1,118 @@
+//! Shared deterministic rules plus the optional Bevy application plugin.
+
+#[cfg(feature = "app")]
 mod assets;
+#[cfg(feature = "app")]
 mod audio;
+#[cfg(feature = "app")]
+pub mod basis_texture;
+#[cfg(feature = "app")]
 mod camera;
 pub mod combat;
 pub mod constants;
-mod map;
+pub mod identity;
+#[cfg(feature = "app")]
+mod loading;
+pub mod map;
+#[cfg(feature = "app")]
 mod menu;
+#[cfg(feature = "app")]
 pub mod messages;
 pub mod missions;
-mod network;
-mod persistence;
-mod player;
-mod resources;
+pub mod player;
+pub mod random;
+pub mod resources;
 mod settings;
-mod states;
+pub mod simulation;
+pub mod states;
+#[cfg(feature = "app")]
 mod systems;
+#[cfg(feature = "app")]
 mod turns;
+#[cfg(feature = "app")]
 mod ui;
-mod units;
+pub mod units;
+#[cfg(feature = "app")]
 mod utils;
 
+#[cfg(feature = "app")]
 use bevy::prelude::*;
+#[cfg(feature = "app")]
 use bevy_egui::EguiPrimaryContextPass;
-use bevy_renet::renet::{RenetClient, RenetServer};
+#[cfg(feature = "app")]
 use missions::send_mission;
+#[cfg(feature = "app")]
 use strum::IntoEnumIterator;
 
+#[cfg(feature = "app")]
+use crate::core::assets::WorldAssets;
+#[cfg(feature = "app")]
 use crate::core::audio::*;
+#[cfg(feature = "app")]
+use crate::core::basis_texture::BasisTexturePlugin;
+#[cfg(feature = "app")]
 use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
+#[cfg(feature = "app")]
 use crate::core::combat::systems::{
     animate_combat, exit_combat, exit_combat_menu, run_combat_animations, setup_combat,
     setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
 };
-use crate::core::map::map::{Map, MapCmp};
+#[cfg(feature = "app")]
+use crate::core::loading::{begin_gameplay_loading, finish_boot, finish_gameplay_loading};
+#[cfg(feature = "app")]
+use crate::core::map::model::{Map, MapCmp};
+#[cfg(feature = "app")]
 use crate::core::map::systems::{
     draw_map, run_map_animations, update_end_turn, update_planet_info, update_voronoi,
 };
+#[cfg(feature = "app")]
 use crate::core::menu::buttons::MenuCmp;
+#[cfg(feature = "app")]
 use crate::core::menu::systems::{
-    exit_end_game, setup_end_game, setup_game_menu, setup_game_settings, setup_menu, update_ip,
+    draw_game_overlay, draw_menu, exit_end_game, fit_menu_background, setup_menu,
 };
+#[cfg(feature = "app")]
 use crate::core::messages::MessageMsg;
+#[cfg(feature = "app")]
 use crate::core::missions::{update_missions, SendMissionMsg};
-use crate::core::network::*;
-use crate::core::persistence::{load_game, save_game, LoadGameMsg, SaveGameMsg};
+#[cfg(feature = "app")]
 use crate::core::settings::Settings;
+#[cfg(feature = "app")]
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
+#[cfg(all(feature = "app", debug_assertions))]
+use crate::core::systems::debug_cheat_keys;
+#[cfg(feature = "app")]
 use crate::core::systems::{check_keys, check_keys_combat, check_keys_menu, on_resize_system};
-use crate::core::turns::{check_turn_ended, resolve_turn, start_turn, StartTurnMsg};
+#[cfg(feature = "app")]
+use crate::core::turns::{check_turn_ended, start_turn, StartTurnMsg};
+#[cfg(feature = "app")]
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
+#[cfg(feature = "app")]
 use crate::core::ui::utils::ImageIds;
+#[cfg(feature = "app")]
 use crate::core::utils::despawn;
+#[cfg(feature = "app")]
+use crate::multiplayer::client::MultiplayerClientPlugin;
 
+#[cfg(feature = "app")]
+/// Bevy plugin that assembles Stellarion gameplay, presentation, menus, and multiplayer systems.
 pub struct GamePlugin;
 
+#[cfg(feature = "app")]
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+/// System set gated by the top-level in-game application state.
 struct InGameSet;
 
+#[cfg(feature = "app")]
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+/// System set gated by both in-game and actively playing states.
 struct InPlayingGameSet;
 
+#[cfg(feature = "app")]
 impl Plugin for GamePlugin {
+    /// Registers this plugin's resources, messages, and ordered systems.
     fn build(&self, app: &mut App) {
-        app
+        app.add_plugins(BasisTexturePlugin)
             // States
             .init_state::<AppState>()
             .init_state::<GameState>()
@@ -73,19 +124,16 @@ impl Plugin for GamePlugin {
             .add_message::<StopAudioMsg>()
             .add_message::<MuteAudioMsg>()
             .add_message::<ChangeAudioMsg>()
-            .add_message::<SaveGameMsg>()
-            .add_message::<LoadGameMsg>()
-            .add_message::<ServerSendMsg>()
-            .add_message::<ClientSendMsg>()
             .add_message::<MessageMsg>()
             .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
             .add_message::<SpawnShotMsg>()
             // Resources
-            .init_resource::<Ip>()
             .init_resource::<Settings>()
             .init_resource::<ImageIds>()
             .init_resource::<PlayingAudio>()
+            .init_resource::<WorldAssets>()
+            .add_plugins(MultiplayerClientPlugin)
             // Sets
             .configure_sets(First, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
@@ -122,22 +170,6 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (toggle_audio, update_audio, play_audio, pause_audio, stop_audio, mute_audio),
-            )
-            //Networking
-            .add_systems(
-                First,
-                (
-                    server_receive_message.run_if(resource_exists::<RenetServer>),
-                    client_receive_message.run_if(resource_exists::<RenetClient>),
-                ),
-            )
-            .add_systems(Update, server_update.run_if(resource_exists::<RenetServer>))
-            .add_systems(
-                Last,
-                (
-                    server_send_message.run_if(resource_exists::<RenetServer>),
-                    client_send_message.run_if(resource_exists::<RenetClient>),
-                ),
             );
 
         // Menu
@@ -145,17 +177,23 @@ impl Plugin for GamePlugin {
             app.add_systems(OnEnter(state), setup_menu)
                 .add_systems(OnExit(state), despawn::<MenuCmp>);
         }
-        app.add_systems(Update, update_ip.run_if(in_state(AppState::MultiPlayerMenu)));
 
         app
             // Ui
-            .add_systems(OnExit(AppState::MainMenu), (add_ui_images, set_ui_style))
-            .add_systems(EguiPrimaryContextPass, draw_ui.in_set(InGameSet))
-            // Persistence
             .add_systems(
-                Update,
-                (load_game, save_game.run_if(resource_exists::<Host>).in_set(InGameSet)),
+                EguiPrimaryContextPass,
+                (set_ui_style, draw_menu.run_if(not(in_state(AppState::Game)))).chain(),
             )
+            .add_systems(
+                EguiPrimaryContextPass,
+                (draw_ui, draw_game_overlay).chain().in_set(InGameSet),
+            )
+            // Deferred loading
+            .add_systems(Update, fit_menu_background.run_if(not(in_state(AppState::Game))))
+            .add_systems(Update, finish_boot.run_if(in_state(AppState::Boot)))
+            .add_systems(OnEnter(AppState::LoadingGame), begin_gameplay_loading)
+            .add_systems(Update, finish_gameplay_loading.run_if(in_state(AppState::LoadingGame)))
+            .add_systems(OnExit(AppState::LoadingGame), add_ui_images)
             // Utilities
             .add_systems(
                 Update,
@@ -163,7 +201,9 @@ impl Plugin for GamePlugin {
                     check_keys_menu,
                     check_keys.in_set(InPlayingGameSet),
                     check_keys_combat
-                        .run_if(in_state(GameState::CombatMenu).or(in_state(GameState::Combat)))
+                        .run_if(
+                            in_state(GameState::CombatMenu).or_else(in_state(GameState::Combat)),
+                        )
                         .in_set(InGameSet),
                 ),
             )
@@ -179,11 +219,7 @@ impl Plugin for GamePlugin {
                         .in_set(InPlayingGameSet),
                 ),
             )
-            .add_systems(
-                PostUpdate,
-                check_turn_ended.run_if(resource_exists::<RenetClient>).in_set(InGameSet),
-            )
-            .add_systems(Last, resolve_turn.run_if(resource_exists::<Host>).in_set(InGameSet))
+            .add_systems(PostUpdate, check_turn_ended.in_set(InGameSet))
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::CombatMenu), setup_combat_menu)
             .add_systems(
@@ -198,11 +234,9 @@ impl Plugin for GamePlugin {
                     .run_if(in_state(GameState::Combat)),
             )
             .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))
-            .add_systems(OnEnter(GameState::GameMenu), setup_game_menu)
-            .add_systems(OnExit(GameState::GameMenu), despawn::<MenuCmp>)
-            .add_systems(OnEnter(GameState::Settings), setup_game_settings)
-            .add_systems(OnExit(GameState::Settings), despawn::<MenuCmp>)
-            .add_systems(OnEnter(GameState::EndGame), setup_end_game)
-            .add_systems(OnExit(GameState::EndGame), (despawn::<MenuCmp>, exit_end_game));
+            .add_systems(OnExit(GameState::EndGame), exit_end_game);
+
+        #[cfg(debug_assertions)]
+        app.add_systems(Update, debug_cheat_keys.in_set(InPlayingGameSet).before(check_keys));
     }
 }

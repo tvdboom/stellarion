@@ -1,8 +1,10 @@
-use bevy_renet::renet::ClientId;
+//! Persisted combat outcomes, rounds, visibility, and attacker/defender views.
+
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::core::combat::combat::CombatUnit;
+use crate::core::combat::resolution::CombatUnit;
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::Mission;
@@ -10,6 +12,7 @@ use crate::core::player::Player;
 use crate::core::units::{Army, Unit};
 
 #[derive(Clone, Serialize, Deserialize)]
+/// Persisted outcome and visibility data produced when one mission resolves.
 pub struct MissionReport {
     /// Unique identifier for the report
     pub id: ReportId,
@@ -39,10 +42,10 @@ pub struct MissionReport {
     pub planet_destroyed: bool,
 
     /// Owner of the planet after mission resolution
-    pub destination_owned: Option<ClientId>,
+    pub destination_owned: Option<PlayerId>,
 
     /// Controller of the planet after mission resolution
-    pub destination_controlled: Option<ClientId>,
+    pub destination_controlled: Option<PlayerId>,
 
     /// Combat report (if combat took place)
     pub combat_report: Option<CombatReport>,
@@ -52,7 +55,8 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
-    pub fn winner(&self) -> Option<ClientId> {
+    /// Returns the winning combat side when the report is decisive.
+    pub fn winner(&self) -> Option<PlayerId> {
         match self.mission.objective {
             Icon::Spy if self.scout_probes > 0 => None,
             Icon::MissileStrike => {
@@ -79,6 +83,7 @@ impl MissionReport {
         }
     }
 
+    /// Returns the user-facing status of this combat side.
     pub fn status(&self, player: &Player) -> &'static str {
         match self.winner() {
             None => "draw",
@@ -87,6 +92,7 @@ impl MissionReport {
         }
     }
 
+    /// Returns the runtime image key for this value.
     pub fn image(&self, player: &Player) -> &'static str {
         match self.mission.objective {
             Icon::MissileStrike => "missile",
@@ -96,7 +102,8 @@ impl MissionReport {
         }
     }
 
-    pub fn can_see(&self, side: &Side, player_id: ClientId) -> bool {
+    /// Returns whether the current state can see.
+    pub fn can_see(&self, side: &Side, player_id: PlayerId) -> bool {
         match side {
             Side::Attacker => {
                 self.mission.owner == player_id
@@ -111,15 +118,20 @@ impl MissionReport {
     }
 }
 
+/// Stable identifier of a mission report.
 pub type ReportId = u64;
 
 #[derive(EnumIter, Clone, Debug, PartialEq)]
+/// Attacker or defender perspective within a combat report.
 pub enum Side {
+    /// The attacker value.
     Attacker,
+    /// The defender value.
     Defender,
 }
 
 impl Side {
+    /// Returns the opposing combat side.
     pub fn opposite(&self) -> Side {
         match self {
             Side::Attacker => Side::Defender,
@@ -129,21 +141,31 @@ impl Side {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+/// Complete ordered round history for one resolved combat.
 pub struct CombatReport {
+    /// Combat rounds in deterministic playback order.
     pub rounds: Vec<RoundReport>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+/// Unit, shield, interception, and bombing state captured for one combat round.
 pub struct RoundReport {
+    /// Attacking unit states captured for this round.
     pub attacker: Vec<CombatUnit>,
+    /// Defending unit states captured for this round.
     pub defender: Vec<CombatUnit>,
+    /// Shared planetary-shield strength remaining in this round.
     pub planetary_shield: usize,
+    /// Number of antiballistic missiles fired during interception.
     pub antiballistic_fired: usize,
+    /// Defending buildings exposed to bombing after fleet combat.
     pub buildings: Army,
+    /// Bounded probability that a War Sun destroys the planet.
     pub destroy_probability: f32,
 }
 
 impl RoundReport {
+    /// Returns the unit states visible for this combat side.
     pub fn units(&self, side: &Side) -> &Vec<CombatUnit> {
         match side {
             Side::Attacker => &self.attacker,
@@ -151,14 +173,17 @@ impl RoundReport {
         }
     }
 
+    /// Counts interplanetary missiles present at the start of this combat side.
     pub fn n_missiles(&self) -> usize {
         self.attacker.iter().filter(|cu| cu.unit == Unit::interplanetary_missile()).count()
     }
 
+    /// Counts antiballistic missiles present at the start of this combat side.
     pub fn n_antiballistic(&self) -> usize {
         self.defender.iter().filter(|cu| cu.unit == Unit::antiballistic_missile()).count()
     }
 
+    /// Returns the number of offensive missiles consumed during the round.
     pub fn missiles_shot(&self) -> usize {
         self.defender
             .iter()

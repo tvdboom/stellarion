@@ -1,39 +1,57 @@
+//! Strategic-map icon/objective kinds and their gameplay requirements.
+
 use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::map::planet::Planet;
+#[cfg(feature = "app")]
 use crate::core::ui::systems::Shop;
 use crate::core::units::{Description, Unit};
 
 #[derive(
     Component, EnumIter, Copy, Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize,
 )]
+/// Strategic objective and UI-category icons shared by missions and map panels.
 pub enum Icon {
+    /// The colonize value.
     Colonize,
     #[default]
+    /// The attack value.
     Attack,
+    /// The spy value.
     Spy,
+    /// The missile strike value.
     MissileStrike,
+    /// The destroy value.
     Destroy,
+    /// The attacked value.
     Attacked,
+    /// The buildings value.
     Buildings,
+    /// The fleet value.
     Fleet,
+    /// The defenses value.
     Defenses,
+    /// The deploy value.
     Deploy,
 }
 
 impl Icon {
+    /// Rendered size associated with this map object.
     pub const SIZE: f32 = Planet::SIZE * 0.2;
 
+    /// Handles the units interaction.
     pub fn on_units(&self) -> bool {
         matches!(self, Icon::Buildings | Icon::Fleet | Icon::Defenses)
     }
 
+    /// Handles the planet only interaction.
     pub fn on_planet_only(&self) -> bool {
         matches!(self, Icon::Colonize | Icon::MissileStrike)
     }
 
+    /// Returns whether this value mission.
     pub fn is_mission(&self) -> bool {
         matches!(
             self,
@@ -46,31 +64,36 @@ impl Icon {
         )
     }
 
+    /// Returns whether this value hidden.
     pub fn is_hidden(&self) -> bool {
         matches!(self, Icon::Spy | Icon::MissileStrike)
     }
 
-    pub fn shop(&self) -> Shop {
+    #[cfg(feature = "app")]
+    /// Returns the shop category associated with this map icon.
+    pub fn shop(&self) -> Option<Shop> {
         match self {
-            Icon::Buildings => Shop::Buildings,
-            Icon::Fleet => Shop::Fleet,
-            Icon::Defenses => Shop::Defenses,
-            _ => unreachable!(),
+            Icon::Buildings => Some(Shop::Buildings),
+            Icon::Fleet => Some(Shop::Fleet),
+            Icon::Defenses => Some(Shop::Defenses),
+            _ => None,
         }
     }
 
-    pub fn priority(&self) -> usize {
+    /// Returns the stable resolution priority of this objective.
+    pub fn priority(&self) -> Option<usize> {
         match self {
-            Icon::Colonize => 2,
-            Icon::Attack => 1,
-            Icon::Spy => 4,
-            Icon::MissileStrike => 5,
-            Icon::Destroy => 3,
-            Icon::Deploy => 0,
-            _ => unreachable!(),
+            Icon::Colonize => Some(2),
+            Icon::Attack => Some(1),
+            Icon::Spy => Some(4),
+            Icon::MissileStrike => Some(5),
+            Icon::Destroy => Some(3),
+            Icon::Deploy => Some(0),
+            _ => None,
         }
     }
 
+    /// Returns mission objectives available for the selected origin and destination.
     pub fn objectives(to_owned_planet: bool, to_controlled_planet: bool) -> Vec<Icon> {
         if to_owned_planet {
             vec![Icon::Deploy]
@@ -81,6 +104,7 @@ impl Icon {
         }
     }
 
+    /// Returns whether this objective is currently allowed for the selected mission.
     pub fn condition(&self, origin: &Planet) -> bool {
         match self {
             Icon::Buildings => origin.has_buildings(),
@@ -92,10 +116,11 @@ impl Icon {
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
-            _ => unreachable!(),
+            Icon::Attacked => false,
         }
     }
 
+    /// Returns a user-facing explanation when this objective is unavailable.
     pub fn requirement(&self) -> &str {
         match self {
             Icon::Colonize => {
@@ -109,12 +134,13 @@ impl Icon {
             },
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
-            _ => unreachable!(),
+            _ => "This icon is not a mission objective.",
         }
     }
 }
 
 impl Description for Icon {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             Icon::Colonize => {
@@ -155,7 +181,7 @@ impl Description for Icon {
                 colonized again."
             },
             Icon::Deploy => "Send a fleet to another planet you control.",
-            _ => unreachable!(),
+            _ => "This icon selects a local map or shop category.",
         }
     }
 }

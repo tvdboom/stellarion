@@ -1,3 +1,5 @@
+//! Bevy combat presentation, animation, report navigation, and cleanup systems.
+
 use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
@@ -7,20 +9,20 @@ use bevy_tweening::{
     AnimCompletedEvent, CycleCompletedEvent, Delay, PlaybackState, RepeatCount, RepeatStrategy,
     Tween, TweenAnim,
 };
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use strum::IntoEnumIterator;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PauseAudioMsg, PlayAudioMsg, StopAudioMsg};
 use crate::core::camera::MainCamera;
-use crate::core::combat::combat::ShotReport;
 use crate::core::combat::report::Side;
+use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
     BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_EXPLOSION_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR,
     PS_SHIELD_PER_LEVEL, PS_WIDTH, SETUP_TIME, SHIELD_COLOR, UNIT_SIZE,
 };
 use crate::core::map::icon::Icon;
-use crate::core::map::map::Map;
+use crate::core::map::model::Map;
 use crate::core::map::utils::{
     spawn_main_button, SpriteAlphaLens, SpriteFrameLens, UiTransformScaleLens,
 };
@@ -36,33 +38,47 @@ use crate::core::units::{Amount, Combat, Unit};
 use crate::utils::{scale_duration, NameFromEnum};
 
 #[derive(Component)]
+/// Bevy component marking combat menu presentation entities.
 pub struct CombatMenuCmp;
 
 #[derive(Component)]
+/// Bevy component marking combat presentation entities.
 pub struct CombatCmp;
 
 #[derive(Component)]
+/// Bevy component marking background image presentation entities.
 pub struct BackgroundImageCmp;
 
 #[derive(Component)]
+/// Bevy component marking speed presentation entities.
 pub struct SpeedCmp;
 
 #[derive(Component)]
+/// Bevy component marking display text presentation entities.
 pub struct DisplayTextCmp;
 
 #[derive(PartialEq, Default)]
+/// Presentation phase for a unit firing during combat playback.
 pub enum FireState {
     #[default]
+    /// The idle value.
     Idle,
+    /// The select value.
     Select,
+    /// The pre fire value.
     PreFire,
+    /// The firing value.
     Firing,
+    /// The deselect value.
     Deselect,
+    /// The after fire value.
     AfterFire,
+    /// The fired value.
     Fired,
 }
 
 impl FireState {
+    /// Returns whether this value has fired.
     pub fn has_fired(&self) -> bool {
         matches!(
             self,
@@ -72,32 +88,46 @@ impl FireState {
 }
 
 #[derive(Component)]
+/// Bevy component connecting one combat sprite to its unit, side, and animation state.
 pub struct CombatUnitCmp {
+    /// Unit kind represented by this record or presentation component.
     pub unit: Unit,
+    /// Combat side to which the rendered unit belongs.
     pub side: Side,
+    /// Current firing-animation phase for the rendered unit.
     pub fire: FireState,
+    /// Shield points remaining at this stage of combat.
     pub shield: usize,
+    /// Full shield value used to scale the presentation bar.
     pub max_shield: usize,
+    /// Hull points remaining at this stage of combat.
     pub hull: usize,
+    /// Full hull value used to scale the presentation bar.
     pub max_hull: usize,
 }
 
 #[derive(Component)]
+/// Bevy component marking pscombat image presentation entities.
 pub struct PSCombatImageCmp;
 
 #[derive(Component)]
+/// Bevy component marking count presentation entities.
 pub struct CountCmp;
 
 #[derive(Component)]
+/// Bevy component marking hull presentation entities.
 pub struct HullCmp;
 
 #[derive(Component)]
+/// Bevy component marking shield presentation entities.
 pub struct ShieldCmp;
 
 #[derive(Component)]
+/// Bevy component marking death ray presentation entities.
 pub struct DeathRayCmp;
 
 #[derive(Message)]
+/// Bevy message requesting one visible projectile or beam animation.
 pub struct SpawnShotMsg {
     shot: ShotReport,
     repair: bool,
@@ -105,24 +135,33 @@ pub struct SpawnShotMsg {
 }
 
 #[derive(Component)]
+/// Bevy component describing a repair effect applied to one combat entity.
 pub struct RepairCmp {
-    pub unit: Unit,
+    /// Exact combat entity receiving the repair when the animation completes.
+    pub target_entity: Entity,
+    /// Number of matching units affected by this presentation component.
     pub amount: usize,
 }
 
 #[derive(Component)]
+/// Timed explosion animation attached to a defeated combat entity.
 pub struct UnitExplosionCmp {
+    /// Timer controlling the current effect frame.
     pub timer: Timer,
+    /// Delay before this effect becomes visible.
     pub delay: Timer,
+    /// Highest valid texture-atlas frame index.
     pub last_index: usize,
+    /// Entity whose defeat animation owns this explosion.
     pub target_entity: Entity,
 }
 
+/// Creates the combat menu entities and resources required on state entry.
 pub fn setup_combat_menu(
     mut commands: Commands,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut pause_audio_msg: MessageWriter<PauseAudioMsg>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     pause_audio_msg.write(PauseAudioMsg::new("music"));
     play_audio_msg.write(PlayAudioMsg::new("drums").background());
@@ -136,6 +175,7 @@ pub fn setup_combat_menu(
         });
 }
 
+/// Cleans up combat menu state and retained entities on state exit.
 pub fn exit_combat_menu(
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
     mut stop_audio_msg: MessageWriter<StopAudioMsg>,
@@ -144,6 +184,7 @@ pub fn exit_combat_menu(
     stop_audio_msg.write(StopAudioMsg::new("drums"));
 }
 
+/// Creates the combat entities and resources required on state entry.
 pub fn setup_combat(
     mut commands: Commands,
     settings: Res<Settings>,
@@ -153,21 +194,28 @@ pub fn setup_combat(
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     window: Single<&Window>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     let (camera_t, projection) = camera.into_inner();
 
     let pos = camera_t.translation;
     let Projection::Orthographic(projection) = projection else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     let (width, height) = (projection.area.width(), projection.area.height());
 
     play_audio_msg.write(PlayAudioMsg::new("horn"));
 
-    let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
-    let destination = map.get(report.mission.destination);
+    let Some(report) = state
+        .in_combat
+        .and_then(|report_id| player.reports.iter().find(|report| report.id == report_id))
+    else {
+        return;
+    };
+    let Some(destination) = map.try_get(report.mission.destination) else {
+        return;
+    };
 
     commands.spawn((
         Sprite {
@@ -210,7 +258,7 @@ pub fn setup_combat(
                 },
                 Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
                 CombatUnitCmp {
-                    unit: u.clone(),
+                    unit: *u,
                     side: side.clone(),
                     fire: FireState::Idle,
                     shield: c * u.shield(),
@@ -229,8 +277,8 @@ pub fn setup_combat(
                         children![(
                             Text2d::new(c.to_string()),
                             TextFont {
-                                font: assets.font("bold"),
-                                font_size: 600. * projection.scale,
+                                font: assets.font("bold").into(),
+                                font_size: (600. * projection.scale).into(),
                                 ..default()
                             },
                             TextColor(WHITE.into()),
@@ -414,8 +462,8 @@ pub fn setup_combat(
                         children![(
                             Text2d::new(ps.to_string()),
                             TextFont {
-                                font: assets.font("bold"),
-                                font_size: 600. * projection.scale,
+                                font: assets.font("bold").into(),
+                                font_size: (600. * projection.scale).into(),
                                 ..default()
                             },
                             TextColor(WHITE.into()),
@@ -473,7 +521,7 @@ pub fn setup_combat(
                 },
                 Transform::from_xyz(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
                 CombatUnitCmp {
-                    unit: u.clone(),
+                    unit: *u,
                     side: Side::Defender,
                     fire: FireState::Idle,
                     shield: 0,
@@ -491,8 +539,8 @@ pub fn setup_combat(
                     children![(
                         Text2d::new(c.to_string()),
                         TextFont {
-                            font: assets.font("bold"),
-                            font_size: 600. * projection.scale,
+                            font: assets.font("bold").into(),
+                            font_size: (600. * projection.scale).into(),
                             ..default()
                         },
                         TextColor(WHITE.into()),
@@ -537,6 +585,7 @@ pub fn setup_combat(
         });
 }
 
+/// Advances the combat presentation state machine after each animation timer.
 pub fn animate_combat(
     mut commands: Commands,
     bg_q: Single<&mut Sprite, With<BackgroundImageCmp>>,
@@ -551,20 +600,25 @@ pub fn animate_combat(
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut anim_completed_msg: MessageReader<AnimCompletedEvent>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     let (camera_t, projection) = camera.into_inner();
 
     let pos = camera_t.translation;
     let Projection::Orthographic(projection) = projection else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     let units: Vec<_> = Unit::all_firing_order();
 
-    let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
-    let combat = report.combat_report.as_ref().unwrap();
-    let round = combat.rounds.get(state.combat_round).unwrap();
+    let Some((report, combat, round)) = state.in_combat.and_then(|report_id| {
+        let report = player.reports.iter().find(|report| report.id == report_id)?;
+        let combat = report.combat_report.as_ref()?;
+        let round = combat.rounds.get(state.combat_round)?;
+        Some((report, combat, round))
+    }) else {
+        return;
+    };
 
     let size = UNIT_SIZE * projection.scale;
 
@@ -760,8 +814,8 @@ pub fn animate_combat(
                     children![(
                         Text::new(format!("Round {}", state.combat_round + 1)),
                         TextFont {
-                            font: assets.font("bold"),
-                            font_size: 80.,
+                            font: assets.font("bold").into(),
+                            font_size: 80.0.into(),
                             ..default()
                         },
                         UiTransform {
@@ -981,7 +1035,7 @@ pub fn animate_combat(
                                     "victory" => 0.7,
                                     "draw" => 0.4,
                                     "defeat" => 0.6,
-                                    _ => unreachable!(),
+                                    _ => 0.5,
                                 }),
                             },
                         )),
@@ -1012,6 +1066,7 @@ pub fn animate_combat(
     }
 }
 
+/// Updates combat stats from the current canonical ECS projection.
 pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp)>,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
@@ -1028,7 +1083,7 @@ pub fn update_combat_stats(
     time: Res<Time>,
 ) {
     let Projection::Orthographic(projection) = camera_q.into_inner() else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     // Update speed indicator
@@ -1051,9 +1106,14 @@ pub fn update_combat_stats(
         }
     );
 
-    let report = player.reports.iter().find(|r| r.id == state.in_combat.unwrap()).unwrap();
-    let combat = report.combat_report.as_ref().unwrap();
-    let round = combat.rounds.get(state.combat_round).unwrap();
+    let Some((_report, _combat, round)) = state.in_combat.and_then(|report_id| {
+        let report = player.reports.iter().find(|report| report.id == report_id)?;
+        let combat = report.combat_report.as_ref()?;
+        let round = combat.rounds.get(state.combat_round)?;
+        Some((report, combat, round))
+    }) else {
+        return;
+    };
 
     let size = UNIT_SIZE * projection.scale;
     let speed = 3. * time.delta_secs() * settings.speed();
@@ -1136,6 +1196,7 @@ pub fn update_combat_stats(
     }
 }
 
+/// Advances combat animations effects for the current frame.
 pub fn run_combat_animations(
     mut commands: Commands,
     mut animation_q: Query<(Entity, &mut Sprite, Option<&ShotReport>, &mut UnitExplosionCmp)>,
@@ -1151,12 +1212,12 @@ pub fn run_combat_animations(
     camera_q: Single<&Projection, With<MainCamera>>,
     settings: Res<Settings>,
     time: Res<Time>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     let mut rng = rng();
 
     let Projection::Orthographic(projection) = camera_q.into_inner() else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     let short_explosion = assets.texture("short explosion");
@@ -1166,17 +1227,13 @@ pub fn run_combat_animations(
         let target = unit_q
             .iter()
             .find(|(_, _, _, cu)| message.shot.unit == Some(cu.unit) && cu.side == message.side)
-            .map(|(e, s, t, cu)| {
+            .and_then(|(e, s, t, cu)| {
                 if cu.unit == Unit::planetary_shield() {
-                    let (s, t) = ps_image_q
-                        .iter()
-                        .next()
-                        .map(|(s, t)| (s.custom_size.unwrap().x, t.compute_transform()))
-                        .unwrap();
-
-                    (e, s, t)
+                    ps_image_q.iter().next().and_then(|(sprite, transform)| {
+                        sprite.custom_size.map(|size| (e, size.x, transform.compute_transform()))
+                    })
                 } else {
-                    (e, s.custom_size.unwrap().x * projection.scale, *t)
+                    s.custom_size.map(|size| (e, size.x * projection.scale, *t))
                 }
             });
 
@@ -1207,7 +1264,7 @@ pub fn run_combat_animations(
                             ),
                         ),
                         RepairCmp {
-                            unit: message.shot.unit.unwrap(),
+                            target_entity: target_e,
                             amount: message.shot.hull_damage,
                         },
                     ))
@@ -1217,8 +1274,8 @@ pub fn run_combat_animations(
                     .spawn((
                         Text2d::new("Miss"),
                         TextFont {
-                            font: assets.font("bold"),
-                            font_size: 15.,
+                            font: assets.font("bold").into(),
+                            font_size: 15.0.into(),
                             ..default()
                         },
                         TextColor(WHITE.into()),
@@ -1288,10 +1345,8 @@ pub fn run_combat_animations(
     // Resolve repairs
     for message in cycle_completed_msg.read() {
         if let Ok((repair_e, repair)) = repair_q.get_mut(message.anim_entity) {
-            if let Some((_, _, _, mut cu)) =
-                unit_q.iter_mut().find(|(_, _, _, cu)| cu.unit == repair.unit)
-            {
-                cu.hull += repair.amount;
+            if let Ok((_, _, _, mut cu)) = unit_q.get_mut(repair.target_entity) {
+                cu.hull = cu.hull.saturating_add(repair.amount);
             }
 
             // Remove component to not trigger again when return cycle finishes
@@ -1318,18 +1373,20 @@ pub fn run_combat_animations(
                         if let Ok((unit_e, _, _, mut cu)) = unit_q.get_mut(animation.target_entity)
                         {
                             if cu.unit == Unit::planetary_shield() {
-                                cu.shield -= shot.planetary_shield_damage;
+                                cu.shield = cu.shield.saturating_sub(shot.planetary_shield_damage);
 
                                 if cu.shield == 0 {
                                     let explosion = assets.texture("explosion");
 
-                                    let (size, ps_t) = ps_image_q
-                                        .iter()
-                                        .next()
-                                        .map(|(s, t)| {
-                                            (s.custom_size.unwrap().x, t.compute_transform())
+                                    let Some((size, ps_t)) =
+                                        ps_image_q.iter().next().and_then(|(sprite, transform)| {
+                                            sprite
+                                                .custom_size
+                                                .map(|size| (size.x, transform.compute_transform()))
                                         })
-                                        .unwrap();
+                                    else {
+                                        continue;
+                                    };
 
                                     commands.spawn((
                                         Sprite {
@@ -1356,11 +1413,11 @@ pub fn run_combat_animations(
                                 }
                             } else if cu.unit.is_building() {
                                 if shot.killed {
-                                    cu.hull -= 1;
+                                    cu.hull = cu.hull.saturating_sub(1);
                                 }
                             } else {
-                                cu.shield -= shot.shield_damage;
-                                cu.hull -= shot.hull_damage;
+                                cu.shield = cu.shield.saturating_sub(shot.shield_damage);
+                                cu.hull = cu.hull.saturating_sub(shot.hull_damage);
                             }
                         }
                     }
@@ -1377,6 +1434,7 @@ pub fn run_combat_animations(
     }
 }
 
+/// Cleans up combat state and retained entities on state exit.
 pub fn exit_combat(
     mut state: ResMut<UiState>,
     mut next_combat_state: ResMut<NextState<CombatState>>,

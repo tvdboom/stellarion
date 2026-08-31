@@ -1,9 +1,12 @@
+//! User preferences and local match-generation settings used by the Bevy layer.
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::states::AudioState;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
+/// Local preferences and map-generation values; deterministic values are copied into game rules.
 pub struct Settings {
     pub audio: AudioState,
     pub n_planets: usize,
@@ -20,6 +23,7 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Returns the movement or animation speed represented by this value.
     pub fn speed(&self) -> f32 {
         if self.combat_paused {
             0.
@@ -30,6 +34,7 @@ impl Settings {
 }
 
 impl Default for Settings {
+    /// Constructs the default value and its gameplay-safe initial state.
     fn default() -> Self {
         Self {
             audio: AudioState::default(),

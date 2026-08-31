@@ -1,18 +1,23 @@
+//! Strategic camera setup, movement, zoom, clamping, and reset systems.
+
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
 use crate::core::constants::{LERP_FACTOR, MAX_ZOOM, MIN_ZOOM, ZOOM_FACTOR};
-use crate::core::map::map::Map;
+use crate::core::map::model::Map;
 use crate::core::map::systems::PlanetCmp;
 use crate::core::ui::systems::UiState;
 
 #[derive(Component)]
+/// Marker component for the unique strategic 2D camera.
 pub struct MainCamera;
 
 #[derive(Component)]
+/// Marker for backgrounds that move at a reduced camera rate.
 pub struct ParallaxCmp;
 
+/// Clamps camera translation so the visible viewport remains inside the map.
 pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
     let min_x = bounds.min.x + view_size.x * 0.5;
     let min_y = bounds.min.y + view_size.y * 0.5;
@@ -26,12 +31,14 @@ pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
     }
 }
 
+/// Creates the camera entities and resources required on state entry.
 pub fn setup_camera(mut commands: Commands) {
     commands.spawn((Camera2d, Msaa::Off, MainCamera));
 }
 
+/// Applies cursor drag and wheel zoom while respecting map bounds.
 pub fn move_camera(
-    context: EguiContexts,
+    mut context: EguiContexts,
     camera_q: Single<
         (&Camera, &GlobalTransform, &mut Transform, &mut Projection),
         With<MainCamera>,
@@ -46,11 +53,12 @@ pub fn move_camera(
     let (camera, global_t, mut camera_t, mut projection) = camera_q.into_inner();
 
     let Projection::Orthographic(projection) = &mut *projection else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     // Ignore scrolling if pointer is over UI
-    if !context.ctx().unwrap().is_pointer_over_area() {
+    let pointer_over_ui = context.ctx_mut().is_ok_and(|ctx| ctx.is_pointer_over_egui());
+    if !pointer_over_ui {
         for ev in scroll_msg.read() {
             // Get cursor position in window space
             if let Some(cursor_pos) = window.cursor_position() {
@@ -113,12 +121,15 @@ pub fn move_camera(
     }
 }
 
+/// Moves the strategic camera from keyboard input using frame time.
 pub fn move_camera_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
     mut state: ResMut<UiState>,
 ) {
-    let (mut camera_t, projection) = camera_q.single_mut().unwrap();
+    let Ok((mut camera_t, projection)) = camera_q.single_mut() else {
+        return;
+    };
 
     let scale = if let Projection::Orthographic(projection) = projection {
         projection.scale
@@ -145,8 +156,11 @@ pub fn move_camera_keyboard(
     }
 }
 
+/// Restores the strategic camera transform and orthographic scale on game exit.
 pub fn reset_camera(mut camera_q: Query<(&mut Transform, &mut Projection), With<MainCamera>>) {
-    let (mut camera_t, mut projection) = camera_q.single_mut().unwrap();
+    let Ok((mut camera_t, mut projection)) = camera_q.single_mut() else {
+        return;
+    };
     camera_t.translation = Vec3::new(0., 0., 1.);
 
     if let Projection::Orthographic(projection) = &mut *projection {

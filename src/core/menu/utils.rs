@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+//! Legacy Bevy menu widget construction helpers retained by the styled UI.
 
 use bevy::prelude::*;
 
@@ -6,18 +6,8 @@ use crate::core::assets::WorldAssets;
 use crate::core::ui::systems::UiCmp;
 
 #[derive(Component)]
+/// Marker component for menu text whose font size follows window scale.
 pub struct TextSize(pub f32);
-
-/// Change the background color of an entity
-pub fn recolor<E: Debug + Clone + Reflect>(
-    color: Color,
-) -> impl Fn(On<Pointer<E>>, Query<&mut BackgroundColor>) {
-    move |ev, mut bgcolor_q| {
-        if let Ok(mut bgcolor) = bgcolor_q.get_mut(ev.entity) {
-            bgcolor.0 = color;
-        };
-    }
-}
 
 /// Add a root UI node that covers the whole screen
 pub fn add_root_node(block: bool) -> (Node, Pickable, ZIndex, UiCmp) {
@@ -61,8 +51,8 @@ pub fn add_text(
     (
         Text::new(text),
         TextFont {
-            font: assets.font(font),
-            font_size: font_size * window.height() / 460.,
+            font: assets.font(font).into(),
+            font_size: (font_size * window.height() / 460.).into(),
             ..default()
         },
         TextSize(font_size),

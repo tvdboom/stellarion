@@ -1,21 +1,25 @@
+//! Cross-state Bevy input, resize, and keyboard-navigation systems.
+
 use bevy::prelude::*;
 use bevy::window::WindowResized;
-use bevy_renet::netcode::NetcodeServerTransport;
-use bevy_renet::renet::{RenetClient, RenetServer};
 use itertools::Itertools;
 
 use crate::core::camera::MainCamera;
 use crate::core::combat::systems::BackgroundImageCmp;
-use crate::core::map::map::Map;
+use crate::core::map::model::Map;
 use crate::core::menu::utils::TextSize;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, Shop, UiState};
+#[cfg(debug_assertions)]
 use crate::core::units::buildings::Building;
+#[cfg(debug_assertions)]
 use crate::core::units::Unit;
+use crate::multiplayer::client::MultiplayerRequest;
 
+/// Handles the resize system interaction.
 pub fn on_resize_system(
     mut resize_reader: MessageReader<WindowResized>,
     mut text: Query<(&mut TextFont, &TextSize)>,
@@ -23,14 +27,14 @@ pub fn on_resize_system(
     camera: Single<&Projection, With<MainCamera>>,
 ) {
     let Projection::Orthographic(projection) = camera.into_inner() else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     let (width, height) = (projection.area.width(), projection.area.height());
 
     for window in resize_reader.read() {
         for (mut text, size) in text.iter_mut() {
-            text.font_size = size.0 * window.height / 460.
+            text.font_size = (size.0 * window.height / 460.).into()
         }
 
         // Resize background images to cover the whole screen
@@ -40,48 +44,43 @@ pub fn on_resize_system(
     }
 }
 
+/// Checks keys menu input/state and applies the resulting transition.
 pub fn check_keys_menu(
-    mut commands: Commands,
     app_state: Res<State<AppState>>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
-    server: Option<ResMut<RenetServer>>,
-    mut client: Option<ResMut<RenetClient>>,
     mut state: Option<ResMut<UiState>>,
     mut start_turn_msg: MessageWriter<StartTurnMsg>,
+    mut multiplayer: MessageWriter<MultiplayerRequest>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
 
     if keyboard.just_pressed(KeyCode::Escape) {
         match app_state.get() {
-            AppState::SinglePlayerMenu | AppState::MultiPlayerMenu | AppState::Settings => {
+            AppState::SinglePlayerMenu | AppState::CreateGame | AppState::Settings => {
                 next_app_state.set(AppState::MainMenu)
             },
-            AppState::Lobby | AppState::ConnectedLobby => {
-                if let Some(client) = client.as_mut() {
-                    client.disconnect();
-                    commands.remove_resource::<RenetClient>();
-                } else if let Some(mut server) = server {
-                    server.disconnect_all();
-                    commands.remove_resource::<RenetServer>();
-                    commands.remove_resource::<NetcodeServerTransport>();
-                }
-
+            AppState::JoinGame | AppState::RecoverPlayer | AppState::ResumeGame => {
                 next_app_state.set(AppState::MultiPlayerMenu)
+            },
+            AppState::MultiPlayerMenu => next_app_state.set(AppState::MainMenu),
+            AppState::Lobby => {
+                multiplayer.write(MultiplayerRequest::LeaveGame);
             },
             AppState::Game => {
                 // Open in-game menu or exit mission/planet selection
                 match game_state.get() {
                     GameState::Playing => {
-                        let state = state.as_mut().unwrap();
-                        if state.planet_selected.is_some() || state.mission {
-                            state.planet_selected = None;
-                            state.mission = false;
-                            state.combat_report = None;
-                        } else {
-                            next_game_state.set(GameState::GameMenu)
+                        if let Some(state) = state.as_mut() {
+                            if state.planet_selected.is_some() || state.mission {
+                                state.planet_selected = None;
+                                state.mission = false;
+                                state.combat_report = None;
+                            } else {
+                                next_game_state.set(GameState::GameMenu)
+                            }
                         }
                     },
                     GameState::CombatMenu | GameState::GameMenu => {
@@ -92,18 +91,19 @@ pub fn check_keys_menu(
                     GameState::Settings => next_game_state.set(GameState::GameMenu),
                 }
             },
-            _ => (),
+            AppState::Boot | AppState::MainMenu | AppState::LoadingGame => {},
         }
     }
 
     if ctrl_pressed && keyboard.just_pressed(KeyCode::Enter) && *app_state.get() == AppState::Game {
         if *game_state.get() == GameState::Playing {
-            let mut state = state.unwrap();
-            if !state.mission {
-                state.planet_selected = None;
-                state.mission = false;
-                state.combat_report = None;
-                state.end_turn = !state.end_turn;
+            if let Some(mut state) = state {
+                if !state.mission {
+                    state.planet_selected = None;
+                    state.mission = false;
+                    state.combat_report = None;
+                    state.end_turn = !state.end_turn;
+                }
             }
         } else if *game_state.get() == GameState::CombatMenu {
             start_turn_msg.write(StartTurnMsg::new(true, false));
@@ -112,6 +112,7 @@ pub fn check_keys_menu(
     }
 }
 
+/// Checks keys combat input/state and applies the resulting transition.
 pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInput<KeyCode>>) {
     if keyboard.just_pressed(KeyCode::Space) {
         settings.combat_paused = !settings.combat_paused;
@@ -122,38 +123,17 @@ pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInp
     }
 }
 
+/// Checks keys input/state and applies the resulting transition.
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    mut map: ResMut<Map>,
-    mut player: ResMut<Player>,
+    map: Res<Map>,
+    player: Res<Player>,
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-
-    // Hack to add resources and bump building levels to max
-    #[cfg(debug_assertions)]
-    if ctrl_pressed && keyboard.just_pressed(KeyCode::ArrowUp) {
-        player.resources += 1_000usize;
-
-        let mut planets = if shift_pressed {
-            map.planets.iter_mut().filter(|p| p.owned == Some(player.id)).collect::<Vec<_>>()
-        } else {
-            map.planets.iter_mut().collect::<Vec<_>>()
-        };
-
-        planets.iter_mut().for_each(|p| {
-            for unit in Unit::all().iter().flatten() {
-                if unit.is_building() {
-                    *p.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
-                } else {
-                    *p.army.entry(*unit).or_insert(0) += 3;
-                }
-            }
-        });
-    }
 
     // Toggle show voronoi cells
     if keyboard.just_pressed(KeyCode::KeyC) {
@@ -216,8 +196,17 @@ pub fn check_keys(
             }
         }
     } else if let Some(id) = state.combat_report {
-        let report = player.reports.iter().find(|r| r.id == id).unwrap();
-        let max_rounds = report.combat_report.as_ref().unwrap().rounds.len();
+        let Some(max_rounds) = player
+            .reports
+            .iter()
+            .find(|report| report.id == id)
+            .and_then(|report| report.combat_report.as_ref())
+            .map(|combat| combat.rounds.len())
+            .filter(|rounds| *rounds > 0)
+        else {
+            state.combat_report = None;
+            return;
+        };
 
         // Move between rounds
         if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
@@ -225,7 +214,7 @@ pub fn check_keys(
         } else if mouse.just_pressed(MouseButton::Back)
             || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
-            state.combat_report_round = (state.combat_report_round - 1).max(1);
+            state.combat_report_round = state.combat_report_round.saturating_sub(1).max(1);
         }
     } else if state.mission {
         // Move between mission or shop tabs
@@ -247,7 +236,10 @@ pub fn check_keys(
             };
         }
     } else if settings.show_menu && state.planet_selected.is_some() {
-        let planet = map.planets.get(state.planet_selected.unwrap()).unwrap();
+        let Some(planet) = state.planet_selected.and_then(|id| map.try_get(id)) else {
+            state.planet_selected = None;
+            return;
+        };
         if mouse.just_pressed(MouseButton::Back)
             || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
@@ -274,6 +266,35 @@ pub fn check_keys(
                 },
                 Shop::Defenses => Shop::Buildings,
             };
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+/// Applies the developer-only resource and unit keyboard shortcut before normal input handling.
+pub fn debug_cheat_keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut map: ResMut<Map>,
+    mut player: ResMut<Player>,
+) {
+    let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    if !ctrl_pressed || !keyboard.just_pressed(KeyCode::ArrowUp) {
+        return;
+    }
+
+    player.resources += 1_000usize;
+    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let player_id = player.id;
+    let planets =
+        map.planets.iter_mut().filter(|planet| !shift_pressed || planet.owned == Some(player_id));
+    for planet in planets {
+        for unit in Unit::all().iter().flatten() {
+            if unit.is_building() {
+                *planet.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
+            } else {
+                let amount = planet.army.entry(*unit).or_insert(0);
+                *amount = amount.saturating_add(3);
+            }
         }
     }
 }

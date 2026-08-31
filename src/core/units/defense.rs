@@ -1,3 +1,5 @@
+//! Stationary defense and missile kinds with their production and combat data.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -10,16 +12,27 @@ use crate::core::units::{Combat, Description, Price, Unit};
 #[derive(
     EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
+/// Constructible stationary weapons, support units, and missiles.
 pub enum Defense {
+    /// The crawler defense or missile.
     Crawler,
+    /// The rocket launcher defense or missile.
     RocketLauncher,
+    /// The light laser defense or missile.
     LightLaser,
+    /// The heavy laser defense or missile.
     HeavyLaser,
+    /// The gauss cannon defense or missile.
     GaussCannon,
+    /// The ion cannon defense or missile.
     IonCannon,
+    /// The plasma turret defense or missile.
     PlasmaTurret,
+    /// The space dock defense or missile.
     SpaceDock,
+    /// The antiballistic missile defense or missile.
     AntiballisticMissile,
+    /// The interplanetary missile defense or missile.
     InterplanetaryMissile,
 }
 
@@ -40,12 +53,14 @@ impl Defense {
         }
     }
 
+    /// Returns whether this value missile.
     pub fn is_missile(&self) -> bool {
         matches!(self, Defense::AntiballisticMissile | Defense::InterplanetaryMissile)
     }
 }
 
 impl Description for Defense {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             Defense::Crawler => {
@@ -115,6 +130,7 @@ impl Description for Defense {
 }
 
 impl Price for Defense {
+    /// Returns the resource cost of producing this unit.
     fn price(&self) -> Resources {
         match self {
             Defense::Crawler => Resources::new(25, 0, 0),
@@ -132,6 +148,7 @@ impl Price for Defense {
 }
 
 impl Combat for Defense {
+    /// Returns this unit type's base hull strength.
     fn hull(&self) -> usize {
         match self {
             Defense::Crawler => 50,
@@ -147,6 +164,7 @@ impl Combat for Defense {
         }
     }
 
+    /// Returns this unit type's base shield strength.
     fn shield(&self) -> usize {
         match self {
             Defense::Crawler => 0,
@@ -162,6 +180,7 @@ impl Combat for Defense {
         }
     }
 
+    /// Returns this unit type's base weapon damage.
     fn damage(&self) -> usize {
         match self {
             Defense::Crawler => 0,
@@ -177,6 +196,7 @@ impl Combat for Defense {
         }
     }
 
+    /// Returns rapid-fire probabilities keyed by target unit.
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
             Defense::SpaceDock => HashMap::from([
@@ -203,6 +223,7 @@ impl Combat for Defense {
         }
     }
 
+    /// Returns the movement or animation speed represented by this value.
     fn speed(&self) -> f32 {
         match self {
             Defense::InterplanetaryMissile => 3.,

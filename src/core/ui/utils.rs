@@ -1,3 +1,5 @@
+//! Reusable egui image, tooltip, painter, and grid helpers.
+
 use std::collections::HashMap;
 
 use bevy::prelude::Resource;
@@ -8,12 +10,18 @@ use crate::core::constants::BG_COLOR;
 use crate::utils::ToColor32;
 
 #[derive(Resource, Default)]
-pub struct ImageIds(pub HashMap<&'static str, TextureId>);
+/// Egui texture identifiers registered from Bevy image handles.
+pub struct ImageIds(pub HashMap<String, TextureId>);
 
 impl ImageIds {
+    /// Returns a registered texture, falling back to the unknown image or egui's managed atlas.
     pub fn get(&self, key: impl Into<String>) -> TextureId {
-        let key = key.into().clone();
-        *self.0.get(key.as_str()).expect(format!("No image found with name: {}", key).as_str())
+        let key = key.into();
+        self.0
+            .get(key.as_str())
+            .or_else(|| self.0.get("unknown"))
+            .copied()
+            .unwrap_or(TextureId::Managed(0))
     }
 }
 
@@ -51,20 +59,27 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
     }
 }
 
+/// Extension trait adding compact tooltip helpers to egui responses.
 pub trait CustomResponse {
+    /// Handles the hover small interaction.
     fn on_hover_small(self, text: impl Into<RichText>) -> Self;
+    /// Handles the hover small ext interaction.
     fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self;
+    /// Handles the disabled hover small interaction.
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self;
+    /// Handles the disabled hover small ext interaction.
     fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self;
 }
 
 impl CustomResponse for Response {
+    /// Handles the hover small interaction.
     fn on_hover_small(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
             ui.small(text);
         })
     }
 
+    /// Handles the hover small ext interaction.
     fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
@@ -72,12 +87,14 @@ impl CustomResponse for Response {
         })
     }
 
+    /// Handles the disabled hover small interaction.
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
             ui.small(text);
         })
     }
 
+    /// Handles the disabled hover small ext interaction.
     fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
@@ -86,16 +103,23 @@ impl CustomResponse for Response {
     }
 }
 
+/// Extension trait implementing Stellarion-specific image buttons and grid cells.
 pub trait CustomUi {
+    /// Adds image to the current UI or asset registry.
     fn add_image(&mut self, texture: impl Into<TextureId>, size: impl Into<Vec2>) -> Response;
+    /// Adds image button to the current UI or asset registry.
     fn add_image_button(
         &mut self,
         texture: impl Into<TextureId>,
         size: impl Into<Vec2>,
     ) -> Response;
+    /// Adds custom button to the current UI or asset registry.
     fn add_custom_button(&mut self, text: impl ToString, images: &ImageIds) -> Response;
+    /// Adds image painter to the current UI or asset registry.
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
+    /// Adds icon on image to the current UI or asset registry.
     fn add_icon_on_image(&mut self, id: impl Into<TextureId>, rect: Rect) -> Response;
+    /// Adds text on image to the current UI or asset registry.
     fn add_text_on_image(
         &mut self,
         text: String,
@@ -104,14 +128,17 @@ pub trait CustomUi {
         pos: Pos2,
         align: Align2,
     ) -> Rect;
+    /// Allocates one grid cell and renders its supplied widget content.
     fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R;
 }
 
 impl CustomUi for Ui {
+    /// Adds image to the current UI or asset registry.
     fn add_image(&mut self, texture: impl Into<TextureId>, size: impl Into<Vec2>) -> Response {
         self.add(Image::new(SizedTexture::new(texture, size)))
     }
 
+    /// Adds image button to the current UI or asset registry.
     fn add_image_button(
         &mut self,
         texture: impl Into<TextureId>,
@@ -120,6 +147,7 @@ impl CustomUi for Ui {
         self.add(Button::image(SizedTexture::new(texture, size)))
     }
 
+    /// Adds custom button to the current UI or asset registry.
     fn add_custom_button(&mut self, text: impl ToString, images: &ImageIds) -> Response {
         let (rect, mut response) = self.allocate_exact_size([180., 50.].into(), Sense::click());
 
@@ -144,6 +172,7 @@ impl CustomUi for Ui {
         response
     }
 
+    /// Adds image painter to the current UI or asset registry.
     fn add_image_painter(&mut self, image: TextureId, rect: Rect) {
         self.painter().rect_filled(rect, 0.0, BG_COLOR.to_color32());
 
@@ -155,6 +184,7 @@ impl CustomUi for Ui {
         );
     }
 
+    /// Adds icon on image to the current UI or asset registry.
     fn add_icon_on_image(&mut self, id: impl Into<TextureId>, rect: Rect) -> Response {
         let size = [20., 20.];
         let pos = rect.right_top() - vec2(size[0] + 5., -5.);
@@ -162,6 +192,7 @@ impl CustomUi for Ui {
         self.put(Rect::from_min_size(pos, size.into()), Image::new(SizedTexture::new(id, size)))
     }
 
+    /// Adds text on image to the current UI or asset registry.
     fn add_text_on_image(
         &mut self,
         text: String,
@@ -180,7 +211,7 @@ impl CustomUi for Ui {
         let size = galley.size();
 
         if style == TextStyle::Heading {
-            pos = pos + vec2(3., -3.);
+            pos += vec2(3., -3.);
         }
 
         let top_left = match align {
@@ -207,6 +238,7 @@ impl CustomUi for Ui {
         bg_rect
     }
 
+    /// Allocates one grid cell and renders its supplied widget content.
     fn cell<R>(&mut self, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
         self.centered_and_justified(|ui| {
             ui.set_min_size([width, 70.].into());

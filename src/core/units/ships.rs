@@ -1,3 +1,5 @@
+//! Ship kinds and their economy, movement, and combat statistics.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -10,16 +12,27 @@ use crate::core::units::{Combat, Description, Price, Unit};
 #[derive(
     EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
+/// Constructible mobile fleet units.
 pub enum Ship {
+    /// The probe ship.
     Probe,
+    /// The colony ship ship.
     ColonyShip,
+    /// The light fighter ship.
     LightFighter,
+    /// The heavy fighter ship.
     HeavyFighter,
+    /// The destroyer ship.
     Destroyer,
+    /// The cruiser ship.
     Cruiser,
+    /// The bomber ship.
     Bomber,
+    /// The battleship ship.
     Battleship,
+    /// The dreadnought ship.
     Dreadnought,
+    /// The war sun ship.
     WarSun,
 }
 
@@ -42,6 +55,7 @@ impl Ship {
 }
 
 impl Description for Ship {
+    /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
             Ship::Probe => {
@@ -108,6 +122,7 @@ impl Description for Ship {
 }
 
 impl Price for Ship {
+    /// Returns the resource cost of producing this unit.
     fn price(&self) -> Resources {
         match self {
             Ship::Probe => Resources::new(0, 20, 0),
@@ -125,6 +140,7 @@ impl Price for Ship {
 }
 
 impl Combat for Ship {
+    /// Returns this unit type's base hull strength.
     fn hull(&self) -> usize {
         match self {
             Ship::Probe => 10,
@@ -140,6 +156,7 @@ impl Combat for Ship {
         }
     }
 
+    /// Returns this unit type's base shield strength.
     fn shield(&self) -> usize {
         match self {
             Ship::Probe => 0,
@@ -155,6 +172,7 @@ impl Combat for Ship {
         }
     }
 
+    /// Returns this unit type's base weapon damage.
     fn damage(&self) -> usize {
         match self {
             Ship::Probe => 0,
@@ -170,6 +188,7 @@ impl Combat for Ship {
         }
     }
 
+    /// Returns rapid-fire probabilities keyed by target unit.
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
             Ship::Probe | Ship::ColonyShip => HashMap::new(),
@@ -224,6 +243,7 @@ impl Combat for Ship {
         }
     }
 
+    /// Returns the movement or animation speed represented by this value.
     fn speed(&self) -> f32 {
         match self {
             Ship::Probe => 2.7,
@@ -239,6 +259,7 @@ impl Combat for Ship {
         }
     }
 
+    /// Returns the deuterium consumed for the supplied movement distance.
     fn fuel_consumption(&self) -> usize {
         match self {
             Ship::Probe => 1,

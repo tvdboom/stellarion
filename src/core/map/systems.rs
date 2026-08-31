@@ -1,3 +1,5 @@
+//! Bevy systems that render and animate the strategic map projection.
+
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::time::Duration;
@@ -10,7 +12,7 @@ use bevy::window::{CursorIcon, SystemCursorIcon};
 use bevy_tweening::lens::ColorMaterialColorLens;
 use bevy_tweening::{AnimTarget, RepeatCount, RepeatStrategy, Tween, TweenAnim};
 use itertools::Itertools;
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
 use voronator::VoronoiDiagram;
@@ -22,7 +24,7 @@ use crate::core::constants::{
     RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
-use crate::core::map::map::{Map, MapCmp};
+use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::utils::{cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens};
 use crate::core::missions::{Mission, MissionId, Missions};
@@ -37,11 +39,14 @@ use crate::core::units::{Amount, Army, Unit};
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
+/// Bevy component mapping a rendered planet entity to a stable planet ID.
 pub struct PlanetCmp {
+    /// Stable identifier used to cross-reference this value.
     pub id: PlanetId,
 }
 
 impl PlanetCmp {
+    /// Creates a new value from the supplied state.
     pub fn new(id: PlanetId) -> Self {
         Self {
             id,
@@ -50,11 +55,14 @@ impl PlanetCmp {
 }
 
 #[derive(Component)]
+/// Bevy component mapping a rendered mission entity to a stable mission ID.
 pub struct MissionCmp {
+    /// Stable identifier used to cross-reference this value.
     pub id: MissionId,
 }
 
 impl MissionCmp {
+    /// Creates a new value from the supplied state.
     pub fn new(id: MissionId) -> Self {
         Self {
             id,
@@ -63,26 +71,34 @@ impl MissionCmp {
 }
 
 #[derive(Component)]
+/// Timed map explosion associated with a destroyed planet.
 pub struct ExplosionCmp {
+    /// Timer controlling the current effect frame.
     pub timer: Timer,
+    /// Highest valid texture-atlas frame index.
     pub last_index: usize,
+    /// Stable planet associated with this component.
     pub planet: PlanetId,
 }
 
 #[derive(Component)]
+/// Bevy component marking planet name presentation entities.
 pub struct PlanetNameCmp;
 
 #[derive(Component)]
+/// Bevy component marking planet resources presentation entities.
 pub struct PlanetResourcesCmp;
 
 /// Component for planetary shield visualization. It stores whether
 /// the player owns the shield to swap the tween animation if it changes
 #[derive(Component)]
 pub struct PlanetaryShieldCmp {
+    /// Owning player when colonized, or an ownership flag in presentation state.
     pub owned: bool,
 }
 
 impl PlanetaryShieldCmp {
+    /// Creates a new value from the supplied state.
     pub fn new() -> Self {
         Self {
             owned: true,
@@ -104,30 +120,47 @@ impl PlanetaryShieldCmp {
     }
 }
 
+impl Default for PlanetaryShieldCmp {
+    /// Creates an owned planetary-shield marker.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Component)]
+/// Bevy component marking space dock presentation entities.
 pub struct SpaceDockCmp;
 
 #[derive(Component)]
+/// Bevy component marking scanner presentation entities.
 pub struct ScannerCmp(pub bool);
 
 #[derive(Component)]
+/// Bevy component marking voronoi presentation entities.
 pub struct VoronoiCmp(pub PlanetId);
 
 #[derive(Component)]
+/// Rendered ownership-border edge with a canonical deduplication key.
 pub struct VoronoiEdgeCmp {
+    /// Stable planet associated with this component.
     pub planet: PlanetId,
+    /// Canonical quantized endpoints used to deduplicate this border edge.
     pub key: (i32, i32, i32, i32),
 }
 
 #[derive(Component)]
+/// Bevy component marking end turn label presentation entities.
 pub struct EndTurnLabelCmp;
 
 #[derive(Component)]
+/// Bevy component marking end turn button presentation entities.
 pub struct EndTurnButtonCmp;
 
 #[derive(Component)]
+/// Bevy component marking spectator label presentation entities.
 pub struct SpectatorLabelCmp;
 
+/// Canonicalizes an undirected Voronoi edge for deduplication.
 fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
     let precision = 5.0;
     let mut a = ((v1.x / precision).round() as i32, (v1.y / precision).round() as i32);
@@ -138,6 +171,7 @@ fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
     (a.0, a.1, b.0, b.1)
 }
 
+/// Draws the map interface and emits any resulting local actions.
 pub fn draw_map(
     mut commands: Commands,
     camera: Single<(&mut Transform, &mut Projection), With<MainCamera>>,
@@ -145,11 +179,11 @@ pub fn draw_map(
     player: Res<Player>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
 ) {
     let (mut camera_t, mut projection) = camera.into_inner();
     let Projection::Orthographic(projection) = &mut *projection else {
-        panic!("Expected Orthographic projection.");
+        return;
     };
 
     commands
@@ -185,7 +219,7 @@ pub fn draw_map(
                     let (mut camera_t, projection) = camera_q.into_inner();
 
                     let Projection::Orthographic(projection) = projection else {
-                        panic!("Expected Orthographic projection.");
+                        return;
                     };
 
                     if !event.delta.x.is_nan() && !event.delta.y.is_nan() {
@@ -266,8 +300,8 @@ pub fn draw_map(
                 parent.spawn((
                     Text2d::new(&planet.name),
                     TextFont {
-                        font: assets.font("bold"),
-                        font_size: TITLE_TEXT_SIZE,
+                        font: assets.font("bold").into(),
+                        font_size: TITLE_TEXT_SIZE.into(),
                         ..default()
                     },
                     TextColor(WHITE.into()),
@@ -292,7 +326,7 @@ pub fn draw_map(
                                     0.8,
                                 )),
                                 Pickable::default(),
-                                icon.clone(),
+                                icon,
                             ))
                             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                             .observe(cursor::<Out>(SystemCursorIcon::Default))
@@ -339,7 +373,9 @@ pub fn draw_map(
                                             state.planet_selected = Some(planet_id);
                                             state.mission = false;
                                             settings.show_menu = true;
-                                            state.shop = icon.shop();
+                                            if let Some(shop) = icon.shop() {
+                                                state.shop = shop;
+                                            }
                                         } else if icon == Icon::Attacked {
                                             state.mission = true;
                                             state.planet_selected = None;
@@ -408,7 +444,7 @@ pub fn draw_map(
                                                                     .then_some((*u, *c))
                                                             })
                                                             .collect(),
-                                                        _ => unreachable!(),
+                                                        _ => Army::new(),
                                                     },
                                                     state.mission_info.bombing.clone(),
                                                     state.mission_info.combat_probes,
@@ -449,8 +485,8 @@ pub fn draw_map(
                                     parent.spawn((
                                         Text2d::new(planet.resources.get(&resource).to_string()),
                                         TextFont {
-                                            font: assets.font("bold"),
-                                            font_size: 25.,
+                                            font: assets.font("bold").into(),
+                                            font_size: 25.0.into(),
                                             ..default()
                                         },
                                         TextColor(WHITE.into()),
@@ -598,8 +634,8 @@ pub fn draw_map(
         },
         Text::new("Waiting for other players to finish their turn..."),
         TextFont {
-            font: assets.font("bold"),
-            font_size: BUTTON_TEXT_SIZE,
+            font: assets.font("bold").into(),
+            font_size: BUTTON_TEXT_SIZE.into(),
             ..default()
         },
         Visibility::Hidden,
@@ -626,17 +662,18 @@ pub fn draw_map(
         },
         Text::new("Spectator Mode"),
         TextFont {
-            font: assets.font("bold"),
-            font_size: 30.,
+            font: assets.font("bold").into(),
+            font_size: 30.0.into(),
             ..default()
         },
-        TextColor(Color::WHITE.into()),
+        TextColor(Color::WHITE),
         Visibility::Hidden,
         SpectatorLabelCmp,
         MapCmp,
     ));
 }
 
+/// Updates planet info from the current canonical ECS projection.
 pub fn update_planet_info(
     mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
     mut icon_q: Query<(&mut Visibility, &mut Transform, &Icon)>,
@@ -701,7 +738,7 @@ pub fn update_planet_info(
     missions: Res<Missions>,
     state: Res<UiState>,
     settings: Res<Settings>,
-    assets: Local<WorldAssets>,
+    assets: Res<WorldAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
@@ -891,6 +928,7 @@ pub fn update_planet_info(
     }
 }
 
+/// Updates voronoi from the current canonical ECS projection.
 pub fn update_voronoi(
     mut cell_q: Query<(&mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &VoronoiCmp)>,
     mut edge_q: Query<
@@ -912,7 +950,7 @@ pub fn update_voronoi(
                 || player.last_info(planet, &missions.0).is_some_and(|i| i.controlled));
 
         if visible {
-            if let Some(material) = materials.get_mut(&*cell_m) {
+            if let Some(mut material) = materials.get_mut(&*cell_m) {
                 material.color = if player.controls(planet) {
                     OWN_COLOR.with_alpha(0.005)
                 } else {
@@ -955,7 +993,7 @@ pub fn update_voronoi(
         };
 
         if visible {
-            if let Some(mat) = materials.get_mut(&*edge_m) {
+            if let Some(mut mat) = materials.get_mut(&*edge_m) {
                 mat.color = color;
             }
         }
@@ -968,6 +1006,7 @@ pub fn update_voronoi(
     }
 }
 
+/// Updates end turn from the current canonical ECS projection.
 pub fn update_end_turn(
     mut button_c: Query<&mut Visibility, With<EndTurnButtonCmp>>,
     mut spectator_q: Query<&mut Visibility, (With<SpectatorLabelCmp>, Without<EndTurnButtonCmp>)>,
@@ -1015,6 +1054,7 @@ pub fn update_end_turn(
     }
 }
 
+/// Advances map animations effects for the current frame.
 pub fn run_map_animations(
     mut commands: Commands,
     mut animation_q: Query<(Entity, &mut Sprite, &mut ExplosionCmp)>,

@@ -1,3 +1,5 @@
+//! Map widget spawning, cursor lookup, and interpolation helpers.
+
 use std::f32::consts::TAU;
 use std::fmt::Debug;
 
@@ -7,14 +9,17 @@ use bevy_tweening::Lens;
 
 use crate::core::assets::WorldAssets;
 use crate::core::constants::BUTTON_TEXT_SIZE;
-use crate::core::map::map::MapCmp;
+use crate::core::map::model::MapCmp;
 
 #[derive(Component)]
+/// Bevy component marking main button presentation entities.
 pub struct MainButtonCmp;
 
 #[derive(Component)]
+/// Bevy component marking main button label presentation entities.
 pub struct MainButtonLabelCmp;
 
+/// Sets button index while preserving the surrounding invariant.
 pub fn set_button_index(button_q: &mut Query<&mut ImageNode, With<MainButtonCmp>>, index: usize) {
     for mut button in button_q {
         if let Some(texture) = button.texture_atlas.as_mut() {
@@ -23,6 +28,7 @@ pub fn set_button_index(button_q: &mut Query<&mut ImageNode, With<MainButtonCmp>
     }
 }
 
+/// Spawns the main button entities with their required components.
 pub fn spawn_main_button<'a>(
     commands: &'a mut Commands,
     text: impl Into<String>,
@@ -54,8 +60,8 @@ pub fn spawn_main_button<'a>(
             children![(
                 Text::new(text),
                 TextFont {
-                    font: assets.font("bold"),
-                    font_size: BUTTON_TEXT_SIZE,
+                    font: assets.font("bold").into(),
+                    font_size: BUTTON_TEXT_SIZE.into(),
                     ..default()
                 },
                 MainButtonLabelCmp,
@@ -86,6 +92,7 @@ pub fn spawn_main_button<'a>(
     commands.entity(id)
 }
 
+/// Returns the cursor position transformed into world coordinates when available.
 pub fn cursor<T: Debug + Clone + Reflect>(
     icon: SystemCursorIcon,
 ) -> impl FnMut(On<Pointer<T>>, Commands, Single<Entity, With<Window>>) {
@@ -97,11 +104,14 @@ pub fn cursor<T: Debug + Clone + Reflect>(
 /// Tween: circular motion
 #[derive(Debug, Clone, Copy)]
 pub struct TransformOrbitLens {
+    /// Radius of the circular interpolation path.
     pub radius: f32,
+    /// Angular offset applied to the circular interpolation path.
     pub offset: f32,
 }
 
 impl Lens<Transform> for TransformOrbitLens {
+    /// Interpolates this value toward a target using the supplied fraction.
     fn lerp(&mut self, mut target: Mut<Transform>, ratio: f32) {
         let angle = self.offset + TAU * ratio;
         target.translation.x = self.radius * angle.cos();
@@ -114,6 +124,7 @@ impl Lens<Transform> for TransformOrbitLens {
 pub struct SpriteFrameLens(pub usize);
 
 impl Lens<Sprite> for SpriteFrameLens {
+    /// Interpolates this value toward a target using the supplied fraction.
     fn lerp(&mut self, mut target: Mut<Sprite>, ratio: f32) {
         if let Some(texture) = &mut target.texture_atlas {
             texture.index = (ratio * self.0 as f32) as usize % self.0;
@@ -124,11 +135,14 @@ impl Lens<Sprite> for SpriteFrameLens {
 /// Tween: sprite alpha
 #[derive(Debug, Clone, Copy)]
 pub struct SpriteAlphaLens {
+    /// Starting scalar or vector of this interpolation lens.
     pub start: f32,
+    /// Ending scalar or vector of this interpolation lens.
     pub end: f32,
 }
 
 impl Lens<Sprite> for SpriteAlphaLens {
+    /// Interpolates this value toward a target using the supplied fraction.
     fn lerp(&mut self, mut target: Mut<Sprite>, ratio: f32) {
         target.color = target.color.with_alpha(self.start + (self.end - self.start) * ratio);
     }
@@ -137,11 +151,14 @@ impl Lens<Sprite> for SpriteAlphaLens {
 /// Tween: UI node transform scale
 #[derive(Debug, Clone, Copy)]
 pub struct UiTransformScaleLens {
+    /// Starting scalar or vector of this interpolation lens.
     pub start: Vec2,
+    /// Ending scalar or vector of this interpolation lens.
     pub end: Vec2,
 }
 
 impl Lens<UiTransform> for UiTransformScaleLens {
+    /// Interpolates this value toward a target using the supplied fraction.
     fn lerp(&mut self, mut target: Mut<UiTransform>, ratio: f32) {
         target.scale = self.start.lerp(self.end, ratio);
     }

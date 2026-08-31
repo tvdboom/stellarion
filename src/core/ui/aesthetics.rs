@@ -1,9 +1,12 @@
+//! Typed egui style tokens used to keep the game interface visually consistent.
+
 use std::collections::BTreeMap;
 
 use bevy_egui;
 use bevy_egui::egui::style::*;
 use bevy_egui::egui::*;
 
+/// Named semantic colors used by the egui theme.
 pub trait Aesthetics {
     /// The name of the theme for debugging and comparison purposes.
     fn name(&self) -> &str;
@@ -304,7 +307,6 @@ pub trait Aesthetics {
                     ..Default::default()
                 },
                 resize_corner_size: 12.0,
-                clip_rect_margin: 3.0,
                 button_frame: true,
                 collapsing_header_frame: true,
                 indent_has_left_vline: true,
@@ -320,12 +322,14 @@ pub trait Aesthetics {
 }
 
 impl std::fmt::Debug for dyn Aesthetics {
+    /// Formats this value for user-facing or diagnostic output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
 impl PartialEq for dyn Aesthetics {
+    /// Compares the semantic style values for equality.
     fn eq(&self, other: &Self) -> bool {
         self.name() == other.name()
     }

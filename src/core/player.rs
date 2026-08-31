@@ -1,18 +1,24 @@
+//! Persisted player economy, reports, home world, and spectator state.
+
 use bevy::prelude::*;
-use bevy_renet::renet::ClientId;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
-use crate::core::map::map::Map;
+use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::units::{Amount, Army, Unit};
 
+/// Maximum number of resolved mission reports retained for one player.
+pub const MAX_REPORTS_PER_PLAYER: usize = 512;
+
 #[derive(Clone)]
+/// Historical intelligence snapshot visible to one player.
 pub struct PlanetInfo {
     /// Turn this information was valid
     pub turn: usize,
@@ -25,15 +31,22 @@ pub struct PlanetInfo {
 }
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
+/// Persisted player slot, economy, home world, reports, and elimination state.
 pub struct Player {
-    pub id: ClientId,
+    /// Stable identifier used to cross-reference this value.
+    pub id: PlayerId,
+    /// Stable home world whose loss eliminates this player.
     pub home_planet: PlanetId,
+    /// Resource production for a world or stockpile for a player.
     pub resources: Resources,
+    /// Resolved mission reports visible to this player.
     pub reports: Vec<MissionReport>,
+    /// Whether this player is eliminated and no longer submits turns.
     pub spectator: bool,
 }
 
 impl Default for Player {
+    /// Constructs the default value and its gameplay-safe initial state.
     fn default() -> Self {
         Self {
             id: 0,
@@ -50,7 +63,8 @@ impl Default for Player {
 }
 
 impl Player {
-    pub fn new(id: ClientId, home_planet: PlanetId) -> Self {
+    /// Creates a new value from the supplied state.
+    pub fn new(id: PlayerId, home_planet: PlanetId) -> Self {
         Self {
             id,
             home_planet,
@@ -58,18 +72,38 @@ impl Player {
         }
     }
 
+    /// Appends a report while pruning the oldest entries from the bounded history.
+    pub fn push_report(&mut self, mut report: MissionReport) {
+        if report.id == 0 || self.reports.iter().any(|existing| existing.id == report.id) {
+            if let Some(replacement) = (1..=self.reports.len() as u64 + 1)
+                .find(|candidate| self.reports.iter().all(|existing| existing.id != *candidate))
+            {
+                report.id = replacement;
+            }
+        }
+        self.reports.push(report);
+        let excess = self.reports.len().saturating_sub(MAX_REPORTS_PER_PLAYER);
+        if excess > 0 {
+            self.reports.drain(..excess);
+        }
+    }
+
+    /// Returns whether this player owns the supplied planet.
     pub fn owns(&self, planet: &Planet) -> bool {
         planet.owned == Some(self.id)
     }
 
+    /// Returns whether this player controls the supplied planet.
     pub fn controls(&self, planet: &Planet) -> bool {
         planet.controlled == Some(self.id)
     }
 
-    pub fn resource_production(&self, planets: &Vec<Planet>) -> Resources {
+    /// Computes resource production for the current owned worlds.
+    pub fn resource_production(&self, planets: &[Planet]) -> Resources {
         planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
     }
 
+    /// Counts non-moon planets currently owned by this player.
     pub fn planets_owned(&self, map: &Map, settings: &Settings) -> (usize, usize) {
         let n_owned = map.planets().iter().filter(|p| p.owned == Some(self.id)).count();
         let n_max =
@@ -78,7 +112,8 @@ impl Player {
         (n_owned, n_max)
     }
 
-    pub fn last_info(&self, planet: &Planet, missions: &Vec<Mission>) -> Option<PlanetInfo> {
+    /// Returns the most recent information report for a planet when present.
+    pub fn last_info(&self, planet: &Planet, missions: &[Mission]) -> Option<PlanetInfo> {
         let mut reports = vec![];
 
         if planet.is_destroyed {
@@ -98,7 +133,13 @@ impl Player {
                                 .iter()
                                 .flatten()
                                 .map(|u| {
-                                    (*u, r.mission.origin_army.amount(u) - r.mission.army.amount(u))
+                                    (
+                                        *u,
+                                        r.mission
+                                            .origin_army
+                                            .amount(u)
+                                            .saturating_sub(r.mission.army.amount(u)),
+                                    )
                                 })
                                 .collect(),
                         });
@@ -134,7 +175,9 @@ impl Player {
                                         if u.is_building() {
                                             r.surviving_defender.amount(u)
                                         } else if *u == Unit::probe() {
-                                            r.surviving_attacker.amount(u) - r.scout_probes
+                                            r.surviving_attacker
+                                                .amount(u)
+                                                .saturating_sub(r.scout_probes)
                                         } else {
                                             r.surviving_attacker.amount(u)
                                         },
@@ -142,7 +185,9 @@ impl Player {
                                 }
                             } else if r.mission.owner == self.id
                                 && r.scout_probes
-                                    > (u.production() - 1) * PROBES_PER_PRODUCTION_LEVEL
+                                    > u.production()
+                                        .saturating_sub(1)
+                                        .saturating_mul(PROBES_PER_PRODUCTION_LEVEL)
                             {
                                 Some((*u, r.planet.army.amount(u)))
                             } else {
@@ -155,7 +200,7 @@ impl Player {
         }
 
         // Add missions that haven't arrived yet
-        for m in missions.into_iter() {
+        for m in missions {
             if m.origin == planet.id {
                 if m.owner == self.id {
                     // Ignore returning probes or from destroy mission
@@ -164,7 +209,7 @@ impl Player {
                         let army: Army = Unit::all()
                             .iter()
                             .flatten()
-                            .map(|u| (*u, m.origin_army.amount(u) - m.army.amount(u)))
+                            .map(|u| (*u, m.origin_army.amount(u).saturating_sub(m.army.amount(u))))
                             .collect();
 
                         reports.push(PlanetInfo {
