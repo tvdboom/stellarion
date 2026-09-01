@@ -42,7 +42,7 @@ pub fn spawn_main_button<'a>(
                 bottom: Val::Px(30.),
                 right: Val::Px(50.),
                 width: Val::Px(200.),
-                height: Val::Px(40.),
+                height: Val::Px(48.),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -53,7 +53,8 @@ pub fn spawn_main_button<'a>(
                     layout: texture.atlas.layout.clone(),
                     index: 0,
                 },
-            ),
+            )
+            .with_mode(NodeImageMode::Stretch),
             Pickable::default(),
             MainButtonCmp,
             MapCmp,

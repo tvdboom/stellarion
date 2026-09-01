@@ -27,7 +27,10 @@ use crate::utils::NameFromEnum;
 pub const PERSISTED_SCHEMA_VERSION: u32 = 1;
 
 /// Supported number of players in a multiplayer game.
-pub const PLAYER_COUNT_RANGE: std::ops::RangeInclusive<u8> = 2..=4;
+pub const PLAYER_COUNT_RANGE: std::ops::RangeInclusive<u8> = 2..=MAX_MULTIPLAYER_PLAYERS;
+
+/// Maximum number of members who may join an open multiplayer lobby.
+pub const MAX_MULTIPLAYER_PLAYERS: u8 = 4;
 
 /// Maximum number of intentional commands accepted from one player for one turn.
 pub const MAX_COMMANDS_PER_SUBMISSION: usize = 1024;
@@ -44,14 +47,27 @@ pub struct GameRules {
     pub colonizable_percent: usize,
     /// Number of moons as a percentage of non-moon planets.
     pub moons_percent: usize,
-    /// Exact number of slots that must join before the game starts.
+    /// Number of generated player slots in this snapshot.
     pub player_count: u8,
+    /// Allows the debug-only one-player practice flow to remain active without opponents.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub practice_mode: bool,
+}
+
+/// Keeps the normal multiplayer JSON shape unchanged when practice mode is disabled.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl GameRules {
     /// Validates supported setting boundaries before map generation.
     pub fn validate(&self) -> Result<(), GameError> {
-        if !PLAYER_COUNT_RANGE.contains(&self.player_count) {
+        let valid_player_count = if self.practice_mode {
+            self.player_count == 1
+        } else {
+            PLAYER_COUNT_RANGE.contains(&self.player_count)
+        };
+        if !valid_player_count {
             return Err(GameError::InvalidPlayerCount(self.player_count));
         }
         if !(5..=20).contains(&self.planets_per_player) {
@@ -79,6 +95,7 @@ impl Default for GameRules {
             colonizable_percent: 25,
             moons_percent: 30,
             player_count: 2,
+            practice_mode: false,
         }
     }
 }
@@ -167,6 +184,14 @@ impl GameModel {
             .ok_or(GameError::UnknownPlayer(player_id))
     }
 
+    /// Returns one mutable player by stable player-slot identifier.
+    pub fn player_mut(&mut self, player_id: PlayerId) -> Result<&mut Player, GameError> {
+        self.players
+            .iter_mut()
+            .find(|player| player.id == player_id)
+            .ok_or(GameError::UnknownPlayer(player_id))
+    }
+
     /// Validates cross-references and boundaries in a deserialized snapshot.
     pub fn validate(&self) -> Result<(), GameError> {
         self.rules.validate()?;
@@ -180,10 +205,15 @@ impl GameModel {
         }
 
         let player_ids = self.players.iter().map(|player| player.id).collect::<HashSet<_>>();
+        let player_colors =
+            self.players.iter().map(|player| player.color()).collect::<HashSet<_>>();
         if self.players.iter().enumerate().any(|(slot, player)| player.id != (slot + 1) as u64) {
             return Err(GameError::MalformedState(
                 "player identifiers must be contiguous slots starting at one".to_string(),
             ));
+        }
+        if player_colors.len() != self.players.len() {
+            return Err(GameError::MalformedState("player colors must be distinct".to_string()));
         }
         if self.map.planets.is_empty()
             || self.map.planets.iter().enumerate().any(|(index, planet)| planet.id != index)
@@ -195,6 +225,12 @@ impl GameModel {
         let planet_ids = self.map.planets.iter().map(|planet| planet.id).collect::<HashSet<_>>();
 
         for player in &self.players {
+            if player.color.is_some_and(|color| !color.is_valid()) {
+                return Err(GameError::MalformedState(format!(
+                    "player {} references an unsupported color",
+                    player.id
+                )));
+            }
             if player.reports.len() > MAX_REPORTS_PER_PLAYER {
                 return Err(GameError::MalformedState(format!(
                     "player {} report history exceeds {MAX_REPORTS_PER_PLAYER} entries",
@@ -433,8 +469,8 @@ pub struct TurnResult {
 /// Typed deterministic simulation failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum GameError {
-    /// Configured player count is outside 2..=4.
-    #[error("player count {0} is outside the supported 2..=4 range")]
+    /// Configured player count is unsupported for multiplayer or local-practice rules.
+    #[error("player count {0} is unsupported by these game rules")]
     InvalidPlayerCount(u8),
     /// A creator-selected setting is unsupported.
     #[error("invalid game settings: {0}")]
@@ -844,6 +880,11 @@ fn apply_mission(
     if mission_id == 0 || model.missions.iter().any(|mission| mission.id == mission_id) {
         return invalid(player_id, "mission identifier is missing or already used");
     }
+    let army = army
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(unit, count)| (*unit, *count))
+        .collect::<Army>();
     if origin_id == destination_id || !objective.is_mission() || !army.has_army() {
         return invalid(player_id, "mission origin, destination, objective, or army is invalid");
     }
@@ -868,7 +909,7 @@ fn apply_mission(
     {
         return invalid(player_id, "mission objective is not available for these planets");
     }
-    if army.iter().any(|(unit, count)| *count == 0 || origin.army.amount(unit) < *count) {
+    if army.iter().any(|(unit, count)| origin.army.amount(unit) < *count) {
         return invalid(player_id, "mission contains unavailable units");
     }
     let turn = usize::try_from(model.turn)
@@ -908,7 +949,7 @@ fn apply_mission(
     if jump_gate {
         origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
     }
-    for (unit, count) in army {
+    for (unit, count) in &army {
         if let Some(available) = origin.army.get_mut(unit) {
             *available = available.saturating_sub(*count);
         }
@@ -1125,7 +1166,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
             playing.push(player.id);
         }
     }
-    if playing.len() > 1 {
+    if playing.len() > 1 || (model.rules.practice_mode && playing.len() == 1) {
         let eliminated = model
             .players
             .iter()
@@ -1243,6 +1284,7 @@ fn invalid_error(player_id: PlayerId, reason: impl Into<String>) -> GameError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::units::ships::Ship;
 
     /// Creates and starts a deterministic model for unit tests.
     fn started_model(player_count: u8) -> GameModel {
@@ -1287,6 +1329,45 @@ mod tests {
                 usize::from(count)
             );
         }
+    }
+
+    #[test]
+    /// Advances a one-player practice match without declaring an automatic victory.
+    fn local_practice_resolves_immediately_and_stays_active() {
+        let mut model = GameModel::new(
+            [1; 32],
+            GameRules {
+                player_count: 1,
+                practice_mode: true,
+                ..GameRules::default()
+            },
+        )
+        .unwrap();
+        model.start().unwrap();
+        let result = resolve_turn(&mut model, &[TurnSubmission::new(1, 1, Vec::new())]).unwrap();
+        assert_eq!(result.turn, 2);
+        assert!(!result.finished);
+        assert_eq!(model.status, MatchStatus::Active);
+        assert!(!model.players[0].spectator);
+    }
+
+    #[test]
+    /// Keeps normal multiplayer snapshots backward-compatible and rejects mixed practice rules.
+    fn practice_rules_are_explicit_and_json_compatible() {
+        let json = serde_json::to_value(GameRules::default()).unwrap();
+        assert!(json.get("practice_mode").is_none());
+        let loaded: GameRules = serde_json::from_value(json).unwrap();
+        assert!(!loaded.practice_mode);
+        assert!(matches!(
+            GameModel::new(
+                [2; 32],
+                GameRules {
+                    practice_mode: true,
+                    ..GameRules::default()
+                }
+            ),
+            Err(GameError::InvalidPlayerCount(2))
+        ));
     }
 
     #[test]
@@ -1348,6 +1429,34 @@ mod tests {
     }
 
     #[test]
+    /// Mission commands produced by the UI may include unselected zero-count ship entries.
+    fn mission_commands_ignore_zero_count_units() {
+        let mut model = started_model(2);
+        let origin = model.players[0].home_planet;
+        let destination = model.players[1].home_planet;
+        let heavy_fighter = Unit::Ship(Ship::HeavyFighter);
+        model.map.get_mut(origin).army.insert(heavy_fighter, 2);
+        let selected = Army::from([(heavy_fighter, 2), (Unit::Ship(Ship::LightFighter), 0)]);
+
+        apply_mission(
+            &mut model,
+            1,
+            7,
+            origin,
+            destination,
+            Icon::Attack,
+            &selected,
+            BombingRaid::None,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(model.missions[0].army, Army::from([(heavy_fighter, 2)]));
+        assert_eq!(model.map.get(origin).army.amount(&heavy_fighter), 0);
+    }
+
+    #[test]
     /// Rejects unsupported envelopes and broken cross-references without partially loading them.
     fn rejects_malformed_persisted_state() {
         let persisted = PersistedGame::new(started_model(2));
@@ -1369,6 +1478,14 @@ mod tests {
         duplicate_player["state"]["players"][1]["id"] = serde_json::json!(1);
         assert!(matches!(
             PersistedGame::from_json(duplicate_player),
+            Err(GameError::MalformedState(_))
+        ));
+
+        let mut duplicate_color = persisted.to_json().unwrap();
+        duplicate_color["state"]["players"][1]["color"] =
+            duplicate_color["state"]["players"][0]["color"].clone();
+        assert!(matches!(
+            PersistedGame::from_json(duplicate_color),
             Err(GameError::MalformedState(_))
         ));
 
@@ -1410,6 +1527,20 @@ mod tests {
             PersistedGame::from_json(invalid_report),
             Err(GameError::MalformedState(_))
         ));
+    }
+
+    #[test]
+    /// Snapshots created before lobby colors receive distinct deterministic slot colors.
+    fn legacy_players_without_colors_remain_compatible() {
+        let mut json = PersistedGame::new(started_model(4)).to_json().unwrap();
+        for player in json["state"]["players"].as_array_mut().unwrap() {
+            player.as_object_mut().unwrap().remove("color");
+        }
+
+        let loaded = PersistedGame::from_json(json).unwrap();
+        for player in &loaded.state.players {
+            assert_eq!(player.color(), crate::core::player::PlayerColor::for_player(player.id));
+        }
     }
 
     #[test]

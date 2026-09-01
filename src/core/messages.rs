@@ -7,6 +7,8 @@ use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::core::audio::PlayAudioMsg;
 use crate::core::constants::MESSAGE_DURATION;
+use crate::core::missions::MissionId;
+use crate::core::ui::systems::{MissionTab, UiState};
 
 /// Severity used for notification color and sound selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,13 @@ pub enum MessageLevel {
     Error,
 }
 
+/// Optional navigation performed when the player clicks a notification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageAction {
+    /// Opens the mission interface on the supplied persisted report.
+    OpenMissionReport(MissionId),
+}
+
 /// Requests a transient notification.
 #[derive(Message, Clone, Debug)]
 pub struct MessageMsg {
@@ -26,6 +35,8 @@ pub struct MessageMsg {
     pub message: String,
     /// Severity of the notification.
     pub level: MessageLevel,
+    /// Optional navigation associated with clicking the notification.
+    pub action: Option<MessageAction>,
 }
 
 impl MessageMsg {
@@ -34,7 +45,14 @@ impl MessageMsg {
         Self {
             message: message.into(),
             level,
+            action: None,
         }
+    }
+
+    /// Makes this notification navigate when clicked.
+    pub fn with_action(mut self, action: MessageAction) -> Self {
+        self.action = Some(action);
+        self
     }
 
     /// Creates an informational notification.
@@ -58,6 +76,7 @@ impl MessageMsg {
 struct ActiveMessage {
     text: String,
     level: MessageLevel,
+    action: Option<MessageAction>,
     remaining_seconds: f32,
 }
 
@@ -71,6 +90,7 @@ impl Messages {
         self.0.push_back(ActiveMessage {
             text: message.message.clone(),
             level: message.level,
+            action: message.action,
             remaining_seconds: MESSAGE_DURATION as f32,
         });
 
@@ -88,6 +108,7 @@ fn check_messages(
     mut messages: ResMut<Messages>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut message_msg: MessageReader<MessageMsg>,
+    mut state: Option<ResMut<UiState>>,
 ) {
     // Only make one sound per severity per frame.
     let (mut info_sound, mut warning_sound, mut error_sound) = (true, true, true);
@@ -126,13 +147,14 @@ fn check_messages(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
+    let mut clicked_message = None;
     egui::Area::new("stellarion_notifications".into())
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 70.0))
         .order(egui::Order::Foreground)
-        .interactable(false)
+        .interactable(true)
         .show(context, |ui| {
             ui.set_max_width(360.0);
-            for message in &messages.0 {
+            for (index, message) in messages.0.iter().enumerate() {
                 let (fill, accent) = match message.level {
                     MessageLevel::Info => (
                         egui::Color32::from_rgba_unmultiplied(28, 36, 48, 235),
@@ -147,17 +169,41 @@ fn check_messages(
                         egui::Color32::from_rgb(255, 105, 120),
                     ),
                 };
-                egui::Frame::new()
+                let response = egui::Frame::new()
                     .fill(fill)
                     .stroke(egui::Stroke::new(1.0, accent))
                     .corner_radius(5.0)
                     .inner_margin(egui::Margin::symmetric(12, 8))
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new(&message.text).small().color(accent));
-                    });
+                    })
+                    .response;
+                if let Some(action) = message.action {
+                    let response = response
+                        .interact(egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if response.clicked() {
+                        clicked_message = Some((index, action));
+                    }
+                }
                 ui.add_space(6.0);
             }
         });
+
+    if let Some((index, action)) = clicked_message {
+        messages.0.remove(index);
+        if let Some(state) = state.as_mut() {
+            match action {
+                MessageAction::OpenMissionReport(mission_id) => {
+                    state.planet_selected = None;
+                    state.mission = true;
+                    state.mission_tab = MissionTab::MissionReports;
+                    state.mission_report = Some(mission_id);
+                    state.combat_report = None;
+                },
+            }
+        }
+    }
 }
 
 /// Installs notification collection, expiration, sound, and rendering.

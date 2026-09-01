@@ -1,9 +1,15 @@
--- Complete Stellarion multiplayer schema for a fresh Supabase project.
---
--- This file is the current database state, not an incremental migration. Reset
--- old Stellarion objects before reapplying it; no prior schema is supported.
+-- Complete destructive reset and install for Stellarion multiplayer.
+-- Running this file removes every existing Stellarion game, player, turn,
+-- event, policy, and RPC before recreating the current database contract.
 
 begin;
+
+-- Supabase system schemas (auth, storage, extensions, and Realtime) stay intact;
+-- the complete application-facing database is reset in one operation.
+drop schema if exists public cascade;
+create schema public;
+grant usage on schema public to postgres, anon, authenticated;
+grant all on schema public to postgres;
 
 create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
@@ -100,6 +106,7 @@ create table public.stellarion_game_events (
             'player_recovered',
             'player_connected',
             'player_disconnected',
+            'game_resumed',
             'turn_submitted',
             'state_changed',
             'game_started',
@@ -321,7 +328,8 @@ begin
                                'user_id', gp.user_id::text,
                                'display_name', gp.display_name,
                                'is_creator', gp.is_creator,
-                               'identity_version', gp.identity_version
+                               'identity_version', gp.identity_version,
+                               'connected', gp.connected
                            ) order by gp.player_id
                        )
                        from public.stellarion_game_players as gp
@@ -359,7 +367,8 @@ begin
                'user_id', gp.user_id::text,
                'display_name', gp.display_name,
                'is_creator', gp.is_creator,
-               'identity_version', gp.identity_version
+               'identity_version', gp.identity_version,
+               'connected', gp.connected
            )
       into v_result
       from public.stellarion_game_players as gp
@@ -726,6 +735,7 @@ as $$
 declare
     v_game public.stellarion_games%rowtype;
     v_member public.stellarion_game_players%rowtype;
+    v_player_count smallint;
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
@@ -739,10 +749,12 @@ begin
     if not found then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
+    select count(*)::smallint into v_player_count
+      from public.stellarion_game_players
+      where game_id = p_game_id;
     if not v_member.is_creator
        or v_game.status <> 'lobby'
-       or (select count(*) from public.stellarion_game_players where game_id = p_game_id)
-          <> v_game.max_players then
+       or v_player_count not between 2 and v_game.max_players then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_STATUS';
     end if;
     if p_expected_revision is null or p_expected_revision < 0 then
@@ -753,11 +765,12 @@ begin
             message = 'STLR_CONFLICT:' || p_expected_revision::text || ':' || v_game.revision::text;
     end if;
     perform public.stellarion_validate_persisted(
-        p_persisted, v_game.max_players, 'active', v_game.current_turn
+        p_persisted, v_player_count, 'active', v_game.current_turn
     );
 
     update public.stellarion_games
        set state = p_persisted,
+           max_players = v_player_count,
            status = 'active',
            persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            revision = revision + 1,
@@ -838,11 +851,11 @@ begin
     if p_submission is null or jsonb_typeof(p_submission) is distinct from 'object'
        or pg_column_size(p_submission) > 1048576
        or jsonb_typeof(p_submission -> 'commands') is distinct from 'array'
-       or case
+       or (case
            when jsonb_typeof(p_submission -> 'commands') = 'array'
                then jsonb_array_length(p_submission -> 'commands') > 1024
            else true
-       end then
+       end) then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission';
     end if;
     begin
@@ -1116,6 +1129,45 @@ begin
 end;
 $$;
 
+create function public.stellarion_resume_game(p_game_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+    v_game public.stellarion_games%rowtype;
+begin
+    if auth.uid() is null then
+        raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
+    end if;
+
+    select * into v_game
+      from public.stellarion_games
+      where id = p_game_id
+      for update;
+    if not found then
+        raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
+    end if;
+    if not exists (
+        select 1 from public.stellarion_game_players
+        where game_id = p_game_id and user_id = auth.uid() and is_creator
+    ) then
+        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    if v_game.status <> 'active'
+       or exists (
+           select 1 from public.stellarion_game_players
+           where game_id = p_game_id and not connected
+       ) then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_STATUS';
+    end if;
+
+    perform public.stellarion_emit_event(p_game_id, 'game_resumed', v_game.current_turn, null);
+    return jsonb_build_object('ok', true);
+end;
+$$;
+
 create function public.stellarion_set_connected(
     p_game_id uuid,
     p_connected boolean
@@ -1194,6 +1246,8 @@ revoke all on function public.stellarion_load_game(uuid)
     from public, anon;
 revoke all on function public.stellarion_start_game(uuid, bigint, jsonb)
     from public, anon;
+revoke all on function public.stellarion_resume_game(uuid)
+    from public, anon;
 revoke all on function public.stellarion_save_game(uuid, bigint, jsonb)
     from public, anon;
 revoke all on function public.stellarion_submit_turn(uuid, jsonb)
@@ -1218,6 +1272,8 @@ grant execute on function public.stellarion_list_games()
 grant execute on function public.stellarion_load_game(uuid)
     to authenticated;
 grant execute on function public.stellarion_start_game(uuid, bigint, jsonb)
+    to authenticated;
+grant execute on function public.stellarion_resume_game(uuid)
     to authenticated;
 grant execute on function public.stellarion_save_game(uuid, bigint, jsonb)
     to authenticated;
@@ -1254,5 +1310,8 @@ begin
     end if;
 end;
 $$;
+
+-- Ensure the Data API sees every RPC immediately after this fresh-project install.
+notify pgrst, 'reload schema';
 
 commit;

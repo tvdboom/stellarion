@@ -36,6 +36,7 @@ use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
+use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
 
 #[derive(Component)]
@@ -169,6 +170,73 @@ fn edge_key(v1: Vec2, v2: Vec2) -> (i32, i32, i32, i32) {
         std::mem::swap(&mut a, &mut b);
     } // Make direction irrelevant
     (a.0, a.1, b.0, b.1)
+}
+
+/// Spawns ownership geometry with transform depths used by Bevy's transparent sort.
+fn spawn_voronoi_cells(
+    commands: &mut Commands,
+    map: &Map,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+) {
+    let Some(voronoi) = VoronoiDiagram::<Point>::from_tuple(
+        &(-10000., -10000.),
+        &(10000., 10000.),
+        &map.planets.iter().map(|p| (p.position.x as f64, p.position.y as f64)).collect::<Vec<_>>(),
+    ) else {
+        warn!("Could not generate ownership cells for the strategic map.");
+        return;
+    };
+
+    for (planet, cell) in map.planets.iter().zip(voronoi.cells()) {
+        let points = cell.points();
+        let n = points.len();
+        if n < 3 {
+            continue;
+        }
+        // Keep mesh vertices on their local plane. Baking depth into vertices alone leaves
+        // the entity at z=0, so transparent cells can sort behind the map background.
+        let positions =
+            points.iter().map(|p| Vec3::new(p.x as f32, p.y as f32, 0.0)).collect::<Vec<_>>();
+        let indices = (1..n - 1).flat_map(|i| [0, i as u32, (i + 1) as u32]).collect();
+        let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_indices(Indices::U32(indices));
+        commands.spawn((
+            Mesh2d(meshes.add(mesh)),
+            MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.12))),
+            Transform::from_xyz(0.0, 0.0, VORONOI_Z),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            VoronoiCmp(planet.id),
+            MapCmp,
+        ));
+
+        for j in 0..n {
+            let a = points[j];
+            let b = points[(j + 1) % n];
+            let v1 = Vec2::new(a.x as f32, a.y as f32);
+            let v2 = Vec2::new(b.x as f32, b.y as f32);
+            let mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default())
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![v1.extend(0.0), v2.extend(0.0)],
+                )
+                .with_inserted_indices(Indices::U32(vec![0, 1]));
+            commands.spawn((
+                Mesh2d(meshes.add(mesh)),
+                MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.58))),
+                Transform::from_xyz(0.0, 0.0, VORONOI_Z + 0.1),
+                Visibility::Hidden,
+                Pickable::IGNORE,
+                VoronoiEdgeCmp {
+                    planet: planet.id,
+                    key: edge_key(v1, v2),
+                },
+                MapCmp,
+            ));
+        }
+    }
 }
 
 /// Draws the map interface and emits any resulting local actions.
@@ -562,73 +630,13 @@ pub fn draw_map(
         }
     }
 
-    // Draw Voronoi cells
-    if let Some(voronoi) = VoronoiDiagram::<Point>::from_tuple(
-        &(-10000., -10000.),
-        &(10000., 10000.),
-        &map.planets.iter().map(|p| (p.position.x as f64, p.position.y as f64)).collect::<Vec<_>>(),
-    ) {
-        for (i, cell) in voronoi.cells().iter().enumerate() {
-            let planet_id = map.planets[i].id;
-
-            let points = cell.points();
-            let n = points.len();
-
-            if n >= 3 {
-                let positions = cell
-                    .points()
-                    .iter()
-                    .map(|p| Vec3::new(p.x as f32, p.y as f32, VORONOI_Z))
-                    .collect::<Vec<_>>();
-
-                let indices: Vec<u32> =
-                    (1..n - 1).flat_map(|i| vec![0u32, i as u32, (i + 1) as u32]).collect();
-
-                let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-                    .with_inserted_indices(Indices::U32(indices));
-
-                commands.spawn((
-                    Mesh2d(meshes.add(mesh)),
-                    MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.5))),
-                    Visibility::Hidden,
-                    VoronoiCmp(map.planets[i].id),
-                    MapCmp,
-                ));
-
-                for j in 0..n {
-                    let a = points[j];
-                    let b = points[(j + 1) % points.len()];
-                    let v1 = Vec2::new(a.x as f32, a.y as f32);
-                    let v2 = Vec2::new(b.x as f32, b.y as f32);
-
-                    let mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default())
-                        .with_inserted_attribute(
-                            Mesh::ATTRIBUTE_POSITION,
-                            vec![v1.extend(VORONOI_Z + 0.1), v2.extend(VORONOI_Z + 0.1)],
-                        )
-                        .with_inserted_indices(Indices::U32(vec![0, 1]));
-
-                    commands.spawn((
-                        Mesh2d(meshes.add(mesh)),
-                        MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.005))),
-                        Visibility::Hidden,
-                        VoronoiEdgeCmp {
-                            planet: planet_id,
-                            key: edge_key(v1, v2),
-                        },
-                        MapCmp,
-                    ));
-                }
-            }
-        }
-    }
+    spawn_voronoi_cells(&mut commands, &map, &mut meshes, &mut materials);
 
     // Spawn end turn button
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(35.),
+            bottom: Val::Px(42.),
             right: Val::Px(270.),
             ..default()
         },
@@ -939,23 +947,33 @@ pub fn update_voronoi(
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
+    session: Res<MultiplayerSession>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    let known_controllers = map
+        .planets
+        .iter()
+        .filter_map(|planet| {
+            let controller = if player.controls(planet) {
+                planet.controlled
+            } else {
+                player.last_info(planet, &missions.0).and_then(|info| info.controlled)
+            };
+            controller.map(|controller| (planet.id, controller))
+        })
+        .collect::<HashMap<_, _>>();
+
     for (mut cell_v, cell_m, cell) in &mut cell_q {
         let planet = map.get(cell.0);
 
         let visible = settings.show_cells
             && !planet.is_destroyed
-            && (player.controls(planet)
-                || player.last_info(planet, &missions.0).is_some_and(|i| i.controlled));
+            && known_controllers.contains_key(&planet.id);
 
         if visible {
             if let Some(mut material) = materials.get_mut(&*cell_m) {
-                material.color = if player.controls(planet) {
-                    OWN_COLOR.with_alpha(0.005)
-                } else {
-                    ENEMY_COLOR.with_alpha(0.005)
-                };
+                let controller = known_controllers[&planet.id];
+                material.color = session.player_color(controller).color().with_alpha(0.12);
             }
         }
 
@@ -966,15 +984,11 @@ pub fn update_voronoi(
         };
     }
 
-    let mut counts_enemy = HashMap::new();
-    let mut counts_own = HashMap::new();
+    let mut counts_by_owner = HashMap::new();
 
     for (_, _, edge) in &edge_q {
-        let planet = map.get(edge.planet);
-        if player.controls(planet) {
-            *counts_own.entry(edge.key).or_default() += 1;
-        } else if player.last_info(planet, &missions.0).is_some_and(|i| i.controlled) {
-            *counts_enemy.entry(edge.key).or_default() += 1;
+        if let Some(&controller) = known_controllers.get(&edge.planet) {
+            *counts_by_owner.entry((edge.key, controller)).or_default() += 1;
         }
     }
 
@@ -984,13 +998,12 @@ pub fn update_voronoi(
             continue;
         }
 
-        let (visible, color) = if *counts_own.get(&edge.key).unwrap_or(&2) <= 1 {
-            (true, OWN_COLOR.with_alpha(0.5))
-        } else if *counts_enemy.get(&edge.key).unwrap_or(&2) <= 1 {
-            (true, ENEMY_COLOR.with_alpha(0.5))
-        } else {
-            (false, Color::default())
+        let Some(&controller) = known_controllers.get(&edge.planet) else {
+            *edge_v = Visibility::Hidden;
+            continue;
         };
+        let visible = *counts_by_owner.get(&(edge.key, controller)).unwrap_or(&2) <= 1;
+        let color = session.player_color(controller).color().with_alpha(0.58);
 
         if visible {
             if let Some(mut mat) = materials.get_mut(&*edge_m) {
@@ -1077,6 +1090,139 @@ pub fn run_map_animations(
                     commands.entity(animation_e).despawn();
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::player::PlayerColor;
+    use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    #[test]
+    fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
+        for player_count in [1, 2] {
+            let mut model = GameModel::new(
+                [7; 32],
+                GameRules {
+                    player_count,
+                    practice_mode: player_count == 1,
+                    ..default()
+                },
+            )
+            .unwrap();
+            if player_count == 2 {
+                model.players[0].color = PlayerColor::new(4);
+            }
+            model.start().unwrap();
+            let player = model.players[0].clone();
+            let expected_color = player.color().color();
+            if player_count == 1 {
+                assert_eq!(expected_color, OWN_COLOR, "local games default to blue");
+            }
+            let home = player.home_planet;
+            let planet_count = model.map.planets.len();
+            let mut session = MultiplayerSession::default();
+            session.local_practice = player_count == 1;
+            session.active_game = Some(GameRecord {
+                id: GameId::new("voronoi-test"),
+                code: GameCode::new("ABCDEF"),
+                revision: 0,
+                max_players: player_count,
+                status: model.status,
+                persisted: PersistedGame::new(model.clone()),
+                members: vec![],
+            });
+            let mut app = App::new();
+            app.add_plugins(TransformPlugin)
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<ColorMaterial>>()
+                .init_resource::<Settings>()
+                .insert_resource(model.map)
+                .insert_resource(Missions(model.missions))
+                .insert_resource(player)
+                .insert_resource(session)
+                .add_systems(
+                    Startup,
+                    |mut commands: Commands,
+                     map: Res<Map>,
+                     mut meshes: ResMut<Assets<Mesh>>,
+                     mut materials: ResMut<Assets<ColorMaterial>>| {
+                        spawn_voronoi_cells(&mut commands, &map, &mut meshes, &mut materials);
+                    },
+                )
+                .add_systems(Update, update_voronoi);
+            app.update();
+
+            let world = app.world_mut();
+            let mut cells = world.query::<(
+                Entity,
+                &VoronoiCmp,
+                &Visibility,
+                &GlobalTransform,
+                &Mesh2d,
+                &MeshMaterial2d<ColorMaterial>,
+            )>();
+            assert_eq!(cells.iter(world).count(), planet_count);
+            let mut home_entity = None;
+            for (entity, cell, visibility, transform, mesh, material) in cells.iter(world) {
+                assert!(transform.translation().z > BACKGROUND_Z);
+                assert!(transform.translation().z < PLANET_Z);
+                let positions = world
+                    .resource::<Assets<Mesh>>()
+                    .get(&mesh.0)
+                    .unwrap()
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .unwrap()
+                    .as_float3()
+                    .unwrap();
+                assert!(positions.iter().all(|position| position[2] == 0.0));
+                if cell.0 == home {
+                    home_entity = Some(entity);
+                    assert_eq!(*visibility, Visibility::Inherited);
+                    assert_eq!(
+                        world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
+                        expected_color.with_alpha(0.12)
+                    );
+                } else {
+                    assert_eq!(*visibility, Visibility::Hidden, "unknown territory stays hidden");
+                }
+            }
+            let home_entity = home_entity.expect("home world has an ownership cell");
+            let mut edges = world.query::<(
+                &VoronoiEdgeCmp,
+                &Visibility,
+                &GlobalTransform,
+                &MeshMaterial2d<ColorMaterial>,
+            )>();
+            let mut home_edges = 0;
+            for (edge, visibility, transform, material) in edges.iter(world) {
+                assert!(transform.translation().z > VORONOI_Z);
+                assert!(transform.translation().z < PLANET_Z);
+                if edge.planet == home {
+                    home_edges += 1;
+                    assert_eq!(*visibility, Visibility::Inherited);
+                    assert_eq!(
+                        world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
+                        expected_color.with_alpha(0.58)
+                    );
+                }
+            }
+            assert!(home_edges >= 3);
+
+            app.world_mut().resource_mut::<Settings>().show_cells = false;
+            app.update();
+            let world = app.world_mut();
+            assert!(world
+                .query_filtered::<&Visibility, With<MapCmp>>()
+                .iter(world)
+                .all(|visibility| *visibility == Visibility::Hidden));
+            app.world_mut().resource_mut::<Settings>().show_cells = true;
+            app.update();
+            assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Inherited);
         }
     }
 }

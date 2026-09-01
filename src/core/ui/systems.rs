@@ -40,7 +40,7 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::multiplayer::client::PendingTurnCommands;
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 #[derive(Component)]
@@ -125,6 +125,67 @@ fn draw_panel<R>(
                 ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
 
             ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
+        });
+}
+
+/// Shows every opposing player's name beside the color used by their map cells.
+fn draw_enemy_players_widget(
+    context: &egui::Context,
+    session: &MultiplayerSession,
+    local_player: &Player,
+) {
+    let Some(game) = &session.active_game else {
+        return;
+    };
+    let enemies = game
+        .members
+        .iter()
+        .filter(|member| member.player_id != local_player.id)
+        .collect::<Vec<_>>();
+    if enemies.is_empty() {
+        return;
+    }
+
+    egui::Area::new("stellarion_enemy_players".into())
+        .fixed_pos(egui::pos2(18.0, 92.0))
+        .movable(false)
+        .constrain(true)
+        .order(Order::Middle)
+        .show(context, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 218))
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 170, 215, 95)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 9))
+                .show(ui, |ui| {
+                    ui.set_min_width(154.0);
+                    ui.label(
+                        RichText::new("ENEMY PLAYERS")
+                            .size(11.0)
+                            .strong()
+                            .color(Color32::from_rgb(166, 188, 211)),
+                    );
+                    ui.add_space(5.0);
+                    for member in enemies {
+                        ui.horizontal(|ui| {
+                            let color = session.player_color(member.player_id);
+                            let [red, green, blue] = color.rgb();
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(18.0, 22.0), egui::Sense::hover());
+                            ui.painter().circle_filled(
+                                rect.center(),
+                                6.0,
+                                Color32::from_rgb(red, green, blue),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&member.display_name).size(14.0).strong(),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                });
         });
 }
 
@@ -3211,6 +3272,7 @@ pub fn draw_ui(
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
     mut pending: ResMut<PendingTurnCommands>,
+    session: Res<MultiplayerSession>,
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -3220,6 +3282,9 @@ pub fn draw_ui(
     let (width, height) = (window.width(), window.height());
 
     if matches!(game_state.get(), GameState::Playing | GameState::GameMenu) {
+        if let Ok(context) = contexts.ctx_mut() {
+            draw_enemy_players_widget(context, &session, &player);
+        }
         draw_panel(
             &mut contexts,
             "resources",

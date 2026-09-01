@@ -58,7 +58,9 @@ use crate::core::combat::systems::{
     setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
 };
 #[cfg(feature = "app")]
-use crate::core::loading::{begin_gameplay_loading, finish_boot, finish_gameplay_loading};
+use crate::core::loading::{
+    begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
+};
 #[cfg(feature = "app")]
 use crate::core::map::model::{Map, MapCmp};
 #[cfg(feature = "app")]
@@ -74,7 +76,7 @@ use crate::core::menu::systems::{
 #[cfg(feature = "app")]
 use crate::core::messages::MessageMsg;
 #[cfg(feature = "app")]
-use crate::core::missions::{update_missions, SendMissionMsg};
+use crate::core::missions::{update_mission_route_arrow, update_missions, SendMissionMsg};
 #[cfg(feature = "app")]
 use crate::core::settings::Settings;
 #[cfg(feature = "app")]
@@ -82,7 +84,9 @@ use crate::core::states::{AppState, AudioState, CombatState, GameState};
 #[cfg(all(feature = "app", debug_assertions))]
 use crate::core::systems::debug_cheat_keys;
 #[cfg(feature = "app")]
-use crate::core::systems::{check_keys, check_keys_combat, check_keys_menu, on_resize_system};
+use crate::core::systems::{
+    check_keys, check_keys_combat, check_keys_menu, check_preference_keys, on_resize_system,
+};
 #[cfg(feature = "app")]
 use crate::core::turns::{check_turn_ended, start_turn, StartTurnMsg};
 #[cfg(feature = "app")]
@@ -193,12 +197,15 @@ impl Plugin for GamePlugin {
             .add_systems(Update, finish_boot.run_if(in_state(AppState::Boot)))
             .add_systems(OnEnter(AppState::LoadingGame), begin_gameplay_loading)
             .add_systems(Update, finish_gameplay_loading.run_if(in_state(AppState::LoadingGame)))
+            .add_systems(Update, refresh_gameplay_projection.in_set(InGameSet))
             .add_systems(OnExit(AppState::LoadingGame), add_ui_images)
             // Utilities
             .add_systems(
                 Update,
                 (
                     check_keys_menu,
+                    check_preference_keys
+                        .run_if(in_state(AppState::Game).or_else(in_state(AppState::Settings))),
                     check_keys.in_set(InPlayingGameSet),
                     check_keys_combat
                         .run_if(
@@ -214,8 +221,8 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    (update_end_turn, run_map_animations).in_set(InGameSet),
-                    (update_voronoi, update_planet_info, send_mission, update_missions)
+                    (update_end_turn, run_map_animations, update_voronoi).in_set(InGameSet),
+                    (update_planet_info, send_mission, update_missions, update_mission_route_arrow)
                         .in_set(InPlayingGameSet),
                 ),
             )

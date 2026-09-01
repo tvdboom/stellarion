@@ -8,7 +8,9 @@ use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::{filter_missions, PreviousEndTurnState, StartTurnMsg};
 use crate::core::ui::systems::UiState;
-use crate::multiplayer::client::{ConnectionStatus, MultiplayerSession, PendingTurnCommands};
+use crate::multiplayer::client::{
+    ConnectionStatus, MultiplayerSession, PendingTurnCommands, RefreshGameplayProjection,
+};
 
 /// Leaves boot only after anonymous authentication and the minimal menu group are ready.
 pub fn finish_boot(
@@ -46,15 +48,65 @@ pub fn finish_gameplay_loading(
     if assets.refresh_gameplay_state(&server) != GameplayAssetState::Ready {
         return;
     }
-    let (Some(record), Some(membership)) = (&session.active_game, &session.membership) else {
+    if install_gameplay_projection(
+        &mut commands,
+        &session,
+        &mut pending,
+        &mut settings,
+        &mut next_game_state,
+        &mut start_turn,
+        true,
+        true,
+    ) {
+        next_app_state.set(AppState::Game);
+    }
+}
+
+/// Replaces an already-visible turn projection without leaving the gameplay state.
+pub fn refresh_gameplay_projection(
+    mut refresh: MessageReader<RefreshGameplayProjection>,
+    mut commands: Commands,
+    session: Res<MultiplayerSession>,
+    mut pending: ResMut<PendingTurnCommands>,
+    mut settings: ResMut<Settings>,
+    mut next_game_state: ResMut<NextState<GameState>>,
+    mut start_turn: MessageWriter<StartTurnMsg>,
+) {
+    if refresh.read().count() == 0 {
         return;
+    }
+    install_gameplay_projection(
+        &mut commands,
+        &session,
+        &mut pending,
+        &mut settings,
+        &mut next_game_state,
+        &mut start_turn,
+        false,
+        false,
+    );
+}
+
+/// Copies the canonical multiplayer snapshot into the live gameplay resources.
+fn install_gameplay_projection(
+    commands: &mut Commands,
+    session: &MultiplayerSession,
+    pending: &mut PendingTurnCommands,
+    settings: &mut Settings,
+    next_game_state: &mut NextState<GameState>,
+    start_turn: &mut MessageWriter<StartTurnMsg>,
+    skip_battle: bool,
+    skip_end_game: bool,
+) -> bool {
+    let (Some(record), Some(membership)) = (&session.active_game, &session.membership) else {
+        return false;
     };
     let model = &record.persisted.state;
     let Ok(player) = model.player(membership.player_id) else {
-        return;
+        return false;
     };
     let Ok(turn) = usize::try_from(model.turn) else {
-        return;
+        return false;
     };
 
     settings.turn = turn;
@@ -67,9 +119,9 @@ pub fn finish_gameplay_loading(
     commands.insert_resource(Missions(filter_missions(&model.missions, &model.map, player)));
     commands.insert_resource(UiState::default());
     commands.insert_resource(PreviousEndTurnState::default());
-    start_turn.write(StartTurnMsg::new(true, true));
+    start_turn.write(StartTurnMsg::new(skip_battle, skip_end_game));
     next_game_state.set(GameState::Playing);
-    next_app_state.set(AppState::Game);
+    true
 }
 
 #[cfg(test)]

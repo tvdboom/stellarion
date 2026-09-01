@@ -7,14 +7,15 @@ use thiserror::Error;
 use crate::core::identity::GameCode;
 
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const RECOVERY_BYTES: usize = 24;
-const RECOVERY_SYMBOLS: usize = 39;
+const RECOVERY_BYTES: usize = 10;
+const RECOVERY_SYMBOLS: usize = 16;
+const LEGACY_RECOVERY_SYMBOLS: usize = 39;
 
 /// Recovery secret shown only to the player who owns a slot.
 pub struct RecoveryCode(String);
 
 impl RecoveryCode {
-    /// Generates a 192-bit recovery secret using the operating system or browser RNG.
+    /// Generates an 80-bit recovery secret using the operating system or browser RNG.
     pub fn generate() -> Result<Self, RecoveryCodeError> {
         let mut random = [0_u8; RECOVERY_BYTES];
         getrandom::fill(&mut random)
@@ -26,7 +27,7 @@ impl RecoveryCode {
     /// Parses and canonicalizes a user-entered recovery code.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, RecoveryCodeError> {
         let canonical = normalize(value.as_ref());
-        if canonical.len() != RECOVERY_SYMBOLS
+        if !matches!(canonical.len(), RECOVERY_SYMBOLS | LEGACY_RECOVERY_SYMBOLS)
             || !canonical.bytes().all(|byte| CROCKFORD.contains(&byte))
         {
             return Err(RecoveryCodeError::Malformed);
@@ -139,18 +140,27 @@ mod tests {
     use super::*;
 
     #[test]
-    /// Recovery secrets carry at least 192 bits and round-trip formatting.
+    /// Recovery secrets use four blocks and round-trip formatting.
     fn recovery_codes_are_strong_and_parseable() {
         let code = RecoveryCode::generate().unwrap();
         assert_eq!(normalize(code.expose()).len(), RECOVERY_SYMBOLS);
+        assert_eq!(code.expose().split('-').collect::<Vec<_>>().len(), 4);
+        assert!(code.expose().split('-').all(|block| block.len() == 4));
         let reparsed = RecoveryCode::parse(code.expose().to_ascii_lowercase()).unwrap();
         assert!(code.hash().constant_time_eq(&reparsed.hash()));
     }
 
     #[test]
+    /// Previously issued ten-block recovery codes remain usable after shortening new codes.
+    fn accepts_legacy_recovery_codes() {
+        let legacy = group(&"0".repeat(LEGACY_RECOVERY_SYMBOLS), 4);
+        assert!(RecoveryCode::parse(legacy).is_ok());
+    }
+
+    #[test]
     /// Malformed recovery strings fail before a backend request is made.
     fn rejects_malformed_recovery_codes() {
-        for invalid in ["", "ABC", "not-a-recovery-code", "!!!!!!!!!!!!!!!!"] {
+        for invalid in ["", "ABC", "not-a-recovery-code!", "!!!!!!!!!!!!!!!!"] {
             assert!(matches!(RecoveryCode::parse(invalid), Err(RecoveryCodeError::Malformed)));
         }
     }

@@ -83,6 +83,9 @@ pub enum BackendError {
     /// Network connection is temporarily unavailable.
     #[error("backend is offline: {0}")]
     Offline(String),
+    /// The selected hosted backend is missing a required deployment setting.
+    #[error("online multiplayer is unavailable: {0}")]
+    Configuration(String),
     /// Backend returned an unexpected response.
     #[error("backend protocol error: {0}")]
     Protocol(String),
@@ -130,7 +133,7 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, GameRecord>;
 
-    /// Starts a full lobby using an optimistic revision check.
+    /// Starts a lobby using its current members and an optimistic revision check.
     fn start_game<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -138,6 +141,13 @@ pub trait MultiplayerBackend: Send + Sync {
         expected_revision: u64,
         persisted: PersistedGame,
     ) -> BackendFuture<'a, GameRecord>;
+
+    /// Releases an active match from its reconnection lobby once every member is online.
+    fn resume_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, ()>;
 
     /// Saves a complete snapshot from any current member with compare-and-swap semantics.
     fn save_game<'a>(

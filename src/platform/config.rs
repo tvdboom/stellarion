@@ -1,11 +1,16 @@
-//! Injectable Supabase configuration for native development and itch.io WebAssembly builds.
+//! Stellarion's fixed public Supabase configuration.
 
 use base64::{engine::general_purpose::URL_SAFE_PAD_INDIFFERENT, Engine as _};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Public Supabase project used by every Stellarion client.
+pub const SUPABASE_URL: &str = "https://crzfxxyapixtfnogxhtu.supabase.co";
+
+/// Browser-safe publishable key used by every Stellarion client.
+pub const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_MfB5egfDId8rzjBMieLCiw_zODH410X";
+
 /// Public browser-safe values required by Supabase clients.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SupabaseConfig {
     /// HTTPS base URL of the Supabase project.
     pub url: String,
@@ -14,7 +19,7 @@ pub struct SupabaseConfig {
 }
 
 impl SupabaseConfig {
-    /// Creates and validates injected configuration.
+    /// Creates and validates a public client configuration.
     pub fn new(
         url: impl Into<String>,
         publishable_key: impl Into<String>,
@@ -27,15 +32,17 @@ impl SupabaseConfig {
         Ok(config)
     }
 
-    /// Loads environment/file configuration using the current platform strategy.
-    pub async fn load() -> Result<Self, ConfigError> {
-        load_platform_config().await
+    /// Returns Stellarion's built-in public Supabase configuration.
+    pub fn load() -> Result<Self, ConfigError> {
+        Self::new(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
     }
 
     /// Validates URL shape and rejects modern or legacy server-only credentials.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.url.is_empty() || self.publishable_key.is_empty() {
-            return Err(ConfigError::Missing);
+            return Err(ConfigError::Invalid(
+                "Supabase URL and publishable key must not be empty".to_string(),
+            ));
         }
         if self.url != self.url.trim().trim_end_matches('/')
             || self.publishable_key != self.publishable_key.trim()
@@ -110,83 +117,12 @@ fn is_server_only_key(key: &str) -> bool {
 /// Configuration loading or validation failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ConfigError {
-    /// Neither environment nor the public JSON file supplied both values.
-    #[error("Supabase configuration is missing")]
-    Missing,
-    /// Configuration file or network request failed.
-    #[error("failed to load Supabase configuration: {0}")]
-    Load(String),
     /// A supplied value is malformed.
     #[error("invalid Supabase configuration: {0}")]
     Invalid(String),
     /// A server-only credential was supplied to a client build.
     #[error("a Supabase secret/service-role key must never be shipped with Stellarion")]
     SecretKeyRejected,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Loads native environment variables, then `stellarion-config.json` beside the executable or CWD.
-async fn load_platform_config() -> Result<SupabaseConfig, ConfigError> {
-    if let (Ok(url), Ok(key)) =
-        (std::env::var("SUPABASE_URL"), std::env::var("SUPABASE_PUBLISHABLE_KEY"))
-    {
-        return SupabaseConfig::new(url, key);
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(parent) = executable.parent() {
-            candidates.push(parent.join("stellarion-config.json"));
-        }
-    }
-    if let Ok(current) = std::env::current_dir() {
-        candidates.push(current.join("stellarion-config.json"));
-    }
-    for path in candidates {
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => {
-                let config: SupabaseConfig = serde_json::from_str(&contents)
-                    .map_err(|error| ConfigError::Load(format!("{}: {error}", path.display())))?;
-                return SupabaseConfig::new(config.url, config.publishable_key);
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Err(error) => {
-                return Err(ConfigError::Load(format!("{}: {error}", path.display())));
-            },
-        }
-    }
-    Err(ConfigError::Missing)
-}
-
-#[cfg(target_arch = "wasm32")]
-/// Loads compile-time variables first, then fetches public `stellarion-config.json` from itch.io.
-async fn load_platform_config() -> Result<SupabaseConfig, ConfigError> {
-    if let (Some(url), Some(key)) =
-        (option_env!("SUPABASE_URL"), option_env!("SUPABASE_PUBLISHABLE_KEY"))
-    {
-        return SupabaseConfig::new(url, key);
-    }
-    let page_url = web_sys::window()
-        .ok_or_else(|| ConfigError::Load("browser window is unavailable".to_string()))?
-        .location()
-        .href()
-        .map_err(|error| ConfigError::Load(format!("could not read the page URL: {error:?}")))?;
-    let config_url =
-        reqwest::Url::parse(&page_url).and_then(|url| url.join("stellarion-config.json")).map_err(
-            |error| ConfigError::Load(format!("could not resolve public config URL: {error}")),
-        )?;
-    let response =
-        reqwest::get(config_url).await.map_err(|error| ConfigError::Load(error.to_string()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(ConfigError::Missing);
-    }
-    let config = response
-        .error_for_status()
-        .map_err(|error| ConfigError::Load(error.to_string()))?
-        .json::<SupabaseConfig>()
-        .await
-        .map_err(|error| ConfigError::Load(error.to_string()))?;
-    SupabaseConfig::new(config.url, config.publishable_key)
 }
 
 #[cfg(test)]
@@ -238,5 +174,13 @@ mod tests {
                 Err(ConfigError::Invalid(_))
             ));
         }
+    }
+
+    #[test]
+    /// Uses the same official project in every build.
+    fn loads_built_in_configuration() {
+        let config = SupabaseConfig::load().unwrap();
+        assert_eq!(config.url, SUPABASE_URL);
+        assert_eq!(config.publishable_key, SUPABASE_PUBLISHABLE_KEY);
     }
 }

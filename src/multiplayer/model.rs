@@ -49,6 +49,9 @@ pub struct GameMembership {
     pub is_creator: bool,
     /// Incremented whenever recovery replaces the associated identity.
     pub identity_version: u64,
+    /// Whether this player currently has the game selected on a connected client.
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// Complete backend record returned when loading a game.
@@ -60,7 +63,7 @@ pub struct GameRecord {
     pub code: GameCode,
     /// Optimistic-concurrency revision.
     pub revision: u64,
-    /// Exact slot capacity configured by the creator.
+    /// Join capacity in a lobby, then the finalized player count after start.
     pub max_players: u8,
     /// Persisted gameplay lifecycle status.
     pub status: MatchStatus,
@@ -94,7 +97,7 @@ pub struct GameSummary {
     pub player_id: PlayerId,
     /// Current lobby membership count.
     pub player_count: usize,
-    /// Configured slot capacity.
+    /// Lobby join capacity or finalized active player count.
     pub max_players: u8,
 }
 
@@ -202,6 +205,8 @@ pub enum BackendEventKind {
     PlayerConnected,
     /// A client reported itself offline.
     PlayerDisconnected,
+    /// The host released an active match after every player reconnected.
+    GameResumed,
     /// A player committed commands for the current turn.
     TurnSubmitted,
     /// Persisted state or revision changed.

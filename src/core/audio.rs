@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bevy::prelude::*;
+use bevy::window::SystemCursorIcon;
 use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
+use crate::core::map::utils::cursor;
 use crate::core::settings::Settings;
 use crate::core::states::{AudioState, GameState};
 
@@ -101,13 +103,15 @@ pub fn setup_audio(mut commands: Commands, assets: Res<WorldAssets>) {
             ZIndex(5),
         ))
         .with_children(|parent| {
-            parent.spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp)).observe(
-                |_: On<Pointer<Click>>, mut commands: Commands| {
+            parent
+                .spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp))
+                .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                .observe(cursor::<Out>(SystemCursorIcon::Default))
+                .observe(|_: On<Pointer<Click>>, mut commands: Commands| {
                     commands.queue(|w: &mut World| {
                         w.write_message(ChangeAudioMsg(None));
                     })
-                },
-            );
+                });
         });
 }
 

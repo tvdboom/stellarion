@@ -3,6 +3,7 @@
 
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
+use bevy::sprite::{SpritePickingMode, SpritePickingSettings};
 use bevy::window::{WindowMode, WindowResolution};
 use bevy_egui::EguiPlugin;
 use bevy_kira_audio::AudioPlugin;
@@ -70,7 +71,11 @@ fn main() {
             }),
     )
     .add_plugins((EguiPlugin::default(), MessagesPlugin, AudioPlugin, TweeningPlugin))
-    .add_plugins(GamePlugin);
+    .add_plugins(GamePlugin)
+    .insert_resource(SpritePickingSettings {
+        picking_mode: SpritePickingMode::BoundingBox,
+        ..default()
+    });
 
     #[cfg(target_os = "windows")]
     app.add_systems(Startup, set_window_icon);

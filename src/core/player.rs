@@ -17,14 +17,71 @@ use crate::core::units::{Amount, Army, Unit};
 /// Maximum number of resolved mission reports retained for one player.
 pub const MAX_REPORTS_PER_PLAYER: usize = 512;
 
+/// Distinct empire colors available in multiplayer lobbies.
+pub const PLAYER_COLOR_PALETTE: [PlayerColor; 6] = [
+    PlayerColor(0),
+    PlayerColor(1),
+    PlayerColor(2),
+    PlayerColor(3),
+    PlayerColor(4),
+    PlayerColor(5),
+];
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+/// Stable palette entry used for player identity and strategic-map ownership.
+pub struct PlayerColor(u8);
+
+impl PlayerColor {
+    /// Creates a palette entry when the supplied index is supported.
+    pub fn new(index: u8) -> Option<Self> {
+        (usize::from(index) < PLAYER_COLOR_PALETTE.len()).then_some(Self(index))
+    }
+
+    /// Chooses a deterministic color for a stable player slot.
+    pub fn for_player(player_id: PlayerId) -> Self {
+        let index = player_id.saturating_sub(1) as usize % PLAYER_COLOR_PALETTE.len();
+        PLAYER_COLOR_PALETTE[index]
+    }
+
+    /// Returns the stored palette index.
+    pub fn index(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether this value names a supported palette entry.
+    pub fn is_valid(self) -> bool {
+        usize::from(self.0) < PLAYER_COLOR_PALETTE.len()
+    }
+
+    /// Returns this entry's display and rendering color.
+    pub fn rgb(self) -> [u8; 3] {
+        match self.0 {
+            0 => [102, 128, 255], // azure
+            1 => [255, 112, 72],  // orange
+            2 => [54, 211, 180],  // teal
+            3 => [232, 96, 190],  // magenta
+            4 => [244, 197, 66],  // gold
+            5 => [164, 118, 255], // violet
+            _ => [190, 198, 210],
+        }
+    }
+
+    /// Converts this stable value into Bevy's render color.
+    pub fn color(self) -> Color {
+        let [red, green, blue] = self.rgb();
+        Color::srgb_u8(red, green, blue)
+    }
+}
+
 #[derive(Clone)]
 /// Historical intelligence snapshot visible to one player.
 pub struct PlanetInfo {
     /// Turn this information was valid
     pub turn: usize,
 
-    /// Whether the planet was controlled
-    pub controlled: bool,
+    /// Last known controller of the planet, when one was observed.
+    pub controlled: Option<PlayerId>,
 
     /// The army present on the planet this turn
     pub army: Army,
@@ -43,6 +100,9 @@ pub struct Player {
     pub reports: Vec<MissionReport>,
     /// Whether this player is eliminated and no longer submits turns.
     pub spectator: bool,
+    /// Lobby-selected identity color; absent only in snapshots created before color selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<PlayerColor>,
 }
 
 impl Default for Player {
@@ -58,6 +118,7 @@ impl Default for Player {
             },
             reports: Vec::new(),
             spectator: false,
+            color: None,
         }
     }
 }
@@ -68,8 +129,16 @@ impl Player {
         Self {
             id,
             home_planet,
+            color: Some(PlayerColor::for_player(id)),
             ..default()
         }
+    }
+
+    /// Returns the selected color or a deterministic fallback for older snapshots.
+    pub fn color(&self) -> PlayerColor {
+        self.color
+            .filter(|color| color.is_valid())
+            .unwrap_or_else(|| PlayerColor::for_player(self.id))
     }
 
     /// Appends a report while pruning the oldest entries from the bounded history.
@@ -128,7 +197,7 @@ impl Player {
                         // Own mission send from this planet (and it's no longer controlled)
                         reports.push(PlanetInfo {
                             turn: r.mission.send,
-                            controlled: false,
+                            controlled: None,
                             army: Unit::all()
                                 .iter()
                                 .flatten()
@@ -148,7 +217,7 @@ impl Player {
                     // Enemy mission send from this planet
                     reports.push(PlanetInfo {
                         turn: r.mission.send,
-                        controlled: true,
+                        controlled: Some(r.mission.owner),
                         army: Army::new(),
                     });
                 }
@@ -159,7 +228,7 @@ impl Player {
                 let can_see = r.can_see(&Side::Defender, self.id);
                 reports.push(PlanetInfo {
                     turn: r.turn,
-                    controlled: r.destination_controlled.is_some(),
+                    controlled: r.destination_controlled,
                     army: Unit::all()
                         .iter()
                         .flatten()
@@ -214,7 +283,7 @@ impl Player {
 
                         reports.push(PlanetInfo {
                             turn: m.send,
-                            controlled: false, // It's no longer controlled or we wouldn't need last_info
+                            controlled: None, // It's no longer controlled or we wouldn't need last_info
                             army,
                         });
                     }
@@ -222,7 +291,7 @@ impl Player {
                     // Enemy mission
                     reports.push(PlanetInfo {
                         turn: m.send,
-                        controlled: true,
+                        controlled: Some(m.owner),
                         army: Army::new(),
                     });
                 }

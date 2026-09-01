@@ -9,7 +9,7 @@ use crate::core::constants::EXPLOSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
-use crate::core::messages::MessageMsg;
+use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -56,16 +56,13 @@ pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<
 
 /// Commits the local command draft once when the player ends the simultaneous turn.
 pub fn check_turn_ended(
-    mut state: ResMut<UiState>,
+    state: Res<UiState>,
     mut previous: ResMut<PreviousEndTurnState>,
     mut requests: MessageWriter<MultiplayerRequest>,
 ) {
     if state.end_turn && !previous.0 {
         requests.write(MultiplayerRequest::SubmitTurn);
         previous.0 = true;
-    } else if !state.end_turn && previous.0 {
-        // A submission is immutable and idempotent once sent; keep the control committed.
-        state.end_turn = true;
     }
 }
 
@@ -147,11 +144,11 @@ pub fn start_turn(
         for report in &new_reports {
             let origin = map.get(report.mission.origin);
             let destination = map.get(report.mission.destination);
-            match report.mission.objective {
+            let notification = match report.mission.objective {
                 Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
                     let probes_only = report.mission.army.len() == 1
                         && report.mission.army.contains_key(&Unit::probe());
-                    messages.write(MessageMsg::info(format!(
+                    MessageMsg::info(format!(
                         "{} returned from planet {}.",
                         if probes_only {
                             "Probes"
@@ -159,13 +156,10 @@ pub fn start_turn(
                             "Fleet"
                         },
                         origin.name
-                    )));
+                    ))
                 },
                 Icon::Deploy => {
-                    messages.write(MessageMsg::info(format!(
-                        "Deployed fleet to planet {}.",
-                        destination.name
-                    )));
+                    MessageMsg::info(format!("Deployed fleet to planet {}.", destination.name))
                 },
                 Icon::Colonize if report.planet_colonized => {
                     let text = if report.mission.owner == player.id {
@@ -177,11 +171,11 @@ pub fn start_turn(
                     } else {
                         format!("Planet {} has been conquered by an enemy.", destination.name)
                     };
-                    messages.write(if report.mission.owner == player.id {
+                    if report.mission.owner == player.id {
                         MessageMsg::info(text)
                     } else {
                         MessageMsg::warning(text)
-                    });
+                    }
                 },
                 Icon::Spy => {
                     let text = if report.mission.owner == player.id && report.scout_probes > 0 {
@@ -191,13 +185,11 @@ pub fn start_turn(
                     } else {
                         format!("Enemy probes were detected around planet {}.", destination.name)
                     };
-                    messages.write(
-                        if report.mission.owner == player.id && report.scout_probes > 0 {
-                            MessageMsg::info(text)
-                        } else {
-                            MessageMsg::warning(text)
-                        },
-                    );
+                    if report.mission.owner == player.id && report.scout_probes > 0 {
+                        MessageMsg::info(text)
+                    } else {
+                        MessageMsg::warning(text)
+                    }
                 },
                 Icon::MissileStrike => {
                     let own = report.mission.owner == player.id;
@@ -206,31 +198,23 @@ pub fn start_turn(
                     } else {
                         format!("Planet {} was hit by a missile strike.", destination.name)
                     };
-                    messages.write(if own {
+                    if own {
                         MessageMsg::info(text)
                     } else {
                         MessageMsg::warning(text)
-                    });
+                    }
                 },
                 Icon::Destroy if report.planet_destroyed => {
-                    messages.write(MessageMsg::warning(format!(
-                        "Planet {} has been destroyed.",
-                        destination.name
-                    )));
+                    MessageMsg::warning(format!("Planet {} has been destroyed.", destination.name))
                 },
                 _ if report.winner() == Some(player.id) => {
-                    messages.write(MessageMsg::info(format!(
-                        "Battle won at planet {}.",
-                        destination.name
-                    )));
+                    MessageMsg::info(format!("Battle won at planet {}.", destination.name))
                 },
-                _ => {
-                    messages.write(MessageMsg::warning(format!(
-                        "Battle lost at planet {}.",
-                        destination.name
-                    )));
-                },
-            }
+                _ => MessageMsg::warning(format!("Battle lost at planet {}.", destination.name)),
+            };
+            messages.write(
+                notification.with_action(MessageAction::OpenMissionReport(report.mission.id)),
+            );
         }
 
         if let Some(last) = new_reports.last() {

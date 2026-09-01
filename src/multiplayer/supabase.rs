@@ -24,7 +24,7 @@ pub struct SupabaseBackend {
 }
 
 impl SupabaseBackend {
-    /// Creates a production backend from injected, validated public configuration.
+    /// Creates a production backend from validated public configuration.
     pub fn new(config: SupabaseConfig) -> Result<Self, BackendError> {
         let config = SupabaseConfig::new(config.url, config.publishable_key)
             .map_err(|error| BackendError::InvalidData(error.to_string()))?;
@@ -211,7 +211,7 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Starts a full lobby with optimistic revision protection.
+    /// Starts a lobby with its current members and optimistic revision protection.
     fn start_game<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -236,6 +236,32 @@ impl MultiplayerBackend for SupabaseBackend {
                 )
                 .await?;
             validate_game_record(record, Some(game_id), Some(&session.user_id))
+        })
+    }
+
+    /// Releases a started match after the host and every member have reconnected.
+    fn resume_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            let acknowledgement: PresenceRpcResponse = self
+                .rpc(
+                    session,
+                    "stellarion_resume_game",
+                    &GameIdRpc {
+                        game_id: &game_id.0,
+                    },
+                )
+                .await?;
+            if acknowledgement.ok {
+                Ok(())
+            } else {
+                Err(BackendError::Protocol(
+                    "resume RPC did not acknowledge the release".to_string(),
+                ))
+            }
         })
     }
 
@@ -526,8 +552,10 @@ struct AuthUser {
 #[derive(Deserialize)]
 /// Structured fields returned by PostgREST and Supabase Auth failures.
 struct SupabaseErrorBody {
-    code: Option<String>,
+    code: Option<serde_json::Value>,
+    error_code: Option<String>,
     message: Option<String>,
+    msg: Option<String>,
     details: Option<String>,
     hint: Option<String>,
 }
@@ -792,7 +820,7 @@ async fn decode_response<T: DeserializeOwned>(
     let parsed = serde_json::from_str::<SupabaseErrorBody>(&body).ok();
     let detail = parsed
         .as_ref()
-        .and_then(|error| error.message.clone())
+        .and_then(|error| error.message.as_ref().or(error.msg.as_ref()).cloned())
         .unwrap_or_else(|| body.chars().take(500).collect());
     Err(map_supabase_error(status, &detail, parsed.as_ref()))
 }
@@ -803,14 +831,29 @@ fn map_supabase_error(
     message: &str,
     body: Option<&SupabaseErrorBody>,
 ) -> BackendError {
+    let response_code = body
+        .and_then(|value| value.code.as_ref())
+        .map(serde_json::Value::to_string)
+        .unwrap_or_default();
     let marker = format!(
-        "{} {} {} {}",
-        body.and_then(|value| value.code.as_deref()).unwrap_or_default(),
+        "{} {} {} {} {}",
+        response_code,
+        body.and_then(|value| value.error_code.as_deref()).unwrap_or_default(),
         message,
         body.and_then(|value| value.details.as_deref()).unwrap_or_default(),
         body.and_then(|value| value.hint.as_deref()).unwrap_or_default(),
     );
-    if status == reqwest::StatusCode::UNAUTHORIZED || marker.contains("STLR_UNAUTHENTICATED") {
+    if marker.contains("PGRST202") && marker.contains("stellarion_") {
+        BackendError::Configuration(
+            "the Stellarion database schema is missing; run supabase/schema.sql in the Supabase SQL Editor"
+                .to_string(),
+        )
+    } else if marker.contains("anonymous_provider_disabled") {
+        BackendError::Configuration(
+            "anonymous sign-ins are disabled for the configured Supabase project".to_string(),
+        )
+    } else if status == reqwest::StatusCode::UNAUTHORIZED || marker.contains("STLR_UNAUTHENTICATED")
+    {
         BackendError::Unauthenticated
     } else if status == reqwest::StatusCode::FORBIDDEN || marker.contains("STLR_FORBIDDEN") {
         BackendError::Forbidden
@@ -913,6 +956,7 @@ mod tests {
                 display_name: "Creator".to_string(),
                 is_creator: true,
                 identity_version: 1,
+                connected: false,
             }],
         }
     }
@@ -1025,6 +1069,46 @@ mod tests {
         );
     }
 
+    #[test]
+    /// Preserves Supabase Auth's numeric code and maps its anonymous-provider marker.
+    fn maps_disabled_anonymous_provider() {
+        let body = serde_json::from_str::<SupabaseErrorBody>(
+            r#"{"code":422,"error_code":"anonymous_provider_disabled","msg":"Anonymous sign-ins are disabled"}"#,
+        )
+        .unwrap();
+        assert_eq!(body.code, Some(serde_json::json!(422)));
+        assert_eq!(
+            map_supabase_error(
+                reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+                body.msg.as_deref().unwrap(),
+                Some(&body),
+            ),
+            BackendError::Configuration(
+                "anonymous sign-ins are disabled for the configured Supabase project".to_string()
+            )
+        );
+    }
+
+    #[test]
+    /// Maps a missing Stellarion RPC to the deployment step instead of raw PostgREST text.
+    fn maps_missing_database_schema() {
+        let body = serde_json::from_str::<SupabaseErrorBody>(
+            r#"{"code":"PGRST202","message":"Could not find the function public.stellarion_list_games without parameters in the schema cache"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            map_supabase_error(
+                reqwest::StatusCode::NOT_FOUND,
+                body.message.as_deref().unwrap(),
+                Some(&body),
+            ),
+            BackendError::Configuration(
+                "the Stellarion database schema is missing; run supabase/schema.sql in the Supabase SQL Editor"
+                    .to_string()
+            )
+        );
+    }
+
     /// Guards the fresh schema's RPC surface, RLS, grants, and Realtime publication.
     #[test]
     fn schema_contains_the_complete_secure_contract() {
@@ -1055,6 +1139,7 @@ mod tests {
             "stellarion_list_games",
             "stellarion_load_game",
             "stellarion_start_game",
+            "stellarion_resume_game",
             "stellarion_save_game",
             "stellarion_submit_turn",
             "stellarion_load_turn_submissions",

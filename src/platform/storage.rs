@@ -114,6 +114,9 @@ impl ClientStorage for MemoryStorage {
 /// Native storage rooted in the operating system's per-user config directory.
 pub struct NativeStorage {
     root: std::path::PathBuf,
+    /// Holding this handle keeps the primary installation profile exclusive to one process.
+    _instance_lock: Option<std::fs::File>,
+    temporary_instance: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -124,9 +127,45 @@ impl NativeStorage {
             directories::ProjectDirs::from("io", "tvdboom", "Stellarion").ok_or_else(|| {
                 StorageError::Platform("application-data directory unavailable".to_string())
             })?;
-        Ok(Self {
-            root: project.config_local_dir().to_path_buf(),
-        })
+        Self::from_primary_root(project.config_local_dir().to_path_buf())
+    }
+
+    /// Uses an exclusive process lock for the persistent profile and isolates extra instances.
+    fn from_primary_root(primary_root: std::path::PathBuf) -> Result<Self, StorageError> {
+        std::fs::create_dir_all(&primary_root)
+            .map_err(|error| StorageError::Platform(error.to_string()))?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(primary_root.join("instance.lock"))
+            .map_err(|error| StorageError::Platform(error.to_string()))?;
+
+        match fs2::FileExt::try_lock_exclusive(&lock) {
+            Ok(()) => Ok(Self {
+                root: primary_root,
+                _instance_lock: Some(lock),
+                temporary_instance: false,
+            }),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                let unique = format!(
+                    "stellarion-instance-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.as_nanos())
+                );
+                let root = std::env::temp_dir().join(unique);
+                std::fs::create_dir_all(&root)
+                    .map_err(|error| StorageError::Platform(error.to_string()))?;
+                Ok(Self {
+                    root,
+                    _instance_lock: None,
+                    temporary_instance: true,
+                })
+            },
+            Err(error) => Err(StorageError::Platform(error.to_string())),
+        }
     }
 
     /// Resolves one already-validated key below the configured root.
@@ -140,6 +179,17 @@ impl NativeStorage {
     fn at(root: std::path::PathBuf) -> Self {
         Self {
             root,
+            _instance_lock: None,
+            temporary_instance: false,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for NativeStorage {
+    fn drop(&mut self) {
+        if self.temporary_instance {
+            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 }
@@ -338,6 +388,35 @@ mod tests {
         std::fs::write(primary.with_extension("json.tmp"), "partial").unwrap();
         assert_eq!(storage.load("profile").unwrap().as_deref(), Some("second"));
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    /// Concurrent desktop processes never reuse one anonymous multiplayer identity.
+    fn concurrent_native_instances_use_isolated_profiles() {
+        let unique = format!(
+            "stellarion-storage-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos())
+        );
+        let root = std::env::temp_dir().join(unique);
+        let primary = NativeStorage::from_primary_root(root.clone()).unwrap();
+        primary.store("client-profile", "primary").unwrap();
+
+        let secondary = NativeStorage::from_primary_root(root.clone()).unwrap();
+        assert!(secondary.temporary_instance);
+        assert_ne!(secondary.root, root);
+        assert_eq!(secondary.load("client-profile").unwrap(), None);
+        let secondary_root = secondary.root.clone();
+        secondary.store("client-profile", "secondary").unwrap();
+        assert_eq!(primary.load("client-profile").unwrap().as_deref(), Some("primary"));
+
+        drop(secondary);
+        assert!(!secondary_root.exists());
+        drop(primary);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

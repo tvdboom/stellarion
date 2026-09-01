@@ -3,7 +3,6 @@ param(
     [string]$Target = "",
     [string]$Channel = "",
     [string]$OutputDirectory = "dist",
-    [string]$ConfigPath = "",
     [string]$BinaryPath = "",
     [switch]$SkipBuild
 )
@@ -32,70 +31,25 @@ function Invoke-Checked {
 function Set-HeavyProcessLimits {
     if ($env:OS -eq "Windows_NT") {
         $process = Get-Process -Id $PID
-        $process.ProcessorAffinity = [IntPtr]0x0FFF
+        try {
+            $allowedMask = $process.ProcessorAffinity.ToInt64()
+            $limitedMask = [long]0
+            $selectedProcessors = 0
+            for ($bit = 0; $bit -lt ([IntPtr]::Size * 8) -and $selectedProcessors -lt 12; $bit++) {
+                $candidate = [long]1 -shl $bit
+                if (($allowedMask -band $candidate) -ne 0) {
+                    $limitedMask = $limitedMask -bor $candidate
+                    $selectedProcessors++
+                }
+            }
+            if ($limitedMask -ne 0 -and $limitedMask -ne $allowedMask) {
+                $process.ProcessorAffinity = [IntPtr]$limitedMask
+            }
+        } catch {
+            Write-Warning "Unable to limit processor affinity: $($_.Exception.Message)"
+        }
         $process.PriorityClass = "BelowNormal"
     }
-}
-
-function Assert-PublishableKey {
-    param([Parameter(Mandatory = $true)][string]$Key)
-
-    $normalized = $Key.Trim()
-    if ([string]::IsNullOrWhiteSpace($normalized)) {
-        throw "Supabase publishable key is empty"
-    }
-    if ($normalized.StartsWith("sb_secret_", [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to package a Supabase secret key"
-    }
-
-    $segments = $normalized.Split('.')
-    if ($segments.Count -eq 3) {
-        $payload = $segments[1].Replace('-', '+').Replace('_', '/')
-        $remainder = $payload.Length % 4
-        if ($remainder -ne 1) {
-            if ($remainder -gt 0) {
-                $payload += "=" * (4 - $remainder)
-            }
-            $claims = $null
-            try {
-                $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
-                $claims = $json | ConvertFrom-Json -ErrorAction Stop
-            } catch {
-                $claims = $null
-            }
-            if ($null -ne $claims -and [string]$claims.role -ieq "service_role") {
-                throw "Refusing to package a legacy Supabase service-role key"
-            }
-        }
-    }
-}
-
-function Assert-PublicConfigFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    try {
-        $config = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        throw "Supabase configuration is not valid JSON: $Path"
-    }
-    Assert-PublishableKey -Key ([string]$config.publishable_key)
-}
-
-$resolvedConfigPath = ""
-$repositoryConfigPath = Join-Path $repository "stellarion-config.json"
-$exampleConfigPath = Join-Path $repository "stellarion-config.example.json"
-if ($ConfigPath) {
-    $resolvedConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
-    Assert-PublicConfigFile -Path $resolvedConfigPath
-} elseif ($env:SUPABASE_URL -or $env:SUPABASE_PUBLISHABLE_KEY) {
-    if (-not $env:SUPABASE_URL -or -not $env:SUPABASE_PUBLISHABLE_KEY) {
-        throw "SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be supplied together"
-    }
-    Assert-PublishableKey -Key $env:SUPABASE_PUBLISHABLE_KEY
-} elseif (Test-Path -LiteralPath $repositoryConfigPath) {
-    Assert-PublicConfigFile -Path $repositoryConfigPath
-} else {
-    Assert-PublicConfigFile -Path $exampleConfigPath
 }
 
 $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $repository "dist"))
@@ -123,19 +77,6 @@ Copy-Item -LiteralPath (Resolve-Path $BinaryPath) -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository "assets-runtime") -Destination $stage -Recurse
 Copy-Item -LiteralPath (Join-Path $repository "LICENSE") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stage
-
-if ($ConfigPath) {
-    Copy-Item -LiteralPath $resolvedConfigPath -Destination (Join-Path $stage "stellarion-config.json")
-} elseif ($env:SUPABASE_URL -and $env:SUPABASE_PUBLISHABLE_KEY) {
-    @{
-        url = $env:SUPABASE_URL
-        publishable_key = $env:SUPABASE_PUBLISHABLE_KEY
-    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage "stellarion-config.json") -Encoding utf8
-} elseif (Test-Path -LiteralPath $repositoryConfigPath) {
-    Copy-Item -LiteralPath $repositoryConfigPath -Destination $stage
-} else {
-    Copy-Item -LiteralPath $exampleConfigPath -Destination $stage
-}
 
 if (Test-Path -LiteralPath $archive) {
     Remove-Item -LiteralPath $archive -Force

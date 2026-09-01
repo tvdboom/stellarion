@@ -114,6 +114,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 display_name: request.display_name.trim().to_string(),
                 is_creator: true,
                 identity_version: 1,
+                connected: false,
             };
             let max_players = request.persisted.state.rules.player_count;
             let record = GameRecord {
@@ -184,6 +185,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 display_name: request.display_name.trim().to_string(),
                 is_creator: false,
                 identity_version: 1,
+                connected: false,
             };
             stored.record.members.push(membership.clone());
             stored.record.members.sort_by_key(|member| member.player_id);
@@ -230,6 +232,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 .ok_or(BackendError::PlayerNoLongerInGame)?;
             membership.user_id = user_id;
             membership.identity_version = membership.identity_version.saturating_add(1);
+            membership.connected = false;
             let membership = membership.clone();
             stored.recovery_hashes.insert(player_id, request.replacement_recovery_hash);
             stored.connected_players.remove(&player_id);
@@ -285,7 +288,7 @@ impl MultiplayerBackend for InMemoryBackend {
         })
     }
 
-    /// Starts a full lobby when called by its creator.
+    /// Starts a lobby with its current contiguous member set when called by its creator.
     fn start_game<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -299,17 +302,49 @@ impl MultiplayerBackend for InMemoryBackend {
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
             let member = authorize_member(stored, &user_id)?;
+            let member_count = stored.record.members.len();
+            let valid_member_count = if persisted.state.rules.practice_mode {
+                member_count == 1 && stored.record.max_players == 1
+            } else {
+                (2..=usize::from(stored.record.max_players)).contains(&member_count)
+            };
             if !member.is_creator
                 || stored.record.status != MatchStatus::Lobby
-                || stored.record.members.len() != usize::from(stored.record.max_players)
+                || !valid_member_count
                 || persisted.state.status != MatchStatus::Active
+                || usize::from(persisted.state.rules.player_count) != member_count
             {
                 return Err(BackendError::InvalidGameStatus);
             }
             compare_revision(stored, expected_revision)?;
+            stored.record.max_players = persisted.state.rules.player_count;
             commit_state(stored, persisted);
             push_event(stored, BackendEventKind::GameStarted, None, None);
             Ok(stored.record.clone())
+        })
+    }
+
+    /// Releases a started match only after its host and every existing player reconnect.
+    fn resume_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let member = authorize_member(stored, &user_id)?;
+            if !member.is_creator {
+                return Err(BackendError::Forbidden);
+            }
+            if stored.record.status != MatchStatus::Active
+                || !stored.record.members.iter().all(|member| member.connected)
+            {
+                return Err(BackendError::InvalidGameStatus);
+            }
+            push_event(stored, BackendEventKind::GameResumed, None, None);
+            Ok(())
         })
     }
 
@@ -526,6 +561,11 @@ impl MultiplayerBackend for InMemoryBackend {
             } else {
                 stored.connected_players.remove(&player_id)
             };
+            if let Some(member) =
+                stored.record.members.iter_mut().find(|member| member.player_id == player_id)
+            {
+                member.connected = connected;
+            }
             if changed {
                 push_event(
                     stored,
@@ -724,6 +764,101 @@ mod tests {
                 Err(BackendError::GameFull)
             ));
         }
+    }
+
+    #[test]
+    /// A four-slot lobby may start with two members and then becomes an exact two-player game.
+    fn starts_with_current_lobby_members_instead_of_waiting_for_capacity() {
+        let backend = InMemoryBackend::new();
+        let (creator, creator_recovery) = identity(&backend);
+        let created = create(&backend, &creator, &creator_recovery, 4);
+
+        let mut premature = created.game.persisted.clone();
+        premature.state.start().unwrap();
+        assert!(matches!(
+            block_on(backend.start_game(
+                &creator,
+                &created.game.id,
+                created.game.revision,
+                premature,
+            )),
+            Err(BackendError::InvalidGameStatus)
+        ));
+
+        let (joiner, joiner_recovery) = identity(&backend);
+        let joined = block_on(backend.join_game(
+            &joiner,
+            JoinGameRequest {
+                code: created.game.code,
+                display_name: "Joiner".to_string(),
+                recovery_hash: joiner_recovery.hash().0,
+            },
+        ))
+        .unwrap();
+        let mut rules = joined.game.persisted.state.rules.clone();
+        rules.player_count = 2;
+        let mut started = GameModel::new([42; 32], rules).unwrap();
+        started.start().unwrap();
+        let active = block_on(backend.start_game(
+            &creator,
+            &joined.game.id,
+            joined.game.revision,
+            PersistedGame::new(started),
+        ))
+        .unwrap();
+
+        assert_eq!(active.status, MatchStatus::Active);
+        assert_eq!(active.max_players, 2);
+        assert_eq!(active.members.len(), 2);
+        assert_eq!(active.persisted.state.players.len(), 2);
+        assert_eq!(active.persisted.state.rules.player_count, 2);
+    }
+
+    #[test]
+    /// Only the host can release an active match, and only after every member reconnects.
+    fn resumed_game_waits_for_every_connected_player() {
+        let backend = InMemoryBackend::new();
+        let (creator, creator_recovery) = identity(&backend);
+        let created = create(&backend, &creator, &creator_recovery, 2);
+        let (joiner, joiner_recovery) = identity(&backend);
+        let joined = block_on(backend.join_game(
+            &joiner,
+            JoinGameRequest {
+                code: created.game.code,
+                display_name: "Joiner".to_string(),
+                recovery_hash: joiner_recovery.hash().0,
+            },
+        ))
+        .unwrap();
+        let mut model = GameModel::new([51; 32], GameRules::default()).unwrap();
+        model.start().unwrap();
+        let active = block_on(backend.start_game(
+            &creator,
+            &joined.game.id,
+            joined.game.revision,
+            PersistedGame::new(model),
+        ))
+        .unwrap();
+
+        block_on(backend.set_connected(&creator, &active.id, true)).unwrap();
+        assert_eq!(
+            block_on(backend.resume_game(&creator, &active.id)),
+            Err(BackendError::InvalidGameStatus)
+        );
+        block_on(backend.set_connected(&joiner, &active.id, true)).unwrap();
+        assert_eq!(
+            block_on(backend.resume_game(&joiner, &active.id)),
+            Err(BackendError::Forbidden)
+        );
+        let before = block_on(backend.subscribe(&creator, &active.id, 0)).unwrap().cursor;
+        block_on(backend.resume_game(&creator, &active.id)).unwrap();
+        let release = block_on(backend.subscribe(&creator, &active.id, before)).unwrap();
+        assert!(release.events.iter().any(|event| event.kind == BackendEventKind::GameResumed));
+        assert!(block_on(backend.load_game(&creator, &active.id))
+            .unwrap()
+            .members
+            .iter()
+            .all(|member| member.connected));
     }
 
     #[test]

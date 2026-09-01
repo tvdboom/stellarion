@@ -5,8 +5,5 @@
 
 target/
 
-# Local public configuration may identify a specific Supabase project. Commit
-# only the documented examples; release CI injects these values when present.
-.env
-stellarion-config.json
 dist/
+assets-runtime/

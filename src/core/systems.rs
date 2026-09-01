@@ -123,6 +123,16 @@ pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInp
     }
 }
 
+/// Keeps display-preference shortcuts active while either Settings menu is open.
+pub fn check_preference_keys(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<Settings>) {
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        settings.show_cells = !settings.show_cells;
+    }
+    if keyboard.just_pressed(KeyCode::KeyH) {
+        settings.show_hover = !settings.show_hover;
+    }
+}
+
 /// Checks keys input/state and applies the resulting transition.
 pub fn check_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -135,19 +145,9 @@ pub fn check_keys(
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
 
-    // Toggle show voronoi cells
-    if keyboard.just_pressed(KeyCode::KeyC) {
-        settings.show_cells = !settings.show_cells;
-    }
-
     // Toggle show planet info
     if keyboard.just_pressed(KeyCode::KeyI) {
         settings.show_info = !settings.show_info;
-    }
-
-    // Toggle show hover info
-    if keyboard.just_pressed(KeyCode::KeyH) {
-        settings.show_hover = !settings.show_hover;
     }
 
     // Toggle shop panel

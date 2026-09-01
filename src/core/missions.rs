@@ -38,11 +38,21 @@ use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
 #[cfg(feature = "app")]
-use crate::multiplayer::client::PendingTurnCommands;
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 use crate::utils::NameFromEnum;
 
 /// Stable identifier of a persisted fleet mission.
 pub type MissionId = u64;
+
+#[cfg(feature = "app")]
+const MISSION_ROUTE_CHEVRONS: usize = 7;
+
+#[cfg(feature = "app")]
+#[derive(Component)]
+/// One animated chevron in the hovered mission's destination route.
+pub struct MissionRouteArrowCmp {
+    index: usize,
+}
 
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 /// Bevy resource containing the selected player's currently visible missions.
@@ -502,6 +512,84 @@ pub fn update_missions(
 }
 
 #[cfg(feature = "app")]
+/// Animates a directional trail from the hovered mission to its destination planet.
+pub fn update_mission_route_arrow(
+    mut commands: Commands,
+    mut arrow_q: Query<(Entity, &mut Transform, &mut TextColor, &MissionRouteArrowCmp)>,
+    state: Res<UiState>,
+    map: Res<Map>,
+    missions: Res<Missions>,
+    session: Res<MultiplayerSession>,
+    assets: Res<WorldAssets>,
+    time: Res<Time>,
+) {
+    let Some(mission) = state.mission_hover.and_then(|id| missions.get(id)) else {
+        for (entity, _, _, _) in &mut arrow_q {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+
+    let destination = map.get(mission.destination);
+    let route = destination.position - mission.position;
+    let direction = route.normalize_or_zero();
+    let start = mission.position + direction * 38.0;
+    let end = destination.position - direction * destination.size() * 0.7;
+    if start.distance_squared(end) < 24.0 * 24.0 {
+        for (entity, _, _, _) in &mut arrow_q {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    let angle = direction.y.atan2(direction.x);
+    let base_phase = (time.elapsed_secs_wrapped() * 0.42).fract();
+    let route_color = session.player_color(mission.owner).color();
+    let mut present = [false; MISSION_ROUTE_CHEVRONS];
+
+    for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {
+        if arrow.index >= MISSION_ROUTE_CHEVRONS {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        present[arrow.index] = true;
+        let progress = (base_phase + arrow.index as f32 / MISSION_ROUTE_CHEVRONS as f32).fract();
+        let alpha = (std::f32::consts::PI * progress).sin().clamp(0.18, 1.0);
+        transform.translation = start.lerp(end, progress).extend(MISSION_Z + 8.0);
+        transform.rotation = Quat::from_rotation_z(angle);
+        transform.scale = Vec3::splat(0.82 + alpha * 0.18);
+        text_color.0 = route_color.with_alpha(alpha);
+    }
+
+    for (index, is_present) in present.into_iter().enumerate() {
+        if is_present {
+            continue;
+        }
+        let progress = (base_phase + index as f32 / MISSION_ROUTE_CHEVRONS as f32).fract();
+        let alpha = (std::f32::consts::PI * progress).sin().clamp(0.18, 1.0);
+        commands.spawn((
+            Text2d::new(">"),
+            TextFont {
+                font: assets.font("bold").into(),
+                font_size: 28.0.into(),
+                ..default()
+            },
+            TextColor(route_color.with_alpha(alpha)),
+            Transform {
+                translation: start.lerp(end, progress).extend(MISSION_Z + 8.0),
+                rotation: Quat::from_rotation_z(angle),
+                scale: Vec3::splat(0.82 + alpha * 0.18),
+            },
+            Pickable::IGNORE,
+            MissionRouteArrowCmp {
+                index,
+            },
+            MapCmp,
+        ));
+    }
+}
+
+#[cfg(feature = "app")]
 /// Validates the selected mission UI, removes committed units/resources, and emits its command.
 pub fn send_mission(
     mut send_mission: MessageReader<SendMissionMsg>,
@@ -515,12 +603,18 @@ pub fn send_mission(
         mission,
     } in send_mission.read()
     {
+        let army = mission
+            .army
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(unit, count)| (*unit, *count))
+            .collect::<Army>();
         if !pending.push(TurnCommand::SendMission {
             mission_id: mission.id,
             origin: mission.origin,
             destination: mission.destination,
             objective: mission.objective,
-            army: mission.army.clone(),
+            army,
             bombing: mission.bombing.clone(),
             combat_probes: mission.combat_probes,
             jump_gate: mission.jump_gate,

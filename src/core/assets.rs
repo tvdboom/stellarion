@@ -386,7 +386,7 @@ impl FromWorld for WorldAssets {
             gameplay_state: GameplayAssetState::Deferred,
         };
 
-        for name in ["button", "message", "error"] {
+        for name in ["button", "message", "error", "music"] {
             load_audio(&server, &mut assets.audio, &mut assets.menu_handles, name);
         }
         for (name, path) in
