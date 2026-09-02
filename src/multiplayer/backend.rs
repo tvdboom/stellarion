@@ -12,6 +12,11 @@ use crate::multiplayer::model::{
     MembershipResult, RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition,
 };
 
+/// A heartbeat lease shared by displayed presence, resume readiness, and recovery protection.
+/// Keep this aligned with `stellarion_connection_is_live` in `supabase/schema.sql`.
+pub(crate) const PLAYER_CONNECTION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
 /// Sendable backend future used by native multithreaded task pools.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BackendError>> + Send + 'a>>;
@@ -44,6 +49,9 @@ pub enum BackendError {
     /// The supplied recovery code is invalid or has already been rotated.
     #[error("recovery code is invalid or has already been used")]
     InvalidRecoveryCode,
+    /// A valid recovery code belongs to a player whose connection is still live.
+    #[error("this recovery code is already in use by a connected player")]
+    RecoveryCodeInUse,
     /// The authenticated user already maps to another slot in this game.
     #[error("authenticated user is already a member of this game")]
     AlreadyMember,
@@ -77,6 +85,9 @@ pub enum BackendError {
     /// Not every active player has submitted yet.
     #[error("turn is still waiting for one or more players")]
     TurnIncomplete,
+    /// Everyone is ready, so the current turn can no longer be edited.
+    #[error("everyone has finished; the next turn is starting")]
+    TurnCommitted,
     /// Persisted JSON or a request violated a validated invariant.
     #[error("invalid data: {0}")]
     InvalidData(String),
@@ -116,14 +127,15 @@ pub trait MultiplayerBackend: Send + Sync {
         request: JoinGameRequest,
     ) -> BackendFuture<'a, MembershipResult>;
 
-    /// Replaces a lost identity after recovery-secret verification and rotation.
+    /// Replaces an offline identity after secret verification and rotation, claiming presence
+    /// atomically so another recovery cannot displace the newly connected player.
     fn recover_player<'a>(
         &'a self,
         session: &'a AuthSession,
         request: RecoverPlayerRequest,
     ) -> BackendFuture<'a, MembershipResult>;
 
-    /// Lists games associated with the authenticated identity.
+    /// Lists started games only; games completed at least 48 hours ago expire and are deleted.
     fn list_games<'a>(&'a self, session: &'a AuthSession) -> BackendFuture<'a, Vec<GameSummary>>;
 
     /// Loads the latest authoritative persisted state and membership list.
@@ -149,7 +161,7 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, ()>;
 
-    /// Saves a complete snapshot from any current member with compare-and-swap semantics.
+    /// Acknowledges canonical state or changes only the caller's lobby color, with revision checks.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -158,7 +170,7 @@ pub trait MultiplayerBackend: Send + Sync {
         persisted: PersistedGame,
     ) -> BackendFuture<'a, GameRecord>;
 
-    /// Inserts one idempotent command submission for the current turn.
+    /// Marks a command draft ready, with idempotent retries for each readiness generation.
     fn submit_turn<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -166,7 +178,17 @@ pub trait MultiplayerBackend: Send + Sync {
         submission: TurnSubmission,
     ) -> BackendFuture<'a, SubmissionDisposition>;
 
-    /// Loads all persisted submissions for one turn in stable player order.
+    /// Clears the caller's readiness while others are still playing, returning the saved draft.
+    /// A generation prevents late requests from changing a newer readiness decision.
+    fn withdraw_turn<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        turn: u64,
+        generation: u64,
+    ) -> BackendFuture<'a, TurnSubmission>;
+
+    /// Loads ready submissions and withdrawn drafts for one turn in stable player order.
     fn load_turn_submissions<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -192,7 +214,8 @@ pub trait MultiplayerBackend: Send + Sync {
         after_sequence: u64,
     ) -> BackendFuture<'a, EventBatch>;
 
-    /// Publishes coarse connection presence without synchronizing local UI state.
+    /// Renews connection presence; it expires after 15 seconds without a heartbeat.
+    /// Disconnecting the host of an unstarted lobby permanently deletes that lobby and its data.
     fn set_connected<'a>(
         &'a self,
         session: &'a AuthSession,

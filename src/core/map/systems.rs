@@ -1,5 +1,7 @@
 //! Bevy systems that render and animate the strategic map projection.
 
+pub use super::scanner::ScannerCmp;
+
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::time::Duration;
@@ -10,7 +12,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
 use bevy_tweening::lens::ColorMaterialColorLens;
-use bevy_tweening::{AnimTarget, RepeatCount, RepeatStrategy, Tween, TweenAnim};
+use bevy_tweening::{AnimTarget, EaseMethod, RepeatCount, Tween, TweenAnim, Tweenable};
 use itertools::Itertools;
 use rand::{rng, RngExt};
 use strum::IntoEnumIterator;
@@ -20,8 +22,8 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, ENEMY_COLOR, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
-    RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE,
+    TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
@@ -90,51 +92,37 @@ pub struct PlanetNameCmp;
 /// Bevy component marking planet resources presentation entities.
 pub struct PlanetResourcesCmp;
 
-/// Component for planetary shield visualization. It stores whether
-/// the player owns the shield to swap the tween animation if it changes
-#[derive(Component)]
+/// Tracks the displayed owner's color so a shield's pulse updates after control changes.
+#[derive(Component, Default)]
 pub struct PlanetaryShieldCmp {
-    /// Owning player when colonized, or an ownership flag in presentation state.
-    pub owned: bool,
+    color: Option<Color>,
 }
 
 impl PlanetaryShieldCmp {
     /// Creates a new value from the supplied state.
     pub fn new() -> Self {
-        Self {
-            owned: true,
-        }
+        Self::default()
     }
 
-    /// Tween that animates the Planetary Shield
-    pub fn tween(c1: Color, c2: Color) -> Tween {
+    /// Breathes in and out with a smooth reversal, preserving the owner's hue.
+    pub fn tween(color: Color) -> Tween {
         Tween::new(
-            EaseFunction::Linear,
-            Duration::from_secs(1),
+            // One complete wave has the same opacity and zero slope at both ends, so the
+            // loop never jumps or abruptly reverses when it wraps back to its start.
+            EaseMethod::CustomFunction(|phase| 0.5 - 0.5 * (TAU * phase).cos()),
+            Duration::from_secs(3),
             ColorMaterialColorLens {
-                start: c1,
-                end: c2,
+                start: color.with_alpha(0.0),
+                end: color.with_alpha(0.95),
             },
         )
         .with_repeat_count(RepeatCount::Infinite)
-        .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
-    }
-}
-
-impl Default for PlanetaryShieldCmp {
-    /// Creates an owned planetary-shield marker.
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[derive(Component)]
 /// Bevy component marking space dock presentation entities.
 pub struct SpaceDockCmp;
-
-#[derive(Component)]
-/// Bevy component marking scanner presentation entities.
-pub struct ScannerCmp(pub bool);
 
 #[derive(Component)]
 /// Bevy component marking voronoi presentation entities.
@@ -204,7 +192,7 @@ fn spawn_voronoi_cells(
             .with_inserted_indices(Indices::U32(indices));
         commands.spawn((
             Mesh2d(meshes.add(mesh)),
-            MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.12))),
+            MeshMaterial2d(materials.add(OWN_COLOR.with_alpha(0.01))),
             Transform::from_xyz(0.0, 0.0, VORONOI_Z),
             Visibility::Hidden,
             Pickable::IGNORE,
@@ -236,6 +224,17 @@ fn spawn_voronoi_cells(
                 MapCmp,
             ));
         }
+    }
+}
+
+/// Selects a planet and updates the mission origin for owned planets.
+pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
+    state.planet_selected = Some(planet.id);
+    state.to_selected = true;
+    state.mission = false;
+    state.combat_report = None;
+    if player.owns(planet) {
+        state.mission_info.origin = planet.id;
     }
 }
 
@@ -332,19 +331,18 @@ pub fn draw_map(
             .observe(
                 move |event: On<Pointer<Click>>,
                       mut state: ResMut<UiState>,
+                      mut pending: ResMut<crate::multiplayer::client::PendingTurnCommands>,
                       settings: Res<Settings>,
                       map: Res<Map>,
                       player: Res<Player>| {
                     let planet = map.get(planet_id);
                     if event.button == PointerButton::Primary {
-                        state.planet_selected = Some(planet_id);
-                        state.to_selected = true;
-                        state.mission = false;
-                        state.combat_report = None;
-                        if player.owns(planet) {
-                            state.mission_info.origin = planet_id;
-                        }
+                        state.end_turn = false;
+                        pending.request_resume();
+                        select_planet(planet, &mut state, &player);
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
+                        state.end_turn = false;
+                        pending.request_resume();
                         state.mission = true;
                         state.combat_report = None;
                         state.mission_tab = MissionTab::NewMission;
@@ -404,6 +402,8 @@ pub fn draw_map(
                                       map: Res<Map>,
                                       missions: Res<Missions>| {
                                     state.planet_hover = Some(planet_id);
+                                    state.mission_hover_from_ui = false;
+                                    state.mission_hover = None;
                                     if let Some(mission) = missions
                                         .iter()
                                         .sorted_by(|a, b| {
@@ -422,6 +422,7 @@ pub fn draw_map(
                             .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                                 state.planet_hover = None;
                                 state.mission_hover = None;
+                                state.mission_hover_from_ui = false;
                             })
                             .observe(
                                 move |mut event: On<Pointer<Click>>,
@@ -565,14 +566,19 @@ pub fn draw_map(
                     }
 
                     // Draw planetary shield
-                    let material = materials.add(ColorMaterial::from(OWN_COLOR));
+                    let material = materials.add(ColorMaterial {
+                        color: OWN_COLOR.with_alpha(0.0),
+                        // ColorMaterial::from an opaque color ignores the tween's alpha changes.
+                        alpha_mode: bevy::sprite_render::AlphaMode2d::Blend,
+                        ..default()
+                    });
                     parent.spawn((
                         Mesh2d(
                             meshes.add(Annulus::new(planet.size() * 0.55, planet.size() * 0.57)),
                         ),
                         MeshMaterial2d(material.clone()),
                         Transform::from_xyz(0., 0., 0.6),
-                        TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR, Color::WHITE)),
+                        TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR)),
                         AnimTarget::asset(&material),
                         Visibility::Hidden,
                         PlanetaryShieldCmp::new(),
@@ -605,21 +611,21 @@ pub fn draw_map(
                         SpaceDockCmp,
                     ));
 
-                    // Draw phalanx and orbital scanning radius
-                    parent.spawn((
-                        Mesh2d(meshes.add(Circle::new(0.))),
-                        MeshMaterial2d(materials.add(Color::srgba(0., 0.5, 0.3, 0.05))),
-                        Transform::from_xyz(0., 0., -0.1),
-                        Visibility::Hidden,
-                        ScannerCmp(true),
-                    ));
-                    parent.spawn((
-                        Mesh2d(meshes.add(Annulus::new(0., 0.))),
-                        MeshMaterial2d(materials.add(Color::srgba(0., 0.5, 0.3, 0.5))),
-                        Transform::from_xyz(0., 0., -0.1),
-                        Visibility::Hidden,
-                        ScannerCmp(false),
-                    ));
+                    // Vertex alpha supplies the scanner's soft field, rim glow, and fading trails.
+                    let scanner_material = materials.add(ColorMaterial {
+                        color: Color::srgb(0.25, 0.95, 0.62),
+                        ..default()
+                    });
+                    for (index, scanner) in ScannerCmp::layers().into_iter().enumerate() {
+                        parent.spawn((
+                            Mesh2d::default(),
+                            MeshMaterial2d(scanner_material.clone()),
+                            Transform::from_xyz(0., 0., -0.12 + index as f32 * 0.01),
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            scanner,
+                        ));
+                    }
                 }
             });
 
@@ -657,7 +663,7 @@ pub fn draw_map(
             state.planet_selected = None;
             state.mission = false;
             state.combat_report = None;
-            state.end_turn = !state.end_turn;
+            state.end_turn = true;
         });
 
     // Spawn spectator mode label
@@ -679,6 +685,20 @@ pub fn draw_map(
         SpectatorLabelCmp,
         MapCmp,
     ));
+}
+
+/// Hides map details on menu entry, independently of selection and the show-info preference.
+pub fn hide_planet_details(
+    mut details: Query<
+        &mut Visibility,
+        Or<(With<PlanetNameCmp>, With<PlanetResourcesCmp>, With<Icon>, With<ScannerCmp>)>,
+    >,
+) {
+    // Map presentation updates stop while a menu is open, so explicitly clear the last frame's
+    // visible details instead of relying on a pointer-out event or normal display preferences.
+    for mut visibility in &mut details {
+        *visibility = Visibility::Hidden;
+    }
 }
 
 /// Updates planet info from the current canonical ECS projection.
@@ -707,31 +727,8 @@ pub fn update_planet_info(
             Without<PlanetaryShieldCmp>,
         ),
     >,
-    mut ps_q: Query<
-        (&mut Visibility, &mut TweenAnim, &mut PlanetaryShieldCmp),
-        (
-            Without<Icon>,
-            Without<PlanetNameCmp>,
-            Without<PlanetResourcesCmp>,
-            Without<ScannerCmp>,
-            Without<PlanetCmp>,
-            Without<SpaceDockCmp>,
-        ),
-    >,
-    mut dock_q: Query<
-        (&mut Visibility, &mut Sprite),
-        (
-            With<SpaceDockCmp>,
-            Without<Icon>,
-            Without<PlanetNameCmp>,
-            Without<PlanetResourcesCmp>,
-            Without<ScannerCmp>,
-            Without<PlanetCmp>,
-            Without<PlanetaryShieldCmp>,
-        ),
-    >,
     mut scanner_q: Query<
-        (&mut Visibility, &mut Mesh2d, &ScannerCmp),
+        (&mut Visibility, &mut Mesh2d, &mut Transform, &mut ScannerCmp),
         (
             Without<Icon>,
             Without<PlanetNameCmp>,
@@ -747,6 +744,7 @@ pub fn update_planet_info(
     state: Res<UiState>,
     settings: Res<Settings>,
     assets: Res<WorldAssets>,
+    time: Res<Time>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
@@ -851,67 +849,17 @@ pub fn update_planet_info(
                 };
             }
 
-            let controls = player.controls(planet);
-            let (has_ps, has_dock) = if controls {
-                (
-                    planet.army.amount(&Unit::planetary_shield()) > 0,
-                    planet.army.amount(&Unit::space_dock()) > 0,
-                )
-            } else {
-                if let Some(info) = player.last_info(planet, &missions.0) {
-                    (
-                        info.army.amount(&Unit::planetary_shield()) > 0,
-                        info.army.amount(&Unit::space_dock()) > 0,
-                    )
-                } else {
-                    (false, false)
-                }
-            };
-
-            // Show/hide the Planetary Shield
-            if let Ok((mut visibility, mut tween, mut ps)) = ps_q.get_mut(child) {
-                *visibility = if has_ps {
-                    if ps.owned != controls {
-                        ps.owned = controls;
-
-                        let tween_def = if controls {
-                            PlanetaryShieldCmp::tween(OWN_COLOR, Color::WHITE)
-                        } else {
-                            PlanetaryShieldCmp::tween(ENEMY_COLOR, Color::WHITE)
-                        };
-
-                        if let Err(err) = tween.set_tweenable(tween_def) {
-                            warn!("Failed to swap PS tween. Error: {err}");
-                        }
-                    }
-
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                }
-            }
-
-            // Show/hide the Space Dock
-            if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
-                *visibility = if has_dock {
-                    sprite.image = assets.image(if controls {
-                        "dock"
-                    } else {
-                        "dock enemy"
-                    });
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-            }
-
             // Show/hide scanner indicator
-            if let Ok((mut visibility, mut mesh, scanner)) = scanner_q.get_mut(child) {
-                let mut radius = if state.phalanx_hover == Some(planet.id) {
+            if let Ok((mut visibility, mut mesh, mut transform, mut scanner)) =
+                scanner_q.get_mut(child)
+            {
+                // Range previews belong to map hover, using only the local player's scanners.
+                let hovered = state.planet_hover == Some(planet.id);
+                let mut radius = if hovered && !planet.is_moon() && player.owns(planet) {
                     PHALANX_DISTANCE
                         * Planet::SIZE
                         * planet.army.amount(&Unit::Building(Building::SensorPhalanx)) as f32
-                } else if state.radar_hover == Some(planet.id) {
+                } else if hovered && planet.is_moon() && player.controls(planet) {
                     RADAR_DISTANCE
                         * Planet::SIZE
                         * planet.army.amount(&Unit::Building(Building::OrbitalRadar)) as f32
@@ -919,17 +867,94 @@ pub fn update_planet_info(
                     0.
                 };
 
-                if radius > 0. {
+                if radius > 0. && !planet.is_destroyed {
                     radius += planet.size() * 0.5; // Start at the edge of the planet
 
                     *visibility = Visibility::Inherited;
-                    if scanner.0 {
-                        *mesh = Mesh2d(meshes.add(Mesh::from(Circle::new(radius))));
-                    } else {
-                        *mesh = Mesh2d(meshes.add(Mesh::from(Annulus::new(radius - 2., radius))));
-                    }
+                    scanner.update(
+                        radius,
+                        time.elapsed_secs_f64(),
+                        &mut transform,
+                        &mut mesh,
+                        &mut meshes,
+                    );
                 } else {
                     *visibility = Visibility::Hidden;
+                }
+            }
+        }
+    }
+}
+
+/// Colors visible defenses from the same controller knowledge as territorial borders.
+pub fn update_planet_defenses(
+    planet_q: Query<(Entity, &PlanetCmp)>,
+    children_q: Query<&Children>,
+    mut ps_q: Query<(
+        &mut Visibility,
+        &mut TweenAnim,
+        &mut PlanetaryShieldCmp,
+        &MeshMaterial2d<ColorMaterial>,
+    )>,
+    mut dock_q: Query<
+        (&mut Visibility, &mut Sprite),
+        (With<SpaceDockCmp>, Without<PlanetaryShieldCmp>),
+    >,
+    map: Res<Map>,
+    player: Res<Player>,
+    missions: Res<Missions>,
+    session: Res<MultiplayerSession>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (entity, planet_c) in &planet_q {
+        let planet = map.get(planet_c.id);
+        let controls = player.controls(planet);
+        // Read intelligence once per planet. A hidden capture must not change its displayed color.
+        let info = (!controls).then(|| player.last_info(planet, &missions.0)).flatten();
+        let (army, controller) = if controls {
+            (Some(&planet.army), planet.controlled)
+        } else {
+            (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
+        };
+        let has_ps = !planet.is_destroyed
+            && army.is_some_and(|army| army.amount(&Unit::planetary_shield()) > 0);
+        let has_dock =
+            !planet.is_destroyed && army.is_some_and(|army| army.amount(&Unit::space_dock()) > 0);
+        // Defenses left on an unclaimed world have no player color.
+        let color = controller
+            .map(|id| session.player_color(id).color())
+            .unwrap_or(Color::srgb_u8(190, 198, 210));
+
+        for child in children_q.iter_descendants(entity) {
+            if let Ok((mut visibility, mut tween, mut ps, material)) = ps_q.get_mut(child) {
+                *visibility = if has_ps {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if has_ps && ps.color != Some(color) {
+                    let mut pulse = PlanetaryShieldCmp::tween(color);
+                    // Recolor the field without restarting its pulse midway through a fade.
+                    pulse.set_elapsed(tween.tweenable().elapsed());
+                    match tween.set_tweenable(pulse) {
+                        Ok(_) => {
+                            ps.color = Some(color);
+                            if let Some(mut material) = materials.get_mut(&material.0) {
+                                material.color = color.with_alpha(material.color.alpha());
+                            }
+                        },
+                        Err(error) => warn!("Failed to update planetary shield color: {error}"),
+                    }
+                }
+            }
+            if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
+                *visibility = if has_dock {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if has_dock {
+                    sprite.color = color;
                 }
             }
         }
@@ -973,7 +998,7 @@ pub fn update_voronoi(
         if visible {
             if let Some(mut material) = materials.get_mut(&*cell_m) {
                 let controller = known_controllers[&planet.id];
-                material.color = session.player_color(controller).color().with_alpha(0.12);
+                material.color = session.player_color(controller).color().with_alpha(0.01);
             }
         }
 
@@ -1029,11 +1054,12 @@ pub fn update_end_turn(
         (With<EndTurnLabelCmp>, Without<SpectatorLabelCmp>, Without<EndTurnButtonCmp>),
     >,
     game_state: Res<State<GameState>>,
-    state: Res<UiState>,
+    pending: Res<crate::multiplayer::client::PendingTurnCommands>,
     player: Res<Player>,
 ) {
+    let playing = *game_state.get() == GameState::Playing;
     for mut button_v in &mut button_c {
-        *button_v = if !player.spectator {
+        *button_v = if playing && !player.spectator {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1041,25 +1067,30 @@ pub fn update_end_turn(
     }
 
     for mut label_v in &mut spectator_q {
-        *label_v = if player.spectator && *game_state.get() == GameState::Playing {
+        *label_v = if player.spectator && playing {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
     }
 
-    if *game_state.get() == GameState::Playing {
+    if playing {
         for mut button_t in &mut button_q {
-            button_t.0 = if state.end_turn {
-                "Continue turn".to_string()
-            } else {
-                "End turn".to_string()
-            };
+            button_t.0 = pending.button_label().to_string();
         }
     }
 
     for mut label_v in &mut label_q {
-        *label_v = if state.end_turn && !player.spectator {
+        *label_v = if playing
+            && !pending.resume_requested
+            && matches!(
+                pending.submission,
+                crate::multiplayer::client::SubmissionState::Sending
+                    | crate::multiplayer::client::SubmissionState::Accepted
+                    | crate::multiplayer::client::SubmissionState::Retry
+            )
+            && !player.spectator
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1095,134 +1126,5 @@ pub fn run_map_animations(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::player::PlayerColor;
-    use crate::core::simulation::{GameModel, GameRules, PersistedGame};
-    use crate::multiplayer::model::GameRecord;
-
-    #[test]
-    fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
-        for player_count in [1, 2] {
-            let mut model = GameModel::new(
-                [7; 32],
-                GameRules {
-                    player_count,
-                    practice_mode: player_count == 1,
-                    ..default()
-                },
-            )
-            .unwrap();
-            if player_count == 2 {
-                model.players[0].color = PlayerColor::new(4);
-            }
-            model.start().unwrap();
-            let player = model.players[0].clone();
-            let expected_color = player.color().color();
-            if player_count == 1 {
-                assert_eq!(expected_color, OWN_COLOR, "local games default to blue");
-            }
-            let home = player.home_planet;
-            let planet_count = model.map.planets.len();
-            let mut session = MultiplayerSession::default();
-            session.local_practice = player_count == 1;
-            session.active_game = Some(GameRecord {
-                id: GameId::new("voronoi-test"),
-                code: GameCode::new("ABCDEF"),
-                revision: 0,
-                max_players: player_count,
-                status: model.status,
-                persisted: PersistedGame::new(model.clone()),
-                members: vec![],
-            });
-            let mut app = App::new();
-            app.add_plugins(TransformPlugin)
-                .init_resource::<Assets<Mesh>>()
-                .init_resource::<Assets<ColorMaterial>>()
-                .init_resource::<Settings>()
-                .insert_resource(model.map)
-                .insert_resource(Missions(model.missions))
-                .insert_resource(player)
-                .insert_resource(session)
-                .add_systems(
-                    Startup,
-                    |mut commands: Commands,
-                     map: Res<Map>,
-                     mut meshes: ResMut<Assets<Mesh>>,
-                     mut materials: ResMut<Assets<ColorMaterial>>| {
-                        spawn_voronoi_cells(&mut commands, &map, &mut meshes, &mut materials);
-                    },
-                )
-                .add_systems(Update, update_voronoi);
-            app.update();
-
-            let world = app.world_mut();
-            let mut cells = world.query::<(
-                Entity,
-                &VoronoiCmp,
-                &Visibility,
-                &GlobalTransform,
-                &Mesh2d,
-                &MeshMaterial2d<ColorMaterial>,
-            )>();
-            assert_eq!(cells.iter(world).count(), planet_count);
-            let mut home_entity = None;
-            for (entity, cell, visibility, transform, mesh, material) in cells.iter(world) {
-                assert!(transform.translation().z > BACKGROUND_Z);
-                assert!(transform.translation().z < PLANET_Z);
-                let positions = world
-                    .resource::<Assets<Mesh>>()
-                    .get(&mesh.0)
-                    .unwrap()
-                    .attribute(Mesh::ATTRIBUTE_POSITION)
-                    .unwrap()
-                    .as_float3()
-                    .unwrap();
-                assert!(positions.iter().all(|position| position[2] == 0.0));
-                if cell.0 == home {
-                    home_entity = Some(entity);
-                    assert_eq!(*visibility, Visibility::Inherited);
-                    assert_eq!(
-                        world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-                        expected_color.with_alpha(0.12)
-                    );
-                } else {
-                    assert_eq!(*visibility, Visibility::Hidden, "unknown territory stays hidden");
-                }
-            }
-            let home_entity = home_entity.expect("home world has an ownership cell");
-            let mut edges = world.query::<(
-                &VoronoiEdgeCmp,
-                &Visibility,
-                &GlobalTransform,
-                &MeshMaterial2d<ColorMaterial>,
-            )>();
-            let mut home_edges = 0;
-            for (edge, visibility, transform, material) in edges.iter(world) {
-                assert!(transform.translation().z > VORONOI_Z);
-                assert!(transform.translation().z < PLANET_Z);
-                if edge.planet == home {
-                    home_edges += 1;
-                    assert_eq!(*visibility, Visibility::Inherited);
-                    assert_eq!(
-                        world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-                        expected_color.with_alpha(0.58)
-                    );
-                }
-            }
-            assert!(home_edges >= 3);
-
-            app.world_mut().resource_mut::<Settings>().show_cells = false;
-            app.update();
-            let world = app.world_mut();
-            assert!(world
-                .query_filtered::<&Visibility, With<MapCmp>>()
-                .iter(world)
-                .all(|visibility| *visibility == Visibility::Hidden));
-            app.world_mut().resource_mut::<Settings>().show_cells = true;
-            app.update();
-            assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Inherited);
-        }
-    }
-}
+#[path = "../../../tests/core/map_systems.rs"]
+mod tests;

@@ -14,13 +14,11 @@ pub enum AppState {
     MainMenu,
     /// Debug-only one-player practice setup; release builds redirect to the main menu.
     SinglePlayerMenu,
-    /// Multiplayer action chooser.
-    MultiPlayerMenu,
     /// Creator settings and display-name form.
     CreateGame,
     /// Game-code and display-name form.
     JoinGame,
-    /// Game/recovery-code replacement-identity form.
+    /// Recover Game form reached from Resume Game when a saved game is missing.
     RecoverPlayer,
     /// Authenticated user's list of persisted games.
     ResumeGame,
@@ -50,6 +48,13 @@ pub enum GameState {
     Settings,
     /// Victory, defeat, or draw overlay.
     EndGame,
+}
+
+impl GameState {
+    /// Returns whether this state is a modal in-game menu that blocks the map and its HUD.
+    pub const fn is_modal_menu(self) -> bool {
+        matches!(self, Self::GameMenu | Self::Settings)
+    }
 }
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
@@ -85,3 +90,7 @@ pub enum AudioState {
     /// Effects and background music play.
     Sound,
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/states.rs"]
+mod tests;

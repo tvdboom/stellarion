@@ -33,16 +33,46 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -j12 -- -D warnings
+      - name: Install KTX-Software
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/KhronosGroup/KTX-Software/releases/download/v4.4.2/KTX-Software-4.4.2-Linux-x86_64.deb \
+            --output "$RUNNER_TEMP/ktx-software.deb"
+          echo "ca635ed489d8bf54fac8d7687056c651193de0740830a7738cc034adc63e3027  $RUNNER_TEMP/ktx-software.deb" | sha256sum --check
+          sudo apt-get install -y "$RUNNER_TEMP/ktx-software.deb"
+      # Runtime assets are ignored build outputs and must exist before texture tests.
+      - name: Generate runtime assets
+        run: cargo run --features asset-pipeline --bin build-assets -j12 -- --jobs 12
       - name: Run tests
         run: cargo test --all-targets --all-features -j12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify disposable SQL database
+        run: |
+          npm install --prefix target/sql-verification --no-save --package-lock=false --ignore-scripts @electric-sql/pglite@0.5.8
+          node tests/sql/verify-schema.mjs
       - name: Verify generated runtime assets
         run: cargo run --features asset-pipeline --bin build-assets -j12 -- --check --jobs 12
+      - name: Share verified runtime assets with packaging jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-assets
+          path: assets-runtime/
+          include-hidden-files: true
+          compression-level: 0
+          if-no-files-found: error
 
   wasm:
     name: WebAssembly / itch.io HTML5
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -62,6 +92,7 @@ jobs:
 
   native:
     name: Native ${{ matrix.channel }}
+    needs: quality
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +106,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -104,9 +139,14 @@ jobs:
 
   macos:
     name: Native macOS universal
+    needs: quality
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin

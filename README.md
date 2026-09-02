@@ -79,8 +79,9 @@ You can build three types of units on an owned planet:
 In combat, there are two sides: the attacker and the defender. There is the possibility that 
 the attacker has launched his fleets against a planet with no defense or ships, in which case 
 he automatically wins the combat. But otherwise, if the defender has ships or defense on his 
-planet, each side will fire upon the enemy. Each combat can have only two outcomes: attacker 
-wins or defender wins.
+planet, each side will fire upon the enemy. Combat ends in an attacker victory, a defender
+victory, or a draw. If both combat armies survive the 100-round limit, the defender keeps
+the planet and the surviving attackers return to their origin.
 
 Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S), 
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 

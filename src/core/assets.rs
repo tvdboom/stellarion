@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy_kira_audio::AudioSource;
 use strum::IntoEnumIterator;
 
+use crate::core::basis_texture::BasisTextureSettings;
 use crate::core::map::planet::PlanetKind;
 use crate::utils::NameFromEnum;
 
@@ -39,6 +40,8 @@ pub struct WorldAssets {
     audio: HashMap<String, Handle<AudioSource>>,
     fonts: HashMap<String, Handle<Font>>,
     pub(crate) images: HashMap<String, Handle<Image>>,
+    /// Premultiplied artwork overrides for images also used as straight-alpha map masks.
+    pub(crate) ui_images: HashMap<String, Handle<Image>>,
     textures: HashMap<String, TextureInfo>,
     menu_handles: Vec<UntypedHandle>,
     gameplay_handles: Vec<UntypedHandle>,
@@ -111,6 +114,9 @@ impl WorldAssets {
             "short explosion",
             "large explosion",
             "death ray",
+            "construction",
+            "booster",
+            "launch",
         ] {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
@@ -132,23 +138,54 @@ impl WorldAssets {
                 "repair",
                 "convert",
                 "convert hover",
-                "dock",
-                "dock enemy",
-                "mission",
-                "mission jump",
-                "mission enemy",
-                "mission hover",
-                "mission jump hover",
-                "mission enemy hover",
             ],
         );
+        // Reuse the original silhouettes, stripping baked faction colors once during loading.
+        // Sprite tint then gives every player the exact lobby color without extra image variants.
+        for name in ["dock", "mission", "mission jump"] {
+            let path = format!("images/icons/{name}.basisu.ktx2");
+            let handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| settings.alpha_mask = true)
+                .load(path.clone());
+            let ui_handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| settings.alpha_mask = true)
+                .load(format!("{path}#ui"));
+            self.gameplay_handles.push(ui_handle.clone().untyped());
+            self.ui_images.insert(name.to_string(), ui_handle);
+            self.gameplay_handles.push(handle.clone().untyped());
+            self.images.insert(name.to_string(), handle);
+        }
+        for name in ["mission hover", "mission jump hover"] {
+            let handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.premultiply_alpha = true;
+                })
+                .load(format!("images/icons/{name}.basisu.ktx2"));
+            self.gameplay_handles.push(handle.clone().untyped());
+            self.images.insert(name.to_string(), handle);
+        }
         load_category(
             server,
             &mut self.images,
             &mut self.gameplay_handles,
             "bg",
-            &["bg", "combat", "defeat", "defeat bg", "draw", "victory", "victory bg"],
+            &["bg", "combat", "defeat bg", "victory bg"],
         );
+        // Result lettering scales throughout its entrance animation; nearest sampling aliases
+        // the gold outlines even though the source artwork has enough resolution.
+        for name in ["victory", "defeat", "draw"] {
+            let handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.linear_filtering = true;
+                })
+                .load(format!("images/bg/{name}.basisu.ktx2"));
+            self.gameplay_handles.push(handle.clone().untyped());
+            self.images.insert(name.to_string(), handle);
+        }
         load_category(
             server,
             &mut self.images,
@@ -380,13 +417,14 @@ impl FromWorld for WorldAssets {
             audio: HashMap::new(),
             fonts: HashMap::new(),
             images: HashMap::new(),
+            ui_images: HashMap::new(),
             textures: HashMap::new(),
             menu_handles: Vec::new(),
             gameplay_handles: Vec::new(),
             gameplay_state: GameplayAssetState::Deferred,
         };
 
-        for name in ["button", "message", "error", "music"] {
+        for name in ["ui-click", "message", "error", "music"] {
             load_audio(&server, &mut assets.audio, &mut assets.menu_handles, name);
         }
         for (name, path) in
@@ -472,23 +510,5 @@ fn handles_ready(server: &AssetServer, handles: &[UntypedHandle]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    /// The declared lifecycle cannot report gameplay ready before its group is requested.
-    fn gameplay_assets_start_deferred() {
-        assert_eq!(GameplayAssetState::default(), GameplayAssetState::Deferred);
-    }
-
-    #[test]
-    /// Runtime image groups use KTX2 paths relative to Bevy's generated asset root.
-    fn runtime_categories_are_ktx2() {
-        for category in ["icons", "bg", "ui", "resources", "planets", "animations"] {
-            let path = format!("images/{category}/asset.basisu.ktx2");
-            assert!(path.ends_with(".ktx2"));
-            assert!(!path.starts_with("assets/"));
-            assert!(!path.starts_with("assets-runtime/"));
-        }
-    }
-}
+#[path = "../../tests/core/assets.rs"]
+mod tests;

@@ -16,7 +16,7 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::Unit;
-use crate::multiplayer::client::MultiplayerRequest;
+use crate::multiplayer::client::{MultiplayerRequest, PendingTurnCommands, SubmissionState};
 
 /// Requests presentation work after a new canonical turn is installed.
 #[derive(Message)]
@@ -37,10 +37,6 @@ impl StartTurnMsg {
     }
 }
 
-/// Remembers whether the end-turn control was already committed.
-#[derive(Resource, Default)]
-pub struct PreviousEndTurnState(bool);
-
 /// Selects only missions visible to one player for the ECS/rendering projection.
 pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<Mission> {
     missions
@@ -54,15 +50,18 @@ pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<
         .collect()
 }
 
-/// Commits the local command draft once when the player ends the simultaneous turn.
+/// Toggles readiness; orders become final only when every player has finished.
 pub fn check_turn_ended(
-    state: Res<UiState>,
-    mut previous: ResMut<PreviousEndTurnState>,
+    mut state: ResMut<UiState>,
+    mut pending: ResMut<PendingTurnCommands>,
     mut requests: MessageWriter<MultiplayerRequest>,
 ) {
-    if state.end_turn && !previous.0 {
-        requests.write(MultiplayerRequest::SubmitTurn);
-        previous.0 = true;
+    if std::mem::take(&mut state.end_turn) {
+        if matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
+            requests.write(MultiplayerRequest::SubmitTurn);
+        } else {
+            pending.request_resume();
+        }
     }
 }
 
@@ -73,7 +72,6 @@ pub fn start_turn(
     planet_query: Query<(&Transform, &PlanetCmp)>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
-    mut previous: ResMut<PreviousEndTurnState>,
     map: Res<Map>,
     player: Res<Player>,
     mut play_audio: MessageWriter<PlayAudioMsg>,
@@ -89,7 +87,6 @@ pub fn start_turn(
             mission_report: state.mission_report,
             ..default()
         };
-        previous.0 = false;
 
         let new_reports = player
             .reports
@@ -113,7 +110,7 @@ pub fn start_turn(
         }
 
         if settings.autosave {
-            multiplayer.write(MultiplayerRequest::SaveGame);
+            multiplayer.write(MultiplayerRequest::AutosaveGame);
         }
         messages.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
 
@@ -144,6 +141,15 @@ pub fn start_turn(
         for report in &new_reports {
             let origin = map.get(report.mission.origin);
             let destination = map.get(report.mission.destination);
+            // Newly owned colonies have one map-navigation toast from the ownership observer.
+            // Keep report navigation for enemy conquests and colonies lost again this turn.
+            if report.planet_colonized
+                && report.mission.owner == player.id
+                && player.owns(destination)
+                && !destination.is_destroyed
+            {
+                continue;
+            }
             let notification = match report.mission.objective {
                 Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
                     let probes_only = report.mission.army.len() == 1
@@ -207,6 +213,10 @@ pub fn start_turn(
                 Icon::Destroy if report.planet_destroyed => {
                     MessageMsg::warning(format!("Planet {} has been destroyed.", destination.name))
                 },
+                _ if report.is_stalemate() => MessageMsg::info(format!(
+                    "Battle at planet {} ended in a draw; the attacking fleet is returning.",
+                    destination.name
+                )),
                 _ if report.winner() == Some(player.id) => {
                     MessageMsg::info(format!("Battle won at planet {}.", destination.name))
                 },
@@ -225,16 +235,5 @@ pub fn start_turn(
 }
 
 #[cfg(test)]
-mod tests {
-    use rand::SeedableRng;
-
-    use super::*;
-
-    #[test]
-    /// Mission visibility always includes the owning player's commands.
-    fn owner_can_see_own_empty_mission_list() {
-        let player = Player::default();
-        let map = Map::new_with_rng(5, 0, &mut rand_chacha::ChaCha8Rng::from_seed([3; 32]));
-        assert!(filter_missions(&[], &map, &player).is_empty());
-    }
-}
+#[path = "../../tests/core/turns.rs"]
+mod tests;

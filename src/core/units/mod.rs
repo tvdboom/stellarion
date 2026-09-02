@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use itertools::Itertools;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::IntoEnumIterator;
@@ -121,6 +120,14 @@ impl<'de> Deserialize<'de> for Unit {
 }
 
 impl Unit {
+    const LUNAR_BUILDINGS: [Self; 5] = [
+        Self::Building(Building::LunarBase),
+        Self::Building(Building::DemolitionNexus),
+        Self::Building(Building::Shipyard),
+        Self::Building(Building::Laboratory),
+        Self::Building(Building::OrbitalRadar),
+    ];
+
     /// Returns every building unit kind.
     pub fn buildings() -> Vec<Self> {
         Building::iter().map(Unit::Building).collect()
@@ -143,22 +150,33 @@ impl Unit {
 
     /// Returns units valid for the supplied planet and ownership context.
     pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
+        let mut groups = vec![
+            if is_moon {
+                Self::lunar_buildings()
+            } else {
+                Self::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect()
+            },
+            Self::ships(),
+        ];
         if !is_moon {
-            vec![
-                Self::buildings()
-                    .into_iter()
-                    .filter(|u| {
-                        !Self::lunar_buildings()
-                            .iter()
-                            .filter(|u| **u != Unit::Building(Building::Shipyard))
-                            .contains(u)
-                    })
-                    .collect(),
-                Self::ships(),
-                Self::defenses(),
-            ]
-        } else {
-            vec![Self::lunar_buildings(), Self::ships()]
+            groups.push(Self::defenses());
+        }
+        groups
+    }
+
+    /// Whether this unit belongs to the planet or moon construction roster.
+    pub fn valid_on(self, is_moon: bool) -> bool {
+        match self {
+            Self::Ship(_) => true,
+            Self::Defense(_) => !is_moon,
+            Self::Building(_) => {
+                if is_moon {
+                    Self::LUNAR_BUILDINGS.contains(&self)
+                } else {
+                    self == Self::Building(Building::Shipyard)
+                        || !Self::LUNAR_BUILDINGS.contains(&self)
+                }
+            },
         }
     }
 
@@ -195,13 +213,7 @@ impl Unit {
 
     /// Returns structures that may be constructed on controlled moons.
     pub fn lunar_buildings() -> Vec<Self> {
-        vec![
-            Unit::Building(Building::LunarBase),
-            Unit::Building(Building::DemolitionNexus),
-            Unit::Building(Building::Shipyard),
-            Unit::Building(Building::Laboratory),
-            Unit::Building(Building::OrbitalRadar),
-        ]
+        Self::LUNAR_BUILDINGS.to_vec()
     }
 
     /// Returns the canonical planetary-shield unit key.

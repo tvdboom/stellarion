@@ -3,10 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{MatchStatus, PersistedGame, TurnSubmission};
 
 /// Restorable anonymous-auth session returned by Supabase or the mock backend.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthSession {
     /// Stable authenticated user identifier.
     pub user_id: UserId,
@@ -49,7 +50,7 @@ pub struct GameMembership {
     pub is_creator: bool,
     /// Incremented whenever recovery replaces the associated identity.
     pub identity_version: u64,
-    /// Whether this player currently has the game selected on a connected client.
+    /// Whether this player's selected client has a current heartbeat lease.
     #[serde(default)]
     pub connected: bool,
 }
@@ -71,6 +72,9 @@ pub struct GameRecord {
     pub persisted: PersistedGame,
     /// Current authenticated memberships.
     pub members: Vec<GameMembership>,
+    /// Players currently ready to finish the turn.
+    #[serde(default)]
+    pub submitted_players: Vec<PlayerId>,
 }
 
 impl GameRecord {
@@ -95,6 +99,10 @@ pub struct GameSummary {
     pub turn: u64,
     /// Calling user's stable player slot.
     pub player_id: PlayerId,
+    /// Calling user's saved name in this game.
+    pub display_name: String,
+    /// Calling user's selected empire color, including legacy snapshot fallback.
+    pub player_color: PlayerColor,
     /// Current lobby membership count.
     pub player_count: usize,
     /// Lobby join capacity or finalized active player count.
@@ -174,6 +182,8 @@ pub struct StoredTurnSubmission {
     pub submission: TurnSubmission,
     /// SHA-256 of canonical serialized submission data.
     pub digest: String,
+    /// Whether the player is ready; withdrawn drafts cannot participate in resolution.
+    pub ready: bool,
 }
 
 /// Monotonic notification emitted by the persistence backend.
@@ -207,8 +217,10 @@ pub enum BackendEventKind {
     PlayerDisconnected,
     /// The host released an active match after every player reconnected.
     GameResumed,
-    /// A player committed commands for the current turn.
+    /// A player is ready to finish the current turn.
     TurnSubmitted,
+    /// A player continued the turn before everyone was ready.
+    TurnWithdrawn,
     /// Persisted state or revision changed.
     StateChanged,
     /// The lobby transitioned to active play.

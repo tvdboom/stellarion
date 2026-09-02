@@ -7,13 +7,19 @@ description = "A deterministic multiplayer space strategy game for native and We
 
 [[bin]]
 name = "build-assets"
-path = "src/bin/build_assets.rs"
+path = "scripts/build-assets.rs"
 required-features = ["asset-pipeline"]
+
+[[bin]]
+name = "sql-fixtures"
+path = "tests/sql/fixtures.rs"
+required-features = ["sql-verification"]
 
 [features]
 default = ["app"]
 app = []
 asset-pipeline = []
+sql-verification = []
 
 [dependencies]
 base64 = "0.23.1"

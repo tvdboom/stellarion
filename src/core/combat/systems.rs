@@ -26,13 +26,14 @@ use crate::core::map::model::Map;
 use crate::core::map::utils::{
     spawn_main_button, SpriteAlphaLens, SpriteFrameLens, UiTransformScaleLens,
 };
+use crate::core::menu::systems::MenuBackground;
 use crate::core::menu::utils::{add_root_node, add_text};
 use crate::core::missions::BombingRaid;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
-use crate::core::ui::systems::UiState;
+use crate::core::ui::systems::{UiCmp, UiState};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Combat, Unit};
 use crate::utils::{scale_duration, NameFromEnum};
@@ -166,7 +167,23 @@ pub fn setup_combat_menu(
     pause_audio_msg.write(PauseAudioMsg::new("music"));
     play_audio_msg.write(PlayAudioMsg::new("drums").background());
 
-    commands.spawn((add_root_node(true), ImageNode::new(assets.image("combat")), CombatMenuCmp));
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.),
+            height: Val::Percent(100.),
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        ImageNode::new(assets.image("combat")).with_mode(NodeImageMode::Stretch),
+        Pickable {
+            should_block_lower: true,
+            is_hoverable: false,
+        },
+        ZIndex(4), // On top of end turn but below audio and Continue buttons.
+        MenuBackground,
+        CombatMenuCmp,
+        UiCmp,
+    ));
 
     spawn_main_button(&mut commands, "Continue", &assets)
         .insert((ZIndex(6), CombatMenuCmp))
@@ -1020,6 +1037,10 @@ pub fn animate_combat(
                 commands.spawn((
                     add_root_node(false),
                     children![(
+                        Node {
+                            max_width: Val::Vw(90.),
+                            ..default()
+                        },
                         ImageNode::new(assets.image(result)),
                         UiTransform {
                             translation: Val2::new(Val::ZERO, Val::Percent(-10.)),
@@ -1032,7 +1053,7 @@ pub fn animate_combat(
                             UiTransformScaleLens {
                                 start: Vec2::ZERO,
                                 end: Vec2::splat(match result {
-                                    "victory" => 0.7,
+                                    "victory" => 0.55,
                                     "draw" => 0.4,
                                     "defeat" => 0.6,
                                     _ => 0.5,

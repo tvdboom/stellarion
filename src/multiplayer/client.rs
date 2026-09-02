@@ -12,26 +12,24 @@ use bevy::tasks::{IoTaskPool, Task};
 use futures_lite::future::{block_on, poll_once};
 
 use crate::core::identity::{GameCode, GameId};
+use crate::core::messages::MessageMsg;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
-    resolve_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnCommand, TurnSubmission,
-    MAX_COMMANDS_PER_SUBMISSION, PLAYER_COUNT_RANGE,
+    resolve_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnSubmission,
 };
 use crate::core::states::AppState;
+use crate::multiplayer::authority::{recolored_lobby_snapshot, started_snapshot_for_members};
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend};
 use crate::multiplayer::memory::InMemoryBackend;
 use crate::multiplayer::model::{
     AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GameRecord,
     GameSummary, JoinDisposition, JoinGameRequest, MembershipResult, RecoverPlayerRequest,
-    SubmissionDisposition,
 };
 use crate::multiplayer::realtime::{RealtimeSignal, SupabaseRealtimeClient};
 use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 use crate::multiplayer::supabase::SupabaseBackend;
 use crate::platform::config::{ConfigError, SupabaseConfig};
-use crate::platform::storage::{
-    load_profile, save_profile, ClientProfile, ClientStorage, MemoryStorage,
-};
+use crate::platform::storage::{load_profile, ClientProfile, ClientStorage, MemoryStorage};
 
 #[cfg(target_arch = "wasm32")]
 use crate::platform::storage::BrowserStorage;
@@ -68,6 +66,7 @@ impl ConnectionStatus {
 }
 
 const RECONNECT_STATUS_GRACE: Duration = Duration::from_secs(3);
+const PRESENCE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Stable connection feedback that does not flash during a brief recovery attempt.
 #[derive(Resource, Default)]
@@ -102,15 +101,20 @@ fn update_connection_indicator(
     indicator.update(session.connection, time.delta());
 }
 
-/// Editable values shared by the multiplayer menu screens.
+/// Values shared by the game setup and multiplayer menu screens.
 #[derive(Resource)]
 pub struct MultiplayerForm {
     /// Lobby display name, persisted locally for convenience.
     pub display_name: String,
+    /// Previously chosen name reused when joining, separate from an unsent create-form edit.
+    pub saved_display_name: Option<String>,
     /// Six-character game code entered by a joining player.
     pub game_code: String,
     /// High-entropy recovery code entered on a replacement device.
     pub recovery_code: String,
+    /// Empire color selected for the next local practice match.
+    #[cfg(debug_assertions)]
+    pub practice_color: PlayerColor,
 }
 
 impl Default for MultiplayerForm {
@@ -118,8 +122,11 @@ impl Default for MultiplayerForm {
     fn default() -> Self {
         Self {
             display_name: "Commander".to_string(),
+            saved_display_name: None,
             game_code: String::new(),
             recovery_code: String::new(),
+            #[cfg(debug_assertions)]
+            practice_color: PlayerColor::for_player(1),
         }
     }
 }
@@ -156,8 +163,10 @@ pub struct MultiplayerSession {
     reload_needed: bool,
     resolve_needed: bool,
     resolving: bool,
+    restore_draft_needed: bool,
     submitted_turn: Option<u64>,
     presence_needed: bool,
+    presence_elapsed: Duration,
     reauthentication_needed: bool,
     auth_refresh_needed: bool,
 }
@@ -186,39 +195,19 @@ impl MultiplayerSession {
         self.reload_needed = false;
         self.resolve_needed = false;
         self.resolving = false;
+        self.restore_draft_needed = false;
         self.submitted_turn = None;
         self.presence_needed = false;
+        self.presence_elapsed = Duration::ZERO;
         self.reconnect_lobby = false;
         self.reauthentication_needed = false;
         self.local_practice = false;
     }
 }
 
-/// Commands accumulated by the Bevy UI for the current simultaneous turn.
-#[derive(Resource, Clone, Default)]
-pub struct PendingTurnCommands {
-    /// Turn for which commands are being collected.
-    pub turn: u64,
-    /// Intentional commands in local interaction order.
-    pub commands: Vec<TurnCommand>,
-}
-
-impl PendingTurnCommands {
-    /// Resets the draft when a canonical next turn is installed.
-    pub fn reset(&mut self, turn: u64) {
-        self.turn = turn;
-        self.commands.clear();
-    }
-
-    /// Appends one gameplay intent, returning false once the bounded draft is full.
-    pub fn push(&mut self, command: TurnCommand) -> bool {
-        if self.commands.len() >= MAX_COMMANDS_PER_SUBMISSION {
-            return false;
-        }
-        self.commands.push(command);
-        true
-    }
-}
+mod profile;
+mod submission;
+pub use submission::{PendingTurnCommands, SubmissionState};
 
 /// Foreground operations requested by menu buttons or gameplay UI.
 #[derive(Message)]
@@ -228,6 +217,8 @@ pub enum MultiplayerRequest {
     StartLocalPractice {
         /// Deterministic rules selected in the local-practice setup screen.
         rules: GameRules,
+        /// Empire color selected in the local-practice setup screen.
+        player_color: PlayerColor,
     },
     /// Creates a lobby from the current settings.
     CreateGame {
@@ -243,7 +234,7 @@ pub enum MultiplayerRequest {
         /// User-entered human-friendly code.
         code: String,
     },
-    /// Replaces a lost anonymous identity using a one-time recovery code.
+    /// Opens a linked game or replaces a lost identity using a one-time recovery code.
     RecoverPlayer {
         /// Human-friendly game code.
         code: String,
@@ -260,11 +251,13 @@ pub enum MultiplayerRequest {
     StartGame,
     /// Changes the current member's empire color while the game is still in its lobby.
     SetPlayerColor(PlayerColor),
-    /// Saves the latest canonical snapshot from any member.
+    /// Saves the latest canonical snapshot from any member and reports the result to the player.
     SaveGame,
-    /// Commits the local player's accumulated commands for this turn.
+    /// Saves the latest canonical snapshot without showing foreground feedback.
+    AutosaveGame,
+    /// Marks the local player ready to finish this turn.
     SubmitTurn,
-    /// Leaves the selected game locally and returns to the multiplayer menu.
+    /// Returns to the main menu, deleting an unstarted lobby when its host leaves.
     LeaveGame,
     /// Retries state/event synchronization after an offline error.
     Retry,
@@ -273,6 +266,10 @@ pub enum MultiplayerRequest {
 #[derive(Message)]
 /// Requests replacement of an already-visible gameplay turn without a menu transition.
 pub(crate) struct RefreshGameplayProjection;
+
+/// Restores local orders without replaying turn-boundary presentation or clearing selection.
+#[derive(Message)]
+pub(crate) struct RefreshTurnDraft;
 
 /// Runtime backend and local profile storage hidden from gameplay systems.
 #[derive(Resource)]
@@ -315,7 +312,10 @@ enum Operation {
     Start,
     Color,
     Save,
+    Autosave,
     Submit,
+    Withdraw,
+    RestoreDraft,
     Events,
     Resolve,
     Presence,
@@ -347,12 +347,16 @@ enum BackendOutput {
     Games(Vec<GameSummary>),
     Record(Operation, GameRecord),
     Resumed,
-    Submitted(SubmissionDisposition, u64),
+    Submitted(u64),
+    Withdrawn(TurnSubmission),
+    DraftLoaded(u64, Option<crate::multiplayer::model::StoredTurnSubmission>),
     Events(EventBatch),
     ResolutionWaiting,
     SessionRefreshed(AuthSession),
     Reauthenticated(AuthSession),
     Presence,
+    Left(GameId),
+    DepartureFinished,
     Failed(Operation, BackendError),
     #[cfg(not(target_arch = "wasm32"))]
     TaskFailed(String),
@@ -377,6 +381,7 @@ impl Plugin for MultiplayerClientPlugin {
             .init_resource::<ConnectionIndicator>()
             .init_resource::<PendingTurnCommands>()
             .init_resource::<BackendTasks>()
+            .init_resource::<profile::ProfileWrites>()
             .insert_resource(EventPollTimer(Timer::new(
                 Duration::from_secs(2),
                 TimerMode::Repeating,
@@ -388,24 +393,35 @@ impl Plugin for MultiplayerClientPlugin {
             .insert_non_send(SupabaseRealtimeClient::default())
             .add_message::<MultiplayerRequest>()
             .add_message::<RefreshGameplayProjection>()
+            .add_message::<RefreshTurnDraft>()
             .add_systems(Startup, initialize_client)
+            .add_systems(OnExit(AppState::JoinGame), clear_join_error)
+            .add_systems(OnExit(AppState::RecoverPlayer), clear_join_error)
             .add_systems(
                 Update,
                 (
                     process_requests,
                     poll_backend_tasks,
+                    drive_turn_draft,
+                    profile::flush_profile,
                     drive_reauthentication,
                     drive_auth_refresh,
                     drive_realtime,
-                    poll_durable_events,
-                    drive_reload,
-                    drive_resolution,
                     drive_presence,
+                    // Apply pending roster changes before another event poll can occupy the task queue.
+                    drive_reload,
+                    poll_durable_events,
+                    drive_resolution,
                     update_connection_indicator,
                 )
                     .chain(),
             );
     }
+}
+
+/// Page-local feedback must not follow the player through Back or Escape navigation.
+fn clear_join_error(mut session: ResMut<MultiplayerSession>) {
+    session.menu_error = None;
 }
 
 /// Creates platform storage and starts anonymous authentication asynchronously.
@@ -481,6 +497,7 @@ async fn select_backend(
 #[cfg(debug_assertions)]
 async fn create_local_practice(
     rules: GameRules,
+    player_color: PlayerColor,
 ) -> Result<(Arc<dyn MultiplayerBackend>, AuthSession, MembershipResult), BackendError> {
     let backend = Arc::new(InMemoryBackend::new());
     let auth = backend.authenticate(None).await?;
@@ -488,8 +505,10 @@ async fn create_local_practice(
     getrandom::fill(&mut seed).map_err(|error| BackendError::Protocol(error.to_string()))?;
     let recovery =
         RecoveryCode::generate().map_err(|error| BackendError::Protocol(error.to_string()))?;
-    let model = GameModel::new(seed, rules)
+    let mut model = GameModel::new(seed, rules)
         .map_err(|error| BackendError::InvalidData(error.to_string()))?;
+    model.player_mut(1).map_err(|error| BackendError::InvalidData(error.to_string()))?.color =
+        Some(player_color);
     let mut result = backend
         .create_game(
             &auth,
@@ -539,18 +558,23 @@ fn platform_storage() -> Arc<dyn ClientStorage> {
 /// Converts foreground requests into independent browser-compatible backend futures.
 fn process_requests(
     mut requests: MessageReader<MultiplayerRequest>,
+    mut messages: MessageWriter<MessageMsg>,
     mut session: ResMut<MultiplayerSession>,
     mut runtime: ResMut<ClientRuntime>,
-    pending: Res<PendingTurnCommands>,
+    mut pending: ResMut<PendingTurnCommands>,
+    mut form: ResMut<MultiplayerForm>,
     mut tasks: ResMut<BackendTasks>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     for request in requests.read() {
         session.menu_error = None;
         if matches!(request, MultiplayerRequest::LeaveGame) {
+            // Take ownership of pending work so none of its results can restore the lobby.
+            let outstanding = std::mem::take(&mut tasks.0);
+            session.busy = false;
             if session.local_practice {
-                tasks.0.clear();
                 session.leave_selected_game();
+                pending.reset(0);
                 if let Some(previous) = runtime.practice_return.take() {
                     runtime.backend = previous.backend;
                     runtime.realtime_config = previous.realtime_config;
@@ -561,25 +585,47 @@ fn process_requests(
                     session.notice = previous.notice;
                 }
                 next_state.set(AppState::MainMenu);
-                continue;
+                requests.clear();
+                return;
             }
+            let departure = session.active_game.as_ref().map(|record| record.id.clone());
             if let (Some(backend), Some(auth), Some(record)) =
                 (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
             {
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.set_connected(&auth, &record.id, false).await {
-                        Ok(()) => BackendOutput::Presence,
-                        Err(error) => BackendOutput::Failed(Operation::Presence, error),
+                    // Finish earlier presence/start requests before disconnecting. Their
+                    // results are discarded; leaving locally never waits for this cleanup.
+                    for task in outstanding {
+                        let _ = task.await;
                     }
+                    let _ = backend.set_connected(&auth, &record.id, false).await;
+                    BackendOutput::DepartureFinished
                 });
             }
-            session.leave_selected_game();
-            next_state.set(AppState::MultiPlayerMenu);
-            continue;
+            if let Some(game_id) = departure {
+                apply_output(
+                    BackendOutput::Left(game_id),
+                    &mut runtime,
+                    &mut session,
+                    &mut form,
+                    &mut pending,
+                    &mut next_state,
+                    false,
+                );
+            } else {
+                session.leave_selected_game();
+                session.notice = None;
+                pending.reset(0);
+                next_state.set(AppState::MainMenu);
+            }
+            // Ignore any clicks queued on the screen that was just left.
+            requests.clear();
+            return;
         }
         #[cfg(debug_assertions)]
         if let MultiplayerRequest::StartLocalPractice {
             rules,
+            player_color,
         } = request
         {
             runtime.practice_return = Some(PracticeReturn {
@@ -594,8 +640,9 @@ fn process_requests(
             session.busy = true;
             session.notice = None;
             let rules = rules.clone();
+            let player_color = *player_color;
             spawn_backend_task(&mut tasks, async move {
-                match create_local_practice(rules).await {
+                match create_local_practice(rules, player_color).await {
                     Ok((backend, auth, result)) => BackendOutput::PracticeReady {
                         backend,
                         auth,
@@ -616,7 +663,11 @@ fn process_requests(
         }
 
         let (Some(backend), Some(auth)) = (runtime.backend.clone(), session.auth.clone()) else {
-            request_error(&mut session, "Authentication is still initializing.");
+            let error = "Authentication is still initializing.";
+            request_error(&mut session, error);
+            if matches!(request, MultiplayerRequest::SaveGame) {
+                messages.write(MessageMsg::error(error));
+            }
             continue;
         };
         session.busy = true;
@@ -633,7 +684,6 @@ fn process_requests(
             } => {
                 let display_name = display_name.trim().to_string();
                 runtime.profile.display_name.clone_from(&display_name);
-                let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
                 let rules = rules.clone();
                 spawn_backend_task(&mut tasks, async move {
                     let mut seed = [0_u8; 32];
@@ -702,7 +752,6 @@ fn process_requests(
                 code,
             } => {
                 runtime.profile.display_name = display_name.trim().to_string();
-                let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
                 let recovery = match RecoveryCode::generate() {
                     Ok(recovery) => recovery,
                     Err(error) => {
@@ -730,6 +779,12 @@ fn process_requests(
                 code,
                 recovery_code,
             } => {
+                let code = GameCode::new(code);
+                // Existing membership needs no recovery credential or secret rotation.
+                if let Some(game_id) = linked_game_id(&session.games, &code) {
+                    spawn_backend_task(&mut tasks, load_game_for_resume(backend, auth, game_id));
+                    continue;
+                }
                 let supplied = match RecoveryCode::parse(recovery_code) {
                     Ok(code) => code,
                     Err(error) => {
@@ -745,29 +800,18 @@ fn process_requests(
                     },
                 };
                 let request = RecoverPlayerRequest {
-                    code: GameCode::new(code),
+                    code,
                     recovery_hash: supplied.hash().0,
                     replacement_recovery_hash: replacement.hash().0,
                 };
-                spawn_backend_task(&mut tasks, async move {
-                    match backend.recover_player(&auth, request).await {
-                        Ok(result) => BackendOutput::Membership {
-                            operation: Operation::Recover,
-                            result,
-                            recovery_code: replacement,
-                        },
-                        Err(error) => BackendOutput::Failed(Operation::Recover, error),
-                    }
-                });
+                spawn_backend_task(
+                    &mut tasks,
+                    recover_or_resume_linked_game(backend, auth, request, replacement),
+                );
             },
             MultiplayerRequest::ResumeGame(game_id) => {
                 let game_id = game_id.clone();
-                spawn_backend_task(&mut tasks, async move {
-                    match backend.load_game(&auth, &game_id).await {
-                        Ok(record) => BackendOutput::Record(Operation::ResumeLoad, record),
-                        Err(error) => BackendOutput::Failed(Operation::ResumeLoad, error),
-                    }
-                });
+                spawn_backend_task(&mut tasks, load_game_for_resume(backend, auth, game_id));
             },
             MultiplayerRequest::ResumeActiveGame => {
                 let Some(record) = session.active_game.clone() else {
@@ -835,9 +879,18 @@ fn process_requests(
                     }
                 });
             },
-            MultiplayerRequest::SaveGame => {
+            MultiplayerRequest::SaveGame | MultiplayerRequest::AutosaveGame => {
+                let operation = if matches!(request, MultiplayerRequest::SaveGame) {
+                    Operation::Save
+                } else {
+                    Operation::Autosave
+                };
                 let Some(record) = session.active_game.clone() else {
-                    request_error(&mut session, "No game is selected.");
+                    let error = "No game is selected.";
+                    request_error(&mut session, error);
+                    if matches!(operation, Operation::Save) {
+                        messages.write(MessageMsg::error(error));
+                    }
                     continue;
                 };
                 spawn_backend_task(&mut tasks, async move {
@@ -845,8 +898,8 @@ fn process_requests(
                         .save_game(&auth, &record.id, record.revision, record.persisted.clone())
                         .await
                     {
-                        Ok(record) => BackendOutput::Record(Operation::Save, record),
-                        Err(error) => BackendOutput::Failed(Operation::Save, error),
+                        Ok(record) => BackendOutput::Record(operation, record),
+                        Err(error) => BackendOutput::Failed(operation, error),
                     }
                 });
             },
@@ -864,15 +917,20 @@ fn process_requests(
                     );
                     continue;
                 }
-                let submission = TurnSubmission::new(
+                if !pending.begin_submission() {
+                    session.busy = !tasks.0.is_empty();
+                    continue;
+                }
+                let mut submission = TurnSubmission::new(
                     membership.player_id,
                     pending.turn,
                     pending.commands.clone(),
                 );
+                submission.generation = pending.generation;
                 let submitted_turn = submission.turn;
                 spawn_backend_task(&mut tasks, async move {
                     match backend.submit_turn(&auth, &record.id, submission).await {
-                        Ok(disposition) => BackendOutput::Submitted(disposition, submitted_turn),
+                        Ok(_) => BackendOutput::Submitted(submitted_turn),
                         Err(error) => BackendOutput::Failed(Operation::Submit, error),
                     }
                 });
@@ -880,90 +938,6 @@ fn process_requests(
             MultiplayerRequest::LeaveGame | MultiplayerRequest::Retry => {},
         }
     }
-}
-
-/// Applies one member's lobby color while preventing indistinguishable active members.
-fn recolored_lobby_snapshot(
-    record: &GameRecord,
-    player_id: u64,
-    color: PlayerColor,
-) -> Result<PersistedGame, BackendError> {
-    if record.status != MatchStatus::Lobby || !color.is_valid() {
-        return Err(BackendError::InvalidGameStatus);
-    }
-    if !record.members.iter().any(|member| member.player_id == player_id) {
-        return Err(BackendError::PlayerNoLongerInGame);
-    }
-    if record.members.iter().any(|member| {
-        member.player_id != player_id
-            && record
-                .persisted
-                .state
-                .player(member.player_id)
-                .is_ok_and(|player| player.color() == color)
-    }) {
-        return Err(BackendError::InvalidData(
-            "That color is already selected by another player.".to_string(),
-        ));
-    }
-
-    let mut persisted = record.persisted.clone();
-    let previous = persisted
-        .state
-        .player(player_id)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?
-        .color();
-    let displaced_player = persisted
-        .state
-        .players
-        .iter()
-        .find(|player| player.id != player_id && player.color() == color)
-        .map(|player| player.id);
-    if let Some(displaced_player) = displaced_player {
-        persisted
-            .state
-            .player_mut(displaced_player)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = Some(previous);
-    }
-    persisted
-        .state
-        .player_mut(player_id)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?
-        .color = Some(color);
-    persisted.validate().map_err(|error| BackendError::InvalidData(error.to_string()))?;
-    Ok(persisted)
-}
-
-/// Generates the real opening map once the creator chooses the lobby's final member count.
-fn started_snapshot_for_members(
-    record: &GameRecord,
-    seed: [u8; 32],
-) -> Result<PersistedGame, BackendError> {
-    let player_count = u8::try_from(record.members.len())
-        .map_err(|_| BackendError::InvalidData("too many lobby members".to_string()))?;
-    if !PLAYER_COUNT_RANGE.contains(&player_count) || player_count > record.max_players {
-        return Err(BackendError::InvalidGameStatus);
-    }
-
-    let mut rules = record.persisted.state.rules.clone();
-    rules.player_count = player_count;
-    let mut model = GameModel::new(seed, rules)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?;
-    for member in &record.members {
-        let color = record
-            .persisted
-            .state
-            .player(member.player_id)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color();
-        model
-            .player_mut(member.player_id)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = Some(color);
-    }
-    model.start().map_err(|error| BackendError::InvalidData(error.to_string()))?;
-    Ok(PersistedGame::new(model))
 }
 
 /// Resets the busy flag and records an immediate request-validation failure.
@@ -978,9 +952,18 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
     match (operation, error) {
         (Operation::Join, BackendError::InvalidGameStatus) => concat!(
             "This game has already started. To continue as an existing player, choose Resume Game. ",
-            "On a new device, choose Recover Player and enter your recovery code."
+            "If the game isn't listed, choose Recover Game there and enter your game and recovery codes."
         )
         .to_string(),
+        (Operation::Recover, BackendError::GameNotFound) => {
+            "No saved game matches this game code. Check the game code and try again.".to_string()
+        },
+        (Operation::Recover, BackendError::InvalidRecoveryCode) => {
+            "This recovery code is invalid or has already been used. Each player needs their own private recovery code. Check both codes and use your latest recovery code.".to_string()
+        },
+        (Operation::Recover, BackendError::RecoveryCodeInUse) => {
+            "This recovery code is already in use. Use your own private recovery code. To move this player here, leave the other window first; after an unexpected close, wait a minute.".to_string()
+        },
         (Operation::Start, BackendError::InvalidGameStatus) => {
             "At least two players must be in the lobby before the host can start the game."
                 .to_string()
@@ -988,12 +971,63 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
         (Operation::Resume, BackendError::InvalidGameStatus) => {
             "Every player must reconnect before the host can resume this game.".to_string()
         },
+        (Operation::Save, BackendError::GameNotFound) => {
+            "This game is no longer available.".to_string()
+        },
         (_, BackendError::InvalidGameStatus) => {
             "This action is not available for the game right now. Refresh the game and try again."
                 .to_string()
         },
+        (_, BackendError::Forbidden) => {
+            "You don't have access to this action in this game. Return to Resume Game and reconnect as your own player.".to_string()
+        },
         _ => error.to_string(),
     }
+}
+
+/// Reports explicit saves and rejected turn orders in the gameplay HUD.
+fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
+    match output {
+        BackendOutput::Record(Operation::Save, _) => {
+            Some(MessageMsg::info("Game saved successfully."))
+        },
+        BackendOutput::Failed(Operation::Save, error) => {
+            Some(MessageMsg::error(user_facing_backend_error(Operation::Save, error)))
+        },
+        BackendOutput::Failed(
+            Operation::Submit | Operation::Resolve,
+            error @ BackendError::InvalidData(_),
+        ) => Some(MessageMsg::error(format!("Could not end turn: {error}"))),
+        _ => None,
+    }
+}
+
+/// Reports opposing players whose canonical presence changed from connected to disconnected.
+fn disconnected_player_notifications(
+    output: &BackendOutput,
+    session: &MultiplayerSession,
+) -> Vec<MessageMsg> {
+    let BackendOutput::Record(_, next) = output else {
+        return Vec::new();
+    };
+    let Some(previous) = session.active_game.as_ref().filter(|game| game.id == next.id) else {
+        return Vec::new();
+    };
+    if next.status == MatchStatus::Lobby {
+        return Vec::new();
+    }
+    let local_player_id = session.membership.as_ref().map(|member| member.player_id);
+    next.members
+        .iter()
+        .filter(|member| Some(member.player_id) != local_player_id && !member.connected)
+        .filter(|member| {
+            previous
+                .members
+                .iter()
+                .any(|previous| previous.player_id == member.player_id && previous.connected)
+        })
+        .map(|member| MessageMsg::warning(format!("Player {} disconnected.", member.display_name)))
+        .collect()
 }
 
 /// Polls task futures once per frame and applies completed backend results.
@@ -1006,10 +1040,16 @@ fn poll_backend_tasks(
     mut next_state: ResMut<NextState<AppState>>,
     app_state: Res<State<AppState>>,
     mut refresh_gameplay: MessageWriter<RefreshGameplayProjection>,
+    mut refresh_draft: MessageWriter<RefreshTurnDraft>,
+    mut messages: MessageWriter<MessageMsg>,
 ) {
     let mut remaining = Vec::with_capacity(tasks.0.len());
     for mut task in std::mem::take(&mut tasks.0) {
         if let Some(output) = block_on(poll_once(&mut task)) {
+            let restore_draft = matches!(&output, BackendOutput::Withdrawn(draft) if draft.turn == pending.turn)
+                || matches!(&output, BackendOutput::DraftLoaded(turn, _) if *turn == pending.turn);
+            let notification = operation_notification(&output);
+            let presence_notifications = disconnected_player_notifications(&output, &session);
             let gameplay_visible = *app_state.get() == AppState::Game;
             let previous_projection = session
                 .active_game
@@ -1024,6 +1064,15 @@ fn poll_backend_tasks(
                 &mut next_state,
                 gameplay_visible,
             );
+            if gameplay_visible && restore_draft {
+                refresh_draft.write(RefreshTurnDraft);
+            }
+            if let Some(notification) = notification {
+                messages.write(notification);
+            }
+            for notification in presence_notifications {
+                messages.write(notification);
+            }
             let current_projection = session
                 .active_game
                 .as_ref()
@@ -1053,6 +1102,9 @@ fn apply_output(
     next_state: &mut NextState<AppState>,
     gameplay_visible: bool,
 ) {
+    if matches!(output, BackendOutput::DepartureFinished) {
+        return;
+    }
     session.busy = false;
     match output {
         BackendOutput::Initialized {
@@ -1068,10 +1120,15 @@ fn apply_output(
             runtime.profile.session = Some(auth.clone());
             if !runtime.profile.display_name.is_empty() {
                 form.display_name.clone_from(&runtime.profile.display_name);
+                form.saved_display_name = Some(runtime.profile.display_name.clone());
             }
-            let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
             session.auth = Some(auth);
-            session.games = games;
+            session.games =
+                games.into_iter().filter(|game| game.status != MatchStatus::Lobby).collect();
+            runtime
+                .profile
+                .recent_games
+                .retain(|id| session.games.iter().any(|game| &game.id == id));
             session.mock_backend = mock_backend;
             session.connection = ConnectionStatus::Connected;
             session.notice = configuration_notice;
@@ -1083,6 +1140,9 @@ fn apply_output(
         } => {
             let reconnected_without_rotation = matches!(operation, Operation::Join)
                 && matches!(result.disposition, JoinDisposition::Reconnected);
+            form.display_name.clone_from(&result.membership.display_name);
+            form.saved_display_name = Some(result.membership.display_name.clone());
+            runtime.profile.display_name.clone_from(&result.membership.display_name);
             form.game_code = result.game.code.0.clone();
             session.issued_recovery_code = if reconnected_without_rotation {
                 None
@@ -1094,7 +1154,8 @@ fn apply_output(
             install_membership(result, runtime, session, pending, next_state, gameplay_visible);
             session.notice = Some(match operation {
                 Operation::Recover => {
-                    "Player recovered. The old recovery code is now invalid.".to_string()
+                    form.recovery_code.clear();
+                    "Game recovered. Save your new recovery code; it replaces the code you just used.".to_string()
                 },
                 Operation::Join if reconnected_without_rotation => {
                     "Reconnected to the existing player on this device.".to_string()
@@ -1122,8 +1183,25 @@ fn apply_output(
             install_record(result.game, runtime, session, pending, next_state, gameplay_visible);
         },
         BackendOutput::Games(games) => {
-            session.games = games;
+            session.games =
+                games.into_iter().filter(|game| game.status != MatchStatus::Lobby).collect();
             session.connection = ConnectionStatus::Connected;
+        },
+        BackendOutput::Left(game_id) => {
+            if let Some(record) = session.active_game.as_ref().filter(|record| record.id == game_id)
+            {
+                if record.status == MatchStatus::Lobby {
+                    forget_game(runtime, session, &game_id);
+                    form.game_code.clear();
+                    form.recovery_code.clear();
+                }
+                session.leave_selected_game();
+                session.connection = ConnectionStatus::Connected;
+                session.notice = None;
+                session.menu_error = None;
+                pending.reset(0);
+                next_state.set(AppState::MainMenu);
+            }
         },
         BackendOutput::Record(operation, record) => {
             if matches!(operation, Operation::ResumeLoad) {
@@ -1133,7 +1211,9 @@ fn apply_output(
             session.connection = ConnectionStatus::Connected;
             session.notice = match operation {
                 Operation::Color => None,
-                Operation::Save => Some("Game saved successfully.".to_string()),
+                Operation::Save | Operation::Autosave => {
+                    Some("Game saved successfully.".to_string())
+                },
                 Operation::Resolve => {
                     Some("All submissions resolved; the next turn is ready.".to_string())
                 },
@@ -1147,24 +1227,59 @@ fn apply_output(
             session.notice = Some("Everyone is connected. Resuming the game…".to_string());
             next_state.set(AppState::LoadingGame);
         },
-        BackendOutput::Submitted(disposition, turn) => {
+        BackendOutput::Submitted(turn) => {
+            if pending.turn == turn {
+                pending.submission = SubmissionState::Accepted;
+            }
             session.submitted_turn = Some(turn);
             session.resolve_needed = true;
             session.connection = ConnectionStatus::Connected;
             session.notice = Some(if session.local_practice {
                 "Resolving local turn…".to_string()
             } else {
-                match disposition {
-                    SubmissionDisposition::Inserted => {
-                        "Turn submitted; waiting for other players.".to_string()
-                    },
-                    SubmissionDisposition::Duplicate => {
-                        "Turn submission was already accepted.".to_string()
-                    },
-                }
+                "Waiting for other players to finish their turn.".to_string()
             });
         },
+        BackendOutput::Withdrawn(draft) => {
+            if draft.turn == pending.turn {
+                // A ready request that never arrived has no server-side orders to restore.
+                // The local draft remains the source in that case.
+                if !draft.commands.is_empty() || pending.commands.is_empty() {
+                    pending.commands = draft.commands;
+                }
+                pending.generation = draft.generation;
+                pending.submission = SubmissionState::Draft;
+                pending.resume_requested = false;
+                session.submitted_turn = None;
+                session.resolve_needed = false;
+                if let (Some(record), Some(member)) =
+                    (&mut session.active_game, &session.membership)
+                {
+                    record.submitted_players.retain(|id| *id != member.player_id);
+                }
+            }
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
+        },
+        BackendOutput::DraftLoaded(turn, stored) => {
+            if pending.turn == turn {
+                let resume_requested = pending.resume_requested;
+                pending.reset(turn);
+                if let Some(stored) = stored {
+                    pending.commands = stored.submission.commands;
+                    pending.generation = stored.submission.generation;
+                    if stored.ready {
+                        pending.submission = SubmissionState::Accepted;
+                        pending.resume_requested = resume_requested;
+                        session.submitted_turn = Some(turn);
+                        session.resolve_needed = true;
+                    }
+                }
+            }
+            session.restore_draft_needed = false;
+        },
         BackendOutput::Events(batch) => {
+            session.restore_draft_needed |= pending.submission == SubmissionState::Loading;
             let game_resumed = batch
                 .events
                 .iter()
@@ -1187,11 +1302,10 @@ fn apply_output(
         },
         BackendOutput::ResolutionWaiting => {
             session.resolving = false;
-            session.notice = Some("Waiting for remaining turn submissions.".to_string());
+            session.notice = Some("Waiting for other players to finish their turn.".to_string());
         },
         BackendOutput::SessionRefreshed(auth) => {
             runtime.profile.session = Some(auth.clone());
-            let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
             session.auth = Some(auth);
             session.connection = ConnectionStatus::Connected;
             session.reload_needed = session.has_active_game();
@@ -1199,7 +1313,6 @@ fn apply_output(
         },
         BackendOutput::Reauthenticated(auth) => {
             runtime.profile.session = Some(auth.clone());
-            let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
             session.auth = Some(auth);
             session.games.clear();
             session.connection = ConnectionStatus::Connected;
@@ -1208,8 +1321,41 @@ fn apply_output(
                     .to_string(),
             );
         },
-        BackendOutput::Presence => {},
+        BackendOutput::Presence => {
+            // Lease expiry creates no durable event. Refresh after each heartbeat so an
+            // abandoned peer becomes offline even while the event stream stays quiet.
+            session.reload_needed = session.has_active_game();
+        },
+        BackendOutput::DepartureFinished => {},
         BackendOutput::Failed(operation, error) => {
+            if matches!(operation, Operation::Withdraw) {
+                pending.resume_requested = false;
+                pending.submission = if matches!(
+                    error,
+                    BackendError::TurnCommitted
+                        | BackendError::StaleSubmission { .. }
+                        | BackendError::InvalidGameStatus
+                ) {
+                    session.reload_needed = true;
+                    session.resolve_needed = true;
+                    SubmissionState::Accepted
+                } else {
+                    SubmissionState::ResumeRetry
+                };
+            }
+            if matches!(operation, Operation::RestoreDraft) {
+                // Retry with the next durable poll, rather than hammering an offline backend.
+                session.restore_draft_needed = false;
+            }
+            if matches!(operation, Operation::Submit) {
+                pending.submission = match &error {
+                    BackendError::InvalidData(_) => SubmissionState::Draft,
+                    BackendError::DuplicateSubmission {
+                        ..
+                    } => SubmissionState::Accepted,
+                    _ => SubmissionState::Retry,
+                };
+            }
             session.resolving = false;
             session.notice = Some(user_facing_backend_error(operation, &error));
             session.menu_error.clone_from(&session.notice);
@@ -1229,6 +1375,44 @@ fn apply_output(
                 } => {
                     session.connection = ConnectionStatus::SyncConflict;
                     session.reload_needed = true;
+                },
+                BackendError::GameNotFound
+                    if matches!(
+                        operation,
+                        Operation::Load
+                            | Operation::Events
+                            | Operation::Presence
+                            | Operation::Color
+                            | Operation::Start
+                            | Operation::Resume
+                            | Operation::Save
+                            | Operation::Autosave
+                            | Operation::Submit
+                            | Operation::Withdraw
+                            | Operation::RestoreDraft
+                            | Operation::Resolve
+                    ) =>
+                {
+                    if let Some(record) = &session.active_game {
+                        let id = record.id.clone();
+                        let was_lobby = record.status == MatchStatus::Lobby;
+                        forget_game(runtime, session, &id);
+                        session.leave_selected_game();
+                        form.game_code.clear();
+                        form.recovery_code.clear();
+                        pending.reset(0);
+                        session.notice = Some(
+                            if was_lobby {
+                                "The host closed this lobby."
+                            } else {
+                                "This game is no longer available."
+                            }
+                            .to_string(),
+                        );
+                        session.menu_error.clone_from(&session.notice);
+                        next_state.set(AppState::MainMenu);
+                    }
+                    session.connection = ConnectionStatus::Connected;
                 },
                 BackendError::Unauthenticated if matches!(operation, Operation::RefreshAuth) => {
                     if let Some(record) = &session.active_game {
@@ -1275,6 +1459,13 @@ fn apply_output(
         },
         #[cfg(not(target_arch = "wasm32"))]
         BackendOutput::TaskFailed(error) => {
+            if pending.submission == SubmissionState::Sending {
+                pending.submission = SubmissionState::Retry;
+            }
+            if pending.submission == SubmissionState::Resuming {
+                pending.submission = SubmissionState::ResumeRetry;
+                pending.resume_requested = false;
+            }
             session.resolving = false;
             session.connection = ConnectionStatus::Offline;
             session.notice = Some(format!("Background network task failed: {error}"));
@@ -1414,6 +1605,7 @@ fn install_record(
     next_state: &mut NextState<AppState>,
     gameplay_visible: bool,
 ) {
+    let newly_selected = session.active_game.as_ref().is_none_or(|game| game.id != record.id);
     let needs_gameplay_install =
         record_requires_gameplay_install(session.active_game.as_ref(), &record);
     if session.membership.as_ref().is_none_or(|membership| membership.game_id != record.id) {
@@ -1423,16 +1615,27 @@ fn install_record(
     mark_selected_member_connected(session, &mut record);
     sync_game_summary(session, &record);
     if !session.local_practice {
-        runtime.profile.remember_game(record.id.clone());
-        let _ = save_profile(runtime.storage.as_ref(), &runtime.profile);
+        if record.status == MatchStatus::Lobby {
+            runtime.profile.recent_games.retain(|id| id != &record.id);
+        } else {
+            runtime.profile.remember_game(record.id.clone());
+        }
     }
     if needs_gameplay_install {
         pending.reset(record.persisted.state.turn);
+        // Recover both ready orders and withdrawn drafts before allowing new commands.
+        session.restore_draft_needed = record.status == MatchStatus::Active;
+        if session.restore_draft_needed {
+            pending.submission = SubmissionState::Loading;
+        }
     }
+    // Same-turn refreshes can predate a readiness change. Only its ordered write
+    // response (or the initial draft restore) may change the local draft state.
     let status = record.status;
     session.active_game = Some(record);
     session.reload_needed = false;
-    session.presence_needed = !session.local_practice;
+    // Refreshing presence must not immediately schedule another heartbeat/reload pair.
+    session.presence_needed |= newly_selected && !session.local_practice;
     if let Some(destination) = record_destination(
         status,
         session.reconnect_lobby,
@@ -1459,8 +1662,18 @@ fn mark_selected_member_connected(session: &mut MultiplayerSession, record: &mut
     }
 }
 
-/// Keeps newly created and freshly loaded records immediately available on the resume screen.
+/// Removes an unavailable game from the local list and convenience profile.
+fn forget_game(runtime: &mut ClientRuntime, session: &mut MultiplayerSession, game_id: &GameId) {
+    session.games.retain(|game| &game.id != game_id);
+    runtime.profile.recent_games.retain(|id| id != game_id);
+}
+
+/// Keeps started matches available on the resume screen without retaining live lobbies.
 fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
+    if record.status == MatchStatus::Lobby {
+        session.games.retain(|game| game.id != record.id);
+        return;
+    }
     let Some(membership) = &session.membership else {
         return;
     };
@@ -1471,6 +1684,11 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
         status: record.status,
         turn: record.persisted.state.turn,
         player_id: membership.player_id,
+        display_name: membership.display_name.clone(),
+        player_color: record.persisted.state.player(membership.player_id).map_or_else(
+            |_| PlayerColor::for_player(membership.player_id),
+            |player| player.color(),
+        ),
         player_count: record.members.len(),
         max_players: record.max_players,
     };
@@ -1509,7 +1727,58 @@ fn record_requires_gameplay_install(previous: Option<&GameRecord>, next: &GameRe
     })
 }
 
-/// Returns whether this client has committed the canonical turn that is still active.
+/// Recovers saved orders or clears readiness after a planet/Continue turn interaction.
+/// Serialize this with ready writes so their payload stays fixed until delivery completes.
+fn drive_turn_draft(
+    runtime: Res<ClientRuntime>,
+    mut session: ResMut<MultiplayerSession>,
+    mut pending: ResMut<PendingTurnCommands>,
+    mut tasks: ResMut<BackendTasks>,
+) {
+    if !tasks.0.is_empty() || (!session.restore_draft_needed && !pending.resume_requested) {
+        return;
+    }
+    let (Some(backend), Some(auth), Some(record), Some(member)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.clone(),
+        session.membership.clone(),
+    ) else {
+        return;
+    };
+    if record.status != MatchStatus::Active || pending.turn != record.persisted.state.turn {
+        return;
+    }
+    let restoring = session.restore_draft_needed;
+    session.restore_draft_needed = false;
+    let turn = pending.turn;
+    if !restoring {
+        pending.submission = SubmissionState::Resuming;
+    }
+    spawn_backend_task(&mut tasks, async move {
+        let operation = if restoring {
+            Operation::RestoreDraft
+        } else {
+            Operation::Withdraw
+        };
+        let stored = match backend.load_turn_submissions(&auth, &record.id, turn).await {
+            Ok(submissions) => {
+                submissions.into_iter().find(|s| s.submission.player_id == member.player_id)
+            },
+            Err(error) => return BackendOutput::Failed(operation, error),
+        };
+        if restoring {
+            return BackendOutput::DraftLoaded(turn, stored);
+        }
+        let generation = stored.as_ref().map_or(0, |s| s.submission.generation);
+        match backend.withdraw_turn(&auth, &record.id, turn, generation).await {
+            Ok(draft) => BackendOutput::Withdrawn(draft),
+            Err(error) => BackendOutput::Failed(Operation::Withdraw, error),
+        }
+    });
+}
+
+/// Returns whether this client is ready for the canonical turn that is still active.
 fn local_submission_awaits_resolution(session: &MultiplayerSession) -> bool {
     session.active_game.as_ref().is_some_and(|record| {
         record.status == MatchStatus::Active
@@ -1519,7 +1788,7 @@ fn local_submission_awaits_resolution(session: &MultiplayerSession) -> bool {
 
 /// Polls durable events periodically so missed/disconnected Realtime notifications are harmless.
 fn poll_durable_events(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut timer: ResMut<EventPollTimer>,
     runtime: Res<ClientRuntime>,
     session: Res<MultiplayerSession>,
@@ -1545,13 +1814,21 @@ fn poll_durable_events(
     });
 }
 
-/// Announces coarse presence after selecting or reconnecting to a game.
+/// Renews presence while a game is open so recovery can distinguish live and abandoned clients.
 fn drive_presence(
+    time: Res<Time<Real>>,
     runtime: Res<ClientRuntime>,
     mut session: ResMut<MultiplayerSession>,
     mut tasks: ResMut<BackendTasks>,
 ) {
-    if !session.presence_needed || !tasks.0.is_empty() {
+    if !session.has_active_game() || session.local_practice {
+        session.presence_elapsed = Duration::ZERO;
+        return;
+    }
+    session.presence_elapsed = session.presence_elapsed.saturating_add(time.delta());
+    if (!session.presence_needed && session.presence_elapsed < PRESENCE_HEARTBEAT_INTERVAL)
+        || !tasks.0.is_empty()
+    {
         return;
     }
     let (Some(backend), Some(auth), Some(record)) =
@@ -1560,6 +1837,7 @@ fn drive_presence(
         return;
     };
     session.presence_needed = false;
+    session.presence_elapsed = Duration::ZERO;
     spawn_backend_task(&mut tasks, async move {
         match backend.set_connected(&auth, &record.id, true).await {
             Ok(()) => BackendOutput::Presence,
@@ -1618,7 +1896,9 @@ fn drive_resolution(
     spawn_backend_task(&mut tasks, async move {
         let turn = record.persisted.state.turn;
         let submissions = match backend.load_turn_submissions(&auth, &record.id, turn).await {
-            Ok(submissions) => submissions,
+            Ok(submissions) => {
+                submissions.into_iter().filter(|stored| stored.ready).collect::<Vec<_>>()
+            },
             Err(error) => return BackendOutput::Failed(Operation::Resolve, error),
         };
         let required =
@@ -1655,6 +1935,52 @@ fn spawn_list(runtime: &ClientRuntime, session: &MultiplayerSession, tasks: &mut
             Err(error) => BackendOutput::Failed(Operation::List, error),
         }
     });
+}
+
+/// Resolves a normalized game code to the same backend identifier used by Resume Game.
+fn linked_game_id(games: &[GameSummary], code: &GameCode) -> Option<GameId> {
+    games.iter().find(|game| &game.code == code).map(|game| game.id.clone())
+}
+
+/// Loads one already-linked game through the shared Resume Game result path.
+async fn load_game_for_resume(
+    backend: Arc<dyn MultiplayerBackend>,
+    auth: AuthSession,
+    game_id: GameId,
+) -> BackendOutput {
+    match backend.load_game(&auth, &game_id).await {
+        Ok(record) => BackendOutput::Record(Operation::ResumeLoad, record),
+        Err(error) => BackendOutput::Failed(Operation::ResumeLoad, error),
+    }
+}
+
+/// Recovers an unlinked slot, or opens the current membership if recovery is redundant.
+async fn recover_or_resume_linked_game(
+    backend: Arc<dyn MultiplayerBackend>,
+    auth: AuthSession,
+    request: RecoverPlayerRequest,
+    replacement: RecoveryCode,
+) -> BackendOutput {
+    let code = request.code.clone();
+    match backend.recover_player(&auth, request).await {
+        Ok(result) => BackendOutput::Membership {
+            operation: Operation::Recover,
+            result,
+            recovery_code: replacement,
+        },
+        Err(BackendError::AlreadyMember) => {
+            let games = match backend.list_games(&auth).await {
+                Ok(games) => games,
+                Err(error) => return BackendOutput::Failed(Operation::Recover, error),
+            };
+            let Some(game_id) = linked_game_id(&games, &code) else {
+                // Lobbies and expired matches are intentionally absent from Resume Game.
+                return BackendOutput::Failed(Operation::Recover, BackendError::GameNotFound);
+            };
+            load_game_for_resume(backend, auth, game_id).await
+        },
+        Err(error) => BackendOutput::Failed(Operation::Recover, error),
+    }
 }
 
 /// Spawns a Send task natively and a browser-local task on WebAssembly.
@@ -1702,327 +2028,5 @@ fn spawn_backend_task(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::*;
-    use crate::core::simulation::MatchStatus;
-
-    #[test]
-    fn connection_indicator_hides_brief_reconnects_and_resets_after_success() {
-        let mut indicator = ConnectionIndicator::default();
-        indicator.update(ConnectionStatus::Connected, Duration::ZERO);
-        indicator.update(ConnectionStatus::Reconnecting, Duration::from_secs(2));
-        assert_eq!(indicator.status, ConnectionStatus::Connected);
-        indicator.update(ConnectionStatus::Connected, Duration::from_millis(16));
-        indicator.update(ConnectionStatus::Reconnecting, Duration::from_secs(2));
-        assert_eq!(indicator.status, ConnectionStatus::Connected);
-        indicator.update(ConnectionStatus::Reconnecting, Duration::from_secs(1));
-        assert_eq!(indicator.status, ConnectionStatus::Reconnecting);
-        indicator.update(ConnectionStatus::Connected, Duration::from_millis(16));
-        assert_eq!(indicator.status, ConnectionStatus::Connected);
-        indicator.update(ConnectionStatus::Offline, Duration::from_millis(16));
-        assert_eq!(indicator.status, ConnectionStatus::Offline);
-    }
-
-    #[test]
-    fn color_update_success_does_not_create_a_toast() {
-        let mut runtime = ClientRuntime {
-            backend: None,
-            realtime_config: None,
-            storage: Arc::new(MemoryStorage::default()),
-            profile: ClientProfile::default(),
-            practice_return: None,
-        };
-        let mut session = MultiplayerSession::default();
-        let mut form = MultiplayerForm::default();
-        let mut pending = PendingTurnCommands::default();
-        let mut next = NextState::default();
-        apply_output(
-            BackendOutput::Record(Operation::Color, record("game-a", 1, 1, MatchStatus::Lobby)),
-            &mut runtime,
-            &mut session,
-            &mut form,
-            &mut pending,
-            &mut next,
-            false,
-        );
-        assert!(session.notice.is_none());
-        assert_eq!(session.connection, ConnectionStatus::Connected);
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    /// Builds a started one-player backend record whose first submission advances immediately.
-    fn local_practice_backend_advances_without_an_opponent() {
-        let rules = GameRules {
-            player_count: 1,
-            practice_mode: true,
-            ..GameRules::default()
-        };
-        let (backend, auth, result) = block_on(create_local_practice(rules)).unwrap();
-        assert_eq!(result.game.status, MatchStatus::Active);
-        assert_eq!(result.game.max_players, 1);
-        assert_eq!(result.game.members.len(), 1);
-
-        let turn = result.game.persisted.state.turn;
-        block_on(backend.submit_turn(
-            &auth,
-            &result.game.id,
-            TurnSubmission::new(result.membership.player_id, turn, Vec::new()),
-        ))
-        .unwrap();
-        let submissions =
-            block_on(backend.load_turn_submissions(&auth, &result.game.id, turn)).unwrap();
-        let mut model = result.game.persisted.state.clone();
-        resolve_turn(
-            &mut model,
-            &submissions.into_iter().map(|stored| stored.submission).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let advanced = block_on(backend.publish_resolution(
-            &auth,
-            &result.game.id,
-            result.game.revision,
-            turn,
-            PersistedGame::new(model),
-        ))
-        .unwrap();
-        assert_eq!(advanced.persisted.state.turn, turn + 1);
-        assert_eq!(advanced.status, MatchStatus::Active);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    /// Native HTTP work always runs inside a live Tokio network reactor.
-    fn native_backend_tasks_have_a_network_reactor() {
-        let runtime = native_backend_runtime().expect("native network runtime should initialize");
-        let task = runtime.spawn(async {
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(1))
-                .build()
-                .expect("test client should build");
-            let _ = client.get("http://127.0.0.1:0").send().await;
-            42
-        });
-        assert_eq!(block_on(task).expect("network task must not panic"), 42);
-    }
-
-    /// Builds a lightweight canonical record for installation-policy tests.
-    fn record(id: &str, revision: u64, turn: u64, status: MatchStatus) -> GameRecord {
-        let mut model = GameModel::new([3; 32], GameRules::default()).unwrap();
-        model.turn = turn;
-        model.status = status;
-        GameRecord {
-            id: GameId::new(id),
-            code: GameCode::new("ABCDEF"),
-            revision,
-            max_players: 2,
-            status,
-            persisted: PersistedGame::new(model),
-            members: Vec::new(),
-        }
-    }
-
-    #[test]
-    /// Same-turn revisions preserve local commands while game/turn transitions rebuild the view.
-    fn same_turn_refresh_does_not_require_projection_reset() {
-        let current = record("game-a", 4, 7, MatchStatus::Active);
-        let saved = record("game-a", 5, 7, MatchStatus::Active);
-        let next_turn = record("game-a", 6, 8, MatchStatus::Active);
-        let other_game = record("game-b", 1, 7, MatchStatus::Active);
-
-        assert!(!record_requires_gameplay_install(Some(&current), &saved));
-        assert!(record_requires_gameplay_install(Some(&saved), &next_turn));
-        assert!(record_requires_gameplay_install(Some(&current), &other_game));
-        assert!(record_requires_gameplay_install(None, &current));
-    }
-
-    #[test]
-    /// Loading a not-yet-started game always returns its member to the shared lobby.
-    fn resumed_waiting_game_opens_lobby() {
-        assert_eq!(
-            record_destination(MatchStatus::Lobby, false, true, false),
-            Some(AppState::Lobby)
-        );
-        assert_eq!(
-            record_destination(MatchStatus::Lobby, false, false, true),
-            Some(AppState::Lobby)
-        );
-        assert_eq!(
-            record_destination(MatchStatus::Active, true, true, false),
-            Some(AppState::Lobby)
-        );
-    }
-
-    #[test]
-    /// A newly created lobby is resumable immediately, before another backend list refresh.
-    fn selected_lobby_is_added_to_resume_list() {
-        let lobby = record("game-a", 0, 1, MatchStatus::Lobby);
-        let mut session = MultiplayerSession {
-            membership: Some(GameMembership {
-                game_id: lobby.id.clone(),
-                player_id: 1,
-                user_id: crate::core::identity::UserId::new("host"),
-                display_name: "Host".to_string(),
-                is_creator: true,
-                identity_version: 1,
-                connected: false,
-            }),
-            ..MultiplayerSession::default()
-        };
-
-        sync_game_summary(&mut session, &lobby);
-
-        assert_eq!(session.games.len(), 1);
-        assert_eq!(session.games[0].status, MatchStatus::Lobby);
-        assert_eq!(session.games[0].player_id, 1);
-    }
-
-    #[test]
-    /// The client entering a reconnection lobby is shown online before its presence RPC returns.
-    fn selected_player_is_optimistically_connected() {
-        let mut game = record("game-a", 4, 7, MatchStatus::Active);
-        let membership = GameMembership {
-            game_id: game.id.clone(),
-            player_id: 1,
-            user_id: crate::core::identity::UserId::new("host"),
-            display_name: "Host".to_string(),
-            is_creator: true,
-            identity_version: 1,
-            connected: false,
-        };
-        game.members.push(membership.clone());
-        let mut session = MultiplayerSession {
-            membership: Some(membership),
-            ..MultiplayerSession::default()
-        };
-
-        mark_selected_member_connected(&mut session, &mut game);
-
-        assert!(session.membership.as_ref().unwrap().connected);
-        assert!(game.members[0].connected);
-    }
-
-    #[test]
-    /// Join failures explain the lifecycle in player language and point to recovery paths.
-    fn started_game_join_error_is_actionable() {
-        let message = user_facing_backend_error(Operation::Join, &BackendError::InvalidGameStatus);
-        assert!(message.contains("already started"));
-        assert!(message.contains("Resume Game"));
-        assert!(!message.contains("required state"));
-    }
-
-    #[test]
-    /// Empty durable polls keep a submitted current turn eligible for resolution retries.
-    fn submitted_current_turn_awaits_resolution_until_projection_advances() {
-        let mut session = MultiplayerSession {
-            active_game: Some(record("game-a", 4, 7, MatchStatus::Active)),
-            submitted_turn: Some(7),
-            ..MultiplayerSession::default()
-        };
-        assert!(local_submission_awaits_resolution(&session));
-
-        session.active_game.as_mut().unwrap().persisted.state.turn = 8;
-        assert!(!local_submission_awaits_resolution(&session));
-        session.active_game.as_mut().unwrap().persisted.state.turn = 7;
-        session.active_game.as_mut().unwrap().status = MatchStatus::Finished;
-        assert!(!local_submission_awaits_resolution(&session));
-    }
-
-    #[test]
-    /// Starting rebuilds the provisional four-slot lobby for the members actually present.
-    fn start_snapshot_uses_current_members() {
-        let mut model = GameModel::new(
-            [4; 32],
-            GameRules {
-                player_count: 4,
-                ..GameRules::default()
-            },
-        )
-        .unwrap();
-        model.status = MatchStatus::Lobby;
-        model.player_mut(1).unwrap().color = PlayerColor::new(4);
-        model.player_mut(2).unwrap().color = PlayerColor::new(5);
-        let id = GameId::new("dynamic-lobby");
-        let members = (1..=2)
-            .map(|player_id| GameMembership {
-                game_id: id.clone(),
-                player_id,
-                user_id: crate::core::identity::UserId::new(format!("user-{player_id}")),
-                display_name: format!("Player {player_id}"),
-                is_creator: player_id == 1,
-                identity_version: 1,
-                connected: false,
-            })
-            .collect();
-        let lobby = GameRecord {
-            id,
-            code: GameCode::new("ABCDEF"),
-            revision: 0,
-            max_players: 4,
-            status: MatchStatus::Lobby,
-            persisted: PersistedGame::new(model),
-            members,
-        };
-
-        let started = started_snapshot_for_members(&lobby, [9; 32]).unwrap();
-        assert_eq!(started.state.status, MatchStatus::Active);
-        assert_eq!(started.state.rules.player_count, 2);
-        assert_eq!(started.state.players.len(), 2);
-        assert_eq!(started.state.player(1).unwrap().color(), PlayerColor::new(4).unwrap());
-        assert_eq!(started.state.player(2).unwrap().color(), PlayerColor::new(5).unwrap());
-    }
-
-    #[test]
-    /// Lobby recoloring swaps provisional slots and rejects colors owned by current members.
-    fn lobby_colors_remain_unique() {
-        let mut lobby = record("game-a", 0, 1, MatchStatus::Lobby);
-        lobby.members = (1..=2)
-            .map(|player_id| GameMembership {
-                game_id: lobby.id.clone(),
-                player_id,
-                user_id: crate::core::identity::UserId::new(format!("user-{player_id}")),
-                display_name: format!("Player {player_id}"),
-                is_creator: player_id == 1,
-                identity_version: 1,
-                connected: false,
-            })
-            .collect();
-
-        let player_two_default = lobby.persisted.state.player(2).unwrap().color();
-        assert!(matches!(
-            recolored_lobby_snapshot(&lobby, 1, player_two_default),
-            Err(BackendError::InvalidData(_))
-        ));
-
-        let free_color = PlayerColor::new(4).unwrap();
-        let recolored = recolored_lobby_snapshot(&lobby, 1, free_color).unwrap();
-        assert_eq!(recolored.state.player(1).unwrap().color(), free_color);
-        assert_eq!(
-            recolored
-                .state
-                .players
-                .iter()
-                .map(|player| player.color())
-                .collect::<HashSet<_>>()
-                .len(),
-            recolored.state.players.len()
-        );
-    }
-
-    #[test]
-    /// Local command drafts stop growing at the same limit enforced by simulation and storage.
-    fn pending_turn_commands_are_bounded() {
-        let mut pending = PendingTurnCommands::default();
-        for _ in 0..MAX_COMMANDS_PER_SUBMISSION {
-            assert!(pending.push(TurnCommand::AbandonPlanet {
-                planet_id: 0
-            }));
-        }
-        assert!(!pending.push(TurnCommand::AbandonPlanet {
-            planet_id: 0
-        }));
-        assert_eq!(pending.commands.len(), MAX_COMMANDS_PER_SUBMISSION);
-    }
-}
+#[path = "../../tests/multiplayer/client.rs"]
+pub(crate) mod tests;

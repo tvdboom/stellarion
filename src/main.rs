@@ -1,5 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-//! Native and WebAssembly entry point for the shared Stellarion Bevy application.
 
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;

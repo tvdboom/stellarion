@@ -4,20 +4,113 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bevy::prelude::*;
-use bevy::window::SystemCursorIcon;
+use bevy::window::{PrimaryWindow, SystemCursorIcon};
+use bevy_egui::{egui, EguiContexts};
 use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
 use crate::core::map::utils::cursor;
+use crate::core::missions::Missions;
 use crate::core::settings::Settings;
-use crate::core::states::{AudioState, GameState};
+use crate::core::states::{AppState, AudioState, GameState};
+use crate::core::ui::systems::UiState;
+use crate::core::units::Unit;
+
+/// Short feedback cues balanced for repeated menu and gameplay actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundEffect {
+    /// Short click for main-menu buttons and explicit action buttons.
+    Button,
+    /// Purchase accepted by the shipyard.
+    ShipPurchased,
+    /// Building construction added to the current turn.
+    BuildingQueued,
+    /// Defense or missile purchase accepted.
+    DefensePurchased,
+    /// Launch confirmation after accepting a mission command.
+    MissionLaunched,
+}
+
+impl SoundEffect {
+    /// Selects the confirmation for a successfully queued purchase.
+    pub fn purchase(unit: Unit) -> Self {
+        match unit {
+            Unit::Building(_) => Self::BuildingQueued,
+            Unit::Ship(_) => Self::ShipPurchased,
+            Unit::Defense(_) => Self::DefensePurchased,
+        }
+    }
+
+    /// Creates a one-shot request without per-cue attenuation.
+    pub fn request(self) -> PlayAudioMsg {
+        let name = match self {
+            Self::Button => "ui-click",
+            Self::ShipPurchased | Self::BuildingQueued | Self::DefensePurchased => "construction",
+            Self::MissionLaunched => "launch",
+        };
+        PlayAudioMsg::new(name)
+    }
+}
+
+/// Overrides the generic click for the current egui pass; `None` silences deferred actions.
+pub fn set_ui_sound(context: &egui::Context, sound: Option<SoundEffect>) {
+    context.data_mut(|data| data.insert_temp(egui::Id::new("ui_sound"), sound));
+}
+
+/// Selects one cue for an enabled button, ignoring background clicks and drag controls.
+fn take_ui_sound(context: &egui::Context, menu_clicks: bool) -> Option<SoundEffect> {
+    if let Some(sound) =
+        context.data_mut(|data| data.remove_temp::<Option<SoundEffect>>(egui::Id::new("ui_sound")))
+    {
+        return sound;
+    }
+    // Gameplay windows also receive clicks on their empty backgrounds. Only
+    // explicit accepted actions may make sound there; browsing stays silent.
+    if !menu_clicks {
+        return None;
+    }
+    let id = context.interaction_snapshot(|interaction| interaction.clicked)?;
+    let response = context.read_response(id)?;
+    (response.enabled() && response.clicked() && !response.sense.senses_drag())
+        .then_some(SoundEffect::Button)
+}
+
+/// Collects egui feedback after drawing, at most once across egui's repeated layout passes.
+pub fn play_ui_audio(
+    mut contexts: EguiContexts,
+    mut play: MessageWriter<PlayAudioMsg>,
+    app_state: Res<State<AppState>>,
+    game_state: Res<State<GameState>>,
+    mut last_frame: Local<Option<u64>>,
+) {
+    let Ok(context) = contexts.ctx_mut() else {
+        return;
+    };
+    let menu_clicks = *app_state.get() != AppState::Game
+        || matches!(game_state.get(), GameState::GameMenu | GameState::Settings);
+    let sound = take_ui_sound(context, menu_clicks);
+    let frame = context.cumulative_frame_nr();
+    if *last_frame != Some(frame) {
+        *last_frame = Some(frame);
+        if let Some(sound) = sound {
+            play.write(sound.request());
+        }
+    }
+}
+
+/// Adds click feedback to a Bevy UI button without responding to right-clicks.
+pub fn play_button_audio(event: On<Pointer<Click>>, mut play: MessageWriter<PlayAudioMsg>) {
+    if event.button == PointerButton::Primary {
+        play.write(SoundEffect::Button.request());
+    }
+}
 
 #[derive(Resource, Default)]
 /// Tracked music and effect instances grouped by logical channel name.
-pub struct PlayingAudio(pub HashMap<&'static str, Handle<AudioInstance>>);
+pub struct PlayingAudio(pub HashMap<&'static str, Vec<Handle<AudioInstance>>>);
 
 impl PlayingAudio {
-    pub const DEFAULT_VOLUME: f32 = -30.;
+    pub const BACKGROUND_VOLUME: f32 = -30.;
     pub const TWEEN: AudioTween = AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2));
 }
 
@@ -27,6 +120,8 @@ pub struct PlayAudioMsg {
     pub name: &'static str,
     pub volume: f32,
     pub is_background: bool,
+    /// Repeats the asset until stopped, independently of the music mute mode.
+    pub is_looped: bool,
 }
 
 impl PlayAudioMsg {
@@ -34,14 +129,23 @@ impl PlayAudioMsg {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            volume: PlayingAudio::DEFAULT_VOLUME,
+            volume: 0.0,
             is_background: false,
+            is_looped: false,
         }
+    }
+
+    /// Repeats an effect at its normal volume until explicitly stopped.
+    pub fn looped(mut self) -> Self {
+        self.is_looped = true;
+        self
     }
 
     /// Marks an audio request as looping background music.
     pub fn background(mut self) -> Self {
+        self.volume = PlayingAudio::BACKGROUND_VOLUME;
         self.is_background = true;
+        self.is_looped = true;
         self
     }
 }
@@ -107,6 +211,7 @@ pub fn setup_audio(mut commands: Commands, assets: Res<WorldAssets>) {
                 .spawn((ImageNode::new(assets.image("no-music")), MusicBtnCmp))
                 .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                 .observe(cursor::<Out>(SystemCursorIcon::Default))
+                .observe(play_button_audio)
                 .observe(|_: On<Pointer<Click>>, mut commands: Commands| {
                     commands.queue(|w: &mut World| {
                         w.write_message(ChangeAudioMsg(None));
@@ -121,7 +226,6 @@ pub fn update_audio(
     mut btn_q: Query<&mut ImageNode, With<MusicBtnCmp>>,
     mut settings: ResMut<Settings>,
     game_state: Res<State<GameState>>,
-    audio_state: Res<State<AudioState>>,
     mut next_audio_state: ResMut<NextState<AudioState>>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     mut pause_audio_msg: MessageWriter<PauseAudioMsg>,
@@ -130,7 +234,7 @@ pub fn update_audio(
     assets: Res<WorldAssets>,
 ) {
     for ev in change_audio_msg.read() {
-        settings.audio = ev.0.unwrap_or(match *audio_state.get() {
+        settings.audio = ev.0.unwrap_or(match settings.audio {
             AudioState::Mute => AudioState::NoMusic,
             AudioState::NoMusic => AudioState::Sound,
             AudioState::Sound => AudioState::Mute,
@@ -182,62 +286,87 @@ pub fn play_music(mut play_audio_msg: MessageWriter<PlayAudioMsg>) {
     play_audio_msg.write(PlayAudioMsg::new("music").background());
 }
 
+/// Keeps one booster loop active only while a visible mission is hovered during play.
+pub fn update_mission_hover_audio(
+    state: Option<Res<UiState>>,
+    missions: Option<Res<Missions>>,
+    app_state: Res<State<AppState>>,
+    game_state: Res<State<GameState>>,
+    settings: Res<Settings>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut playing: Local<bool>,
+    mut play: MessageWriter<PlayAudioMsg>,
+    mut stop: MessageWriter<StopAudioMsg>,
+) {
+    let hovered = *app_state.get() == AppState::Game
+        && *game_state.get() == GameState::Playing
+        && settings.audio != AudioState::Mute
+        && windows.iter().any(|window| window.focused && window.cursor_position().is_some())
+        && state.zip(missions).is_some_and(|(state, missions)| {
+            state.mission_hover.is_some_and(|id| missions.get(id).is_some())
+        });
+    if hovered != *playing {
+        if hovered {
+            play.write(PlayAudioMsg::new("booster").looped());
+        } else {
+            stop.write(StopAudioMsg::new("booster"));
+        }
+        *playing = hovered;
+    }
+}
+
 /// Starts queued audio handles with the requested channel and volume settings.
 pub fn play_audio(
     mut play_audio_msg: MessageReader<PlayAudioMsg>,
-    audio_state: Res<State<AudioState>>,
+    settings: Res<Settings>,
     mut playing_audio: ResMut<PlayingAudio>,
     mut audio_instances: ResMut<Assets<AudioInstance>>,
     audio: Res<Audio>,
     assets: Res<WorldAssets>,
 ) {
-    for message in play_audio_msg.read() {
-        if *audio_state.get() != AudioState::Mute {
-            let mut new_sound = false;
+    // Kira removes completed instances in PreUpdate. Keep every live one-shot so
+    // mute/stop also reaches overlapping clicks, then discard finished handles.
+    playing_audio.0.retain(|_, handles| {
+        handles.retain(|handle| {
+            audio_instances
+                .get(handle)
+                .is_some_and(|instance| !matches!(instance.state(), PlaybackState::Stopped))
+        });
+        !handles.is_empty()
+    });
 
-            if let Some(handle) = playing_audio.0.get(message.name) {
-                if let Some(mut instance) = audio_instances.get_mut(handle) {
-                    if matches!(
-                        instance.state(),
-                        PlaybackState::Paused { .. } | PlaybackState::Pausing { .. }
-                    ) {
-                        if !message.is_background || *audio_state.get() != AudioState::NoMusic {
+    for message in play_audio_msg.read() {
+        if settings.audio == AudioState::Mute
+            || (message.is_background && settings.audio == AudioState::NoMusic)
+        {
+            continue;
+        }
+
+        if message.is_looped {
+            if let Some(handles) = playing_audio.0.get(message.name) {
+                for handle in handles {
+                    if let Some(mut instance) = audio_instances.get_mut(handle) {
+                        if matches!(
+                            instance.state(),
+                            PlaybackState::Paused { .. } | PlaybackState::Pausing { .. }
+                        ) {
                             instance.resume(PlayingAudio::TWEEN);
                         }
-                    } else if !message.is_background
-                        || !matches!(
-                            instance.state(),
-                            PlaybackState::Playing { .. }
-                                | PlaybackState::WaitingToResume { .. }
-                                | PlaybackState::Resuming { .. }
-                        )
-                    {
-                        new_sound = true; // Audio finished playing
                     }
                 }
-            } else if message.is_background {
-                if *audio_state.get() != AudioState::NoMusic {
-                    playing_audio.0.insert(
-                        message.name,
-                        audio
-                            .play(assets.audio(message.name))
-                            .fade_in(PlayingAudio::TWEEN)
-                            .with_volume(message.volume)
-                            .looped()
-                            .handle(),
-                    );
-                }
-            } else {
-                new_sound = true;
-            }
-
-            if new_sound {
-                playing_audio.0.insert(
-                    message.name,
-                    audio.play(assets.audio(message.name)).with_volume(message.volume).handle(),
-                );
+                continue;
             }
         }
+
+        let mut playback = audio.play(assets.audio(message.name));
+        playback.with_volume(message.volume);
+        if message.is_background {
+            playback.fade_in(PlayingAudio::TWEEN);
+        }
+        if message.is_looped {
+            playback.looped();
+        }
+        playing_audio.0.entry(message.name).or_default().push(playback.handle());
     }
 }
 
@@ -246,11 +375,18 @@ pub fn pause_audio(
     mut pause_audio_msg: MessageReader<PauseAudioMsg>,
     playing_audio: Res<PlayingAudio>,
     mut audio_instances: ResMut<Assets<AudioInstance>>,
+    settings: Res<Settings>,
 ) {
     for message in pause_audio_msg.read() {
-        if let Some(handle) = playing_audio.0.get(message.name) {
-            if let Some(mut instance) = audio_instances.get_mut(handle) {
-                instance.pause(PlayingAudio::TWEEN);
+        if let Some(handles) = playing_audio.0.get(message.name) {
+            for handle in handles {
+                if let Some(mut instance) = audio_instances.get_mut(handle) {
+                    instance.pause(if settings.audio == AudioState::Mute {
+                        AudioTween::default()
+                    } else {
+                        PlayingAudio::TWEEN
+                    });
+                }
             }
         }
     }
@@ -263,10 +399,11 @@ pub fn stop_audio(
     mut audio_instances: ResMut<Assets<AudioInstance>>,
 ) {
     for message in stop_audio_msg.read() {
-        if let Some(handle) = playing_audio.0.get(message.name) {
-            if let Some(mut instance) = audio_instances.get_mut(handle) {
-                instance.stop(PlayingAudio::TWEEN);
-                playing_audio.0.remove(message.name);
+        if let Some(handles) = playing_audio.0.remove(message.name) {
+            for handle in handles {
+                if let Some(mut instance) = audio_instances.get_mut(&handle) {
+                    instance.stop(AudioTween::default());
+                }
             }
         }
     }
@@ -289,3 +426,7 @@ pub fn mute_audio(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/audio.rs"]
+mod tests;

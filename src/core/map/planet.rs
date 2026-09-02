@@ -458,6 +458,14 @@ impl Planet {
             .saturating_mul(self.army.amount(&Unit::Building(Building::MissileSilo)))
     }
 
+    /// Returns silo space after reserving slots for both missile types queued this turn.
+    pub fn remaining_missile_capacity(&self) -> usize {
+        self.max_missile_capacity().saturating_sub(
+            self.missile_capacity()
+                .saturating_add(self.buy.iter().filter(|unit| unit.is_missile()).count()),
+        )
+    }
+
     /// Returns the maximum jump capacity allowed by current upgrades.
     pub fn max_jump_capacity(&self) -> usize {
         FACTORY_PRODUCTION_FACTOR

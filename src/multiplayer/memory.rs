@@ -2,21 +2,33 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use bevy::platform::time::Instant;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::core::identity::{GameId, PlayerId, UserId};
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
-use crate::multiplayer::backend::{BackendError, BackendFuture, MultiplayerBackend};
+use crate::multiplayer::authority::{
+    initial_snapshot, resolved_snapshot, same_snapshot, started_snapshot_for_members,
+    validate_incoming, validate_save,
+};
+use crate::multiplayer::backend::{
+    BackendError, BackendFuture, MultiplayerBackend, PLAYER_CONNECTION_TIMEOUT,
+};
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
     GameRecord, GameSummary, JoinDisposition, JoinGameRequest, MembershipResult,
     RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition,
 };
 use crate::multiplayer::recovery::generate_user_token;
+
+/// How long completed games and their related records are retained.
+const FINISHED_GAME_RETENTION: Duration = Duration::from_secs(48 * 60 * 60);
 
 /// Thread-safe in-memory implementation with Supabase-like uniqueness and revision semantics.
 #[derive(Clone, Default)]
@@ -36,10 +48,11 @@ struct MemoryState {
 /// Canonical mock game plus hidden recovery hashes, submissions, and durable events.
 struct StoredGame {
     record: GameRecord,
+    finished_at: Option<Instant>,
     recovery_hashes: HashMap<PlayerId, String>,
     submissions: BTreeMap<(u64, PlayerId), StoredTurnSubmission>,
     events: Vec<BackendEvent>,
-    connected_players: HashSet<PlayerId>,
+    connected_players: HashMap<PlayerId, Instant>,
 }
 
 impl InMemoryBackend {
@@ -48,11 +61,33 @@ impl InMemoryBackend {
         Self::default()
     }
 
-    /// Returns a lock error as a protocol failure rather than panicking.
+    /// Removes expired mock records on access; hosted cleanup runs on the database scheduler.
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, MemoryState>, BackendError> {
-        self.inner
-            .lock()
-            .map_err(|_| BackendError::Protocol("in-memory backend lock was poisoned".to_string()))
+        let mut state = self.inner.lock().map_err(|_| {
+            BackendError::Protocol("in-memory backend lock was poisoned".to_string())
+        })?;
+        state.games.retain(|_, stored| {
+            stored.record.status != MatchStatus::Finished
+                || stored.finished_at.is_none_or(|at| at.elapsed() < FINISHED_GAME_RETENTION)
+        });
+        // Project the heartbeat lease on every access, including loads and resume checks.
+        // A client that vanishes cannot leave its saved connection flag true forever.
+        let now = Instant::now();
+        for stored in state.games.values_mut() {
+            for member in &mut stored.record.members {
+                member.connected =
+                    stored.connected_players.get(&member.player_id).is_some_and(|last_seen| {
+                        now.saturating_duration_since(*last_seen) < PLAYER_CONNECTION_TIMEOUT
+                    });
+            }
+        }
+        let MemoryState {
+            games,
+            codes,
+            ..
+        } = &mut *state;
+        codes.retain(|_, game_id| games.contains_key(game_id));
+        Ok(state)
     }
 }
 
@@ -95,7 +130,7 @@ impl MultiplayerBackend for InMemoryBackend {
     ) -> BackendFuture<'a, MembershipResult> {
         Box::pin(async move {
             validate_name_and_hash(&request.display_name, &request.recovery_hash)?;
-            request.persisted.state.validate().map_err(invalid_game)?;
+            request.persisted.validate().map_err(invalid_game)?;
             if request.persisted.state.status != MatchStatus::Lobby {
                 return Err(BackendError::InvalidGameStatus);
             }
@@ -117,21 +152,24 @@ impl MultiplayerBackend for InMemoryBackend {
                 connected: false,
             };
             let max_players = request.persisted.state.rules.player_count;
+            let canonical = initial_snapshot(&request.persisted, request.persisted.state.rng.seed)?;
             let record = GameRecord {
+                submitted_players: Vec::new(),
                 id: game_id.clone(),
                 code: request.code.clone(),
                 revision: 0,
                 max_players,
                 status: MatchStatus::Lobby,
-                persisted: request.persisted,
+                persisted: canonical,
                 members: vec![membership.clone()],
             };
             let mut stored = StoredGame {
                 record,
+                finished_at: None,
                 recovery_hashes: HashMap::from([(1, request.recovery_hash)]),
                 submissions: BTreeMap::new(),
                 events: Vec::new(),
-                connected_players: HashSet::new(),
+                connected_players: HashMap::new(),
             };
             push_event(&mut stored, BackendEventKind::PlayerJoined, None, Some(1));
             let game = stored.record.clone();
@@ -208,6 +246,9 @@ impl MultiplayerBackend for InMemoryBackend {
         Box::pin(async move {
             validate_hash(&request.recovery_hash)?;
             validate_hash(&request.replacement_recovery_hash)?;
+            if request.recovery_hash == request.replacement_recovery_hash {
+                return Err(BackendError::InvalidData("recovery_rotation".to_string()));
+            }
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let game_id =
@@ -224,6 +265,20 @@ impl MultiplayerBackend for InMemoryBackend {
                     bool::from(expected.as_bytes().ct_eq(supplied)).then_some(*player_id)
                 })
                 .ok_or(BackendError::InvalidRecoveryCode)?;
+            if stored
+                .connected_players
+                .get(&player_id)
+                .is_some_and(|last_seen| last_seen.elapsed() < PLAYER_CONNECTION_TIMEOUT)
+            {
+                return Err(BackendError::RecoveryCodeInUse);
+            }
+            if stored
+                .recovery_hashes
+                .values()
+                .any(|hash| hash == &request.replacement_recovery_hash)
+            {
+                return Err(BackendError::InvalidRecoveryCode);
+            }
             let membership = stored
                 .record
                 .members
@@ -232,10 +287,10 @@ impl MultiplayerBackend for InMemoryBackend {
                 .ok_or(BackendError::PlayerNoLongerInGame)?;
             membership.user_id = user_id;
             membership.identity_version = membership.identity_version.saturating_add(1);
-            membership.connected = false;
+            membership.connected = true;
             let membership = membership.clone();
             stored.recovery_hashes.insert(player_id, request.replacement_recovery_hash);
-            stored.connected_players.remove(&player_id);
+            stored.connected_players.insert(player_id, Instant::now());
             push_event(stored, BackendEventKind::PlayerRecovered, None, Some(player_id));
             Ok(MembershipResult {
                 game: stored.record.clone(),
@@ -245,7 +300,7 @@ impl MultiplayerBackend for InMemoryBackend {
         })
     }
 
-    /// Lists only games for which the calling identity has a current mapping.
+    /// Lists started games for current memberships after expired games have been removed.
     fn list_games<'a>(&'a self, session: &'a AuthSession) -> BackendFuture<'a, Vec<GameSummary>> {
         Box::pin(async move {
             let state = self.lock()?;
@@ -253,6 +308,7 @@ impl MultiplayerBackend for InMemoryBackend {
             let mut summaries = state
                 .games
                 .values()
+                .filter(|stored| stored.record.status != MatchStatus::Lobby)
                 .filter_map(|stored| {
                     let member =
                         stored.record.members.iter().find(|member| member.user_id == user_id)?;
@@ -263,6 +319,16 @@ impl MultiplayerBackend for InMemoryBackend {
                         status: stored.record.status,
                         turn: stored.record.persisted.state.turn,
                         player_id: member.player_id,
+                        display_name: member.display_name.clone(),
+                        player_color: stored
+                            .record
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .map_or_else(
+                                |_| PlayerColor::for_player(member.player_id),
+                                |player| player.color(),
+                            ),
                         player_count: stored.record.members.len(),
                         max_players: stored.record.max_players,
                     })
@@ -297,7 +363,7 @@ impl MultiplayerBackend for InMemoryBackend {
         persisted: PersistedGame,
     ) -> BackendFuture<'a, GameRecord> {
         Box::pin(async move {
-            persisted.state.validate().map_err(invalid_game)?;
+            persisted.validate().map_err(invalid_game)?;
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
@@ -317,6 +383,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 return Err(BackendError::InvalidGameStatus);
             }
             compare_revision(stored, expected_revision)?;
+            let persisted = started_snapshot_for_members(&stored.record, persisted.state.rng.seed)?;
             stored.record.max_players = persisted.state.rules.player_count;
             commit_state(stored, persisted);
             push_event(stored, BackendEventKind::GameStarted, None, None);
@@ -357,15 +424,16 @@ impl MultiplayerBackend for InMemoryBackend {
         persisted: PersistedGame,
     ) -> BackendFuture<'a, GameRecord> {
         Box::pin(async move {
-            persisted.state.validate().map_err(invalid_game)?;
+            persisted.validate().map_err(invalid_game)?;
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
-            authorize_member(stored, &user_id)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
             compare_revision(stored, expected_revision)?;
             if persisted.state.status != stored.record.status {
                 return Err(BackendError::InvalidGameStatus);
             }
+            validate_save(&stored.record, player_id, &persisted)?;
             commit_state(stored, persisted);
             push_event(stored, BackendEventKind::StateChanged, None, None);
             Ok(stored.record.clone())
@@ -414,15 +482,27 @@ impl MultiplayerBackend for InMemoryBackend {
             let digest = submission_digest(&submission)?;
             let key = (submission.turn, submission.player_id);
             if let Some(existing) = stored.submissions.get(&key) {
-                return if existing.digest == digest {
-                    Ok(SubmissionDisposition::Duplicate)
-                } else {
-                    Err(BackendError::DuplicateSubmission {
+                if existing.submission.generation != submission.generation
+                    || (existing.ready && existing.digest != digest)
+                {
+                    return Err(BackendError::DuplicateSubmission {
                         player_id: submission.player_id,
                         turn: submission.turn,
-                    })
-                };
+                    });
+                }
+                if existing.ready {
+                    return Ok(SubmissionDisposition::Duplicate);
+                }
+            } else if submission.generation != 0 {
+                return Err(BackendError::InvalidData("unknown readiness generation".into()));
             }
+            let existing = stored
+                .submissions
+                .range((submission.turn, 0)..=(submission.turn, PlayerId::MAX))
+                .filter(|(_, stored)| stored.ready)
+                .map(|(_, stored)| stored.submission.clone())
+                .collect::<Vec<_>>();
+            validate_incoming(&stored.record, &existing, &submission)?;
             let player_id = submission.player_id;
             let turn = submission.turn;
             stored.submissions.insert(
@@ -430,10 +510,94 @@ impl MultiplayerBackend for InMemoryBackend {
                 StoredTurnSubmission {
                     submission,
                     digest,
+                    ready: true,
                 },
             );
+            stored.record.submitted_players.push(player_id);
+            stored.record.submitted_players.sort_unstable();
             push_event(stored, BackendEventKind::TurnSubmitted, Some(turn), Some(player_id));
             Ok(SubmissionDisposition::Inserted)
+        })
+    }
+
+    /// Withdraws readiness under the same lock as the final ready and resolution writes.
+    fn withdraw_turn<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        turn: u64,
+        generation: u64,
+    ) -> BackendFuture<'a, TurnSubmission> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            if stored.record.status != MatchStatus::Active {
+                return Err(BackendError::InvalidGameStatus);
+            }
+            if !stored
+                .record
+                .persisted
+                .state
+                .players
+                .iter()
+                .any(|p| p.id == player_id && !p.spectator)
+            {
+                return Err(BackendError::Forbidden);
+            }
+            if turn != stored.record.persisted.state.turn {
+                return Err(BackendError::StaleSubmission {
+                    expected: stored.record.persisted.state.turn,
+                    actual: turn,
+                });
+            }
+            let key = (turn, player_id);
+            let mut draft = if let Some(existing) = stored.submissions.get(&key) {
+                if !existing.ready && generation <= existing.submission.generation {
+                    return Ok(existing.submission.clone());
+                }
+                if generation != existing.submission.generation {
+                    return Err(BackendError::DuplicateSubmission {
+                        player_id,
+                        turn,
+                    });
+                }
+                existing.submission.clone()
+            } else {
+                if generation != 0 {
+                    return Err(BackendError::InvalidData("unknown readiness generation".into()));
+                }
+                TurnSubmission::new(player_id, turn, Vec::new())
+            };
+            if stored
+                .record
+                .persisted
+                .state
+                .players
+                .iter()
+                .filter(|p| !p.spectator)
+                .all(|p| stored.submissions.get(&(turn, p.id)).is_some_and(|s| s.ready))
+            {
+                return Err(BackendError::TurnCommitted);
+            }
+            draft.generation = generation
+                .checked_add(1)
+                .filter(|g| *g <= i64::MAX as u64)
+                .ok_or_else(|| BackendError::InvalidData("readiness generation overflow".into()))?;
+            // Keep a withdrawn draft so late ready requests cannot resurrect it and a
+            // reconnecting player can recover their orders even after a lost response.
+            stored.submissions.insert(
+                key,
+                StoredTurnSubmission {
+                    digest: submission_digest(&draft)?,
+                    submission: draft.clone(),
+                    ready: false,
+                },
+            );
+            stored.record.submitted_players.retain(|id| *id != player_id);
+            push_event(stored, BackendEventKind::TurnWithdrawn, Some(turn), Some(player_id));
+            Ok(draft)
         })
     }
 
@@ -467,7 +631,7 @@ impl MultiplayerBackend for InMemoryBackend {
         persisted: PersistedGame,
     ) -> BackendFuture<'a, GameRecord> {
         Box::pin(async move {
-            persisted.state.validate().map_err(invalid_game)?;
+            persisted.validate().map_err(invalid_game)?;
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
@@ -494,12 +658,24 @@ impl MultiplayerBackend for InMemoryBackend {
             let submitted = stored
                 .submissions
                 .range((resolved_turn, 0)..=(resolved_turn, PlayerId::MAX))
+                .filter(|(_, stored)| stored.ready)
                 .map(|((_, player_id), _)| *player_id)
                 .collect::<HashSet<_>>();
             if required != submitted {
                 return Err(BackendError::TurnIncomplete);
             }
+            let submissions = stored
+                .submissions
+                .range((resolved_turn, 0)..=(resolved_turn, PlayerId::MAX))
+                .filter(|(_, stored)| stored.ready)
+                .map(|(_, stored)| stored.submission.clone())
+                .collect::<Vec<_>>();
+            let canonical = resolved_snapshot(&stored.record, &submissions)?;
+            if !same_snapshot(&canonical, &persisted)? {
+                return Err(BackendError::Forbidden);
+            }
             let finished = persisted.state.status == MatchStatus::Finished;
+            stored.record.submitted_players.clear();
             commit_state(stored, persisted);
             push_event(
                 stored,
@@ -544,7 +720,7 @@ impl MultiplayerBackend for InMemoryBackend {
         })
     }
 
-    /// Emits coarse connection presence for lobby/status UI.
+    /// Deletes a lobby when its host leaves; started games retain their memberships.
     fn set_connected<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -555,12 +731,20 @@ impl MultiplayerBackend for InMemoryBackend {
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
-            let player_id = authorize_member(stored, &user_id)?.player_id;
-            let changed = if connected {
-                stored.connected_players.insert(player_id)
+            let member = authorize_member(stored, &user_id)?;
+            if !connected && stored.record.status == MatchStatus::Lobby && member.is_creator {
+                let code = stored.record.code.clone();
+                state.games.remove(game_id);
+                state.codes.remove(&code);
+                return Ok(());
+            }
+            let player_id = member.player_id;
+            let changed = member.connected != connected;
+            if connected {
+                stored.connected_players.insert(player_id, Instant::now());
             } else {
-                stored.connected_players.remove(&player_id)
-            };
+                stored.connected_players.remove(&player_id);
+            }
             if let Some(member) =
                 stored.record.members.iter_mut().find(|member| member.player_id == player_id)
             {
@@ -643,6 +827,9 @@ fn compare_revision(stored: &StoredGame, expected: u64) -> Result<(), BackendErr
 
 /// Commits validated state and increments the revision exactly once.
 fn commit_state(stored: &mut StoredGame, persisted: PersistedGame) {
+    if persisted.state.status == MatchStatus::Finished && stored.finished_at.is_none() {
+        stored.finished_at = Some(Instant::now());
+    }
     stored.record.revision = stored.record.revision.saturating_add(1);
     stored.record.status = persisted.state.status;
     stored.record.persisted = persisted;
@@ -681,617 +868,5 @@ fn push_event(
 }
 
 #[cfg(test)]
-mod tests {
-    use futures_lite::future::block_on;
-
-    use super::*;
-    use crate::core::identity::GameCode;
-    use crate::core::simulation::{resolve_turn, GameModel, GameRules};
-    use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
-
-    /// Creates a session and a matching recovery credential.
-    fn identity(backend: &InMemoryBackend) -> (AuthSession, RecoveryCode) {
-        (block_on(backend.authenticate(None)).unwrap(), RecoveryCode::generate().unwrap())
-    }
-
-    /// Creates a game with the requested exact player capacity.
-    fn create(
-        backend: &InMemoryBackend,
-        session: &AuthSession,
-        recovery: &RecoveryCode,
-        count: u8,
-    ) -> MembershipResult {
-        let model = GameModel::new(
-            [count; 32],
-            GameRules {
-                player_count: count,
-                ..GameRules::default()
-            },
-        )
-        .unwrap();
-        block_on(backend.create_game(
-            session,
-            CreateGameRequest {
-                code: generate_game_code().unwrap(),
-                display_name: "Creator".to_string(),
-                recovery_hash: recovery.hash().0,
-                persisted: PersistedGame::new(model),
-            },
-        ))
-        .unwrap()
-    }
-
-    #[test]
-    /// Covers creation, 2/3/4-player joining, duplicate reconnect, and full lobbies.
-    fn supports_all_lobby_sizes_and_duplicate_joining() {
-        for count in 2..=4 {
-            let backend = InMemoryBackend::new();
-            let (creator, creator_recovery) = identity(&backend);
-            let created = create(&backend, &creator, &creator_recovery, count);
-            for slot in 2..=count {
-                let (session, recovery) = identity(&backend);
-                let joined = block_on(backend.join_game(
-                    &session,
-                    JoinGameRequest {
-                        code: created.game.code.clone(),
-                        display_name: format!("Player {slot}"),
-                        recovery_hash: recovery.hash().0,
-                    },
-                ))
-                .unwrap();
-                assert_eq!(joined.membership.player_id, u64::from(slot));
-                let duplicate = block_on(backend.join_game(
-                    &session,
-                    JoinGameRequest {
-                        code: created.game.code.clone(),
-                        display_name: "Ignored".to_string(),
-                        recovery_hash: recovery.hash().0,
-                    },
-                ))
-                .unwrap();
-                assert_eq!(duplicate.disposition, JoinDisposition::Reconnected);
-            }
-            let (extra, extra_recovery) = identity(&backend);
-            assert!(matches!(
-                block_on(backend.join_game(
-                    &extra,
-                    JoinGameRequest {
-                        code: created.game.code,
-                        display_name: "Extra".to_string(),
-                        recovery_hash: extra_recovery.hash().0,
-                    },
-                )),
-                Err(BackendError::GameFull)
-            ));
-        }
-    }
-
-    #[test]
-    /// A four-slot lobby may start with two members and then becomes an exact two-player game.
-    fn starts_with_current_lobby_members_instead_of_waiting_for_capacity() {
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 4);
-
-        let mut premature = created.game.persisted.clone();
-        premature.state.start().unwrap();
-        assert!(matches!(
-            block_on(backend.start_game(
-                &creator,
-                &created.game.id,
-                created.game.revision,
-                premature,
-            )),
-            Err(BackendError::InvalidGameStatus)
-        ));
-
-        let (joiner, joiner_recovery) = identity(&backend);
-        let joined = block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let mut rules = joined.game.persisted.state.rules.clone();
-        rules.player_count = 2;
-        let mut started = GameModel::new([42; 32], rules).unwrap();
-        started.start().unwrap();
-        let active = block_on(backend.start_game(
-            &creator,
-            &joined.game.id,
-            joined.game.revision,
-            PersistedGame::new(started),
-        ))
-        .unwrap();
-
-        assert_eq!(active.status, MatchStatus::Active);
-        assert_eq!(active.max_players, 2);
-        assert_eq!(active.members.len(), 2);
-        assert_eq!(active.persisted.state.players.len(), 2);
-        assert_eq!(active.persisted.state.rules.player_count, 2);
-    }
-
-    #[test]
-    /// Only the host can release an active match, and only after every member reconnects.
-    fn resumed_game_waits_for_every_connected_player() {
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 2);
-        let (joiner, joiner_recovery) = identity(&backend);
-        let joined = block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let mut model = GameModel::new([51; 32], GameRules::default()).unwrap();
-        model.start().unwrap();
-        let active = block_on(backend.start_game(
-            &creator,
-            &joined.game.id,
-            joined.game.revision,
-            PersistedGame::new(model),
-        ))
-        .unwrap();
-
-        block_on(backend.set_connected(&creator, &active.id, true)).unwrap();
-        assert_eq!(
-            block_on(backend.resume_game(&creator, &active.id)),
-            Err(BackendError::InvalidGameStatus)
-        );
-        block_on(backend.set_connected(&joiner, &active.id, true)).unwrap();
-        assert_eq!(
-            block_on(backend.resume_game(&joiner, &active.id)),
-            Err(BackendError::Forbidden)
-        );
-        let before = block_on(backend.subscribe(&creator, &active.id, 0)).unwrap().cursor;
-        block_on(backend.resume_game(&creator, &active.id)).unwrap();
-        let release = block_on(backend.subscribe(&creator, &active.id, before)).unwrap();
-        assert!(release.events.iter().any(|event| event.kind == BackendEventKind::GameResumed));
-        assert!(block_on(backend.load_game(&creator, &active.id))
-            .unwrap()
-            .members
-            .iter()
-            .all(|member| member.connected));
-    }
-
-    #[test]
-    /// Restores the same anonymous identity and automatically finds its player slot.
-    fn reconnect_uses_authenticated_mapping() {
-        let backend = InMemoryBackend::new();
-        let (session, recovery) = identity(&backend);
-        let created = create(&backend, &session, &recovery, 2);
-        let restored = block_on(backend.authenticate(Some(&session))).unwrap();
-        let games = block_on(backend.list_games(&restored)).unwrap();
-        assert_eq!(games.len(), 1);
-        assert_eq!(games[0].player_id, created.membership.player_id);
-    }
-
-    #[test]
-    /// Recovery replaces the user, rotates the secret, and invalidates old access.
-    fn recovers_from_another_identity_and_rotates_code() {
-        let backend = InMemoryBackend::new();
-        let (old_session, recovery) = identity(&backend);
-        let created = create(&backend, &old_session, &recovery, 2);
-        let (new_session, replacement) = identity(&backend);
-        let recovered = block_on(backend.recover_player(
-            &new_session,
-            RecoverPlayerRequest {
-                code: created.game.code.clone(),
-                recovery_hash: recovery.hash().0.clone(),
-                replacement_recovery_hash: replacement.hash().0,
-            },
-        ))
-        .unwrap();
-        assert_eq!(recovered.membership.user_id, new_session.user_id);
-        assert_eq!(recovered.membership.identity_version, 2);
-        assert!(matches!(
-            block_on(backend.load_game(&old_session, &created.game.id)),
-            Err(BackendError::Forbidden)
-        ));
-        let (third_session, third_replacement) = identity(&backend);
-        assert!(matches!(
-            block_on(backend.recover_player(
-                &third_session,
-                RecoverPlayerRequest {
-                    code: created.game.code,
-                    recovery_hash: recovery.hash().0,
-                    replacement_recovery_hash: third_replacement.hash().0,
-                },
-            )),
-            Err(BackendError::InvalidRecoveryCode)
-        ));
-    }
-
-    #[test]
-    /// Recovery distinguishes unknown games, malformed hashes, existing members, and bad secrets.
-    fn reports_typed_recovery_failures() {
-        let backend = InMemoryBackend::new();
-        let (creator, recovery) = identity(&backend);
-        let created = create(&backend, &creator, &recovery, 2);
-        let (stranger, replacement) = identity(&backend);
-
-        assert!(matches!(
-            block_on(backend.recover_player(
-                &stranger,
-                RecoverPlayerRequest {
-                    code: GameCode::new("ABCDEF"),
-                    recovery_hash: recovery.hash().0.clone(),
-                    replacement_recovery_hash: replacement.hash().0.clone(),
-                },
-            )),
-            Err(BackendError::GameNotFound)
-        ));
-        assert!(matches!(
-            block_on(backend.recover_player(
-                &stranger,
-                RecoverPlayerRequest {
-                    code: created.game.code.clone(),
-                    recovery_hash: "not-a-sha256-hash".to_string(),
-                    replacement_recovery_hash: replacement.hash().0.clone(),
-                },
-            )),
-            Err(BackendError::InvalidData(_))
-        ));
-        assert!(matches!(
-            block_on(backend.recover_player(
-                &creator,
-                RecoverPlayerRequest {
-                    code: created.game.code.clone(),
-                    recovery_hash: recovery.hash().0.clone(),
-                    replacement_recovery_hash: replacement.hash().0.clone(),
-                },
-            )),
-            Err(BackendError::AlreadyMember)
-        ));
-        let unrelated = RecoveryCode::generate().unwrap();
-        assert!(matches!(
-            block_on(backend.recover_player(
-                &stranger,
-                RecoverPlayerRequest {
-                    code: created.game.code,
-                    recovery_hash: unrelated.hash().0,
-                    replacement_recovery_hash: replacement.hash().0,
-                },
-            )),
-            Err(BackendError::InvalidRecoveryCode)
-        ));
-    }
-
-    #[test]
-    /// Any member may save, while simultaneous stale writes are rejected.
-    fn saves_by_multiple_players_use_optimistic_revisions() {
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 2);
-        let (joiner, joiner_recovery) = identity(&backend);
-        block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let loaded = block_on(backend.load_game(&creator, &created.game.id)).unwrap();
-        let creator_saved = block_on(backend.save_game(
-            &creator,
-            &created.game.id,
-            loaded.revision,
-            loaded.persisted.clone(),
-        ))
-        .unwrap();
-        let saved = block_on(backend.save_game(
-            &joiner,
-            &created.game.id,
-            creator_saved.revision,
-            loaded.persisted.clone(),
-        ))
-        .unwrap();
-        assert_eq!(saved.revision, loaded.revision + 2);
-        assert!(matches!(
-            block_on(backend.save_game(
-                &creator,
-                &created.game.id,
-                loaded.revision,
-                loaded.persisted,
-            )),
-            Err(BackendError::Conflict { expected, actual })
-                if expected == loaded.revision && actual == saved.revision
-        ));
-    }
-
-    #[test]
-    /// A saved snapshot is discoverable and exact after restoring the member's local session.
-    fn resumes_exact_saved_state() {
-        let backend = InMemoryBackend::new();
-        let (creator, recovery) = identity(&backend);
-        let created = create(&backend, &creator, &recovery, 2);
-        let mut changed = created.game.persisted.clone();
-        changed.state.players[0].resources.metal = 42_424;
-        let saved =
-            block_on(backend.save_game(&creator, &created.game.id, created.game.revision, changed))
-                .unwrap();
-
-        let restored = block_on(backend.authenticate(Some(&creator))).unwrap();
-        let listed = block_on(backend.list_games(&restored)).unwrap();
-        assert_eq!(listed[0].revision, saved.revision);
-        let resumed = block_on(backend.load_game(&restored, &created.game.id)).unwrap();
-        assert_eq!(resumed.persisted.state.players[0].resources.metal, 42_424);
-    }
-
-    #[test]
-    /// Invalid complete-state snapshots are rejected before they can advance a revision.
-    fn rejects_malformed_saved_state() {
-        let backend = InMemoryBackend::new();
-        let (creator, recovery) = identity(&backend);
-        let created = create(&backend, &creator, &recovery, 2);
-        let mut malformed = created.game.persisted.clone();
-        malformed.state.players.pop();
-        assert!(matches!(
-            block_on(backend.save_game(
-                &creator,
-                &created.game.id,
-                created.game.revision,
-                malformed,
-            )),
-            Err(BackendError::InvalidData(_))
-        ));
-        assert_eq!(
-            block_on(backend.load_game(&creator, &created.game.id)).unwrap().revision,
-            created.game.revision
-        );
-    }
-
-    #[test]
-    /// Two genuinely concurrent saves serialize to one success and one revision conflict.
-    fn simultaneous_saves_accept_exactly_one_writer() {
-        use std::sync::{Arc, Barrier};
-
-        let backend = InMemoryBackend::new();
-        let (creator, recovery) = identity(&backend);
-        let created = create(&backend, &creator, &recovery, 2);
-        let barrier = Arc::new(Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let backend = backend.clone();
-            let creator = creator.clone();
-            let game_id = created.game.id.clone();
-            let persisted = created.game.persisted.clone();
-            let barrier = Arc::clone(&barrier);
-            workers.push(std::thread::spawn(move || {
-                barrier.wait();
-                block_on(backend.save_game(&creator, &game_id, 0, persisted))
-            }));
-        }
-        barrier.wait();
-        let results = workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>();
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| matches!(result, Err(BackendError::Conflict { .. })))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    /// Duplicate/stale submissions and competing resolvers have deterministic outcomes.
-    fn coordinates_idempotent_submission_and_single_resolution() {
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 2);
-        let (joiner, joiner_recovery) = identity(&backend);
-        let joined = block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let mut lobby = joined.game;
-        lobby.persisted.state.start().unwrap();
-        let active =
-            block_on(backend.start_game(&creator, &lobby.id, lobby.revision, lobby.persisted))
-                .unwrap();
-        let first = TurnSubmission::new(1, active.persisted.state.turn, Vec::new());
-        let second = TurnSubmission::new(2, active.persisted.state.turn, Vec::new());
-        assert_eq!(
-            block_on(backend.submit_turn(&creator, &active.id, first.clone())).unwrap(),
-            SubmissionDisposition::Inserted
-        );
-        assert_eq!(
-            block_on(backend.submit_turn(&creator, &active.id, first)).unwrap(),
-            SubmissionDisposition::Duplicate
-        );
-        block_on(backend.submit_turn(&joiner, &active.id, second)).unwrap();
-        let submissions = block_on(backend.load_turn_submissions(
-            &creator,
-            &active.id,
-            active.persisted.state.turn,
-        ))
-        .unwrap();
-        let mut next = active.persisted.state.clone();
-        resolve_turn(
-            &mut next,
-            &submissions.iter().map(|stored| stored.submission.clone()).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let accepted = block_on(backend.publish_resolution(
-            &joiner,
-            &active.id,
-            active.revision,
-            active.persisted.state.turn,
-            PersistedGame::new(next.clone()),
-        ))
-        .unwrap();
-        assert_eq!(accepted.persisted.state.turn, active.persisted.state.turn + 1);
-        assert!(matches!(
-            block_on(backend.publish_resolution(
-                &creator,
-                &active.id,
-                active.revision,
-                active.persisted.state.turn,
-                PersistedGame::new(next),
-            )),
-            Err(BackendError::Conflict { .. })
-        ));
-        let stale = TurnSubmission::new(2, active.persisted.state.turn, Vec::new());
-        assert!(matches!(
-            block_on(backend.submit_turn(&joiner, &active.id, stale)),
-            Err(BackendError::StaleSubmission { .. })
-        ));
-    }
-
-    #[test]
-    /// Concurrent player submissions persist once and concurrent resolvers accept one next state.
-    fn simultaneous_submissions_and_resolvers_are_serialized() {
-        use std::sync::{Arc, Barrier};
-
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 2);
-        let (joiner, joiner_recovery) = identity(&backend);
-        let joined = block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let mut lobby = joined.game;
-        lobby.persisted.state.start().unwrap();
-        let active =
-            block_on(backend.start_game(&creator, &lobby.id, lobby.revision, lobby.persisted))
-                .unwrap();
-
-        let barrier = Arc::new(Barrier::new(3));
-        let mut submitters = Vec::new();
-        for (session, player_id) in [(creator.clone(), 1), (joiner.clone(), 2)] {
-            let backend = backend.clone();
-            let game_id = active.id.clone();
-            let barrier = Arc::clone(&barrier);
-            let turn = active.persisted.state.turn;
-            submitters.push(std::thread::spawn(move || {
-                barrier.wait();
-                block_on(backend.submit_turn(
-                    &session,
-                    &game_id,
-                    TurnSubmission::new(player_id, turn, Vec::new()),
-                ))
-            }));
-        }
-        barrier.wait();
-        for submitter in submitters {
-            assert_eq!(submitter.join().unwrap().unwrap(), SubmissionDisposition::Inserted);
-        }
-
-        let submissions = block_on(backend.load_turn_submissions(
-            &creator,
-            &active.id,
-            active.persisted.state.turn,
-        ))
-        .unwrap();
-        let mut model = active.persisted.state.clone();
-        resolve_turn(
-            &mut model,
-            &submissions.into_iter().map(|stored| stored.submission).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let next = PersistedGame::new(model);
-
-        let barrier = Arc::new(Barrier::new(3));
-        let mut resolvers = Vec::new();
-        for session in [creator, joiner] {
-            let backend = backend.clone();
-            let game_id = active.id.clone();
-            let next = next.clone();
-            let barrier = Arc::clone(&barrier);
-            let revision = active.revision;
-            let turn = active.persisted.state.turn;
-            resolvers.push(std::thread::spawn(move || {
-                barrier.wait();
-                block_on(backend.publish_resolution(&session, &game_id, revision, turn, next))
-            }));
-        }
-        barrier.wait();
-        let results =
-            resolvers.into_iter().map(|resolver| resolver.join().unwrap()).collect::<Vec<_>>();
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| matches!(result, Err(BackendError::Conflict { .. })))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    /// An eliminated slot remains a member for resume/view access but cannot submit a turn.
-    fn spectator_cannot_submit_turn() {
-        let backend = InMemoryBackend::new();
-        let (creator, creator_recovery) = identity(&backend);
-        let created = create(&backend, &creator, &creator_recovery, 2);
-        let (joiner, joiner_recovery) = identity(&backend);
-        let joined = block_on(backend.join_game(
-            &joiner,
-            JoinGameRequest {
-                code: created.game.code,
-                display_name: "Joiner".to_string(),
-                recovery_hash: joiner_recovery.hash().0,
-            },
-        ))
-        .unwrap();
-        let mut lobby = joined.game;
-        let defeated_home = lobby.persisted.state.players[1].home_planet;
-        let home = lobby.persisted.state.map.get_mut(defeated_home);
-        home.owned = Some(1);
-        home.controlled = Some(1);
-        lobby.persisted.state.players[1].spectator = true;
-        lobby.persisted.state.start().unwrap();
-        let active =
-            block_on(backend.start_game(&creator, &lobby.id, lobby.revision, lobby.persisted))
-                .unwrap();
-
-        assert!(matches!(
-            block_on(backend.submit_turn(
-                &joiner,
-                &active.id,
-                TurnSubmission::new(2, active.persisted.state.turn, Vec::new()),
-            )),
-            Err(BackendError::Forbidden)
-        ));
-    }
-
-    #[test]
-    /// A reconnecting client can replay missed events and then reload current state.
-    fn reconnect_replays_notifications_and_loads_current_state() {
-        let backend = InMemoryBackend::new();
-        let (creator, recovery) = identity(&backend);
-        let created = create(&backend, &creator, &recovery, 2);
-        let initial = block_on(backend.subscribe(&creator, &created.game.id, 0)).unwrap();
-        block_on(backend.set_connected(&creator, &created.game.id, true)).unwrap();
-        block_on(backend.set_connected(&creator, &created.game.id, false)).unwrap();
-        block_on(backend.set_connected(&creator, &created.game.id, false)).unwrap();
-        let caught_up =
-            block_on(backend.subscribe(&creator, &created.game.id, initial.cursor)).unwrap();
-        assert_eq!(caught_up.events.len(), 2);
-        assert_eq!(
-            block_on(backend.load_game(&creator, &created.game.id)).unwrap().revision,
-            created.game.revision
-        );
-    }
-}
+#[path = "../../tests/multiplayer/memory.rs"]
+mod tests;

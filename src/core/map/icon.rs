@@ -7,7 +7,7 @@ use strum_macros::EnumIter;
 use crate::core::map::planet::Planet;
 #[cfg(feature = "app")]
 use crate::core::ui::systems::Shop;
-use crate::core::units::{Description, Unit};
+use crate::core::units::{Amount, Army, Description, Unit};
 
 #[derive(
     Component, EnumIter, Copy, Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize,
@@ -117,6 +117,25 @@ impl Icon {
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
             Icon::Attacked => false,
+        }
+    }
+
+    /// Checks the actual dispatched units, ignoring empty entries retained by the UI.
+    pub fn accepts_army(self, army: &Army) -> bool {
+        let only = |predicate: fn(&Unit) -> bool| {
+            army.has_army() && army.iter().all(|(unit, count)| *count == 0 || predicate(unit))
+        };
+        match self {
+            Self::Spy => only(|unit| *unit == Unit::probe()),
+            Self::MissileStrike => only(|unit| *unit == Unit::interplanetary_missile()),
+            Self::Deploy => only(Unit::is_ship),
+            Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
+            Self::Destroy => only(Unit::is_ship) && army.amount(&Unit::war_sun()) > 0,
+            Self::Attack => {
+                only(Unit::is_ship)
+                    && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
+            },
+            Self::Attacked | Self::Buildings | Self::Fleet | Self::Defenses => false,
         }
     }
 

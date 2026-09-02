@@ -82,8 +82,8 @@ pub const BACKGROUND_Z: f32 = 0.;
 pub const VORONOI_Z: f32 = 1.;
 /// Render layer of strategic planet sprites.
 pub const PLANET_Z: f32 = 2.;
-/// Render layer of travelling mission sprites.
-pub const MISSION_Z: f32 = 3.;
+/// Travelling missions sit above planets and below their defense and icon overlays.
+pub const MISSION_Z: f32 = PLANET_Z + 0.4;
 /// Render layer of strategic map explosions.
 pub const EXPLOSION_Z: f32 = 4.;
 

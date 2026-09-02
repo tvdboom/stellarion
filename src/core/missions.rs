@@ -1,58 +1,26 @@
-//! Persisted fleet missions, movement calculations, visibility, and Bevy adapters.
+//! Persisted fleet missions, movement calculations, visibility, and optional Bevy adapters.
 
 #[cfg(feature = "app")]
-use std::f32::consts::PI;
-#[cfg(feature = "app")]
-use std::time::Duration;
+pub use super::mission_systems::{
+    send_mission, update_mission_route_arrow, update_missions, MissionRouteArrowCmp,
+};
 
 use bevy::prelude::*;
-#[cfg(feature = "app")]
-use bevy::window::SystemCursorIcon;
-#[cfg(feature = "app")]
-use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-#[cfg(feature = "app")]
-use crate::core::assets::WorldAssets;
-#[cfg(feature = "app")]
-use crate::core::constants::MISSION_Z;
 use crate::core::constants::{NEXUS_FACTOR, PHALANX_DISTANCE, RADAR_DISTANCE};
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-#[cfg(feature = "app")]
-use crate::core::map::model::MapCmp;
 use crate::core::map::planet::{Planet, PlanetId};
-#[cfg(feature = "app")]
-use crate::core::map::systems::MissionCmp;
-#[cfg(feature = "app")]
-use crate::core::map::utils::{cursor, SpriteFrameLens};
-#[cfg(feature = "app")]
-use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
-#[cfg(feature = "app")]
-use crate::core::simulation::TurnCommand;
-#[cfg(feature = "app")]
-use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
-#[cfg(feature = "app")]
-use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 use crate::utils::NameFromEnum;
 
 /// Stable identifier of a persisted fleet mission.
 pub type MissionId = u64;
-
-#[cfg(feature = "app")]
-const MISSION_ROUTE_CHEVRONS: usize = 7;
-
-#[cfg(feature = "app")]
-#[derive(Component)]
-/// One animated chevron in the hovered mission's destination route.
-pub struct MissionRouteArrowCmp {
-    index: usize,
-}
 
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 /// Bevy resource containing the selected player's currently visible missions.
@@ -244,12 +212,12 @@ impl Mission {
         )
     }
 
-    /// Returns the runtime image key for this value.
+    /// Returns the neutral silhouette, keeping jump-gate details private to the owner.
     pub fn image(&self, player: &Player) -> &str {
-        match (self.owner == player.id, self.jump_gate) {
-            (true, false) => "mission",
-            (true, true) => "mission jump",
-            (false, _) => "mission enemy",
+        if self.owner == player.id && self.jump_gate {
+            "mission jump"
+        } else {
+            "mission"
         }
     }
 
@@ -405,246 +373,5 @@ impl Mission {
                     >= moon.position.distance(self.position))
             .then_some(radar)
         })
-    }
-}
-
-#[cfg(feature = "app")]
-/// Advances the visible ECS mission projection after canonical turn installation.
-pub fn update_missions(
-    mut commands: Commands,
-    mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &MissionCmp)>,
-    state: Res<UiState>,
-    map: Res<Map>,
-    player: Res<Player>,
-    missions: Res<Missions>,
-    assets: Res<WorldAssets>,
-) {
-    let player_id = player.id;
-
-    for mission in missions.iter() {
-        if !mission_q.iter().any(|(_, _, _, m)| m.id == mission.id) {
-            let id = mission.id;
-            let owner = mission.owner;
-
-            let destination = map.get(mission.destination);
-
-            let direction = (-mission.position + destination.position).normalize();
-            let angle = direction.y.atan2(direction.x);
-
-            let texture = assets.texture("flame");
-            commands
-                .spawn((
-                    Sprite {
-                        image: assets.image(mission.image(&player)),
-                        custom_size: Some(Vec2::splat(50.)),
-                        ..default()
-                    },
-                    Transform {
-                        translation: mission.position.extend(MISSION_Z),
-                        rotation: Quat::from_rotation_z(angle),
-                        ..default()
-                    },
-                    Pickable::default(),
-                    MissionCmp::new(id),
-                    MapCmp,
-                    children![(
-                        Sprite::from_atlas_image(texture.image, texture.atlas),
-                        Transform {
-                            translation: Vec3::new(-25., 0., -0.1),
-                            scale: Vec3::splat(0.35),
-                            rotation: Quat::from_rotation_z(PI),
-                        },
-                        TweenAnim::new(
-                            Tween::new(
-                                EaseFunction::Linear,
-                                Duration::from_millis(1000),
-                                SpriteFrameLens(texture.last_index),
-                            )
-                            .with_repeat_count(RepeatCount::Infinite),
-                        ),
-                    )],
-                ))
-                .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-                .observe(cursor::<Out>(SystemCursorIcon::Default))
-                .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                    state.mission_hover = Some(id);
-                })
-                .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                    state.mission_hover = None;
-                })
-                .observe(move |event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
-                    if event.button == PointerButton::Primary {
-                        state.mission = true;
-                        state.planet_selected = None;
-                        state.mission_tab = if owner == player_id {
-                            MissionTab::ActiveMissions
-                        } else {
-                            MissionTab::EnemyMissions
-                        }
-                    }
-                });
-        }
-    }
-
-    for (mission_e, mut mission_s, mut mission_t, mission_c) in &mut mission_q {
-        if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
-            // Update the direction the image is pointing at
-            // Could change if the destination planet was destroyed
-            let destination = map.get(mission.destination);
-
-            let direction = (-mission.position + destination.position).normalize();
-            let angle = direction.y.atan2(direction.x);
-
-            mission_t.rotation = Quat::from_rotation_z(angle);
-
-            if state.mission_hover.is_some_and(|id| id == mission.id) {
-                // Hovered missions show on top of all other components (e.g., planets)
-                mission_t.translation = mission.position.extend(MISSION_Z + 10.);
-                mission_s.image = assets.image(format!("{} hover", mission.image(&player)));
-            } else {
-                mission_t.translation = mission.position.extend(MISSION_Z);
-                mission_s.image = assets.image(mission.image(&player));
-            }
-        } else {
-            commands.entity(mission_e).despawn();
-        }
-    }
-}
-
-#[cfg(feature = "app")]
-/// Animates a directional trail from the hovered mission to its destination planet.
-pub fn update_mission_route_arrow(
-    mut commands: Commands,
-    mut arrow_q: Query<(Entity, &mut Transform, &mut TextColor, &MissionRouteArrowCmp)>,
-    state: Res<UiState>,
-    map: Res<Map>,
-    missions: Res<Missions>,
-    session: Res<MultiplayerSession>,
-    assets: Res<WorldAssets>,
-    time: Res<Time>,
-) {
-    let Some(mission) = state.mission_hover.and_then(|id| missions.get(id)) else {
-        for (entity, _, _, _) in &mut arrow_q {
-            commands.entity(entity).despawn();
-        }
-        return;
-    };
-
-    let destination = map.get(mission.destination);
-    let route = destination.position - mission.position;
-    let direction = route.normalize_or_zero();
-    let start = mission.position + direction * 38.0;
-    let end = destination.position - direction * destination.size() * 0.7;
-    if start.distance_squared(end) < 24.0 * 24.0 {
-        for (entity, _, _, _) in &mut arrow_q {
-            commands.entity(entity).despawn();
-        }
-        return;
-    }
-
-    let angle = direction.y.atan2(direction.x);
-    let base_phase = (time.elapsed_secs_wrapped() * 0.42).fract();
-    let route_color = session.player_color(mission.owner).color();
-    let mut present = [false; MISSION_ROUTE_CHEVRONS];
-
-    for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {
-        if arrow.index >= MISSION_ROUTE_CHEVRONS {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        present[arrow.index] = true;
-        let progress = (base_phase + arrow.index as f32 / MISSION_ROUTE_CHEVRONS as f32).fract();
-        let alpha = (std::f32::consts::PI * progress).sin().clamp(0.18, 1.0);
-        transform.translation = start.lerp(end, progress).extend(MISSION_Z + 8.0);
-        transform.rotation = Quat::from_rotation_z(angle);
-        transform.scale = Vec3::splat(0.82 + alpha * 0.18);
-        text_color.0 = route_color.with_alpha(alpha);
-    }
-
-    for (index, is_present) in present.into_iter().enumerate() {
-        if is_present {
-            continue;
-        }
-        let progress = (base_phase + index as f32 / MISSION_ROUTE_CHEVRONS as f32).fract();
-        let alpha = (std::f32::consts::PI * progress).sin().clamp(0.18, 1.0);
-        commands.spawn((
-            Text2d::new(">"),
-            TextFont {
-                font: assets.font("bold").into(),
-                font_size: 28.0.into(),
-                ..default()
-            },
-            TextColor(route_color.with_alpha(alpha)),
-            Transform {
-                translation: start.lerp(end, progress).extend(MISSION_Z + 8.0),
-                rotation: Quat::from_rotation_z(angle),
-                scale: Vec3::splat(0.82 + alpha * 0.18),
-            },
-            Pickable::IGNORE,
-            MissionRouteArrowCmp {
-                index,
-            },
-            MapCmp,
-        ));
-    }
-}
-
-#[cfg(feature = "app")]
-/// Validates the selected mission UI, removes committed units/resources, and emits its command.
-pub fn send_mission(
-    mut send_mission: MessageReader<SendMissionMsg>,
-    mut message: MessageWriter<MessageMsg>,
-    mut map: ResMut<Map>,
-    mut player: ResMut<Player>,
-    mut missions: ResMut<Missions>,
-    mut pending: ResMut<PendingTurnCommands>,
-) {
-    for SendMissionMsg {
-        mission,
-    } in send_mission.read()
-    {
-        let army = mission
-            .army
-            .iter()
-            .filter(|(_, count)| **count > 0)
-            .map(|(unit, count)| (*unit, *count))
-            .collect::<Army>();
-        if !pending.push(TurnCommand::SendMission {
-            mission_id: mission.id,
-            origin: mission.origin,
-            destination: mission.destination,
-            objective: mission.objective,
-            army,
-            bombing: mission.bombing.clone(),
-            combat_probes: mission.combat_probes,
-            jump_gate: mission.jump_gate,
-        }) {
-            message.write(MessageMsg::error(
-                "This turn already contains the maximum number of commands.",
-            ));
-            continue;
-        }
-        player.resources.deuterium =
-            player.resources.deuterium.saturating_sub(mission.fuel_consumption(&map));
-
-        let origin = map.get_mut(mission.origin);
-
-        if mission.jump_gate {
-            origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
-        }
-
-        // Subtract armies from the origin planet
-        origin.army.iter_mut().for_each(|(u, c)| {
-            *c = c.saturating_sub(mission.army.amount(u));
-        });
-
-        // Update control of the planet
-        if !origin.has_fleet() && origin.owned != Some(player.id) && !origin.is_moon() {
-            origin.controlled = None;
-        }
-
-        missions.0.push(mission.clone());
-
-        message.write(MessageMsg::info("Mission sent."));
     }
 }

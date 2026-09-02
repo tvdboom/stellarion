@@ -7,3 +7,5 @@ target/
 
 dist/
 assets-runtime/
+
+node_modules/

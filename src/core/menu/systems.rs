@@ -5,7 +5,7 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::core::assets::WorldAssets;
-use crate::core::audio::{ChangeAudioMsg, MuteAudioMsg};
+use crate::core::audio::{set_ui_sound, ChangeAudioMsg, MuteAudioMsg, SoundEffect};
 use crate::core::constants::{HOVERED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, PRESSED_BUTTON_COLOR};
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
@@ -18,6 +18,10 @@ use crate::multiplayer::client::{
 use crate::multiplayer::model::{GameRecord, GameSummary};
 use crate::utils::ToColor32;
 use crate::TITLE;
+
+const MAIN_MENU_BUTTON_HEIGHT: f32 = 55.0;
+const MAIN_MENU_ACTION_COUNT: usize =
+    4 + cfg!(debug_assertions) as usize + cfg!(not(target_arch = "wasm32")) as usize;
 
 /// Spawns the lightweight menu background; gameplay assets are not requested here.
 pub fn setup_menu(mut commands: Commands, assets: Res<WorldAssets>) {
@@ -100,14 +104,23 @@ pub fn draw_menu(
     }
     let content_width =
         (menu_size.x * 0.4).clamp(320.0, 640.0).min((menu_size.x - 32.0).max(240.0));
-    let is_primary_navigation =
-        matches!(*app_state.get(), AppState::MainMenu | AppState::MultiPlayerMenu);
+    let is_primary_navigation = *app_state.get() == AppState::MainMenu;
     let (content_pivot, content_y) = if is_primary_navigation {
-        (egui::Align2::CENTER_TOP, menu_size.y * 0.365)
+        (egui::Align2::CENTER_TOP, main_menu_top(context, menu_size))
+    } else if matches!(
+        *app_state.get(),
+        AppState::JoinGame
+            | AppState::ResumeGame
+            | AppState::RecoverPlayer
+            | AppState::Lobby
+            | AppState::SinglePlayerMenu
+    ) {
+        // Leave room for the connection/credit footer on smaller windows.
+        (egui::Align2::CENTER_CENTER, (menu_size.y - 96.0).max(0.0) * 0.5)
     } else {
         (egui::Align2::CENTER_CENTER, menu_size.y * 0.5)
     };
-    egui::Area::new("stellarion_menu_content".into())
+    egui::Area::new(egui::Id::new(("stellarion_menu_content", *app_state.get())))
         .pivot(content_pivot)
         .fixed_pos(egui::pos2(menu_size.x * 0.5, content_y))
         .constrain(false)
@@ -115,27 +128,14 @@ pub fn draw_menu(
             apply_menu_style(ui);
             ui.set_width(content_width);
             ui.vertical_centered(|ui| {
-                let title = match app_state.get() {
-                    AppState::SinglePlayerMenu => Some("Local Practice"),
-                    _ => None,
-                };
-                if let Some(title) = title {
-                    let title_size = if *app_state.get() == AppState::SinglePlayerMenu {
-                        36.0
-                    } else {
-                        (menu_size.y * 0.08).clamp(48.0, 76.0)
-                    };
-                    ui.heading(egui::RichText::new(title).size(title_size));
-                    ui.add_space(if *app_state.get() == AppState::SinglePlayerMenu {
-                        28.0
-                    } else {
-                        (menu_size.y * 0.045).clamp(20.0, 42.0)
-                    });
-                }
                 match app_state.get() {
                     AppState::Boot => boot_screen(ui),
-                    AppState::MainMenu => main_screen(ui, &mut next_state),
-                    AppState::MultiPlayerMenu => multiplayer_screen(ui, &mut next_state),
+                    AppState::MainMenu => main_screen(
+                        ui,
+                        session.menu_error.as_deref(),
+                        &mut requests,
+                        &mut next_state,
+                    ),
                     AppState::CreateGame => create_screen(
                         ui,
                         &mut form,
@@ -144,12 +144,22 @@ pub fn draw_menu(
                         &mut requests,
                         &mut next_state,
                     ),
-                    AppState::JoinGame => {
-                        join_screen(ui, &mut form, session.busy, &mut requests, &mut next_state)
-                    },
-                    AppState::RecoverPlayer => {
-                        recovery_screen(ui, &mut form, session.busy, &mut requests, &mut next_state)
-                    },
+                    AppState::JoinGame => join_screen(
+                        ui,
+                        &mut form,
+                        session.busy,
+                        session.menu_error.as_deref(),
+                        &mut requests,
+                        &mut next_state,
+                    ),
+                    AppState::RecoverPlayer => recovery_screen(
+                        ui,
+                        &mut form,
+                        session.busy,
+                        session.menu_error.as_deref(),
+                        &mut requests,
+                        &mut next_state,
+                    ),
                     AppState::ResumeGame => resume_screen(
                         ui,
                         &session,
@@ -166,6 +176,7 @@ pub fn draw_menu(
                         #[cfg(debug_assertions)]
                         local_practice_screen(
                             ui,
+                            &mut form,
                             &mut settings,
                             session.busy,
                             &mut requests,
@@ -176,12 +187,25 @@ pub fn draw_menu(
                     },
                     AppState::Game => {},
                 }
-                if let Some(error) = &session.menu_error {
+                if let Some(error) = session.menu_error.as_ref().filter(|_| {
+                    !matches!(
+                        *app_state.get(),
+                        AppState::Boot
+                            | AppState::MainMenu
+                            | AppState::JoinGame
+                            | AppState::RecoverPlayer
+                            | AppState::Lobby
+                    )
+                }) {
                     ui.add_space(12.0);
-                    ui.colored_label(egui::Color32::from_rgb(255, 112, 112), error);
+                    menu_error_panel(ui, "Unable to complete action", error);
                 }
             });
         });
+
+    if *app_state.get() == AppState::Boot {
+        return;
+    }
 
     if is_primary_navigation {
         egui::Area::new("stellarion_main_title".into())
@@ -216,36 +240,136 @@ pub fn draw_menu(
         });
 }
 
+/// Moves the actions up when needed, while preserving space below the measured title.
+fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f32 {
+    let title_height = context.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                TITLE.to_string(),
+                egui::FontId::proportional((viewport.y * 0.11).clamp(68.0, 104.0)),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .y
+    });
+    let title_bottom = viewport.y * 0.17 + title_height * 0.5;
+    let count = MAIN_MENU_ACTION_COUNT as f32;
+    let gap = context.global_style().spacing.item_spacing.y + 5.4;
+    let actions_height = MAIN_MENU_BUTTON_HEIGHT * count + gap * (count - 1.0);
+    (viewport.y * 0.365).min(viewport.y - 96.0 - actions_height).max(title_bottom + 24.0)
+}
+
 /// Shows progress while public configuration and anonymous authentication initialize.
 fn boot_screen(ui: &mut egui::Ui) {
-    ui.spinner();
-    ui.label("Loading menu and restoring your player identity…");
+    let color = ui.visuals().text_color();
+    let label =
+        ui.painter().layout_no_wrap("Loading".to_string(), egui::FontId::proportional(40.0), color);
+    let spinner_size = 24.0;
+    let gap = 12.0;
+    let size = egui::vec2(spinner_size + gap + label.size().x, spinner_size.max(label.size().y));
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let spinner_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + spinner_size * 0.5, rect.center().y),
+        egui::Vec2::splat(spinner_size),
+    );
+    ui.put(spinner_rect, egui::Spinner::new().size(spinner_size));
+    ui.painter().galley(
+        egui::pos2(rect.left() + spinner_size + gap, rect.center().y - label.size().y * 0.5),
+        label,
+        color,
+    );
 }
 
 /// Draws top-level actions required by the multiplayer product flow.
-fn main_screen(ui: &mut egui::Ui, next_state: &mut NextState<AppState>) {
-    main_menu_button(ui, "New Game", || next_state.set(AppState::CreateGame));
-    main_menu_button(ui, "Resume / Join Game", || next_state.set(AppState::MultiPlayerMenu));
-    #[cfg(debug_assertions)]
-    main_menu_button(ui, "Local Practice", || next_state.set(AppState::SinglePlayerMenu));
-    main_menu_button(ui, "Settings", || next_state.set(AppState::Settings));
-    #[cfg(not(target_arch = "wasm32"))]
-    main_menu_button(ui, "Quit", || std::process::exit(0));
+fn main_screen(
+    ui: &mut egui::Ui,
+    error: Option<&str>,
+    requests: &mut MessageWriter<MultiplayerRequest>,
+    next_state: &mut NextState<AppState>,
+) {
+    // Keep every action and any feedback reachable above the footer on short windows.
+    let available_height =
+        (ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 96.0).max(80.0);
+    // An Area remembers its previous content height. Expand the parent before the
+    // scroll area measures it, including after a small window grows again.
+    ui.set_max_height(available_height);
+    let count = MAIN_MENU_ACTION_COUNT as f32;
+    let preferred_gap = ui.spacing().item_spacing.y + 5.4;
+    let gap = preferred_gap
+        .min(((available_height - count * MAIN_MENU_BUTTON_HEIGHT) / (count - 1.0)).max(8.0));
+    let button_height =
+        ((available_height - gap * (count - 1.0)) / count).clamp(44.0, MAIN_MENU_BUTTON_HEIGHT);
+    let button_size = egui::vec2(308.0_f32.min(ui.available_width()), button_height);
+    egui::ScrollArea::vertical()
+        .id_salt("stellarion_main_actions")
+        .auto_shrink([false, true])
+        .max_height(available_height)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = gap;
+            ui.vertical_centered(|ui| {
+                let button = |ui: &mut egui::Ui, label: &str| {
+                    menu_button_widget(ui, label, true, button_size, 21.6)
+                };
+                if button(ui, "New Game") {
+                    next_state.set(AppState::CreateGame);
+                }
+                if button(ui, "Join Game") {
+                    next_state.set(AppState::JoinGame);
+                }
+                if button(ui, "Resume Game") {
+                    requests.write(MultiplayerRequest::RefreshGames);
+                    next_state.set(AppState::ResumeGame);
+                }
+                #[cfg(debug_assertions)]
+                if button(ui, "Local Practice") {
+                    next_state.set(AppState::SinglePlayerMenu);
+                }
+                if button(ui, "Settings") {
+                    next_state.set(AppState::Settings);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if button(ui, "Quit") {
+                    std::process::exit(0);
+                }
+                if let Some(error) = error {
+                    ui.add_space(12.0);
+                    menu_error_panel(ui, "Unable to complete action", error);
+                }
+            });
+        });
 }
 
 /// Configures and starts an isolated one-player deterministic match in debug builds.
 #[cfg(debug_assertions)]
 fn local_practice_screen(
     ui: &mut egui::Ui,
+    form: &mut MultiplayerForm,
     settings: &mut Settings,
     busy: bool,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    map_rule_rows(ui, settings);
-    ui.add_space(40.0);
-    let (back_clicked, start_clicked) = local_practice_action_buttons(ui, !busy);
+    // Bound the full setup, including the new color row, above the menu footer.
+    ui.set_max_height((ui.ctx().content_rect().height() - 128.0).max(160.0));
+    ui.heading(egui::RichText::new("Local Practice").size(36.0));
+    ui.add_space(28.0);
+    let (back_clicked, start_clicked) = egui::ScrollArea::vertical()
+        .id_salt("local_practice_setup")
+        .auto_shrink([false, true])
+        .max_height(ui.available_height())
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_enabled_ui(!busy, |ui| {
+                    practice_color_picker(ui, &mut form.practice_color);
+                    map_rule_rows(ui, settings);
+                });
+                ui.add_space(40.0);
+                local_practice_action_buttons(ui, !busy)
+            })
+            .inner
+        })
+        .inner;
     if back_clicked {
         next_state.set(AppState::MainMenu);
     } else if !busy && (start_clicked || enter_pressed) {
@@ -257,16 +381,31 @@ fn local_practice_screen(
                 player_count: 1,
                 practice_mode: true,
             },
+            player_color: form.practice_color,
         });
     }
 }
 
-/// Draws join, resume, and replacement-device recovery choices.
-fn multiplayer_screen(ui: &mut egui::Ui, next_state: &mut NextState<AppState>) {
-    main_menu_button(ui, "Join Game", || next_state.set(AppState::JoinGame));
-    main_menu_button(ui, "Resume Game", || next_state.set(AppState::ResumeGame));
-    main_menu_button(ui, "Recover Player", || next_state.set(AppState::RecoverPlayer));
-    main_menu_button(ui, "Back", || next_state.set(AppState::MainMenu));
+/// Shows every empire color and keeps the selected swatch outlined.
+#[cfg(debug_assertions)]
+fn practice_color_picker(ui: &mut egui::Ui, selected: &mut PlayerColor) {
+    ui.label(egui::RichText::new("Player color").size(20.0).strong());
+    ui.add_space(3.0);
+    let gap = 6.0;
+    let row_width = PLAYER_COLOR_PALETTE.len() as f32 * (34.0 + gap) - gap;
+    ui.allocate_ui_with_layout(
+        egui::vec2(row_width, 34.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for color in PLAYER_COLOR_PALETTE {
+                if player_color_swatch(ui, color, color == *selected) {
+                    *selected = color;
+                }
+            }
+        },
+    );
+    ui.add_space(6.0);
 }
 
 /// Collects creator name, exact 2..=4 capacity, and existing gameplay settings.
@@ -281,7 +420,7 @@ fn create_screen(
     let enter_pressed = menu_submit_pressed(ui);
     ui.heading(egui::RichText::new("Create Game").size(36.0));
     ui.add_space(28.0);
-    form_fields(ui, form, false, 420.0);
+    player_name_field(ui, &mut form.display_name, 420.0);
     map_rule_rows(ui, settings);
     ui.add_space(40.0);
     let can_create = !busy && valid_name(&form.display_name);
@@ -303,53 +442,174 @@ fn create_screen(
     }
 }
 
-/// Collects the share code and display name for a new slot or identity reconnect.
+/// Collects the share code, asking for a player name only when none has been saved.
 fn join_screen(
     ui: &mut egui::Ui,
     form: &mut MultiplayerForm,
     busy: bool,
+    error: Option<&str>,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    ui.heading(egui::RichText::new("Join Game").size(36.0));
-    ui.add_space(28.0);
-    form_fields(ui, form, true, 340.0);
-    let can_join = !busy && valid_name(&form.display_name) && valid_game_code(&form.game_code);
-    ui.add_space(20.0);
+    ui.spacing_mut().item_spacing.y = 8.0;
+    let saved_name = form.saved_display_name.as_deref().filter(|name| valid_name(name));
+    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
+    // Keep navigation visible while the form and a long error scroll on short viewports.
+    let form_height =
+        (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
+    egui::ScrollArea::vertical()
+        .id_salt("stellarion_join_form")
+        .auto_shrink([false, true])
+        .max_height(form_height)
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("Join Game").size(36.0));
+                ui.add_space(28.0);
+                if saved_name.is_none() {
+                    player_name_field(ui, &mut form.display_name, 340.0);
+                }
+                ui.label(egui::RichText::new("Game code").size(20.0).strong());
+                form_text_edit_width(ui, &mut form.game_code, false, 340.0);
+                if let Some(error) = error {
+                    ui.add_space(12.0);
+                    menu_error_panel(ui, "Unable to join game", error);
+                }
+            });
+        });
+    let display_name = saved_name.unwrap_or(&form.display_name);
+    let can_join = !busy && valid_name(display_name) && valid_game_code(&form.game_code);
+    ui.add_space(16.0);
     let (back_clicked, join_clicked) = menu_button_pair(ui, "Back", true, "Join", can_join, false);
     if back_clicked {
-        next_state.set(AppState::MultiPlayerMenu);
+        next_state.set(AppState::MainMenu);
     } else if can_join && (join_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::JoinGame {
-            display_name: form.display_name.clone(),
+            display_name: display_name.to_string(),
             code: form.game_code.clone(),
         });
     }
 }
 
-/// Collects the two codes needed to rotate a player identity and recovery secret.
+/// Keeps menu failures readable over the artwork without a dismissal timer.
+fn menu_error_panel(ui: &mut egui::Ui, title: &str, error: &str) -> egui::Response {
+    let (button_size, _, _) = menu_button_pair_metrics(ui);
+    let width = button_size.x * 2.0 + 12.0;
+    menu_error_panel_width(ui, title, error, width)
+}
+
+/// Matches an error container to the outer width of the form it describes.
+fn menu_error_panel_width(
+    ui: &mut egui::Ui,
+    title: &str,
+    error: &str,
+    width: f32,
+) -> egui::Response {
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(67, 23, 32, 232))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(240, 112, 123, 150)))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(16, 12));
+    frame
+        .show(ui, |ui| {
+            ui.set_width((width - frame.total_margin().sum().x).max(1.0));
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(17.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 171, 179)),
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(error)
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(255, 230, 232)),
+                    )
+                    .wrap(),
+                );
+            });
+        })
+        .response
+}
+
+/// Reveals a newly reported error once while preserving subsequent manual scrolling.
+fn menu_error_changed(ui: &mut egui::Ui, key: &str, error: Option<&str>) -> bool {
+    let id = ui.make_persistent_id(key);
+    ui.data_mut(|data| {
+        let previous = data.get_temp_mut_or_default::<String>(id);
+        let current = error.unwrap_or_default();
+        if previous == current {
+            return false;
+        }
+        previous.clear();
+        previous.push_str(current);
+        error.is_some()
+    })
+}
+
+/// Opens an unlisted saved game using its shared code and the player's private code.
 fn recovery_screen(
     ui: &mut egui::Ui,
     form: &mut MultiplayerForm,
     busy: bool,
+    error: Option<&str>,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    ui.heading(egui::RichText::new("Recover Player").size(36.0));
-    ui.add_space(28.0);
-    ui.label(egui::RichText::new("Game code").size(20.0).strong());
-    form_text_edit_width(ui, &mut form.game_code, false, 340.0);
-    ui.label(egui::RichText::new("Recovery code").size(20.0).strong());
-    form_text_edit_width(ui, &mut form.recovery_code, true, 340.0);
+    ui.spacing_mut().item_spacing.y = 8.0;
+    let scroll_to_error = menu_error_changed(ui, "recovery_error", error);
+    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
+    let form_height =
+        (ui.ctx().content_rect().height() - 132.0 - button_size.y - button_spacing).max(80.0);
+    egui::ScrollArea::vertical()
+        .id_salt("stellarion_recovery_form")
+        .auto_shrink([false, true])
+        .max_height(form_height)
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("Recover Game").size(36.0));
+                ui.add_space(18.0);
+                let recovery_field = ui.add_enabled_ui(!busy, |ui| {
+                    recovery_code_field(
+                        ui,
+                        "Game code",
+                        &mut form.game_code,
+                        false,
+                        "Enter game code",
+                    );
+                    ui.add_space(12.0);
+                    recovery_code_field(
+                        ui,
+                        "Recovery code",
+                        &mut form.recovery_code,
+                        true,
+                        "Enter recovery code",
+                    )
+                });
+                if let Some(error) = error {
+                    ui.add_space(12.0);
+                    let panel = menu_error_panel_width(
+                        ui,
+                        "Unable to recover game",
+                        error,
+                        recovery_field.inner.rect.width(),
+                    );
+                    if scroll_to_error {
+                        panel.scroll_to_me(Some(egui::Align::Max));
+                    }
+                }
+            });
+        });
     let can_recover =
         !busy && valid_game_code(&form.game_code) && !form.recovery_code.trim().is_empty();
     ui.add_space(20.0);
     let (back_clicked, recover_clicked) =
-        menu_button_pair(ui, "Back", true, "Recover Player", can_recover, false);
+        menu_button_pair(ui, "Back", !busy, "Recover Game", can_recover, busy);
     if back_clicked {
-        next_state.set(AppState::MultiPlayerMenu);
+        next_state.set(AppState::ResumeGame);
     } else if can_recover && (recover_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::RecoverPlayer {
             code: form.game_code.clone(),
@@ -358,7 +618,7 @@ fn recovery_screen(
     }
 }
 
-/// Lists authenticated memberships and lets a user refresh or load one record.
+/// Lists known games and offers code recovery when a game is missing on this device.
 fn resume_screen(
     ui: &mut egui::Ui,
     session: &MultiplayerSession,
@@ -366,12 +626,25 @@ fn resume_screen(
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
+    ui.spacing_mut().item_spacing.y = 8.0;
     ui.heading(egui::RichText::new("Resume Game").size(38.0).strong());
     ui.add_space(20.0);
-    if session.games.is_empty() {
-        resume_empty_state(ui);
+    let mut games =
+        session.games.iter().filter(|game| game.status != MatchStatus::Lobby).peekable();
+    if games.peek().is_none() {
+        // Keep the recovery actions visible when guidance wraps on small screens.
+        egui::ScrollArea::vertical()
+            .id_salt("stellarion_resume_guidance")
+            .auto_shrink([false, true])
+            .max_height((ui.ctx().content_rect().height() - 260.0).max(80.0))
+            .show(ui, |ui| {
+                resume_empty_state(ui);
+                ui.add_space(12.0);
+                resume_recovery_toast(ui);
+            });
     } else {
-        let list_height = (ui.max_rect().height() * 0.34).clamp(150.0, 310.0);
+        // Fit five cards when space permits, leaving room for the heading and actions.
+        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(94.0, 384.0);
         egui::ScrollArea::vertical()
             .id_salt("stellarion_resume_games")
             .auto_shrink([false, true])
@@ -379,36 +652,151 @@ fn resume_screen(
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (index, game) in session.games.iter().enumerate() {
+                while let Some(game) = games.next() {
                     if resume_game_card(ui, game, !session.busy) {
                         requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
                     }
-                    if index + 1 < session.games.len() {
+                    if games.peek().is_some() {
                         ui.add_space(6.0);
                     }
                 }
             });
     }
     ui.add_space(16.0);
-    let refresh_label = if *refreshing {
-        "Refreshing…"
-    } else {
-        "Refresh"
-    };
-    let (back_clicked, refresh_clicked) =
-        menu_button_pair(ui, "Back", true, refresh_label, !session.busy, *refreshing);
+    let (back_clicked, refresh_clicked, recover_clicked) =
+        resume_action_buttons(ui, session.busy, *refreshing);
     if back_clicked {
-        next_state.set(AppState::MultiPlayerMenu);
+        next_state.set(AppState::MainMenu);
     }
     if refresh_clicked {
         *refreshing = true;
         requests.write(MultiplayerRequest::RefreshGames);
     }
+    if recover_clicked {
+        next_state.set(AppState::RecoverPlayer);
+    }
 }
 
-/// Draws one saved game as a scannable two-line card instead of a dense sentence.
+/// Fits navigation, refresh, and recovery on one row, including narrow windows.
+fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bool, bool, bool) {
+    let (size, text_size, spacing) = menu_button_metrics(ui);
+    let gap = 12.0;
+    let width = size.x.min(((ui.available_width() - gap * 2.0) / 3.0).max(1.0));
+    let labels = ["Back", "Refresh", "Recover Game"];
+    let measured_width = labels
+        .iter()
+        .map(|label| {
+            ui.painter()
+                .layout_no_wrap(
+                    (*label).to_string(),
+                    egui::FontId::proportional(text_size),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let text_size = text_size * ((width - 24.0) / measured_width).clamp(0.1, 1.0);
+    let clicked = ui
+        .allocate_ui_with_layout(
+            egui::vec2(width * 3.0 + gap * 2.0, size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                let button_size = egui::vec2(width, size.y);
+                let back =
+                    menu_action_button(ui, labels[0], true, false, false, button_size, text_size);
+                let refresh = ui.scope(|ui| {
+                    menu_action_button(
+                        ui,
+                        labels[1],
+                        !busy && !refreshing,
+                        false,
+                        false,
+                        button_size,
+                        text_size,
+                    )
+                });
+                if refreshing {
+                    // Paint into the existing padding so progress never changes the layout.
+                    let label_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            labels[1].to_string(),
+                            egui::FontId::proportional(text_size),
+                            egui::Color32::WHITE,
+                        )
+                        .size()
+                        .x;
+                    let padding = (button_size.x - label_width) * 0.5;
+                    let spinner_size = (padding - 8.0).clamp(4.0, 16.0);
+                    let spinner_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            refresh.response.rect.left() + padding * 0.5,
+                            refresh.response.rect.center().y,
+                        ),
+                        egui::Vec2::splat(spinner_size),
+                    );
+                    egui::Spinner::new().paint_at(ui, spinner_rect);
+                }
+                let recover =
+                    menu_action_button(ui, labels[2], !busy, false, false, button_size, text_size);
+                (back, refresh.inner, recover)
+            },
+        )
+        .inner;
+    ui.add_space(spacing);
+    clicked
+}
+
+/// Draws a saved game with the caller's identity, using an extra row when needed.
 fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> bool {
-    let size = egui::vec2(ui.available_width(), 72.0);
+    let secondary = if enabled {
+        egui::Color32::from_rgb(166, 188, 211)
+    } else {
+        egui::Color32::from_rgb(112, 124, 137)
+    };
+    let details_font = egui::FontId::proportional(14.0);
+    let details = ui.painter().layout_no_wrap(
+        format!(
+            "Turn {}   ·   {} player{}",
+            game.turn,
+            game.player_count,
+            if game.player_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+        details_font.clone(),
+        secondary,
+    );
+    let content_width = (ui.available_width() - 55.0).max(1.0);
+    let name =
+        ui.painter().layout_no_wrap(game.display_name.clone(), details_font.clone(), secondary);
+    let stacked = details.size().x + 36.0 + name.size().x > content_width;
+    let name_offset = if stacked {
+        18.0
+    } else {
+        details.size().x + 36.0
+    };
+    let mut name_job = egui::text::LayoutJob::simple_singleline(
+        game.display_name.clone(),
+        details_font.clone(),
+        secondary,
+    );
+    name_job.wrap.max_width = (content_width - name_offset).max(1.0);
+    name_job.wrap.max_rows = 1;
+    name_job.wrap.break_anywhere = true;
+    let name = ui.painter().layout_job(name_job);
+    let size = egui::vec2(
+        ui.available_width(),
+        if stacked {
+            94.0
+        } else {
+            72.0
+        },
+    );
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -433,11 +821,6 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
         egui::Color32::WHITE
     } else {
         egui::Color32::from_rgb(142, 153, 166)
-    };
-    let secondary = if enabled {
-        egui::Color32::from_rgb(166, 188, 211)
-    } else {
-        egui::Color32::from_rgb(112, 124, 137)
     };
 
     ui.painter().rect(
@@ -468,39 +851,48 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
         egui::FontId::proportional(19.0),
         foreground,
     );
-    ui.painter().text(
-        egui::pos2(left, rect.bottom() - 13.0),
-        egui::Align2::LEFT_BOTTOM,
-        format!(
-            "Turn {}   ·   {} player{}",
-            game.turn,
-            game.player_count,
-            if game.player_count == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ),
-        egui::FontId::proportional(14.0),
-        secondary,
+    let details_y = rect.top() + 59.0 - details.size().y * 0.5;
+    if !stacked {
+        ui.painter().text(
+            egui::pos2(left + details.size().x + 10.0, details_y),
+            egui::Align2::CENTER_CENTER,
+            "·",
+            details_font,
+            secondary,
+        );
+    }
+    ui.painter().galley(egui::pos2(left, details_y - details.size().y * 0.5), details, secondary);
+    let name_left = left + name_offset;
+    let name_y = details_y
+        + if stacked {
+            22.0
+        } else {
+            0.0
+        };
+    let [red, green, blue] = game.player_color.rgb();
+    let color = egui::Color32::from_rgb(red, green, blue);
+    ui.painter().circle_filled(
+        egui::pos2(name_left - 12.0, name_y),
+        5.0,
+        if enabled {
+            color
+        } else {
+            color.gamma_multiply(0.5)
+        },
     );
+    ui.painter().galley(egui::pos2(name_left, name_y - name.size().y * 0.5), name, secondary);
 
     let (status, status_color) = resume_status_style(game.status, enabled);
     let status_right = rect.right() - 38.0;
-    ui.painter().text(
+    let status_rect = ui.painter().text(
         egui::pos2(status_right, rect.top() + 16.0),
         egui::Align2::RIGHT_TOP,
         status,
         egui::FontId::proportional(13.0),
         status_color,
     );
-    let status_width = match status {
-        "Waiting for players" => 105.0,
-        "In progress" => 66.0,
-        _ => 51.0,
-    };
     ui.painter().circle_filled(
-        egui::pos2(status_right - status_width - 8.0, rect.top() + 23.0),
+        egui::pos2(status_rect.left() - 10.0, status_rect.center().y),
         3.5,
         status_color,
     );
@@ -520,8 +912,13 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
         egui::Stroke::new(1.8, arrow_color),
     );
 
+    let response = response.on_hover_text(format!("Playing as {}", game.display_name));
     if enabled {
-        response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        let clicked = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        if clicked {
+            mark_menu_click(ui);
+        }
+        clicked
     } else {
         false
     }
@@ -560,10 +957,51 @@ fn resume_empty_state(ui: &mut egui::Ui) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        "No saved multiplayer games yet",
+        "No games linked to this device",
         egui::FontId::proportional(15.0),
         egui::Color32::from_rgb(166, 188, 211),
     );
+}
+
+/// Places persistent recovery guidance in its own toast below the empty-state panel.
+fn resume_recovery_toast(ui: &mut egui::Ui) {
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(13, 22, 32, 242))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(132, 177, 213, 70)))
+        .corner_radius(7.0)
+        .inner_margin(egui::Margin::symmetric(18, 16));
+    let width = (ui.available_width() - frame.total_margin().sum().x).max(1.0);
+    frame.show(ui, |ui| {
+        ui.set_width(width);
+        ui.vertical_centered(|ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Played in another window or on another device?")
+                        .size(17.0)
+                        .color(egui::Color32::from_rgb(225, 235, 247)),
+                )
+                .wrap(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "Choose Recover Game, then enter the game code and your own private recovery code.",
+                    )
+                    .size(17.0)
+                    .color(egui::Color32::from_rgb(225, 235, 247)),
+                )
+                .wrap(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Each player has a different recovery code.")
+                        .size(16.0)
+                        .color(egui::Color32::from_rgb(195, 214, 233)),
+                )
+                .wrap(),
+            );
+        });
+    });
 }
 
 /// Displays access codes, current members, and creator start controls.
@@ -576,37 +1014,60 @@ fn lobby_screen(
     let enter_pressed = menu_submit_pressed(ui);
     let Some(game) = &session.active_game else {
         ui.label("No lobby is selected.");
-        back_button(ui, next_state, AppState::MultiPlayerMenu);
+        back_button(ui, next_state, AppState::MainMenu);
         return;
     };
 
     let reconnecting = game.status == MatchStatus::Active && session.reconnect_lobby;
-    ui.heading(
-        egui::RichText::new(if reconnecting {
-            "Reconnect Players"
-        } else {
-            "Game Lobby"
-        })
-        .size(36.0),
-    );
-    ui.add_space(20.0);
-
-    lobby_code_card(ui, "Game code", game.code.as_str(), true);
-    ui.add_space(10.0);
-    if let Some(code) = &session.issued_recovery_code {
-        lobby_code_card(ui, "Recovery code", code, false);
-    }
-
-    ui.add_space(22.0);
-    lobby_players_card(
-        ui,
-        game,
-        reconnecting,
-        session.membership.as_ref().map(|member| member.player_id),
-        session.busy,
-        requests,
-    );
-    ui.add_space(24.0);
+    ui.spacing_mut().item_spacing.y = 8.0;
+    let scroll_to_error = menu_error_changed(ui, "lobby_error", session.menu_error.as_deref());
+    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
+    let content_height =
+        (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
+    egui::ScrollArea::vertical()
+        .id_salt("stellarion_lobby_content")
+        .auto_shrink([false, true])
+        .max_height(content_height)
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(
+                    egui::RichText::new(if reconnecting {
+                        "Resume Game"
+                    } else {
+                        "Game Lobby"
+                    })
+                    .size(36.0),
+                );
+                ui.add_space(20.0);
+                lobby_code_card(ui, "Game code", game.code.as_str(), true);
+                ui.add_space(10.0);
+                if let Some(code) = &session.issued_recovery_code {
+                    lobby_code_card(ui, "Recovery code", code, false);
+                }
+                ui.add_space(22.0);
+                lobby_players_card(
+                    ui,
+                    game,
+                    reconnecting,
+                    session.membership.as_ref().map(|member| member.player_id),
+                    session.busy,
+                    requests,
+                );
+                let guidance = lobby_guidance(session);
+                if !guidance.is_empty() {
+                    ui.add_space(12.0);
+                    ui.label(egui::RichText::new(guidance).size(16.0));
+                }
+                if let Some(error) = &session.menu_error {
+                    ui.add_space(12.0);
+                    let panel = menu_error_panel(ui, "Unable to continue game", error);
+                    if scroll_to_error {
+                        panel.scroll_to_me(Some(egui::Align::Max));
+                    }
+                }
+            });
+        });
+    ui.add_space(16.0);
 
     let is_host = session.membership.as_ref().is_some_and(|member| member.is_creator);
     let can_continue = lobby_primary_enabled(session);
@@ -614,7 +1075,7 @@ fn lobby_screen(
         menu_button_pair(
             ui,
             "Leave Lobby",
-            !session.busy,
+            true,
             if reconnecting {
                 "Resume Game"
             } else {
@@ -624,7 +1085,7 @@ fn lobby_screen(
             false,
         )
     } else {
-        (lobby_leave_button(ui, !session.busy), false)
+        (lobby_leave_button(ui, true), false)
     };
     if leave_clicked {
         requests.write(MultiplayerRequest::LeaveGame);
@@ -634,6 +1095,31 @@ fn lobby_screen(
         } else {
             MultiplayerRequest::StartGame
         });
+    }
+}
+
+/// Explains the next step for the local role, including a host who has not returned yet.
+fn lobby_guidance(session: &MultiplayerSession) -> String {
+    let Some(game) = &session.active_game else {
+        return String::new();
+    };
+    let is_host = session.membership.as_ref().is_some_and(|member| member.is_creator);
+    if game.status == MatchStatus::Lobby {
+        return String::new();
+    }
+    if is_host {
+        return if game.members.iter().all(|member| member.connected) {
+            "Everyone is connected. Resume the saved game for all players.".to_string()
+        } else {
+            "Other players: open Resume Game in your window. If this game is missing, choose Recover Game with this game code and your own private recovery code.".to_string()
+        };
+    }
+    let host = game.members.iter().find(|member| member.is_creator);
+    let host_name = host.map_or("the host", |member| member.display_name.as_str());
+    if host.is_some_and(|member| member.connected) {
+        format!("Waiting for {host_name} to resume. You'll enter automatically when the host resumes. If they're in-game, ask them to open Game Lobby from the pause menu.")
+    } else {
+        format!("Waiting for {host_name} to reconnect. The host must open this game from Resume Game. You'll enter automatically when the host resumes.")
     }
 }
 
@@ -680,55 +1166,97 @@ fn take_menu_submit(events: &mut Vec<egui::Event>) -> bool {
     pressed
 }
 
-/// Draws one lobby access code as a compact card with an icon-only copy action.
-fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) {
-    let card_width = ui.available_width().min(560.0);
+/// Shares the access-code container between code display and recovery inputs.
+fn code_card_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(130, 170, 215, 115)))
         .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(18, 14))
-        .show(ui, |ui| {
-            let inner_width = card_width - 36.0;
-            ui.set_min_width(inner_width);
-            ui.set_max_width(inner_width);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(label.to_uppercase())
-                        .size(13.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(145, 184, 226)),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    copy_icon_button(ui, code, label);
-                    code_info_icon(ui, label);
-                });
-            });
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(code)
-                        .size(if prominent {
-                            27.0
-                        } else {
-                            16.0
-                        })
-                        .strong()
-                        .monospace()
-                        .color(egui::Color32::WHITE),
-                )
-                .wrap(),
-            );
-        });
 }
 
-/// Explains an access code without permanently crowding the lobby card.
-fn code_info_icon(ui: &mut egui::Ui, label: &str) {
-    let tooltip = if label.eq_ignore_ascii_case("Game code") {
-        "Share this code with other players to join this game."
+/// Labels an access-code card and keeps its explanation behind hover help.
+fn code_card_heading(ui: &mut egui::Ui, label: &str, tooltip: &str, copy_value: Option<&str>) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label.to_uppercase())
+                .size(13.0)
+                .strong()
+                .color(egui::Color32::from_rgb(145, 184, 226)),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(value) = copy_value {
+                copy_icon_button(ui, value, label);
+            }
+            code_info_icon(ui, tooltip);
+        });
+    });
+}
+
+/// Draws an editable recovery code in the same container used to share codes.
+fn recovery_code_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    private: bool,
+    hint: &str,
+) -> egui::Response {
+    let inner_width = (ui.available_width().min(560.0) - 36.0).max(1.0);
+    let tooltip = if private {
+        "Each player has a different private recovery code. Enter your own latest code, not another player's. After recovery, save the new code that replaces it. A connected player cannot be recovered in another window."
     } else {
-        "This recovery code restores your player slot on another device. Use it together with the game code on Recover Player. Never share it with other players."
+        "Enter the shared code of the game you want to recover. Find it in your saved codes or ask another player in that game."
     };
+    let panel = code_card_frame().show(ui, |ui| {
+        ui.set_width(inner_width);
+        code_card_heading(ui, label, tooltip, None);
+        ui.add_space(8.0);
+        ui.add_sized(
+            egui::vec2(inner_width, 42.0),
+            egui::TextEdit::singleline(value)
+                .id_salt(label)
+                .font(egui::FontId::proportional(18.0))
+                .password(private)
+                .hint_text(egui::RichText::new(hint).size(18.0))
+                .margin(egui::vec2(12.0, 10.0)),
+        );
+    });
+    panel.response
+}
+
+/// Draws one lobby access code as a compact card with an icon-only copy action.
+fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) {
+    let card_width = ui.available_width().min(560.0);
+    let tooltip = if label.eq_ignore_ascii_case("Game code") {
+        "Share this code to invite players before the game starts. It also identifies the saved game when recovering with your private recovery code."
+    } else {
+        "Keep this code private. Enter it with the game code to restore your player and host or player role. The host resumes once everyone reconnects; finished games open for viewing."
+    };
+    code_card_frame().show(ui, |ui| {
+        let inner_width = card_width - 36.0;
+        ui.set_min_width(inner_width);
+        ui.set_max_width(inner_width);
+        code_card_heading(ui, label, tooltip, Some(code));
+        ui.add_space(2.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(code)
+                    .size(if prominent {
+                        27.0
+                    } else {
+                        16.0
+                    })
+                    .strong()
+                    .monospace()
+                    .color(egui::Color32::WHITE),
+            )
+            .wrap(),
+        );
+    });
+}
+
+/// Shows the page's explanation without permanently crowding the code card.
+fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 30.0), egui::Sense::hover());
     let center = rect.center();
     let color = if response.hovered() {
@@ -774,6 +1302,7 @@ fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) {
     ui.painter().rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
 
     if response.clicked() {
+        mark_menu_click(ui);
         ui.ctx().copy_text(value.to_string());
     }
 }
@@ -787,6 +1316,10 @@ fn lobby_players_card(
     busy: bool,
     requests: &mut MessageWriter<MultiplayerRequest>,
 ) {
+    let is_host = game
+        .members
+        .iter()
+        .any(|member| Some(member.player_id) == local_player_id && member.is_creator);
     let card_width = ui.available_width().min(560.0);
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232))
@@ -823,6 +1356,8 @@ fn lobby_players_card(
                     } else {
                         "Waiting for every existing player to reconnect…"
                     }
+                } else if !is_host {
+                    "Waiting for the host to start..."
                 } else if game.members.len() < 2 {
                     "Waiting for at least one more player…"
                 } else {
@@ -843,24 +1378,19 @@ fn lobby_players_card(
                 let row_inner_width = inner_width - row_margin_x * 2.0;
                 let color_width = 26.0;
                 let id_width = 38.0;
-                let host_width = if member.is_creator {
-                    56.0
-                } else {
-                    0.0
-                };
+                let role_width = 56.0;
                 let status_width = if reconnecting {
                     118.0
                 } else {
                     0.0
                 };
                 let gap = 8.0;
-                let gap_count =
-                    2.0 + u8::from(reconnecting) as f32 + u8::from(member.is_creator) as f32;
+                let gap_count = 3.0 + u8::from(reconnecting) as f32;
                 let name_width = (row_inner_width
                     - color_width
                     - id_width
                     - status_width
-                    - host_width
+                    - role_width
                     - gap * gap_count)
                     .max(0.0);
                 egui::Frame::new()
@@ -896,52 +1426,61 @@ fn lobby_players_card(
                                         .color(egui::Color32::from_rgb(145, 184, 226)),
                                 ),
                             );
-                            ui.add_sized(
-                                [name_width, 22.0],
-                                egui::Label::new(
-                                    egui::RichText::new(&member.display_name).size(16.0).strong(),
-                                )
-                                .halign(egui::Align::LEFT)
-                                .truncate(),
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(name_width, 22.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_size(egui::vec2(name_width, 22.0));
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&member.display_name)
+                                                .size(16.0)
+                                                .strong(),
+                                        )
+                                        .halign(egui::Align::LEFT)
+                                        .truncate(),
+                                    );
+                                },
                             );
                             if reconnecting {
-                                ui.allocate_ui_with_layout(
+                                let (status, status_color) = if member.connected {
+                                    ("Connected", egui::Color32::from_rgb(102, 224, 170))
+                                } else {
+                                    ("Not connected", egui::Color32::from_rgb(243, 190, 92))
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
                                     egui::vec2(status_width, 22.0),
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            egui::RichText::new(if member.connected {
-                                                "● CONNECTED"
-                                            } else {
-                                                "○ NOT CONNECTED"
-                                            })
-                                            .size(12.0)
-                                            .strong()
-                                            .color(
-                                                if member.connected {
-                                                    egui::Color32::from_rgb(102, 224, 170)
-                                                } else {
-                                                    egui::Color32::from_rgb(175, 195, 218)
-                                                },
-                                            ),
-                                        );
-                                    },
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(
+                                    egui::pos2(rect.left() + 3.5, rect.center().y),
+                                    3.5,
+                                    status_color,
+                                );
+                                ui.painter().text(
+                                    egui::pos2(rect.left() + 15.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    status,
+                                    egui::FontId::proportional(13.0),
+                                    status_color,
                                 );
                             }
-                            if member.is_creator {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(host_width, 22.0),
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            egui::RichText::new("HOST")
-                                                .size(12.0)
-                                                .strong()
-                                                .color(egui::Color32::from_rgb(175, 195, 218)),
-                                        );
-                                    },
-                                );
-                            }
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(role_width, 22.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(if member.is_creator {
+                                            "HOST"
+                                        } else {
+                                            "CLIENT"
+                                        })
+                                        .size(12.0)
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(175, 195, 218)),
+                                    );
+                                },
+                            );
                         });
                     });
                 if index + 1 < game.members.len() {
@@ -1033,28 +1572,32 @@ fn lobby_color_picker(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for color in colors {
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
-            let [red, green, blue] = color.rgb();
-            ui.painter().circle_filled(
-                rect.center(),
-                11.0,
-                egui::Color32::from_rgb(red, green, blue),
-            );
-            if response.hovered() {
-                ui.painter().circle_stroke(
-                    rect.center(),
-                    14.0,
-                    egui::Stroke::new(1.5, egui::Color32::WHITE),
-                );
-            }
-            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            if player_color_swatch(ui, *color, false) {
                 requests.write(MultiplayerRequest::SetPlayerColor(*color));
                 chosen = true;
             }
         }
     });
     chosen
+}
+
+/// Draws a shared lobby/practice swatch with selection, hover, and click feedback.
+fn player_color_swatch(ui: &mut egui::Ui, color: PlayerColor, selected: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
+    let [red, green, blue] = color.rgb();
+    ui.painter().circle_filled(rect.center(), 11.0, egui::Color32::from_rgb(red, green, blue));
+    if selected || response.hovered() || response.has_focus() {
+        ui.painter().circle_stroke(
+            rect.center(),
+            14.0,
+            egui::Stroke::new(1.5, egui::Color32::WHITE),
+        );
+    }
+    let clicked = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    if clicked {
+        mark_menu_click(ui);
+    }
+    clicked
 }
 
 /// Paints the player marker used to hover-open the local player's color choices.
@@ -1089,8 +1632,12 @@ fn player_color_dot(
 
 /// Draws the only lobby action available to a non-host player.
 fn lobby_leave_button(ui: &mut egui::Ui, enabled: bool) -> bool {
-    let (size, text_size, spacing) = menu_button_metrics(ui);
-    let clicked = menu_button_widget(ui, "Leave Lobby", enabled, size, text_size);
+    let (size, text_size, spacing) = menu_button_pair_metrics(ui);
+    let clicked = ui
+        .allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            menu_button_widget(ui, "Leave Lobby", enabled, size, text_size)
+        })
+        .inner;
     ui.add_space(spacing);
     clicked
 }
@@ -1169,6 +1716,9 @@ pub fn draw_game_overlay(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
+    if game_state.get().is_modal_menu() {
+        block_gameplay_pointer(context);
+    }
     let viewport = context.viewport_rect();
     let content_width =
         (viewport.width() * 0.42).clamp(360.0, 560.0).min((viewport.width() - 32.0).max(280.0));
@@ -1187,6 +1737,16 @@ pub fn draw_game_overlay(
                         main_menu_button(ui, "Save Game", || {
                             requests.write(MultiplayerRequest::SaveGame);
                         });
+                        if let Some(game) = session
+                            .active_game
+                            .as_ref()
+                            .filter(|game| game.status == MatchStatus::Active)
+                        {
+                            main_menu_button(ui, "Game Lobby", || {
+                                requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
+                                next_game_state.set(GameState::Playing);
+                            });
+                        }
                     }
                     main_menu_button(ui, "Settings", || next_game_state.set(GameState::Settings));
                     main_menu_button(ui, "Return to Main Menu", || {
@@ -1219,6 +1779,19 @@ pub fn draw_game_overlay(
     if *game_state.get() == GameState::GameMenu {
         game_access_codes(context, &session);
     }
+}
+
+/// Covers the viewport with an invisible interactive layer so Egui captures every pointer action.
+fn block_gameplay_pointer(context: &egui::Context) {
+    let viewport = context.viewport_rect();
+    egui::Area::new("stellarion_gameplay_input_blocker".into())
+        .fixed_pos(viewport.min)
+        .movable(false)
+        .constrain(false)
+        .order(egui::Order::Middle)
+        .show(context, |ui| {
+            ui.allocate_exact_size(viewport.size(), egui::Sense::click_and_drag());
+        });
 }
 
 /// Keeps the active game's share and recovery information accessible during play.
@@ -1268,14 +1841,12 @@ fn menu_button_pair(
     right_enabled: bool,
     right_busy: bool,
 ) -> (bool, bool) {
-    let (size, text_size, spacing) = menu_button_metrics(ui);
+    let (button_size, text_size, spacing) = menu_button_pair_metrics(ui);
     let gap = 12.0;
-    let button_width = size.x.min(((ui.available_width() - gap) * 0.5).max(1.0));
-    let button_size = egui::vec2(button_width, size.y);
-    let row_width = button_width * 2.0 + gap;
+    let row_width = button_size.x * 2.0 + gap;
     let clicked = ui
         .allocate_ui_with_layout(
-            egui::vec2(row_width, size.y),
+            egui::vec2(row_width, button_size.y),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.spacing_mut().item_spacing.x = gap;
@@ -1306,6 +1877,7 @@ fn menu_button_pair(
 }
 
 /// Draws the larger Local Practice actions side by side, with navigation first.
+#[cfg(debug_assertions)]
 fn local_practice_action_buttons(ui: &mut egui::Ui, start_enabled: bool) -> (bool, bool) {
     let (base_size, base_text_size, spacing) = menu_button_metrics(ui);
     let gap = 12.0;
@@ -1353,6 +1925,13 @@ fn menu_button_metrics(ui: &egui::Ui) -> (egui::Vec2, f32, f32) {
         (viewport.y / 36.0).clamp(18.0, 26.0),
         (viewport.y * 0.008).clamp(5.0, 8.0),
     )
+}
+
+/// Keeps paired actions and the client's single lobby action the same size.
+fn menu_button_pair_metrics(ui: &egui::Ui) -> (egui::Vec2, f32, f32) {
+    let (size, text_size, spacing) = menu_button_metrics(ui);
+    let width = size.x.min(((ui.available_width() - 12.0) * 0.5).max(1.0));
+    (egui::vec2(width, size.y), text_size, spacing)
 }
 
 /// Draws one shared rounded menu button with the established hover behavior.
@@ -1406,7 +1985,15 @@ fn menu_action_button(
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
-        rect.center(),
+        rect.center()
+            + egui::vec2(
+                if busy {
+                    10.0
+                } else {
+                    0.0
+                },
+                0.0,
+            ),
         egui::Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(text_size),
@@ -1425,7 +2012,11 @@ fn menu_action_button(
         ui.put(spinner_rect, egui::Spinner::new().size(spinner_size));
     }
     if enabled {
-        response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        let clicked = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        if clicked {
+            mark_menu_click(ui);
+        }
+        clicked
     } else {
         false
     }
@@ -1457,14 +2048,10 @@ fn apply_menu_style(ui: &mut egui::Ui) {
     }
 }
 
-/// Draws shared display-name and optional game-code fields.
-fn form_fields(ui: &mut egui::Ui, form: &mut MultiplayerForm, include_code: bool, max_width: f32) {
+/// Draws the player-name field when creating a game or joining for the first time.
+fn player_name_field(ui: &mut egui::Ui, display_name: &mut String, max_width: f32) {
     ui.label(egui::RichText::new("Player name").size(20.0).strong());
-    form_text_edit_width(ui, &mut form.display_name, false, max_width);
-    if include_code {
-        ui.label(egui::RichText::new("Game code").size(20.0).strong());
-        form_text_edit_width(ui, &mut form.game_code, false, max_width);
-    }
+    form_text_edit_width(ui, display_name, false, max_width);
     ui.add_space(8.0);
 }
 
@@ -1529,12 +2116,18 @@ fn choice_row<T: Copy + PartialEq>(
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 paint_choice_icon(ui, response.rect, text);
                 if response.clicked() {
+                    mark_menu_click(ui);
                     *value = *candidate;
                 }
             }
         },
     );
     ui.add_space(6.0);
+}
+
+/// Records an explicit menu interaction so audio does not depend on egui's response history.
+fn mark_menu_click(ui: &egui::Ui) {
+    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
 }
 
 /// Draws one centered icon-and-label group without relying on font icon glyphs.
@@ -1676,293 +2269,5 @@ fn valid_game_code(value: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use bevy::ecs::system::SystemState;
-
-    use super::*;
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::{GameModel, PersistedGame};
-    use crate::multiplayer::model::GameMembership;
-
-    fn enter_event(repeat: bool, modifiers: egui::Modifiers) -> egui::Event {
-        egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat,
-            modifiers,
-        }
-    }
-
-    /// Exercises the actual egui screen with a plain Enter event and captures its requests.
-    fn submit_menu(
-        draw: impl FnMut(&mut egui::Ui, &mut MessageWriter<MultiplayerRequest>),
-    ) -> Vec<MultiplayerRequest> {
-        menu_frame(&egui::Context::default(), vec![enter_event(false, egui::Modifiers::NONE)], draw)
-            .1
-    }
-
-    fn menu_frame(
-        context: &egui::Context,
-        events: Vec<egui::Event>,
-        mut draw: impl FnMut(&mut egui::Ui, &mut MessageWriter<MultiplayerRequest>),
-    ) -> (Vec<egui::epaint::ClippedShape>, Vec<MultiplayerRequest>) {
-        let mut world = World::new();
-        world.init_resource::<Messages<MultiplayerRequest>>();
-        let mut system = SystemState::<MessageWriter<MultiplayerRequest>>::new(&mut world);
-        let mut requests = system.get_mut(&mut world).unwrap();
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1600.0, 900.0),
-                )),
-                events,
-                ..default()
-            },
-            |ui| {
-                ui.set_width(560.0);
-                draw(ui, &mut requests);
-            },
-        );
-        // Headless tests inspect shapes without uploading font textures to a GPU.
-        output.textures_delta.clear();
-        let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
-        (output.shapes, requests)
-    }
-
-    fn click_menu(
-        context: &egui::Context,
-        pos: egui::Pos2,
-        mut draw: impl FnMut(&mut egui::Ui, &mut MessageWriter<MultiplayerRequest>),
-    ) -> (Vec<egui::epaint::ClippedShape>, Vec<MultiplayerRequest>) {
-        let mut shapes = Vec::new();
-        let mut requests = Vec::new();
-        for pressed in [true, false] {
-            let (frame_shapes, frame_requests) = menu_frame(
-                context,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                &mut draw,
-            );
-            shapes = frame_shapes;
-            requests.extend(frame_requests);
-        }
-        (shapes, requests)
-    }
-
-    fn filled_circles(shapes: &[egui::epaint::ClippedShape], radius: f32) -> Vec<egui::Pos2> {
-        shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Circle(circle)
-                    if circle.radius == radius && circle.fill != egui::Color32::TRANSPARENT =>
-                {
-                    Some(circle.center)
-                },
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn test_lobby() -> MultiplayerSession {
-        let id = GameId::new("menu-test");
-        let members = (1..=2)
-            .map(|player_id| GameMembership {
-                game_id: id.clone(),
-                player_id,
-                user_id: UserId::new(format!("user-{player_id}")),
-                display_name: format!("Player {player_id}"),
-                is_creator: player_id == 1,
-                identity_version: 1,
-                connected: true,
-            })
-            .collect::<Vec<_>>();
-        let mut session = MultiplayerSession::default();
-        session.membership = Some(members[0].clone());
-        session.active_game = Some(GameRecord {
-            id,
-            code: GameCode::new("ABCDEF"),
-            revision: 0,
-            max_players: 2,
-            status: MatchStatus::Lobby,
-            persisted: PersistedGame::new(GameModel::new([3; 32], GameRules::default()).unwrap()),
-            members,
-        });
-        session
-    }
-
-    #[test]
-    fn menu_enter_is_consumed_once_without_repeats_or_modifiers() {
-        let mut events = vec![enter_event(false, egui::Modifiers::NONE)];
-        assert!(take_menu_submit(&mut events));
-        assert!(!take_menu_submit(&mut events));
-        events.push(enter_event(true, egui::Modifiers::NONE));
-        assert!(!take_menu_submit(&mut events));
-        assert!(events.is_empty());
-        events.push(enter_event(false, egui::Modifiers::CTRL));
-        assert!(!take_menu_submit(&mut events));
-        assert_eq!(events.len(), 1);
-    }
-
-    #[test]
-    fn enter_submits_forms_but_respects_validation_and_busy_state() {
-        let mut form = MultiplayerForm::default();
-        let mut settings = Settings::default();
-        let mut next = NextState::default();
-        for busy in [false, true] {
-            let requests = submit_menu(|ui, requests| {
-                create_screen(ui, &mut form, &mut settings, busy, requests, &mut next);
-            });
-            if busy {
-                assert!(requests.is_empty());
-            } else {
-                assert!(matches!(requests.as_slice(), [MultiplayerRequest::CreateGame { .. }]));
-            }
-        }
-        form.display_name.clear();
-        assert!(submit_menu(|ui, requests| {
-            create_screen(ui, &mut form, &mut settings, false, requests, &mut next);
-        })
-        .is_empty());
-
-        form.display_name = "Commander".to_string();
-        form.game_code = "ABCDEF".to_string();
-        let joined = submit_menu(|ui, requests| {
-            join_screen(ui, &mut form, false, requests, &mut next);
-        });
-        assert!(matches!(joined.as_slice(), [MultiplayerRequest::JoinGame { .. }]));
-        form.game_code.clear();
-        assert!(submit_menu(|ui, requests| {
-            join_screen(ui, &mut form, false, requests, &mut next);
-        })
-        .is_empty());
-    }
-
-    #[test]
-    fn enter_in_lobby_requires_a_ready_host() {
-        let mut session = test_lobby();
-        let mut next = NextState::default();
-        let started = submit_menu(|ui, requests| lobby_screen(ui, &session, requests, &mut next));
-        assert!(matches!(started.as_slice(), [MultiplayerRequest::StartGame]));
-        session.busy = true;
-        assert!(!lobby_primary_enabled(&session));
-        session.busy = false;
-        session.membership.as_mut().unwrap().is_creator = false;
-        assert!(
-            submit_menu(|ui, requests| lobby_screen(ui, &session, requests, &mut next)).is_empty()
-        );
-        session.membership.as_mut().unwrap().is_creator = true;
-        session.active_game.as_mut().unwrap().members.pop();
-        assert!(!lobby_primary_enabled(&session));
-
-        session = test_lobby();
-        session.active_game.as_mut().unwrap().status = MatchStatus::Active;
-        session.reconnect_lobby = true;
-        let resumed = submit_menu(|ui, requests| lobby_screen(ui, &session, requests, &mut next));
-        assert!(matches!(resumed.as_slice(), [MultiplayerRequest::ResumeActiveGame]));
-        session.active_game.as_mut().unwrap().members[1].connected = false;
-        assert!(!lobby_primary_enabled(&session));
-    }
-
-    #[test]
-    fn hovering_player_color_opens_overlay_without_moving_the_page() {
-        let session = test_lobby();
-        let game = session.active_game.as_ref().unwrap();
-        let context = egui::Context::default();
-        let draw = |ui: &mut egui::Ui, requests: &mut MessageWriter<MultiplayerRequest>| {
-            lobby_players_card(ui, game, false, Some(1), false, requests);
-        };
-        let (shapes, requests) = menu_frame(&context, vec![], draw);
-        assert!(requests.is_empty());
-        assert!(filled_circles(&shapes, 11.0).is_empty());
-        let markers = filled_circles(&shapes, 6.0);
-        assert_eq!(markers.len(), 2);
-
-        let host = shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "HOST" => Some(text),
-                _ => None,
-            })
-            .unwrap();
-        let row = shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if rect.fill == egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) =>
-                {
-                    Some(rect.rect)
-                },
-                _ => None,
-            })
-            .unwrap();
-        let host_right = host.pos.x + host.galley.rect.right();
-        assert!(
-            (host_right - (row.right() - 10.0)).abs() < 1.0,
-            "host right edge {host_right}, player row {row:?}"
-        );
-
-        let (shapes, requests) =
-            menu_frame(&context, vec![egui::Event::PointerMoved(markers[1])], draw);
-        assert!(requests.is_empty());
-        assert!(filled_circles(&shapes, 11.0).is_empty());
-        let (_, requests) = menu_frame(&context, vec![egui::Event::PointerMoved(markers[0])], draw);
-        assert!(requests.is_empty());
-        // Popup areas use their first frame to measure; no click is needed to open them.
-        let (shapes, _) = menu_frame(&context, vec![], draw);
-        let swatches = filled_circles(&shapes, 11.0);
-        let available = available_player_colors(game, 1);
-        assert_eq!(swatches.len(), available.len());
-        assert!(swatches.iter().all(|pos| pos.y > markers[0].y + 20.0));
-        assert_eq!(filled_circles(&shapes, 6.0), markers);
-
-        let selected = game.persisted.state.player(1).unwrap().color();
-        let occupied = game.persisted.state.player(2).unwrap().color();
-        assert!(!available.contains(&selected));
-        assert!(!available.contains(&occupied));
-        let (shapes, requests) =
-            menu_frame(&context, vec![egui::Event::PointerMoved(swatches[0])], draw);
-        assert!(requests.is_empty());
-        assert_eq!(filled_circles(&shapes, 11.0).len(), available.len());
-        let (_, requests) = click_menu(&context, swatches[0], draw);
-        assert!(matches!(
-            requests.as_slice(),
-            [MultiplayerRequest::SetPlayerColor(color)] if *color == available[0]
-        ));
-        let (shapes, _) = menu_frame(&context, vec![], draw);
-        assert!(filled_circles(&shapes, 11.0).is_empty());
-        assert_eq!(filled_circles(&shapes, 6.0), markers);
-
-        menu_frame(&context, vec![egui::Event::PointerMoved(markers[0])], draw);
-        let (shapes, _) = menu_frame(&context, vec![], draw);
-        assert_eq!(filled_circles(&shapes, 11.0).len(), available.len());
-        let (shapes, _) =
-            menu_frame(&context, vec![egui::Event::PointerMoved(egui::pos2(1000.0, 700.0))], draw);
-        assert!(filled_circles(&shapes, 11.0).is_empty());
-        assert_eq!(filled_circles(&shapes, 6.0), markers);
-    }
-
-    #[test]
-    /// Wide viewports crop the top and bottom instead of exposing empty side bars.
-    fn cover_crop_fills_widescreen() {
-        let rect = cover_source_rect(Vec2::new(1536.0, 1024.0), Vec2::new(1600.0, 900.0));
-        assert_eq!(rect.min, Vec2::new(0.0, 80.0));
-        assert_eq!(rect.max, Vec2::new(1536.0, 944.0));
-    }
-
-    #[test]
-    /// Tall viewports crop both horizontal edges while preserving source proportions.
-    fn cover_crop_fills_portrait() {
-        let rect = cover_source_rect(Vec2::new(1536.0, 1024.0), Vec2::new(900.0, 1600.0));
-        assert_eq!(rect.min, Vec2::new(480.0, 0.0));
-        assert_eq!(rect.max, Vec2::new(1056.0, 1024.0));
-    }
-}
+#[path = "../../../tests/core/menu_systems.rs"]
+mod tests;

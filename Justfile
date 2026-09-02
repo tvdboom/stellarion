@@ -4,6 +4,7 @@ jobs := env_var_or_default("STELLARION_JOBS", "12")
 asset_jobs := env_var_or_default("STELLARION_ASSET_JOBS", "12")
 native_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-native.ps1" } else { "bash scripts/package-native.sh" }
 web_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-web.ps1" } else { "bash scripts/package-web.sh" }
+npm_command := if os() == "windows" { "npm.cmd" } else { "npm" }
 
 # List the available project commands.
 default:
@@ -57,12 +58,12 @@ assets:
 assets-force:
     cargo run --features asset-pipeline --bin build-assets -j{{ jobs }} -- --force --jobs {{ asset_jobs }}
 
-# Verify that committed runtime assets match their sources.
+# Verify that generated runtime assets match their sources.
 assets-check:
     cargo run --features asset-pipeline --bin build-assets -j{{ jobs }} -- --check --jobs {{ asset_jobs }}
 
 # Run the same quality gates used by CI.
-ci: fmt-check lint test assets-check check-wasm
+ci: fmt-check lint test assets-check check-wasm verify-sql
 
 # Package the native game for the current host.
 package-native:
@@ -71,3 +72,9 @@ package-native:
 # Package the browser build.
 package-web:
     {{ web_package_command }}
+
+# Execute the reset twice and verify authenticated RPCs in disposable PostgreSQL.
+# Node.js 24 installs pinned test tooling into ignored output; Rust generates snapshots.
+verify-sql:
+    {{ npm_command }} install --prefix target/sql-verification --no-save --package-lock=false --ignore-scripts @electric-sql/pglite@0.5.8
+    node tests/sql/verify-schema.mjs

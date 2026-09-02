@@ -8,6 +8,7 @@ use bevy::window::{CursorIcon, SystemCursorIcon};
 use bevy_tweening::Lens;
 
 use crate::core::assets::WorldAssets;
+use crate::core::audio::play_button_audio;
 use crate::core::constants::BUTTON_TEXT_SIZE;
 use crate::core::map::model::MapCmp;
 
@@ -70,6 +71,7 @@ pub fn spawn_main_button<'a>(
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Pointer))
         .observe(cursor::<Out>(SystemCursorIcon::Default))
+        .observe(play_button_audio)
         .observe(
             |_: On<Pointer<Over>>, mut button_q: Query<&mut ImageNode, With<MainButtonCmp>>| {
                 set_button_index(&mut button_q, 1);

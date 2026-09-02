@@ -11,6 +11,10 @@ $ErrorActionPreference = "Stop"
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRoot = [System.IO.Path]::GetFullPath((Join-Path $repository $OutputDirectory))
 
+if (-not (Test-Path -LiteralPath (Join-Path $repository "assets-runtime/.stellarion-assets") -PathType Leaf)) {
+    throw "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging."
+}
+
 if (-not $Target) {
     $Target = (rustc -vV | Select-String '^host: ' | ForEach-Object { $_.Line.Substring(6) }).Trim()
 }
@@ -20,37 +24,7 @@ if (-not $Channel) {
 $stage = Join-Path $outputRoot "stellarion-$Channel"
 $archive = Join-Path $outputRoot "stellarion-$Channel.zip"
 
-function Invoke-Checked {
-    param([scriptblock]$Command)
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE"
-    }
-}
-
-function Set-HeavyProcessLimits {
-    if ($env:OS -eq "Windows_NT") {
-        $process = Get-Process -Id $PID
-        try {
-            $allowedMask = $process.ProcessorAffinity.ToInt64()
-            $limitedMask = [long]0
-            $selectedProcessors = 0
-            for ($bit = 0; $bit -lt ([IntPtr]::Size * 8) -and $selectedProcessors -lt 12; $bit++) {
-                $candidate = [long]1 -shl $bit
-                if (($allowedMask -band $candidate) -ne 0) {
-                    $limitedMask = $limitedMask -bor $candidate
-                    $selectedProcessors++
-                }
-            }
-            if ($limitedMask -ne 0 -and $limitedMask -ne $allowedMask) {
-                $process.ProcessorAffinity = [IntPtr]$limitedMask
-            }
-        } catch {
-            Write-Warning "Unable to limit processor affinity: $($_.Exception.Message)"
-        }
-        $process.PriorityClass = "BelowNormal"
-    }
-}
+. (Join-Path $PSScriptRoot "common.ps1")
 
 $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $repository "dist"))
 $expectedPrefix = $expectedRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar

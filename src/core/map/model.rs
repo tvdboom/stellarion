@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 use itertools::Itertools;
 use rand::prelude::IteratorRandom;
-use rand::seq::{index::sample, SliceRandom};
-use rand::{rng, Rng};
+use rand::seq::index::sample;
+use rand::{rng, Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
 use crate::core::constants::{HEIGHT, PLANET_NAMES, WIDTH};
@@ -34,15 +34,17 @@ impl Map {
         let n_moons = (n_planets as f32 * p_moons as f32 / 100.) as usize;
         let n_total = n_planets + n_moons;
 
-        let moon_idx: Vec<usize> = sample(rng, n_total, n_moons).into_iter().collect();
+        let mut moons = vec![false; n_total];
+        for index in sample(rng, n_total, n_moons) {
+            moons[index] = true;
+        }
 
         // Determine map size based on number of planets
         let scale = 0.5 + (n_total as f32 / 60.).clamp(0., 2.) * 0.5;
-        let rect = Rect::new(-WIDTH * scale, -HEIGHT * scale, WIDTH * scale, HEIGHT * scale);
+        let mut rect = Rect::new(-WIDTH * scale, -HEIGHT * scale, WIDTH * scale, HEIGHT * scale);
 
-        // A rejection sampler can become permanently jammed once the map is dense. A shuffled
-        // hex lattice provides the same visual separation with a strict, finite upper bound.
-        let positions = generate_positions(rect, n_total, rng);
+        // Scatter worlds in continuous space; only enforce clearance, not fixed intervals.
+        let positions = generate_positions(&mut rect, &moons, rng);
 
         // Compute total distance per world to the three closest planets (ignore moons).
         let mut sum_closest = Vec::with_capacity(positions.len());
@@ -51,9 +53,7 @@ impl Map {
                 positions
                     .iter()
                     .enumerate()
-                    .filter_map(|(j, pos)| {
-                        (j != i && !moon_idx.contains(&j)).then_some(p.distance(*pos))
-                    })
+                    .filter_map(|(j, pos)| (j != i && !moons[j]).then_some(p.distance(*pos)))
                     .sorted_by(f32::total_cmp)
                     .take(3)
                     .sum::<f32>(),
@@ -77,7 +77,7 @@ impl Map {
                 .zip(factors)
                 .enumerate()
                 .map(|(id, ((name, pos), f))| {
-                    Planet::new_with_rng(id, name.to_string(), pos, moon_idx.contains(&id), f, rng)
+                    Planet::new_with_rng(id, name.to_string(), pos, moons[id], f, rng)
                 })
                 .collect(),
         }
@@ -116,93 +116,61 @@ impl Map {
     }
 }
 
-/// Generates a finite, deterministic set of well-separated map positions.
-fn generate_positions<R: Rng + ?Sized>(rect: Rect, count: usize, rng: &mut R) -> Vec<Vec2> {
-    if count == 0 {
-        return Vec::new();
-    }
-
-    let mut spacing = 2.75 * Planet::SIZE;
-    for _ in 0..64 {
-        let mut candidates = hex_lattice(rect, spacing);
-        if candidates.len() >= count {
-            candidates.shuffle(rng);
-            candidates.truncate(count);
-            return candidates;
-        }
-        spacing *= 0.9;
-    }
-
-    // This is reachable only for callers far outside GameRules' validated limits. It still
-    // terminates and fills the requested map instead of hanging indefinitely.
-    let columns = (count as f32).sqrt().ceil() as usize;
-    let rows = count.div_ceil(columns);
-    let min = rect.min * 0.9;
-    let max = rect.max * 0.9;
-    let x_step = if columns > 1 {
-        (max.x - min.x) / (columns - 1) as f32
-    } else {
-        0.0
+/// Minimum center-to-center separation, leaving a visible gap beyond the sprite radii.
+fn minimum_separation(left_is_moon: bool, right_is_moon: bool) -> f32 {
+    let diameters = match (left_is_moon, right_is_moon) {
+        (false, false) => 2.5,
+        (true, true) => 1.25,
+        _ => 1.5,
     };
-    let y_step = if rows > 1 {
-        (max.y - min.y) / (rows - 1) as f32
-    } else {
-        0.0
-    };
-    let mut positions = (0..count)
-        .map(|index| {
-            Vec2::new(
-                min.x + (index % columns) as f32 * x_step,
-                min.y + (index / columns) as f32 * y_step,
-            )
-        })
-        .collect::<Vec<_>>();
-    positions.shuffle(rng);
+    diameters * Planet::SIZE
+}
+
+/// Scatters worlds with hard pair-specific clearance, expanding crowded maps when needed.
+fn generate_positions<R: Rng + ?Sized>(rect: &mut Rect, moons: &[bool], rng: &mut R) -> Vec<Vec2> {
+    let mut positions: Vec<Vec2> = Vec::with_capacity(moons.len());
+    for &is_moon in moons {
+        let bounds = Rect::from_center_size(rect.center(), rect.size() * 0.9);
+        let position = (0..512)
+            .map(|_| random_position(bounds, rng))
+            .find(|&candidate| {
+                positions.iter().enumerate().all(|(other, position)| {
+                    let clearance = minimum_separation(is_moon, moons[other]);
+                    position.distance_squared(candidate) >= clearance * clearance
+                })
+            })
+            .unwrap_or_else(|| {
+                // All earlier worlds are inside these bounds. Placing beyond one edge by
+                // more than the largest clearance is safe even if the random stream repeats.
+                // This bounds generation work without ever weakening the separation rule.
+                let mut candidate = random_position(bounds, rng);
+                let clearance = minimum_separation(false, false) * rng.random_range(1.1..1.6);
+                match rng.random_range(0..4) {
+                    0 => candidate.x = bounds.min.x - clearance,
+                    1 => candidate.x = bounds.max.x + clearance,
+                    2 => candidate.y = bounds.min.y - clearance,
+                    _ => candidate.y = bounds.max.y + clearance,
+                }
+
+                // Preserve the aspect ratio and leave a rounding margin inside the safe bounds.
+                let required_half_size = (candidate - rect.center()).abs() + Vec2::ONE;
+                let scale = (required_half_size / bounds.half_size()).max_element();
+                *rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+                candidate
+            });
+        positions.push(position);
+    }
     positions
 }
 
-/// Builds all points in a staggered hexagonal lattice inside the map's safe bounds.
-fn hex_lattice(rect: Rect, spacing: f32) -> Vec<Vec2> {
-    let min = rect.min * 0.9;
-    let max = rect.max * 0.9;
-    let row_spacing = spacing * 3.0_f32.sqrt() * 0.5;
-    let mut positions = Vec::new();
-    let mut row = 0_usize;
-    let mut y = min.y;
-    while y <= max.y {
-        let mut x = min.x
-            + if row.is_multiple_of(2) {
-                0.0
-            } else {
-                spacing * 0.5
-            };
-        while x <= max.x {
-            positions.push(Vec2::new(x, y));
-            x += spacing;
-        }
-        row += 1;
-        y += row_spacing;
-    }
-    positions
+/// Samples continuous coordinates, so distance limits do not introduce a placement grid.
+fn random_position<R: Rng + ?Sized>(bounds: Rect, rng: &mut R) -> Vec2 {
+    Vec2::new(
+        rng.random_range(bounds.min.x..=bounds.max.x),
+        rng.random_range(bounds.min.y..=bounds.max.y),
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use rand::SeedableRng;
-    use rand_chacha::ChaCha8Rng;
-
-    use super::*;
-
-    /// Ensures the largest supported map is generated with the intended minimum separation.
-    #[test]
-    fn maximum_supported_map_has_stable_spacing() {
-        let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let map = Map::new_with_rng(80, 100, &mut rng);
-        assert_eq!(map.planets.len(), 160);
-        for (index, planet) in map.planets.iter().enumerate() {
-            for other in &map.planets[index + 1..] {
-                assert!(planet.position.distance(other.position) > 2.5 * Planet::SIZE);
-            }
-        }
-    }
-}
+#[path = "../../../tests/core/map_model.rs"]
+mod tests;

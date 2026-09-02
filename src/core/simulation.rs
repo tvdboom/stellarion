@@ -15,11 +15,11 @@ use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::orders::{purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
 use crate::core::resources::ResourceName;
 use crate::core::units::buildings::Building;
-use crate::core::units::defense::Defense;
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
 
@@ -382,6 +382,11 @@ impl PersistedGame {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TurnCommand {
+    /// Adds testing resources and units in an isolated one-player practice match.
+    PracticeBoost {
+        /// Limits the boost to the player's owned planets and controlled moons when true.
+        owned_worlds_only: bool,
+    },
     /// Queues one or more identical units on a controlled planet.
     BuyUnits {
         /// Planet on which production is queued.
@@ -440,6 +445,10 @@ pub struct TurnSubmission {
     pub player_id: PlayerId,
     /// Turn to which the commands apply.
     pub turn: u64,
+    /// Readiness attempt, advanced when the player continues an unfinished turn.
+    /// This orders network retries only; it does not affect deterministic gameplay.
+    #[serde(default)]
+    pub generation: u64,
     /// Commands in the intentional order selected by that player.
     pub commands: Vec<TurnCommand>,
 }
@@ -450,6 +459,7 @@ impl TurnSubmission {
         Self {
             player_id,
             turn,
+            generation: 0,
             commands,
         }
     }
@@ -589,6 +599,36 @@ pub fn resolve_turn(
     Ok(result)
 }
 
+/// Validates a partial submission set by resolving it with empty orders for missing players.
+/// A backend must perform this before making any submission immutable. It also checks shared
+/// mission limits and collisions across already accepted players' commands.
+pub fn validate_submission_batch(
+    state: &GameModel,
+    submissions: &[TurnSubmission],
+) -> Result<(), GameError> {
+    let mut complete = submissions.to_vec();
+    for player in state.players.iter().filter(|player| !player.spectator) {
+        if !complete.iter().any(|submission| submission.player_id == player.id) {
+            complete.push(TurnSubmission::new(player.id, state.turn, Vec::new()));
+        }
+    }
+    resolve_turn(&mut state.clone(), &complete).map(|_| ())
+}
+
+/// Projects one player's orders without advancing the simultaneous turn.
+/// Used when restoring a saved draft; other players' orders remain invisible.
+pub fn preview_commands(
+    state: &GameModel,
+    player_id: PlayerId,
+    commands: &[TurnCommand],
+) -> Result<GameModel, GameError> {
+    let mut preview = state.clone();
+    for command in commands {
+        apply_command(&mut preview, player_id, command)?;
+    }
+    Ok(preview)
+}
+
 /// Selects well-separated home planets without an unbounded rejection loop.
 fn choose_home_planets<R: Rng + ?Sized>(
     map: &Map,
@@ -631,6 +671,9 @@ fn apply_command(
     command: &TurnCommand,
 ) -> Result<(), GameError> {
     match command {
+        TurnCommand::PracticeBoost {
+            owned_worlds_only,
+        } => apply_practice_boost(model, player_id, *owned_worlds_only),
         TurnCommand::BuyUnits {
             planet_id,
             unit,
@@ -672,6 +715,34 @@ fn apply_command(
     }
 }
 
+/// Keeps testing shortcuts in the same ordered draft as the orders that depend on them.
+fn apply_practice_boost(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    owned_worlds_only: bool,
+) -> Result<(), GameError> {
+    if !model.rules.practice_mode {
+        return invalid(player_id, "testing shortcuts are only available in local practice");
+    }
+    model.player_mut(player_id)?.resources += 1_000usize;
+    for planet in model.map.planets.iter_mut().filter(|planet| {
+        !owned_worlds_only
+            || planet.owned == Some(player_id)
+            || (planet.is_moon() && planet.controlled == Some(player_id))
+    }) {
+        // Practice boosts deliberately ignore normal construction rosters and lunar field limits.
+        for unit in Unit::all().iter().flatten() {
+            let amount = planet.army.entry(*unit).or_default();
+            if unit.is_building() {
+                *amount = Building::MAX_LEVEL;
+            } else {
+                *amount = amount.saturating_add(3);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Queues a validated purchase and deducts its resources.
 fn apply_purchase(
     model: &mut GameModel,
@@ -695,71 +766,14 @@ fn apply_purchase(
         .position(|planet| planet.id == planet_id)
         .ok_or_else(|| invalid_error(player_id, "purchase planet does not exist"))?;
 
-    for _ in 0..count {
-        let planet = &model.map.planets[planet_index];
-        if !(planet.owned == Some(player_id)
-            || (planet.is_moon() && planet.controlled == Some(player_id)))
-        {
-            return invalid(player_id, "player cannot produce on this planet");
-        }
-        let player = &model.players[player_index];
-        if player.resources < unit.price() {
-            return invalid(player_id, "not enough resources for purchase");
-        }
-        match unit {
-            Unit::Building(_) => {
-                let current = planet.army.amount(&unit);
-                if current >= Building::MAX_LEVEL || planet.buy.contains(&unit) {
-                    return invalid(player_id, "building is at maximum level or already queued");
-                }
-                if planet.is_moon()
-                    && unit.consumes_field()
-                    && planet.fields_consumed() >= planet.max_fields()
-                {
-                    return invalid(player_id, "no lunar field is available");
-                }
-            },
-            Unit::Ship(ship) => {
-                if ship.production() > planet.army.amount(&Unit::Building(Building::Shipyard))
-                    || planet.fleet_production().saturating_add(ship.production())
-                        > planet.max_fleet_production()
-                {
-                    return invalid(
-                        player_id,
-                        "shipyard level or production capacity is insufficient",
-                    );
-                }
-            },
-            Unit::Defense(defense) => {
-                let required_building = if defense.is_missile() {
-                    Building::MissileSilo
-                } else {
-                    Building::Factory
-                };
-                if defense.production() > planet.army.amount(&Unit::Building(required_building))
-                    || planet.battery_production().saturating_add(defense.production())
-                        > planet.max_battery_production()
-                {
-                    return invalid(player_id, "defense production requirements are not met");
-                }
-                if defense.is_missile()
-                    && planet
-                        .missile_capacity()
-                        .saturating_add(planet.buy.iter().filter(|queued| **queued == unit).count())
-                        >= planet.max_missile_capacity()
-                {
-                    return invalid(player_id, "missile silo is full");
-                }
-                if defense == Defense::SpaceDock
-                    && (planet.army.amount(&unit) > 0 || planet.buy.contains(&unit))
-                {
-                    return invalid(player_id, "only one space dock is allowed");
-                }
-            },
-        }
-        model.players[player_index].resources -= unit.price();
-        model.map.planets[planet_index].buy.push(unit);
+    let limit =
+        purchase_limit(&model.players[player_index], &model.map.planets[planet_index], unit)
+            .map_err(|error| invalid_error(player_id, error.to_string()))?;
+    if count > limit {
+        return invalid(player_id, "purchase exceeds available resources or production capacity");
     }
+    model.players[player_index].resources -= unit.price() * count;
+    model.map.planets[planet_index].buy.extend(std::iter::repeat_n(unit, count));
     Ok(())
 }
 
@@ -902,16 +916,6 @@ fn apply_mission(
         .ok_or_else(|| invalid_error(player_id, "mission destination does not exist"))?
         .clone();
     let origin = &model.map.planets[origin_index];
-    if origin.controlled != Some(player_id)
-        || destination.is_destroyed
-        || (destination.is_moon() && objective.on_planet_only())
-        || !objective.condition(origin)
-    {
-        return invalid(player_id, "mission objective is not available for these planets");
-    }
-    if army.iter().any(|(unit, count)| origin.army.amount(unit) < *count) {
-        return invalid(player_id, "mission contains unavailable units");
-    }
     let turn = usize::try_from(model.turn)
         .map_err(|_| invalid_error(player_id, "turn cannot be represented on this platform"))?;
     let mission = Mission::new_with_id(
@@ -927,6 +931,8 @@ fn apply_mission(
         jump_gate,
         None,
     );
+    validate_mission(model.player(player_id)?, origin, &destination, &mission)
+        .map_err(|error| invalid_error(player_id, error.to_string()))?;
     let fuel = mission.fuel_consumption(&model.map);
     let player_index = model
         .players
@@ -936,14 +942,6 @@ fn apply_mission(
     if model.players[player_index].resources.deuterium < fuel {
         return invalid(player_id, "mission requires more deuterium than the player owns");
     }
-    if jump_gate
-        && (origin.army.amount(&Unit::Building(Building::JumpGate)) == 0
-            || destination.army.amount(&Unit::Building(Building::JumpGate)) == 0
-            || mission.jump_cost().saturating_add(origin.jump_gate) > origin.max_jump_capacity())
-    {
-        return invalid(player_id, "jump gate requirements or capacity are not met");
-    }
-
     model.players[player_index].resources.deuterium -= fuel;
     let origin = &mut model.map.planets[origin_index];
     if jump_gate {
@@ -982,6 +980,10 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let planet_ids = model.map.planets.iter().map(|planet| planet.id).collect::<Vec<_>>();
     let mut new_missions = Vec::new();
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
+
+    for mission in &mut model.missions {
+        check_mission(mission, &model.map, turn, model.rules.colonizable_percent);
+    }
 
     for player_id in player_order {
         for planet_id in &planet_ids {
@@ -1046,6 +1048,53 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 false,
                                 false,
                                 None,
+                            ));
+                        }
+                    }
+
+                    if matches!(
+                        report.mission.objective,
+                        Icon::Attack | Icon::Colonize | Icon::Destroy
+                    ) {
+                        destination.army.retain(|unit, _| !unit.is_building());
+                        destination.army.extend(
+                            report
+                                .surviving_defender
+                                .iter()
+                                .filter(|(unit, _)| unit.is_building())
+                                .map(|(unit, count)| (*unit, *count)),
+                        );
+                    }
+                    if report.is_stalemate() {
+                        // Defenders keep the world; surviving attackers retreat without duplicating scouts.
+                        let retreat = report
+                            .surviving_attacker
+                            .iter()
+                            .filter_map(|(unit, count)| {
+                                let count = if *unit == Unit::probe() {
+                                    count.saturating_sub(report.scout_probes)
+                                } else {
+                                    *count
+                                };
+                                (count > 0).then_some((*unit, count))
+                            })
+                            .collect::<Army>();
+                        if retreat.has_army() {
+                            new_missions.push(Mission::new_with_id(
+                                next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
+                                turn,
+                                mission.owner,
+                                destination,
+                                &new_origin,
+                                Icon::Deploy,
+                                retreat,
+                                BombingRaid::None,
+                                false,
+                                false,
+                                Some(format!(
+                                    "{}\n- ({turn}) Combat stalemate; returning to {}.",
+                                    report.mission.logs, new_origin.name
+                                )),
                             ));
                         }
                     }
@@ -1282,347 +1331,5 @@ fn invalid_error(player_id: PlayerId, reason: impl Into<String>) -> GameError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::units::ships::Ship;
-
-    /// Creates and starts a deterministic model for unit tests.
-    fn started_model(player_count: u8) -> GameModel {
-        let mut model = GameModel::new(
-            [player_count; 32],
-            GameRules {
-                player_count,
-                ..GameRules::default()
-            },
-        )
-        .unwrap();
-        model.start().unwrap();
-        model
-    }
-
-    #[test]
-    /// Proves identical state and submissions produce byte-identical next state.
-    fn resolution_is_deterministic() {
-        let mut left = started_model(2);
-        let mut right = left.clone();
-        let submissions = left
-            .players
-            .iter()
-            .map(|player| TurnSubmission::new(player.id, left.turn, Vec::new()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(resolve_turn(&mut left, &submissions), resolve_turn(&mut right, &submissions));
-        assert_eq!(
-            serde_json::to_vec(&PersistedGame::new(left)).unwrap(),
-            serde_json::to_vec(&PersistedGame::new(right)).unwrap()
-        );
-    }
-
-    #[test]
-    /// Validates every supported multiplayer player count.
-    fn supports_two_through_four_players() {
-        for count in 2..=4 {
-            let model = started_model(count);
-            assert_eq!(model.players.len(), usize::from(count));
-            assert_eq!(
-                model.players.iter().map(|player| player.id).collect::<HashSet<_>>().len(),
-                usize::from(count)
-            );
-        }
-    }
-
-    #[test]
-    /// Advances a one-player practice match without declaring an automatic victory.
-    fn local_practice_resolves_immediately_and_stays_active() {
-        let mut model = GameModel::new(
-            [1; 32],
-            GameRules {
-                player_count: 1,
-                practice_mode: true,
-                ..GameRules::default()
-            },
-        )
-        .unwrap();
-        model.start().unwrap();
-        let result = resolve_turn(&mut model, &[TurnSubmission::new(1, 1, Vec::new())]).unwrap();
-        assert_eq!(result.turn, 2);
-        assert!(!result.finished);
-        assert_eq!(model.status, MatchStatus::Active);
-        assert!(!model.players[0].spectator);
-    }
-
-    #[test]
-    /// Keeps normal multiplayer snapshots backward-compatible and rejects mixed practice rules.
-    fn practice_rules_are_explicit_and_json_compatible() {
-        let json = serde_json::to_value(GameRules::default()).unwrap();
-        assert!(json.get("practice_mode").is_none());
-        let loaded: GameRules = serde_json::from_value(json).unwrap();
-        assert!(!loaded.practice_mode);
-        assert!(matches!(
-            GameModel::new(
-                [2; 32],
-                GameRules {
-                    practice_mode: true,
-                    ..GameRules::default()
-                }
-            ),
-            Err(GameError::InvalidPlayerCount(2))
-        ));
-    }
-
-    #[test]
-    /// Rejects player counts outside the public contract.
-    fn rejects_player_count_boundaries() {
-        for count in [0, 1, 5, u8::MAX] {
-            let result = GameModel::new(
-                [count; 32],
-                GameRules {
-                    player_count: count,
-                    ..GameRules::default()
-                },
-            );
-            assert!(matches!(result, Err(GameError::InvalidPlayerCount(value)) if value == count));
-        }
-    }
-
-    #[test]
-    /// Rejects missing, duplicate, and stale simultaneous submissions.
-    fn validates_submission_set() {
-        let model = started_model(2);
-        let first = TurnSubmission::new(1, model.turn, Vec::new());
-        assert!(matches!(
-            resolve_turn(&mut model.clone(), std::slice::from_ref(&first)),
-            Err(GameError::MissingSubmission(2))
-        ));
-        assert!(matches!(
-            resolve_turn(&mut model.clone(), &[first.clone(), first]),
-            Err(GameError::DuplicateSubmission(1))
-        ));
-        let stale = model
-            .players
-            .iter()
-            .map(|player| TurnSubmission::new(player.id, 0, Vec::new()))
-            .collect::<Vec<_>>();
-        assert!(matches!(
-            resolve_turn(&mut model.clone(), &stale),
-            Err(GameError::StaleTurn { .. })
-        ));
-
-        let oversized = TurnSubmission::new(
-            1,
-            model.turn,
-            vec![
-                TurnCommand::AbandonPlanet {
-                    planet_id: 0
-                };
-                MAX_COMMANDS_PER_SUBMISSION + 1
-            ],
-        );
-        let second = TurnSubmission::new(2, model.turn, Vec::new());
-        assert!(matches!(
-            resolve_turn(&mut model.clone(), &[oversized, second]),
-            Err(GameError::InvalidCommand {
-                player_id: 1,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    /// Mission commands produced by the UI may include unselected zero-count ship entries.
-    fn mission_commands_ignore_zero_count_units() {
-        let mut model = started_model(2);
-        let origin = model.players[0].home_planet;
-        let destination = model.players[1].home_planet;
-        let heavy_fighter = Unit::Ship(Ship::HeavyFighter);
-        model.map.get_mut(origin).army.insert(heavy_fighter, 2);
-        let selected = Army::from([(heavy_fighter, 2), (Unit::Ship(Ship::LightFighter), 0)]);
-
-        apply_mission(
-            &mut model,
-            1,
-            7,
-            origin,
-            destination,
-            Icon::Attack,
-            &selected,
-            BombingRaid::None,
-            false,
-            false,
-        )
-        .unwrap();
-
-        assert_eq!(model.missions[0].army, Army::from([(heavy_fighter, 2)]));
-        assert_eq!(model.map.get(origin).army.amount(&heavy_fighter), 0);
-    }
-
-    #[test]
-    /// Rejects unsupported envelopes and broken cross-references without partially loading them.
-    fn rejects_malformed_persisted_state() {
-        let persisted = PersistedGame::new(started_model(2));
-        let mut wrong_schema = persisted.to_json().unwrap();
-        wrong_schema["schema_version"] = serde_json::json!(999);
-        assert!(matches!(
-            PersistedGame::from_json(wrong_schema),
-            Err(GameError::UnsupportedSchema(999))
-        ));
-
-        let mut missing_home = persisted.to_json().unwrap();
-        missing_home["state"]["players"][0]["home_planet"] = serde_json::json!(u64::MAX);
-        assert!(matches!(
-            PersistedGame::from_json(missing_home),
-            Err(GameError::MalformedState(_))
-        ));
-
-        let mut duplicate_player = persisted.to_json().unwrap();
-        duplicate_player["state"]["players"][1]["id"] = serde_json::json!(1);
-        assert!(matches!(
-            PersistedGame::from_json(duplicate_player),
-            Err(GameError::MalformedState(_))
-        ));
-
-        let mut duplicate_color = persisted.to_json().unwrap();
-        duplicate_color["state"]["players"][1]["color"] =
-            duplicate_color["state"]["players"][0]["color"].clone();
-        assert!(matches!(
-            PersistedGame::from_json(duplicate_color),
-            Err(GameError::MalformedState(_))
-        ));
-
-        let mut with_report = started_model(2);
-        let origin = with_report.map.get(with_report.players[0].home_planet).clone();
-        let destination = with_report.map.get(with_report.players[1].home_planet).clone();
-        let mission = Mission::new_with_id(
-            7,
-            1,
-            1,
-            &origin,
-            &destination,
-            Icon::Attack,
-            Army::new(),
-            BombingRaid::None,
-            false,
-            false,
-            None,
-        );
-        with_report.players[0].push_report(crate::core::combat::report::MissionReport {
-            id: 7,
-            turn: 1,
-            mission,
-            planet: destination.clone(),
-            scout_probes: 0,
-            surviving_attacker: Army::new(),
-            surviving_defender: destination.army.clone(),
-            planet_colonized: false,
-            planet_destroyed: false,
-            destination_owned: destination.owned,
-            destination_controlled: destination.controlled,
-            combat_report: None,
-            hidden: false,
-        });
-        let mut invalid_report = PersistedGame::new(with_report).to_json().unwrap();
-        invalid_report["state"]["players"][0]["reports"][0]["mission"]["destination"] =
-            serde_json::json!(u64::MAX);
-        assert!(matches!(
-            PersistedGame::from_json(invalid_report),
-            Err(GameError::MalformedState(_))
-        ));
-    }
-
-    #[test]
-    /// Snapshots created before lobby colors receive distinct deterministic slot colors.
-    fn legacy_players_without_colors_remain_compatible() {
-        let mut json = PersistedGame::new(started_model(4)).to_json().unwrap();
-        for player in json["state"]["players"].as_array_mut().unwrap() {
-            player.as_object_mut().unwrap().remove("color");
-        }
-
-        let loaded = PersistedGame::from_json(json).unwrap();
-        for player in &loaded.state.players {
-            assert_eq!(player.color(), crate::core::player::PlayerColor::for_player(player.id));
-        }
-    }
-
-    #[test]
-    /// Losing the final opposing home world completes the match with one stable winner.
-    fn resolution_completes_game() {
-        let mut model = started_model(2);
-        let defeated_home = model.players[1].home_planet;
-        let planet = model.map.get_mut(defeated_home);
-        planet.owned = Some(1);
-        planet.controlled = Some(1);
-        model.players[1].spectator = true;
-        let submissions = model
-            .players
-            .iter()
-            .filter(|player| !player.spectator)
-            .map(|player| TurnSubmission::new(player.id, model.turn, Vec::new()))
-            .collect::<Vec<_>>();
-
-        let result = resolve_turn(&mut model, &submissions).unwrap();
-        assert!(result.finished);
-        assert_eq!(result.winner, Some(1));
-        assert_eq!(model.status, MatchStatus::Finished);
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(16))]
-
-        #[test]
-        /// Round-trips arbitrary compact seeds without changing valid state.
-        fn serialized_state_round_trips(seed in proptest::prelude::any::<u64>()) {
-            let mut bytes = [0_u8; 32];
-            bytes[..8].copy_from_slice(&seed.to_le_bytes());
-            let model = GameModel::new(bytes, GameRules::default()).unwrap();
-            let persisted = PersistedGame::new(model);
-            let json = persisted.to_json().unwrap();
-            let loaded = PersistedGame::from_json(json).unwrap();
-            proptest::prop_assert_eq!(
-                serde_json::to_vec(&persisted).unwrap(),
-                serde_json::to_vec(&loaded).unwrap()
-            );
-        }
-
-        #[test]
-        /// Arbitrary valid games resolve deterministically and retain ownership/unit invariants.
-        fn arbitrary_empty_turns_preserve_invariants(
-            seed in proptest::array::uniform32(proptest::prelude::any::<u8>()),
-            player_count in 2_u8..=4,
-        ) {
-            let rules = GameRules {
-                player_count,
-                ..GameRules::default()
-            };
-            let mut left = GameModel::new(seed, rules).unwrap();
-            left.start().unwrap();
-            let mut right = left.clone();
-            let submissions = left
-                .players
-                .iter()
-                .map(|player| TurnSubmission::new(player.id, left.turn, Vec::new()))
-                .collect::<Vec<_>>();
-
-            let left_result = resolve_turn(&mut left, &submissions).unwrap();
-            let right_result = resolve_turn(&mut right, &submissions).unwrap();
-            proptest::prop_assert_eq!(left_result, right_result);
-            proptest::prop_assert_eq!(
-                serde_json::to_vec(&left).unwrap(),
-                serde_json::to_vec(&right).unwrap()
-            );
-            left.validate().unwrap();
-
-            let player_ids = left.players.iter().map(|player| player.id).collect::<HashSet<_>>();
-            proptest::prop_assert_eq!(player_ids.len(), usize::from(player_count));
-            for planet in &left.map.planets {
-                for owner in [planet.owned, planet.controlled].into_iter().flatten() {
-                    proptest::prop_assert!(player_ids.contains(&owner));
-                }
-                for count in planet.army.values() {
-                    proptest::prop_assert!(
-                        serde_json::to_value(count).unwrap().as_u64().is_some()
-                    );
-                }
-            }
-        }
-    }
-}
+#[path = "../../tests/core/simulation.rs"]
+mod tests;

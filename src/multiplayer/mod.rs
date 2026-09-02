@@ -1,5 +1,6 @@
 //! Mockable multiplayer coordination and Supabase infrastructure.
 
+pub mod authority;
 pub mod backend;
 #[cfg(feature = "app")]
 pub mod client;

@@ -21,6 +21,7 @@ use crate::platform::config::SupabaseConfig;
 pub struct SupabaseBackend {
     config: SupabaseConfig,
     client: reqwest::Client,
+    request_timeout: std::time::Duration,
 }
 
 impl SupabaseBackend {
@@ -31,6 +32,7 @@ impl SupabaseBackend {
         Ok(Self {
             config,
             client: reqwest::Client::new(),
+            request_timeout: std::time::Duration::from_secs(30),
         })
     }
 
@@ -48,6 +50,7 @@ impl SupabaseBackend {
             .bearer_auth(&session.access_token)
             .header("Content-Type", "application/json")
             .json(request)
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(network_error)?;
@@ -62,6 +65,7 @@ impl SupabaseBackend {
             .header("apikey", &self.config.publishable_key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "refresh_token": session.refresh_token }))
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(network_error)?;
@@ -77,6 +81,7 @@ impl SupabaseBackend {
             .header("Authorization", format!("Bearer {}", self.config.publishable_key))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "data": { "client": "stellarion" } }))
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(network_error)?;
@@ -313,7 +318,32 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Loads canonical submissions needed for deterministic local resolution.
+    /// Clears readiness atomically unless everyone has already finished the turn.
+    fn withdraw_turn<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        turn: u64,
+        generation: u64,
+    ) -> BackendFuture<'a, TurnSubmission> {
+        Box::pin(async move {
+            let draft = self
+                .rpc(
+                    session,
+                    "stellarion_withdraw_turn",
+                    &WithdrawTurnRpc {
+                        game_id: &game_id.0,
+                        turn,
+                        generation,
+                    },
+                )
+                .await?;
+            validate_submission(&draft, Some(turn))?;
+            Ok(draft)
+        })
+    }
+
+    /// Loads ready submissions and recoverable drafts for this turn.
     fn load_turn_submissions<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -389,7 +419,7 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Records non-authoritative connection presence for status UI and notifications.
+    /// Updates presence, deleting an unstarted lobby when its host disconnects.
     fn set_connected<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -495,6 +525,16 @@ struct TurnRpc<'a> {
     game_id: &'a str,
     #[serde(rename = "p_turn")]
     turn: u64,
+}
+
+#[derive(Serialize)]
+struct WithdrawTurnRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_turn")]
+    turn: u64,
+    #[serde(rename = "p_generation")]
+    generation: u64,
 }
 
 #[derive(Serialize)]
@@ -616,6 +656,12 @@ fn validate_game_record(
             }
         }
     }
+    let submitted = record.submitted_players.iter().copied().collect::<HashSet<_>>();
+    if submitted.len() != record.submitted_players.len()
+        || submitted.iter().any(|id| !player_ids.contains(id))
+    {
+        return invalid_protocol("invalid submitted-player list");
+    }
     if creator_count != 1 {
         return invalid_protocol("game record must contain exactly one creator");
     }
@@ -684,6 +730,13 @@ fn validate_summaries(summaries: Vec<GameSummary>) -> Result<Vec<GameSummary>, B
             return invalid_protocol("resume list contains an empty or duplicate game identifier");
         }
         validate_game_code(&summary.code)?;
+        let name_length = summary.display_name.trim().chars().count();
+        if !(1..=32).contains(&name_length)
+            || summary.display_name != summary.display_name.trim()
+            || !summary.player_color.is_valid()
+        {
+            return invalid_protocol("resume entry contains an invalid player name or color");
+        }
         if !(2..=4).contains(&summary.max_players)
             || summary.player_id == 0
             || summary.player_id > u64::from(summary.max_players)
@@ -720,6 +773,7 @@ fn validate_submission(
     if submission.player_id == 0
         || submission.player_id > 4
         || submission.turn == 0
+        || submission.generation > i64::MAX as u64
         || submission.commands.len() > MAX_COMMANDS_PER_SUBMISSION
         || expected_turn.is_some_and(|turn| submission.turn != turn)
     {
@@ -867,6 +921,8 @@ fn map_supabase_error(
         BackendError::InvalidGameStatus
     } else if marker.contains("STLR_INVALID_RECOVERY") {
         BackendError::InvalidRecoveryCode
+    } else if marker.contains("STLR_RECOVERY_IN_USE") {
+        BackendError::RecoveryCodeInUse
     } else if marker.contains("STLR_ALREADY_MEMBER") {
         BackendError::AlreadyMember
     } else if marker.contains("STLR_PLAYER_REMOVED") {
@@ -883,6 +939,8 @@ fn map_supabase_error(
         }
     } else if marker.contains("STLR_TURN_INCOMPLETE") {
         BackendError::TurnIncomplete
+    } else if marker.contains("STLR_TURN_COMMITTED") {
+        BackendError::TurnCommitted
     } else if let Some((expected, actual)) = marker_pair(&marker, "STLR_STALE_SUBMISSION:") {
         BackendError::StaleSubmission {
             expected,
@@ -922,251 +980,5 @@ fn network_error(error: reqwest::Error) -> BackendError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::simulation::{GameModel, GameRules};
-    use crate::multiplayer::model::{BackendEvent, BackendEventKind, JoinDisposition};
-
-    const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/supabase/schema.sql"));
-
-    /// Builds a valid two-player lobby response for transport-boundary tests.
-    fn record() -> GameRecord {
-        let persisted = PersistedGame::new(
-            GameModel::new(
-                [7; 32],
-                GameRules {
-                    player_count: 2,
-                    ..GameRules::default()
-                },
-            )
-            .unwrap(),
-        );
-        let id = GameId::new("00000000-0000-0000-0000-000000000007");
-        GameRecord {
-            id: id.clone(),
-            code: GameCode::new("ABCDEF"),
-            revision: 0,
-            max_players: 2,
-            status: MatchStatus::Lobby,
-            persisted,
-            members: vec![GameMembership {
-                game_id: id,
-                player_id: 1,
-                user_id: UserId::new("00000000-0000-0000-0000-000000000001"),
-                display_name: "Creator".to_string(),
-                is_creator: true,
-                identity_version: 1,
-                connected: false,
-            }],
-        }
-    }
-
-    /// Ensures successful RPC payloads still undergo semantic core and membership validation.
-    #[test]
-    fn validates_successful_transport_payloads() {
-        let valid = record();
-        assert!(validate_game_record(valid.clone(), Some(&valid.id), None).is_ok());
-
-        let mut wrong_status = valid.clone();
-        wrong_status.status = MatchStatus::Finished;
-        assert!(matches!(
-            validate_game_record(wrong_status, None, None),
-            Err(BackendError::Protocol(_))
-        ));
-
-        let mut duplicate = valid.clone();
-        duplicate.members.push(duplicate.members[0].clone());
-        assert!(matches!(
-            validate_game_record(duplicate, None, None),
-            Err(BackendError::Protocol(_))
-        ));
-
-        let result = MembershipResult {
-            membership: valid.members[0].clone(),
-            game: valid,
-            disposition: JoinDisposition::Joined,
-        };
-        assert!(validate_membership_result(
-            result,
-            &UserId::new("00000000-0000-0000-0000-000000000001")
-        )
-        .is_ok());
-    }
-
-    /// Rejects stale, out-of-order, or cross-game event replay responses.
-    #[test]
-    fn validates_durable_event_batches() {
-        let game_id = GameId::new("game-1");
-        let event = BackendEvent {
-            sequence: 4,
-            game_id: game_id.clone(),
-            kind: BackendEventKind::StateChanged,
-            revision: Some(2),
-            turn: Some(1),
-            player_id: None,
-        };
-        assert!(validate_event_batch(
-            EventBatch {
-                events: vec![event.clone()],
-                cursor: 4,
-            },
-            &game_id,
-            3,
-        )
-        .is_ok());
-        assert!(matches!(
-            validate_event_batch(
-                EventBatch {
-                    events: vec![event],
-                    cursor: 5,
-                },
-                &game_id,
-                3,
-            ),
-            Err(BackendError::Protocol(_))
-        ));
-    }
-
-    /// Maps every stable SQL marker into a typed client error.
-    #[test]
-    fn maps_sql_error_markers() {
-        let status = reqwest::StatusCode::BAD_REQUEST;
-        let mapped = |message| map_supabase_error(status, message, None);
-        assert_eq!(mapped("STLR_UNAUTHENTICATED"), BackendError::Unauthenticated);
-        assert_eq!(mapped("STLR_FORBIDDEN"), BackendError::Forbidden);
-        assert_eq!(mapped("STLR_GAME_NOT_FOUND"), BackendError::GameNotFound);
-        assert_eq!(mapped("STLR_CODE_COLLISION"), BackendError::GameCodeCollision);
-        assert_eq!(mapped("STLR_GAME_FULL"), BackendError::GameFull);
-        assert_eq!(mapped("STLR_INVALID_STATUS"), BackendError::InvalidGameStatus);
-        assert_eq!(mapped("STLR_INVALID_RECOVERY"), BackendError::InvalidRecoveryCode);
-        assert_eq!(mapped("STLR_ALREADY_MEMBER"), BackendError::AlreadyMember);
-        assert_eq!(mapped("STLR_PLAYER_REMOVED"), BackendError::PlayerNoLongerInGame);
-        assert_eq!(
-            mapped("STLR_CONFLICT:7:8"),
-            BackendError::Conflict {
-                expected: 7,
-                actual: 8,
-            }
-        );
-        assert_eq!(
-            mapped("STLR_DUPLICATE_SUBMISSION:2:9"),
-            BackendError::DuplicateSubmission {
-                player_id: 2,
-                turn: 9,
-            }
-        );
-        assert_eq!(
-            mapped("STLR_STALE_SUBMISSION:10:9"),
-            BackendError::StaleSubmission {
-                expected: 10,
-                actual: 9,
-            }
-        );
-        assert_eq!(mapped("STLR_TURN_INCOMPLETE"), BackendError::TurnIncomplete);
-        assert_eq!(
-            mapped("STLR_INVALID_DATA:submission"),
-            BackendError::InvalidData("submission".to_string())
-        );
-    }
-
-    #[test]
-    /// Preserves Supabase Auth's numeric code and maps its anonymous-provider marker.
-    fn maps_disabled_anonymous_provider() {
-        let body = serde_json::from_str::<SupabaseErrorBody>(
-            r#"{"code":422,"error_code":"anonymous_provider_disabled","msg":"Anonymous sign-ins are disabled"}"#,
-        )
-        .unwrap();
-        assert_eq!(body.code, Some(serde_json::json!(422)));
-        assert_eq!(
-            map_supabase_error(
-                reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-                body.msg.as_deref().unwrap(),
-                Some(&body),
-            ),
-            BackendError::Configuration(
-                "anonymous sign-ins are disabled for the configured Supabase project".to_string()
-            )
-        );
-    }
-
-    #[test]
-    /// Maps a missing Stellarion RPC to the deployment step instead of raw PostgREST text.
-    fn maps_missing_database_schema() {
-        let body = serde_json::from_str::<SupabaseErrorBody>(
-            r#"{"code":"PGRST202","message":"Could not find the function public.stellarion_list_games without parameters in the schema cache"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            map_supabase_error(
-                reqwest::StatusCode::NOT_FOUND,
-                body.message.as_deref().unwrap(),
-                Some(&body),
-            ),
-            BackendError::Configuration(
-                "the Stellarion database schema is missing; run supabase/schema.sql in the Supabase SQL Editor"
-                    .to_string()
-            )
-        );
-    }
-
-    /// Guards the fresh schema's RPC surface, RLS, grants, and Realtime publication.
-    #[test]
-    fn schema_contains_the_complete_secure_contract() {
-        for table in [
-            "stellarion_games",
-            "stellarion_game_players",
-            "stellarion_turn_submissions",
-            "stellarion_game_events",
-        ] {
-            assert!(
-                SCHEMA.contains(&format!("alter table public.{table} enable row level security"))
-            );
-            assert!(SCHEMA
-                .contains(&format!("revoke all on table public.{table} from anon, authenticated")));
-        }
-        for policy in [
-            "stellarion_games_member_select",
-            "stellarion_players_member_select",
-            "stellarion_submissions_member_select",
-            "stellarion_events_member_select",
-        ] {
-            assert!(SCHEMA.contains(&format!("create policy {policy}")));
-        }
-        for rpc in [
-            "stellarion_create_game",
-            "stellarion_join_game",
-            "stellarion_recover_player",
-            "stellarion_list_games",
-            "stellarion_load_game",
-            "stellarion_start_game",
-            "stellarion_resume_game",
-            "stellarion_save_game",
-            "stellarion_submit_turn",
-            "stellarion_load_turn_submissions",
-            "stellarion_publish_resolution",
-            "stellarion_events_since",
-            "stellarion_set_connected",
-        ] {
-            assert!(SCHEMA.contains(&format!("create function public.{rpc}")));
-            assert!(SCHEMA.contains(&format!("grant execute on function public.{rpc}")));
-        }
-        assert!(SCHEMA.contains("alter publication supabase_realtime"));
-        assert!(SCHEMA.contains("add table public.stellarion_game_events"));
-        assert!(SCHEMA.contains("alter table public.stellarion_game_events replica identity full"));
-        assert!(
-            SCHEMA.contains("grant select on table public.stellarion_game_events to authenticated")
-        );
-        assert_eq!(SCHEMA.matches("revision is distinct from p_expected_revision").count(), 3);
-        assert!(SCHEMA.contains("p_after_sequence is null or p_after_sequence < 0"));
-        assert!(SCHEMA.contains("v_planet_total > 160"));
-        assert!(SCHEMA.contains("jsonb_array_length(v_missions) > 4096"));
-        assert!(SCHEMA.contains("pg_column_size(p_persisted) > 67108864"));
-        assert!(SCHEMA.contains("jsonb_array_length(entry -> 'reports') > 512"));
-        assert!(SCHEMA.contains("jsonb_array_length(p_submission -> 'commands') > 1024"));
-        assert!(SCHEMA.contains("pg_column_size(p_submission) > 1048576"));
-        assert!(!SCHEMA.contains("service_role"));
-        assert!(!SCHEMA.contains("sb_secret_"));
-        assert!(!SCHEMA.contains("drop policy"));
-        assert!(SCHEMA.trim_end().ends_with("commit;"));
-    }
-}
+#[path = "../../tests/multiplayer/supabase.rs"]
+mod tests;

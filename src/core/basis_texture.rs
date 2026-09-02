@@ -9,6 +9,7 @@ use bevy::render::render_resource::{
     TextureFormat, TextureUsages, WgpuFeatures,
 };
 use bevy::render::{renderer::RenderDevice, RenderApp};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Registers the `.basisu.ktx2` loader after detecting the active GPU formats.
@@ -83,6 +84,17 @@ struct BasisTextureLoader {
     target: TranscodeTarget,
 }
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+/// Per-image filtering and alpha options for artwork and player-color silhouettes.
+pub(crate) struct BasisTextureSettings {
+    /// Discards baked RGB while preserving transparency and antialiased edges in every mip.
+    pub alpha_mask: bool,
+    /// Encodes RGB with alpha for egui's premultiplied blending.
+    pub premultiply_alpha: bool,
+    /// Smooths scaled artwork and mip transitions without changing its pixels or GPU format.
+    pub linear_filtering: bool,
+}
+
 impl BasisTextureLoader {
     /// Creates a loader whose output matches the current GPU's advertised features.
     fn from_features(features: WgpuFeatures) -> Self {
@@ -109,8 +121,8 @@ pub enum BasisTextureError {
 impl AssetLoader for BasisTextureLoader {
     /// Asset type produced by this loader.
     type Asset = Image;
-    /// Per-load settings type; Basis textures require no custom settings.
-    type Settings = ();
+    /// Per-load settings distinguish full-color artwork from tintable silhouettes.
+    type Settings = BasisTextureSettings;
     /// Typed loader error returned for invalid containers or transcoding failures.
     type Error = BasisTextureError;
 
@@ -118,12 +130,25 @@ impl AssetLoader for BasisTextureLoader {
     async fn load(
         &self,
         reader: &mut dyn bevy::asset::io::Reader,
-        _settings: &Self::Settings,
-        _load_context: &mut bevy::asset::LoadContext<'_>,
+        settings: &Self::Settings,
+        load_context: &mut bevy::asset::LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        transcode_basis_texture(&bytes, self.target)
+        if settings.alpha_mask {
+            // Map sprites need straight-alpha white masks. Egui instead needs the original
+            // artwork with premultiplied RGB; sharing the mask paints a solid white square.
+            let ui_image = transcode_basis_texture(
+                &bytes,
+                self.target,
+                &BasisTextureSettings {
+                    premultiply_alpha: true,
+                    ..default()
+                },
+            )?;
+            load_context.add_labeled_asset("ui", ui_image);
+        }
+        transcode_basis_texture(&bytes, self.target, settings)
     }
 
     /// Uses a compound extension so Bevy's built-in KTX2 loader never claims these files.
@@ -136,6 +161,7 @@ impl AssetLoader for BasisTextureLoader {
 fn transcode_basis_texture(
     bytes: &[u8],
     target: TranscodeTarget,
+    settings: &BasisTextureSettings,
 ) -> Result<Image, BasisTextureError> {
     let transcoder = Transcoder::new(bytes)
         .map_err(|error| BasisTextureError::Transcode(format!("{error:?}")))?;
@@ -148,13 +174,32 @@ fn transcode_basis_texture(
     // wgpu requires compressed texture descriptors to use whole block extents. Source UI
     // sprites intentionally have arbitrary pixel dimensions, so keeping their logical extent
     // requires an uncompressed upload rather than padding and subtly changing layout sizes.
-    let target = target.for_dimensions(width, height);
+    // Silhouette icons and their UI artwork need editable channels, once on the asset-loading
+    // task; all other artwork retains the device's compressed format.
+    let target = if settings.alpha_mask || settings.premultiply_alpha {
+        TranscodeTarget::from_features(WgpuFeatures::empty())
+    } else {
+        target.for_dimensions(width, height)
+    };
     let mut data = Vec::new();
     for level in 0..level_count {
         let mut level_data =
             transcoder
                 .transcode(level, target.basis, DecodeFlags::HIGH_QUALITY)
                 .map_err(|error| BasisTextureError::Transcode(format!("mip {level}: {error:?}")))?;
+        if settings.alpha_mask {
+            for pixel in level_data.chunks_exact_mut(4) {
+                pixel[..3].fill(255);
+            }
+        }
+        if settings.premultiply_alpha {
+            for pixel in level_data.chunks_exact_mut(4) {
+                let alpha = u16::from(pixel[3]);
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                }
+            }
+        }
         data.append(&mut level_data);
     }
 
@@ -175,7 +220,11 @@ fn transcode_basis_texture(
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         },
-        sampler: ImageSampler::Default,
+        sampler: if settings.linear_filtering || settings.alpha_mask || settings.premultiply_alpha {
+            ImageSampler::linear()
+        } else {
+            ImageSampler::Default
+        },
         texture_view_descriptor: None,
         asset_usage: RenderAssetUsages::RENDER_WORLD,
         copy_on_resize: false,
@@ -183,48 +232,5 @@ fn transcode_basis_texture(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Reads one reproducibly generated runtime texture.
-    fn runtime_asset(path: &str) -> Vec<u8> {
-        std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets-runtime").join(path),
-        )
-        .unwrap_or_else(|error| panic!("generated runtime asset {path} is missing: {error}"))
-    }
-
-    #[test]
-    /// Pure Rust produces valid RGBA data for arbitrary browser GPUs without compressed support.
-    fn transcodes_uastc_without_native_libraries() {
-        let target = TranscodeTarget::from_features(WgpuFeatures::empty());
-        let image = transcode_basis_texture(&runtime_asset("images/ui/button.basisu.ktx2"), target)
-            .expect("UASTC menu texture should transcode");
-        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
-        assert_eq!(image.texture_descriptor.size.width, 135);
-        assert_eq!(image.texture_descriptor.size.height, 29);
-        assert_eq!(image.texture_descriptor.mip_level_count, 1);
-    }
-
-    #[test]
-    /// Odd-sized UI sprites avoid invalid BC texture descriptors on compressed-capable GPUs.
-    fn odd_sized_texture_falls_back_from_bc7() {
-        let target = TranscodeTarget::from_features(WgpuFeatures::TEXTURE_COMPRESSION_BC);
-        let image = transcode_basis_texture(&runtime_asset("images/ui/button.basisu.ktx2"), target)
-            .expect("odd-sized UASTC UI texture should transcode");
-        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
-        assert_eq!(image.texture_descriptor.size.width, 135);
-        assert_eq!(image.texture_descriptor.size.height, 29);
-        assert_eq!(image.data.as_ref().map(Vec::len), Some(135 * 29 * 4));
-    }
-
-    #[test]
-    /// Mips and a GPU-compressed target survive the full generated-file decode path.
-    fn transcodes_mip_chain_to_bc7() {
-        let target = TranscodeTarget::from_features(WgpuFeatures::TEXTURE_COMPRESSION_BC);
-        let image = transcode_basis_texture(&runtime_asset("images/bg/menu.basisu.ktx2"), target)
-            .expect("mipmapped UASTC background should transcode");
-        assert_eq!(image.texture_descriptor.format, TextureFormat::Bc7RgbaUnormSrgb);
-        assert!(image.texture_descriptor.mip_level_count > 1);
-    }
-}
+#[path = "../../tests/core/basis_texture.rs"]
+mod tests;

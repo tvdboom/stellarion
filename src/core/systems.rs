@@ -1,23 +1,60 @@
 //! Cross-state Bevy input, resize, and keyboard-navigation systems.
 
 use bevy::prelude::*;
-use bevy::window::WindowResized;
+use bevy::window::{CursorIcon, SystemCursorIcon, WindowResized};
 use itertools::Itertools;
 
 use crate::core::camera::MainCamera;
 use crate::core::combat::systems::BackgroundImageCmp;
-use crate::core::map::model::Map;
-use crate::core::menu::utils::TextSize;
+use crate::core::map::model::{Map, MapCmp};
+use crate::core::menu::utils::{add_root_node, TextSize};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
+#[cfg(debug_assertions)]
+use crate::core::simulation::{preview_commands, TurnCommand};
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, Shop, UiState};
-#[cfg(debug_assertions)]
-use crate::core::units::buildings::Building;
-#[cfg(debug_assertions)]
-use crate::core::units::Unit;
 use crate::multiplayer::client::MultiplayerRequest;
+#[cfg(debug_assertions)]
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
+
+#[derive(Component)]
+/// Invisible full-screen Bevy UI layer that blocks picking beneath in-game menus.
+pub(crate) struct GameplayInputBlocker;
+
+/// Blocks map picking and clears transient hover state without interrupting Egui menu input.
+pub(crate) fn suspend_gameplay_interactions(
+    mut commands: Commands,
+    mut state: Option<ResMut<UiState>>,
+    window: Query<Entity, With<Window>>,
+    blockers: Query<Entity, With<GameplayInputBlocker>>,
+) {
+    if blockers.is_empty() {
+        // A Bevy blocker also catches drags that began before Egui's modal area appeared.
+        // Keep the picking pipeline running so button releases are not replayed on resume.
+        commands.spawn((add_root_node(true), GameplayInputBlocker, MapCmp));
+    }
+    if let Some(state) = state.as_mut() {
+        state.planet_hover = None;
+        state.mission_hover = None;
+        state.mission_hover_from_ui = false;
+        state.combat_report_hover = None;
+    }
+    if let Ok(window) = window.single() {
+        commands.entity(window).insert(CursorIcon::from(SystemCursorIcon::Default));
+    }
+}
+
+/// Restores map picking when the player closes the in-game menus.
+pub(crate) fn resume_gameplay_interactions(
+    mut commands: Commands,
+    blockers: Query<Entity, With<GameplayInputBlocker>>,
+) {
+    for blocker in &blockers {
+        commands.entity(blocker).despawn();
+    }
+}
 
 /// Handles the resize system interaction.
 pub fn on_resize_system(
@@ -59,13 +96,12 @@ pub fn check_keys_menu(
 
     if keyboard.just_pressed(KeyCode::Escape) {
         match app_state.get() {
-            AppState::SinglePlayerMenu | AppState::CreateGame | AppState::Settings => {
-                next_app_state.set(AppState::MainMenu)
-            },
-            AppState::JoinGame | AppState::RecoverPlayer | AppState::ResumeGame => {
-                next_app_state.set(AppState::MultiPlayerMenu)
-            },
-            AppState::MultiPlayerMenu => next_app_state.set(AppState::MainMenu),
+            AppState::SinglePlayerMenu
+            | AppState::CreateGame
+            | AppState::JoinGame
+            | AppState::ResumeGame
+            | AppState::Settings => next_app_state.set(AppState::MainMenu),
+            AppState::RecoverPlayer => next_app_state.set(AppState::ResumeGame),
             AppState::Lobby => {
                 multiplayer.write(MultiplayerRequest::LeaveGame);
             },
@@ -102,7 +138,7 @@ pub fn check_keys_menu(
                     state.planet_selected = None;
                     state.mission = false;
                     state.combat_report = None;
-                    state.end_turn = !state.end_turn;
+                    state.end_turn = true;
                 }
             }
         } else if *game_state.get() == GameState::CombatMenu {
@@ -271,30 +307,53 @@ pub fn check_keys(
 }
 
 #[cfg(debug_assertions)]
-/// Applies the developer-only resource and unit keyboard shortcut before normal input handling.
+/// Queues and previews the practice shortcut so subsequent orders use the same canonical draft.
 pub fn debug_cheat_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
+    session: Res<MultiplayerSession>,
+    mut pending: ResMut<PendingTurnCommands>,
+    mut messages: MessageWriter<crate::core::messages::MessageMsg>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    if !ctrl_pressed || !keyboard.just_pressed(KeyCode::ArrowUp) {
+    if !ctrl_pressed
+        || !keyboard.just_pressed(KeyCode::ArrowUp)
+        || !session.local_practice
+        || !pending.is_editable()
+    {
+        return;
+    }
+    let Some(record) = &session.active_game else {
+        return;
+    };
+    if pending.turn != record.persisted.state.turn {
         return;
     }
 
-    player.resources += 1_000usize;
-    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let player_id = player.id;
-    let planets =
-        map.planets.iter_mut().filter(|planet| !shift_pressed || planet.owned == Some(player_id));
-    for planet in planets {
-        for unit in Unit::all().iter().flatten() {
-            if unit.is_building() {
-                *planet.army.entry(*unit).or_insert(0) = Building::MAX_LEVEL;
-            } else {
-                let amount = planet.army.entry(*unit).or_insert(0);
-                *amount = amount.saturating_add(3);
-            }
-        }
+    if !pending.push(TurnCommand::PracticeBoost {
+        owned_worlds_only: keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+    }) {
+        messages.write(crate::core::messages::MessageMsg::error(
+            "This turn already contains the maximum number of commands.",
+        ));
+        return;
+    }
+    let preview = preview_commands(&record.persisted.state, player.id, &pending.commands);
+    match preview.and_then(|model| Ok((model.player(player.id)?.clone(), model.map))) {
+        Ok((preview_player, preview_map)) => {
+            *player = preview_player;
+            *map = preview_map;
+        },
+        Err(error) => {
+            pending.commands.pop();
+            messages.write(crate::core::messages::MessageMsg::error(format!(
+                "Could not apply testing shortcut: {error}"
+            )));
+        },
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/systems.rs"]
+mod tests;

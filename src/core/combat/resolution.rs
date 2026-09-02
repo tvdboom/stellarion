@@ -198,15 +198,14 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
                     }
                 }
 
-                let mut damage = unit.unit.damage();
-
-                if damage == 0 {
+                if unit.unit.damage() == 0 {
                     // Skip the shooting (for probes or antiballistic missiles)
                     continue 'unit;
                 }
 
                 let mut shots_fired = 0;
                 'shoot: loop {
+                    let mut damage = unit.unit.damage();
                     shots_fired += 1;
                     let mut shot = ShotReport::default();
 
@@ -403,7 +402,9 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
         // Add the non-combat ships to the attacker
         *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
             mission.army.amount(&Unit::colony_ship());
-    } else {
+    }
+    if !surviving_defense.is_empty() {
+        // Defender support units survive a stalemate as well as a defensive victory.
         // Add non-combat ships and the remaining missiles to the defender
         *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
             destination.army.amount(&Unit::colony_ship());
@@ -452,67 +453,5 @@ fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f3
 }
 
 #[cfg(test)]
-mod tests {
-    use rand::SeedableRng;
-
-    use super::*;
-    use crate::core::map::planet::PlanetKind;
-
-    #[test]
-    /// Zero-damage armies produce a bounded draw instead of an infinite combat loop.
-    fn zero_damage_stalemate_terminates() {
-        let destination = Planet {
-            id: 1,
-            name: "Stalemate".to_string(),
-            kind: PlanetKind::Dry,
-            image: 2,
-            diameter: 10_000,
-            temperature: (0, 10),
-            position: Vec2::X,
-            resources: Default::default(),
-            jump_gate: 0,
-            is_destroyed: false,
-            owned: Some(2),
-            controlled: Some(2),
-            army: Army::from([(Unit::probe(), 1)]),
-            buy: Vec::new(),
-        };
-        let origin = Planet {
-            id: 0,
-            position: Vec2::ZERO,
-            ..destination.clone()
-        };
-        let mut mission = Mission::new_with_id(
-            1,
-            1,
-            1,
-            &origin,
-            &destination,
-            Icon::Attack,
-            Army::from([(Unit::probe(), 1)]),
-            BombingRaid::None,
-            true,
-            false,
-            None,
-        );
-        mission.position = destination.position;
-
-        let report = resolve_combat_with_rng(
-            1,
-            &mission,
-            &destination,
-            &mut rand_chacha::ChaCha8Rng::from_seed([9; 32]),
-        );
-        assert_eq!(report.surviving_attacker.amount(&Unit::probe()), 1);
-        assert_eq!(report.surviving_defender.amount(&Unit::probe()), 1);
-    }
-
-    #[test]
-    /// An adversarial rapid-fire roll cannot keep one firing loop alive forever.
-    fn rapid_fire_chain_has_a_hard_limit() {
-        let attacker = Unit::war_sun();
-        let target = Unit::probe();
-        assert!(!rapid_fire_stops(&attacker, &target, MAX_SHOTS_PER_UNIT_PER_ROUND - 1, 0.999,));
-        assert!(rapid_fire_stops(&attacker, &target, MAX_SHOTS_PER_UNIT_PER_ROUND, 0.999,));
-    }
-}
+#[path = "../../../tests/core/combat_resolution.rs"]
+mod tests;

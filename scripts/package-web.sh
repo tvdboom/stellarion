@@ -7,6 +7,11 @@ stage="$output_root/stellarion-html"
 archive="$output_root/stellarion-html.zip"
 wasm_bindgen_version="$(tr -d '[:space:]' < "$repository/scripts/wasm-bindgen-version.txt")"
 
+if [[ ! -f "$repository/assets-runtime/.stellarion-assets" ]]; then
+  echo "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging." >&2
+  exit 1
+fi
+
 case "$output_root" in
   "$repository"/dist|"$repository"/dist/*) ;;
   *) echo "Refusing to clean output outside $repository/dist" >&2; exit 1 ;;

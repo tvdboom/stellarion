@@ -67,6 +67,7 @@ impl MissionReport {
                     None
                 }
             },
+            _ if self.is_stalemate() => None,
             _ => {
                 if self.surviving_attacker.iter().any(|(u, c)| {
                     if *u == Unit::probe() {
@@ -81,6 +82,26 @@ impl MissionReport {
                 }
             },
         }
+    }
+
+    /// Both combat armies remain after the bounded round limit; neither side conquered the world.
+    pub fn is_stalemate(&self) -> bool {
+        matches!(self.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+            && self.surviving_attacker.iter().any(|(unit, count)| {
+                *unit != Unit::colony_ship()
+                    && *count
+                        > if *unit == Unit::probe() {
+                            self.scout_probes
+                        } else {
+                            0
+                        }
+            })
+            && self.surviving_defender.iter().any(|(unit, count)| {
+                *count > 0
+                    && !unit.is_building()
+                    && !unit.is_missile()
+                    && *unit != Unit::colony_ship()
+            })
     }
 
     /// Returns the user-facing status of this combat side.
