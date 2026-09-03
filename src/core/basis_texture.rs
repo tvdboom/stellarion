@@ -188,12 +188,12 @@ fn transcode_basis_texture(
                 .transcode(level, target.basis, DecodeFlags::HIGH_QUALITY)
                 .map_err(|error| BasisTextureError::Transcode(format!("mip {level}: {error:?}")))?;
         if settings.alpha_mask {
-            for pixel in level_data.chunks_exact_mut(4) {
+            for pixel in level_data.as_chunks_mut::<4>().0 {
                 pixel[..3].fill(255);
             }
         }
         if settings.premultiply_alpha {
-            for pixel in level_data.chunks_exact_mut(4) {
+            for pixel in level_data.as_chunks_mut::<4>().0 {
                 let alpha = u16::from(pixel[3]);
                 for channel in &mut pixel[..3] {
                     *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;

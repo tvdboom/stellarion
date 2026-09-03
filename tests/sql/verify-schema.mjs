@@ -184,6 +184,7 @@ const created = await create(host);
 const id = created.game.id;
 assert.equal(created.membership.player_id, 1);
 assert.equal(created.game.status, "lobby");
+assert(Number.isSafeInteger(created.game.saved_at) && created.game.saved_at > 0);
 assert(!JSON.stringify(created).includes("recovery_hash"));
 await assert.rejects(create(host), /STLR_CODE_COLLISION/);
 assert.deepEqual(await rpc(host, "select public.stellarion_list_games() as result"), []);
@@ -235,7 +236,10 @@ let active = await start(host);
 assert.equal(active.status, "active");
 assert.equal(active.max_players, 2);
 assert.equal(active.members.length, 2);
-assert.equal((await rpc(host, "select public.stellarion_list_games() as result")).length, 1);
+const startedSavedAt = active.saved_at;
+const summaries = await rpc(host, "select public.stellarion_list_games() as result");
+assert.equal(summaries.length, 1);
+assert.equal(summaries[0].saved_at, startedSavedAt);
 for (const field of ["resources", "color"]) {
   const forged = structuredClone(active.persisted);
   if (field === "resources") forged.state.players[0].resources.metal += 1;
@@ -243,6 +247,7 @@ for (const field of ["resources", "color"]) {
   await assert.rejects(save(guest, active, forged), /STLR_FORBIDDEN/);
 }
 active = await save(host, active, active.persisted);
+assert(active.saved_at >= startedSavedAt);
 const submit = (actor, player, turn = 1, commands = [], generation = 0) => rpc(actor,
   "select public.stellarion_submit_turn($1, $2) as result",
   [id, { player_id: player, turn, commands, generation }]);
@@ -283,6 +288,7 @@ await assert.rejects(publish(outsider), /STLR_FORBIDDEN/);
 const resolved = await publish(host);
 assert.equal(resolved.persisted.state.turn, 2);
 assert.equal(resolved.revision, active.revision + 1);
+assert(resolved.saved_at >= active.saved_at);
 assert.deepEqual(resolved.submitted_players, []);
 await assert.rejects(publish(guest), /STLR_CONFLICT/);
 const events = await rpc(guest, "select public.stellarion_events_since($1, $2) as result", [id, 0]);
@@ -294,7 +300,9 @@ await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
 await rpc(host, "select public.stellarion_set_connected($1, false) as result", [temporary.game.id]);
 await assert.rejects(rpc(guest, "select public.stellarion_load_game($1) as result", [temporary.game.id]), /STLR_GAME_NOT_FOUND/);
 await rpc(host, "select public.stellarion_set_connected($1, false) as result", [id]);
-assert.equal((await rpc(guest, "select public.stellarion_load_game($1) as result", [id])).status, "active");
+const disconnected = await rpc(guest, "select public.stellarion_load_game($1) as result", [id]);
+assert.equal(disconnected.status, "active");
+assert.equal(disconnected.saved_at, resolved.saved_at, "presence is not a gameplay save");
 // Hosts and guests share the same short presence lease. Reads and event polls
 // must expose expiry without renewing it or deleting an active match.
 for (const [departed, observer] of [[host, guest], [guest, host]]) {
@@ -307,6 +315,7 @@ for (const [departed, observer] of [[host, guest], [guest, host]]) {
     [id, departed],
   );
   const live = await rpc(observer, "select public.stellarion_load_game($1) as result", [id]);
+  assert.equal(live.saved_at, resolved.saved_at);
   assert(live.members.find(member => member.user_id === departed).connected);
   await db.query(
     "update public.stellarion_game_players set last_seen_at = clock_timestamp() - interval '15 seconds' where game_id = $1 and user_id = $2",
@@ -318,6 +327,7 @@ for (const [departed, observer] of [[host, guest], [guest, host]]) {
     assert(expired.members.find(member => member.user_id === observer).connected);
     assert.equal(expired.status, "active");
     assert.equal(expired.revision, live.revision);
+    assert.equal(expired.saved_at, resolved.saved_at);
     const quiet = await rpc(observer, "select public.stellarion_events_since($1, $2) as result", [id, before.cursor]);
     assert.deepEqual(quiet.events, []);
   }

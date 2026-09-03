@@ -125,6 +125,92 @@ fn main_menu_shows_all_actions_after_boot_and_resize() {
 }
 
 #[test]
+fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
+    let (mut app, context) = menu_app();
+    let viewport = egui::vec2(898.0, 934.0);
+    app.world_mut().resource_mut::<MultiplayerSession>().menu_error = Some(
+        "backend protocol error: Supabase returned 400 Bad Request: Refresh token is not valid"
+            .to_string(),
+    );
+    app.world_mut().resource_mut::<ConnectionIndicator>().status =
+        crate::multiplayer::client::ConnectionStatus::Offline;
+
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    assert_main_actions_visible(&shapes, viewport);
+
+    let offline = visible_menu_label(&shapes, "Offline").unwrap();
+    let status_dot = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle)
+                if (circle.radius - 4.0).abs() < f32::EPSILON
+                    && circle.center.x < offline.left()
+                    && (offline.top()..=offline.bottom()).contains(&circle.center.y) =>
+            {
+                Some(circle)
+            },
+            _ => None,
+        })
+        .unwrap();
+    let toast_title = visible_menu_label(&shapes, "Unable to complete action").unwrap();
+    let toast = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.rect.contains_rect(toast_title) => Some(rect.rect),
+            _ => None,
+        })
+        .unwrap();
+    let last_action = visible_menu_label(&shapes, main_action_labels().last().unwrap()).unwrap();
+    let last_button = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.rect.contains_rect(last_action)
+                    && rect.rect.center().distance(last_action.center()) < 1.0 =>
+            {
+                Some(rect.rect)
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert!(status_dot.center.x < offline.left());
+    assert!((offline.top()..=offline.bottom()).contains(&status_dot.center.y));
+    assert!(u16::from(status_dot.fill.r()) > u16::from(status_dot.fill.g()) * 2);
+    assert!(toast.bottom() < offline.top());
+    assert!(toast.center().x > viewport.x * 0.5);
+    assert!((toast.right() - (viewport.x - 24.0)).abs() < 1.0);
+    assert!(toast.left() > last_button.right());
+    assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(toast));
+
+    app.world_mut().resource_mut::<MultiplayerSession>().menu_error = None;
+    app.world_mut().resource_mut::<ConnectionIndicator>().status =
+        crate::multiplayer::client::ConnectionStatus::Connected;
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    let connected = visible_menu_label(&shapes, "Connected").unwrap();
+    let status_dot = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle)
+                if (circle.radius - 4.0).abs() < f32::EPSILON
+                    && circle.center.x < connected.left()
+                    && (connected.top()..=connected.bottom()).contains(&circle.center.y) =>
+            {
+                Some(circle)
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert!(u16::from(status_dot.fill.g()) > u16::from(status_dot.fill.r()) * 2);
+    assert!(visible_menu_label(&shapes, "Unable to complete action").is_none());
+}
+
+#[test]
 fn main_menu_scrolls_short_windows_and_recovers_after_navigation_and_growth() {
     let (mut app, context) = menu_app();
     let small = egui::vec2(400.0, 400.0);
@@ -455,6 +541,7 @@ fn test_lobby() -> MultiplayerSession {
         id,
         code: GameCode::new("ABCDEF"),
         revision: 0,
+        saved_at: 1_700_000_000,
         max_players: 2,
         status: MatchStatus::Lobby,
         persisted: PersistedGame::new(GameModel::new([3; 32], GameRules::default()).unwrap()),
@@ -489,8 +576,14 @@ fn menu_button_registers_its_click_sound() {
 }
 
 #[test]
+fn resume_save_timestamp_uses_a_stable_utc_date_and_minute() {
+    assert_eq!(format_saved_timestamp(1_700_000_000), "Saved 2023-11-14 22:13 UTC");
+    assert_eq!(format_saved_timestamp(0), "Saved time unavailable");
+}
+
+#[test]
 fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
-    for (height, visible_cards) in [(514.0, 3), (900.0, 5)] {
+    for (height, visible_cards) in [(514.0, 2), (900.0, 5)] {
         let context = egui::Context::default();
         context.add_font(egui::epaint::text::FontInsert::new(
             "firasans",
@@ -506,6 +599,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
                 id: GameId::new(format!("resume-{index}")),
                 code: GameCode::new("ABCDEF"),
                 revision: 0,
+                saved_at: 1_700_000_000 + index as u64 * 60,
                 status: [MatchStatus::Active, MatchStatus::Finished][index % 2],
                 turn: 7,
                 player_id: 1,
@@ -525,7 +619,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
             .iter()
             .filter(|shape| {
                 matches!(&shape.shape,
-                    egui::Shape::Rect(rect) if rect.rect.height() == 72.0
+                    egui::Shape::Rect(rect) if rect.rect.height() == 90.0
                         && shape.clip_rect.contains_rect(rect.rect)
                 )
             })
@@ -558,6 +652,7 @@ fn resume_identity_fits_narrow_cards_and_busy_cards_do_not_resume() {
                     id: GameId::new("resume-identity"),
                     code: GameCode::new("ABCDEF"),
                     revision: 1,
+                    saved_at: 1_700_000_000,
                     status: MatchStatus::Active,
                     turn: 6,
                     player_id: 2,
@@ -567,7 +662,7 @@ fn resume_identity_fits_narrow_cards_and_busy_cards_do_not_resume() {
                     max_players: 2,
                 };
                 let draw = |ui: &mut egui::Ui, requests: &mut MessageWriter<MultiplayerRequest>| {
-                    ui.allocate_ui(egui::vec2(width, 94.0), |ui| {
+                    ui.allocate_ui(egui::vec2(width, 120.0), |ui| {
                         if resume_game_card(ui, &game, enabled) {
                             requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
                         }

@@ -150,7 +150,7 @@ pub struct MultiplayerSession {
     pub connection: ConnectionStatus,
     /// Human-readable result or failure from the latest operation.
     pub notice: Option<String>,
-    /// Actionable failure displayed inline in menus, never as a toast.
+    /// Actionable failure displayed persistently in the menu UI.
     pub menu_error: Option<String>,
     /// Whether local development is using the credential-free backend.
     pub mock_backend: bool,
@@ -184,6 +184,16 @@ impl MultiplayerSession {
             .and_then(|record| record.persisted.state.player(player_id).ok())
             .map(|player| player.color())
             .unwrap_or_else(|| PlayerColor::for_player(player_id))
+    }
+
+    /// Returns the lobby name associated with a stable player slot.
+    pub fn player_name(&self, player_id: u64) -> Option<&str> {
+        self.active_game
+            .as_ref()?
+            .members
+            .iter()
+            .find(|member| member.player_id == player_id)
+            .map(|member| member.display_name.as_str())
     }
 
     /// Clears selection data while retaining authentication and resumable games.
@@ -1681,6 +1691,7 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
         id: record.id.clone(),
         code: record.code.clone(),
         revision: record.revision,
+        saved_at: record.saved_at,
         status: record.status,
         turn: record.persisted.state.turn,
         player_id: membership.player_id,

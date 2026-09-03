@@ -108,6 +108,7 @@ fn record() -> GameRecord {
         id: id.clone(),
         code: GameCode::new("ABCDEF"),
         revision: 0,
+        saved_at: 1_700_000_000,
         max_players: 2,
         status: MatchStatus::Lobby,
         persisted,
@@ -156,7 +157,8 @@ fn validates_successful_transport_payloads() {
 #[test]
 fn validates_resume_player_identity() {
     let payload = serde_json::json!({
-        "id": "game-1", "code": "ABCDEF", "revision": 1, "status": "active",
+        "id": "game-1", "code": "ABCDEF", "revision": 1, "saved_at": 1700000000,
+        "status": "active",
         "turn": 6, "player_id": 2, "player_count": 2, "max_players": 2,
         "display_name": "Nova", "player_color": 4
     });

@@ -615,6 +615,9 @@ fn validate_game_record(
     if record.id.0.trim().is_empty() {
         return invalid_protocol("game record has an empty identifier");
     }
+    if record.saved_at == 0 {
+        return invalid_protocol("game record has an invalid save timestamp");
+    }
     if expected_game_id.is_some_and(|expected| expected != &record.id) {
         return invalid_protocol("game record identifier does not match the request");
     }
@@ -743,6 +746,7 @@ fn validate_summaries(summaries: Vec<GameSummary>) -> Result<Vec<GameSummary>, B
             || summary.player_count == 0
             || summary.player_count > usize::from(summary.max_players)
             || summary.turn == 0
+            || summary.saved_at == 0
         {
             return invalid_protocol("resume entry contains invalid game boundaries");
         }

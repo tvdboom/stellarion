@@ -64,6 +64,9 @@ pub struct GameRecord {
     pub code: GameCode,
     /// Optimistic-concurrency revision.
     pub revision: u64,
+    /// Unix timestamp of the most recent authoritative snapshot save.
+    #[serde(default)]
+    pub saved_at: u64,
     /// Join capacity in a lobby, then the finalized player count after start.
     pub max_players: u8,
     /// Persisted gameplay lifecycle status.
@@ -93,6 +96,9 @@ pub struct GameSummary {
     pub code: GameCode,
     /// Current optimistic revision.
     pub revision: u64,
+    /// Unix timestamp of the most recent authoritative snapshot save.
+    #[serde(default)]
+    pub saved_at: u64,
     /// Current lifecycle status.
     pub status: MatchStatus,
     /// Current turn from the persisted snapshot.

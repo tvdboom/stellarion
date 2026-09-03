@@ -22,6 +22,18 @@ use crate::utils::NameFromEnum;
 /// Stable identifier of a persisted fleet mission.
 pub type MissionId = u64;
 
+#[cfg(feature = "app")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Visual language used for a route without affecting authoritative movement.
+pub(crate) enum MissionRouteStyle {
+    /// Ordinary sub-light fleet travel.
+    Standard,
+    /// A one-turn, fuel-free jump between two gates.
+    JumpGate,
+    /// An interplanetary missile strike.
+    MissileStrike,
+}
+
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 /// Bevy resource containing the selected player's currently visible missions.
 pub struct Missions(pub Vec<Mission>);
@@ -212,12 +224,36 @@ impl Mission {
         )
     }
 
-    /// Returns the neutral silhouette, keeping jump-gate details private to the owner.
+    /// Returns the mission silhouette, keeping jump-gate details private to the owner.
     pub fn image(&self, player: &Player) -> &str {
-        if self.owner == player.id && self.jump_gate {
+        if self.objective == Icon::MissileStrike {
+            "mission missile"
+        } else if self.owner == player.id && self.jump_gate {
             "mission jump"
         } else {
             "mission"
+        }
+    }
+
+    /// Returns the route treatment visible to this player.
+    #[cfg(feature = "app")]
+    pub(crate) fn route_style(&self, player: &Player) -> MissionRouteStyle {
+        if self.objective == Icon::MissileStrike {
+            MissionRouteStyle::MissileStrike
+        } else if self.owner == player.id && self.jump_gate {
+            MissionRouteStyle::JumpGate
+        } else {
+            MissionRouteStyle::Standard
+        }
+    }
+
+    /// Scales cosmetic route motion from the fleet's actual slowest unit.
+    #[cfg(feature = "app")]
+    pub(crate) fn route_speed_factor(&self) -> f64 {
+        if self.jump_gate {
+            2.0
+        } else {
+            (f64::from(self.speed()) / 2.0).clamp(0.55, 1.65)
         }
     }
 

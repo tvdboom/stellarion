@@ -7,7 +7,10 @@ use crate::multiplayer::model::GameRecord;
 use bevy::color::ColorToComponents;
 
 /// Finds the defenses spawned by the real map setup without a window or GPU.
-fn test_defenses(world: &mut World, planet: PlanetId) -> (Entity, Entity, Handle<ColorMaterial>) {
+fn test_defenses(
+    world: &mut World,
+    planet: PlanetId,
+) -> (Entity, Entity, Entity, Handle<ColorMaterial>) {
     let planet = world
         .query::<(Entity, &PlanetCmp)>()
         .iter(world)
@@ -18,8 +21,9 @@ fn test_defenses(world: &mut World, planet: PlanetId) -> (Entity, Entity, Handle
     let shield =
         children.iter().find(|&child| world.get::<PlanetaryShieldCmp>(child).is_some()).unwrap();
     let dock = children.iter().find(|&child| world.get::<SpaceDockCmp>(child).is_some()).unwrap();
+    let gate = children.iter().find(|&child| world.get::<JumpGateCmp>(child).is_some()).unwrap();
     let material = world.get::<MeshMaterial2d<ColorMaterial>>(shield).unwrap().0.clone();
-    (shield, dock, material)
+    (shield, dock, gate, material)
 }
 
 #[test]
@@ -36,7 +40,11 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     let own_home = model.players[0].home_planet;
     let enemy_home = model.players[1].home_planet;
     let unknown_home = model.players[2].home_planet;
-    let army = Army::from([(Unit::planetary_shield(), 1), (Unit::space_dock(), 1)]);
+    let army = Army::from([
+        (Unit::planetary_shield(), 1),
+        (Unit::space_dock(), 1),
+        (Unit::Building(Building::JumpGate), 1),
+    ]);
     for home in [own_home, enemy_home, unknown_home] {
         model.map.get_mut(home).army = army.clone();
     }
@@ -69,6 +77,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         id: GameId::new("defense-color-test"),
         code: GameCode::new("ABCDEF"),
         revision: 0,
+        saved_at: 1_700_000_000,
         max_players: 3,
         status: model.status,
         persisted: PersistedGame::new(model.clone()),
@@ -111,10 +120,15 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             model.player_mut(2).unwrap().color = Some(enemy_color);
         }
         app.update();
-        for ((shield, dock, material), expected) in [(&own, color), (&enemy, enemy_color)] {
+        for ((shield, dock, gate, material), expected) in [(&own, color), (&enemy, enemy_color)] {
             assert_eq!(*app.world().get::<Visibility>(*shield).unwrap(), Visibility::Inherited);
             assert_eq!(*app.world().get::<Visibility>(*dock).unwrap(), Visibility::Inherited);
+            assert_eq!(*app.world().get::<Visibility>(*gate).unwrap(), Visibility::Inherited);
             assert_eq!(app.world().get::<Sprite>(*dock).unwrap().color, expected.color());
+            assert_eq!(
+                app.world().get::<Sprite>(*gate).unwrap().color,
+                expected.color().with_alpha(0.94)
+            );
             let mut alphas = Vec::new();
             // Step across loop boundaries at a frame interval that does not divide the period.
             // Check the rendered material too: an opaque material ignores the animated alpha.
@@ -131,7 +145,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
                     .abs_diff_eq(expected.color().to_srgba().to_vec4(), 1e-6));
                 alphas.push(actual.color.alpha());
             }
-            for cycle in alphas.chunks_exact(177) {
+            for cycle in alphas.as_chunks::<177>().0 {
                 assert!(cycle.iter().any(|&alpha| alpha < 0.01), "shield fades fully out");
                 assert!(cycle.iter().any(|&alpha| alpha > 0.9), "shield becomes visible again");
             }
@@ -143,14 +157,14 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
                 }
             }
         }
-        for entity in [unknown.0, unknown.1] {
+        for entity in [unknown.0, unknown.1, unknown.2] {
             assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
         }
     }
 
     // Once the local player captures it, both defenses adopt the new controller immediately.
     let alpha_before_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.2).unwrap().color.alpha();
+        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.3).unwrap().color.alpha();
     let elapsed_before_capture =
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed();
     app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
@@ -158,6 +172,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     app.update();
     let own_color = app.world().get::<Sprite>(own.1).unwrap().color;
     assert_eq!(app.world().get::<Sprite>(enemy.1).unwrap().color, own_color);
+    assert_eq!(app.world().get::<Sprite>(enemy.2).unwrap().color, own_color.with_alpha(0.94));
     assert_eq!(app.world().get::<PlanetaryShieldCmp>(enemy.0).unwrap().color, Some(own_color));
     assert_eq!(
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed(),
@@ -165,14 +180,79 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         "changing controller must not restart the fade"
     );
     let alpha_after_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.2).unwrap().color.alpha();
+        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.3).unwrap().color.alpha();
     assert!((alpha_after_capture - alpha_before_capture).abs() < 1e-6);
 
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).is_destroyed = true;
     app.update();
-    for entity in [enemy.0, enemy.1] {
+    for entity in [enemy.0, enemy.1, enemy.2] {
         assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
     }
+}
+
+#[test]
+fn territory_cells_blend_between_players_and_fade_away_without_popping() {
+    let first = Color::srgb(0.2, 0.4, 0.8);
+    let second = Color::srgb(0.9, 0.3, 0.15);
+    let mut visibility = Visibility::Hidden;
+    let mut material = ColorMaterial::default();
+    let mut transition = TerritoryTransitionCmp::default();
+
+    update_territory_visual(
+        &mut visibility,
+        &mut material,
+        &mut transition,
+        Some(first),
+        true,
+        0.58,
+        true,
+        true,
+        0.0,
+    );
+    assert_eq!(visibility, Visibility::Inherited);
+    assert_eq!(material.color, first.with_alpha(0.58));
+
+    update_territory_visual(
+        &mut visibility,
+        &mut material,
+        &mut transition,
+        Some(second),
+        true,
+        0.58,
+        true,
+        true,
+        TERRITORY_TRANSITION_SECONDS * 0.5,
+    );
+    assert_ne!(material.color, first.with_alpha(0.58));
+    assert_ne!(material.color, second.with_alpha(0.58));
+    assert_eq!(visibility, Visibility::Inherited);
+
+    update_territory_visual(
+        &mut visibility,
+        &mut material,
+        &mut transition,
+        Some(second),
+        true,
+        0.58,
+        true,
+        true,
+        TERRITORY_TRANSITION_SECONDS,
+    );
+    assert_eq!(material.color, second.with_alpha(0.58));
+
+    update_territory_visual(
+        &mut visibility,
+        &mut material,
+        &mut transition,
+        None,
+        false,
+        0.58,
+        true,
+        true,
+        TERRITORY_TRANSITION_SECONDS,
+    );
+    assert_eq!(material.color.alpha(), 0.0);
+    assert_eq!(visibility, Visibility::Hidden);
 }
 
 #[test]
@@ -442,6 +522,7 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
             id: GameId::new("voronoi-test"),
             code: GameCode::new("ABCDEF"),
             revision: 0,
+            saved_at: 1_700_000_000,
             max_players: player_count,
             status: model.status,
             persisted: PersistedGame::new(model.clone()),

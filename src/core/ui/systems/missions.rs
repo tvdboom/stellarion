@@ -1,6 +1,94 @@
 //! Missions panels for the game interface.
 
 use super::*;
+use crate::core::missions::MissionRouteStyle;
+
+/// Draws the same compact route language used by hovered missions on the strategic map.
+fn draw_route_preview(ui: &mut Ui, mission: &Mission, player: &Player, color: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(58.0, 28.0), Sense::hover());
+    let painter = ui.painter().with_clip_rect(rect);
+    let left = rect.left() + 4.0;
+    let right = rect.right() - 4.0;
+    let width = (right - left).max(1.0);
+    let center_y = rect.center().y;
+    let time = ui.input(|input| input.time) as f32;
+    let speed = 22.0 * mission.route_speed_factor() as f32;
+    let phase = time * speed;
+
+    painter.line_segment(
+        [egui::pos2(left, center_y), egui::pos2(right, center_y)],
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(143, 158, 174, 52)),
+    );
+
+    match mission.route_style(player) {
+        MissionRouteStyle::Standard => {
+            let spacing = 15.0;
+            for index in 0..5 {
+                let x = left + (index as f32 * spacing + phase).rem_euclid(width + spacing) - 5.0;
+                let alpha = if x < left || x > right {
+                    0
+                } else {
+                    220
+                };
+                let marker =
+                    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
+                painter.line_segment(
+                    [egui::pos2(x - 3.0, center_y - 4.0), egui::pos2(x + 2.0, center_y)],
+                    Stroke::new(1.7, marker),
+                );
+                painter.line_segment(
+                    [egui::pos2(x + 2.0, center_y), egui::pos2(x - 3.0, center_y + 4.0)],
+                    Stroke::new(1.7, marker),
+                );
+            }
+        },
+        MissionRouteStyle::JumpGate => {
+            let spacing = 18.0;
+            for index in 0..4 {
+                let progress = (index as f32 * spacing + phase).rem_euclid(width + spacing);
+                let x = left + progress - 5.0;
+                if !(left..=right).contains(&x) {
+                    continue;
+                }
+                let pulse = ((time * 3.2 + index as f32 * 1.1).sin() * 0.5 + 0.5).max(0.0);
+                painter.circle_stroke(
+                    egui::pos2(x, center_y),
+                    2.5 + 2.2 * pulse,
+                    Stroke::new(
+                        1.4,
+                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 210),
+                    ),
+                );
+            }
+        },
+        MissionRouteStyle::MissileStrike => {
+            let spacing = 22.0;
+            for index in 0..4 {
+                let x = left + (index as f32 * spacing + phase).rem_euclid(width + spacing) - 7.0;
+                if !(left..=right).contains(&x) {
+                    continue;
+                }
+                let marker = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 235);
+                painter.line_segment(
+                    [egui::pos2(x - 10.0, center_y), egui::pos2(x - 2.5, center_y)],
+                    Stroke::new(2.0, marker.gamma_multiply(0.55)),
+                );
+                painter.circle_filled(egui::pos2(x, center_y), 2.7, marker);
+            }
+        },
+    }
+
+    response
+}
+
+/// Draws a faction-tinted mission sprite without separate hover-color assets.
+fn draw_mission_image(ui: &mut Ui, image: egui::TextureId, size: f32, color: Color32) -> Response {
+    ui.add(
+        egui::Image::new(SizedTexture::new(image, egui::vec2(size, size)))
+            .fit_to_exact_size(egui::vec2(size, size))
+            .tint(color),
+    )
+}
 
 /// Draws the new mission interface and emits any resulting local actions.
 fn draw_new_mission(
@@ -134,13 +222,17 @@ fn draw_new_mission(
                     "Click to select all units on the origin planet. Right-click to unselect all.",
                 );
 
-                let image = if response.hovered() && !response.is_pointer_button_down_on() {
-                    images.get(format!("{} hover", state.mission_info.image(player)))
+                let image_rect = if response.hovered() && !response.is_pointer_button_down_on() {
+                    rect.expand(3.0)
                 } else {
-                    images.get(state.mission_info.image(player))
+                    rect
                 };
-
-                ui.add_image_painter(image, rect);
+                ui.painter().image(
+                    images.get(state.mission_info.image(player)),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    player.color().color().to_color32(),
+                );
 
                 if response.clicked() {
                     state.mission_info.army =
@@ -552,6 +644,7 @@ fn draw_active_missions(
     state: &mut UiState,
     map: &Map,
     player: &Player,
+    session: &MultiplayerSession,
     is_hovered: bool,
     images: &ImageIds,
 ) {
@@ -665,13 +758,13 @@ fn draw_active_missions(
                                         [25.; 2],
                                     );
 
-                                    ui.add_image(
-                                        if state.mission_hover == Some(mission.id) {
-                                            images.get(format!("{} hover", mission.image(player)))
-                                        } else {
-                                            images.get(mission.image(player))
-                                        },
-                                        [50.; 2],
+                                    let [red, green, blue] =
+                                        session.player_color(mission.owner).rgb();
+                                    draw_route_preview(
+                                        ui,
+                                        mission,
+                                        player,
+                                        Color32::from_rgb(red, green, blue),
                                     );
 
                                     ui.small(format!("+{}", mission.turns_to_destination(map)));
@@ -720,6 +813,7 @@ fn draw_mission_reports(
     state: &mut UiState,
     map: &Map,
     player: &Player,
+    session: &MultiplayerSession,
     is_hovered: bool,
     images: &ImageIds,
 ) {
@@ -763,15 +857,20 @@ fn draw_mission_reports(
                                 [25.; 2],
                             );
 
-                            ui.add_image(
-                                if state.mission_report == Some(report.mission.id)
-                                    || (response.hovered() && !response.is_pointer_button_down_on())
-                                {
-                                    images.get(format!("{} hover", report.mission.image(player)))
-                                } else {
-                                    images.get(report.mission.image(player))
-                                },
-                                [50.; 2],
+                            let [red, green, blue] =
+                                session.player_color(report.mission.owner).rgb();
+                            let size = if state.mission_report == Some(report.mission.id)
+                                || (response.hovered() && !response.is_pointer_button_down_on())
+                            {
+                                52.0
+                            } else {
+                                48.0
+                            };
+                            draw_mission_image(
+                                ui,
+                                images.get(report.mission.image(player)),
+                                size,
+                                Color32::from_rgb(red, green, blue),
                             );
 
                             ui.scope(|ui| {
@@ -916,9 +1015,13 @@ fn draw_mission_reports(
                             )
                             .on_hover_small(report.mission.objective.to_name());
 
-                            ui.add_image(
-                                images.get(format!("{} hover", report.mission.image(player))),
-                                [50.; 2],
+                            let [red, green, blue] =
+                                session.player_color(report.mission.owner).rgb();
+                            draw_mission_image(
+                                ui,
+                                images.get(report.mission.image(player)),
+                                50.0,
+                                Color32::from_rgb(red, green, blue),
                             );
 
                             ui.small(report.turn.to_string()).on_hover_small(format!(
@@ -957,11 +1060,14 @@ fn draw_mission_reports(
             ui.horizontal(|ui| {
                 ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
 
-                let (a_color, d_color) = if report.mission.owner == player.id {
-                    (OWN_COLOR, ENEMY_COLOR)
-                } else {
-                    (ENEMY_COLOR, OWN_COLOR)
-                };
+                let a_color = session.player_color(report.mission.owner).color();
+                let d_color = report
+                    .planet
+                    .controlled
+                    .or(report.planet.owned)
+                    .map_or(Color::srgb_u8(150, 158, 170), |defender| {
+                        session.player_color(defender).color()
+                    });
 
                 ui.vertical(|ui| {
                     ui.set_width(140.);
@@ -1085,6 +1191,7 @@ pub(super) fn draw_mission(
     state: &mut UiState,
     map: &mut Map,
     player: &mut Player,
+    session: &MultiplayerSession,
     is_hovered: bool,
     keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
@@ -1122,6 +1229,7 @@ pub(super) fn draw_mission(
             state,
             map,
             player,
+            session,
             is_hovered,
             images,
         ),
@@ -1131,11 +1239,12 @@ pub(super) fn draw_mission(
             state,
             map,
             player,
+            session,
             is_hovered,
             images,
         ),
         MissionTab::MissionReports => {
-            draw_mission_reports(ui, state, map, player, is_hovered, images)
+            draw_mission_reports(ui, state, map, player, session, is_hovered, images)
         },
     }
 }

@@ -100,7 +100,7 @@ fn effects(app: &mut App) -> Vec<Entity> {
 }
 
 #[test]
-fn outcomes_follow_the_local_combat_side_including_a_lost_planet() {
+fn battle_outcomes_follow_the_local_side_while_territory_headlines_take_priority() {
     let (app, planet) = presentation_app();
     let attacker = app.world().resource::<Player>();
     let defender = Player::new(2, planet.id);
@@ -109,17 +109,36 @@ fn outcomes_follow_the_local_combat_side_including_a_lost_planet() {
         (Outcome::Defeat, Outcome::Victory),
         (Outcome::Draw, Outcome::Draw),
     ] {
-        let mut report = battle_report(1, &planet, result);
-        report.destination_owned = Some(1);
-        report.destination_controlled = Some(1);
+        let report = battle_report(1, &planet, result);
         assert_eq!(Outcome::from_report(&report, attacker), Some(result));
         assert_eq!(Outcome::from_report(&report, &defender), Some(defense_result));
         assert_eq!(Outcome::from_report(&report, &Player::new(3, 0)), None);
     }
+
+    let mut captured = battle_report(2, &planet, Outcome::Victory);
+    captured.destination_owned = Some(attacker.id);
+    captured.destination_controlled = Some(attacker.id);
+    assert_eq!(Outcome::from_report(&captured, attacker), None);
+    assert_eq!(Outcome::from_report(&captured, &defender), None);
+    assert_eq!(
+        TerritoryOutcome::from_report(&captured, attacker),
+        Some(TerritoryOutcome::Conquered)
+    );
+    assert_eq!(TerritoryOutcome::from_report(&captured, &defender), Some(TerritoryOutcome::Lost));
+
+    for (player, expected) in [(attacker, "PLANET CONQUERED"), (&defender, "PLANET LOST")] {
+        let mut sites = BattleSites::default();
+        let mut player = player.clone();
+        player.reports.push(captured.clone());
+        assert!(sites.observe(&player, 2));
+        let labels = sites.outcomes[&planet.id].labels();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].0, expected);
+    }
 }
 
 #[test]
-fn only_current_visible_fleet_battles_produce_aftermath() {
+fn only_current_visible_battles_and_missile_impacts_produce_aftermath() {
     let (app, planet) = presentation_app();
     let mut player = app.world().resource::<Player>().clone();
     let report = battle_report(1, &planet, Outcome::Victory);
@@ -140,7 +159,9 @@ fn only_current_visible_fleet_battles_produce_aftermath() {
     missiles.mission.objective = Icon::MissileStrike;
     player.reports = vec![peaceful, hidden, old, spy, missiles];
     let mut sites = BattleSites::default();
-    assert!(!sites.observe(&player, 2));
+    assert!(sites.observe(&player, 2));
+    assert_eq!(sites.pending, BTreeSet::from([planet.id]));
+    sites.pending.clear();
     player.reports.push(report);
     assert!(sites.observe(&player, 2));
     assert_eq!(sites.pending, BTreeSet::from([planet.id]));

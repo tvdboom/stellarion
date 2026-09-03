@@ -81,7 +81,7 @@ fn smooth_result_banners_preserve_pixels_alpha_and_mips_on_native_and_browser() 
 
 #[test]
 fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
-    for name in ["mission", "mission jump", "dock"] {
+    for name in ["mission", "mission jump", "mission missile", "dock", "jump gate marker"] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
             &bytes,
@@ -108,9 +108,11 @@ fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
             let pixels = mask.data.as_ref().unwrap();
             let source = original.data.as_ref().unwrap();
             assert_eq!(pixels.len(), source.len());
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
-            for (pixel, source_pixel) in pixels.chunks_exact(4).zip(source.chunks_exact(4)) {
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+            for (pixel, source_pixel) in
+                pixels.as_chunks::<4>().0.iter().zip(source.as_chunks::<4>().0)
+            {
                 assert_eq!(&pixel[..3], &[255; 3]);
                 assert_eq!(pixel[3], source_pixel[3], "{name}: silhouette coverage changed");
             }
@@ -119,8 +121,8 @@ fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
 }
 
 #[test]
-fn mission_ui_artwork_preserves_transparency_and_hover_on_native_and_browser() {
-    for name in ["mission", "mission jump", "mission hover", "mission jump hover", "dock"] {
+fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
+    for name in ["mission", "mission jump", "mission missile", "dock", "jump gate marker"] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
             &bytes,
@@ -147,10 +149,12 @@ fn mission_ui_artwork_preserves_transparency_and_hover_on_native_and_browser() {
             let pixels = image.data.as_ref().unwrap();
             let source = original.data.as_ref().unwrap();
             assert_eq!(pixels.len(), source.len());
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
-            assert!(pixels.chunks_exact(4).any(|pixel| (1..255).contains(&pixel[3])));
-            for (pixel, source_pixel) in pixels.chunks_exact(4).zip(source.chunks_exact(4)) {
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| (1..255).contains(&pixel[3])));
+            for (pixel, source_pixel) in
+                pixels.as_chunks::<4>().0.iter().zip(source.as_chunks::<4>().0)
+            {
                 assert_eq!(pixel[3], source_pixel[3], "{name}: coverage changed");
                 match pixel[3] {
                     // Egui adds texture RGB directly: even zero-alpha pixels must be black.
@@ -201,7 +205,7 @@ fn masked_icon_loads_separate_ui_artwork() {
     let sprite = images.get(&sprite).unwrap().data.as_ref().unwrap();
     let ui = images.get(&ui).unwrap().data.as_ref().unwrap();
     assert_eq!(sprite.len(), ui.len());
-    assert!(sprite.chunks_exact(4).any(|pixel| pixel == [255, 255, 255, 0]));
-    assert!(ui.chunks_exact(4).any(|pixel| pixel == [0, 0, 0, 0]));
-    assert!(ui.chunks_exact(4).all(|pixel| pixel[3] != 0 || pixel[..3] == [0; 3]));
+    assert!(sprite.as_chunks::<4>().0.iter().any(|pixel| pixel == &[255, 255, 255, 0]));
+    assert!(ui.as_chunks::<4>().0.iter().any(|pixel| pixel == &[0, 0, 0, 0]));
+    assert!(ui.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0 || pixel[..3] == [0; 3]));
 }

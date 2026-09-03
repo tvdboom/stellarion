@@ -627,7 +627,10 @@ fn resumes_exact_saved_state() {
     let restored = block_on(backend.authenticate(Some(&creator))).unwrap();
     let listed = block_on(backend.list_games(&restored)).unwrap();
     assert_eq!(listed[0].revision, saved.revision);
+    assert!(saved.saved_at > 0);
+    assert_eq!(listed[0].saved_at, saved.saved_at);
     let resumed = block_on(backend.load_game(&restored, &created.game.id)).unwrap();
+    assert_eq!(resumed.saved_at, saved.saved_at);
     assert_eq!(resumed.persisted.state.players[0].resources.metal, expected_metal);
 }
 

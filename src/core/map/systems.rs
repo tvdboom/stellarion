@@ -3,11 +3,11 @@
 pub use super::scanner::ScannerCmp;
 
 use std::collections::HashMap;
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 use std::time::Duration;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::color::palettes::css::WHITE;
+use bevy::color::{palettes::css::WHITE, Mix};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
@@ -25,10 +25,13 @@ use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE,
     TITLE_TEXT_SIZE, VORONOI_Z,
 };
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::map::utils::{cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens};
+use crate::core::map::utils::{
+    cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens, TransformOrbitSpinLens,
+};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
@@ -125,6 +128,34 @@ impl PlanetaryShieldCmp {
 pub struct SpaceDockCmp;
 
 #[derive(Component)]
+/// Animated, faction-tinted jump-gate marker orbiting a world.
+pub struct JumpGateCmp;
+
+const TERRITORY_TRANSITION_SECONDS: f32 = 1.35;
+
+#[derive(Component, Debug)]
+/// Local presentation state for smooth ownership-color and visibility changes.
+pub struct TerritoryTransitionCmp {
+    target: Color,
+    target_visible: bool,
+    start: Color,
+    elapsed: f32,
+    initialized: bool,
+}
+
+impl Default for TerritoryTransitionCmp {
+    fn default() -> Self {
+        Self {
+            target: OWN_COLOR.with_alpha(0.0),
+            target_visible: false,
+            start: OWN_COLOR.with_alpha(0.0),
+            elapsed: 0.0,
+            initialized: false,
+        }
+    }
+}
+
+#[derive(Component)]
 /// Bevy component marking voronoi presentation entities.
 pub struct VoronoiCmp(pub PlanetId);
 
@@ -197,6 +228,7 @@ fn spawn_voronoi_cells(
             Visibility::Hidden,
             Pickable::IGNORE,
             VoronoiCmp(planet.id),
+            TerritoryTransitionCmp::default(),
             MapCmp,
         ));
 
@@ -221,6 +253,7 @@ fn spawn_voronoi_cells(
                     planet: planet.id,
                     key: edge_key(v1, v2),
                 },
+                TerritoryTransitionCmp::default(),
                 MapCmp,
             ));
         }
@@ -230,6 +263,7 @@ fn spawn_voronoi_cells(
 /// Selects a planet and updates the mission origin for owned planets.
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
+    state.focus_planet = None;
     state.to_selected = true;
     state.mission = false;
     state.combat_report = None;
@@ -269,6 +303,8 @@ pub fn draw_map(
              window_e: Single<Entity, With<Window>>| {
                 if event.button == PointerButton::Primary {
                     state.planet_selected = None;
+                    state.focus_planet = None;
+                    state.to_selected = false;
                     commands.entity(*window_e).insert(CursorIcon::from(SystemCursorIcon::Grabbing));
                 }
             },
@@ -293,6 +329,7 @@ pub fn draw_map(
                         camera_t.translation.x -= event.delta.x * projection.scale;
                         camera_t.translation.y += event.delta.y * projection.scale;
                         state.to_selected = false;
+                        state.focus_planet = None;
                     }
                 }
             },
@@ -611,6 +648,38 @@ pub fn draw_map(
                         SpaceDockCmp,
                     ));
 
+                    // Keep the gate opposite the dock on a wider, slower orbit. Its own spin
+                    // makes it read as an active portal while avoiding the planet and UI icons.
+                    let gate_angle = angle + PI;
+                    let gate_radius = planet.size() * 0.9;
+                    parent.spawn((
+                        Sprite {
+                            image: assets.image("jump gate marker"),
+                            custom_size: Some(Vec2::splat(planet.size() * 0.36)),
+                            ..default()
+                        },
+                        Transform::from_xyz(
+                            gate_angle.cos() * gate_radius,
+                            gate_angle.sin() * gate_radius,
+                            0.72,
+                        ),
+                        TweenAnim::new(
+                            Tween::new(
+                                EaseFunction::Linear,
+                                Duration::from_secs(17),
+                                TransformOrbitSpinLens {
+                                    radius: gate_radius,
+                                    offset: gate_angle,
+                                    rotations: -2.0,
+                                },
+                            )
+                            .with_repeat_count(RepeatCount::Infinite),
+                        ),
+                        Pickable::IGNORE,
+                        Visibility::Hidden,
+                        JumpGateCmp,
+                    ));
+
                     // Vertex alpha supplies the scanner's soft field, rim glow, and fading trails.
                     let scanner_material = materials.add(ColorMaterial {
                         color: Color::srgb(0.25, 0.95, 0.62),
@@ -898,7 +967,11 @@ pub fn update_planet_defenses(
     )>,
     mut dock_q: Query<
         (&mut Visibility, &mut Sprite),
-        (With<SpaceDockCmp>, Without<PlanetaryShieldCmp>),
+        (With<SpaceDockCmp>, Without<JumpGateCmp>, Without<PlanetaryShieldCmp>),
+    >,
+    mut gate_q: Query<
+        (&mut Visibility, &mut Sprite),
+        (With<JumpGateCmp>, Without<SpaceDockCmp>, Without<PlanetaryShieldCmp>),
     >,
     map: Res<Map>,
     player: Res<Player>,
@@ -920,6 +993,8 @@ pub fn update_planet_defenses(
             && army.is_some_and(|army| army.amount(&Unit::planetary_shield()) > 0);
         let has_dock =
             !planet.is_destroyed && army.is_some_and(|army| army.amount(&Unit::space_dock()) > 0);
+        let has_gate = !planet.is_destroyed
+            && army.is_some_and(|army| army.amount(&Unit::Building(Building::JumpGate)) > 0);
         // Defenses left on an unclaimed world have no player color.
         let color = controller
             .map(|id| session.player_color(id).color())
@@ -957,15 +1032,112 @@ pub fn update_planet_defenses(
                     sprite.color = color;
                 }
             }
+            if let Ok((mut visibility, mut sprite)) = gate_q.get_mut(child) {
+                *visibility = if has_gate {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if has_gate {
+                    sprite.color = color.with_alpha(0.94);
+                }
+            }
         }
     }
 }
 
-/// Updates voronoi from the current canonical ECS projection.
+/// Smoothly applies one territory cell or border's target color and visibility.
+#[allow(clippy::too_many_arguments)]
+fn update_territory_visual(
+    visibility: &mut Visibility,
+    material: &mut ColorMaterial,
+    transition: &mut TerritoryTransitionCmp,
+    base_color: Option<Color>,
+    target_visible: bool,
+    opacity: f32,
+    show_cells: bool,
+    animate: bool,
+    delta_seconds: f32,
+) {
+    if !show_cells {
+        *visibility = Visibility::Hidden;
+        // Re-enabling the user's display preference should be immediate, not mistaken for a
+        // gameplay ownership change that happened while borders were deliberately hidden.
+        transition.initialized = false;
+        return;
+    }
+
+    let target = base_color.map_or_else(
+        || transition.target.with_alpha(0.0),
+        |color| {
+            color.with_alpha(if target_visible {
+                opacity
+            } else {
+                0.0
+            })
+        },
+    );
+
+    if !transition.initialized {
+        material.color = target;
+        transition.target = target;
+        transition.target_visible = target_visible;
+        transition.start = target;
+        transition.elapsed = TERRITORY_TRANSITION_SECONDS;
+        transition.initialized = true;
+        *visibility = if target_visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        return;
+    }
+
+    if transition.target != target || transition.target_visible != target_visible {
+        transition.start = material.color;
+        transition.target = target;
+        transition.target_visible = target_visible;
+        transition.elapsed = 0.0;
+    }
+
+    if transition.elapsed < TERRITORY_TRANSITION_SECONDS {
+        if animate {
+            transition.elapsed =
+                (transition.elapsed + delta_seconds).min(TERRITORY_TRANSITION_SECONDS);
+        }
+        let linear = (transition.elapsed / TERRITORY_TRANSITION_SECONDS).clamp(0.0, 1.0);
+        let eased = linear * linear * (3.0 - 2.0 * linear);
+        material.color = transition.start.mix(&transition.target, eased);
+        *visibility = if transition.elapsed >= TERRITORY_TRANSITION_SECONDS && !target_visible {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    } else {
+        material.color = transition.target;
+        *visibility = if target_visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Updates Voronoi ownership cells with smooth capture, loss, and recolor transitions.
 pub fn update_voronoi(
-    mut cell_q: Query<(&mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &VoronoiCmp)>,
+    mut cell_q: Query<(
+        &mut Visibility,
+        &MeshMaterial2d<ColorMaterial>,
+        &VoronoiCmp,
+        &mut TerritoryTransitionCmp,
+    )>,
     mut edge_q: Query<
-        (&mut Visibility, &mut MeshMaterial2d<ColorMaterial>, &VoronoiEdgeCmp),
+        (
+            &mut Visibility,
+            &MeshMaterial2d<ColorMaterial>,
+            &VoronoiEdgeCmp,
+            &mut TerritoryTransitionCmp,
+        ),
         Without<VoronoiCmp>,
     >,
     settings: Res<Settings>,
@@ -973,6 +1145,8 @@ pub fn update_voronoi(
     player: Res<Player>,
     missions: Res<Missions>,
     session: Res<MultiplayerSession>,
+    time: Option<Res<Time>>,
+    game_state: Option<Res<State<GameState>>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let known_controllers = map
@@ -986,61 +1160,60 @@ pub fn update_voronoi(
             };
             controller.map(|controller| (planet.id, controller))
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<HashMap<PlanetId, PlayerId>>();
 
-    for (mut cell_v, cell_m, cell) in &mut cell_q {
+    let animate = game_state.as_ref().is_none_or(|state| *state.get() == GameState::Playing);
+    let delta_seconds =
+        time.as_ref().map_or(TERRITORY_TRANSITION_SECONDS, |time| time.delta_secs());
+
+    for (mut cell_v, cell_m, cell, mut transition) in &mut cell_q {
         let planet = map.get(cell.0);
-
-        let visible = settings.show_cells
-            && !planet.is_destroyed
-            && known_controllers.contains_key(&planet.id);
-
-        if visible {
-            if let Some(mut material) = materials.get_mut(&*cell_m) {
-                let controller = known_controllers[&planet.id];
-                material.color = session.player_color(controller).color().with_alpha(0.01);
-            }
+        let controller = known_controllers.get(&planet.id).copied();
+        let visible = !planet.is_destroyed && controller.is_some();
+        let base_color = controller.map(|id| session.player_color(id).color());
+        if let Some(mut material) = materials.get_mut(&cell_m.0) {
+            update_territory_visual(
+                &mut cell_v,
+                &mut material,
+                &mut transition,
+                base_color,
+                visible,
+                0.01,
+                settings.show_cells,
+                animate,
+                delta_seconds,
+            );
         }
-
-        *cell_v = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
     }
 
     let mut counts_by_owner = HashMap::new();
 
-    for (_, _, edge) in &edge_q {
+    for (_, _, edge, _) in &edge_q {
         if let Some(&controller) = known_controllers.get(&edge.planet) {
             *counts_by_owner.entry((edge.key, controller)).or_default() += 1;
         }
     }
 
-    for (mut edge_v, edge_m, edge) in &mut edge_q {
-        if !settings.show_cells {
-            *edge_v = Visibility::Hidden;
-            continue;
+    for (mut edge_v, edge_m, edge, mut transition) in &mut edge_q {
+        let controller = known_controllers.get(&edge.planet).copied();
+        let visible = controller.is_some_and(|controller| {
+            !map.get(edge.planet).is_destroyed
+                && *counts_by_owner.get(&(edge.key, controller)).unwrap_or(&2) <= 1
+        });
+        let base_color = controller.map(|id| session.player_color(id).color());
+        if let Some(mut material) = materials.get_mut(&edge_m.0) {
+            update_territory_visual(
+                &mut edge_v,
+                &mut material,
+                &mut transition,
+                base_color,
+                visible,
+                0.58,
+                settings.show_cells,
+                animate,
+                delta_seconds,
+            );
         }
-
-        let Some(&controller) = known_controllers.get(&edge.planet) else {
-            *edge_v = Visibility::Hidden;
-            continue;
-        };
-        let visible = *counts_by_owner.get(&(edge.key, controller)).unwrap_or(&2) <= 1;
-        let color = session.player_color(controller).color().with_alpha(0.58);
-
-        if visible {
-            if let Some(mut mat) = materials.get_mut(&*edge_m) {
-                mat.color = color;
-            }
-        }
-
-        *edge_v = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
     }
 }
 

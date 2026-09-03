@@ -1,6 +1,6 @@
 //! Bevy mission rendering, route animation, and command submission.
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 use std::time::Duration;
 
 use bevy::prelude::*;
@@ -14,7 +14,7 @@ use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::MissionCmp;
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{Missions, SendMissionMsg};
+use crate::core::missions::{MissionRouteStyle, Missions, SendMissionMsg};
 use crate::core::player::Player;
 use crate::core::simulation::TurnCommand;
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -29,6 +29,7 @@ const MISSION_ROUTE_SPEED: f64 = 32.0;
 /// One animated chevron in the hovered mission's origin or destination trail.
 pub struct MissionRouteArrowCmp {
     index: usize,
+    style: MissionRouteStyle,
 }
 
 /// Advances the visible ECS mission projection after canonical turn installation.
@@ -140,40 +141,60 @@ pub fn update_missions(
     }
 }
 
-/// Places evenly spaced chevrons inside a route's endpoint clearances.
-fn mission_route_chevrons(
+/// Places evenly spaced route markers inside a route's endpoint clearances.
+fn mission_route_markers(
     from: Vec2,
     to: Vec2,
     start_clearance: f32,
     end_clearance: f32,
     color: Color,
     offset: f32,
-) -> impl Iterator<Item = (Transform, TextColor)> {
+    style: MissionRouteStyle,
+) -> Vec<(Transform, TextColor)> {
     let route = to - from;
     let direction = route.normalize_or_zero();
     let start = from + direction * start_clearance;
+    let spacing = match style {
+        MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
+        MissionRouteStyle::JumpGate => 64.0,
+        MissionRouteStyle::MissileStrike => 58.0,
+    };
     // Subtract clearances before clamping: overlapping endpoints must never reverse the trail.
     let length = (route.length() - start_clearance - end_clearance).max(0.0);
-    let count = (length / MISSION_ROUTE_SPACING).ceil() as usize;
-    let rotation = Quat::from_rotation_z(direction.y.atan2(direction.x));
+    let count = (length / spacing).ceil() as usize;
+    let route_rotation = Quat::from_rotation_z(direction.y.atan2(direction.x));
 
-    (0..count).filter_map(move |index| {
-        let distance = index as f32 * MISSION_ROUTE_SPACING + offset;
-        if distance >= length {
-            return None;
-        }
-        // Fade whole glyphs at the edges instead of squeezing or clipping them to fit.
-        let fade = (distance.min(length - distance) / 18.0).clamp(0.0, 1.0);
-        Some((
-            Transform {
-                // Route trails sit above planets, behind missions and planet icons.
-                translation: (start + direction * distance).extend(MISSION_Z - 0.2),
-                rotation,
-                ..default()
-            },
-            TextColor(color.with_alpha(color.alpha() * fade)),
-        ))
-    })
+    (0..count)
+        .filter_map(move |index| {
+            let distance = index as f32 * spacing + offset;
+            if distance >= length {
+                return None;
+            }
+            // Fade whole glyphs at the edges instead of squeezing or clipping them to fit.
+            let fade = (distance.min(length - distance) / 18.0).clamp(0.0, 1.0);
+            let phase = (index as f32 * 0.91 + offset / spacing) * TAU;
+            let (rotation, scale) = match style {
+                MissionRouteStyle::Standard => (route_rotation, Vec3::ONE),
+                MissionRouteStyle::JumpGate => {
+                    let pulse = 0.82 + 0.28 * (phase.sin() * 0.5 + 0.5);
+                    (Quat::IDENTITY, Vec3::splat(pulse))
+                },
+                MissionRouteStyle::MissileStrike => {
+                    let pulse = 0.85 + 0.2 * (phase.sin() * 0.5 + 0.5);
+                    (route_rotation, Vec3::new(1.55 * pulse, 0.62 * pulse, 1.0))
+                },
+            };
+            Some((
+                Transform {
+                    // Route trails sit above planets, behind missions and planet icons.
+                    translation: (start + direction * distance).extend(MISSION_Z - 0.2),
+                    rotation,
+                    scale,
+                },
+                TextColor(color.with_alpha(color.alpha() * fade)),
+            ))
+        })
+        .collect()
 }
 
 /// Animates the travelled and remaining route of the hovered mission.
@@ -182,6 +203,7 @@ pub fn update_mission_route_arrow(
     mut arrow_q: Query<(Entity, &mut Transform, &mut TextColor, &MissionRouteArrowCmp)>,
     state: Res<UiState>,
     map: Res<Map>,
+    player: Res<Player>,
     missions: Res<Missions>,
     session: Res<MultiplayerSession>,
     assets: Res<WorldAssets>,
@@ -196,30 +218,43 @@ pub fn update_mission_route_arrow(
 
     let origin = map.get(mission.origin);
     let destination = map.get(mission.destination);
-    // Motion is measured in world units, so speed and spacing do not depend on route length.
-    let offset = |speed: f64| {
-        (time.elapsed_secs_f64() * speed).rem_euclid(MISSION_ROUTE_SPACING as f64) as f32
+    let style = mission.route_style(&player);
+    let spacing = match style {
+        MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
+        MissionRouteStyle::JumpGate => 64.0,
+        MissionRouteStyle::MissileStrike => 58.0,
     };
-    let arrows = mission_route_chevrons(
+    let animation_speed = MISSION_ROUTE_SPEED * mission.route_speed_factor();
+    // Motion is measured in world units, so speed and spacing do not depend on route length.
+    let offset =
+        |speed: f64| (time.elapsed_secs_f64() * speed).rem_euclid(f64::from(spacing)) as f32;
+    let arrows = mission_route_markers(
         origin.position,
         mission.position,
         origin.size() * 0.7,
         48.0,
         Color::srgba(0.72, 0.77, 0.84, 0.55),
-        offset(MISSION_ROUTE_SPEED * 0.625),
+        offset(animation_speed * 0.625),
+        style,
     )
-    .chain(mission_route_chevrons(
+    .into_iter()
+    .chain(mission_route_markers(
         mission.position,
         destination.position,
         38.0,
         destination.size() * 0.7,
         session.player_color(mission.owner).color(),
-        offset(MISSION_ROUTE_SPEED),
+        offset(animation_speed),
+        style,
     ))
     .collect::<Vec<_>>();
     let mut present = vec![false; arrows.len()];
 
     for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {
+        if arrow.style != style {
+            commands.entity(entity).despawn();
+            continue;
+        }
         let Some((next_transform, next_color)) = arrows.get(arrow.index) else {
             commands.entity(entity).despawn();
             continue;
@@ -233,11 +268,16 @@ pub fn update_mission_route_arrow(
         if present[index] {
             continue;
         }
+        let (glyph, font_size) = match style {
+            MissionRouteStyle::Standard => (">", 28.0),
+            MissionRouteStyle::JumpGate => ("○", 30.0),
+            MissionRouteStyle::MissileStrike => ("•", 25.0),
+        };
         commands.spawn((
-            Text2d::new(">"),
+            Text2d::new(glyph),
             TextFont {
                 font: assets.font("bold").into(),
-                font_size: 28.0.into(),
+                font_size: font_size.into(),
                 ..default()
             },
             text_color,
@@ -245,6 +285,7 @@ pub fn update_mission_route_arrow(
             Pickable::IGNORE,
             MissionRouteArrowCmp {
                 index,
+                style,
             },
             MapCmp,
         ));

@@ -31,9 +31,18 @@ enum Outcome {
 impl Outcome {
     fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
         // Spy and missile reports have their own success rules, not fleet victory/defeat.
+        // Territory headlines take precedence whenever this player's ownership or
+        // control changes. Colonization has its own presentation system; captures
+        // and losses are handled by `TerritoryOutcome` below.
+        let ownership_changed = (report.planet.owned == Some(player.id))
+            != (report.destination_owned == Some(player.id));
+        let control_changed = (report.planet.controlled == Some(player.id))
+            != (report.destination_controlled == Some(player.id));
         if report.hidden
             || report.combat_report.is_none()
             || !matches!(report.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+            || ownership_changed
+            || control_changed
             || !(report.mission.owner == player.id
                 || report.planet.owned == Some(player.id)
                 || report.planet.controlled == Some(player.id))
@@ -65,11 +74,124 @@ impl Outcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerritoryOutcome {
+    Conquered,
+    Lost,
+}
+
+impl TerritoryOutcome {
+    fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
+        if report.hidden {
+            return None;
+        }
+        let controlled_before =
+            report.planet.owned == Some(player.id) || report.planet.controlled == Some(player.id);
+        let controlled_after = report.destination_owned == Some(player.id)
+            || report.destination_controlled == Some(player.id);
+
+        if controlled_before && !controlled_after {
+            Some(Self::Lost)
+        } else if !controlled_before
+            && controlled_after
+            && report.mission.owner == player.id
+            && report.mission.objective != Icon::Colonize
+        {
+            // Colonize outcomes use the richer colony expansion effect instead.
+            Some(Self::Conquered)
+        } else {
+            None
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Conquered => Color::srgb(0.3, 0.93, 0.74),
+            Self::Lost => Color::srgb(1.0, 0.35, 0.3),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Conquered => "PLANET CONQUERED",
+            Self::Lost => "PLANET LOST",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissileOutcome {
+    Strike,
+    Impact,
+}
+
+impl MissileOutcome {
+    fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
+        if report.hidden
+            || report.mission.objective != Icon::MissileStrike
+            || !(report.mission.owner == player.id
+                || report.planet.owned == Some(player.id)
+                || report.planet.controlled == Some(player.id))
+        {
+            return None;
+        }
+        Some(if report.mission.owner == player.id {
+            Self::Strike
+        } else {
+            Self::Impact
+        })
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Strike => Color::srgb(1.0, 0.72, 0.28),
+            Self::Impact => Color::srgb(1.0, 0.38, 0.22),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Strike => "MISSILE STRIKE",
+            Self::Impact => "MISSILE IMPACT",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SiteOutcome {
+    battle: Option<Outcome>,
+    territory: Option<TerritoryOutcome>,
+    missile: Option<MissileOutcome>,
+}
+
+impl SiteOutcome {
+    fn color(self) -> Color {
+        self.territory
+            .map(TerritoryOutcome::color)
+            .or_else(|| self.battle.map(Outcome::color))
+            .or_else(|| self.missile.map(MissileOutcome::color))
+            .unwrap_or(Color::WHITE)
+    }
+
+    fn labels(self) -> Vec<(&'static str, Color)> {
+        let mut labels = Vec::with_capacity(3);
+        if let Some(territory) = self.territory {
+            labels.push((territory.label(), territory.color()));
+        } else if let Some(battle) = self.battle {
+            labels.push((battle.label(), battle.color()));
+        }
+        if let Some(missile) = self.missile {
+            labels.push((missile.label(), missile.color()));
+        }
+        labels
+    }
+}
+
 #[derive(Resource, Default)]
 struct BattleSites {
     turn: usize,
     observed: BTreeSet<ReportId>,
-    outcomes: BTreeMap<PlanetId, Outcome>,
+    outcomes: BTreeMap<PlanetId, SiteOutcome>,
     pending: BTreeSet<PlanetId>,
 }
 
@@ -83,20 +205,35 @@ impl BattleSites {
         }
         let mut added = false;
         for report in player.reports.iter().filter(|report| report.turn == turn) {
-            let Some(outcome) = Outcome::from_report(report, player) else {
+            let battle = Outcome::from_report(report, player);
+            let territory = TerritoryOutcome::from_report(report, player);
+            let missile = MissileOutcome::from_report(report, player);
+            if battle.is_none() && territory.is_none() && missile.is_none() {
                 continue;
-            };
+            }
             if !self.observed.insert(report.id) {
                 continue;
             }
-            self.outcomes
-                .entry(report.mission.destination)
-                .and_modify(|previous| {
-                    if *previous != outcome {
-                        *previous = Outcome::Mixed;
-                    }
-                })
-                .or_insert(outcome);
+            let site = self.outcomes.entry(report.mission.destination).or_default();
+            if let Some(outcome) = battle {
+                site.battle = Some(match site.battle {
+                    Some(previous) if previous != outcome => Outcome::Mixed,
+                    Some(previous) => previous,
+                    None => outcome,
+                });
+            }
+            if let Some(territory) = territory {
+                site.territory = Some(territory);
+            }
+            if let Some(missile) = missile {
+                site.missile = Some(match (site.missile, missile) {
+                    // A local impact is the more urgent label if both sides launch at one site.
+                    (Some(MissileOutcome::Impact), _) | (_, MissileOutcome::Impact) => {
+                        MissileOutcome::Impact
+                    },
+                    _ => MissileOutcome::Strike,
+                });
+            }
             self.pending.insert(report.mission.destination);
             added = true;
         }
@@ -133,7 +270,14 @@ enum EffectPart {
     Ring {
         radius: f32,
     },
-    Label,
+    Missile {
+        delay: f32,
+        start: Vec2,
+        end: Vec2,
+    },
+    Label {
+        y: f32,
+    },
 }
 
 fn show_battles(
@@ -190,7 +334,7 @@ fn spawn_aftermath(
     commands: &mut Commands,
     planet: &Planet,
     turn: usize,
-    outcome: Outcome,
+    outcome: SiteOutcome,
     assets: &WorldAssets,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -211,6 +355,33 @@ fn spawn_aftermath(
             },
         ))
         .with_children(|parent| {
+            if let Some(missile) = outcome.missile {
+                // Local diagonals convey impact without revealing a hidden mission origin.
+                for (index, y) in [-0.55, 0.0, 0.48].into_iter().enumerate() {
+                    let start = Vec2::new(-size * (2.0 + index as f32 * 0.18), size * (1.25 + y));
+                    let end = Vec2::new(size * (-0.18 + index as f32 * 0.17), size * y * 0.25);
+                    let direction = end - start;
+                    parent.spawn((
+                        Sprite {
+                            image: assets.image("mission missile"),
+                            custom_size: Some(Vec2::splat(size * 0.46)),
+                            color: missile.color().with_alpha(0.0),
+                            ..default()
+                        },
+                        Transform {
+                            translation: start.extend(0.24),
+                            rotation: Quat::from_rotation_z(direction.y.atan2(direction.x)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                        EffectPart::Missile {
+                            delay: index as f32 * 0.16,
+                            start,
+                            end,
+                        },
+                    ));
+                }
+            }
             // Destroyed worlds already receive the larger planet-destruction animation.
             if !planet.is_destroyed {
                 for (index, offset) in
@@ -244,19 +415,24 @@ fn spawn_aftermath(
                     radius: size * 0.57,
                 },
             ));
-            parent.spawn((
-                Text2d::new(outcome.label()),
-                TextFont {
-                    font: assets.font("bold").into(),
-                    font_size: 17.0.into(),
-                    ..default()
-                },
-                TextColor(color.with_alpha(0.0)),
-                // Planet names sit at 0.7 * size; keep results above them and colony labels.
-                Transform::from_xyz(0.0, size * 0.7 + TITLE_TEXT_SIZE * 1.15, 0.2),
-                Pickable::IGNORE,
-                EffectPart::Label,
-            ));
+            for (index, (label, label_color)) in outcome.labels().into_iter().enumerate() {
+                let y = size * 0.7 + TITLE_TEXT_SIZE * (1.15 + index as f32 * 1.05);
+                parent.spawn((
+                    Text2d::new(label),
+                    TextFont {
+                        font: assets.font("bold").into(),
+                        font_size: 17.0.into(),
+                        ..default()
+                    },
+                    TextColor(label_color.with_alpha(0.0)),
+                    // Planet names sit at 0.7 * size; stack results above them and colony labels.
+                    Transform::from_xyz(0.0, y, 0.2 + index as f32 * 0.01),
+                    Pickable::IGNORE,
+                    EffectPart::Label {
+                        y,
+                    },
+                ));
+            }
         });
 }
 
@@ -337,8 +513,28 @@ fn animate_battles(
                         );
                     }
                 },
-                EffectPart::Label => {
+                EffectPart::Missile {
+                    delay,
+                    start,
+                    end,
+                } => {
+                    let progress = ((elapsed - delay) / 0.82).clamp(0.0, 1.0);
+                    if progress >= 1.0 {
+                        commands.entity(entity).despawn();
+                    } else if progress > 0.0 {
+                        let eased = progress * progress * (3.0 - 2.0 * progress);
+                        transform.translation = start.lerp(*end, eased).extend(0.24);
+                        transform.scale = Vec3::splat(0.82 + 0.3 * (1.0 - progress));
+                        if let Some(mut sprite) = sprite {
+                            sprite.color.set_alpha((progress * 8.0).min(1.0));
+                        }
+                    }
+                },
+                EffectPart::Label {
+                    y,
+                } => {
                     transform.scale = Vec3::splat(1.0 - 0.12 * settle);
+                    transform.translation.y = *y + 5.0 * (1.0 - settle);
                     if let Some(mut text) = text {
                         text.0.set_alpha(((elapsed - 0.3) / 0.4).clamp(0.0, 1.0) * (1.0 - settle));
                     }

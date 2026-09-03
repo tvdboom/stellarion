@@ -21,12 +21,12 @@ use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
-    BG2_COLOR, ENEMY_COLOR, OWN_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL,
-    SHIELD_COLOR,
+    BG2_COLOR, HEALTH_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::systems::select_planet;
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{BombingRaid, Mission, MissionId, Missions, SendMissionMsg};
 use crate::core::orders::{purchase_limit, validate_mission};
@@ -54,13 +54,35 @@ use shop::draw_shop;
 /// Marker for entities owned by the in-game UI projection.
 pub struct UiCmp;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 /// Selected constructible-unit category in the local shop panel.
 pub enum Shop {
     #[default]
     Buildings,
     Fleet,
     Defenses,
+}
+
+impl Shop {
+    /// Returns the category reached by moving one tab to the right.
+    pub(crate) fn next(self, is_moon: bool) -> Self {
+        match self {
+            Self::Buildings => Self::Fleet,
+            Self::Fleet if is_moon => Self::Buildings,
+            Self::Fleet => Self::Defenses,
+            Self::Defenses => Self::Buildings,
+        }
+    }
+
+    /// Returns the category reached by moving one tab to the left.
+    pub(crate) fn previous(self, is_moon: bool) -> Self {
+        match self {
+            Self::Buildings if is_moon => Self::Fleet,
+            Self::Buildings => Self::Defenses,
+            Self::Fleet => Self::Buildings,
+            Self::Defenses => Self::Fleet,
+        }
+    }
 }
 
 #[derive(EnumIter, Copy, Clone, Debug, Default, PartialEq)]
@@ -78,6 +100,8 @@ pub enum MissionTab {
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
     pub planet_selected: Option<PlanetId>,
+    /// Camera-only world focus used by shortcuts that must not open a world panel.
+    pub focus_planet: Option<PlanetId>,
     pub to_selected: bool,
     pub shop: Shop,
     pub lab: (ResourceName, ResourceName),
@@ -135,6 +159,177 @@ fn draw_panel<R>(
         });
 }
 
+/// Draws one compact, fully clickable world shortcut.
+fn draw_world_shortcut(ui: &mut Ui, planet: &Planet, opens_panel: bool, images: &ImageIds) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
+    let response =
+        response.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(if opens_panel {
+            "Center the map and open this planet"
+        } else {
+            "Center the map on this controlled world"
+        });
+
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(4),
+            Color32::from_rgba_unmultiplied(62, 105, 137, 74),
+        );
+    }
+
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 19.0, rect.center().y),
+        egui::vec2(30.0, 30.0),
+    );
+    ui.painter().image(
+        images.get(planet.image()),
+        icon_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+
+    let text_x = icon_rect.right() + 8.0;
+    ui.painter().text(
+        egui::pos2(text_x, rect.top() + 8.0),
+        Align2::LEFT_TOP,
+        &planet.name,
+        TextStyle::Body.resolve(ui.style()),
+        Color32::WHITE,
+    );
+
+    let has_fleet = planet.has_fleet();
+    let fleet_color = if has_fleet {
+        Color32::from_rgb(102, 224, 170)
+    } else {
+        Color32::from_rgb(119, 132, 145)
+    };
+    let fleet_y = rect.bottom() - 8.0;
+    ui.painter().circle_filled(egui::pos2(text_x + 3.0, fleet_y - 1.0), 2.8, fleet_color);
+    ui.painter().text(
+        egui::pos2(text_x + 10.0, fleet_y),
+        Align2::LEFT_BOTTOM,
+        if has_fleet {
+            "FLEET"
+        } else {
+            "NO FLEET"
+        },
+        TextStyle::Small.resolve(ui.style()),
+        fleet_color,
+    );
+
+    response.clicked()
+}
+
+/// Shows the local player's owned and controlled worlds as quick map shortcuts.
+fn draw_owned_worlds_widget(
+    context: &egui::Context,
+    map: &Map,
+    player: &Player,
+    state: &mut UiState,
+    settings: &mut Settings,
+    images: &ImageIds,
+) {
+    let mut owned = map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_destroyed && !planet.is_moon() && player.owns(planet))
+        .collect::<Vec<_>>();
+    let mut controlled = map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_destroyed && player.controls(planet) && !player.owns(planet))
+        .collect::<Vec<_>>();
+    owned.sort_by(|left, right| left.name.cmp(&right.name));
+    controlled.sort_by(|left, right| left.name.cmp(&right.name));
+
+    egui::Area::new("stellarion_owned_worlds".into())
+        .fixed_pos(egui::pos2(18.0, 92.0))
+        .movable(false)
+        .constrain(true)
+        .order(Order::Middle)
+        .show(context, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 226))
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 170, 215, 95)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(9, 9))
+                .show(ui, |ui| {
+                    let max_width = (context.content_rect().width() - 62.0).max(0.0);
+                    ui.set_width(246.0_f32.min(max_width));
+                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("YOUR WORLDS")
+                                .size(11.0)
+                                .strong()
+                                .color(Color32::from_rgb(166, 188, 211)),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("{}", owned.len() + controlled.len()))
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(119, 196, 230)),
+                            );
+                        });
+                    });
+                    ui.add_space(4.0);
+
+                    let max_height = (context.content_rect().height() - 285.0).max(120.0);
+                    ScrollArea::vertical()
+                        .id_salt("owned world shortcuts")
+                        .max_height(max_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if owned.is_empty() && controlled.is_empty() {
+                                ui.small(
+                                    RichText::new("No worlds under your control")
+                                        .color(Color32::from_rgb(145, 156, 168)),
+                                );
+                            }
+
+                            if !owned.is_empty() {
+                                ui.label(
+                                    RichText::new("OWNED PLANETS")
+                                        .size(9.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(102, 224, 170)),
+                                );
+                                for planet in &owned {
+                                    if draw_world_shortcut(ui, planet, true, images) {
+                                        select_planet(planet, state, player);
+                                        state.planet_hover = None;
+                                        settings.show_menu = true;
+                                    }
+                                }
+                            }
+
+                            if !controlled.is_empty() {
+                                if !owned.is_empty() {
+                                    ui.add_space(5.0);
+                                }
+                                ui.label(
+                                    RichText::new("CONTROLLED WORLDS")
+                                        .size(9.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(244, 197, 66)),
+                                );
+                                for planet in &controlled {
+                                    if draw_world_shortcut(ui, planet, false, images) {
+                                        state.planet_selected = None;
+                                        state.focus_planet = Some(planet.id);
+                                        state.to_selected = true;
+                                        state.planet_hover = None;
+                                        state.mission = false;
+                                        state.combat_report = None;
+                                    }
+                                }
+                            }
+                        });
+                });
+        });
+}
+
 /// Shows every opposing player's name beside the color used by their map cells.
 fn draw_enemy_players_widget(
     context: &egui::Context,
@@ -154,7 +349,7 @@ fn draw_enemy_players_widget(
     }
 
     egui::Area::new("stellarion_enemy_players".into())
-        .fixed_pos(egui::pos2(18.0, 92.0))
+        .anchor(Align2::LEFT_BOTTOM, egui::vec2(18.0, -18.0))
         .movable(false)
         .constrain(true)
         .order(Order::Middle)
@@ -338,7 +533,6 @@ fn draw_combat_army_grid(
     round: &RoundReport,
     units: Vec<Unit>,
     side: Side,
-    color: Color,
     images: &ImageIds,
 ) -> bool {
     let (own, mut enemy) = match side {
@@ -530,7 +724,7 @@ fn draw_combat_army_grid(
 
                     for (i, (value, color)) in [shield, hull]
                         .into_iter()
-                        .zip([SHIELD_COLOR.to_color32(), color.to_color32()])
+                        .zip([SHIELD_COLOR.to_color32(), HEALTH_COLOR.to_color32()])
                         .enumerate()
                     {
                         if !value.is_nan() {
@@ -1051,6 +1245,7 @@ fn draw_combat_report(
     state: &mut UiState,
     map: &Map,
     player: &Player,
+    session: &MultiplayerSession,
     images: &ImageIds,
 ) {
     let Some(report_id) = state.combat_report else {
@@ -1265,11 +1460,19 @@ fn draw_combat_report(
 
     let (attacker_w, defender_w) = (ui.available_width() * 0.3, ui.available_width() * 0.6);
 
-    let (attack_c, defend_c) = if report.mission.owner == player.id {
-        (OWN_COLOR, ENEMY_COLOR)
-    } else {
-        (ENEMY_COLOR, OWN_COLOR)
-    };
+    let attacker_id = report.mission.owner;
+    let defender_id = report.planet.controlled.or(report.planet.owned);
+    let attack_c = session.player_color(attacker_id).color();
+    let defend_c =
+        defender_id.map_or(Color::srgb_u8(150, 158, 170), |id| session.player_color(id).color());
+    let attacker_name = session
+        .player_name(attacker_id)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("Player {attacker_id}"));
+    let defender_name = defender_id.map_or_else(
+        || "Neutral defenses".to_string(),
+        |id| session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}")),
+    );
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
@@ -1279,14 +1482,22 @@ fn draw_combat_report(
         ui.vertical(|ui| {
             ui.set_width(attacker_w);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label("Attacker");
+                ui.label(
+                    RichText::new(format!("Attacker · {attacker_name}"))
+                        .strong()
+                        .color(attack_c.to_color32()),
+                );
             });
             ui.visuals_mut().widgets.noninteractive.bg_stroke.color = attack_c.to_color32();
             ui.separator();
         });
         ui.vertical(|ui| {
             ui.set_width(defender_w);
-            ui.label("Defender");
+            ui.label(
+                RichText::new(format!("Defender · {defender_name}"))
+                    .strong()
+                    .color(defend_c.to_color32()),
+            );
             ui.visuals_mut().widgets.noninteractive.bg_stroke.color = defend_c.to_color32();
             ui.separator();
         });
@@ -1332,7 +1543,6 @@ fn draw_combat_report(
                             Unit::ships()
                         },
                         Side::Attacker,
-                        attack_c,
                         images,
                     );
                     any_hovered = any_hovered || hovered;
@@ -1365,7 +1575,6 @@ fn draw_combat_report(
                                         &round,
                                         Unit::ships(),
                                         Side::Defender,
-                                        defend_c,
                                         images,
                                     )
                                 } else {
@@ -1397,7 +1606,6 @@ fn draw_combat_report(
                                         .filter(|u| defenses.contains(u))
                                         .collect(),
                                     Side::Defender,
-                                    defend_c,
                                     images,
                                 )
                             } else {
@@ -1416,7 +1624,6 @@ fn draw_combat_report(
                                     &round,
                                     vec![Unit::planetary_shield()],
                                     Side::Defender,
-                                    defend_c,
                                     images,
                                 );
                             }
@@ -1451,7 +1658,6 @@ fn draw_combat_report(
                                     &round,
                                     units,
                                     Side::Defender,
-                                    defend_c,
                                     images,
                                 );
                             }
@@ -1626,13 +1832,32 @@ fn draw_combat_selection(
                 let destination = map.get(report.mission.destination);
 
                 let (rect, response) =
-                    ui.allocate_exact_size([ui.available_width(), 64.].into(), Sense::click());
+                    ui.allocate_exact_size([ui.available_width(), 72.].into(), Sense::click());
                 let response = response
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .on_hover_text("View this combat");
                 let hovered = response.hovered();
                 let pressed = response.is_pointer_button_down_on();
-                let player_color = session.player_color(report.mission.owner).color().to_color32();
+                let attacker_id = report.mission.owner;
+                let defender_id = report.planet.controlled.or(report.planet.owned);
+                let player_color = session.player_color(attacker_id).color().to_color32();
+                let opponent_id = if attacker_id == player.id {
+                    defender_id
+                } else {
+                    Some(attacker_id)
+                };
+                let opponent_name = opponent_id.map_or_else(
+                    || "Neutral defenses".to_string(),
+                    |id| {
+                        session
+                            .player_name(id)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("Player {id}"))
+                    },
+                );
+                let opponent_color = opponent_id.map_or(Color32::from_rgb(150, 158, 170), |id| {
+                    session.player_color(id).color().to_color32()
+                });
 
                 let fill = if pressed {
                     Color32::from_rgba_unmultiplied(34, 61, 84, 248)
@@ -1703,11 +1928,23 @@ fn draw_combat_selection(
 
                 let text_painter = ui.painter().with_clip_rect(text_rect);
                 text_painter.text(
-                    egui::pos2(text_rect.left(), center_y),
+                    egui::pos2(text_rect.left(), center_y - 9.0),
                     Align2::LEFT_CENTER,
                     format!("Battle of {}", destination.name),
                     TextStyle::Body.resolve(ui.style()),
                     Color32::WHITE,
+                );
+                text_painter.circle_filled(
+                    egui::pos2(text_rect.left() + 3.0, center_y + 13.0),
+                    3.0,
+                    opponent_color,
+                );
+                text_painter.text(
+                    egui::pos2(text_rect.left() + 11.0, center_y + 13.0),
+                    Align2::LEFT_CENTER,
+                    format!("Against {opponent_name}"),
+                    TextStyle::Small.resolve(ui.style()),
+                    opponent_color,
                 );
 
                 if response.clicked() {
@@ -1779,6 +2016,7 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
+            draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
             draw_enemy_players_widget(context, &session, &player);
         }
         draw_panel(
@@ -1977,6 +2215,7 @@ pub fn draw_ui(
                     &mut state,
                     &mut map,
                     &mut player,
+                    &session,
                     is_hovered,
                     &keyboard,
                     &images,
@@ -2031,7 +2270,7 @@ pub fn draw_ui(
             (width * 0.5 - window_w * 0.5, height * 0.9 - window_h),
             (window_w, window_h),
             &images,
-            |ui| draw_combat_report(ui, &mut state, &map, &player, &images),
+            |ui| draw_combat_report(ui, &mut state, &map, &player, &session, &images),
         );
     }
 

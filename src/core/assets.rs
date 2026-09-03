@@ -142,7 +142,7 @@ impl WorldAssets {
         );
         // Reuse the original silhouettes, stripping baked faction colors once during loading.
         // Sprite tint then gives every player the exact lobby color without extra image variants.
-        for name in ["dock", "mission", "mission jump"] {
+        for name in ["dock", "jump gate marker", "mission", "mission jump", "mission missile"] {
             let path = format!("images/icons/{name}.basisu.ktx2");
             let handle: Handle<Image> = server
                 .load_builder()
@@ -154,16 +154,6 @@ impl WorldAssets {
                 .load(format!("{path}#ui"));
             self.gameplay_handles.push(ui_handle.clone().untyped());
             self.ui_images.insert(name.to_string(), ui_handle);
-            self.gameplay_handles.push(handle.clone().untyped());
-            self.images.insert(name.to_string(), handle);
-        }
-        for name in ["mission hover", "mission jump hover"] {
-            let handle: Handle<Image> = server
-                .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
-                    settings.premultiply_alpha = true;
-                })
-                .load(format!("images/icons/{name}.basisu.ktx2"));
             self.gameplay_handles.push(handle.clone().untyped());
             self.images.insert(name.to_string(), handle);
         }

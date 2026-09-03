@@ -28,12 +28,18 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         model
             .players
             .iter()
-            .map(|player| Mission {
+            .enumerate()
+            .map(|(index, player)| Mission {
                 id: player.id,
                 owner: player.id,
                 origin: model.map.planets[0].id,
                 destination: model.map.planets[1].id,
                 position: model.map.planets[0].position,
+                objective: if index == 3 {
+                    Icon::MissileStrike
+                } else {
+                    Icon::Attack
+                },
                 jump_gate: true,
                 ..default()
             })
@@ -45,6 +51,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         id: GameId::new("mission-color-test"),
         code: GameCode::new("ABCDEF"),
         revision: 0,
+        saved_at: 1_700_000_000,
         max_players: 4,
         status: model.status,
         persisted: PersistedGame::new(model.clone()),
@@ -76,7 +83,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
     });
 
     // Covers the first rendered frame, hover, and switching the inspected player's view.
-    for (viewer, hover) in [(0, None), (0, Some(2)), (1, Some(2)), (1, None)] {
+    for (viewer, hover) in [(0, None), (0, Some(2)), (1, Some(2)), (0, Some(4)), (1, None)] {
         app.insert_resource(model.players[viewer].clone());
         app.world_mut().resource_mut::<UiState>().mission_hover = hover;
         app.update();
@@ -129,12 +136,27 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
                         0.
                     }
             );
-            let key = if owner.id == model.players[viewer].id {
+            let key = if mission.id == 4 {
+                "mission missile"
+            } else if owner.id == model.players[viewer].id {
                 "mission jump"
             } else {
                 "mission"
             };
             assert_eq!(sprite.image, world.resource::<WorldAssets>().image(key));
         }
+        let route_styles = world
+            .query::<&MissionRouteArrowCmp>()
+            .iter(world)
+            .map(|arrow| arrow.style)
+            .collect::<Vec<_>>();
+        let expected_style = match hover {
+            Some(4) => Some(MissionRouteStyle::MissileStrike),
+            Some(2) if model.players[viewer].id == 2 => Some(MissionRouteStyle::JumpGate),
+            Some(2) => Some(MissionRouteStyle::Standard),
+            _ => None,
+        };
+        assert_eq!(route_styles.first().copied(), expected_style);
+        assert!(route_styles.iter().all(|&style| Some(style) == expected_style));
     }
 }

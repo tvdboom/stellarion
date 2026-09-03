@@ -30,6 +30,23 @@ use crate::multiplayer::recovery::generate_user_token;
 /// How long completed games and their related records are retained.
 const FINISHED_GAME_RETENTION: Duration = Duration::from_secs(48 * 60 * 60);
 
+#[cfg(not(target_arch = "wasm32"))]
+fn current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_unix_timestamp() -> u64 {
+    let seconds = js_sys::Date::now() / 1_000.0;
+    if seconds.is_finite() && seconds >= 0.0 {
+        seconds as u64
+    } else {
+        0
+    }
+}
+
 /// Thread-safe in-memory implementation with Supabase-like uniqueness and revision semantics.
 #[derive(Clone, Default)]
 pub struct InMemoryBackend {
@@ -158,6 +175,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 id: game_id.clone(),
                 code: request.code.clone(),
                 revision: 0,
+                saved_at: current_unix_timestamp(),
                 max_players,
                 status: MatchStatus::Lobby,
                 persisted: canonical,
@@ -316,6 +334,7 @@ impl MultiplayerBackend for InMemoryBackend {
                         id: stored.record.id.clone(),
                         code: stored.record.code.clone(),
                         revision: stored.record.revision,
+                        saved_at: stored.record.saved_at,
                         status: stored.record.status,
                         turn: stored.record.persisted.state.turn,
                         player_id: member.player_id,
@@ -334,7 +353,9 @@ impl MultiplayerBackend for InMemoryBackend {
                     })
                 })
                 .collect::<Vec<_>>();
-            summaries.sort_by(|left, right| left.id.cmp(&right.id));
+            summaries.sort_by(|left, right| {
+                right.saved_at.cmp(&left.saved_at).then_with(|| left.id.cmp(&right.id))
+            });
             Ok(summaries)
         })
     }
@@ -831,6 +852,7 @@ fn commit_state(stored: &mut StoredGame, persisted: PersistedGame) {
         stored.finished_at = Some(Instant::now());
     }
     stored.record.revision = stored.record.revision.saturating_add(1);
+    stored.record.saved_at = current_unix_timestamp();
     stored.record.status = persisted.state.status;
     stored.record.persisted = persisted;
 }

@@ -226,16 +226,34 @@ pub(super) fn draw_shop(
         state.shop = Shop::default();
     }
 
-    let (current, max, idx) = match state.shop {
-        Shop::Buildings => (planet.fields_consumed(), planet.max_fields(), 0),
-        Shop::Fleet => (planet.fleet_production(), planet.max_fleet_production(), 1),
-        Shop::Defenses => (planet.battery_production(), planet.max_battery_production(), 2),
-    };
-
     ui.horizontal(|ui| {
-        ui.add_space(45.);
+        ui.add_space(20.);
+        if ui
+            .add_sized([26., 24.], egui::Button::new(RichText::new("‹").size(19.)).frame(false))
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Previous shop category")
+            .clicked()
+        {
+            state.shop = state.shop.previous(planet.is_moon());
+        }
+
         ui.add_image(images.get(state.shop.to_lowername()), [20., 20.]);
         ui.small(state.shop.to_name());
+
+        if ui
+            .add_sized([26., 24.], egui::Button::new(RichText::new("›").size(19.)).frame(false))
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Next shop category")
+            .clicked()
+        {
+            state.shop = state.shop.next(planet.is_moon());
+        }
+
+        let (current, max) = match state.shop {
+            Shop::Buildings => (planet.fields_consumed(), planet.max_fields()),
+            Shop::Fleet => (planet.fleet_production(), planet.max_fleet_production()),
+            Shop::Defenses => (planet.battery_production(), planet.max_battery_production()),
+        };
 
         if state.shop != Shop::Buildings || planet.is_moon() {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -253,6 +271,12 @@ pub(super) fn draw_shop(
             });
         }
     });
+
+    let idx = match state.shop {
+        Shop::Buildings => 0,
+        Shop::Fleet => 1,
+        Shop::Defenses => 2,
+    };
 
     ui.add_space(10.);
 

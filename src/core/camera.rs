@@ -79,6 +79,7 @@ pub fn move_camera(
 
                     projection.scale = new_scale;
                     state.to_selected = false;
+                    state.focus_planet = None;
                 }
             }
         }
@@ -87,10 +88,15 @@ pub fn move_camera(
     let mut position = camera_t.translation.truncate();
 
     // Move camera on top of selected planet
+    let mut shortcut_target = None;
     if state.to_selected {
-        if let Some(planet_id) = state.planet_selected {
+        if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
-                position = position.lerp(pos.translation.truncate(), LERP_FACTOR);
+                let target = pos.translation.truncate();
+                position = position.lerp(target, LERP_FACTOR);
+                if state.planet_selected.is_none() && state.focus_planet == Some(planet_id) {
+                    shortcut_target = Some(target);
+                }
             }
         }
     }
@@ -112,6 +118,10 @@ pub fn move_camera(
     );
 
     camera_t.translation = position.extend(camera_t.translation.z);
+    if shortcut_target.is_some_and(|target| position.distance(target) < 0.75) {
+        state.to_selected = false;
+        state.focus_planet = None;
+    }
 
     for mut parallax_t in parallax_q.iter_mut() {
         parallax_t.translation.x = camera_t.translation.x / 1.2;
@@ -141,18 +151,22 @@ pub fn move_camera_keyboard(
     if keyboard.pressed(KeyCode::KeyA) {
         camera_t.translation.x -= transform;
         state.to_selected = false;
+        state.focus_planet = None;
     }
     if keyboard.pressed(KeyCode::KeyD) {
         camera_t.translation.x += transform;
         state.to_selected = false;
+        state.focus_planet = None;
     }
     if keyboard.pressed(KeyCode::KeyW) {
         camera_t.translation.y += transform;
         state.to_selected = false;
+        state.focus_planet = None;
     }
     if keyboard.pressed(KeyCode::KeyS) {
         camera_t.translation.y -= transform;
         state.to_selected = false;
+        state.focus_planet = None;
     }
 }
 

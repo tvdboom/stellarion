@@ -122,6 +122,27 @@ impl Lens<Transform> for TransformOrbitLens {
     }
 }
 
+/// Tween: circular motion combined with a steady local spin.
+#[derive(Debug, Clone, Copy)]
+pub struct TransformOrbitSpinLens {
+    /// Radius of the circular interpolation path.
+    pub radius: f32,
+    /// Angular offset applied to the circular interpolation path.
+    pub offset: f32,
+    /// Number of local rotations completed during one orbit.
+    pub rotations: f32,
+}
+
+impl Lens<Transform> for TransformOrbitSpinLens {
+    /// Interpolates orbital position and local orientation with one seamless phase.
+    fn lerp(&mut self, mut target: Mut<Transform>, ratio: f32) {
+        let orbit = self.offset + TAU * ratio;
+        target.translation.x = self.radius * orbit.cos();
+        target.translation.y = self.radius * orbit.sin();
+        target.rotation = Quat::from_rotation_z(self.offset + TAU * self.rotations * ratio);
+    }
+}
+
 /// Tween: sprite texture cycle
 #[derive(Debug, Clone, Copy)]
 pub struct SpriteFrameLens(pub usize);

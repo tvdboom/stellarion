@@ -13,7 +13,7 @@ use crate::core::settings::Settings;
 use crate::core::simulation::{GameRules, MatchStatus, MAX_MULTIPLAYER_PLAYERS};
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::multiplayer::client::{
-    ConnectionIndicator, MultiplayerForm, MultiplayerRequest, MultiplayerSession,
+    ConnectionIndicator, ConnectionStatus, MultiplayerForm, MultiplayerRequest, MultiplayerSession,
 };
 use crate::multiplayer::model::{GameRecord, GameSummary};
 use crate::utils::ToColor32;
@@ -130,12 +130,7 @@ pub fn draw_menu(
             ui.vertical_centered(|ui| {
                 match app_state.get() {
                     AppState::Boot => boot_screen(ui),
-                    AppState::MainMenu => main_screen(
-                        ui,
-                        session.menu_error.as_deref(),
-                        &mut requests,
-                        &mut next_state,
-                    ),
+                    AppState::MainMenu => main_screen(ui, &mut requests, &mut next_state),
                     AppState::CreateGame => create_screen(
                         ui,
                         &mut form,
@@ -220,10 +215,11 @@ pub fn draw_menu(
             });
     }
 
-    egui::Area::new("stellarion_menu_footer".into())
+    let footer = egui::Area::new("stellarion_menu_footer".into())
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(egui::pos2(menu_size.x - 24.0, menu_size.y - 18.0))
         .constrain(false)
+        .order(egui::Order::Foreground)
         .show(context, |ui| {
             let mode = if session.local_practice {
                 " · local practice"
@@ -234,10 +230,69 @@ pub fn draw_menu(
             };
             ui.set_min_width(220.0);
             ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                ui.label(format!("{}{}", connection_indicator.status.label(), mode));
-                ui.label("Created by Mavs");
+                connection_status_badge(ui, connection_indicator.status, mode);
+                ui.label(egui::RichText::new("Created by Mavs").weak());
             });
         });
+
+    if let Some(error) = session.menu_error.as_deref().filter(|_| is_primary_navigation) {
+        let action_right = menu_size.x * 0.5 + 308.0_f32.min(content_width) * 0.5;
+        let clear_side_width = (menu_size.x - 36.0 - action_right).max(236.0);
+        let toast_width = (menu_size.x * 0.38)
+            .clamp(260.0, 400.0)
+            .min(clear_side_width)
+            .min((menu_size.x - 48.0).max(220.0));
+        egui::Area::new("stellarion_main_menu_error".into())
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(egui::pos2(menu_size.x - 24.0, footer.response.rect.top() - 10.0))
+            .constrain(false)
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                menu_error_panel_width(ui, "Unable to complete action", error, toast_width);
+            });
+    }
+}
+
+/// Draws the transport state as a compact badge that remains legible over menu artwork.
+fn connection_status_badge(ui: &mut egui::Ui, status: ConnectionStatus, mode: &str) {
+    let foreground = ui.visuals().strong_text_color();
+    let label = ui.painter().layout_no_wrap(
+        format!("{}{}", status.label(), mode),
+        egui::FontId::proportional(14.0),
+        foreground,
+    );
+    let size = egui::vec2(label.size().x + 46.0, label.size().y.max(10.0) + 10.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(10),
+        egui::Color32::from_rgba_unmultiplied(10, 16, 23, 210),
+        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(216, 222, 233, 48)),
+        egui::StrokeKind::Inside,
+    );
+    let center_y = rect.center().y;
+    ui.painter().circle_filled(
+        egui::pos2(rect.left() + 14.0, center_y),
+        4.0,
+        connection_status_color(status),
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 28.0, center_y - label.size().y * 0.5),
+        label,
+        foreground,
+    );
+}
+
+/// Maps each connection state to an immediately recognizable indicator color.
+fn connection_status_color(status: ConnectionStatus) -> egui::Color32 {
+    match status {
+        ConnectionStatus::Connected => egui::Color32::from_rgb(91, 214, 133),
+        ConnectionStatus::Offline => egui::Color32::from_rgb(255, 107, 119),
+        ConnectionStatus::Initializing => egui::Color32::from_rgb(111, 190, 255),
+        ConnectionStatus::Reconnecting | ConnectionStatus::SyncConflict => {
+            egui::Color32::from_rgb(246, 193, 88)
+        },
+    }
 }
 
 /// Moves the actions up when needed, while preserving space below the measured title.
@@ -283,11 +338,10 @@ fn boot_screen(ui: &mut egui::Ui) {
 /// Draws top-level actions required by the multiplayer product flow.
 fn main_screen(
     ui: &mut egui::Ui,
-    error: Option<&str>,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
-    // Keep every action and any feedback reachable above the footer on short windows.
+    // Keep every action reachable above the footer on short windows.
     let available_height =
         (ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 96.0).max(80.0);
     // An Area remembers its previous content height. Expand the parent before the
@@ -330,10 +384,6 @@ fn main_screen(
                 #[cfg(not(target_arch = "wasm32"))]
                 if button(ui, "Quit") {
                     std::process::exit(0);
-                }
-                if let Some(error) = error {
-                    ui.add_space(12.0);
-                    menu_error_panel(ui, "Unable to complete action", error);
                 }
             });
         });
@@ -643,8 +693,8 @@ fn resume_screen(
                 resume_recovery_toast(ui);
             });
     } else {
-        // Fit five cards when space permits, leaving room for the heading and actions.
-        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(94.0, 384.0);
+        // Fit five timestamped cards when space permits, leaving room for heading and actions.
+        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(112.0, 474.0);
         egui::ScrollArea::vertical()
             .id_salt("stellarion_resume_games")
             .auto_shrink([false, true])
@@ -749,6 +799,43 @@ fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bo
     clicked
 }
 
+/// Formats an epoch timestamp without adding a platform-specific date dependency.
+fn format_saved_timestamp(timestamp: u64) -> String {
+    if timestamp == 0 {
+        return "Saved time unavailable".to_string();
+    }
+
+    let seconds = timestamp.min(i64::MAX as u64) as i64;
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    // Howard Hinnant's civil-from-days conversion, with day zero at 1970-01-01.
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    }
+    .div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime
+        + if month_prime < 10 {
+            3
+        } else {
+            -9
+        };
+    year += i64::from(month <= 2);
+    let hour = day_seconds / 3_600;
+    let minute = day_seconds % 3_600 / 60;
+
+    format!("Saved {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
 /// Draws a saved game with the caller's identity, using an extra row when needed.
 fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> bool {
     let secondary = if enabled {
@@ -792,9 +879,9 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
     let size = egui::vec2(
         ui.available_width(),
         if stacked {
-            94.0
+            112.0
         } else {
-            72.0
+            90.0
         },
     );
     let sense = if enabled {
@@ -851,7 +938,14 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
         egui::FontId::proportional(19.0),
         foreground,
     );
-    let details_y = rect.top() + 59.0 - details.size().y * 0.5;
+    ui.painter().text(
+        egui::pos2(left, rect.top() + 38.0),
+        egui::Align2::LEFT_TOP,
+        format_saved_timestamp(game.saved_at),
+        egui::FontId::proportional(12.0),
+        secondary,
+    );
+    let details_y = rect.top() + 72.0 - details.size().y * 0.5;
     if !stacked {
         ui.painter().text(
             egui::pos2(left + details.size().x + 10.0, details_y),

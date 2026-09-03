@@ -18,7 +18,6 @@
 -- Test tooling is installed under ignored target/sql-verification/.
 -- This generates current Rust test snapshots and executes disposable PostgreSQL
 -- with pg_cron registration stubbed. It never resets the hosted project.
--- Keep setup documentation here; there are no companion migration or README files.
 
 begin;
 
@@ -72,6 +71,9 @@ create table public.stellarion_games (
     current_turn bigint not null,
     event_sequence bigint not null default 0,
     created_at timestamptz not null default clock_timestamp(),
+    -- Snapshot save time is intentionally separate from updated_at: presence and
+    -- durable notification traffic must not make an old save look recent.
+    saved_at timestamptz not null default clock_timestamp(),
     updated_at timestamptz not null default clock_timestamp(),
     finished_at timestamptz,
     constraint stellarion_games_code_format check (code ~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$'),
@@ -401,6 +403,7 @@ begin
                'id', g.id::text,
                'code', g.code,
                'revision', g.revision,
+               'saved_at', floor(extract(epoch from g.saved_at))::bigint,
                'max_players', g.max_players,
                'status', g.status,
                'persisted', g.state,
@@ -781,6 +784,7 @@ as $$
                         'id', g.id::text,
                         'code', g.code,
                         'revision', g.revision,
+                        'saved_at', floor(extract(epoch from g.saved_at))::bigint,
                         'status', g.status,
                         'turn', g.current_turn,
                         'player_id', mine.player_id,
@@ -796,7 +800,7 @@ as $$
                             where all_players.game_id = g.id
                         ),
                         'max_players', g.max_players
-                    ) order by g.updated_at desc, g.id
+                    ) order by g.saved_at desc, g.id
                 ),
                 '[]'::jsonb
             )
@@ -900,6 +904,7 @@ begin
            status = 'active',
            persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            revision = revision + 1,
+           saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
      where id = p_game_id;
     perform public.stellarion_emit_event(p_game_id, 'game_started', null, null);
@@ -994,6 +999,7 @@ begin
        set state = p_persisted,
            persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            revision = revision + 1,
+           saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
      where id = p_game_id;
     perform public.stellarion_emit_event(p_game_id, 'state_changed', null, null);
@@ -1328,6 +1334,7 @@ begin
            persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            current_turn = p_resolved_turn + 1,
            revision = revision + 1,
+           saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
      where id = p_game_id;
 

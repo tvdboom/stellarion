@@ -30,6 +30,8 @@ pub const BG_COLOR: Color = Color::srgb_u8(12, 16, 20);
 pub const BG2_COLOR: Color = Color::srgb_u8(40, 40, 40);
 /// Combat shield indicator color.
 pub const SHIELD_COLOR: Color = Color::srgb_u8(0, 255, 255);
+/// Shared hull/health color; player identity is presented separately.
+pub const HEALTH_COLOR: Color = Color::srgb_u8(102, 224, 170);
 /// Map color used for the local player's ownership.
 pub const OWN_COLOR: Color = Color::srgb_u8(102, 128, 255);
 /// Map color used for enemy ownership.

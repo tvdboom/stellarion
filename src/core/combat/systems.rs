@@ -18,7 +18,7 @@ use crate::core::camera::MainCamera;
 use crate::core::combat::report::Side;
 use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
-    BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_EXPLOSION_Z, COMBAT_SHIP_Z, ENEMY_COLOR, OWN_COLOR,
+    BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_EXPLOSION_Z, COMBAT_SHIP_Z, HEALTH_COLOR,
     PS_SHIELD_PER_LEVEL, PS_WIDTH, SETUP_TIME, SHIELD_COLOR, UNIT_SIZE,
 };
 use crate::core::map::icon::Icon;
@@ -36,6 +36,7 @@ use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{UiCmp, UiState};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Combat, Unit};
+use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::{scale_duration, NameFromEnum};
 
 #[derive(Component)]
@@ -157,6 +158,64 @@ pub struct UnitExplosionCmp {
     pub target_entity: Entity,
 }
 
+/// Adds a readable player identity banner without overloading health-bar color.
+fn spawn_combat_identity(
+    commands: &mut Commands,
+    role: &str,
+    name: &str,
+    color: Color,
+    top: Option<f32>,
+    bottom: Option<f32>,
+    assets: &WorldAssets,
+    window: &Window,
+) {
+    let mut node = Node {
+        position_type: PositionType::Absolute,
+        left: Val::Px(22.0),
+        min_width: Val::Px(250.0),
+        height: Val::Px(42.0),
+        padding: UiRect::px(12.0, 14.0, 7.0, 7.0),
+        column_gap: Val::Px(9.0),
+        align_items: AlignItems::Center,
+        ..default()
+    };
+    if let Some(top) = top {
+        node.top = Val::Px(top);
+    }
+    if let Some(bottom) = bottom {
+        node.bottom = Val::Px(bottom);
+    }
+
+    commands
+        .spawn((
+            node,
+            BackgroundColor(Color::srgba(0.025, 0.045, 0.07, 0.88)),
+            Pickable::IGNORE,
+            ZIndex(5),
+            CombatCmp,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Node {
+                    width: Val::Px(4.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(color),
+            ));
+            parent.spawn((
+                add_text(
+                    format!("{}  ·  {}", role.to_uppercase(), name),
+                    "medium",
+                    11.0,
+                    assets,
+                    window,
+                ),
+                TextColor(color),
+            ));
+        });
+}
+
 /// Creates the combat menu entities and resources required on state entry.
 pub fn setup_combat_menu(
     mut commands: Commands,
@@ -208,6 +267,7 @@ pub fn setup_combat(
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
+    session: Res<MultiplayerSession>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     window: Single<&Window>,
@@ -257,8 +317,7 @@ pub fn setup_combat(
                      units: Vec<(Unit, usize)>,
                      side: Side,
                      y_start: f32,
-                     y_end: f32,
-                     color: Color| {
+                     y_end: f32| {
         let total = units.len() as f32;
         let total_width = spacing * (total - 1.0);
         for (i, (u, c)) in units.iter().enumerate() {
@@ -329,7 +388,7 @@ pub fn setup_combat(
                         Transform::from_xyz(0., -size * 0.69, 0.1),
                         children![(
                             Sprite {
-                                color,
+                                color: HEALTH_COLOR,
                                 custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
                                 ..default()
                             },
@@ -352,11 +411,40 @@ pub fn setup_combat(
         }
     };
 
-    let (attack_c, defend_c) = if report.mission.owner == player.id {
-        (OWN_COLOR, ENEMY_COLOR)
-    } else {
-        (ENEMY_COLOR, OWN_COLOR)
-    };
+    let attacker_id = report.mission.owner;
+    let defender_id = report.planet.controlled.or(report.planet.owned);
+    let attack_c = session.player_color(attacker_id).color();
+    let defend_c =
+        defender_id.map_or(Color::srgb_u8(150, 158, 170), |id| session.player_color(id).color());
+    let attacker_name = session
+        .player_name(attacker_id)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("Player {attacker_id}"));
+    let defender_name = defender_id.map_or_else(
+        || "Neutral defenses".to_string(),
+        |id| session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}")),
+    );
+
+    spawn_combat_identity(
+        &mut commands,
+        "Attacker",
+        &attacker_name,
+        attack_c,
+        Some(18.0),
+        None,
+        &assets,
+        &window,
+    );
+    spawn_combat_identity(
+        &mut commands,
+        "Defender",
+        &defender_name,
+        defend_c,
+        None,
+        Some(52.0),
+        &assets,
+        &window,
+    );
 
     let attacking = Unit::all()
         .into_iter()
@@ -367,14 +455,7 @@ pub fn setup_combat(
         })
         .collect::<Vec<_>>();
 
-    spawn_row(
-        &mut commands,
-        attacking,
-        Side::Attacker,
-        pos.y + height * 0.8,
-        pos.y + height * 0.4,
-        attack_c,
-    );
+    spawn_row(&mut commands, attacking, Side::Attacker, pos.y + height * 0.8, pos.y + height * 0.4);
 
     let defending_def = Unit::defenses()
         .into_iter()
@@ -419,7 +500,6 @@ pub fn setup_combat(
         Side::Defender,
         pos.y - height * 0.7,
         pos.y - height * 0.36,
-        defend_c,
     );
     spawn_row(
         &mut commands,
@@ -427,7 +507,6 @@ pub fn setup_combat(
         Side::Defender,
         pos.y - height * 0.7,
         pos.y - height * ship_y,
-        defend_c,
     );
 
     // Spawn Planetary Shield image

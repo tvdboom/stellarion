@@ -60,6 +60,39 @@ players can build on a controlled moon. Moons only have a limited number of fiel
 build. Increasing the level of the Lunar Base increases the number of fields. Moons don't have 
 defenses.
 
+### Mission types
+
+- **Deploy:** Move a fleet to another planet or moon you control.
+- **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet; moons
+  cannot be colonized. The Colony Ship is consumed. An empty planet receives level-one Metal,
+  Crystal, and Deuterium mines; an owned planet can produce resources and construct buildings.
+- **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
+  control, but not ownership. The previous owner loses both ownership and control, while surviving
+  buildings remain.
+- **Spy:** Send only Probes. Unless `combat probes` is enabled, they leave after the first combat
+  round; more returning Probes reveal better intelligence. Spy missions cannot be detected by a
+  Sensor Phalanx and do not reveal their origin.
+- **Missile Strike:** Launch only Interplanetary Missiles against a planet, not a moon. They bypass
+  ships and the Planetary Shield to hit defenses directly, and surviving missiles are consumed. A
+  launched strike still hits if the destination later becomes friendly, reveals no enemy-unit
+  intelligence, cannot be detected by a Sensor Phalanx, and does not reveal its origin.
+- **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
+  enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet; the
+  chance falls in later rounds. The fleet returns whether or not destruction succeeds, and a
+  destroyed planet can never be colonized again.
+
+A **Jump Gate** modifies an eligible mission rather than being a separate objective. Travel between
+owned planets with gates takes one turn and no fuel, regardless of fleet composition; the origin
+gate's level limits how much fleet production can pass through it that turn.
+
+### Saved multiplayer games
+
+Starting a game permanently assigns the creator as host and every other member to the same client
+slot. Resuming never transfers the host role. Any member can open the saved game, but everyone first
+returns to a reconnect lobby; clients wait there until the original host reconnects and resumes the
+match for all connected players. The Resume Game list shows when each authoritative snapshot was
+last saved.
+
 ### Units
 
 You can build three types of units on an owned planet:

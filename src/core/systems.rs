@@ -14,7 +14,7 @@ use crate::core::settings::Settings;
 use crate::core::simulation::{preview_commands, TurnCommand};
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::StartTurnMsg;
-use crate::core::ui::systems::{MissionTab, Shop, UiState};
+use crate::core::ui::systems::{MissionTab, UiState};
 use crate::multiplayer::client::MultiplayerRequest;
 #[cfg(debug_assertions)]
 use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
@@ -279,29 +279,9 @@ pub fn check_keys(
         if mouse.just_pressed(MouseButton::Back)
             || (shift_pressed && keyboard.just_pressed(KeyCode::Tab))
         {
-            state.shop = match &state.shop {
-                Shop::Buildings => {
-                    if planet.is_moon() {
-                        Shop::Fleet
-                    } else {
-                        Shop::Defenses
-                    }
-                },
-                Shop::Fleet => Shop::Buildings,
-                Shop::Defenses => Shop::Fleet,
-            };
+            state.shop = state.shop.previous(planet.is_moon());
         } else if mouse.just_pressed(MouseButton::Forward) || keyboard.just_pressed(KeyCode::Tab) {
-            state.shop = match &state.shop {
-                Shop::Buildings => Shop::Fleet,
-                Shop::Fleet => {
-                    if planet.is_moon() {
-                        Shop::Buildings
-                    } else {
-                        Shop::Defenses
-                    }
-                },
-                Shop::Defenses => Shop::Buildings,
-            };
+            state.shop = state.shop.next(planet.is_moon());
         }
     }
 }

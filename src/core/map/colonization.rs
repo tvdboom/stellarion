@@ -22,6 +22,42 @@ use crate::multiplayer::client::MultiplayerSession;
 const CELEBRATION_SECONDS: f32 = 4.2;
 const WAVE_BANDS: usize = 4;
 
+#[derive(Clone, Copy)]
+enum ColonyEvent {
+    Colonized,
+    Conquered,
+}
+
+impl ColonyEvent {
+    fn for_world(player: &Player, planet: PlanetId, turn: usize) -> Self {
+        if player.reports.iter().rev().any(|report| {
+            report.turn == turn
+                && report.mission.destination == planet
+                && report.mission.owner == player.id
+                && report.planet_colonized
+                && report.planet.has_buildings()
+        }) {
+            Self::Conquered
+        } else {
+            Self::Colonized
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Colonized => "PLANET COLONIZED",
+            Self::Conquered => "PLANET CONQUERED",
+        }
+    }
+
+    fn message(self, planet: &Planet) -> String {
+        match self {
+            Self::Colonized => format!("Planet {} has been colonized.", planet.name),
+            Self::Conquered => format!("Planet {} has been conquered.", planet.name),
+        }
+    }
+}
+
 /// Remembers ownership across projections, including immediate local command previews.
 #[derive(Resource, Default)]
 struct Colonies {
@@ -125,10 +161,10 @@ fn celebrate_colonies(
         let Some(planet) = map.try_get(id).filter(|planet| player.owns(planet)) else {
             continue;
         };
+        let event = ColonyEvent::for_world(&player, id, settings.turn);
         colonies.announced.insert(id);
         messages.write(
-            MessageMsg::info(format!("Colony established in {}.", planet.name))
-                .with_action(MessageAction::FocusColony(id)),
+            MessageMsg::info(event.message(planet)).with_action(MessageAction::FocusColony(id)),
         );
         let boundary = cells.iter().find(|(cell, _)| cell.0 == id).and_then(|(_, mesh)| {
             let positions =
@@ -138,6 +174,7 @@ fn celebrate_colonies(
         spawn_celebration(
             &mut commands,
             planet,
+            event,
             session.player_color(player.id).color(),
             boundary,
             &mut meshes,
@@ -150,6 +187,7 @@ fn celebrate_colonies(
 fn spawn_celebration(
     commands: &mut Commands,
     planet: &Planet,
+    event: ColonyEvent,
     color: Color,
     boundary: Option<Vec<Vec2>>,
     meshes: &mut Assets<Mesh>,
@@ -217,7 +255,7 @@ fn spawn_celebration(
                 ));
             }
             parent.spawn((
-                Text2d::new("COLONY ESTABLISHED"),
+                Text2d::new(event.label()),
                 TextFont {
                     font: assets.font("bold").into(),
                     font_size: 17.0.into(),
@@ -296,7 +334,7 @@ fn advance_wave(mesh: &mut Mesh, boundary: &[Vec2], radius: f32) {
     else {
         return;
     };
-    for (edge, vertices) in boundary.iter().zip(positions.chunks_exact_mut(WAVE_BANDS)) {
+    for (edge, vertices) in boundary.iter().zip(positions.as_chunks_mut::<WAVE_BANDS>().0) {
         let distance = edge.length();
         let direction = edge.normalize_or_zero();
         for (vertex, offset) in vertices.iter_mut().zip([150.0, 75.0, 18.0, 0.0]) {
