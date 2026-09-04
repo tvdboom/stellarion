@@ -108,6 +108,11 @@ create index stellarion_finished_games_expiry
     on public.stellarion_games (finished_at)
     where status = 'finished';
 
+-- All games, including lobbies, expire 30 days after their last snapshot save.
+-- Presence, recovery, and notification traffic do not extend this deadline.
+create index stellarion_saved_games_expiry
+    on public.stellarion_games (saved_at);
+
 create table public.stellarion_game_players (
     game_id uuid not null references public.stellarion_games(id) on delete cascade,
     player_id bigint not null,
@@ -809,6 +814,7 @@ as $$
     join public.stellarion_game_players as mine
       on mine.game_id = g.id and mine.user_id = auth.uid()
     where g.status <> 'lobby'
+      and g.saved_at > statement_timestamp() - interval '30 days'
       and (g.status <> 'finished'
            or g.finished_at is null
            or g.finished_at > statement_timestamp() - interval '48 hours');
@@ -1623,6 +1629,8 @@ end;
 $$;
 
 -- Delete expired games even when no client opens the resume overview.
+-- Run every minute: any game expires 30 days after its last save; finished
+-- games also expire 48 hours after completion, whichever deadline comes first.
 -- Foreign keys also delete their players, recovery hashes, turns, and events.
 create function public.stellarion_delete_expired_games()
 returns bigint
@@ -1631,8 +1639,9 @@ set search_path = pg_catalog, public
 as $$
     with deleted as (
         delete from public.stellarion_games
-         where status = 'finished'
-           and finished_at <= statement_timestamp() - interval '48 hours'
+         where saved_at <= statement_timestamp() - interval '30 days'
+            or (status = 'finished'
+                and finished_at <= statement_timestamp() - interval '48 hours')
         returning id
     )
     select count(*) from deleted;
@@ -1643,7 +1652,7 @@ revoke all on function public.stellarion_delete_expired_games()
     from public, anon, authenticated;
 
 select cron.schedule(
-    'stellarion-delete-finished-games',
+    'stellarion-delete-expired-games',
     '* * * * *',
     'select public.stellarion_delete_expired_games();'
 );

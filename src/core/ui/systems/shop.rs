@@ -149,6 +149,7 @@ fn draw_unit_hover(
                         ));
 
                     if response.clicked()
+                        && state.lab_amount > 0
                         && pending.push(TurnCommand::ConvertResources {
                             planet_id,
                             from: *from,
@@ -290,7 +291,7 @@ pub(super) fn draw_shop(
 
                 let purchase = purchase_limit(player, planet, *unit);
                 let limit = purchase.as_ref().copied().unwrap_or(0);
-                ui.add_enabled_ui(limit > 0 && pending.is_editable(), |ui| {
+                ui.add_enabled_ui(limit > 0 && pending.can_accept_commands(), |ui| {
                     ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
 
                     let mut response =

@@ -365,6 +365,47 @@ fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
 }
 
 #[test]
+fn last_save_retention_applies_to_every_game_status() {
+    let backend = InMemoryBackend::new();
+    let (session, recovery) = identity(&backend);
+    for status in [MatchStatus::Lobby, MatchStatus::Active, MatchStatus::Finished] {
+        for days in [29, 30, 31] {
+            let created = create(&backend, &session, &recovery, 2);
+            {
+                let mut state = backend.lock().unwrap();
+                let stored = state.games.get_mut(&created.game.id).unwrap();
+                stored.record.status = status;
+                stored.record.persisted.state.status = status;
+                stored.record.saved_at = current_unix_timestamp() - days * 24 * 60 * 60;
+                stored.finished_at = (status == MatchStatus::Finished).then(Instant::now);
+            }
+            let loaded = block_on(backend.load_game(&session, &created.game.id));
+            if days < 30 {
+                assert!(loaded.is_ok());
+            } else {
+                assert!(matches!(loaded, Err(BackendError::GameNotFound)));
+                assert!(!backend.lock().unwrap().codes.contains_key(&created.game.code));
+            }
+        }
+    }
+    assert_eq!(backend.lock().unwrap().games.len(), 3);
+}
+
+#[test]
+fn only_snapshot_saves_extend_save_retention() {
+    let backend = InMemoryBackend::new();
+    let (session, recovery) = identity(&backend);
+    let created = create(&backend, &session, &recovery, 2);
+    let old_save = current_unix_timestamp() - 29 * 24 * 60 * 60;
+    backend.lock().unwrap().games.get_mut(&created.game.id).unwrap().record.saved_at = old_save;
+    block_on(backend.set_connected(&session, &created.game.id, true)).unwrap();
+    let loaded = block_on(backend.load_game(&session, &created.game.id)).unwrap();
+    assert_eq!(loaded.saved_at, old_save);
+    block_on(backend.save_game(&session, &loaded.id, loaded.revision, loaded.persisted)).unwrap();
+    assert!(backend.lock().unwrap().games[&created.game.id].record.saved_at > old_save);
+}
+
+#[test]
 /// Recovery replaces the user, rotates the secret, and invalidates old access.
 fn recovers_from_another_identity_and_rotates_code() {
     let backend = InMemoryBackend::new();

@@ -1275,6 +1275,7 @@ fn apply_output(
                 if !draft.commands.is_empty() || pending.commands.is_empty() {
                     pending.commands = draft.commands;
                 }
+                pending.commands.append(&mut pending.queued_commands);
                 pending.generation = draft.generation;
                 pending.submission = SubmissionState::Draft;
                 pending.resume_requested = false;
@@ -1757,7 +1758,7 @@ fn record_requires_gameplay_install(previous: Option<&GameRecord>, next: &GameRe
     })
 }
 
-/// Recovers saved orders or clears readiness after a planet/Continue turn interaction.
+/// Recovers saved orders or clears readiness after a gameplay action or Continue turn interaction.
 /// Serialize this with ready writes so their payload stays fixed until delivery completes.
 fn drive_turn_draft(
     runtime: Res<ClientRuntime>,
@@ -1902,10 +1903,13 @@ fn drive_reload(
 /// Attempts deterministic resolution after submission events; compare-and-swap accepts one winner.
 fn drive_resolution(
     runtime: Res<ClientRuntime>,
+    pending: Res<PendingTurnCommands>,
     mut session: ResMut<MultiplayerSession>,
     mut tasks: ResMut<BackendTasks>,
 ) {
-    if !session.resolve_needed
+    if pending.resume_requested
+        || !pending.queued_commands.is_empty()
+        || !session.resolve_needed
         || session.reconnect_lobby
         || session.resolving
         || !tasks.0.is_empty()

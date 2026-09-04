@@ -25,7 +25,8 @@ actual code, `Cargo.toml`, and `Justfile` when the project changes.
 - Preserve the current retention rule: finished games are permanently deleted
   after 48 hours, including their memberships, recovery hashes, submissions,
   and events. The database cleanup job runs every minute. Lobby and active
-  games do not expire under this rule.
+  games also expire 30 days after their last snapshot save, as do finished games
+  if that deadline arrives first. Presence and reconnects do not extend retention.
 - Explain database setup and behavior in comments in `supabase/schema.sql`.
   Do not add a README inside `supabase/`. Report local SQL verification
   separately from actually applying a hosted reset.

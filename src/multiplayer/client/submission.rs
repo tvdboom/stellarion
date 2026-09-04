@@ -31,6 +31,8 @@ pub struct PendingTurnCommands {
     pub turn: u64,
     /// Intentional commands in local interaction order.
     pub commands: Vec<TurnCommand>,
+    /// New orders projected locally while the previous submission is being withdrawn.
+    pub queued_commands: Vec<TurnCommand>,
     /// Orders readiness changes so delayed network requests cannot restore an old decision.
     pub generation: u64,
     /// Whether the payload can be edited, sent, or retried.
@@ -53,6 +55,11 @@ impl PendingTurnCommands {
         self.submission == SubmissionState::Draft
     }
 
+    /// Whether gameplay actions can be accepted, automatically withdrawing readiness if needed.
+    pub fn can_accept_commands(&self) -> bool {
+        self.submission != SubmissionState::Loading
+    }
+
     /// Queues a return to editing without racing an in-flight ready request.
     pub fn request_resume(&mut self) {
         if !self.is_editable() {
@@ -71,12 +78,19 @@ impl PendingTurnCommands {
         true
     }
 
-    /// Appends an intent only while the bounded draft is editable.
+    /// Accepts an intent and clears readiness, preserving the immutable submitted payload.
     pub fn push(&mut self, command: TurnCommand) -> bool {
-        if !self.is_editable() || self.commands.len() >= MAX_COMMANDS_PER_SUBMISSION {
+        if !self.can_accept_commands()
+            || self.commands.len() + self.queued_commands.len() >= MAX_COMMANDS_PER_SUBMISSION
+        {
             return false;
         }
-        self.commands.push(command);
+        if self.is_editable() {
+            self.commands.push(command);
+        } else {
+            self.queued_commands.push(command);
+            self.request_resume();
+        }
         true
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 
 /// Creates and starts a deterministic model for unit tests.
@@ -13,6 +14,32 @@ fn started_model(player_count: u8) -> GameModel {
     .unwrap();
     model.start().unwrap();
     model
+}
+
+#[test]
+fn every_home_planet_starts_with_five_rocket_launchers() {
+    for player_count in 1..=4 {
+        let mut model = GameModel::new(
+            [player_count; 32],
+            GameRules {
+                player_count,
+                practice_mode: player_count == 1,
+                ..GameRules::default()
+            },
+        )
+        .unwrap();
+        model.start().unwrap();
+        for player in &model.players {
+            assert_eq!(
+                model
+                    .map
+                    .get(player.home_planet)
+                    .army
+                    .amount(&Unit::Defense(Defense::RocketLauncher)),
+                5
+            );
+        }
+    }
 }
 
 #[test]
@@ -123,7 +150,7 @@ fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
                 if unit.is_building() {
                     Building::MAX_LEVEL
                 } else {
-                    3
+                    model.map.get(home).army.amount(&unit) + 3
                 }
             } else {
                 0
@@ -377,6 +404,70 @@ fn departing_planets_and_moons_release_control_only_when_vacant() {
                 "control must match the buildings and ships left on world {world_id}"
             );
         }
+    }
+}
+
+#[test]
+fn colonize_missions_preserve_intent_through_friendly_ownership_changes() {
+    for (owned_midway, owned_on_arrival) in [(false, false), (true, false), (true, true)] {
+        let mut model = started_model(2);
+        let player = model.players[0].clone();
+        let origin = model.map.get(player.home_planet).clone();
+        let destination = model
+            .map
+            .planets()
+            .into_iter()
+            .find(|planet| planet.controlled.is_none())
+            .unwrap()
+            .clone();
+        let mut mission = Mission::new_with_id(
+            71,
+            model.turn as usize,
+            player.id,
+            &origin,
+            &destination,
+            Icon::Colonize,
+            Army::from([(Unit::colony_ship(), 1)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position =
+            destination.position + bevy::math::Vec2::X * Planet::SIZE * mission.speed() * 5.0;
+        model.missions.push(mission);
+        let fighter = Unit::Ship(Ship::LightFighter);
+        let target = model.map.get_mut(destination.id);
+        target.controlled = Some(player.id);
+        target.owned = owned_midway.then_some(player.id);
+        target.army = Army::from([(fighter, 3)]);
+
+        let submissions = model
+            .players
+            .iter()
+            .map(|candidate| TurnSubmission::new(candidate.id, model.turn, Vec::new()))
+            .collect::<Vec<_>>();
+        resolve_turn(&mut model, &submissions).unwrap();
+        assert_eq!(model.missions[0].objective, Icon::Colonize);
+
+        model.map.get_mut(destination.id).owned = owned_on_arrival.then_some(player.id);
+        model.missions[0].position = destination.position;
+        let submissions = model
+            .players
+            .iter()
+            .map(|candidate| TurnSubmission::new(candidate.id, model.turn, Vec::new()))
+            .collect::<Vec<_>>();
+        resolve_turn(&mut model, &submissions).unwrap();
+
+        let target = model.map.get(destination.id);
+        assert_eq!(target.owned, Some(player.id));
+        assert_eq!(target.controlled, Some(player.id));
+        assert_eq!(target.army.amount(&fighter), 3);
+        assert_eq!(target.army.amount(&Unit::colony_ship()), usize::from(owned_on_arrival));
+        assert!(model.missions.is_empty());
+        let report = model.players[0].reports.last().unwrap();
+        assert_eq!(report.mission.objective, Icon::Colonize);
+        assert_eq!(report.planet_colonized, !owned_on_arrival);
     }
 }
 

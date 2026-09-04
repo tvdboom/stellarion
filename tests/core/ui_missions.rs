@@ -151,7 +151,7 @@ fn report_thumbnail_size_changes_only_for_selection() {
 
 #[test]
 fn report_list_top_padding_keeps_the_outside_hover_stroke_visible() {
-    assert!(MISSION_REPORT_LIST_TOP_PADDING >= MISSION_REPORT_HOVER_STROKE_WIDTH * 0.5);
+    const { assert!(MISSION_REPORT_LIST_TOP_PADDING >= MISSION_REPORT_HOVER_STROKE_WIDTH * 0.5) };
 }
 
 #[test]

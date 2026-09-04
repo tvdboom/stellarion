@@ -123,9 +123,13 @@ impl Colonies {
             }
         }
         for &planet in self.owned.difference(&owned) {
-            let was_abandoned = pending_commands.commands.iter().any(|command| {
-                matches!(command, TurnCommand::AbandonPlanet { planet_id } if *planet_id == planet)
-            });
+            let was_abandoned = pending_commands
+                .commands
+                .iter()
+                .chain(&pending_commands.queued_commands)
+                .any(|command| {
+                    matches!(command, TurnCommand::AbandonPlanet { planet_id } if *planet_id == planet)
+                });
             if was_abandoned && !self.announced.contains(&(planet, ColonyAnnouncement::Abandoned)) {
                 changed |= self.pending.insert(planet, ColonyEvent::Abandoned)
                     != Some(ColonyEvent::Abandoned);

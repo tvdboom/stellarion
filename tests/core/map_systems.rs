@@ -133,7 +133,7 @@ fn scenery_uses_all_corners_and_keeps_most_of_the_large_sun_beyond_the_playfield
     assert!((black_hole.x - opposite_edge_x) * corner.x > 0.0);
     assert!((black_hole.x - map.rect.center().x) * corner.x < 0.0);
     assert!((map.rect.min.y..=map.rect.max.y).contains(&black_hole.y));
-    assert!(BLACK_HOLE_SIZE.x < SOLAR_STAR_SIZE * 0.5);
+    const { assert!(BLACK_HOLE_SIZE.x < SOLAR_STAR_SIZE * 0.5) };
 
     for sample in 0..=200 {
         let elapsed = sample as f32 * SOLAR_STAR_FRAME_SECONDS / 20.0;

@@ -925,13 +925,13 @@ fn draw_active_missions(
 
     ui.add_space(30.);
 
+    // The panel artwork includes a border; keep both the viewport and its scrollbar inside it.
+    let mut frame = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(16, 0)).begin(ui);
     ScrollArea::vertical()
-        // Occupy the panel's full content width. Reserving trailing width here biases the whole
-        // mission row left, which is especially obvious in the origin planet column.
-        .max_width(ui.available_width())
+        .max_width(frame.content_ui.available_width())
         .auto_shrink([false, false])
-        .max_height(ui.available_height() - 50.)
-        .show(ui, |ui| {
+        .max_height(frame.content_ui.available_height() - 50.)
+        .show(&mut frame.content_ui, |ui| {
             let available_width = ui.available_width();
             let (route_column_width, leading_space) = mission_row_layout(available_width);
             let route_preview_width = (route_column_width - 82.0).max(220.0);
@@ -1083,6 +1083,7 @@ fn draw_active_missions(
                     });
             });
         });
+    frame.end(ui);
 }
 
 /// Draws the mission reports interface and emits any resulting local actions.

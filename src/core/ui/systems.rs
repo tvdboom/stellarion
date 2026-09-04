@@ -1502,8 +1502,10 @@ fn draw_planet_overview(
     });
 
     if !planet.is_moon() {
-        let owned = pending.is_editable() && player.owns(planet) && player.home_planet != planet.id;
-        let controlled = pending.is_editable() && player.controls(planet) && !player.owns(planet);
+        let owned =
+            pending.can_accept_commands() && player.owns(planet) && player.home_planet != planet.id;
+        let controlled =
+            pending.can_accept_commands() && player.controls(planet) && !player.owns(planet);
 
         let size = egui::vec2(40., 40.);
         let pos = rect.left_bottom() - egui::vec2(-20., size.y + 7.);
@@ -2813,7 +2815,7 @@ pub fn draw_ui(
                     is_hovered,
                     &keyboard,
                     &images,
-                    pending.is_editable(),
+                    pending.can_accept_commands(),
                 )
             },
         );
@@ -2895,7 +2897,7 @@ pub fn draw_ui(
 
     if let Some(id) = state.abandon_confirmation {
         let planet = map.get(id);
-        let can_abandon = pending.is_editable()
+        let can_abandon = pending.can_accept_commands()
             && !planet.is_moon()
             && player.owns(planet)
             && player.home_planet != id

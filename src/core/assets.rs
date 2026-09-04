@@ -326,7 +326,7 @@ impl WorldAssets {
                 &mut self.images,
                 &mut self.gameplay_handles,
                 &name,
-                &format!("images/animations/{name}.basisu.ktx2"),
+                &format!("images/ambient/{name}.basisu.ktx2"),
             );
         }
         load_linear_image(

@@ -90,7 +90,7 @@ assert.deepEqual(
   (await db.query("select jobname from cron.job order by jobname")).rows.map(
     (row) => row.jobname,
   ),
-  ["external-job", "stellarion-delete-finished-games"],
+  ["external-job", "stellarion-delete-expired-games"],
 );
 assert.equal(
   (await db.query("select count(*)::int as n from cron.job_run_details"))
@@ -98,7 +98,7 @@ assert.equal(
   1,
 );
 const job = (await db.query(
-  "select * from cron.job where jobname = 'stellarion-delete-finished-games'",
+  "select * from cron.job where jobname = 'stellarion-delete-expired-games'",
 )).rows[0];
 assert.equal(job.schedule, "* * * * *");
 assert.equal(job.command, "select public.stellarion_delete_expired_games();");
@@ -158,6 +158,44 @@ for (const role of ["anon", "authenticated"]) {
 console.log(
   "Current cleanup command, 48-hour cutoff, cascading deletion, and restricted cleanup permissions passed.",
 );
+
+// Cross both deadlines for every lifecycle state. Recent presence must not keep
+// an old snapshot alive, and recent completion must not override save expiry.
+await db.exec(`
+  delete from public.stellarion_games;
+  insert into public.stellarion_games
+    (id, code, created_by, max_players, status, persisted_schema_version,
+     state, current_turn, created_at, saved_at, updated_at, finished_at)
+  select ('20000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
+    lpad(i::text, 6, '0'), '00000000-0000-0000-0000-000000000001', 2,
+    case when i <= 3 then 'lobby' when i <= 6 then 'active' else 'finished' end,
+    1, '{}'::jsonb, 7, now() - interval '90 days',
+    now() - case when i % 3 = 1 then interval '29 days'
+                when i % 3 = 2 then interval '30 days'
+                else interval '31 days' end,
+    now(), case when i >= 7 then now() - interval '1 day' else null end
+  from generate_series(1, 9) i;
+  insert into public.stellarion_game_players
+    (game_id, player_id, user_id, display_name, recovery_hash, is_creator)
+  select id, 1, created_by, 'Tester', repeat('a', 64), true from public.stellarion_games;
+  insert into public.stellarion_turn_submissions (game_id, turn, player_id, submission, digest)
+  select game_id, 7, player_id, '{}'::jsonb, repeat('b', 64) from public.stellarion_game_players;
+  insert into public.stellarion_game_events (game_id, sequence, kind)
+  select id, 1, 'state_changed' from public.stellarion_games;
+  select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
+`);
+const retained = (await db.query("select public.stellarion_list_games() as result")).rows[0].result;
+assert.deepEqual(retained.map(game => game.code).sort(), ["000004", "000007"]);
+assert.equal((await db.query(job.command)).rows[0].stellarion_delete_expired_games, 6);
+assert.deepEqual(
+  (await db.query("select code from public.stellarion_games order by code")).rows.map(row => row.code),
+  ["000001", "000004", "000007"],
+);
+for (const table of ["stellarion_game_players", "stellarion_turn_submissions", "stellarion_game_events"]) {
+  assert.equal((await db.query(`select count(*)::int as n from public.${table}`)).rows[0].n, 3);
+}
+assert.equal((await db.query(job.command)).rows[0].stellarion_delete_expired_games, 0);
+console.log("30-day last-save cutoff across all statuses, resume filtering, and cascading cleanup passed.");
 
 // Exercise the same authenticated RPCs as native/browser clients, without a
 // service-role dispatcher, server runtime, Docker, or any hosted connection.

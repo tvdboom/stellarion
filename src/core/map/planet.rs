@@ -14,6 +14,7 @@ use crate::core::constants::{
 use crate::core::identity::PlayerId;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
 use crate::core::units::{Amount, Army, Unit};
 
 /// Stable index identifying a planet inside one persisted map.
@@ -317,6 +318,7 @@ impl Planet {
             (Unit::Building(Building::DeuteriumSynthesizer), 1),
             (Unit::Building(Building::Shipyard), 1),
             (Unit::Building(Building::Factory), 1),
+            (Unit::Defense(Defense::RocketLauncher), 5),
         ]);
     }
 

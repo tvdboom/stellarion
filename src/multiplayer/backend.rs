@@ -135,7 +135,8 @@ pub trait MultiplayerBackend: Send + Sync {
         request: RecoverPlayerRequest,
     ) -> BackendFuture<'a, MembershipResult>;
 
-    /// Lists started games only; games completed at least 48 hours ago expire and are deleted.
+    /// Lists started games only; games expire 30 days after their last save or
+    /// 48 hours after completion, whichever comes first.
     fn list_games<'a>(&'a self, session: &'a AuthSession) -> BackendFuture<'a, Vec<GameSummary>>;
 
     /// Loads the latest authoritative persisted state and membership list.

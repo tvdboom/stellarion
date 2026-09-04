@@ -98,7 +98,8 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
             scout_probes: 0,
             surviving_attacker: mission.army.clone(),
             surviving_defender: destination.army.clone(),
-            planet_colonized: mission.objective == Icon::Colonize,
+            planet_colonized: mission.objective == Icon::Colonize
+                && destination.owned != Some(mission.owner),
             planet_destroyed: false,
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,

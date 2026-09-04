@@ -374,7 +374,7 @@ pub fn send_mission(
             crate::core::orders::validate_mission(&player, origin, destination, mission).is_ok()
         });
         if !valid
-            || !pending.is_editable()
+            || !pending.can_accept_commands()
             || mission.fuel_consumption(&map) > player.resources.deuterium
         {
             message.write(MessageMsg::error(

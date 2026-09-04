@@ -360,7 +360,6 @@ fn normalized(path: &Path) -> Result<String, String> {
 fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
         || source_relative.ends_with(" large.png")
-        || source_relative.starts_with("images/animations/solar star ")
         || source_relative.starts_with("images/ambient/")
 }
 

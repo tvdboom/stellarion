@@ -1292,9 +1292,9 @@ fn next_unique_mission_id<R: Rng + ?Sized>(
 fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_percent: usize) {
     let old_objective = mission.objective;
     let destination = map.get(mission.destination);
-    if (destination.controlled == Some(mission.owner)
-        && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike | Icon::Colonize))
-        || (destination.owned == Some(mission.owner) && mission.objective == Icon::Colonize)
+    // Colonization intent survives friendly ownership changes while the fleet travels.
+    if destination.controlled == Some(mission.owner)
+        && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike | Icon::Colonize)
     {
         mission.objective = Icon::Deploy;
     }
@@ -1304,7 +1304,10 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
     let owned = map.planets.iter().filter(|planet| planet.owned == Some(mission.owner)).count();
     let max_owned =
         (map.planets().len() as f32 * colonizable_percent as f32 / 100.0).ceil() as usize;
-    if mission.objective == Icon::Colonize && owned >= max_owned {
+    if mission.objective == Icon::Colonize
+        && destination.owned != Some(mission.owner)
+        && owned >= max_owned
+    {
         mission.objective = if destination.controlled == Some(mission.owner) {
             Icon::Deploy
         } else {

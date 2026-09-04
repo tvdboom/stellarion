@@ -97,12 +97,13 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
     let pending = app.world().resource::<PendingTurnCommands>();
     assert_eq!(pending.submission, SubmissionState::Accepted);
     assert_eq!(pending.commands.len(), 1, "saved orders survive opening the game");
-    app.world_mut().resource_mut::<PendingTurnCommands>().request_resume();
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(order));
     settle(&mut app);
-    let mut pending = app.world_mut().resource_mut::<PendingTurnCommands>();
+    let pending = app.world().resource::<PendingTurnCommands>();
     assert!(pending.is_editable());
-    assert_eq!(pending.commands.len(), 1);
-    assert!(pending.push(order));
+    assert_eq!(pending.commands.len(), 2);
+    assert!(pending.queued_commands.is_empty());
+    assert!(block_on(backend.load_game(&guest, &active.id)).unwrap().submitted_players.is_empty());
     app.world_mut().write_message(MultiplayerRequest::SubmitTurn);
     settle(&mut app);
     assert_eq!(block_on(backend.load_game(&guest, &active.id)).unwrap().submitted_players, vec![1]);

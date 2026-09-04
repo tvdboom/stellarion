@@ -875,18 +875,13 @@ pub fn draw_map(
             .observe(
                 move |event: On<Pointer<Click>>,
                       mut state: ResMut<UiState>,
-                      mut pending: ResMut<crate::multiplayer::client::PendingTurnCommands>,
                       settings: Res<Settings>,
                       map: Res<Map>,
                       player: Res<Player>| {
                     let planet = map.get(planet_id);
                     if event.button == PointerButton::Primary {
-                        state.end_turn = false;
-                        pending.request_resume();
                         select_planet(planet, &mut state, &player);
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
-                        state.end_turn = false;
-                        pending.request_resume();
                         state.mission = true;
                         state.combat_report = None;
                         state.mission_tab = MissionTab::NewMission;

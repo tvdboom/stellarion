@@ -30,6 +30,9 @@ use crate::multiplayer::recovery::generate_user_token;
 /// How long completed games and their related records are retained.
 const FINISHED_GAME_RETENTION: Duration = Duration::from_secs(48 * 60 * 60);
 
+/// Maximum age of the last snapshot save for any game, including lobbies.
+const SAVED_GAME_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 #[cfg(not(target_arch = "wasm32"))]
 fn current_unix_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -83,9 +86,11 @@ impl InMemoryBackend {
         let mut state = self.inner.lock().map_err(|_| {
             BackendError::Protocol("in-memory backend lock was poisoned".to_string())
         })?;
+        let timestamp = current_unix_timestamp();
         state.games.retain(|_, stored| {
-            stored.record.status != MatchStatus::Finished
-                || stored.finished_at.is_none_or(|at| at.elapsed() < FINISHED_GAME_RETENTION)
+            timestamp.saturating_sub(stored.record.saved_at) < SAVED_GAME_RETENTION.as_secs()
+                && (stored.record.status != MatchStatus::Finished
+                    || stored.finished_at.is_none_or(|at| at.elapsed() < FINISHED_GAME_RETENTION))
         });
         // Project the heartbeat lease on every access, including loads and resume checks.
         // A client that vanishes cannot leave its saved connection flag true forever.
