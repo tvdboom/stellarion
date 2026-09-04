@@ -37,6 +37,7 @@ pub(crate) fn suspend_gameplay_interactions(
     }
     if let Some(state) = state.as_mut() {
         state.planet_hover = None;
+        state.mission_planet_hover = None;
         state.mission_hover = None;
         state.mission_hover_from_ui = false;
         state.combat_report_hover = None;
@@ -287,7 +288,7 @@ pub fn check_keys(
 }
 
 #[cfg(debug_assertions)]
-/// Queues and previews the practice shortcut so subsequent orders use the same canonical draft.
+/// Queues and previews the testing shortcut so subsequent orders use the same canonical draft.
 pub fn debug_cheat_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut map: ResMut<Map>,
@@ -297,11 +298,7 @@ pub fn debug_cheat_keys(
     mut messages: MessageWriter<crate::core::messages::MessageMsg>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    if !ctrl_pressed
-        || !keyboard.just_pressed(KeyCode::ArrowUp)
-        || !session.local_practice
-        || !pending.is_editable()
-    {
+    if !ctrl_pressed || !keyboard.just_pressed(KeyCode::ArrowUp) || !pending.is_editable() {
         return;
     }
     let Some(record) = &session.active_game else {

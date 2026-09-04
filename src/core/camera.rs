@@ -14,8 +14,29 @@ use crate::core::ui::systems::UiState;
 pub struct MainCamera;
 
 #[derive(Component)]
-/// Marker for backgrounds that move at a reduced camera rate.
-pub struct ParallaxCmp;
+/// Presentation settings for a map layer that follows the camera at a reduced rate.
+pub struct ParallaxCmp {
+    /// Fraction of camera translation inherited by the layer.
+    pub camera_follow: f32,
+    /// Scale applied before responding to orthographic zoom.
+    pub base_scale: f32,
+    /// Exponent controlling how strongly the layer responds to zoom.
+    pub zoom_power: f32,
+    /// Slow world-space drift, measured in pixels per second.
+    pub drift: Vec2,
+}
+
+impl ParallaxCmp {
+    /// Creates a parallax layer with explicit depth, zoom, and drift behavior.
+    pub const fn new(camera_follow: f32, base_scale: f32, zoom_power: f32, drift: Vec2) -> Self {
+        Self {
+            camera_follow,
+            base_scale,
+            zoom_power,
+            drift,
+        }
+    }
+}
 
 /// Clamps camera translation so the visible viewport remains inside the map.
 pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
@@ -44,7 +65,6 @@ pub fn move_camera(
         With<MainCamera>,
     >,
     planet_q: Query<(&Transform, &PlanetCmp), (Without<MainCamera>, Without<ParallaxCmp>)>,
-    mut parallax_q: Query<&mut Transform, (With<ParallaxCmp>, Without<MainCamera>)>,
     map: Res<Map>,
     mut state: ResMut<UiState>,
     mut scroll_msg: MessageReader<MouseWheel>,
@@ -122,13 +142,6 @@ pub fn move_camera(
         state.to_selected = false;
         state.focus_planet = None;
     }
-
-    for mut parallax_t in parallax_q.iter_mut() {
-        parallax_t.translation.x = camera_t.translation.x / 1.2;
-        parallax_t.translation.y = camera_t.translation.y / 1.2;
-
-        parallax_t.scale = 0.6 * camera_t.scale.powf(0.8);
-    }
 }
 
 /// Moves the strategic camera from keyboard input using frame time.
@@ -136,6 +149,7 @@ pub fn move_camera_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
     mut state: ResMut<UiState>,
+    time: Res<Time>,
 ) {
     let Ok((mut camera_t, projection)) = camera_q.single_mut() else {
         return;
@@ -147,7 +161,9 @@ pub fn move_camera_keyboard(
         1.0
     };
 
-    let transform = 10. * scale;
+    // Match the old 10-pixels-per-frame feel at 60 FPS without changing speed on high-refresh
+    // displays or after a slow frame.
+    let transform = 600. * scale * time.delta_secs();
     if keyboard.pressed(KeyCode::KeyA) {
         camera_t.translation.x -= transform;
         state.to_selected = false;
@@ -170,6 +186,41 @@ pub fn move_camera_keyboard(
     }
 }
 
+fn parallax_state(
+    parallax: &ParallaxCmp,
+    camera_position: Vec2,
+    zoom: f32,
+    elapsed: f32,
+) -> (Vec2, f32) {
+    (
+        camera_position * parallax.camera_follow + parallax.drift * elapsed,
+        parallax.base_scale * zoom.powf(parallax.zoom_power),
+    )
+}
+
+/// Updates all map depth planes after camera input has been applied for this frame.
+pub fn update_parallax(
+    camera_q: Single<(&Transform, &Projection), With<MainCamera>>,
+    mut parallax_q: Query<(&ParallaxCmp, &mut Transform), Without<MainCamera>>,
+    time: Res<Time>,
+) {
+    let (camera_t, projection) = camera_q.into_inner();
+    let scale = if let Projection::Orthographic(projection) = projection {
+        projection.scale
+    } else {
+        1.0
+    };
+    let elapsed = time.elapsed_secs_f64() as f32;
+
+    for (parallax, mut transform) in &mut parallax_q {
+        let (position, layer_scale) =
+            parallax_state(parallax, camera_t.translation.truncate(), scale, elapsed);
+        transform.translation.x = position.x;
+        transform.translation.y = position.y;
+        transform.scale = Vec3::splat(layer_scale);
+    }
+}
+
 /// Restores the strategic camera transform and orthographic scale on game exit.
 pub fn reset_camera(mut camera_q: Query<(&mut Transform, &mut Projection), With<MainCamera>>) {
     let Ok((mut camera_t, mut projection)) = camera_q.single_mut() else {
@@ -181,3 +232,7 @@ pub fn reset_camera(mut camera_q: Query<(&mut Transform, &mut Projection), With<
         projection.scale = 1.;
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/camera.rs"]
+mod tests;

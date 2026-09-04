@@ -3,77 +3,140 @@
 use super::*;
 use crate::core::missions::MissionRouteStyle;
 
+const MISSION_PLANET_COLUMN_WIDTH: f32 = 120.0;
+const MISSION_PLANET_CELL_HEIGHT: f32 = 100.0;
+const MISSION_PLANET_IMAGE_SIZE: f32 = 60.0;
+const MISSION_PLANET_NAME_HEIGHT: f32 = 18.0;
+const MISSION_PLANET_NAME_OVERLAP: f32 = 14.0;
+const MISSION_LOG_BADGE_SIZE: f32 = 20.0;
+const MISSION_COLUMN_GAP: f32 = 24.0;
+const MISSION_ROW_HORIZONTAL_INSET: f32 = 16.0;
+const MISSION_ROUTE_COLUMN_MIN_WIDTH: f32 = 330.0;
+const MISSION_ROUTE_COLUMN_MAX_WIDTH: f32 = 620.0;
+const MISSION_FLEET_IMAGE_SCALE: f32 = 0.9;
+const MISSION_COLONY_IMAGE_SCALE: f32 = 0.86;
+const MISSION_SPY_IMAGE_SCALE: f32 = 0.82;
+const MISSION_REPORT_IMAGE_SLOT_SIZE: f32 = 52.0;
+const MISSION_MISSILE_IMAGE_OFFSET_X: f32 = -4.0;
+
+/// Sizes and centers the active-mission row while preserving equal outer breathing room.
+fn mission_row_layout(available_width: f32) -> (f32, f32) {
+    let centered_row_width = (available_width - 2.0 * MISSION_ROW_HORIZONTAL_INSET).max(0.0);
+    let route_column_width =
+        (centered_row_width - 2.0 * MISSION_PLANET_COLUMN_WIDTH - 2.0 * MISSION_COLUMN_GAP)
+            .clamp(MISSION_ROUTE_COLUMN_MIN_WIDTH, MISSION_ROUTE_COLUMN_MAX_WIDTH);
+    let row_width =
+        2.0 * MISSION_PLANET_COLUMN_WIDTH + 2.0 * MISSION_COLUMN_GAP + route_column_width;
+    let leading_space = ((available_width - row_width) * 0.5).max(0.0);
+
+    (route_column_width, leading_space)
+}
+
+/// Returns marker centers on one continuous spacing grid, independent of the preview width.
+fn route_marker_positions(
+    left: f32,
+    right: f32,
+    spacing: f32,
+    phase: f32,
+) -> impl Iterator<Item = f32> {
+    let (first, count) = if right >= left && spacing > 0.0 {
+        let first = left + phase.rem_euclid(spacing);
+        let count = (((right - first) / spacing).floor() as isize + 1).max(0) as usize;
+        (first, count)
+    } else {
+        (left, 0)
+    };
+
+    (0..count).map(move |index| first + index as f32 * spacing)
+}
+
+/// Samples one open arc whose bowed side points toward the route destination.
+fn jump_gate_wave_front(center: egui::Pos2, half_height: f32, depth: f32) -> Vec<egui::Pos2> {
+    const SEGMENTS: usize = 8;
+
+    (0..=SEGMENTS)
+        .map(|index| {
+            let angle = -std::f32::consts::FRAC_PI_2
+                + std::f32::consts::PI * index as f32 / SEGMENTS as f32;
+            egui::pos2(center.x + depth * angle.cos(), center.y + half_height * angle.sin())
+        })
+        .collect()
+}
+
 /// Draws the same compact route language used by hovered missions on the strategic map.
-fn draw_route_preview(ui: &mut Ui, mission: &Mission, player: &Player, color: Color32) -> Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(58.0, 28.0), Sense::hover());
+fn draw_route_preview(
+    ui: &mut Ui,
+    width: f32,
+    mission: &Mission,
+    player: &Player,
+    color: Color32,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 34.0), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
-    let left = rect.left() + 4.0;
-    let right = rect.right() - 4.0;
-    let width = (right - left).max(1.0);
+    // Keep even the missile trail fully inside the lane instead of clipping glyphs at its edges.
+    let left = rect.left() + 12.0;
+    let right = rect.right() - 8.0;
     let center_y = rect.center().y;
     let time = ui.input(|input| input.time) as f32;
-    let speed = 22.0 * mission.route_speed_factor() as f32;
+    let speed = mission.route_animation_speed() as f32;
     let phase = time * speed;
 
-    painter.line_segment(
-        [egui::pos2(left, center_y), egui::pos2(right, center_y)],
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(143, 158, 174, 52)),
-    );
+    let route_style = mission.route_style(player);
+    if route_style != MissionRouteStyle::MissileStrike {
+        painter.line_segment(
+            [egui::pos2(left, center_y), egui::pos2(right, center_y)],
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(143, 158, 174, 52)),
+        );
+    }
 
-    match mission.route_style(player) {
+    match route_style {
         MissionRouteStyle::Standard => {
-            let spacing = 15.0;
-            for index in 0..5 {
-                let x = left + (index as f32 * spacing + phase).rem_euclid(width + spacing) - 5.0;
-                let alpha = if x < left || x > right {
-                    0
-                } else {
-                    220
-                };
-                let marker =
-                    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha);
+            for x in route_marker_positions(left, right, 27.0, phase) {
+                let marker = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 220);
                 painter.line_segment(
-                    [egui::pos2(x - 3.0, center_y - 4.0), egui::pos2(x + 2.0, center_y)],
-                    Stroke::new(1.7, marker),
+                    [egui::pos2(x - 4.0, center_y - 5.0), egui::pos2(x + 2.0, center_y)],
+                    Stroke::new(2.0, marker),
                 );
                 painter.line_segment(
-                    [egui::pos2(x + 2.0, center_y), egui::pos2(x - 3.0, center_y + 4.0)],
-                    Stroke::new(1.7, marker),
+                    [egui::pos2(x + 2.0, center_y), egui::pos2(x - 4.0, center_y + 5.0)],
+                    Stroke::new(2.0, marker),
                 );
             }
         },
         MissionRouteStyle::JumpGate => {
-            let spacing = 18.0;
-            for index in 0..4 {
-                let progress = (index as f32 * spacing + phase).rem_euclid(width + spacing);
-                let x = left + progress - 5.0;
-                if !(left..=right).contains(&x) {
-                    continue;
-                }
+            for (index, x) in route_marker_positions(left, right, 30.0, phase).enumerate() {
                 let pulse = ((time * 3.2 + index as f32 * 1.1).sin() * 0.5 + 0.5).max(0.0);
-                painter.circle_stroke(
-                    egui::pos2(x, center_y),
-                    2.5 + 2.2 * pulse,
-                    Stroke::new(
-                        1.4,
-                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 210),
-                    ),
-                );
+                let height_scale = 0.9 + 0.2 * pulse;
+                for (offset, half_height, depth, alpha) in
+                    [(-6.0, 4.5, 2.4, 120), (-3.0, 6.0, 3.0, 165), (0.0, 7.5, 3.6, 220)]
+                {
+                    painter.line(
+                        jump_gate_wave_front(
+                            egui::pos2(x + offset, center_y),
+                            half_height * height_scale,
+                            depth,
+                        ),
+                        Stroke::new(
+                            1.4,
+                            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+                        ),
+                    );
+                }
             }
         },
         MissionRouteStyle::MissileStrike => {
-            let spacing = 22.0;
-            for index in 0..4 {
-                let x = left + (index as f32 * spacing + phase).rem_euclid(width + spacing) - 7.0;
-                if !(left..=right).contains(&x) {
-                    continue;
-                }
+            const SPACING: f32 = 34.0;
+            for (index, x) in route_marker_positions(left, right, SPACING, phase).enumerate() {
                 let marker = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 235);
+                // The strategic map renders missile routes as horizontally stretched bullet
+                // glyphs. A thick, subtly pulsing dash is the equivalent treatment in Egui.
+                let pulse_phase = (index as f32 * 0.91 + phase / SPACING) * std::f32::consts::TAU;
+                let pulse = 0.85 + 0.2 * (pulse_phase.sin() * 0.5 + 0.5);
+                let half_width = 7.5 * pulse;
                 painter.line_segment(
-                    [egui::pos2(x - 10.0, center_y), egui::pos2(x - 2.5, center_y)],
-                    Stroke::new(2.0, marker.gamma_multiply(0.55)),
+                    [egui::pos2(x - half_width, center_y), egui::pos2(x + half_width, center_y)],
+                    Stroke::new(4.5, marker),
                 );
-                painter.circle_filled(egui::pos2(x, center_y), 2.7, marker);
             }
         },
     }
@@ -81,13 +144,164 @@ fn draw_route_preview(ui: &mut Ui, mission: &Mission, player: &Player, color: Co
     response
 }
 
-/// Draws a faction-tinted mission sprite without separate hover-color assets.
-fn draw_mission_image(ui: &mut Ui, image: egui::TextureId, size: f32, color: Color32) -> Response {
-    ui.add(
-        egui::Image::new(SizedTexture::new(image, egui::vec2(size, size)))
-            .fit_to_exact_size(egui::vec2(size, size))
+/// Draws a faction-tinted mission sprite centered in a stable layout slot.
+fn draw_mission_image(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    size: f32,
+    slot_size: f32,
+    offset: egui::Vec2,
+    color: Color32,
+) -> Response {
+    let (slot, response) = ui.allocate_exact_size(egui::Vec2::splat(slot_size), Sense::hover());
+    let image_rect = egui::Rect::from_center_size(slot.center() + offset, egui::Vec2::splat(size));
+    ui.place(
+        image_rect,
+        egui::Image::new(SizedTexture::new(image, egui::Vec2::splat(size)))
+            .fit_to_exact_size(egui::Vec2::splat(size))
             .tint(color),
-    )
+    );
+
+    response
+}
+
+/// Balances broad mission artwork within the report panel's fixed thumbnail slot.
+fn mission_report_image_size(image: &str, size: f32) -> f32 {
+    match image {
+        "mission" => size * MISSION_FLEET_IMAGE_SCALE,
+        "mission colonize" => size * MISSION_COLONY_IMAGE_SCALE,
+        "mission spy" => size * MISSION_SPY_IMAGE_SCALE,
+        _ => size,
+    }
+}
+
+/// Optically centers asymmetric mission artwork without moving adjacent report columns.
+fn mission_report_image_offset(image: &str) -> egui::Vec2 {
+    match image {
+        "mission missile" => egui::vec2(MISSION_MISSILE_IMAGE_OFFSET_X, 0.0),
+        _ => egui::Vec2::ZERO,
+    }
+}
+
+/// Places a mission-row planet and its name on one shared layout for both route endpoints.
+fn mission_planet_rects(cell: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let image = egui::Rect::from_center_size(
+        egui::pos2(cell.center().x, cell.top() + MISSION_PLANET_IMAGE_SIZE * 0.5),
+        egui::Vec2::splat(MISSION_PLANET_IMAGE_SIZE),
+    );
+    let name = egui::Rect::from_min_size(
+        egui::pos2(cell.left(), image.bottom() - MISSION_PLANET_NAME_OVERLAP),
+        egui::vec2(MISSION_PLANET_COLUMN_WIDTH, MISSION_PLANET_NAME_HEIGHT),
+    );
+
+    (image, name)
+}
+
+/// Draws one active-mission planet link without letting overlay widgets shift its name.
+fn draw_mission_planet_link(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    name: &str,
+    sense: Sense,
+) -> (Response, Response) {
+    let (cell, _) = ui.allocate_exact_size(
+        egui::vec2(MISSION_PLANET_COLUMN_WIDTH, MISSION_PLANET_CELL_HEIGHT),
+        Sense::hover(),
+    );
+    let (image_rect, name_rect) = mission_planet_rects(cell);
+    let image_response = ui
+        .place(
+            image_rect,
+            egui::Image::new(SizedTexture::new(
+                image,
+                egui::Vec2::splat(MISSION_PLANET_IMAGE_SIZE),
+            )),
+        )
+        .interact(sense);
+    let name = egui::WidgetText::from(RichText::new(name).text_style(TextStyle::Small))
+        .into_galley(ui, Some(egui::TextWrapMode::Truncate), name_rect.width(), TextStyle::Small);
+    let name_pos = name_rect.center() - name.size() * 0.5;
+    ui.painter().galley(name_pos, name, ui.visuals().text_color());
+    let name_response = ui.interact(name_rect, ui.next_auto_id(), sense);
+
+    (image_response, name_response)
+}
+
+/// Overlays the mission log badge without advancing the surrounding grid cursor.
+fn draw_mission_log_badge(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    planet_rect: egui::Rect,
+) -> Response {
+    let size = egui::Vec2::splat(MISSION_LOG_BADGE_SIZE);
+    let rect = egui::Rect::from_min_size(
+        planet_rect.right_top() - egui::vec2(MISSION_LOG_BADGE_SIZE + 5.0, -5.0),
+        size,
+    );
+
+    ui.place(rect, egui::Image::new(SizedTexture::new(image, size)))
+}
+
+/// Returns whether the draft can currently use a jump gate for this route and fleet.
+fn jump_gate_route_available(
+    mission: &Mission,
+    origin: &Planet,
+    destination: &Planet,
+    player: &Player,
+) -> bool {
+    mission.objective == Icon::Deploy
+        && player.owns(origin)
+        && player.owns(destination)
+        && origin.has(&Unit::Building(Building::JumpGate))
+        && destination.has(&Unit::Building(Building::JumpGate))
+        && mission.jump_cost() <= origin.max_jump_capacity().saturating_sub(origin.jump_gate)
+}
+
+/// Applies the remembered toggle only while the selected route can actually use a jump gate.
+fn sync_jump_gate_selection(
+    mission: &mut Mission,
+    origin: &Planet,
+    destination: &Planet,
+    player: &Player,
+    remembered: bool,
+) {
+    mission.jump_gate =
+        remembered && jump_gate_route_available(mission, origin, destination, player);
+}
+
+/// Draws the mission tabs as one group centered within the panel's available width.
+fn draw_mission_tabs(ui: &mut Ui, selected: &mut MissionTab) -> egui::Rect {
+    let tabs = MissionTab::iter().collect::<Vec<_>>();
+    let button_padding = egui::vec2(6.0, 0.0);
+
+    let text_width = tabs
+        .iter()
+        .map(|tab| {
+            egui::WidgetText::from(tab.to_title())
+                .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, TextStyle::Body)
+                .size()
+                .x
+        })
+        .sum::<f32>();
+    let tab_row_width = text_width
+        + 2.0 * button_padding.x * tabs.len() as f32
+        + ui.spacing().item_spacing.x * tabs.len().saturating_sub(1) as f32;
+    let leading_space = ((ui.available_width() - tab_row_width) * 0.5).max(0.0);
+
+    ui.horizontal(|ui| {
+        ui.style_mut().spacing.button_padding = button_padding;
+        ui.add_space(leading_space);
+        let mut tab_row = None;
+
+        for tab in tabs {
+            let response = ui.selectable_value(selected, tab, tab.to_title());
+            tab_row =
+                Some(tab_row.map_or(response.rect, |rect: egui::Rect| rect.union(response.rect)));
+        }
+
+        tab_row.unwrap_or(egui::Rect::NOTHING)
+    })
+    .inner
 }
 
 /// Draws the new mission interface and emits any resulting local actions.
@@ -141,6 +355,16 @@ fn draw_new_mission(
             .unwrap_or_default();
     }
 
+    // Normalize route state before choosing the center icon. The toggle preference deliberately
+    // survives between drafts, but an ineligible route must never inherit its visual state.
+    sync_jump_gate_selection(
+        &mut state.mission_info,
+        origin,
+        destination,
+        player,
+        state.jump_gate_history,
+    );
+
     let army = match state.mission_info.objective {
         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
         Icon::Spy => vec![Unit::probe()],
@@ -159,6 +383,8 @@ fn draw_new_mission(
 
         let action = |r: Response, planet: &Planet, h: &mut bool, state: &mut UiState| {
             if r.clicked() {
+                state.planet_hover = None;
+                state.mission_planet_hover = None;
                 state.planet_selected = Some(planet.id);
                 state.to_selected = true;
                 state.mission = false;
@@ -169,7 +395,8 @@ fn draw_new_mission(
                 state.mission_tab = MissionTab::NewMission;
                 state.mission_info.destination = planet.id;
             } else if r.hovered() {
-                state.planet_hover = Some(planet.id);
+                state.planet_hover = None;
+                state.mission_planet_hover = Some(planet.id);
                 *h = true;
             }
         };
@@ -279,6 +506,7 @@ fn draw_new_mission(
         // If not hovering anything, reset hover selection
         if is_hovered && !changed_hover {
             state.planet_hover = None;
+            state.mission_planet_hover = None;
         }
     });
 
@@ -553,17 +781,23 @@ fn draw_new_mission(
                 if state.mission_info.objective == Icon::Deploy {
                     if player.owns(origin)
                         && player.owns(destination)
-                        && origin.army.amount(&Unit::Building(Building::JumpGate)) > 0
-                        && destination.army.amount(&Unit::Building(Building::JumpGate)) > 0
+                        && origin.has(&Unit::Building(Building::JumpGate))
+                        && destination.has(&Unit::Building(Building::JumpGate))
                     {
                         let jump_cost = state.mission_info.jump_cost();
-                        let can_jump = origin.jump_gate + jump_cost <= origin.max_jump_capacity();
-
-                        if !can_jump {
-                            state.mission_info.jump_gate = false;
-                        } else if state.mission_info.jump_gate != state.jump_gate_history {
-                            state.mission_info.jump_gate = state.jump_gate_history;
-                        }
+                        let can_jump = jump_gate_route_available(
+                            &state.mission_info,
+                            origin,
+                            destination,
+                            player,
+                        );
+                        sync_jump_gate_selection(
+                            &mut state.mission_info,
+                            origin,
+                            destination,
+                            player,
+                            state.jump_gate_history,
+                        );
 
                         ui.horizontal(|ui| {
                             ui.small(format!(
@@ -571,7 +805,10 @@ fn draw_new_mission(
                                 jump_cost,
                                 origin.max_jump_capacity() - origin.jump_gate
                             ));
-                            if ui.add(toggle(&mut state.mission_info.jump_gate)).clicked() {
+                            if ui
+                                .add_enabled(can_jump, toggle(&mut state.mission_info.jump_gate))
+                                .clicked()
+                            {
                                 state.jump_gate_history = !state.jump_gate_history;
                             }
                         })
@@ -581,6 +818,8 @@ fn draw_new_mission(
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
                                 armies total jump cost can't surpass the Gate's limit.",
                         );
+                    } else {
+                        state.mission_info.jump_gate = false;
                     }
                 } else {
                     state.mission_info.jump_gate = false;
@@ -664,11 +903,18 @@ fn draw_active_missions(
     ui.add_space(30.);
 
     ScrollArea::vertical()
-        .max_width(ui.available_width() - 45.)
+        // Occupy the panel's full content width. Reserving trailing width here biases the whole
+        // mission row left, which is especially obvious in the origin planet column.
+        .max_width(ui.available_width())
+        .auto_shrink([false, false])
         .max_height(ui.available_height() - 50.)
         .show(ui, |ui| {
+            let available_width = ui.available_width();
+            let (route_column_width, leading_space) = mission_row_layout(available_width);
+            let route_preview_width = (route_column_width - 82.0).max(220.0);
+
             ui.horizontal(|ui| {
-                ui.add_space(165.);
+                ui.add_space(leading_space);
 
                 let action = |r1: Response,
                               r2: Response,
@@ -676,6 +922,8 @@ fn draw_active_missions(
                               h: &mut bool,
                               state: &mut UiState| {
                     if r1.clicked() || r2.clicked() {
+                        state.planet_hover = None;
+                        state.mission_planet_hover = None;
                         state.planet_selected = Some(planet.id);
                         state.to_selected = true;
                         state.mission = false;
@@ -692,15 +940,17 @@ fn draw_active_missions(
                             .unwrap_or(player.home_planet);
                         state.mission_info.destination = planet.id;
                     } else if r1.hovered() || r2.hovered() {
-                        state.planet_hover = Some(planet.id);
+                        state.planet_hover = None;
+                        state.mission_planet_hover = Some(planet.id);
                         *h = true;
                     }
                 };
 
                 let mut changed_hover = false;
-                egui::Grid::new("active missions").spacing([20., 0.]).striped(false).show(
-                    ui,
-                    |ui| {
+                egui::Grid::new("active missions")
+                    .spacing([MISSION_COLUMN_GAP, 0.])
+                    .striped(false)
+                    .show(ui, |ui| {
                         for mission in missions {
                             let origin = map.get(mission.origin);
                             let destination = map.get(mission.destination);
@@ -709,45 +959,41 @@ fn draw_active_missions(
                                 || !mission.objective.is_hidden()
                                 || mission.is_seen_by_radar(map, player).is_some()
                             {
-                                let resp1 = ui.cell(70., |ui| {
-                                    let resp1 = ui
-                                        .add_image(images.get(origin.image()), [60.; 2])
-                                        .interact(Sense::click())
-                                        .on_hover_cursor(CursorIcon::PointingHand);
+                                let (resp1, resp2) = draw_mission_planet_link(
+                                    ui,
+                                    images.get(origin.image()),
+                                    &origin.name,
+                                    Sense::click(),
+                                );
+                                let resp1 = resp1.on_hover_cursor(CursorIcon::PointingHand);
+                                let resp2 = resp2.on_hover_cursor(CursorIcon::PointingHand);
 
-                                    if mission.owner == player.id {
-                                        let resp =
-                                            ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                                if mission.owner == player.id {
+                                    let resp =
+                                        draw_mission_log_badge(ui, images.get("logs"), resp1.rect);
 
-                                        resp.on_hover_ui(|ui| {
-                                            ui.set_min_width(350.);
-                                            ui.small(format!(
-                                                "Mission logs\n===========\n\n{}",
-                                                mission.logs
-                                            ));
-                                        });
-                                    }
-
-                                    resp1
-                                });
-
-                                let resp2 = ui.cell(100., |ui| {
-                                    ui.small(&origin.name)
-                                        .interact(Sense::click())
-                                        .on_hover_cursor(CursorIcon::PointingHand)
-                                });
+                                    resp.on_hover_ui(|ui| {
+                                        ui.set_min_width(350.);
+                                        ui.small(format!(
+                                            "Mission logs\n===========\n\n{}",
+                                            mission.logs
+                                        ));
+                                    });
+                                }
 
                                 action(resp1, resp2, origin, &mut changed_hover, state);
                             } else {
-                                ui.cell(70., |ui| {
-                                    ui.add_image(images.get("unknown"), [60.; 2]);
-                                });
-                                ui.cell(100., |ui| ui.small("Unknown"));
+                                draw_mission_planet_link(
+                                    ui,
+                                    images.get("unknown"),
+                                    "Unknown",
+                                    Sense::hover(),
+                                );
                             }
 
-                            let response = ui.cell(100., |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 4.;
+                            let response = ui.cell(route_column_width, |ui| {
+                                ui.horizontal_centered(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.;
 
                                     ui.add_image(
                                         images.get(if mission.owner == player.id {
@@ -762,34 +1008,40 @@ fn draw_active_missions(
                                         session.player_color(mission.owner).rgb();
                                     draw_route_preview(
                                         ui,
+                                        route_preview_width,
                                         mission,
                                         player,
                                         Color32::from_rgb(red, green, blue),
                                     );
 
-                                    ui.small(format!("+{}", mission.turns_to_destination(map)));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "+{}",
+                                            mission.turns_to_destination(map)
+                                        ))
+                                        .strong(),
+                                    );
                                 })
                                 .response
                                 .interact(Sense::hover())
                             });
 
                             if response.hovered() {
+                                // Browsing animated routes must never enqueue generic UI audio.
+                                set_ui_sound(ui.ctx(), None);
                                 state.mission_hover = Some(mission.id);
                                 state.mission_hover_from_ui = true;
                                 changed_hover = true;
                             }
 
-                            let resp3 = ui.cell(100., |ui| {
-                                ui.small(&destination.name)
-                                    .interact(Sense::click())
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                            });
-
-                            let resp4 = ui.cell(70., |ui| {
-                                ui.add_image(images.get(destination.image()), [60.; 2])
-                                    .interact(Sense::click())
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                            });
+                            let (resp4, resp3) = draw_mission_planet_link(
+                                ui,
+                                images.get(destination.image()),
+                                &destination.name,
+                                Sense::click(),
+                            );
+                            let resp4 = resp4.on_hover_cursor(CursorIcon::PointingHand);
+                            let resp3 = resp3.on_hover_cursor(CursorIcon::PointingHand);
 
                             action(resp3, resp4, destination, &mut changed_hover, state);
 
@@ -799,10 +1051,10 @@ fn draw_active_missions(
                         // If not hovering anything, reset all hover selections
                         if is_hovered && !changed_hover {
                             state.planet_hover = None;
+                            state.mission_planet_hover = None;
                             state.mission_hover = None;
                         }
-                    },
-                );
+                    });
             });
         });
 }
@@ -866,10 +1118,13 @@ fn draw_mission_reports(
                             } else {
                                 48.0
                             };
+                            let mission_image = report.mission.image(player);
                             draw_mission_image(
                                 ui,
-                                images.get(report.mission.image(player)),
-                                size,
+                                images.get(mission_image),
+                                mission_report_image_size(mission_image, size),
+                                MISSION_REPORT_IMAGE_SLOT_SIZE,
+                                mission_report_image_offset(mission_image),
                                 Color32::from_rgb(red, green, blue),
                             );
 
@@ -941,6 +1196,8 @@ fn draw_mission_reports(
                               h: &mut bool,
                               state: &mut UiState| {
                     if r1.clicked() || r2.clicked() {
+                        state.planet_hover = None;
+                        state.mission_planet_hover = None;
                         state.planet_selected = Some(planet.id);
                         state.to_selected = true;
                         state.mission = false;
@@ -957,7 +1214,8 @@ fn draw_mission_reports(
                             .unwrap_or(player.home_planet);
                         state.mission_info.destination = planet.id;
                     } else if r1.hovered() || r2.hovered() {
-                        state.planet_hover = Some(planet.id);
+                        state.planet_hover = None;
+                        state.mission_planet_hover = Some(planet.id);
                         *h = true;
                     }
                 };
@@ -1017,10 +1275,13 @@ fn draw_mission_reports(
 
                             let [red, green, blue] =
                                 session.player_color(report.mission.owner).rgb();
+                            let mission_image = report.mission.image(player);
                             draw_mission_image(
                                 ui,
-                                images.get(report.mission.image(player)),
+                                images.get(mission_image),
+                                mission_report_image_size(mission_image, 50.0),
                                 50.0,
+                                mission_report_image_offset(mission_image),
                                 Color32::from_rgb(red, green, blue),
                             );
 
@@ -1052,6 +1313,7 @@ fn draw_mission_reports(
                     // If not hovering anything, reset all hover selections
                     if is_hovered && !changed_hover {
                         state.planet_hover = None;
+                        state.mission_planet_hover = None;
                     }
                 });
             });
@@ -1197,15 +1459,11 @@ pub(super) fn draw_mission(
     images: &ImageIds,
     editable: bool,
 ) {
-    ui.add_space(17.);
-    ui.horizontal(|ui| {
-        ui.style_mut().spacing.button_padding = egui::vec2(6., 0.);
+    // Rebuild this transient preview every Egui pass so it cannot outlive the hovered link.
+    state.mission_planet_hover = None;
 
-        ui.add_space(105.);
-        for tab in MissionTab::iter() {
-            ui.selectable_value(&mut state.mission_tab, tab, tab.to_title());
-        }
-    });
+    ui.add_space(17.);
+    draw_mission_tabs(ui, &mut state.mission_tab);
 
     match state.mission_tab {
         MissionTab::NewMission => {
@@ -1248,3 +1506,7 @@ pub(super) fn draw_mission(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/core/ui_missions.rs"]
+mod tests;

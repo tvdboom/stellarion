@@ -77,6 +77,15 @@ fn gameplay_browsing_is_silent_but_accepted_purchases_still_sound() {
     assert!(click_widget(true, egui::Sense::click(), Some(None), false).is_empty());
 }
 
+#[test]
+fn mission_launch_confirmation_is_considerably_attenuated() {
+    let request = SoundEffect::MissionLaunched.request();
+    assert_eq!(request.name, "launch");
+    assert_eq!(request.volume, SoundEffect::MISSION_LAUNCH_VOLUME);
+    assert_eq!(SoundEffect::Button.request().volume, 0.0);
+    assert_eq!(SoundEffect::ShipPurchased.request().volume, 0.0);
+}
+
 /// Builds the real playback system without opening a speaker or GPU device.
 fn audio_app() -> App {
     let mut app = App::new();
@@ -190,6 +199,7 @@ fn hover_audio_frame(app: &mut App) -> (usize, usize) {
         assert_eq!(play.name, "booster");
         assert!(play.is_looped);
         assert!(!play.is_background);
+        assert_eq!(play.volume, PlayingAudio::AMBIENCE_VOLUME);
     }
     let stops: Vec<_> = app.world_mut().resource_mut::<Messages<StopAudioMsg>>().drain().collect();
     assert!(stops.iter().all(|stop| stop.name == "booster"));
@@ -197,7 +207,7 @@ fn hover_audio_frame(app: &mut App) -> (usize, usize) {
 }
 
 #[test]
-fn mission_hover_repeats_without_restarting_until_hover_ends() {
+fn mission_hover_loops_without_restarting_until_hover_ends() {
     let (mut app, _) = hover_audio_app();
     assert_eq!(hover_audio_frame(&mut app), (1, 0));
     for hovered in [Some(1), Some(2), Some(1)] {
@@ -209,6 +219,19 @@ fn mission_hover_repeats_without_restarting_until_hover_ends() {
     assert_eq!(hover_audio_frame(&mut app), (0, 0));
     app.world_mut().resource_mut::<UiState>().mission_hover = Some(1);
     assert_eq!(hover_audio_frame(&mut app), (1, 0));
+}
+
+#[test]
+fn mission_panel_arrow_hover_does_not_play_booster_audio() {
+    let (mut app, _) = hover_audio_app();
+    app.world_mut().resource_mut::<UiState>().mission_hover_from_ui = true;
+    assert_eq!(hover_audio_frame(&mut app), (0, 0));
+
+    app.world_mut().resource_mut::<UiState>().mission_hover_from_ui = false;
+    assert_eq!(hover_audio_frame(&mut app), (1, 0));
+
+    app.world_mut().resource_mut::<UiState>().mission_hover_from_ui = true;
+    assert_eq!(hover_audio_frame(&mut app), (0, 1));
 }
 
 #[test]

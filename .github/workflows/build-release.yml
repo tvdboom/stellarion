@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [master]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -64,7 +63,7 @@ jobs:
           if-no-files-found: error
 
   wasm:
-    name: WebAssembly / itch.io HTML5
+    name: WebAssembly
     needs: quality
     runs-on: ubuntu-latest
     steps:
@@ -177,7 +176,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/master'
     needs: [quality, wasm, native, macos]
     runs-on: ubuntu-latest
     permissions:
@@ -191,36 +190,48 @@ jobs:
       - name: Create release with all packages
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/*.zip --generate-notes --verify-tag
+        run: |
+          if gh release view "build-$GITHUB_RUN_NUMBER" >/dev/null 2>&1; then
+            gh release upload "build-$GITHUB_RUN_NUMBER" release/*.zip --clobber
+          else
+            gh release create "build-$GITHUB_RUN_NUMBER" release/*.zip \
+              --generate-notes \
+              --target "$GITHUB_SHA" \
+              --title "Stellarion build $GITHUB_RUN_NUMBER"
+          fi
 
   itch:
-    name: Optional itch.io Butler deployment
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    name: itch.io deployment
+    if: github.ref == 'refs/heads/master'
     needs: [quality, wasm, native, macos]
     runs-on: ubuntu-latest
     env:
-      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-      ITCH_USER: ${{ vars.ITCH_USER }}
-      ITCH_GAME: ${{ vars.ITCH_GAME }}
+      BUTLER_CREDENTIALS: ${{ secrets.BUTLER_CREDENTIALS }}
+      ITCH_USER: tvdboom
+      ITCH_GAME: stellarion
     steps:
       - uses: actions/download-artifact@v8
         with:
           pattern: stellarion-*
           path: deploy
           merge-multiple: true
-      - name: Push configured channels
-        if: env.BUTLER_API_KEY != '' && env.ITCH_USER != '' && env.ITCH_GAME != ''
-        run: |
-          curl --fail --location --retry 3 \
-            https://broth.itch.ovh/butler/linux-amd64/LATEST/archive/default \
-            --output butler.zip
-          unzip -q butler.zip -d butler
-          chmod +x butler/butler
-          version="${GITHUB_SHA::12}"
-          butler/butler push deploy/stellarion-html.zip "$ITCH_USER/$ITCH_GAME:html" --userversion "$version"
-          butler/butler push deploy/stellarion-windows.zip "$ITCH_USER/$ITCH_GAME:windows" --userversion "$version"
-          butler/butler push deploy/stellarion-linux.zip "$ITCH_USER/$ITCH_GAME:linux" --userversion "$version"
-          butler/butler push deploy/stellarion-mac.zip "$ITCH_USER/$ITCH_GAME:mac" --userversion "$version"
-      - name: Explain skipped deployment
-        if: env.BUTLER_API_KEY == '' || env.ITCH_USER == '' || env.ITCH_GAME == ''
-        run: echo "Packages built successfully; Butler variables/credentials are not configured."
+      - name: Deploy HTML5 channel
+        uses: yeslayla/butler-publish-itchio-action@v1.2.0
+        env:
+          CHANNEL: html
+          PACKAGE: deploy/stellarion-html.zip
+      - name: Deploy Windows channel
+        uses: yeslayla/butler-publish-itchio-action@v1.2.0
+        env:
+          CHANNEL: windows
+          PACKAGE: deploy/stellarion-windows.zip
+      - name: Deploy Linux channel
+        uses: yeslayla/butler-publish-itchio-action@v1.2.0
+        env:
+          CHANNEL: linux
+          PACKAGE: deploy/stellarion-linux.zip
+      - name: Deploy macOS channel
+        uses: yeslayla/butler-publish-itchio-action@v1.2.0
+        env:
+          CHANNEL: mac
+          PACKAGE: deploy/stellarion-mac.zip

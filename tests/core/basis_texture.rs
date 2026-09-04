@@ -81,7 +81,7 @@ fn smooth_result_banners_preserve_pixels_alpha_and_mips_on_native_and_browser() 
 
 #[test]
 fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
-    for name in ["mission", "mission jump", "mission missile", "dock", "jump gate marker"] {
+    for name in ["dock", "jump gate marker"] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
             &bytes,
@@ -121,8 +121,59 @@ fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
 }
 
 #[test]
+fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
+    for name in [
+        "dock",
+        "jump gate marker",
+        "mission",
+        "mission colonize",
+        "mission destroy",
+        "mission jump",
+        "mission missile",
+        "mission spy",
+    ] {
+        let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
+        for features in [WgpuFeatures::empty(), WgpuFeatures::TEXTURE_COMPRESSION_BC] {
+            let target = TranscodeTarget::from_features(features);
+            let original = transcode_basis_texture(&bytes, target, &default()).unwrap();
+            let image = transcode_basis_texture(
+                &bytes,
+                target,
+                &BasisTextureSettings {
+                    linear_filtering: true,
+                    ..default()
+                },
+            )
+            .unwrap();
+            assert_eq!(image.texture_descriptor.format, original.texture_descriptor.format);
+            assert_eq!(image.data, original.data, "{name}: map artwork pixels changed");
+            if features.is_empty() {
+                let pixels = image.data.as_ref().unwrap();
+                assert!(
+                    pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|pixel| pixel[3] == 255 && pixel[..3] != [255; 3]),
+                    "{name}: map artwork was flattened into a white silhouette"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
-    for name in ["mission", "mission jump", "mission missile", "dock", "jump gate marker"] {
+    for name in [
+        "mission",
+        "mission colonize",
+        "mission destroy",
+        "mission jump",
+        "mission missile",
+        "mission spy",
+        "dock",
+        "jump gate marker",
+    ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
             &bytes,
@@ -168,7 +219,7 @@ fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
 }
 
 #[test]
-fn masked_icon_loads_separate_ui_artwork() {
+fn detailed_icon_loads_separate_ui_artwork() {
     use std::time::{Duration, Instant};
 
     let mut app = App::new();
@@ -187,7 +238,10 @@ fn masked_icon_loads_separate_ui_artwork() {
     let load = |path: &str| -> Handle<Image> {
         server
             .load_builder()
-            .with_settings(|settings: &mut BasisTextureSettings| settings.alpha_mask = true)
+            .with_settings(|settings: &mut BasisTextureSettings| {
+                settings.ui_variant = true;
+                settings.linear_filtering = true;
+            })
             .load(path.to_string())
     };
     let sprite = load("images/icons/mission.basisu.ktx2");
@@ -196,7 +250,7 @@ fn masked_icon_loads_separate_ui_artwork() {
     while !(server.is_loaded_with_dependencies(sprite.id())
         && server.is_loaded_with_dependencies(ui.id()))
     {
-        assert!(Instant::now() < deadline, "map mask and UI artwork did not both load");
+        assert!(Instant::now() < deadline, "map and UI artwork did not both load");
         app.update();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -205,7 +259,11 @@ fn masked_icon_loads_separate_ui_artwork() {
     let sprite = images.get(&sprite).unwrap().data.as_ref().unwrap();
     let ui = images.get(&ui).unwrap().data.as_ref().unwrap();
     assert_eq!(sprite.len(), ui.len());
-    assert!(sprite.as_chunks::<4>().0.iter().any(|pixel| pixel == &[255, 255, 255, 0]));
+    assert!(sprite
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|pixel| pixel[3] == 255 && pixel[..3] != [255; 3]));
     assert!(ui.as_chunks::<4>().0.iter().any(|pixel| pixel == &[0, 0, 0, 0]));
     assert!(ui.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0 || pixel[..3] == [0; 3]));
 }

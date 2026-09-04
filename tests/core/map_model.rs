@@ -3,6 +3,18 @@ use rand_chacha::ChaCha8Rng;
 
 use super::*;
 
+#[test]
+fn destroyed_worlds_use_the_destroyed_icon() {
+    for moon in [false, true] {
+        let mut planet = Planet::new(1, "Masduk".to_string(), Vec2::ZERO, moon, 1.0);
+        assert_ne!(planet.image(), "destroy");
+
+        planet.destroy();
+
+        assert_eq!(planet.image(), "destroy");
+    }
+}
+
 /// Covers practice, typical multiplayer, and the densest supported planet/moon settings.
 #[test]
 fn supported_maps_keep_worlds_inside_bounds_and_clear_of_each_other() {

@@ -166,7 +166,7 @@ pub fn draw_menu(
                     AppState::Settings => {
                         settings_screen(ui, &mut settings, &mut change_audio, &mut next_state)
                     },
-                    AppState::LoadingGame => loading_screen(ui, &session),
+                    AppState::LoadingGame => loading_screen(ui, &session, &mut requests),
                     AppState::SinglePlayerMenu => {
                         #[cfg(debug_assertions)]
                         local_practice_screen(
@@ -515,15 +515,21 @@ fn join_screen(
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(egui::RichText::new("Join Game").size(36.0));
-                ui.add_space(28.0);
+                ui.add_space(18.0);
                 if saved_name.is_none() {
                     player_name_field(ui, &mut form.display_name, 340.0);
+                    ui.add_space(12.0);
                 }
-                ui.label(egui::RichText::new("Game code").size(20.0).strong());
-                form_text_edit_width(ui, &mut form.game_code, false, 340.0);
+                let game_code_field =
+                    ui.add_enabled_ui(!busy, |ui| join_game_code_field(ui, &mut form.game_code));
                 if let Some(error) = error {
                     ui.add_space(12.0);
-                    menu_error_panel(ui, "Unable to join game", error);
+                    menu_error_panel_width(
+                        ui,
+                        "Unable to join game",
+                        error,
+                        game_code_field.inner.rect.width(),
+                    );
                 }
             });
         });
@@ -1287,6 +1293,18 @@ fn code_card_heading(ui: &mut egui::Ui, label: &str, tooltip: &str, copy_value: 
     });
 }
 
+/// Draws the shared game code field used to join an open lobby.
+fn join_game_code_field(ui: &mut egui::Ui, value: &mut String) -> egui::Response {
+    editable_code_field(
+        ui,
+        "Game code",
+        value,
+        false,
+        "Enter game code",
+        "Enter the game code shared by the host to join their lobby.",
+    )
+}
+
 /// Draws an editable recovery code in the same container used to share codes.
 fn recovery_code_field(
     ui: &mut egui::Ui,
@@ -1295,12 +1313,24 @@ fn recovery_code_field(
     private: bool,
     hint: &str,
 ) -> egui::Response {
-    let inner_width = (ui.available_width().min(560.0) - 36.0).max(1.0);
     let tooltip = if private {
         "Each player has a different private recovery code. Enter your own latest code, not another player's. After recovery, save the new code that replaces it. A connected player cannot be recovered in another window."
     } else {
         "Enter the shared code of the game you want to recover. Find it in your saved codes or ask another player in that game."
     };
+    editable_code_field(ui, label, value, private, hint, tooltip)
+}
+
+/// Draws a labeled access-code input card with contextual hover help.
+fn editable_code_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    private: bool,
+    hint: &str,
+    tooltip: &str,
+) -> egui::Response {
+    let inner_width = (ui.available_width().min(560.0) - 36.0).max(1.0);
     let panel = code_card_frame().show(ui, |ui| {
         ui.set_width(inner_width);
         code_card_heading(ui, label, tooltip, None);
@@ -1736,16 +1766,25 @@ fn lobby_leave_button(ui: &mut egui::Ui, enabled: bool) -> bool {
     clicked
 }
 
-/// Shows loading progress while the canonical state and deferred world assets are prepared.
-fn loading_screen(ui: &mut egui::Ui, session: &MultiplayerSession) {
-    ui.add(egui::Spinner::new().size(32.0));
-    ui.add_space(12.0);
-    ui.label(egui::RichText::new("Starting game…").size(30.0).strong());
-    ui.add_space(8.0);
-    let game = session.active_game.as_ref().map(|game| game.code.as_str()).unwrap_or("game");
-    ui.label(
-        egui::RichText::new(format!("Loading {game} and gameplay assets…")).size(24.0).strong(),
-    );
+/// Shows loading progress or an escape action when required gameplay assets fail.
+fn loading_screen(
+    ui: &mut egui::Ui,
+    session: &MultiplayerSession,
+    requests: &mut MessageWriter<MultiplayerRequest>,
+) {
+    if session.menu_error.is_some() {
+        ui.label(egui::RichText::new("Game assets could not be loaded.").size(30.0).strong());
+        ui.add_space(18.0);
+        let (size, text_size, spacing) = menu_button_metrics(ui);
+        if menu_button_widget(ui, "Back to Menu", true, size, text_size) {
+            requests.write(MultiplayerRequest::LeaveGame);
+        }
+        ui.add_space(spacing);
+        return;
+    }
+    ui.add(egui::Spinner::new().size(42.0));
+    ui.add_space(14.0);
+    ui.label(egui::RichText::new("Starting game…").size(36.0).strong());
 }
 
 /// Edits preferences that do not affect deterministic turn resolution.

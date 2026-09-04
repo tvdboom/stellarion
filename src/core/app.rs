@@ -7,7 +7,9 @@ use strum::IntoEnumIterator;
 use crate::core::assets::WorldAssets;
 use crate::core::audio::*;
 use crate::core::basis_texture::BasisTexturePlugin;
-use crate::core::camera::{move_camera, move_camera_keyboard, reset_camera, setup_camera};
+use crate::core::camera::{
+    move_camera, move_camera_keyboard, reset_camera, setup_camera, update_parallax,
+};
 use crate::core::combat::systems::{
     animate_combat, exit_combat, exit_combat_menu, run_combat_animations, setup_combat,
     setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
@@ -19,8 +21,9 @@ use crate::core::map::battle::BattleAftermathPlugin;
 use crate::core::map::colonization::ColonizationPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
-    draw_map, hide_planet_details, run_map_animations, update_end_turn, update_planet_defenses,
-    update_planet_info, update_voronoi,
+    animate_map_ambience, draw_map, hide_planet_details, run_map_animations, update_ambient_comets,
+    update_end_turn, update_planet_defenses, update_planet_info, update_voronoi,
+    AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -79,6 +82,7 @@ impl Plugin for GamePlugin {
             .init_resource::<ImageIds>()
             .init_resource::<PlayingAudio>()
             .init_resource::<WorldAssets>()
+            .init_resource::<AmbientCometSpawner>()
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
@@ -111,7 +115,12 @@ impl Plugin for GamePlugin {
             )
             // Camera
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, (move_camera, move_camera_keyboard).in_set(InPlayingGameSet))
+            .add_systems(
+                Update,
+                (move_camera, move_camera_keyboard, update_parallax)
+                    .chain()
+                    .in_set(InPlayingGameSet),
+            )
             // Audio
             .add_systems(Startup, setup_audio)
             .add_systems(OnEnter(GameState::Playing), play_music)
@@ -202,11 +211,13 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    (update_end_turn, run_map_animations, update_voronoi).in_set(InGameSet),
+                    (update_end_turn, run_map_animations, animate_map_ambience, update_voronoi)
+                        .in_set(InGameSet),
                     (
                         update_planet_info,
                         update_planet_defenses
                             .before(bevy_tweening::AnimationSystem::AnimationUpdate),
+                        update_ambient_comets,
                         send_mission,
                         update_missions,
                         update_mission_route_arrow,

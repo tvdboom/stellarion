@@ -6,6 +6,7 @@ use crate::core::map::systems::{draw_map, PlanetCmp};
 use crate::core::missions::Mission;
 use crate::core::player::PLAYER_COLOR_PALETTE;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+use crate::core::units::Unit;
 use crate::multiplayer::model::GameRecord;
 use bevy_kira_audio::AudioSource;
 
@@ -35,10 +36,16 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
                 origin: model.map.planets[0].id,
                 destination: model.map.planets[1].id,
                 position: model.map.planets[0].position,
-                objective: if index == 3 {
-                    Icon::MissileStrike
+                objective: match index {
+                    1 => Icon::Attack,
+                    2 => Icon::Spy,
+                    3 => Icon::MissileStrike,
+                    _ => Icon::Attack,
+                },
+                army: if index == 1 {
+                    Army::from([(Unit::war_sun(), 1)])
                 } else {
-                    Icon::Attack
+                    Army::new()
                 },
                 jump_gate: true,
                 ..default()
@@ -119,14 +126,24 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             let owner = model.player(mission.id).unwrap();
             assert_eq!(sprite.color, owner.color().color());
             let hovered = hover == Some(mission.id);
-            assert_eq!(
-                sprite.custom_size,
-                Some(Vec2::splat(if hovered {
-                    60.
+            let expected_size = if mission.id == 2 {
+                if hovered {
+                    WAR_SUN_MISSION_HOVER_SIZE
                 } else {
-                    50.
-                }))
-            );
+                    WAR_SUN_MISSION_SIZE
+                }
+            } else if mission.id == 3 {
+                if hovered {
+                    SPY_MISSION_HOVER_SIZE
+                } else {
+                    SPY_MISSION_SIZE
+                }
+            } else if hovered {
+                MISSION_HOVER_SIZE
+            } else {
+                MISSION_SIZE
+            };
+            assert_eq!(sprite.custom_size, Some(Vec2::splat(expected_size)));
             assert_eq!(
                 transform.translation.z,
                 MISSION_Z
@@ -138,6 +155,10 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             );
             let key = if mission.id == 4 {
                 "mission missile"
+            } else if mission.id == 2 {
+                "mission destroy"
+            } else if mission.id == 3 {
+                "mission spy"
             } else if owner.id == model.players[viewer].id {
                 "mission jump"
             } else {
@@ -158,5 +179,77 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         };
         assert_eq!(route_styles.first().copied(), expected_style);
         assert!(route_styles.iter().all(|&style| Some(style) == expected_style));
+        if expected_style == Some(MissionRouteStyle::JumpGate) {
+            let glyphs = world
+                .query_filtered::<&Text2d, With<MissionRouteArrowCmp>>()
+                .iter(world)
+                .map(|text| text.0.as_str())
+                .collect::<Vec<_>>();
+            assert!(!glyphs.is_empty());
+            assert!(glyphs.iter().all(|glyph| *glyph == JUMP_GATE_ROUTE_GLYPH));
+            assert_eq!(JUMP_GATE_ROUTE_GLYPH, ")))");
+        }
     }
+}
+
+#[test]
+fn jump_gate_wave_packets_face_the_route_destination() {
+    let markers = mission_route_markers(
+        Vec2::ZERO,
+        Vec2::new(0.0, 500.0),
+        0.0,
+        0.0,
+        Color::WHITE,
+        0.0,
+        MissionRouteStyle::JumpGate,
+    );
+
+    assert!(!markers.is_empty());
+    assert!(markers
+        .iter()
+        .all(|(transform, _)| { transform.rotation.mul_vec3(Vec3::X).dot(Vec3::Y) > 0.999 }));
+}
+
+#[test]
+fn spy_map_rotation_keeps_the_flame_behind_the_route() {
+    let spy = Mission {
+        objective: Icon::Spy,
+        ..default()
+    };
+    let map_rotation = mission_map_rotation(&spy);
+    assert_eq!(map_rotation, SPY_MISSION_MAP_ROTATION);
+
+    let parent_rotation = Quat::from_rotation_z(map_rotation);
+    let flame = mission_flame_transform(SPY_MISSION_SIZE, map_rotation);
+    let world_flame_offset = parent_rotation * flame.translation;
+    assert!((world_flame_offset.x + SPY_MISSION_SIZE * 0.5).abs() < 0.0001);
+    assert!(world_flame_offset.y.abs() < 0.0001);
+
+    let world_flame_rotation = parent_rotation * flame.rotation;
+    assert!(world_flame_rotation.dot(Quat::from_rotation_z(PI)).abs() > 1.0 - 0.0001);
+}
+
+#[test]
+fn colony_ship_map_artwork_stays_upright_and_uses_the_smaller_size() {
+    let colony = Mission {
+        objective: Icon::Colonize,
+        army: Army::from([(Unit::colony_ship(), 1), (Unit::war_sun(), 1)]),
+        ..default()
+    };
+
+    assert_eq!(mission_size(&colony, false), COLONY_SHIP_MISSION_SIZE);
+    assert_eq!(mission_size(&colony, true), COLONY_SHIP_MISSION_HOVER_SIZE);
+    const {
+        assert!(COLONY_SHIP_MISSION_SIZE < MISSION_SIZE);
+        assert!(COLONY_SHIP_MISSION_HOVER_SIZE < MISSION_HOVER_SIZE);
+    }
+
+    assert!(mission_map_flip_y("mission colonize", Vec2::NEG_X));
+    assert!(!mission_map_flip_y("mission colonize", Vec2::X));
+    assert!(!mission_map_flip_y("mission", Vec2::NEG_X));
+
+    // Sprite flipping happens before the route rotation. The local downward axis therefore
+    // becomes screen-up after a 180-degree left turn instead of inverting the habitat dome.
+    let world_up = Quat::from_rotation_z(PI) * Vec3::NEG_Y;
+    assert!(world_up.dot(Vec3::Y) > 0.999);
 }

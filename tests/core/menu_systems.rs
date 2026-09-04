@@ -104,6 +104,26 @@ fn assert_main_actions_visible(shapes: &[egui::epaint::ClippedShape], viewport: 
 }
 
 #[test]
+fn gameplay_asset_failure_replaces_spinner_with_escape_action() {
+    let (mut app, context) = menu_app();
+    app.world_mut().resource_mut::<MultiplayerSession>().menu_error =
+        Some("Could not load gameplay asset `missing.ktx2`.".to_string());
+    let viewport = egui::vec2(900.0, 700.0);
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::LoadingGame, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::LoadingGame, vec![]);
+
+    assert!(visible_menu_label(&shapes, "Starting game…").is_none());
+    assert!(visible_menu_label(&shapes, "Game assets could not be loaded.").is_some());
+    let back = visible_menu_label(&shapes, "Back to Menu").unwrap();
+    click_menu_app(&mut app, &context, viewport, AppState::LoadingGame, back.center());
+    let requests: Vec<_> =
+        app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
+    assert!(matches!(requests.as_slice(), [MultiplayerRequest::LeaveGame]));
+}
+
+#[test]
 fn main_menu_shows_all_actions_after_boot_and_resize() {
     let (mut app, context) = menu_app();
     let initial_size = egui::vec2(786.0, 788.0);
@@ -783,6 +803,44 @@ fn recovery_is_accessible_from_an_empty_resume_list_and_returns_to_it() {
             );
         }
     }
+}
+
+#[test]
+fn join_game_code_uses_the_labeled_help_card_above_the_actions() {
+    let context = egui::Context::default();
+    let mut form = MultiplayerForm {
+        saved_display_name: Some("Nova".to_string()),
+        ..default()
+    };
+    let mut next = NextState::default();
+    let (shapes, _) = menu_frame(&context, vec![], |ui, requests| {
+        join_screen(ui, &mut form, false, None, requests, &mut next);
+    });
+
+    let title = visible_menu_label(&shapes, "Join Game").unwrap();
+    let heading = visible_menu_label(&shapes, "GAME CODE").unwrap();
+    let hint = visible_menu_label(&shapes, "Enter game code").unwrap();
+    let info = visible_menu_label(&shapes, "i").unwrap();
+    let back = visible_menu_label(&shapes, "Back").unwrap();
+    let join = visible_menu_label(&shapes, "Join").unwrap();
+    let card = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.fill == egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232) =>
+            {
+                Some(rect.rect)
+            },
+            _ => None,
+        })
+        .unwrap();
+
+    assert!(title.bottom() < card.top());
+    assert!(card.contains_rect(heading));
+    assert!(card.contains_rect(hint));
+    assert!(card.contains_rect(info));
+    assert!(card.bottom() < back.top());
+    assert!((back.center().y - join.center().y).abs() < 1.0);
 }
 
 #[test]

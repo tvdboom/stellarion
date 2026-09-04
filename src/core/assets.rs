@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use bevy::asset::{AssetServer, UntypedHandle};
+use bevy::asset::{
+    AssetLoadError, AssetServer, DependencyLoadState, LoadState, RecursiveDependencyLoadState,
+    UntypedHandle,
+};
 use bevy::prelude::*;
 use bevy_kira_audio::AudioSource;
 use strum::IntoEnumIterator;
@@ -32,6 +35,15 @@ pub enum GameplayAssetState {
     Loading,
     /// Every gameplay handle and dependency is ready.
     Ready,
+    /// At least one gameplay asset or dependency could not be loaded.
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandleLoadStatus {
+    Pending,
+    Ready,
+    Failed,
 }
 
 /// Deduplicated handles partitioned into a minimal menu group and a deferred gameplay group.
@@ -46,6 +58,7 @@ pub struct WorldAssets {
     menu_handles: Vec<UntypedHandle>,
     gameplay_handles: Vec<UntypedHandle>,
     gameplay_state: GameplayAssetState,
+    gameplay_error: Option<String>,
 }
 
 impl WorldAssets {
@@ -100,6 +113,7 @@ impl WorldAssets {
             return;
         }
         self.gameplay_state = GameplayAssetState::Loading;
+        self.gameplay_error = None;
 
         for name in [
             "warning",
@@ -140,17 +154,32 @@ impl WorldAssets {
                 "convert hover",
             ],
         );
-        // Reuse the original silhouettes, stripping baked faction colors once during loading.
-        // Sprite tint then gives every player the exact lobby color without extra image variants.
-        for name in ["dock", "jump gate marker", "mission", "mission jump", "mission missile"] {
+        // Faction-colored map artwork keeps neutral blue-silver relief under the sprite tint.
+        // The matching UI variants premultiply that same shaded artwork for egui.
+        for name in [
+            "dock",
+            "jump gate marker",
+            "mission",
+            "mission colonize",
+            "mission destroy",
+            "mission jump",
+            "mission missile",
+            "mission spy",
+        ] {
             let path = format!("images/icons/{name}.basisu.ktx2");
             let handle: Handle<Image> = server
                 .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| settings.alpha_mask = true)
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.ui_variant = true;
+                    settings.linear_filtering = true;
+                })
                 .load(path.clone());
             let ui_handle: Handle<Image> = server
                 .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| settings.alpha_mask = true)
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.ui_variant = true;
+                    settings.linear_filtering = true;
+                })
                 .load(format!("{path}#ui"));
             self.gameplay_handles.push(ui_handle.clone().untyped());
             self.ui_images.insert(name.to_string(), ui_handle);
@@ -176,13 +205,7 @@ impl WorldAssets {
             self.gameplay_handles.push(handle.clone().untyped());
             self.images.insert(name.to_string(), handle);
         }
-        load_category(
-            server,
-            &mut self.images,
-            &mut self.gameplay_handles,
-            "ui",
-            &["panel", "thin panel"],
-        );
+        load_category(server, &mut self.images, &mut self.gameplay_handles, "ui", &["panel"]);
         load_category(
             server,
             &mut self.images,
@@ -363,10 +386,18 @@ impl WorldAssets {
 
     /// Advances the gameplay group to ready after all recursive dependencies load.
     pub fn refresh_gameplay_state(&mut self, server: &AssetServer) -> GameplayAssetState {
-        if self.gameplay_state == GameplayAssetState::Loading
-            && handles_ready(server, &self.gameplay_handles)
-        {
-            self.gameplay_state = GameplayAssetState::Ready;
+        if self.gameplay_state == GameplayAssetState::Loading {
+            self.gameplay_state = classify_handle_group(
+                self.gameplay_handles.iter().map(|handle| handle_status(server, handle)),
+            );
+            if self.gameplay_state == GameplayAssetState::Failed {
+                let failure =
+                    first_handle_failure(server, &self.gameplay_handles).unwrap_or_else(|| {
+                        "A gameplay asset or one of its dependencies failed to load.".to_string()
+                    });
+                error!("gameplay asset loading failed: {failure}");
+                self.gameplay_error = Some(failure);
+            }
         }
         self.gameplay_state
     }
@@ -374,6 +405,11 @@ impl WorldAssets {
     /// Returns the current deferred-group lifecycle for UI and tests.
     pub fn gameplay_state(&self) -> GameplayAssetState {
         self.gameplay_state
+    }
+
+    /// Returns the terminal gameplay loading error, when one was observed.
+    pub fn gameplay_error(&self) -> Option<&str> {
+        self.gameplay_error.as_deref()
     }
 
     /// Inserts atlas metadata for an already requested image.
@@ -412,6 +448,7 @@ impl FromWorld for WorldAssets {
             menu_handles: Vec::new(),
             gameplay_handles: Vec::new(),
             gameplay_state: GameplayAssetState::Deferred,
+            gameplay_error: None,
         };
 
         for name in ["ui-click", "message", "error", "music"] {
@@ -497,6 +534,59 @@ fn load_image(
 fn handles_ready(server: &AssetServer, handles: &[UntypedHandle]) -> bool {
     !handles.is_empty()
         && handles.iter().all(|handle| server.is_loaded_with_dependencies(handle.id()))
+}
+
+/// Collapses per-handle load results while ensuring any failure wins over pending work.
+fn classify_handle_group(
+    statuses: impl IntoIterator<Item = HandleLoadStatus>,
+) -> GameplayAssetState {
+    let mut saw_handle = false;
+    let mut all_ready = true;
+    for status in statuses {
+        saw_handle = true;
+        match status {
+            HandleLoadStatus::Failed => return GameplayAssetState::Failed,
+            HandleLoadStatus::Pending => all_ready = false,
+            HandleLoadStatus::Ready => {},
+        }
+    }
+    if saw_handle && all_ready {
+        GameplayAssetState::Ready
+    } else {
+        GameplayAssetState::Loading
+    }
+}
+
+/// Converts Bevy's root and dependency states into the lifecycle used by the loading screen.
+fn handle_status(server: &AssetServer, handle: &UntypedHandle) -> HandleLoadStatus {
+    match server.get_load_states(handle.id()) {
+        Some((LoadState::Failed(_), _, _))
+        | Some((_, DependencyLoadState::Failed(_), _))
+        | Some((_, _, RecursiveDependencyLoadState::Failed(_))) => HandleLoadStatus::Failed,
+        Some((
+            LoadState::Loaded,
+            DependencyLoadState::Loaded,
+            RecursiveDependencyLoadState::Loaded,
+        )) => HandleLoadStatus::Ready,
+        _ => HandleLoadStatus::Pending,
+    }
+}
+
+/// Describes the first failed retained handle so missing packaged assets are actionable.
+fn first_handle_failure(server: &AssetServer, handles: &[UntypedHandle]) -> Option<String> {
+    handles.iter().find_map(|handle| {
+        let (root, dependencies, recursive) = server.get_load_states(handle.id())?;
+        let failure: &AssetLoadError = match (&root, &dependencies, &recursive) {
+            (LoadState::Failed(error), _, _)
+            | (_, DependencyLoadState::Failed(error), _)
+            | (_, _, RecursiveDependencyLoadState::Failed(error)) => error,
+            _ => return None,
+        };
+        let path = server
+            .get_path(handle.id())
+            .map_or_else(|| format!("{:?}", handle.id()), |path| path.to_string());
+        Some(format!("Could not load gameplay asset `{path}`: {failure}"))
+    })
 }
 
 #[cfg(test)]

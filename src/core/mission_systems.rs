@@ -10,11 +10,12 @@ use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PlayAudioMsg, SoundEffect};
 use crate::core::constants::MISSION_Z;
+use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::MissionCmp;
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{MissionRouteStyle, Missions, SendMissionMsg};
+use crate::core::missions::{Mission, MissionRouteStyle, Missions, SendMissionMsg};
 use crate::core::player::Player;
 use crate::core::simulation::TurnCommand;
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -22,8 +23,64 @@ use crate::core::units::{Amount, Army};
 use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 
 const MISSION_ROUTE_SPACING: f32 = 52.0;
+// Three forward-facing ASCII arcs form a wave packet without relying on Unicode glyph coverage.
+// Rotating the packet into the route direction makes its motion read as a travelling wave.
+const JUMP_GATE_ROUTE_GLYPH: &str = ")))";
+const MISSION_SIZE: f32 = 50.0;
+const MISSION_HOVER_SIZE: f32 = 60.0;
+const WAR_SUN_MISSION_SIZE: f32 = 50.0;
+const WAR_SUN_MISSION_HOVER_SIZE: f32 = 60.0;
+const COLONY_SHIP_MISSION_SIZE: f32 = 44.0;
+const COLONY_SHIP_MISSION_HOVER_SIZE: f32 = 53.0;
+const SPY_MISSION_SIZE: f32 = 36.0;
+const SPY_MISSION_HOVER_SIZE: f32 = 43.0;
+// The probe artwork's exhaust is diagonal. Rotate only its map presentation so that exhaust
+// aligns with the route's trailing flame without changing the shared source image.
+const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
 
-const MISSION_ROUTE_SPEED: f64 = 32.0;
+fn mission_size(mission: &Mission, hovered: bool) -> f32 {
+    let image_objective = mission.return_objective.unwrap_or(mission.objective);
+    if image_objective == Icon::Colonize || mission.uses_colony_ship_image() {
+        return if hovered {
+            COLONY_SHIP_MISSION_HOVER_SIZE
+        } else {
+            COLONY_SHIP_MISSION_SIZE
+        };
+    }
+
+    match (image_objective, mission.uses_war_sun_image(), hovered) {
+        (_, true, true) => WAR_SUN_MISSION_HOVER_SIZE,
+        (_, true, false) => WAR_SUN_MISSION_SIZE,
+        (Icon::Spy, false, true) => SPY_MISSION_HOVER_SIZE,
+        (Icon::Spy, false, false) => SPY_MISSION_SIZE,
+        (_, false, true) => MISSION_HOVER_SIZE,
+        (_, false, false) => MISSION_SIZE,
+    }
+}
+
+/// Mirrors left-bound colony artwork before route rotation so its habitat stays above the hull.
+fn mission_map_flip_y(image: &str, direction: Vec2) -> bool {
+    image == "mission colonize" && direction.x < 0.0
+}
+
+fn mission_map_rotation(mission: &Mission) -> f32 {
+    if mission.return_objective.unwrap_or(mission.objective) == Icon::Spy {
+        SPY_MISSION_MAP_ROTATION
+    } else {
+        0.0
+    }
+}
+
+fn mission_flame_transform(size: f32, map_rotation: f32) -> Transform {
+    let distance = size * 0.5;
+    Transform {
+        // Counter-rotate the child offset so the flame remains behind the route while the probe
+        // artwork turns to place its lower exhaust over that anchor.
+        translation: Vec3::new(-distance * map_rotation.cos(), distance * map_rotation.sin(), -0.1),
+        scale: Vec3::splat(0.35),
+        rotation: Quat::from_rotation_z(PI - map_rotation),
+    }
+}
 
 #[derive(Component)]
 /// One animated chevron in the hovered mission's origin or destination trail.
@@ -54,19 +111,23 @@ pub fn update_missions(
 
             let direction = (-mission.position + destination.position).normalize();
             let angle = direction.y.atan2(direction.x);
+            let size = mission_size(mission, false);
+            let map_rotation = mission_map_rotation(mission);
+            let image = mission.image(&player);
 
             let texture = assets.texture("flame");
             commands
                 .spawn((
                     Sprite {
-                        image: assets.image(mission.image(&player)),
+                        image: assets.image(image),
                         color: session.player_color(owner).color(),
-                        custom_size: Some(Vec2::splat(50.)),
+                        custom_size: Some(Vec2::splat(size)),
+                        flip_y: mission_map_flip_y(image, direction),
                         ..default()
                     },
                     Transform {
                         translation: mission.position.extend(MISSION_Z),
-                        rotation: Quat::from_rotation_z(angle),
+                        rotation: Quat::from_rotation_z(angle + map_rotation),
                         ..default()
                     },
                     Pickable::default(),
@@ -74,11 +135,7 @@ pub fn update_missions(
                     MapCmp,
                     children![(
                         Sprite::from_atlas_image(texture.image, texture.atlas),
-                        Transform {
-                            translation: Vec3::new(-25., 0., -0.1),
-                            scale: Vec3::splat(0.35),
-                            rotation: Quat::from_rotation_z(PI),
-                        },
+                        mission_flame_transform(size, map_rotation),
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::Linear,
@@ -121,19 +178,21 @@ pub fn update_missions(
 
             let direction = (-mission.position + destination.position).normalize();
             let angle = direction.y.atan2(direction.x);
+            let image = mission.image(&player);
 
-            mission_t.rotation = Quat::from_rotation_z(angle);
-            mission_s.image = assets.image(mission.image(&player));
+            mission_t.rotation = Quat::from_rotation_z(angle + mission_map_rotation(mission));
+            mission_s.image = assets.image(image);
             mission_s.color = session.player_color(mission.owner).color();
+            mission_s.flip_y = mission_map_flip_y(image, direction);
 
             if state.mission_hover.is_some_and(|id| id == mission.id) {
                 // Lift above other missions while staying below the planet's icons.
                 mission_t.translation = mission.position.extend(MISSION_Z + 0.1);
                 // Size, rather than a blue/red texture swap, indicates hover without losing identity.
-                mission_s.custom_size = Some(Vec2::splat(60.));
+                mission_s.custom_size = Some(Vec2::splat(mission_size(mission, true)));
             } else {
                 mission_t.translation = mission.position.extend(MISSION_Z);
-                mission_s.custom_size = Some(Vec2::splat(50.));
+                mission_s.custom_size = Some(Vec2::splat(mission_size(mission, false)));
             }
         } else {
             commands.entity(mission_e).despawn();
@@ -176,8 +235,8 @@ fn mission_route_markers(
             let (rotation, scale) = match style {
                 MissionRouteStyle::Standard => (route_rotation, Vec3::ONE),
                 MissionRouteStyle::JumpGate => {
-                    let pulse = 0.82 + 0.28 * (phase.sin() * 0.5 + 0.5);
-                    (Quat::IDENTITY, Vec3::splat(pulse))
+                    let pulse = 0.9 + 0.2 * (phase.sin() * 0.5 + 0.5);
+                    (route_rotation, Vec3::new(0.9, pulse, 1.0))
                 },
                 MissionRouteStyle::MissileStrike => {
                     let pulse = 0.85 + 0.2 * (phase.sin() * 0.5 + 0.5);
@@ -224,7 +283,7 @@ pub fn update_mission_route_arrow(
         MissionRouteStyle::JumpGate => 64.0,
         MissionRouteStyle::MissileStrike => 58.0,
     };
-    let animation_speed = MISSION_ROUTE_SPEED * mission.route_speed_factor();
+    let animation_speed = mission.route_animation_speed();
     // Motion is measured in world units, so speed and spacing do not depend on route length.
     let offset =
         |speed: f64| (time.elapsed_secs_f64() * speed).rem_euclid(f64::from(spacing)) as f32;
@@ -270,7 +329,7 @@ pub fn update_mission_route_arrow(
         }
         let (glyph, font_size) = match style {
             MissionRouteStyle::Standard => (">", 28.0),
-            MissionRouteStyle::JumpGate => ("○", 30.0),
+            MissionRouteStyle::JumpGate => (JUMP_GATE_ROUTE_GLYPH, 26.0),
             MissionRouteStyle::MissileStrike => ("•", 25.0),
         };
         commands.spawn((
@@ -358,10 +417,8 @@ pub fn send_mission(
             *c = c.saturating_sub(mission.army.amount(u));
         });
 
-        // Update control of the planet
-        if !origin.has_fleet() && origin.owned != Some(player.id) && !origin.is_moon() {
-            origin.controlled = None;
-        }
+        // Keep the immediate map projection aligned with the deterministic turn preview.
+        origin.release_control_if_vacant();
 
         missions.0.push(mission.clone());
 

@@ -67,7 +67,7 @@ fn local_practice_resolves_immediately_and_stays_active() {
 }
 
 #[test]
-fn practice_boost_is_replayed_before_dependent_orders_and_preserves_world_scope() {
+fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
     for owned_worlds_only in [false, true] {
         let mut model = GameModel::new(
             [1; 32],
@@ -82,7 +82,7 @@ fn practice_boost_is_replayed_before_dependent_orders_and_preserves_world_scope(
         let home = model.players[0].home_planet;
         let moon = model.map.moons()[0].id;
         model.map.get_mut(moon).controlled = Some(1);
-        // Stationing ships on an unowned planet must not expand the Shift shortcut's scope.
+        // Fleet-controlled planets are valid targets even before they are colonized.
         let occupied = model.map.planets().into_iter().find(|p| p.id != home).unwrap().id;
         model.map.get_mut(occupied).controlled = Some(1);
         let commands = vec![
@@ -97,10 +97,43 @@ fn practice_boost_is_replayed_before_dependent_orders_and_preserves_world_scope(
         ];
         let preview = preview_commands(&model, 1, &commands).unwrap();
         assert_eq!(preview.map.get(moon).owned, None, "moons are controlled, never colonized");
-        for unit in Unit::buildings() {
-            assert_eq!(preview.map.get(moon).army.amount(&unit), Building::MAX_LEVEL);
+        assert_eq!(
+            preview.map.get(occupied).army.amount(&Unit::war_sun()),
+            3,
+            "controlled planets must be included in the Shift shortcut"
+        );
+        for unit in Unit::all().into_iter().flatten() {
+            let expected = if unit.valid_on(true) {
+                if unit.is_building() {
+                    Building::MAX_LEVEL
+                } else {
+                    3
+                }
+            } else {
+                0
+            };
+            assert_eq!(
+                preview.map.get(moon).army.amount(&unit),
+                expected,
+                "unexpected testing amount for {unit:?} on a moon"
+            );
         }
-        assert!(preview.map.get(moon).fields_consumed() > preview.map.get(moon).max_fields());
+        for unit in Unit::all().into_iter().flatten() {
+            let expected = if unit.valid_on(false) {
+                if unit.is_building() {
+                    Building::MAX_LEVEL
+                } else {
+                    3
+                }
+            } else {
+                0
+            };
+            assert_eq!(
+                preview.map.get(home).army.amount(&unit),
+                expected,
+                "unexpected testing amount for {unit:?} on a planet"
+            );
+        }
         let expected_resources = preview.players[0].resources
             + preview.players[0].resource_production(&preview.map.planets);
         resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
@@ -112,38 +145,85 @@ fn practice_boost_is_replayed_before_dependent_orders_and_preserves_world_scope(
                 planet.army.amount(&Unit::war_sun()),
                 if planet.id == home {
                     4
-                } else if !owned_worlds_only || planet.id == moon {
+                } else if !owned_worlds_only || planet.id == moon || planet.id == occupied {
                     3
                 } else {
                     0
                 }
             );
         }
-        for unit in Unit::buildings() {
-            assert_eq!(model.map.get(moon).army.amount(&unit), Building::MAX_LEVEL);
+        for unit in Unit::all().into_iter().flatten().filter(|unit| !unit.valid_on(true)) {
+            assert_eq!(
+                model.map.get(moon).army.amount(&unit),
+                0,
+                "{unit:?} must remain absent from a moon after resolution"
+            );
         }
     }
 }
 
 #[test]
-fn multiplayer_rejects_practice_boost_without_changing_the_game() {
+fn multiplayer_replays_testing_boost_for_every_peer() {
     let mut model = started_model(2);
-    let before = serde_json::to_value(&model).unwrap();
+    let player_id = model.players[0].id;
+    let home = model.players[0].home_planet;
+    let resources = model.players[0].resources;
     let commands = vec![TurnCommand::PracticeBoost {
         owned_worlds_only: true,
     }];
-    assert!(preview_commands(&model, 1, &commands).is_err());
-    assert!(matches!(
-        resolve_turn(
-            &mut model,
-            &[TurnSubmission::new(1, 1, commands), TurnSubmission::new(2, 1, Vec::new()),]
-        ),
-        Err(GameError::InvalidCommand {
-            player_id: 1,
-            ..
-        })
-    ));
-    assert_eq!(serde_json::to_value(&model).unwrap(), before);
+    let preview = preview_commands(&model, player_id, &commands).unwrap();
+    assert_eq!(preview.players[0].resources, resources + 1_000usize);
+    assert_eq!(preview.map.get(home).army.amount(&Unit::war_sun()), 3);
+
+    resolve_turn(
+        &mut model,
+        &[TurnSubmission::new(player_id, 1, commands), TurnSubmission::new(2, 1, Vec::new())],
+    )
+    .unwrap();
+    assert_eq!(model.turn, 2);
+    assert_eq!(model.map.get(home).army.amount(&Unit::war_sun()), 3);
+}
+
+#[test]
+fn abandoning_a_planet_keeps_control_only_while_a_fleet_remains() {
+    let model = started_model(2);
+    let player_id = model.players[0].id;
+    let planet_id = model
+        .map
+        .planets()
+        .into_iter()
+        .find(|planet| model.players.iter().all(|player| player.home_planet != planet.id))
+        .unwrap()
+        .id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+
+    for stationed_fighters in [0, 1] {
+        let mut state = model.clone();
+        let planet = state.map.get_mut(planet_id);
+        planet.army.clear();
+        planet.colonize(player_id);
+        // Owned planets are controlled by definition. Exercise the sparse presentation form that
+        // triggered the same-turn Voronoi fade, where that redundant value is not populated.
+        planet.controlled = None;
+        planet.army.insert(fighter, stationed_fighters);
+
+        let preview = preview_commands(
+            &state,
+            player_id,
+            &[TurnCommand::AbandonPlanet {
+                planet_id,
+            }],
+        )
+        .unwrap();
+        let abandoned = preview.map.get(planet_id);
+
+        assert_eq!(abandoned.owned, None);
+        assert_eq!(
+            abandoned.controlled,
+            (stationed_fighters > 0).then_some(player_id),
+            "control must follow stationed units immediately in the turn preview"
+        );
+    }
 }
 
 #[test]
@@ -246,6 +326,120 @@ fn mission_commands_ignore_zero_count_units() {
 
     assert_eq!(model.missions[0].army, Army::from([(heavy_fighter, 2)]));
     assert_eq!(model.map.get(origin).army.amount(&heavy_fighter), 0);
+}
+
+#[test]
+fn departing_planets_and_moons_release_control_only_when_vacant() {
+    let base = started_model(2);
+    let player_id = base.players[0].id;
+    let destination = base.players[0].home_planet;
+    let planet = base
+        .map
+        .planets()
+        .into_iter()
+        .find(|planet| base.players.iter().all(|player| player.home_planet != planet.id))
+        .unwrap()
+        .id;
+    let moon = base.map.moons()[0].id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+
+    for (world_id, building) in
+        [(planet, Unit::Building(Building::MetalMine)), (moon, Unit::Building(Building::LunarBase))]
+    {
+        for (building_count, stationed_fighters, expected_control) in
+            [(0, 1, None), (1, 1, Some(player_id)), (0, 2, Some(player_id))]
+        {
+            let mut model = base.clone();
+            let world = model.map.get_mut(world_id);
+            world.owned = None;
+            world.controlled = Some(player_id);
+            world.army.clear();
+            world.army.insert(building, building_count);
+            world.army.insert(fighter, stationed_fighters);
+
+            apply_mission(
+                &mut model,
+                player_id,
+                100 + world_id as u64,
+                world_id,
+                destination,
+                Icon::Deploy,
+                &Army::from([(fighter, 1)]),
+                BombingRaid::None,
+                false,
+                false,
+            )
+            .unwrap();
+
+            assert_eq!(
+                model.map.get(world_id).controlled,
+                expected_control,
+                "control must match the buildings and ships left on world {world_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_spy_and_destroy_missions_preserve_their_images_on_the_return_trip() {
+    let mut model = started_model(2);
+    let player = model.players[0].clone();
+    let origin = model.map.get(player.home_planet).clone();
+    let destination = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| model.players.iter().all(|candidate| candidate.home_planet != planet.id))
+        .unwrap()
+        .clone();
+    model.map.get_mut(destination.id).army = Army::new();
+
+    let mut spy = Mission::new_with_id(
+        51,
+        model.turn as usize,
+        player.id,
+        &origin,
+        &destination,
+        Icon::Spy,
+        Army::from([(Unit::probe(), 2)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    spy.position = destination.position;
+    let mut destroy = Mission::new_with_id(
+        52,
+        model.turn as usize,
+        player.id,
+        &origin,
+        &destination,
+        Icon::Destroy,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    destroy.position = destination.position;
+    model.missions.extend([spy, destroy]);
+
+    let submissions = model
+        .players
+        .iter()
+        .map(|candidate| TurnSubmission::new(candidate.id, model.turn, Vec::new()))
+        .collect::<Vec<_>>();
+    resolve_turn(&mut model, &submissions).unwrap();
+
+    for (objective, image) in [(Icon::Spy, "mission spy"), (Icon::Destroy, "mission destroy")] {
+        let returning = model
+            .missions
+            .iter()
+            .find(|mission| mission.return_objective == Some(objective))
+            .expect("the resolved mission should still be travelling home");
+        assert_eq!(returning.objective, Icon::Deploy);
+        assert_eq!(returning.image(&player), image);
+    }
 }
 
 #[test]

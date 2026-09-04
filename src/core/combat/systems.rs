@@ -162,21 +162,31 @@ pub struct UnitExplosionCmp {
 fn spawn_combat_identity(
     commands: &mut Commands,
     role: &str,
-    name: &str,
+    name: Option<&str>,
     color: Color,
     top: Option<f32>,
     bottom: Option<f32>,
     assets: &WorldAssets,
     window: &Window,
 ) {
+    let has_name = name.is_some();
     let mut node = Node {
         position_type: PositionType::Absolute,
-        left: Val::Px(22.0),
-        min_width: Val::Px(250.0),
-        height: Val::Px(42.0),
-        padding: UiRect::px(12.0, 14.0, 7.0, 7.0),
-        column_gap: Val::Px(9.0),
+        left: Val::Px(18.0),
+        width: Val::Px(if has_name {
+            220.0
+        } else {
+            132.0
+        }),
+        height: Val::Px(if has_name {
+            54.0
+        } else {
+            38.0
+        }),
+        padding: UiRect::px(10.0, 12.0, 7.0, 7.0),
+        column_gap: Val::Px(10.0),
         align_items: AlignItems::Center,
+        overflow: Overflow::clip(),
         ..default()
     };
     if let Some(top) = top {
@@ -197,22 +207,46 @@ fn spawn_combat_identity(
         .with_children(|parent| {
             parent.spawn((
                 Node {
-                    width: Val::Px(4.0),
+                    width: Val::Px(3.0),
                     height: Val::Percent(100.0),
                     ..default()
                 },
                 BackgroundColor(color),
             ));
-            parent.spawn((
-                add_text(
-                    format!("{}  ·  {}", role.to_uppercase(), name),
-                    "medium",
-                    11.0,
-                    assets,
-                    window,
-                ),
-                TextColor(color),
-            ));
+            parent
+                .spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::Center,
+                    row_gap: Val::Px(1.0),
+                    overflow: Overflow::clip(),
+                    ..default()
+                })
+                .with_children(|content| {
+                    content.spawn((
+                        add_text(
+                            role.to_uppercase(),
+                            "medium",
+                            if has_name {
+                                7.0
+                            } else {
+                                9.0
+                            },
+                            assets,
+                            window,
+                        ),
+                        TextColor(if has_name {
+                            Color::srgb_u8(166, 188, 211)
+                        } else {
+                            color
+                        }),
+                    ));
+                    if let Some(name) = name {
+                        content.spawn((
+                            add_text(name, "medium", 9.0, assets, window),
+                            TextColor(color),
+                        ));
+                    }
+                });
         });
 }
 
@@ -420,15 +454,14 @@ pub fn setup_combat(
         .player_name(attacker_id)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let defender_name = defender_id.map_or_else(
-        || "Neutral defenses".to_string(),
-        |id| session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}")),
-    );
+    let defender_name = defender_id.map(|id| {
+        session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
+    });
 
     spawn_combat_identity(
         &mut commands,
         "Attacker",
-        &attacker_name,
+        Some(&attacker_name),
         attack_c,
         Some(18.0),
         None,
@@ -438,7 +471,7 @@ pub fn setup_combat(
     spawn_combat_identity(
         &mut commands,
         "Defender",
-        &defender_name,
+        defender_name.as_deref(),
         defend_c,
         None,
         Some(52.0),
@@ -455,7 +488,12 @@ pub fn setup_combat(
         })
         .collect::<Vec<_>>();
 
-    spawn_row(&mut commands, attacking, Side::Attacker, pos.y + height * 0.8, pos.y + height * 0.4);
+    // Keep fleet cards out of the fixed UI identity cards at either screen edge.
+    // Multiplying the pixel inset by the projection scale preserves the gap while zoomed.
+    let attacker_row_y = pos.y + height * 0.5 - 150.0 * projection.scale;
+    let defender_edge_row_y = pos.y - height * 0.5 + 180.0 * projection.scale;
+
+    spawn_row(&mut commands, attacking, Side::Attacker, pos.y + height * 0.8, attacker_row_y);
 
     let defending_def = Unit::defenses()
         .into_iter()
@@ -489,9 +527,9 @@ pub fn setup_combat(
         && (!defending_def.is_empty() || report.mission.bombing != BombingRaid::None);
 
     let ship_y = if defending_def.is_empty() && !draw_ps {
-        0.36
+        defender_edge_row_y
     } else {
-        0.1
+        pos.y - height * 0.1
     };
 
     spawn_row(
@@ -499,15 +537,9 @@ pub fn setup_combat(
         defending_def,
         Side::Defender,
         pos.y - height * 0.7,
-        pos.y - height * 0.36,
+        defender_edge_row_y,
     );
-    spawn_row(
-        &mut commands,
-        defending_ships,
-        Side::Defender,
-        pos.y - height * 0.7,
-        pos.y - height * ship_y,
-    );
+    spawn_row(&mut commands, defending_ships, Side::Defender, pos.y - height * 0.7, ship_y);
 
     // Spawn Planetary Shield image
     if draw_ps {

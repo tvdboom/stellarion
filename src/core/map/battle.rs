@@ -11,7 +11,7 @@ use super::systems::draw_map;
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::report::{MissionReport, ReportId};
-use crate::core::constants::{EXPLOSION_Z, TITLE_TEXT_SIZE};
+use crate::core::constants::EXPLOSION_Z;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -19,6 +19,11 @@ use crate::core::states::{AppState, GameState};
 
 const AFTERMATH_SECONDS: f32 = 4.2;
 const EXPLOSION_SECONDS: f32 = 1.55;
+const RIPPLE_COUNT: usize = 4;
+const RIPPLE_INTERVAL_SECONDS: f32 = 0.38;
+const RIPPLE_SECONDS: f32 = 1.35;
+const SPY_FADE_OUT_START: f32 = 0.7;
+const SPY_SWEEP_SECONDS: f32 = 1.15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
@@ -39,6 +44,7 @@ impl Outcome {
         let control_changed = (report.planet.controlled == Some(player.id))
             != (report.destination_controlled == Some(player.id));
         if report.hidden
+            || report.planet_destroyed
             || report.combat_report.is_none()
             || !matches!(report.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
             || ownership_changed
@@ -54,14 +60,6 @@ impl Outcome {
             Some(_) => Self::Defeat,
             None => Self::Draw,
         })
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Self::Victory => Color::srgb(0.3, 0.93, 0.74),
-            Self::Defeat => Color::srgb(1.0, 0.35, 0.3),
-            Self::Draw | Self::Mixed => Color::srgb(1.0, 0.78, 0.32),
-        }
     }
 
     fn label(self) -> &'static str {
@@ -82,7 +80,7 @@ enum TerritoryOutcome {
 
 impl TerritoryOutcome {
     fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
-        if report.hidden {
+        if report.hidden || report.planet_destroyed {
             return None;
         }
         let controlled_before =
@@ -104,17 +102,12 @@ impl TerritoryOutcome {
         }
     }
 
-    fn color(self) -> Color {
-        match self {
-            Self::Conquered => Color::srgb(0.3, 0.93, 0.74),
-            Self::Lost => Color::srgb(1.0, 0.35, 0.3),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Conquered => "PLANET CONQUERED",
-            Self::Lost => "PLANET LOST",
+    fn label(self, is_moon: bool) -> &'static str {
+        match (self, is_moon) {
+            (Self::Conquered, false) => "PLANET CONQUERED",
+            (Self::Conquered, true) => "MOON CONQUERED",
+            (Self::Lost, false) => "PLANET LOST",
+            (Self::Lost, true) => "MOON LOST",
         }
     }
 }
@@ -142,13 +135,6 @@ impl MissileOutcome {
         })
     }
 
-    fn color(self) -> Color {
-        match self {
-            Self::Strike => Color::srgb(1.0, 0.72, 0.28),
-            Self::Impact => Color::srgb(1.0, 0.38, 0.22),
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Strike => "MISSILE STRIKE",
@@ -157,34 +143,162 @@ impl MissileOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MissilePresentation {
+    outcome: MissileOutcome,
+    direction: Vec2,
+}
+
+impl MissilePresentation {
+    fn from_report(report: &MissionReport, player: &Player, map: &Map) -> Option<Self> {
+        let outcome = MissileOutcome::from_report(report, player)?;
+        let origin = map.try_get(report.mission.origin)?;
+        let destination = map.try_get(report.mission.destination)?;
+        let direction = (destination.position - origin.position).normalize_or_zero();
+        Some(Self {
+            outcome,
+            // Malformed same-origin reports retain the old left-to-right treatment.
+            direction: if direction == Vec2::ZERO {
+                Vec2::X
+            } else {
+                direction
+            },
+        })
+    }
+
+    fn label(self) -> &'static str {
+        self.outcome.label()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpyOutcome {
+    Success,
+    Failed,
+    Detected,
+    Mixed,
+}
+
+impl SpyOutcome {
+    fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
+        if report.hidden
+            || report.mission.objective != Icon::Spy
+            || !(report.mission.owner == player.id
+                || report.planet.owned == Some(player.id)
+                || report.planet.controlled == Some(player.id))
+        {
+            return None;
+        }
+        Some(if report.mission.owner != player.id {
+            Self::Detected
+        } else if report.scout_probes > 0 {
+            Self::Success
+        } else {
+            Self::Failed
+        })
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Success => "SPY MISSION SUCCESSFUL",
+            Self::Failed => "SPY MISSION FAILED",
+            Self::Detected => "ENEMY PROBES DETECTED",
+            Self::Mixed => "SPY MISSIONS RESOLVED",
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Self::Mixed
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SpyPresentation {
+    outcome: SpyOutcome,
+    direction: Vec2,
+}
+
+impl SpyPresentation {
+    fn from_report(report: &MissionReport, player: &Player, map: &Map) -> Option<Self> {
+        let outcome = SpyOutcome::from_report(report, player)?;
+        let direction = if report.mission.owner == player.id {
+            let origin = map.try_get(report.mission.origin)?;
+            let destination = map.try_get(report.mission.destination)?;
+            (destination.position - origin.position).normalize_or_zero()
+        } else {
+            // Detection must not reveal the hidden origin of an enemy spy mission.
+            Vec2::X
+        };
+        Some(Self {
+            outcome,
+            direction: if direction == Vec2::ZERO {
+                Vec2::X
+            } else {
+                direction
+            },
+        })
+    }
+
+    fn label(self) -> &'static str {
+        self.outcome.label()
+    }
+
+    fn merge(self, other: Self) -> Self {
+        Self {
+            outcome: self.outcome.merge(other.outcome),
+            // One site gets one combined effect; retain its first deterministic approach vector.
+            direction: self.direction,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct SiteOutcome {
+    planet_destroyed: bool,
     battle: Option<Outcome>,
     territory: Option<TerritoryOutcome>,
-    missile: Option<MissileOutcome>,
+    missile: Option<MissilePresentation>,
+    spy: Option<SpyPresentation>,
 }
 
 impl SiteOutcome {
-    fn color(self) -> Color {
-        self.territory
-            .map(TerritoryOutcome::color)
-            .or_else(|| self.battle.map(Outcome::color))
-            .or_else(|| self.missile.map(MissileOutcome::color))
-            .unwrap_or(Color::WHITE)
-    }
-
-    fn labels(self) -> Vec<(&'static str, Color)> {
-        let mut labels = Vec::with_capacity(3);
-        if let Some(territory) = self.territory {
-            labels.push((territory.label(), territory.color()));
+    fn labels(self, planet: &Planet) -> Vec<&'static str> {
+        let mut labels = Vec::with_capacity(4);
+        if self.planet_destroyed {
+            labels.push("PLANET DESTROYED");
+        } else if let Some(territory) = self.territory {
+            labels.push(territory.label(planet.is_moon()));
         } else if let Some(battle) = self.battle {
-            labels.push((battle.label(), battle.color()));
+            labels.push(battle.label());
         }
         if let Some(missile) = self.missile {
-            labels.push((missile.label(), missile.color()));
+            labels.push(missile.label());
+        }
+        if let Some(spy) = self.spy {
+            labels.push(spy.label());
         }
         labels
     }
+
+    fn has_impact(self) -> bool {
+        self.planet_destroyed
+            || self.battle.is_some()
+            || self.territory.is_some()
+            || self.missile.is_some()
+    }
+}
+
+fn planet_destruction_visible(report: &MissionReport, player: &Player) -> bool {
+    !report.hidden
+        && report.planet_destroyed
+        && report.mission.objective == Icon::Destroy
+        && (report.mission.owner == player.id
+            || report.planet.owned == Some(player.id)
+            || report.planet.controlled == Some(player.id))
 }
 
 #[derive(Resource, Default)]
@@ -196,7 +310,7 @@ struct BattleSites {
 }
 
 impl BattleSites {
-    fn observe(&mut self, player: &Player, turn: usize) -> bool {
+    fn observe(&mut self, player: &Player, map: &Map, turn: usize) -> bool {
         if self.turn != turn {
             *self = Self {
                 turn,
@@ -205,16 +319,24 @@ impl BattleSites {
         }
         let mut added = false;
         for report in player.reports.iter().filter(|report| report.turn == turn) {
+            let planet_destroyed = planet_destruction_visible(report, player);
             let battle = Outcome::from_report(report, player);
             let territory = TerritoryOutcome::from_report(report, player);
-            let missile = MissileOutcome::from_report(report, player);
-            if battle.is_none() && territory.is_none() && missile.is_none() {
+            let missile = MissilePresentation::from_report(report, player, map);
+            let spy = SpyPresentation::from_report(report, player, map);
+            if !planet_destroyed
+                && battle.is_none()
+                && territory.is_none()
+                && missile.is_none()
+                && spy.is_none()
+            {
                 continue;
             }
             if !self.observed.insert(report.id) {
                 continue;
             }
             let site = self.outcomes.entry(report.mission.destination).or_default();
+            site.planet_destroyed |= planet_destroyed;
             if let Some(outcome) = battle {
                 site.battle = Some(match site.battle {
                     Some(previous) if previous != outcome => Outcome::Mixed,
@@ -226,13 +348,19 @@ impl BattleSites {
                 site.territory = Some(territory);
             }
             if let Some(missile) = missile {
-                site.missile = Some(match (site.missile, missile) {
+                site.missile = Some(match site.missile {
                     // A local impact is the more urgent label if both sides launch at one site.
-                    (Some(MissileOutcome::Impact), _) | (_, MissileOutcome::Impact) => {
-                        MissileOutcome::Impact
+                    Some(previous)
+                        if previous.outcome == MissileOutcome::Impact
+                            || previous.outcome == missile.outcome =>
+                    {
+                        previous
                     },
-                    _ => MissileOutcome::Strike,
+                    _ => missile,
                 });
+            }
+            if let Some(spy) = spy {
+                site.spy = Some(site.spy.map_or(spy, |previous| previous.merge(spy)));
             }
             self.pending.insert(report.mission.destination);
             added = true;
@@ -267,10 +395,16 @@ enum EffectPart {
         delay: f32,
         last_index: usize,
     },
-    Ring {
+    Ripple {
+        delay: f32,
         radius: f32,
     },
     Missile {
+        delay: f32,
+        start: Vec2,
+        end: Vec2,
+    },
+    SpySweep {
         delay: f32,
         start: Vec2,
         end: Vec2,
@@ -293,7 +427,8 @@ fn show_battles(
     assets: Res<WorldAssets>,
     mut audio: MessageWriter<PlayAudioMsg>,
 ) {
-    if (player.is_changed() || sites.turn != settings.turn) && sites.observe(&player, settings.turn)
+    if (player.is_changed() || sites.turn != settings.turn)
+        && sites.observe(&player, &map, settings.turn)
     {
         // Let the projection's StartTurnMsg open combat before displaying the aftermath.
         return;
@@ -319,11 +454,12 @@ fn show_battles(
             planet,
             settings.turn,
             outcome,
+            player.color().color(),
             &assets,
             &mut meshes,
             &mut materials,
         );
-        exploded |= !planet.is_destroyed;
+        exploded |= outcome.has_impact() && !planet.is_destroyed;
     }
     if exploded {
         audio.write(PlayAudioMsg::new("short explosion"));
@@ -335,12 +471,12 @@ fn spawn_aftermath(
     planet: &Planet,
     turn: usize,
     outcome: SiteOutcome,
+    viewer_color: Color,
     assets: &WorldAssets,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
 ) {
     let size = planet.size();
-    let color = outcome.color();
     let texture = assets.texture("explosion");
     commands
         .spawn((
@@ -356,16 +492,14 @@ fn spawn_aftermath(
         ))
         .with_children(|parent| {
             if let Some(missile) = outcome.missile {
-                // Local diagonals convey impact without revealing a hidden mission origin.
                 for (index, y) in [-0.55, 0.0, 0.48].into_iter().enumerate() {
-                    let start = Vec2::new(-size * (2.0 + index as f32 * 0.18), size * (1.25 + y));
-                    let end = Vec2::new(size * (-0.18 + index as f32 * 0.17), size * y * 0.25);
+                    let (start, end) = missile_path(size, index, y, missile.direction);
                     let direction = end - start;
                     parent.spawn((
                         Sprite {
                             image: assets.image("mission missile"),
                             custom_size: Some(Vec2::splat(size * 0.46)),
-                            color: missile.color().with_alpha(0.0),
+                            color: viewer_color.with_alpha(0.0),
                             ..default()
                         },
                         Transform {
@@ -382,8 +516,33 @@ fn spawn_aftermath(
                     ));
                 }
             }
+            if let Some(spy) = outcome.spy {
+                for (index, y) in [-0.28, 0.32].into_iter().enumerate() {
+                    let (start, end) = spy_path(size, y, spy.direction);
+                    let direction = end - start;
+                    parent.spawn((
+                        Sprite {
+                            image: assets.image("mission spy"),
+                            custom_size: Some(Vec2::splat(size * 0.42)),
+                            color: viewer_color.with_alpha(0.0),
+                            ..default()
+                        },
+                        Transform {
+                            translation: start.extend(0.23),
+                            rotation: Quat::from_rotation_z(direction.y.atan2(direction.x)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                        EffectPart::SpySweep {
+                            delay: index as f32 * 0.26,
+                            start,
+                            end,
+                        },
+                    ));
+                }
+            }
             // Destroyed worlds already receive the larger planet-destruction animation.
-            if !planet.is_destroyed {
+            if outcome.has_impact() && !planet.is_destroyed {
                 for (index, offset) in
                     [Vec2::new(-0.28, 0.1), Vec2::new(0.18, -0.18), Vec2::new(0.25, 0.21)]
                         .into_iter()
@@ -394,7 +553,7 @@ fn spawn_aftermath(
                             image: texture.image.clone(),
                             texture_atlas: Some(texture.atlas.clone()),
                             custom_size: Some(Vec2::splat(size * 0.7)),
-                            color: Color::WHITE.with_alpha(0.0),
+                            color: viewer_color.with_alpha(0.0),
                             ..default()
                         },
                         Transform::from_translation((offset * size).extend(0.1)),
@@ -406,17 +565,22 @@ fn spawn_aftermath(
                     ));
                 }
             }
-            parent.spawn((
-                Mesh2d(meshes.add(Annulus::new(0.975, 1.0))),
-                MeshMaterial2d(materials.add(color.with_alpha(0.0))),
-                Transform::default(),
-                Pickable::IGNORE,
-                EffectPart::Ring {
-                    radius: size * 0.57,
-                },
-            ));
-            for (index, (label, label_color)) in outcome.labels().into_iter().enumerate() {
-                let y = size * 0.7 + TITLE_TEXT_SIZE * (1.15 + index as f32 * 1.05);
+            let ripple = meshes.add(Annulus::new(0.98, 1.0));
+            for index in 0..RIPPLE_COUNT {
+                let radius = size * 0.52;
+                parent.spawn((
+                    Mesh2d(ripple.clone()),
+                    MeshMaterial2d(materials.add(viewer_color.with_alpha(0.0))),
+                    Transform::from_scale(Vec3::splat(radius)),
+                    Pickable::IGNORE,
+                    EffectPart::Ripple {
+                        delay: index as f32 * RIPPLE_INTERVAL_SECONDS,
+                        radius,
+                    },
+                ));
+            }
+            for (index, label) in outcome.labels(planet).into_iter().enumerate() {
+                let y = super::aftermath_label_y(size, index);
                 parent.spawn((
                     Text2d::new(label),
                     TextFont {
@@ -424,7 +588,7 @@ fn spawn_aftermath(
                         font_size: 17.0.into(),
                         ..default()
                     },
-                    TextColor(label_color.with_alpha(0.0)),
+                    TextColor(viewer_color.with_alpha(0.0)),
                     // Planet names sit at 0.7 * size; stack results above them and colony labels.
                     Transform::from_xyz(0.0, y, 0.2 + index as f32 * 0.01),
                     Pickable::IGNORE,
@@ -434,6 +598,29 @@ fn spawn_aftermath(
                 ));
             }
         });
+}
+
+fn missile_path(size: f32, index: usize, lateral_offset: f32, direction: Vec2) -> (Vec2, Vec2) {
+    let lateral = Vec2::new(-direction.y, direction.x);
+    let start = -direction * size * (2.0 + index as f32 * 0.18) + lateral * size * lateral_offset;
+    let end =
+        direction * size * (-0.18 + index as f32 * 0.17) + lateral * size * lateral_offset * 0.25;
+    (start, end)
+}
+
+fn spy_path(size: f32, lateral_offset: f32, direction: Vec2) -> (Vec2, Vec2) {
+    let lateral = Vec2::new(-direction.y, direction.x);
+    (
+        -direction * size * 1.45 + lateral * size * lateral_offset,
+        // Finish just inside the destination instead of sweeping through and past it.
+        -direction * size * 0.08 + lateral * size * lateral_offset * 0.25,
+    )
+}
+
+fn spy_sweep_alpha(progress: f32) -> f32 {
+    let fade_in = (progress / 0.1).clamp(0.0, 1.0);
+    let fade_out = ((1.0 - progress) / (1.0 - SPY_FADE_OUT_START)).clamp(0.0, 1.0);
+    fade_in.min(fade_out)
 }
 
 /// Fade out and remove the aftermath; overlays hide and pause the animation.
@@ -500,17 +687,22 @@ fn animate_battles(
                         }
                     }
                 },
-                EffectPart::Ring {
+                EffectPart::Ripple {
+                    delay,
                     radius,
                 } => {
-                    let pulse = (elapsed * 5.0).sin().abs() * (1.0 - settle);
-                    transform.scale = Vec3::splat(radius * (1.0 + 0.1 * pulse));
-                    if let Some(mut material) =
-                        material.and_then(|handle| materials.get_mut(&handle.0))
-                    {
-                        material.color.set_alpha(
-                            (elapsed / 0.35).min(1.0) * (0.28 + 0.4 * pulse) * (1.0 - settle),
-                        );
+                    let progress = (elapsed - delay) / RIPPLE_SECONDS;
+                    if progress >= 1.0 {
+                        commands.entity(entity).despawn();
+                    } else if progress > 0.0 {
+                        let outward = 1.0 - (1.0 - progress).powi(2);
+                        transform.scale = Vec3::splat(radius * (1.0 + 1.8 * outward));
+                        if let Some(mut material) =
+                            material.and_then(|handle| materials.get_mut(&handle.0))
+                        {
+                            let fade_in = (progress / 0.08).min(1.0);
+                            material.color.set_alpha(0.68 * fade_in * (1.0 - progress).powf(1.35));
+                        }
                     }
                 },
                 EffectPart::Missile {
@@ -527,6 +719,26 @@ fn animate_battles(
                         transform.scale = Vec3::splat(0.82 + 0.3 * (1.0 - progress));
                         if let Some(mut sprite) = sprite {
                             sprite.color.set_alpha((progress * 8.0).min(1.0));
+                        }
+                    }
+                },
+                EffectPart::SpySweep {
+                    delay,
+                    start,
+                    end,
+                } => {
+                    let progress = (elapsed - delay) / SPY_SWEEP_SECONDS;
+                    if progress >= 1.0 {
+                        commands.entity(entity).despawn();
+                    } else if progress > 0.0 {
+                        let eased = progress * progress * (3.0 - 2.0 * progress);
+                        transform.translation = start.lerp(*end, eased).extend(0.23);
+                        let pulse = (progress * std::f32::consts::PI).sin();
+                        transform.scale = Vec3::splat(0.86 + 0.18 * pulse);
+                        if let Some(mut sprite) = sprite {
+                            // Remain visible during approach, then disappear only after the
+                            // probe has entered the planet's disc.
+                            sprite.color.set_alpha(spy_sweep_alpha(progress));
                         }
                     }
                 },

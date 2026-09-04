@@ -31,6 +31,8 @@ pub enum MessageLevel {
 pub enum MessageAction {
     /// Opens the mission interface on the supplied persisted report.
     OpenMissionReport(MissionId),
+    /// Opens the mission interface on the reports tab without selecting a hidden report.
+    OpenMissionReports,
     /// Centers the strategic map on a still-owned colony and selects it.
     FocusColony(PlanetId),
 }
@@ -195,11 +197,10 @@ fn check_messages(
         if let Some(state) = state.as_mut() {
             match action {
                 MessageAction::OpenMissionReport(mission_id) => {
-                    state.planet_selected = None;
-                    state.mission = true;
-                    state.mission_tab = MissionTab::MissionReports;
-                    state.mission_report = Some(mission_id);
-                    state.combat_report = None;
+                    open_mission_reports(state, Some(mission_id));
+                },
+                MessageAction::OpenMissionReports => {
+                    open_mission_reports(state, None);
                 },
                 MessageAction::FocusColony(planet_id) => {
                     if playing {
@@ -211,6 +212,16 @@ fn check_messages(
             }
         }
     }
+}
+
+fn open_mission_reports(state: &mut UiState, mission_id: Option<MissionId>) {
+    state.planet_selected = None;
+    state.mission = true;
+    state.mission_tab = MissionTab::MissionReports;
+    if let Some(mission_id) = mission_id {
+        state.mission_report = Some(mission_id);
+    }
+    state.combat_report = None;
 }
 
 fn draw_notifications(

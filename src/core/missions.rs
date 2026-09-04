@@ -119,6 +119,9 @@ pub struct Mission {
     pub position: Vec2,
     /// Strategic objective applied on arrival.
     pub objective: Icon,
+    /// Original objective whose silhouette is retained while a resolved mission returns home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_objective: Option<Icon>,
     /// Units stationed on this world or travelling with this mission.
     pub army: Army,
     /// Optional building category selected for post-combat bombing.
@@ -189,6 +192,7 @@ impl Mission {
                 origin.position + direction * Planet::SIZE * 0.7
             },
             objective,
+            return_objective: None,
             army,
             bombing,
             combat_probes,
@@ -226,13 +230,31 @@ impl Mission {
 
     /// Returns the mission silhouette, keeping jump-gate details private to the owner.
     pub fn image(&self, player: &Player) -> &str {
-        if self.objective == Icon::MissileStrike {
+        let image_objective = self.return_objective.unwrap_or(self.objective);
+        if image_objective == Icon::Colonize || self.uses_colony_ship_image() {
+            "mission colonize"
+        } else if self.uses_war_sun_image() {
+            "mission destroy"
+        } else if image_objective == Icon::MissileStrike {
             "mission missile"
+        } else if image_objective == Icon::Spy {
+            "mission spy"
         } else if self.owner == player.id && self.jump_gate {
             "mission jump"
         } else {
             "mission"
         }
+    }
+
+    /// Returns whether every dispatched unit is a colony ship.
+    pub(crate) fn uses_colony_ship_image(&self) -> bool {
+        self.army.amount(&Unit::colony_ship()) > 0
+            && self.army.iter().all(|(unit, count)| *count == 0 || *unit == Unit::colony_ship())
+    }
+
+    /// Returns whether this fleet uses the War Sun silhouette on the strategic map.
+    pub(crate) fn uses_war_sun_image(&self) -> bool {
+        self.army.amount(&Unit::war_sun()) > 0 || self.return_objective == Some(Icon::Destroy)
     }
 
     /// Returns the route treatment visible to this player.
@@ -255,6 +277,27 @@ impl Mission {
         } else {
             (f64::from(self.speed()) / 2.0).clamp(0.55, 1.65)
         }
+    }
+
+    /// Retains an outbound objective's silhouette while this mission resolves as a safe deploy.
+    pub(crate) fn with_return_objective(mut self, objective: Icon) -> Self {
+        debug_assert!(matches!(objective, Icon::Spy | Icon::Destroy));
+        debug_assert_eq!(self.objective, Icon::Deploy);
+        self.return_objective = Some(objective);
+        self
+    }
+
+    /// Returns whether the optional return-trip presentation metadata is internally consistent.
+    pub(crate) fn has_valid_return_objective(&self) -> bool {
+        self.return_objective.is_none_or(|objective| {
+            self.objective == Icon::Deploy && matches!(objective, Icon::Spy | Icon::Destroy)
+        })
+    }
+
+    /// Returns the route-marker speed shared by the strategic map and mission panels.
+    #[cfg(feature = "app")]
+    pub(crate) fn route_animation_speed(&self) -> f64 {
+        32.0 * self.route_speed_factor()
     }
 
     /// Returns remaining world-space distance from the mission to its destination.

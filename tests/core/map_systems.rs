@@ -27,6 +27,149 @@ fn test_defenses(
 }
 
 #[test]
+fn ambience_wraps_stars_around_the_camera_without_moving_worlds() {
+    let mut app = App::new();
+    app.init_resource::<Time>().add_systems(Update, animate_map_ambience);
+    app.world_mut().spawn((MainCamera, Transform::from_xyz(4_000.0, 0.0, 1.0)));
+    let layer = app
+        .world_mut()
+        .spawn((ParallaxCmp::new(0.0, 1.0, 0.0, Vec2::ZERO), Transform::default()))
+        .id();
+    let star = app
+        .world_mut()
+        .spawn((
+            AmbientStarCmp {
+                anchor: Vec2::new(-2_000.0, 0.0),
+                phase: -PI * 0.5,
+                speed: 0.0,
+                base_alpha: 0.6,
+                minimum_alpha: 0.0,
+                pulse_power: 3.4,
+            },
+            Sprite::default(),
+            Transform::from_xyz(-2_000.0, 0.0, 0.0),
+        ))
+        .id();
+    app.world_mut().entity_mut(layer).add_child(star);
+    let planet_position = Vec3::new(123.0, 456.0, PLANET_Z);
+    let planet = app
+        .world_mut()
+        .spawn((
+            PlanetCmp::new(0),
+            PlanetAmbienceCmp {
+                phase: 0.0,
+                minimum_brightness: 0.9,
+            },
+            Sprite::default(),
+            Transform::from_translation(planet_position),
+        ))
+        .id();
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+
+    let star_x = app.world().get::<Transform>(star).unwrap().translation.x;
+    assert!((star_x - 4_000.0).abs() <= AMBIENT_STAR_FIELD_SIZE.x * 0.5);
+    assert_eq!(app.world().get::<Sprite>(star).unwrap().color.alpha(), 0.0);
+    assert_eq!(app.world().get::<Transform>(planet).unwrap().translation, planet_position);
+    let brightness = app.world().get::<Sprite>(planet).unwrap().color.to_srgba().red;
+    assert!(brightness > 0.9 && brightness < 1.0);
+}
+
+#[test]
+fn comet_streaks_fade_at_both_ends_and_keep_occasional_timing_bounded() {
+    assert_eq!(comet_visibility(0.0), 0.0);
+    assert_eq!(comet_visibility(1.0), 0.0);
+    assert!(comet_visibility(0.2) > 0.99);
+    assert!(comet_visibility(0.5) > 0.99);
+
+    for sequence in 0..1_000 {
+        let delay = next_comet_delay(sequence);
+        assert!((1.4..=27.0).contains(&delay));
+    }
+}
+
+#[test]
+fn pulsars_flare_briefly_and_relocate_while_dark() {
+    assert_eq!(pulsar_visibility(0.0), 0.0);
+    assert!(pulsar_visibility(0.12) > 0.99);
+    assert_eq!(pulsar_visibility(0.5), 0.0);
+    assert_eq!(pulsar_visibility(1.0), 0.0);
+
+    let first = pulsar_anchor(0x1234_5678, 0);
+    let second = pulsar_anchor(0x1234_5678, 1);
+    assert_ne!(first, second);
+    assert!(first.x.abs() <= AMBIENT_PULSAR_FIELD_SIZE.x * 0.5);
+    assert!(first.y.abs() <= AMBIENT_PULSAR_FIELD_SIZE.y * 0.5);
+}
+
+#[test]
+fn ambience_uses_three_star_depths_and_cross_shaped_glints() {
+    let mut app = App::new();
+    app.add_plugins(TransformPlugin).add_systems(Startup, |mut commands: Commands| {
+        spawn_ambient_stars(&mut commands);
+    });
+    app.update();
+
+    let world = app.world_mut();
+    let mut layers = world.query::<(&ParallaxCmp, &Children)>();
+    let mut star_layers = layers
+        .iter(world)
+        .filter(|(_, children)| {
+            children.iter().any(|child| world.get::<AmbientStarCmp>(child).is_some())
+        })
+        .map(|(parallax, _)| (parallax.camera_follow, parallax.drift))
+        .collect::<Vec<_>>();
+    star_layers.sort_by(|left, right| right.0.total_cmp(&left.0));
+    assert_eq!(star_layers.len(), 3);
+    assert!(star_layers.windows(2).all(|layers| layers[0].0 > layers[1].0));
+    assert!(star_layers.iter().any(|(_, drift)| drift.x < 0.0));
+    assert!(star_layers.iter().any(|(_, drift)| drift.x > 0.0));
+
+    let mut pulsars = world.query::<(&AmbientPulsarCmp, &Children)>();
+    assert_eq!(pulsars.iter(world).count(), 18);
+    assert!(pulsars.iter(world).all(|(_, children)| {
+        children.len() == 2
+            && children.iter().all(|child| world.get::<AmbientPulsarRayCmp>(child).is_some())
+    }));
+}
+
+#[test]
+fn comet_system_spawns_thin_half_screen_streaks_and_cleans_them_up() {
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .insert_resource(AmbientCometSpawner {
+            remaining: 0.0,
+            sequence: 0,
+        })
+        .add_systems(Update, update_ambient_comets);
+    app.world_mut().spawn((Camera2d, MainCamera));
+
+    app.update();
+    let world = app.world_mut();
+    let mut comets =
+        world.query_filtered::<(Entity, &Children, &AmbientCometCmp), With<AmbientCometCmp>>();
+    let (comet, children, comet_data) = comets.single(world).unwrap();
+    assert_eq!(children.len(), 2);
+    let travel_distance = comet_data.velocity.length() * comet_data.lifetime;
+    assert!((800.0 * 0.44..=800.0 * 0.56).contains(&travel_distance));
+    assert!(comet_data.peak_alpha <= 0.54);
+    let children = children.iter().collect::<Vec<_>>();
+    assert!(children.iter().all(|child| world.get::<AmbientCometPartCmp>(*child).is_some()));
+    assert!(children.iter().all(|child| {
+        world
+            .get::<Sprite>(*child)
+            .and_then(|sprite| sprite.custom_size)
+            .is_some_and(|size| size.x <= 200.0 && size.y <= 1.28)
+    }));
+
+    world.resource_mut::<Time>().advance_by(Duration::from_secs(5));
+    app.update();
+    assert!(app.world().get_entity(comet).is_err());
+    assert!(children.iter().all(|child| app.world().get_entity(*child).is_err()));
+}
+
+#[test]
 fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     let mut model = GameModel::new(
         [17; 32],
@@ -125,10 +268,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             assert_eq!(*app.world().get::<Visibility>(*dock).unwrap(), Visibility::Inherited);
             assert_eq!(*app.world().get::<Visibility>(*gate).unwrap(), Visibility::Inherited);
             assert_eq!(app.world().get::<Sprite>(*dock).unwrap().color, expected.color());
-            assert_eq!(
-                app.world().get::<Sprite>(*gate).unwrap().color,
-                expected.color().with_alpha(0.94)
-            );
+            assert_eq!(app.world().get::<Sprite>(*gate).unwrap().color, expected.color());
             let mut alphas = Vec::new();
             // Step across loop boundaries at a frame interval that does not divide the period.
             // Check the rendered material too: an opaque material ignores the animated alpha.
@@ -172,7 +312,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     app.update();
     let own_color = app.world().get::<Sprite>(own.1).unwrap().color;
     assert_eq!(app.world().get::<Sprite>(enemy.1).unwrap().color, own_color);
-    assert_eq!(app.world().get::<Sprite>(enemy.2).unwrap().color, own_color.with_alpha(0.94));
+    assert_eq!(app.world().get::<Sprite>(enemy.2).unwrap().color, own_color);
     assert_eq!(app.world().get::<PlanetaryShieldCmp>(enemy.0).unwrap().color, Some(own_color));
     assert_eq!(
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed(),
@@ -277,11 +417,15 @@ fn planet_selection_updates_navigation_and_preserves_the_origin_for_other_owners
         assert_eq!(state.combat_report, None);
         assert_eq!(state.mission_info.origin, previous_origin);
     }
-    planet.owned = Some(player.id);
-    state.planet_selected = None;
-    select_planet(&planet, &mut state, &player);
-    assert_eq!(state.planet_selected, Some(planet.id));
-    assert_eq!(state.mission_info.origin, planet.id);
+    for (owned, controlled) in [(Some(player.id), None), (None, Some(player.id))] {
+        planet.owned = owned;
+        planet.controlled = controlled;
+        state.planet_selected = None;
+        state.mission_info.origin = previous_origin;
+        select_planet(&planet, &mut state, &player);
+        assert_eq!(state.planet_selected, Some(planet.id));
+        assert_eq!(state.mission_info.origin, planet.id);
+    }
 }
 
 #[test]
@@ -530,6 +674,7 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         });
         let mut app = App::new();
         app.add_plugins(TransformPlugin)
+            .init_resource::<Time>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<ColorMaterial>>()
             .init_resource::<Settings>()
@@ -615,5 +760,40 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         app.world_mut().resource_mut::<Settings>().show_cells = true;
         app.update();
         assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Inherited);
+
+        let home_material =
+            app.world().get::<MeshMaterial2d<ColorMaterial>>(home_entity).unwrap().0.clone();
+        app.world_mut().resource_mut::<Map>().get_mut(home).controlled = None;
+        app.update();
+        assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Inherited);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(TERRITORY_TRANSITION_SECONDS * 0.5));
+        app.update();
+        let fading_alpha = app
+            .world()
+            .resource::<Assets<ColorMaterial>>()
+            .get(&home_material)
+            .unwrap()
+            .color
+            .alpha();
+        assert!(fading_alpha > 0.0 && fading_alpha < 0.01);
+        assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Inherited);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(TERRITORY_TRANSITION_SECONDS));
+        app.update();
+        assert_eq!(*app.world().get::<Visibility>(home_entity).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            app.world()
+                .resource::<Assets<ColorMaterial>>()
+                .get(&home_material)
+                .unwrap()
+                .color
+                .alpha(),
+            0.0
+        );
     }
 }

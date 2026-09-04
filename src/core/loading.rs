@@ -39,15 +39,30 @@ pub fn finish_gameplay_loading(
     mut commands: Commands,
     server: Res<AssetServer>,
     mut assets: ResMut<WorldAssets>,
-    session: Res<MultiplayerSession>,
+    mut session: ResMut<MultiplayerSession>,
     mut pending: ResMut<PendingTurnCommands>,
     mut settings: ResMut<Settings>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut start_turn: MessageWriter<StartTurnMsg>,
 ) {
-    if assets.refresh_gameplay_state(&server) != GameplayAssetState::Ready {
-        return;
+    match assets.refresh_gameplay_state(&server) {
+        GameplayAssetState::Ready => {},
+        GameplayAssetState::Failed => {
+            if session.menu_error.is_none() {
+                let failure = assets
+                    .gameplay_error()
+                    .unwrap_or("A gameplay asset or one of its dependencies failed to load.");
+                let recovery = if cfg!(debug_assertions) {
+                    "Run `just assets` and restart Stellarion."
+                } else {
+                    "Reinstall the game or restore its runtime assets, then restart Stellarion."
+                };
+                session.menu_error = Some(format!("{failure} {recovery}"));
+            }
+            return;
+        },
+        GameplayAssetState::Deferred | GameplayAssetState::Loading => return,
     }
     if install_gameplay_projection(
         &mut commands,

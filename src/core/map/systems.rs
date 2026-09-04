@@ -51,6 +51,92 @@ pub struct PlanetCmp {
     pub id: PlanetId,
 }
 
+#[derive(Component)]
+/// Slow, presentation-only light variation applied to a world sprite.
+pub(crate) struct PlanetAmbienceCmp {
+    phase: f32,
+    minimum_brightness: f32,
+}
+
+#[derive(Component)]
+/// One point in the wrapping foreground star layer.
+pub(crate) struct AmbientStarCmp {
+    anchor: Vec2,
+    phase: f32,
+    speed: f32,
+    base_alpha: f32,
+    minimum_alpha: f32,
+    pulse_power: f32,
+}
+
+#[derive(Component)]
+/// A sparse beacon that briefly flares before reappearing at a new position.
+pub(crate) struct AmbientPulsarCmp {
+    seed: u32,
+    phase: f32,
+    cycle_duration: f32,
+    peak_alpha: f32,
+}
+
+#[derive(Component)]
+/// One light ray belonging to a briefly flaring ambient pulsar.
+pub(crate) struct AmbientPulsarRayCmp {
+    alpha_factor: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AmbientStarLayer {
+    count: u32,
+    seed: u32,
+    depth: f32,
+    camera_follow: f32,
+    zoom_power: f32,
+    drift: Vec2,
+    minimum_size: f32,
+    size_range: f32,
+    minimum_base_alpha: f32,
+    base_alpha_range: f32,
+    minimum_alpha: f32,
+    minimum_alpha_range: f32,
+    pulse_power: f32,
+    minimum_speed: f32,
+    speed_range: f32,
+}
+
+#[derive(Component)]
+/// A short-lived streak crossing behind the strategic map.
+pub(crate) struct AmbientCometCmp {
+    age: f32,
+    lifetime: f32,
+    velocity: Vec2,
+    peak_alpha: f32,
+}
+
+#[derive(Component)]
+pub(crate) struct AmbientCometPartCmp {
+    alpha_factor: f32,
+}
+
+#[derive(Resource, Debug)]
+/// Local scheduling state for occasional presentation-only comet streaks.
+pub(crate) struct AmbientCometSpawner {
+    remaining: f32,
+    sequence: u32,
+}
+
+impl Default for AmbientCometSpawner {
+    fn default() -> Self {
+        Self {
+            // Show the first streak soon enough to establish the effect, then make it occasional.
+            remaining: 4.5,
+            sequence: 0,
+        }
+    }
+}
+
+const AMBIENT_STAR_FIELD_SIZE: Vec2 = Vec2::new(5_200.0, 3_200.0);
+const AMBIENT_PULSAR_FIELD_SIZE: Vec2 = Vec2::new(2_200.0, 1_300.0);
+
 impl PlanetCmp {
     /// Creates a new value from the supplied state.
     pub fn new(id: PlanetId) -> Self {
@@ -260,14 +346,189 @@ fn spawn_voronoi_cells(
     }
 }
 
-/// Selects a planet and updates the mission origin for owned planets.
+/// Returns a stable pseudo-random value in `[0, 1]` for presentation placement.
+fn visual_noise(mut value: u32) -> f32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb_352d);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846c_a68b);
+    value ^= value >> 16;
+    value as f32 / u32::MAX as f32
+}
+
+fn spawn_ambient_star_layer(commands: &mut Commands, layer: AmbientStarLayer) {
+    commands
+        .spawn((
+            Transform::from_xyz(0.0, 0.0, layer.depth),
+            Visibility::Inherited,
+            ParallaxCmp::new(layer.camera_follow, 1.0, layer.zoom_power, layer.drift),
+            Pickable::IGNORE,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            for index in 0..layer.count {
+                let seed = layer.seed.wrapping_add(index.wrapping_mul(7));
+                let x = (visual_noise(seed.wrapping_add(1)) - 0.5) * AMBIENT_STAR_FIELD_SIZE.x;
+                let y = (visual_noise(seed.wrapping_add(2)) - 0.5) * AMBIENT_STAR_FIELD_SIZE.y;
+                let size =
+                    layer.minimum_size + visual_noise(seed.wrapping_add(3)) * layer.size_range;
+                let base_alpha = layer.minimum_base_alpha
+                    + visual_noise(seed.wrapping_add(4)) * layer.base_alpha_range;
+                let temperature = visual_noise(seed.wrapping_add(5));
+                let color = if temperature < 0.24 {
+                    Color::srgba(0.62, 0.76, 1.0, base_alpha)
+                } else if temperature > 0.88 {
+                    Color::srgba(1.0, 0.82, 0.58, base_alpha)
+                } else {
+                    Color::srgba(0.9, 0.95, 1.0, base_alpha)
+                };
+
+                parent.spawn((
+                    Sprite::from_color(color, Vec2::splat(size)),
+                    Transform {
+                        translation: Vec3::new(x, y, 0.0),
+                        rotation: Quat::from_rotation_z(visual_noise(seed.wrapping_add(6)) * TAU),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                    AmbientStarCmp {
+                        anchor: Vec2::new(x, y),
+                        phase: visual_noise(seed.wrapping_add(7)) * TAU,
+                        speed: layer.minimum_speed
+                            + visual_noise(seed.wrapping_add(8)) * layer.speed_range,
+                        base_alpha,
+                        minimum_alpha: layer.minimum_alpha
+                            + visual_noise(seed.wrapping_add(9)) * layer.minimum_alpha_range,
+                        pulse_power: layer.pulse_power,
+                    },
+                ));
+            }
+        });
+}
+
+fn spawn_ambient_pulsars(commands: &mut Commands) {
+    commands
+        .spawn((
+            Transform::from_xyz(0.0, 0.0, BACKGROUND_Z + 0.64),
+            Visibility::Inherited,
+            ParallaxCmp::new(0.38, 1.0, 0.05, Vec2::new(0.18, -0.08)),
+            Pickable::IGNORE,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            for index in 0..18_u32 {
+                let seed = 0x6c91_3ea7_u32.wrapping_add(index.wrapping_mul(13));
+                let size = 1.6 + visual_noise(seed.wrapping_add(1)) * 1.2;
+                let tint = if visual_noise(seed.wrapping_add(2)) > 0.82 {
+                    Color::srgb(1.0, 0.88, 0.68)
+                } else {
+                    Color::srgb(0.78, 0.9, 1.0)
+                };
+
+                parent
+                    .spawn((
+                        Sprite::from_color(tint.with_alpha(0.0), Vec2::splat(size)),
+                        Transform::default(),
+                        Pickable::IGNORE,
+                        AmbientPulsarCmp {
+                            seed,
+                            phase: visual_noise(seed.wrapping_add(3)),
+                            cycle_duration: 5.0 + visual_noise(seed.wrapping_add(4)) * 6.0,
+                            peak_alpha: 0.68 + visual_noise(seed.wrapping_add(5)) * 0.24,
+                        },
+                    ))
+                    .with_children(|pulsar| {
+                        for (ray_size, rotation, alpha_factor) in [
+                            (Vec2::new(size * 7.0, size * 0.24), 0.0, 0.4),
+                            (Vec2::new(size * 5.2, size * 0.18), PI * 0.5, 0.26),
+                        ] {
+                            pulsar.spawn((
+                                Sprite::from_color(tint.with_alpha(0.0), ray_size),
+                                Transform::from_rotation(Quat::from_rotation_z(rotation)),
+                                Pickable::IGNORE,
+                                AmbientPulsarRayCmp {
+                                    alpha_factor,
+                                },
+                            ));
+                        }
+                    });
+            }
+        });
+}
+
+/// Adds sparse stars and intermittent beacons between the backdrop and ownership projection.
+fn spawn_ambient_stars(commands: &mut Commands) {
+    spawn_ambient_star_layer(
+        commands,
+        AmbientStarLayer {
+            count: 420,
+            seed: 0x14d2_8a31,
+            depth: BACKGROUND_Z + 0.22,
+            camera_follow: 0.66,
+            zoom_power: 0.12,
+            drift: Vec2::new(0.28, -0.12),
+            minimum_size: 0.8,
+            size_range: 2.0,
+            minimum_base_alpha: 0.16,
+            base_alpha_range: 0.4,
+            minimum_alpha: 0.48,
+            minimum_alpha_range: 0.2,
+            pulse_power: 1.25,
+            minimum_speed: 0.22,
+            speed_range: 0.68,
+        },
+    );
+    spawn_ambient_star_layer(
+        commands,
+        AmbientStarLayer {
+            count: 280,
+            seed: 0xf274_9b13,
+            depth: BACKGROUND_Z + 0.4,
+            camera_follow: 0.43,
+            zoom_power: 0.07,
+            drift: Vec2::new(-0.34, 0.24),
+            minimum_size: 0.9,
+            size_range: 2.5,
+            minimum_base_alpha: 0.2,
+            base_alpha_range: 0.46,
+            minimum_alpha: 0.22,
+            minimum_alpha_range: 0.24,
+            pulse_power: 2.1,
+            minimum_speed: 0.4,
+            speed_range: 0.92,
+        },
+    );
+    spawn_ambient_star_layer(
+        commands,
+        AmbientStarLayer {
+            count: 220,
+            seed: 0xa8e5_3c79,
+            depth: BACKGROUND_Z + 0.56,
+            camera_follow: 0.2,
+            zoom_power: 0.03,
+            drift: Vec2::new(0.9, -0.42),
+            minimum_size: 1.2,
+            size_range: 3.4,
+            minimum_base_alpha: 0.28,
+            base_alpha_range: 0.62,
+            minimum_alpha: 0.0,
+            minimum_alpha_range: 0.16,
+            pulse_power: 3.4,
+            minimum_speed: 0.65,
+            speed_range: 1.25,
+        },
+    );
+    spawn_ambient_pulsars(commands);
+}
+
+/// Selects a planet and updates the mission origin for worlds under the player's control.
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
     state.focus_planet = None;
     state.to_selected = true;
     state.mission = false;
     state.combat_report = None;
-    if player.owns(planet) {
+    if player.owns(planet) || player.controls(planet) {
         state.mission_info.origin = planet.id;
     }
 }
@@ -292,7 +553,7 @@ pub fn draw_map(
             Sprite::from_image(assets.image("bg")),
             Transform::from_xyz(0., 0., BACKGROUND_Z),
             Pickable::default(),
-            ParallaxCmp,
+            ParallaxCmp::new(0.84, 0.6, 0.8, Vec2::ZERO),
             MapCmp,
         ))
         .observe(cursor::<Over>(SystemCursorIcon::Default))
@@ -339,6 +600,8 @@ pub fn draw_map(
             state.combat_report = None;
         });
 
+    spawn_ambient_stars(&mut commands);
+
     for planet in &map.planets {
         let planet_id = planet.id;
 
@@ -355,6 +618,14 @@ pub fn draw_map(
                 },
                 Pickable::default(),
                 PlanetCmp::new(planet.id),
+                PlanetAmbienceCmp {
+                    phase: visual_noise(planet.id as u32 + 701) * TAU,
+                    minimum_brightness: if planet.is_moon() {
+                        0.9
+                    } else {
+                        0.94
+                    },
+                },
                 MapCmp,
             ))
             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
@@ -1039,7 +1310,7 @@ pub fn update_planet_defenses(
                     Visibility::Hidden
                 };
                 if has_gate {
-                    sprite.color = color.with_alpha(0.94);
+                    sprite.color = color;
                 }
             }
         }
@@ -1268,6 +1539,251 @@ pub fn update_end_turn(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+fn wrap_around(value: f32, center: f32, span: f32) -> f32 {
+    center + (value - center + span * 0.5).rem_euclid(span) - span * 0.5
+}
+
+fn smoothstep(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
+fn comet_visibility(progress: f32) -> f32 {
+    let fade_in = smoothstep(progress / 0.12);
+    let fade_out = smoothstep((1.0 - progress) / 0.34);
+    fade_in * fade_out
+}
+
+fn pulsar_visibility(progress: f32) -> f32 {
+    let fade_in = smoothstep(progress / 0.08);
+    let fade_out = smoothstep((0.34 - progress) / 0.12);
+    fade_in * fade_out
+}
+
+fn pulsar_anchor(seed: u32, cycle: u32) -> Vec2 {
+    let cycle_seed = seed.wrapping_add(cycle.wrapping_mul(0x9e37_79b9));
+    Vec2::new(
+        (visual_noise(cycle_seed.wrapping_add(1)) - 0.5) * AMBIENT_PULSAR_FIELD_SIZE.x,
+        (visual_noise(cycle_seed.wrapping_add(2)) - 0.5) * AMBIENT_PULSAR_FIELD_SIZE.y,
+    )
+}
+
+fn next_comet_delay(sequence: u32) -> f32 {
+    if visual_noise(sequence.wrapping_add(0x713)) > 0.9 {
+        1.4 + visual_noise(sequence.wrapping_add(0x919)) * 1.8
+    } else {
+        10.0 + visual_noise(sequence.wrapping_add(0xb53)) * 17.0
+    }
+}
+
+fn spawn_ambient_comet(
+    commands: &mut Commands,
+    camera: &Transform,
+    projection: &OrthographicProjection,
+    sequence: u32,
+) {
+    let view_size = (projection.area.max - projection.area.min).max(Vec2::new(800.0, 450.0));
+    let horizontal = if visual_noise(sequence.wrapping_add(1)) < 0.5 {
+        1.0
+    } else {
+        -1.0
+    };
+    let direction =
+        Vec2::new(horizontal, (visual_noise(sequence.wrapping_add(2)) - 0.5) * 0.65).normalize();
+    let length = 90.0 + visual_noise(sequence.wrapping_add(3)) * 110.0;
+    let thickness = 0.42 + visual_noise(sequence.wrapping_add(4)) * 0.38;
+    let lifetime = 1.35 + visual_noise(sequence.wrapping_add(5)) * 0.65;
+    let travel_distance = view_size.x * (0.44 + visual_noise(sequence.wrapping_add(9)) * 0.12);
+    let speed = travel_distance / lifetime;
+    let camera_position = camera.translation.truncate();
+    let start = camera_position - direction * travel_distance * 0.5
+        + Vec2::Y * (visual_noise(sequence.wrapping_add(6)) - 0.5) * view_size.y * 0.62;
+    let tint = if visual_noise(sequence.wrapping_add(7)) > 0.84 {
+        Color::srgb(1.0, 0.78, 0.54)
+    } else {
+        Color::srgb(0.66, 0.84, 1.0)
+    };
+
+    commands
+        .spawn((
+            Transform {
+                translation: start.extend(BACKGROUND_Z + 0.72),
+                rotation: Quat::from_rotation_z(direction.y.atan2(direction.x)),
+                ..default()
+            },
+            Visibility::Inherited,
+            Pickable::IGNORE,
+            AmbientCometCmp {
+                age: 0.0,
+                lifetime,
+                velocity: direction * speed,
+                peak_alpha: 0.38 + visual_noise(sequence.wrapping_add(8)) * 0.16,
+            },
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            for (part_length, part_thickness, offset, depth, alpha_factor) in [
+                (length, thickness * 1.6, -length * 0.5, 0.0, 0.18),
+                (length * 0.72, thickness * 0.58, -length * 0.36, 0.01, 1.0),
+            ] {
+                parent.spawn((
+                    Sprite::from_color(
+                        tint.with_alpha(0.0),
+                        Vec2::new(part_length, part_thickness),
+                    ),
+                    Transform::from_xyz(offset, 0.0, depth),
+                    Pickable::IGNORE,
+                    AmbientCometPartCmp {
+                        alpha_factor,
+                    },
+                ));
+            }
+        });
+}
+
+/// Spawns and advances occasional comet streaks behind the strategic projection.
+pub(crate) fn update_ambient_comets(
+    mut commands: Commands,
+    camera_q: Single<(&Transform, &Projection), (With<MainCamera>, Without<AmbientCometCmp>)>,
+    mut spawner: ResMut<AmbientCometSpawner>,
+    mut comet_q: Query<
+        (Entity, &mut AmbientCometCmp, &mut Transform, &Children),
+        Without<MainCamera>,
+    >,
+    mut part_q: Query<(&AmbientCometPartCmp, &mut Sprite)>,
+    time: Res<Time>,
+) {
+    let (camera, projection) = camera_q.into_inner();
+    let delta = time.delta_secs();
+    for (entity, mut comet, mut transform, children) in &mut comet_q {
+        comet.age += delta;
+        let progress = comet.age / comet.lifetime;
+        if progress >= 1.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        transform.translation += (comet.velocity * delta).extend(0.0);
+        let visibility = comet_visibility(progress);
+        for child in children.iter() {
+            if let Ok((part, mut sprite)) = part_q.get_mut(child) {
+                sprite.color.set_alpha(comet.peak_alpha * part.alpha_factor * visibility);
+            }
+        }
+    }
+
+    spawner.remaining -= delta;
+    if spawner.remaining > 0.0 {
+        return;
+    }
+    let Projection::Orthographic(projection) = projection else {
+        return;
+    };
+    spawn_ambient_comet(&mut commands, camera, projection, spawner.sequence);
+    spawner.sequence = spawner.sequence.wrapping_add(1);
+    spawner.remaining = next_comet_delay(spawner.sequence);
+}
+
+/// Animates presentation-only depth cues without changing canonical world positions.
+pub(crate) fn animate_map_ambience(
+    camera_q: Single<
+        &Transform,
+        (
+            With<MainCamera>,
+            Without<ParallaxCmp>,
+            Without<AmbientStarCmp>,
+            Without<AmbientPulsarCmp>,
+            Without<PlanetCmp>,
+        ),
+    >,
+    parallax_q: Query<
+        &Transform,
+        (
+            With<ParallaxCmp>,
+            Without<MainCamera>,
+            Without<AmbientStarCmp>,
+            Without<AmbientPulsarCmp>,
+            Without<PlanetCmp>,
+        ),
+    >,
+    mut star_q: Query<
+        (&AmbientStarCmp, &ChildOf, &mut Sprite, &mut Transform),
+        (Without<MainCamera>, Without<ParallaxCmp>, Without<AmbientPulsarCmp>, Without<PlanetCmp>),
+    >,
+    mut pulsar_q: Query<
+        (&AmbientPulsarCmp, &ChildOf, &mut Sprite, &mut Transform, &Children),
+        (Without<MainCamera>, Without<ParallaxCmp>, Without<AmbientStarCmp>, Without<PlanetCmp>),
+    >,
+    mut pulsar_ray_q: Query<
+        (&AmbientPulsarRayCmp, &mut Sprite),
+        (Without<AmbientPulsarCmp>, Without<AmbientStarCmp>, Without<PlanetCmp>),
+    >,
+    mut planet_q: Query<
+        (&PlanetAmbienceCmp, &mut Sprite),
+        (
+            With<PlanetCmp>,
+            Without<AmbientStarCmp>,
+            Without<AmbientPulsarCmp>,
+            Without<MainCamera>,
+            Without<ParallaxCmp>,
+        ),
+    >,
+    time: Res<Time>,
+) {
+    let elapsed = time.elapsed_secs_f64() as f32;
+    let camera_position = camera_q.translation.truncate();
+
+    for (star, parent, mut sprite, mut transform) in &mut star_q {
+        let Ok(layer_transform) = parallax_q.get(parent.parent()) else {
+            continue;
+        };
+        let layer_scale = layer_transform.scale.x.max(f32::EPSILON);
+        let local_center = (camera_position - layer_transform.translation.truncate()) / layer_scale;
+        transform.translation.x =
+            wrap_around(star.anchor.x, local_center.x, AMBIENT_STAR_FIELD_SIZE.x);
+        transform.translation.y =
+            wrap_around(star.anchor.y, local_center.y, AMBIENT_STAR_FIELD_SIZE.y);
+
+        let pulse = (0.5 + 0.5 * (elapsed * star.speed + star.phase).sin()).powf(star.pulse_power);
+        sprite
+            .color
+            .set_alpha(star.base_alpha * (star.minimum_alpha + (1.0 - star.minimum_alpha) * pulse));
+        transform.scale = Vec3::splat(0.82 + 0.3 * pulse);
+    }
+
+    for (pulsar, parent, mut sprite, mut transform, children) in &mut pulsar_q {
+        let Ok(layer_transform) = parallax_q.get(parent.parent()) else {
+            continue;
+        };
+        let layer_scale = layer_transform.scale.x.max(f32::EPSILON);
+        let local_center = (camera_position - layer_transform.translation.truncate()) / layer_scale;
+        let cycle_position = elapsed / pulsar.cycle_duration + pulsar.phase;
+        let cycle = cycle_position.floor() as u32;
+        let progress = cycle_position.fract();
+        let anchor = pulsar_anchor(pulsar.seed, cycle);
+        transform.translation.x =
+            wrap_around(anchor.x, local_center.x, AMBIENT_PULSAR_FIELD_SIZE.x);
+        transform.translation.y =
+            wrap_around(anchor.y, local_center.y, AMBIENT_PULSAR_FIELD_SIZE.y);
+
+        let visibility = pulsar_visibility(progress);
+        sprite.color.set_alpha(pulsar.peak_alpha * visibility);
+        transform.scale = Vec3::splat(0.72 + visibility * 0.58);
+        transform.rotation = Quat::from_rotation_z(elapsed * 0.035 + pulsar.phase * TAU);
+        for child in children.iter() {
+            if let Ok((ray, mut ray_sprite)) = pulsar_ray_q.get_mut(child) {
+                ray_sprite.color.set_alpha(pulsar.peak_alpha * ray.alpha_factor * visibility);
+            }
+        }
+    }
+
+    for (ambience, mut sprite) in &mut planet_q {
+        let pulse = 0.5 + 0.5 * (elapsed * 0.45 + ambience.phase).sin();
+        let brightness = ambience.minimum_brightness + (1.0 - ambience.minimum_brightness) * pulse;
+        sprite.color = Color::srgba(brightness, brightness, brightness, 1.0);
     }
 }
 

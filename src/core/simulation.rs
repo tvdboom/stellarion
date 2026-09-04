@@ -284,6 +284,7 @@ impl GameModel {
                     || !planet_ids.contains(&mission.destination)
                     || report.planet.id != mission.destination
                     || !mission.objective.is_mission()
+                    || !mission.has_valid_return_objective()
                     || !mission.position.is_finite()
                     || mission.send > report.turn
                     || !u64::try_from(report.turn).is_ok_and(|turn| turn <= self.turn)
@@ -323,6 +324,7 @@ impl GameModel {
                 || !planet_ids.contains(&mission.destination)
                 || mission.origin == mission.destination
                 || !mission.objective.is_mission()
+                || !mission.has_valid_return_objective()
                 || mission.id == 0
                 || !mission_ids.insert(mission.id)
                 || !mission.position.is_finite()
@@ -382,9 +384,9 @@ impl PersistedGame {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TurnCommand {
-    /// Adds testing resources and units in an isolated one-player practice match.
+    /// Adds debug-only testing resources and units to a local turn draft.
     PracticeBoost {
-        /// Limits the boost to the player's owned planets and controlled moons when true.
+        /// Limits the boost to the player's owned or controlled worlds when true.
         owned_worlds_only: bool,
     },
     /// Queues one or more identical units on a controlled planet.
@@ -721,18 +723,17 @@ fn apply_practice_boost(
     player_id: PlayerId,
     owned_worlds_only: bool,
 ) -> Result<(), GameError> {
-    if !model.rules.practice_mode {
-        return invalid(player_id, "testing shortcuts are only available in local practice");
-    }
     model.player_mut(player_id)?.resources += 1_000usize;
     for planet in model.map.planets.iter_mut().filter(|planet| {
-        !owned_worlds_only
-            || planet.owned == Some(player_id)
-            || (planet.is_moon() && planet.controlled == Some(player_id))
+        !planet.is_destroyed
+            && (!owned_worlds_only
+                || planet.owned == Some(player_id)
+                || planet.controlled == Some(player_id))
     }) {
-        // Practice boosts deliberately ignore normal construction rosters and lunar field limits.
-        for unit in Unit::all().iter().flatten() {
-            let amount = planet.army.entry(*unit).or_default();
+        // Testing shortcuts bypass costs and capacity, but never create a unit on a world where
+        // that unit cannot normally be constructed.
+        for unit in Unit::all_valid(planet.is_moon()).into_iter().flatten() {
+            let amount = planet.army.entry(unit).or_default();
             if unit.is_building() {
                 *amount = Building::MAX_LEVEL;
             } else {
@@ -952,9 +953,7 @@ fn apply_mission(
             *available = available.saturating_sub(*count);
         }
     }
-    if !origin.has_fleet() && origin.owned != Some(player_id) && !origin.is_moon() {
-        origin.controlled = None;
-    }
+    origin.release_control_if_vacant();
     model.missions.push(mission);
     Ok(())
 }
@@ -1017,22 +1016,25 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 "\n- ({turn}) Spied on planet {}.",
                                 destination.name
                             ));
-                            new_missions.push(Mission::new_with_id(
-                                next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
-                                turn,
-                                report.mission.owner,
-                                destination,
-                                &new_origin,
-                                Icon::Deploy,
-                                report.surviving_attacker.clone(),
-                                BombingRaid::None,
-                                false,
-                                false,
-                                Some(format!(
-                                    "{}\n- ({turn}) Returning to planet {}.",
-                                    report.mission.logs, new_origin.name
-                                )),
-                            ));
+                            new_missions.push(
+                                Mission::new_with_id(
+                                    next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
+                                    turn,
+                                    report.mission.owner,
+                                    destination,
+                                    &new_origin,
+                                    Icon::Deploy,
+                                    report.surviving_attacker.clone(),
+                                    BombingRaid::None,
+                                    false,
+                                    false,
+                                    Some(format!(
+                                        "{}\n- ({turn}) Returning to planet {}.",
+                                        report.mission.logs, new_origin.name
+                                    )),
+                                )
+                                .with_return_objective(Icon::Spy),
+                            );
                         } else if report.mission.objective != Icon::Destroy
                             || report.winner() != Some(mission.owner)
                         {
@@ -1080,7 +1082,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             })
                             .collect::<Army>();
                         if retreat.has_army() {
-                            new_missions.push(Mission::new_with_id(
+                            let return_mission = Mission::new_with_id(
                                 next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
                                 turn,
                                 mission.owner,
@@ -1095,7 +1097,12 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     "{}\n- ({turn}) Combat stalemate; returning to {}.",
                                     report.mission.logs, new_origin.name
                                 )),
-                            ));
+                            );
+                            new_missions.push(if mission.objective == Icon::Destroy {
+                                return_mission.with_return_objective(Icon::Destroy)
+                            } else {
+                                return_mission
+                            });
                         }
                     }
 
@@ -1113,22 +1120,25 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     destination.name
                                 ));
                             }
-                            new_missions.push(Mission::new_with_id(
-                                next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
-                                turn,
-                                report.mission.owner,
-                                destination,
-                                &new_origin,
-                                Icon::Deploy,
-                                report.surviving_attacker.clone(),
-                                BombingRaid::None,
-                                false,
-                                false,
-                                Some(format!(
-                                    "{}\n- ({turn}) Returning to planet {}.",
-                                    report.mission.logs, new_origin.name
-                                )),
-                            ));
+                            new_missions.push(
+                                Mission::new_with_id(
+                                    next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
+                                    turn,
+                                    report.mission.owner,
+                                    destination,
+                                    &new_origin,
+                                    Icon::Deploy,
+                                    report.surviving_attacker.clone(),
+                                    BombingRaid::None,
+                                    false,
+                                    false,
+                                    Some(format!(
+                                        "{}\n- ({turn}) Returning to planet {}.",
+                                        report.mission.logs, new_origin.name
+                                    )),
+                                )
+                                .with_return_objective(Icon::Destroy),
+                            );
                         } else if report.planet_colonized {
                             if let Some(count) =
                                 report.surviving_attacker.get_mut(&Unit::colony_ship())
@@ -1310,6 +1320,9 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
         ));
     }
     if old_objective != mission.objective {
+        if mission.objective != Icon::Deploy {
+            mission.return_objective = None;
+        }
         mission.logs.push_str(&format!(
             "\n- ({turn}) Objective changed to {}.",
             mission.objective.to_name()

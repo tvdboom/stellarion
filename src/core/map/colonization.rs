@@ -1,6 +1,6 @@
-//! Client-only celebration of newly owned colonies; never changes the simulation.
+//! Client-only presentation of colony ownership changes; never changes the simulation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::TAU;
 
 use bevy::asset::RenderAssetUsages;
@@ -16,16 +16,24 @@ use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
+use crate::core::simulation::TurnCommand;
 use crate::core::states::{AppState, GameState};
-use crate::multiplayer::client::MultiplayerSession;
+use crate::multiplayer::client::PendingTurnCommands;
 
 const CELEBRATION_SECONDS: f32 = 4.2;
 const WAVE_BANDS: usize = 4;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ColonyEvent {
     Colonized,
     Conquered,
+    Abandoned,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum ColonyAnnouncement {
+    Acquired,
+    Abandoned,
 }
 
 impl ColonyEvent {
@@ -47,6 +55,7 @@ impl ColonyEvent {
         match self {
             Self::Colonized => "PLANET COLONIZED",
             Self::Conquered => "PLANET CONQUERED",
+            Self::Abandoned => "PLANET ABANDONED",
         }
     }
 
@@ -54,6 +63,24 @@ impl ColonyEvent {
         match self {
             Self::Colonized => format!("Planet {} has been colonized.", planet.name),
             Self::Conquered => format!("Planet {} has been conquered.", planet.name),
+            Self::Abandoned => format!("Planet {} has been abandoned.", planet.name),
+        }
+    }
+
+    fn still_applies(self, planet: &Planet, player: &Player) -> bool {
+        if planet.is_destroyed {
+            return false;
+        }
+        match self {
+            Self::Colonized | Self::Conquered => player.owns(planet),
+            Self::Abandoned => planet.owned.is_none(),
+        }
+    }
+
+    fn announcement(self) -> ColonyAnnouncement {
+        match self {
+            Self::Colonized | Self::Conquered => ColonyAnnouncement::Acquired,
+            Self::Abandoned => ColonyAnnouncement::Abandoned,
         }
     }
 }
@@ -62,8 +89,8 @@ impl ColonyEvent {
 #[derive(Resource, Default)]
 struct Colonies {
     owned: BTreeSet<PlanetId>,
-    pending: BTreeSet<PlanetId>,
-    announced: BTreeSet<PlanetId>,
+    pending: BTreeMap<PlanetId, ColonyEvent>,
+    announced: BTreeSet<(PlanetId, ColonyAnnouncement)>,
     turn: usize,
 }
 
@@ -76,21 +103,39 @@ fn owned_colonies(map: &Map, player: &Player) -> BTreeSet<PlanetId> {
 }
 
 impl Colonies {
-    fn observe(&mut self, map: &Map, player: &Player, turn: usize) -> bool {
+    fn observe(
+        &mut self,
+        map: &Map,
+        player: &Player,
+        pending_commands: &PendingTurnCommands,
+        turn: usize,
+    ) -> bool {
         if self.turn != turn {
             self.turn = turn;
             self.announced.clear();
         }
         let owned = owned_colonies(map, player);
-        let mut added = false;
+        let mut changed = false;
         for &planet in owned.difference(&self.owned) {
-            if !self.announced.contains(&planet) {
-                added |= self.pending.insert(planet);
+            let event = ColonyEvent::for_world(player, planet, turn);
+            if !self.announced.contains(&(planet, event.announcement())) {
+                changed |= self.pending.insert(planet, event) != Some(event);
             }
         }
-        self.pending.retain(|planet| owned.contains(planet));
+        for &planet in self.owned.difference(&owned) {
+            let was_abandoned = pending_commands.commands.iter().any(|command| {
+                matches!(command, TurnCommand::AbandonPlanet { planet_id } if *planet_id == planet)
+            });
+            if was_abandoned && !self.announced.contains(&(planet, ColonyAnnouncement::Abandoned)) {
+                changed |= self.pending.insert(planet, ColonyEvent::Abandoned)
+                    != Some(ColonyEvent::Abandoned);
+            }
+        }
+        self.pending.retain(|planet, event| {
+            map.try_get(*planet).is_some_and(|world| event.still_applies(world, player))
+        });
         self.owned = owned;
-        added
+        changed
     }
 }
 
@@ -111,6 +156,7 @@ fn initialize_colonies(
 #[derive(Component)]
 struct ColonyEffect {
     planet: PlanetId,
+    event: ColonyEvent,
     timer: Timer,
 }
 
@@ -138,9 +184,9 @@ fn celebrate_colonies(
     mut colonies: ResMut<Colonies>,
     map: Res<Map>,
     player: Res<Player>,
+    pending_commands: Res<PendingTurnCommands>,
     settings: Res<Settings>,
     game_state: Res<State<GameState>>,
-    session: Res<MultiplayerSession>,
     cells: Query<(&VoronoiCmp, &Mesh2d)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -148,7 +194,7 @@ fn celebrate_colonies(
     mut messages: MessageWriter<MessageMsg>,
 ) {
     if (map.is_changed() || player.is_changed() || settings.turn != colonies.turn)
-        && colonies.observe(&map, &player, settings.turn)
+        && colonies.observe(&map, &player, &pending_commands, settings.turn)
     {
         // The new projection's StartTurnMsg runs next frame and may open combat first.
         return;
@@ -157,12 +203,12 @@ fn celebrate_colonies(
         return;
     }
 
-    for id in std::mem::take(&mut colonies.pending) {
-        let Some(planet) = map.try_get(id).filter(|planet| player.owns(planet)) else {
+    for (id, event) in std::mem::take(&mut colonies.pending) {
+        let Some(planet) = map.try_get(id).filter(|planet| event.still_applies(planet, &player))
+        else {
             continue;
         };
-        let event = ColonyEvent::for_world(&player, id, settings.turn);
-        colonies.announced.insert(id);
+        colonies.announced.insert((id, event.announcement()));
         messages.write(
             MessageMsg::info(event.message(planet)).with_action(MessageAction::FocusColony(id)),
         );
@@ -175,7 +221,7 @@ fn celebrate_colonies(
             &mut commands,
             planet,
             event,
-            session.player_color(player.id).color(),
+            player.color().color(),
             boundary,
             &mut meshes,
             &mut materials,
@@ -195,6 +241,7 @@ fn spawn_celebration(
     assets: &WorldAssets,
 ) {
     let size = planet.size();
+    let label_y = super::aftermath_label_y(size, 0);
     let glow = meshes.add(glow_mesh());
     let ring = meshes.add(Annulus::new(0.965, 1.0));
     commands
@@ -205,6 +252,7 @@ fn spawn_celebration(
             MapCmp,
             ColonyEffect {
                 planet: planet.id,
+                event,
                 timer: Timer::from_seconds(CELEBRATION_SECONDS, TimerMode::Once),
             },
         ))
@@ -234,7 +282,7 @@ fn spawn_celebration(
             ] {
                 parent.spawn((
                     Mesh2d(glow.clone()),
-                    MeshMaterial2d(materials.add(Color::srgb(0.84, 0.93, 1.0).with_alpha(0.0))),
+                    MeshMaterial2d(materials.add(color.with_alpha(0.0))),
                     Transform::from_xyz(size * 0.18, size * 0.12, PLANET_Z + 1.2),
                     Pickable::IGNORE,
                     EffectPart::Flare {
@@ -262,10 +310,10 @@ fn spawn_celebration(
                     ..default()
                 },
                 TextColor(color.with_alpha(0.0)),
-                Transform::from_xyz(0.0, -size * 0.8, PLANET_Z + 1.3),
+                Transform::from_xyz(0.0, label_y, PLANET_Z + 1.3),
                 Pickable::IGNORE,
                 EffectPart::Label {
-                    y: -size * 0.8,
+                    y: label_y,
                 },
             ));
         });
@@ -344,7 +392,7 @@ fn advance_wave(mesh: &mut Mesh, boundary: &[Vec2], radius: f32) {
     }
 }
 
-/// Pauses behind overlays and despawns all effect children when finished or ownership is lost.
+/// Pauses behind overlays and removes an effect when it finishes or its ownership change is undone.
 fn animate_colonies(
     mut commands: Commands,
     time: Res<Time>,
@@ -364,7 +412,10 @@ fn animate_colonies(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for (entity, mut effect, children, mut visibility) in &mut effects {
-        if !map.try_get(effect.planet).is_some_and(|p| player.owns(p) && !p.is_destroyed) {
+        if !map
+            .try_get(effect.planet)
+            .is_some_and(|planet| effect.event.still_applies(planet, &player))
+        {
             commands.entity(entity).despawn();
             continue;
         }
@@ -421,7 +472,7 @@ fn animate_colonies(
                     y,
                 } => {
                     let fade_in = ((elapsed - 0.55) / 0.4).clamp(0.0, 1.0);
-                    transform.translation.y = y - 10.0 * fade_in;
+                    transform.translation.y = y + 10.0 * (1.0 - fade_in);
                     fade_in * ((CELEBRATION_SECONDS - elapsed) / 0.8).clamp(0.0, 1.0)
                 },
             };

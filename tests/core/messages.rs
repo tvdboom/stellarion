@@ -152,6 +152,64 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
 }
 
 #[test]
+fn spy_toast_click_opens_the_requested_mission_report() {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 640.0));
+    let mut messages = Messages::default();
+    messages.push(
+        &MessageMsg::info("Spy mission successful at planet Ganymede.")
+            .with_action(MessageAction::OpenMissionReport(42)),
+    );
+    let frame = |events| {
+        let mut clicked = None;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..default()
+            },
+            |ui| clicked = draw_notifications(ui.ctx(), &messages, true),
+        );
+        output.textures_delta.clear();
+        clicked
+    };
+    frame(vec![]);
+    frame(vec![]);
+    let rect = context
+        .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
+        .unwrap();
+    let pos = rect.center();
+    frame(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: default(),
+        },
+    ]);
+    let clicked = frame(vec![egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: default(),
+    }]);
+    assert_eq!(clicked, Some((0, MessageAction::OpenMissionReport(42))));
+
+    let mut state = UiState {
+        planet_selected: Some(7),
+        combat_report: Some(3),
+        ..default()
+    };
+    open_mission_reports(&mut state, Some(42));
+    assert_eq!(state.planet_selected, None);
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::MissionReports);
+    assert_eq!(state.mission_report, Some(42));
+    assert_eq!(state.combat_report, None);
+}
+
+#[test]
 fn colony_toast_selects_and_centers_using_the_planet_click_path() {
     let mut model = GameModel::new([8; 32], GameRules::default()).unwrap();
     model.start().unwrap();
@@ -179,4 +237,22 @@ fn colony_toast_selects_and_centers_using_the_planet_click_path() {
     model.map.get_mut(planet).is_destroyed = true;
     assert!(!focus_colony(planet, &model.map, player, &mut state));
     assert!(!state.to_selected);
+}
+
+#[test]
+fn return_toast_opens_the_reports_panel_without_selecting_a_hidden_report() {
+    let mut state = UiState {
+        planet_selected: Some(4),
+        mission_report: Some(17),
+        combat_report: Some(9),
+        ..default()
+    };
+
+    open_mission_reports(&mut state, None);
+
+    assert_eq!(state.planet_selected, None);
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::MissionReports);
+    assert_eq!(state.mission_report, Some(17), "the last visible report remains selected");
+    assert_eq!(state.combat_report, None);
 }

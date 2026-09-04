@@ -1,13 +1,16 @@
 //! Bevy turn-boundary presentation and submission adapter around the deterministic core.
 
+use std::collections::BTreeSet;
+
 use bevy::prelude::*;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
-use crate::core::combat::report::Side;
+use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::EXPLOSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Mission;
@@ -65,11 +68,111 @@ pub fn check_turn_ended(
     }
 }
 
+fn report_notification(
+    report: &MissionReport,
+    player: &Player,
+    origin: &Planet,
+    destination: &Planet,
+) -> MessageMsg {
+    let notification = match report.mission.objective {
+        Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
+            let probes_only =
+                report.mission.army.len() == 1 && report.mission.army.contains_key(&Unit::probe());
+            MessageMsg::info(format!(
+                "{} returned from planet {}.",
+                if probes_only {
+                    "Probes"
+                } else {
+                    "Fleet"
+                },
+                origin.name
+            ))
+        },
+        Icon::Deploy => MessageMsg::info(format!("Deployed fleet to planet {}.", destination.name)),
+        Icon::Colonize if report.planet_colonized => {
+            let text = if report.mission.owner == player.id {
+                if report.planet.has_buildings() {
+                    format!("Planet {} has been conquered.", destination.name)
+                } else {
+                    format!("Planet {} has been colonized.", destination.name)
+                }
+            } else {
+                format!("Planet {} has been conquered by an enemy.", destination.name)
+            };
+            if report.mission.owner == player.id {
+                MessageMsg::info(text)
+            } else {
+                MessageMsg::warning(text)
+            }
+        },
+        Icon::Spy => {
+            let text = if report.mission.owner == player.id && report.scout_probes > 0 {
+                format!("Spy mission successful at planet {}.", destination.name)
+            } else if report.mission.owner == player.id {
+                format!("Spy mission failed at planet {}; all probes were lost.", destination.name)
+            } else {
+                format!("Enemy probes were detected around planet {}.", destination.name)
+            };
+            if report.mission.owner == player.id && report.scout_probes > 0 {
+                MessageMsg::info(text)
+            } else {
+                MessageMsg::warning(text)
+            }
+        },
+        Icon::MissileStrike => {
+            let own = report.mission.owner == player.id;
+            let text = if own {
+                format!("Successful missile strike on planet {}.", destination.name)
+            } else {
+                format!("Planet {} was hit by a missile strike.", destination.name)
+            };
+            if own {
+                MessageMsg::info(text)
+            } else {
+                MessageMsg::warning(text)
+            }
+        },
+        Icon::Destroy if report.planet_destroyed => {
+            MessageMsg::warning(format!("Planet {} has been destroyed.", destination.name))
+        },
+        _ if report.is_stalemate() => MessageMsg::info(format!(
+            "Battle at planet {} ended in a draw; the attacking fleet is returning.",
+            destination.name
+        )),
+        _ if report.winner() == Some(player.id) => {
+            MessageMsg::info(format!("Battle won at planet {}.", destination.name))
+        },
+        _ => MessageMsg::warning(format!("Battle lost at planet {}.", destination.name)),
+    };
+    notification.with_action(if report.hidden {
+        MessageAction::OpenMissionReports
+    } else {
+        MessageAction::OpenMissionReport(report.mission.id)
+    })
+}
+
+fn should_start_planet_destruction(
+    planet: &Planet,
+    reports: &[&MissionReport],
+    turn: usize,
+    animating_planets: &mut BTreeSet<PlanetId>,
+) -> bool {
+    planet.is_destroyed
+        && planet.image != 0
+        && reports.iter().any(|report| {
+            report.turn == turn
+                && report.planet_destroyed
+                && report.mission.destination == planet.id
+        })
+        && animating_planets.insert(planet.id)
+}
+
 /// Resets local presentation, announces reports, and spawns destruction effects for a new turn.
 pub fn start_turn(
     mut commands: Commands,
     mut start_turn_messages: MessageReader<StartTurnMsg>,
     planet_query: Query<(&Transform, &PlanetCmp)>,
+    active_destructions: Query<&ExplosionCmp>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
     map: Res<Map>,
@@ -80,6 +183,9 @@ pub fn start_turn(
     mut next_game_state: ResMut<NextState<GameState>>,
     assets: Res<WorldAssets>,
 ) {
+    let mut animating_planets =
+        active_destructions.iter().map(|effect| effect.planet).collect::<BTreeSet<_>>();
+
     for request in start_turn_messages.read() {
         *state = UiState {
             mission_hover: None,
@@ -93,6 +199,13 @@ pub fn start_turn(
             .iter()
             .filter(|report| report.turn == settings.turn && !report.hidden)
             .collect::<Vec<_>>();
+        let returned_reports = player.reports.iter().filter(|report| {
+            report.turn == settings.turn
+                && report.hidden
+                && report.mission.owner == player.id
+                && report.mission.objective == Icon::Deploy
+                && report.mission.origin_controlled != Some(player.id)
+        });
 
         if !request.skip_battle
             && new_reports.iter().any(|report| {
@@ -114,7 +227,21 @@ pub fn start_turn(
         }
         messages.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
 
-        for planet in map.planets.iter().filter(|planet| planet.is_destroyed && planet.image != 0) {
+        for report in returned_reports {
+            let origin = map.get(report.mission.origin);
+            let destination = map.get(report.mission.destination);
+            messages.write(report_notification(report, &player, origin, destination));
+        }
+
+        for planet in &map.planets {
+            if !should_start_planet_destruction(
+                planet,
+                &new_reports,
+                settings.turn,
+                &mut animating_planets,
+            ) {
+                continue;
+            }
             let Some((transform, _)) =
                 planet_query.iter().find(|(_, marker)| marker.id == planet.id)
             else {
@@ -150,81 +277,7 @@ pub fn start_turn(
             {
                 continue;
             }
-            let notification = match report.mission.objective {
-                Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
-                    let probes_only = report.mission.army.len() == 1
-                        && report.mission.army.contains_key(&Unit::probe());
-                    MessageMsg::info(format!(
-                        "{} returned from planet {}.",
-                        if probes_only {
-                            "Probes"
-                        } else {
-                            "Fleet"
-                        },
-                        origin.name
-                    ))
-                },
-                Icon::Deploy => {
-                    MessageMsg::info(format!("Deployed fleet to planet {}.", destination.name))
-                },
-                Icon::Colonize if report.planet_colonized => {
-                    let text = if report.mission.owner == player.id {
-                        if report.planet.has_buildings() {
-                            format!("Planet {} has been conquered.", destination.name)
-                        } else {
-                            format!("Planet {} has been colonized.", destination.name)
-                        }
-                    } else {
-                        format!("Planet {} has been conquered by an enemy.", destination.name)
-                    };
-                    if report.mission.owner == player.id {
-                        MessageMsg::info(text)
-                    } else {
-                        MessageMsg::warning(text)
-                    }
-                },
-                Icon::Spy => {
-                    let text = if report.mission.owner == player.id && report.scout_probes > 0 {
-                        format!("Successful spy mission on planet {}.", destination.name)
-                    } else if report.mission.owner == player.id {
-                        format!("All probes lost while spying planet {}.", destination.name)
-                    } else {
-                        format!("Enemy probes were detected around planet {}.", destination.name)
-                    };
-                    if report.mission.owner == player.id && report.scout_probes > 0 {
-                        MessageMsg::info(text)
-                    } else {
-                        MessageMsg::warning(text)
-                    }
-                },
-                Icon::MissileStrike => {
-                    let own = report.mission.owner == player.id;
-                    let text = if own {
-                        format!("Successful missile strike on planet {}.", destination.name)
-                    } else {
-                        format!("Planet {} was hit by a missile strike.", destination.name)
-                    };
-                    if own {
-                        MessageMsg::info(text)
-                    } else {
-                        MessageMsg::warning(text)
-                    }
-                },
-                Icon::Destroy if report.planet_destroyed => {
-                    MessageMsg::warning(format!("Planet {} has been destroyed.", destination.name))
-                },
-                _ if report.is_stalemate() => MessageMsg::info(format!(
-                    "Battle at planet {} ended in a draw; the attacking fleet is returning.",
-                    destination.name
-                )),
-                _ if report.winner() == Some(player.id) => {
-                    MessageMsg::info(format!("Battle won at planet {}.", destination.name))
-                },
-                _ => MessageMsg::warning(format!("Battle lost at planet {}.", destination.name)),
-            };
-            messages.write(
-                notification.with_action(MessageAction::OpenMissionReport(report.mission.id)),
-            );
+            messages.write(report_notification(report, &player, origin, destination));
         }
 
         if let Some(last) = new_reports.last() {

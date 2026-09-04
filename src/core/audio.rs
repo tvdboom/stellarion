@@ -32,6 +32,9 @@ pub enum SoundEffect {
 }
 
 impl SoundEffect {
+    /// Gain for the mission launch confirmation, in decibels.
+    pub const MISSION_LAUNCH_VOLUME: f32 = -18.0;
+
     /// Selects the confirmation for a successfully queued purchase.
     pub fn purchase(unit: Unit) -> Self {
         match unit {
@@ -41,14 +44,18 @@ impl SoundEffect {
         }
     }
 
-    /// Creates a one-shot request without per-cue attenuation.
+    /// Creates a one-shot request with the cue's configured gain.
     pub fn request(self) -> PlayAudioMsg {
         let name = match self {
             Self::Button => "ui-click",
             Self::ShipPurchased | Self::BuildingQueued | Self::DefensePurchased => "construction",
             Self::MissionLaunched => "launch",
         };
-        PlayAudioMsg::new(name)
+        let mut request = PlayAudioMsg::new(name);
+        if self == Self::MissionLaunched {
+            request.volume = Self::MISSION_LAUNCH_VOLUME;
+        }
+        request
     }
 }
 
@@ -111,6 +118,8 @@ pub struct PlayingAudio(pub HashMap<&'static str, Vec<Handle<AudioInstance>>>);
 
 impl PlayingAudio {
     pub const BACKGROUND_VOLUME: f32 = -30.;
+    /// Gain for the continuous hovered-mission booster ambience, in decibels.
+    pub const AMBIENCE_VOLUME: f32 = -12.;
     pub const TWEEN: AudioTween = AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2));
 }
 
@@ -137,6 +146,13 @@ impl PlayAudioMsg {
 
     /// Repeats an effect at its normal volume until explicitly stopped.
     pub fn looped(mut self) -> Self {
+        self.is_looped = true;
+        self
+    }
+
+    /// Repeats a quiet ambience while leaving it available in effects-only mode.
+    pub fn ambience(mut self) -> Self {
+        self.volume = PlayingAudio::AMBIENCE_VOLUME;
         self.is_looped = true;
         self
     }
@@ -286,7 +302,7 @@ pub fn play_music(mut play_audio_msg: MessageWriter<PlayAudioMsg>) {
     play_audio_msg.write(PlayAudioMsg::new("music").background());
 }
 
-/// Keeps one booster loop active only while a visible mission is hovered during play.
+/// Keeps one quiet booster loop active only while a visible map mission is hovered during play.
 pub fn update_mission_hover_audio(
     state: Option<Res<UiState>>,
     missions: Option<Res<Missions>>,
@@ -303,11 +319,12 @@ pub fn update_mission_hover_audio(
         && settings.audio != AudioState::Mute
         && windows.iter().any(|window| window.focused && window.cursor_position().is_some())
         && state.zip(missions).is_some_and(|(state, missions)| {
-            state.mission_hover.is_some_and(|id| missions.get(id).is_some())
+            !state.mission_hover_from_ui
+                && state.mission_hover.is_some_and(|id| missions.get(id).is_some())
         });
     if hovered != *playing {
         if hovered {
-            play.write(PlayAudioMsg::new("booster").looped());
+            play.write(PlayAudioMsg::new("booster").ambience());
         } else {
             stop.write(StopAudioMsg::new("booster"));
         }

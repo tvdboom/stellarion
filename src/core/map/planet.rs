@@ -290,7 +290,9 @@ impl Planet {
 
     /// Returns the runtime image key for this value.
     pub fn image(&self) -> String {
-        if self.is_moon() {
+        if self.is_destroyed {
+            "destroy".to_string()
+        } else if self.is_moon() {
             format!("moon{}", self.image)
         } else {
             format!("planet{}", self.image)
@@ -357,11 +359,16 @@ impl Planet {
 
     /// Removes ownership and owner-only infrastructure from this planet.
     pub fn abandon(&mut self) {
-        self.owned = None;
+        let former_owner = self.owned.take();
         self.army.retain(|u, _| !u.is_defense());
-        if !self.has_fleet() {
-            self.controlled = None;
-        }
+        self.controlled = if self.has_fleet() {
+            // Ownership implies control, so use it as the authority when converting an owned
+            // planet into a merely controlled one. Presentation projections may temporarily
+            // omit the redundant `controlled` value for an owned planet.
+            former_owner.or(self.controlled)
+        } else {
+            None
+        };
     }
 
     /// Returns the bounded War Sun destruction chance for the current turn.
@@ -492,6 +499,13 @@ impl Planet {
         self.army.iter().any(|(u, c)| u.is_defense() && *c > 0)
     }
 
+    /// Releases control after a fleet departs when no infrastructure or ships remain.
+    pub fn release_control_if_vacant(&mut self) {
+        if !self.has_buildings() && !self.has_fleet() {
+            self.controlled = None;
+        }
+    }
+
     /// Merge a fleet into the planet's fleet
     pub fn dock(&mut self, army: Army) {
         for (unit, count) in army {
@@ -500,7 +514,7 @@ impl Planet {
         }
     }
 
-    /// Destroy this planet (image changes when resolving the animation)
+    /// Permanently destroys this planet and clears all ownership and stationed units.
     pub fn destroy(&mut self) {
         self.owned = None;
         self.controlled = None;

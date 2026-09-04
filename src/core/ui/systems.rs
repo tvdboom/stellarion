@@ -99,7 +99,11 @@ pub enum MissionTab {
 /// Local-only panel, selection, hover, and report navigation state.
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
+    /// Mission-panel world hover, which previews known units without map or planet details.
+    pub(crate) mission_planet_hover: Option<PlanetId>,
     pub planet_selected: Option<PlanetId>,
+    /// Planet awaiting confirmation before its abandon command is added to the turn draft.
+    pub(crate) abandon_confirmation: Option<PlanetId>,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
     pub to_selected: bool,
@@ -123,6 +127,161 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanetPanelMode {
+    Full,
+    UnitsOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AbandonConfirmationAction {
+    Confirm,
+    Cancel,
+}
+
+const ABANDON_CONFIRMATION_TEXT_COLOR: Color32 = Color32::from_rgb(166, 188, 211);
+const ABANDON_CONFIRMATION_BUTTON_FILL: Color32 = Color32::from_rgb(18, 28, 39);
+
+fn visible_planet_panel(state: &UiState) -> Option<(PlanetId, PlanetPanelMode)> {
+    state.mission_planet_hover.map(|id| (id, PlanetPanelMode::UnitsOnly)).or_else(|| {
+        state.planet_hover.or(state.planet_selected).map(|id| (id, PlanetPanelMode::Full))
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlanetPanelSlideTarget {
+    id: PlanetId,
+    mode: PlanetPanelMode,
+    right_side: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct PlanetPanelSlide {
+    target: Option<PlanetPanelSlideTarget>,
+    elapsed: f32,
+}
+
+impl PlanetPanelSlide {
+    fn progress(&mut self, target: PlanetPanelSlideTarget, delta_seconds: f32) -> f32 {
+        if self.target != Some(target) {
+            self.target = Some(target);
+            self.elapsed = 0.0;
+        } else {
+            self.elapsed = (self.elapsed + delta_seconds.max(0.0)).min(PLANET_PANEL_TOTAL_DURATION);
+        }
+
+        (self.elapsed / PLANET_PANEL_SLIDE_DURATION).min(1.0)
+    }
+
+    fn detail_progress(&self, line: usize) -> f32 {
+        if self.elapsed >= PLANET_PANEL_TOTAL_DURATION {
+            return 1.0;
+        }
+        let start = PLANET_PANEL_SLIDE_DURATION + line as f32 * PLANET_DETAIL_LINE_STAGGER;
+        ((self.elapsed - start) / PLANET_DETAIL_LINE_DURATION).clamp(0.0, 1.0)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.target.is_some() && self.elapsed < PLANET_PANEL_TOTAL_DURATION
+    }
+
+    fn hide(&mut self) {
+        self.target = None;
+        self.elapsed = 0.0;
+    }
+}
+
+const PLANET_PANEL_SLIDE_DURATION: f32 = 0.22;
+const PLANET_DETAIL_LINE_DURATION: f32 = 0.12;
+const PLANET_DETAIL_LINE_STAGGER: f32 = 0.04;
+const PLANET_DETAIL_LINE_COUNT: usize = 4;
+const PLANET_PANEL_TOTAL_DURATION: f32 = PLANET_PANEL_SLIDE_DURATION
+    + PLANET_DETAIL_LINE_STAGGER * (PLANET_DETAIL_LINE_COUNT - 1) as f32
+    + PLANET_DETAIL_LINE_DURATION;
+
+/// Returns the horizontal remainder of a fast cubic ease-out from the viewport edge.
+fn planet_panel_slide_offset(progress: f32, right_side: bool, distance: f32) -> f32 {
+    let remaining = (1.0 - progress.clamp(0.0, 1.0)).powi(3) * distance.max(0.0);
+    if right_side {
+        remaining
+    } else {
+        -remaining
+    }
+}
+
+/// Lays text out at its final position while painting it as a clipped horizontal entrance.
+fn draw_sliding_text(ui: &mut Ui, text: RichText, progress: f32, right_side: bool) -> Response {
+    let (position, galley, response) = egui::Label::new(text).selectable(false).layout_in_ui(ui);
+    let offset = planet_panel_slide_offset(progress, right_side, galley.size().x);
+    let text_color = ui.visuals().text_color();
+    ui.painter().with_clip_rect(response.rect).add(egui::epaint::TextShape::new(
+        position + egui::vec2(offset, 0.0),
+        galley,
+        text_color,
+    ));
+    response
+}
+
+const MISSION_HOVER_FLEET_WIDTH: f32 = 110.0;
+const MISSION_HOVER_INFO_WIDTH: f32 = 330.0;
+const MISSION_HOVER_PANEL_GAP: f32 = 1.0;
+
+const HUD_PANEL_FILL: Color32 = Color32::from_rgba_unmultiplied_const(10, 16, 23, 226);
+const HUD_PANEL_STROKE: Color32 = Color32::from_rgba_unmultiplied_const(130, 170, 215, 95);
+const HUD_REFERENCE_WIDTH: f32 = 1280.0;
+const HUD_REFERENCE_HEIGHT: f32 = 720.0;
+const HUD_MIN_SCALE: f32 = 0.8;
+const HUD_MAX_SCALE: f32 = 1.6;
+
+/// Scales the strategic HUD with the limiting viewport dimension, within readable bounds.
+fn strategic_hud_scale(viewport: egui::Vec2) -> f32 {
+    (viewport.x / HUD_REFERENCE_WIDTH)
+        .min(viewport.y / HUD_REFERENCE_HEIGHT)
+        .clamp(HUD_MIN_SCALE, HUD_MAX_SCALE)
+}
+
+/// Keeps the world shortcuts readable on short screens while still growing them on large ones.
+fn owned_worlds_hud_scale(viewport: egui::Vec2) -> f32 {
+    strategic_hud_scale(viewport).max(1.0)
+}
+
+fn scaled_margin(horizontal: f32, vertical: f32, scale: f32) -> egui::Margin {
+    egui::Margin::symmetric((horizontal * scale).round() as i8, (vertical * scale).round() as i8)
+}
+
+/// Builds the translucent frame shared by the compact strategic HUD widgets.
+fn hud_panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(HUD_PANEL_FILL)
+        .stroke(Stroke::new(1.0, HUD_PANEL_STROKE))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(9, 9))
+}
+
+fn scaled_hud_panel_frame(scale: f32) -> egui::Frame {
+    hud_panel_frame()
+        .stroke(Stroke::new(scale, HUD_PANEL_STROKE))
+        .corner_radius((6.0 * scale).round() as u8)
+        .inner_margin(scaled_margin(9.0, 9.0, scale))
+}
+
+/// Places mission hover panels at the screen edge opposite the pointer.
+fn mission_hover_panel_x_positions(cursor_x: Option<f32>, viewport_width: f32) -> (f32, f32) {
+    let panels_on_right = cursor_x.is_none_or(|x| x < viewport_width * 0.5);
+    let left_edge = viewport_width * 0.002;
+    let right_edge = viewport_width * 0.998;
+
+    if panels_on_right {
+        let fleet_x = right_edge - MISSION_HOVER_FLEET_WIDTH;
+        let info_x = fleet_x - MISSION_HOVER_PANEL_GAP - MISSION_HOVER_INFO_WIDTH;
+        (fleet_x, info_x)
+    } else {
+        let fleet_x = left_edge;
+        let info_x = fleet_x + MISSION_HOVER_FLEET_WIDTH + MISSION_HOVER_PANEL_GAP;
+        (fleet_x, info_x)
+    }
+}
+
 /// Draws the panel interface and emits any resulting local actions.
 fn draw_panel<R>(
     contexts: &mut EguiContexts,
@@ -133,10 +292,46 @@ fn draw_panel<R>(
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) {
+    draw_panel_with_horizontal_overflow(contexts, name, image, pos, size, 0.0, images, content);
+}
+
+/// Draws a panel while permitting an animated horizontal entrance beyond the viewport edge.
+fn draw_sliding_panel<R>(
+    contexts: &mut EguiContexts,
+    name: &str,
+    image: &str,
+    pos: (f32, f32),
+    size: (f32, f32),
+    horizontal_overflow: f32,
+    images: &ImageIds,
+    content: impl FnOnce(&mut Ui) -> R,
+) {
+    draw_panel_with_horizontal_overflow(
+        contexts,
+        name,
+        image,
+        pos,
+        size,
+        horizontal_overflow,
+        images,
+        content,
+    );
+}
+
+fn draw_panel_with_horizontal_overflow<R>(
+    contexts: &mut EguiContexts,
+    name: &str,
+    image: &str,
+    pos: (f32, f32),
+    size: (f32, f32),
+    horizontal_overflow: f32,
+    images: &ImageIds,
+    content: impl FnOnce(&mut Ui) -> R,
+) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    egui::Window::new(name)
+    let mut window = egui::Window::new(name)
         .frame(egui::Frame {
             fill: Color32::TRANSPARENT,
             ..default()
@@ -150,37 +345,181 @@ fn draw_panel<R>(
         .resizable(false)
         .title_bar(false)
         .fixed_pos(pos)
-        .fixed_size(size)
-        .show(context, |ui| {
-            let response =
-                ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
+        .fixed_size(size);
 
-            ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
+    if horizontal_overflow > 0.0 {
+        window = window
+            .constrain_to(context.content_rect().expand2(egui::vec2(horizontal_overflow, 0.0)));
+    }
+
+    window.show(context, |ui| {
+        let response =
+            ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
+
+        ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
+    });
+}
+
+/// Draws a centered, input-blocking abandon prompt over the game interface.
+fn draw_abandon_confirmation(
+    context: &egui::Context,
+    images: &ImageIds,
+) -> Option<AbandonConfirmationAction> {
+    let content_rect = context.content_rect();
+    let available = content_rect.size() - egui::vec2(32.0, 32.0);
+    let size = egui::vec2(520.0_f32.min(available.x), 230.0_f32.min(available.y));
+    let modal_id = egui::Id::new("abandon planet confirmation");
+    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min;
+    let area = egui::Modal::default_area(modal_id).anchor(Align2::LEFT_TOP, panel_offset);
+    let response =
+        egui::Modal::new(modal_id).area(area).frame(egui::Frame::NONE).show(context, |ui| {
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            ui.painter().image(
+                images.get("panel"),
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            let mut action = None;
+            ui.scope_builder(
+                UiBuilder::new().max_rect(rect.shrink2(egui::vec2(34.0, 24.0))),
+                |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(42.0);
+                        ui.label(
+                            RichText::new("Are you sure you want to abandon this planet?")
+                                .size(22.0)
+                                .strong()
+                                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                        );
+                        ui.add_space(24.0);
+                        ui.scope(|ui| {
+                            let widgets = &mut ui.style_mut().visuals.widgets;
+                            for (visuals, fill, stroke) in [
+                                (
+                                    &mut widgets.inactive,
+                                    ABANDON_CONFIRMATION_BUTTON_FILL,
+                                    Color32::from_rgb(74, 99, 122),
+                                ),
+                                (
+                                    &mut widgets.hovered,
+                                    Color32::from_rgb(31, 47, 61),
+                                    Color32::from_rgb(123, 158, 188),
+                                ),
+                                (
+                                    &mut widgets.active,
+                                    Color32::from_rgb(39, 94, 123),
+                                    Color32::from_rgb(139, 183, 216),
+                                ),
+                            ] {
+                                visuals.bg_fill = fill;
+                                visuals.weak_bg_fill = fill;
+                                visuals.bg_stroke = Stroke::new(1.0, stroke);
+                                visuals.corner_radius = egui::CornerRadius::same(6);
+                                visuals.expansion = 0.0;
+                            }
+
+                            ui.horizontal(|ui| {
+                                const BUTTON_WIDTH: f32 = 96.0;
+                                const BUTTON_GAP: f32 = 12.0;
+                                let row_width = BUTTON_WIDTH * 2.0 + BUTTON_GAP;
+                                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                                let button = |label| {
+                                    egui::Button::new(
+                                        RichText::new(label)
+                                            .size(17.0)
+                                            .strong()
+                                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                                    )
+                                };
+                                if ui
+                                    .add_sized([BUTTON_WIDTH, 36.0], button("Yes"))
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    action = Some(AbandonConfirmationAction::Confirm);
+                                }
+                                if ui
+                                    .add_sized([BUTTON_WIDTH, 36.0], button("No"))
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    action = Some(AbandonConfirmationAction::Cancel);
+                                }
+                            });
+                        });
+                    });
+                },
+            );
+            action
         });
+
+    if response.should_close() {
+        Some(AbandonConfirmationAction::Cancel)
+    } else {
+        response.inner
+    }
+}
+
+/// Selects the stationed fleet silhouette shown beside a world shortcut.
+fn world_shortcut_fleet_image(planet: &Planet) -> Option<&'static str> {
+    if planet.has(&Unit::war_sun()) {
+        Some("mission destroy")
+    } else if !planet.has_fleet() {
+        None
+    } else if planet
+        .army
+        .iter()
+        .all(|(unit, count)| *count == 0 || !unit.is_ship() || *unit == Unit::probe())
+    {
+        Some("mission spy")
+    } else {
+        Some("mission")
+    }
 }
 
 /// Draws one compact, fully clickable world shortcut.
-fn draw_world_shortcut(ui: &mut Ui, planet: &Planet, opens_panel: bool, images: &ImageIds) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
-    let response =
-        response.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(if opens_panel {
-            "Center the map and open this planet"
-        } else {
-            "Center the map on this controlled world"
-        });
+fn draw_world_shortcut(
+    ui: &mut Ui,
+    planet: &Planet,
+    fleet_color: Color32,
+    images: &ImageIds,
+    scale: f32,
+) -> bool {
+    let available_width = ui.available_width();
+    const FLEET_ICON_GAP: f32 = 6.0;
+    const FLEET_ICON_SIZE: f32 = 20.0;
+    let fleet_image = world_shortcut_fleet_image(planet);
+    let fleet_icon_width = if fleet_image.is_some() {
+        (FLEET_ICON_GAP + FLEET_ICON_SIZE) * scale
+    } else {
+        0.0
+    };
+    let text_width = (available_width - 46.0 * scale - fleet_icon_width).max(0.0);
+    let name = egui::WidgetText::from(
+        RichText::new(&planet.name).size(14.0 * scale).strong().color(Color32::WHITE),
+    )
+    .into_galley(ui, Some(egui::TextWrapMode::Truncate), text_width, TextStyle::Body);
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(available_width, WORLD_SHORTCUT_HEIGHT * scale),
+        Sense::click(),
+    );
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
     if response.hovered() {
         ui.painter().rect_filled(
             rect,
-            egui::CornerRadius::same(4),
+            egui::CornerRadius::same((4.0 * scale).round() as u8),
             Color32::from_rgba_unmultiplied(62, 105, 137, 74),
         );
     }
 
     let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 19.0, rect.center().y),
-        egui::vec2(30.0, 30.0),
+        egui::pos2(rect.left() + 19.0 * scale, rect.center().y),
+        egui::Vec2::splat(30.0 * scale),
     );
     ui.painter().image(
         images.get(planet.image()),
@@ -189,37 +528,51 @@ fn draw_world_shortcut(ui: &mut Ui, planet: &Planet, opens_panel: bool, images: 
         Color32::WHITE,
     );
 
-    let text_x = icon_rect.right() + 8.0;
-    ui.painter().text(
-        egui::pos2(text_x, rect.top() + 8.0),
-        Align2::LEFT_TOP,
-        &planet.name,
-        TextStyle::Body.resolve(ui.style()),
+    let text_x = icon_rect.right() + 8.0 * scale;
+    let name_size = name.size();
+    ui.painter().galley(
+        egui::pos2(text_x, rect.center().y - name_size.y * 0.5),
+        name,
         Color32::WHITE,
     );
 
-    let has_fleet = planet.has_fleet();
-    let fleet_color = if has_fleet {
-        Color32::from_rgb(102, 224, 170)
-    } else {
-        Color32::from_rgb(119, 132, 145)
-    };
-    let fleet_y = rect.bottom() - 8.0;
-    ui.painter().circle_filled(egui::pos2(text_x + 3.0, fleet_y - 1.0), 2.8, fleet_color);
-    ui.painter().text(
-        egui::pos2(text_x + 10.0, fleet_y),
-        Align2::LEFT_BOTTOM,
-        if has_fleet {
-            "FLEET"
-        } else {
-            "NO FLEET"
-        },
-        TextStyle::Small.resolve(ui.style()),
-        fleet_color,
-    );
+    if let Some(fleet_image) = fleet_image {
+        let fleet_icon_rect = egui::Rect::from_center_size(
+            egui::pos2(
+                text_x + name_size.x + FLEET_ICON_GAP * scale + FLEET_ICON_SIZE * scale * 0.5,
+                rect.center().y,
+            ),
+            egui::Vec2::splat(FLEET_ICON_SIZE * scale),
+        );
+        ui.painter().image(
+            images.get(fleet_image),
+            fleet_icon_rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            fleet_color,
+        );
+    }
 
     response.clicked()
 }
+
+/// Draws a world-group label and its prominent item count using the shared panel heading style.
+fn draw_world_group_header(ui: &mut Ui, title: &str, count: usize, scale: f32) {
+    let heading_color = Color32::from_rgb(166, 188, 211);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).size(11.0 * scale).strong().color(heading_color));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(count.to_string()).size(16.0 * scale).strong().color(heading_color),
+            );
+        });
+    });
+}
+
+const OWNED_WORLDS_LEFT: f32 = 9.0;
+const OWNED_WORLDS_TOP: f32 = 112.0;
+const OWNED_WORLDS_WIDTH: f32 = 210.0;
+const WORLD_SHORTCUT_HEIGHT: f32 = 40.0;
+const WORLD_LIST_ITEM_SPACING: f32 = 3.0;
 
 /// Shows the local player's owned and controlled worlds as quick map shortcuts.
 fn draw_owned_worlds_widget(
@@ -229,7 +582,8 @@ fn draw_owned_worlds_widget(
     state: &mut UiState,
     settings: &mut Settings,
     images: &ImageIds,
-) {
+) -> egui::Rect {
+    let scale = owned_worlds_hud_scale(context.content_rect().size());
     let mut owned = map
         .planets
         .iter()
@@ -242,92 +596,61 @@ fn draw_owned_worlds_widget(
         .collect::<Vec<_>>();
     owned.sort_by(|left, right| left.name.cmp(&right.name));
     controlled.sort_by(|left, right| left.name.cmp(&right.name));
+    let fleet_color = player.color().color().to_color32();
 
     egui::Area::new("stellarion_owned_worlds".into())
-        .fixed_pos(egui::pos2(18.0, 92.0))
+        .fixed_pos(egui::pos2(OWNED_WORLDS_LEFT * scale, OWNED_WORLDS_TOP * scale))
         .movable(false)
         .constrain(true)
         .order(Order::Middle)
         .show(context, |ui| {
-            egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 226))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 170, 215, 95)))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(9, 9))
-                .show(ui, |ui| {
-                    let max_width = (context.content_rect().width() - 62.0).max(0.0);
-                    ui.set_width(246.0_f32.min(max_width));
-                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 3.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("YOUR WORLDS")
-                                .size(11.0)
-                                .strong()
-                                .color(Color32::from_rgb(166, 188, 211)),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{}", owned.len() + controlled.len()))
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(119, 196, 230)),
-                            );
-                        });
-                    });
-                    ui.add_space(4.0);
+            scaled_hud_panel_frame(scale).show(ui, |ui| {
+                let max_width = (context.content_rect().width() - 62.0 * scale).max(0.0);
+                ui.set_width((OWNED_WORLDS_WIDTH * scale).min(max_width));
+                ui.spacing_mut().item_spacing =
+                    egui::vec2(5.0 * scale, WORLD_LIST_ITEM_SPACING * scale);
 
-                    let max_height = (context.content_rect().height() - 285.0).max(120.0);
-                    ScrollArea::vertical()
-                        .id_salt("owned world shortcuts")
-                        .max_height(max_height)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            if owned.is_empty() && controlled.is_empty() {
-                                ui.small(
-                                    RichText::new("No worlds under your control")
-                                        .color(Color32::from_rgb(145, 156, 168)),
-                                );
-                            }
+                if owned.is_empty() && controlled.is_empty() {
+                    ui.label(
+                        RichText::new("No worlds under your control")
+                            .size(11.0 * scale)
+                            .color(Color32::from_rgb(145, 156, 168)),
+                    );
+                }
 
-                            if !owned.is_empty() {
-                                ui.label(
-                                    RichText::new("OWNED PLANETS")
-                                        .size(9.0)
-                                        .strong()
-                                        .color(Color32::from_rgb(102, 224, 170)),
-                                );
-                                for planet in &owned {
-                                    if draw_world_shortcut(ui, planet, true, images) {
-                                        select_planet(planet, state, player);
-                                        state.planet_hover = None;
-                                        settings.show_menu = true;
-                                    }
-                                }
-                            }
+                if !owned.is_empty() {
+                    draw_world_group_header(ui, "OWNED PLANETS", owned.len(), scale);
+                    for planet in &owned {
+                        if draw_world_shortcut(ui, planet, fleet_color, images, scale) {
+                            select_planet(planet, state, player);
+                            state.planet_hover = None;
+                            settings.show_menu = true;
+                        }
+                    }
+                }
 
-                            if !controlled.is_empty() {
-                                if !owned.is_empty() {
-                                    ui.add_space(5.0);
-                                }
-                                ui.label(
-                                    RichText::new("CONTROLLED WORLDS")
-                                        .size(9.0)
-                                        .strong()
-                                        .color(Color32::from_rgb(244, 197, 66)),
-                                );
-                                for planet in &controlled {
-                                    if draw_world_shortcut(ui, planet, false, images) {
-                                        state.planet_selected = None;
-                                        state.focus_planet = Some(planet.id);
-                                        state.to_selected = true;
-                                        state.planet_hover = None;
-                                        state.mission = false;
-                                        state.combat_report = None;
-                                    }
-                                }
-                            }
-                        });
-                });
-        });
+                if !controlled.is_empty() {
+                    if !owned.is_empty() {
+                        ui.add_space(8.0 * scale);
+                    }
+                    draw_world_group_header(
+                        ui,
+                        "CONTROLLED PLANETS AND MOONS",
+                        controlled.len(),
+                        scale,
+                    );
+                    for planet in &controlled {
+                        if draw_world_shortcut(ui, planet, fleet_color, images, scale) {
+                            select_planet(planet, state, player);
+                            state.planet_hover = None;
+                            settings.show_menu = true;
+                        }
+                    }
+                }
+            });
+        })
+        .response
+        .rect
 }
 
 /// Shows every opposing player's name beside the color used by their map cells.
@@ -354,10 +677,8 @@ fn draw_enemy_players_widget(
         .constrain(true)
         .order(Order::Middle)
         .show(context, |ui| {
-            egui::Frame::new()
+            hud_panel_frame()
                 .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 218))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 170, 215, 95)))
-                .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(12, 9))
                 .show(ui, |ui| {
                     let max_width = (context.content_rect().width() - 62.0).max(0.0);
@@ -761,49 +1082,240 @@ fn draw_combat_army_grid(
     any_hovered
 }
 
-/// Draws the resources interface and emits any resulting local actions.
-fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, images: &ImageIds) {
-    ui.add_space(10.);
+const RESOURCE_BAR_TOP: f32 = 9.0;
+const RESOURCE_BAR_SIDE_INSET: f32 = 9.0;
+const RESOURCE_BAR_ROW_HEIGHT: f32 = 50.0;
+const RESOURCE_BAR_VERTICAL_MARGIN: f32 = 4.0;
+const RESOURCE_SUMMARY_HORIZONTAL_PADDING: f32 = 4.0;
+const RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET: f32 = 2.0;
 
-    // Measure total horizontal width required
-    let mut text = settings.turn.to_string();
+fn resource_summary_style(compact: bool, scale: f32) -> (egui::Vec2, f32, f32, f32) {
+    let (icon_size, spacing, label_size, value_size) = if compact {
+        (egui::vec2(52.0, 34.0), 8.0, 9.0, 24.0)
+    } else {
+        (egui::vec2(70.0, 44.0), 11.0, 11.0, 30.0)
+    };
 
+    (icon_size * scale, spacing * scale, label_size * scale, value_size * scale)
+}
+
+fn resource_summary_width(ui: &Ui, label: &str, value: &str, compact: bool, scale: f32) -> f32 {
+    let (icon_size, spacing, label_size, value_size) = resource_summary_style(compact, scale);
+    let label_width = ui
+        .painter()
+        .layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::new(label_size, FontFamily::Proportional),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
+    let value_width = ui
+        .painter()
+        .layout_no_wrap(
+            value.to_owned(),
+            egui::FontId::new(value_size, FontFamily::Proportional),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
+
+    RESOURCE_SUMMARY_HORIZONTAL_PADDING * scale * 2.0
+        + icon_size.x
+        + spacing
+        + label_width.max(value_width)
+}
+
+/// Draws one labeled value in the compact resource summary row.
+fn draw_resource_summary(
+    ui: &mut Ui,
+    icon: egui::TextureId,
+    label: &str,
+    value: &str,
+    compact: bool,
+    scale: f32,
+) -> Response {
+    let (icon_size, spacing, label_size, value_size) = resource_summary_style(compact, scale);
+    let label = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(label_size, FontFamily::Proportional),
+        Color32::from_rgb(166, 188, 211),
+    );
+    let value = ui.painter().layout_no_wrap(
+        value.to_owned(),
+        egui::FontId::new(value_size, FontFamily::Proportional),
+        Color32::WHITE,
+    );
+    let horizontal_padding = RESOURCE_SUMMARY_HORIZONTAL_PADDING * scale;
+    let width =
+        horizontal_padding * 2.0 + icon_size.x + spacing + label.size().x.max(value.size().x);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, RESOURCE_BAR_ROW_HEIGHT * scale), Sense::hover());
+
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + horizontal_padding + icon_size.x * 0.5, rect.center().y),
+        icon_size,
+    );
+    ui.painter().image(
+        icon,
+        icon_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+
+    let text_x = icon_rect.right() + spacing;
+    // The font's visible glyphs sit slightly above its line box, so this small optical offset
+    // makes the label/value stack look centered rather than mathematically centered but high.
+    let text_height = label.size().y + value.size().y;
+    let text_top =
+        rect.center().y - text_height * 0.5 + RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET * scale;
+    let value_top = text_top + label.size().y;
+    ui.painter().galley(egui::pos2(text_x, text_top), label, Color32::WHITE);
+    ui.painter().galley(egui::pos2(text_x, value_top), value, Color32::WHITE);
+
+    response
+}
+
+/// Reserves breathing room between resource summaries and optionally paints a section divider.
+fn draw_resource_gap(ui: &mut Ui, width: f32, divided: bool, scale: f32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, RESOURCE_BAR_ROW_HEIGHT * scale), Sense::hover());
+    if divided {
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.center().x, rect.top() + 5.0 * scale),
+                egui::pos2(rect.center().x, rect.bottom() - 5.0 * scale),
+            ],
+            Stroke::new(scale, Color32::from_rgba_unmultiplied(130, 170, 215, 55)),
+        );
+    }
+}
+
+fn resource_bar_gap(compact: bool, scale: f32) -> f32 {
+    let gap = if compact {
+        10.0
+    } else {
+        24.0
+    };
+    gap * scale
+}
+
+fn resource_bar_section_gap(compact: bool, scale: f32) -> f32 {
+    let gap = if compact {
+        24.0
+    } else {
+        48.0
+    };
+    gap * scale
+}
+
+fn resource_bar_content_width(
+    ui: &Ui,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    compact: bool,
+    scale: f32,
+) -> f32 {
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
-
-    text += &n_owned.to_string();
-    text += &n_max_owned.to_string();
-    for r in ResourceName::iter() {
-        text += &player.resources.get(&r).to_string();
+    let mut width = resource_summary_width(ui, "TURN", &settings.turn.to_string(), compact, scale)
+        + resource_summary_width(
+            ui,
+            "PLANETS",
+            &format!("{n_owned}/{n_max_owned}"),
+            compact,
+            scale,
+        );
+    for resource in ResourceName::iter() {
+        width += resource_summary_width(
+            ui,
+            &resource.to_name().to_uppercase(),
+            &player.resources.get(&resource).to_string(),
+            compact,
+            scale,
+        );
     }
 
-    let size_x = ui
-        .painter()
-        .layout_no_wrap(text, TextStyle::Heading.resolve(ui.style()), Color32::WHITE)
-        .size()
-        .x
-        + 80.
-        + 35. * 3.
-        + 65. * 5.
-        + ui.spacing().item_spacing.x * 12.5;
+    width + resource_bar_gap(compact, scale) * 3.0 + resource_bar_section_gap(compact, scale)
+}
 
-    ui.horizontal_centered(|ui| {
-        ui.add_space((ui.available_width() - size_x) * 0.5);
+fn draw_resource_tooltip(
+    ui: &mut Ui,
+    resource: ResourceName,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+) -> egui::Rect {
+    ui.horizontal(|ui| {
+        let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
+        ui.vertical(|ui| {
+            ui.set_max_width(360.0);
+            ui.label(RichText::new(resource.to_name()).strong());
+            ui.separator();
+            ui.scope(|ui| {
+                ui.style_mut().interaction.selectable_labels = true;
+                ui.small(format!(
+                    "Production: +{}",
+                    player.resource_production(&map.planets).get(&resource)
+                ))
+                .on_hover_cursor(CursorIcon::Default)
+                .on_hover_text_at_pointer(
+                    RichText::new(
+                        map.planets()
+                            .iter()
+                            .filter_map(|planet| {
+                                player.owns(planet).then_some((
+                                    planet.name.clone(),
+                                    planet.resource_production().get(&resource),
+                                ))
+                            })
+                            .sorted_by(|left, right| right.1.cmp(&left.1))
+                            .map(|(name, production)| format!("{name}: {production}"))
+                            .join("\n"),
+                    )
+                    .small(),
+                );
+            });
+            ui.add_space(3.0);
+            ui.small(resource.description());
+        });
+        image_rect
+    })
+    .inner
+}
 
-        let response = ui
-            .scope(|ui| {
-                ui.add_image(images.get("turn"), [65., 40.]);
-                ui.heading(settings.turn.to_string());
-            })
-            .response;
+/// Draws the resources interface and emits any resulting local actions.
+fn draw_resources(
+    ui: &mut Ui,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+    compact: bool,
+    scale: f32,
+) {
+    let gap = resource_bar_gap(compact, scale);
+    let section_gap = resource_bar_section_gap(compact, scale);
+    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
+    let resource_count = ResourceName::iter().count();
 
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+
+        let response = draw_resource_summary(
+            ui,
+            images.get("turn"),
+            "TURN",
+            &settings.turn.to_string(),
+            compact,
+            scale,
+        );
         if settings.show_hover {
             response.on_hover_ui(|ui| {
                 ui.horizontal(|ui| {
+                    ui.add_image(images.get("turn"), [130.0, 90.0]);
                     ui.vertical(|ui| {
-                        ui.add_image(images.get("turn"), [130., 90.]);
-                    });
-                    ui.vertical(|ui| {
-                        ui.label("Turn");
+                        ui.label(RichText::new("Turn").strong());
                         ui.separator();
                         ui.small("Current turn in the game.");
                     });
@@ -811,85 +1323,92 @@ fn draw_resources(ui: &mut Ui, settings: &Settings, map: &Map, player: &Player, 
             });
         }
 
-        ui.add_space(35.);
+        draw_resource_gap(ui, gap, false, scale);
 
-        let response = ui
-            .scope(|ui| {
-                ui.add_image(images.get("owned"), [65., 40.]);
-                ui.heading(format!("{n_owned}/{n_max_owned}"));
-            })
-            .response;
-
+        let response = draw_resource_summary(
+            ui,
+            images.get("owned"),
+            "PLANETS",
+            &format!("{n_owned}/{n_max_owned}"),
+            compact,
+            scale,
+        );
         if settings.show_hover {
             response.on_hover_ui(|ui| {
                 ui.horizontal(|ui| {
+                    ui.add_image(images.get("owned"), [130.0, 90.0]);
                     ui.vertical(|ui| {
-                        ui.add_image(images.get("owned"), [130., 90.]);
-                    });
-                    ui.vertical(|ui| {
-                        ui.label("Planets colonized / Max. colonizable");
+                        ui.set_max_width(320.0);
+                        ui.label(RichText::new("Planets owned / Max. owned").strong());
                         ui.separator();
                         ui.small(
-                            "The current number of planets colonized (owned) and the maximum \
-                            number of planets than can be colonized this game. A spots is only \
-                            if an owned planet is abandoned, conquered or destroyed.",
+                            "The current number of planets owned and the maximum number of \
+                            planets that can be owned this game. A spot becomes available if an \
+                            owned planet is abandoned, conquered, or destroyed.",
                         );
                     });
                 });
             });
         }
 
-        ui.add_space(80.);
+        draw_resource_gap(ui, section_gap, true, scale);
 
-        for resource in ResourceName::iter() {
-            let response = ui
-                .scope(|ui| {
-                    ui.add_image(images.get(resource.to_lowername()), [65., 40.]);
-                    ui.heading(player.resources.get(&resource).to_string());
-                    ui.add_space(35.);
-                })
-                .response;
+        for (index, resource) in ResourceName::iter().enumerate() {
+            let response = draw_resource_summary(
+                ui,
+                images.get(resource.to_lowername()),
+                &resource.to_name().to_uppercase(),
+                &player.resources.get(&resource).to_string(),
+                compact,
+                scale,
+            );
 
             if settings.show_hover {
                 response.on_hover_ui(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.add_image(images.get(resource.to_lowername()), [130., 90.]);
-                        });
-                        ui.vertical(|ui| {
-                            ui.label(resource.to_name());
-                            ui.separator();
-                            ui.scope(|ui| {
-                                ui.style_mut().interaction.selectable_labels = true;
-                                ui.small(format!(
-                                    "Production: +{}",
-                                    player.resource_production(&map.planets).get(&resource)
-                                ))
-                                .on_hover_cursor(CursorIcon::Default)
-                                .on_hover_text_at_pointer(
-                                    RichText::new(
-                                        map.planets()
-                                            .iter()
-                                            .filter_map(|p| {
-                                                player.owns(p).then_some((
-                                                    p.name.clone(),
-                                                    p.resource_production().get(&resource),
-                                                ))
-                                            })
-                                            .sorted_by(|a, b| b.1.cmp(&a.1))
-                                            .map(|(n, c)| format!("{}: {}", n, c))
-                                            .join("\n"),
-                                    )
-                                    .small(),
-                                );
-                            });
-                            ui.small(resource.description());
-                        });
-                    });
+                    draw_resource_tooltip(ui, resource, map, player, images);
                 });
+            }
+
+            if index + 1 < resource_count {
+                draw_resource_gap(ui, gap, false, scale);
             }
         }
     });
+}
+
+/// Shows turn, ownership, and stockpile totals in the same framed style as the world list.
+fn draw_resources_widget(
+    context: &egui::Context,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+) -> egui::Rect {
+    let scale = strategic_hud_scale(context.content_rect().size());
+    egui::Area::new("stellarion_resources".into())
+        .anchor(Align2::CENTER_TOP, egui::vec2(0.0, RESOURCE_BAR_TOP * scale))
+        .movable(false)
+        .constrain(true)
+        .order(Order::Middle)
+        .show(context, |ui| {
+            let frame = scaled_hud_panel_frame(scale).inner_margin(scaled_margin(
+                14.0,
+                RESOURCE_BAR_VERTICAL_MARGIN,
+                scale,
+            ));
+            let frame_width = frame.total_margin().sum().x;
+            frame.show(ui, |ui| {
+                let max_width = (context.content_rect().width()
+                    - 2.0 * RESOURCE_BAR_SIDE_INSET * scale
+                    - frame_width)
+                    .max(1.0);
+                let compact =
+                    resource_bar_content_width(ui, settings, map, player, false, scale) > max_width;
+                draw_resources(ui, settings, map, player, images, compact, scale);
+            });
+        })
+        .response
+        .rect
 }
 
 /// Draws the planet overview interface and emits any resulting local actions.
@@ -901,6 +1420,9 @@ fn draw_planet_overview(
     settings: &Settings,
     message: &mut MessageWriter<MessageMsg>,
     pending: &mut PendingTurnCommands,
+    abandon_confirmation: &mut Option<PlanetId>,
+    detail_line_progress: &[f32; PLANET_DETAIL_LINE_COUNT],
+    right_side: bool,
     images: &ImageIds,
 ) {
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
@@ -925,37 +1447,61 @@ fn draw_planet_overview(
 
         ui.with_layout(Layout::top_down(Align::RIGHT), |ui| {
             ui.spacing_mut().item_spacing.y = 6.;
-            ui.small(format!(
-                "🌎 Planet Kind: {}",
-                if !planet.is_moon() {
-                    planet.kind.to_name()
-                } else {
-                    "Moon".to_string()
-                }
-            ))
+            draw_sliding_text(
+                ui,
+                RichText::new(format!(
+                    "🌎 Planet Kind: {}",
+                    if !planet.is_moon() {
+                        planet.kind.to_name()
+                    } else {
+                        "Moon".to_string()
+                    }
+                ))
+                .small(),
+                detail_line_progress[0],
+                right_side,
+            )
             .on_hover_small(planet.kind.description());
-            ui.small(format!(
-                "📐 Diameter: {}km ({:.0}%)",
-                format_thousands(planet.diameter),
-                planet.destroy_probability() * 100.,
-            ))
+            draw_sliding_text(
+                ui,
+                RichText::new(format!(
+                    "📐 Diameter: {}km ({:.0}%)",
+                    format_thousands(planet.diameter),
+                    planet.destroy_probability() * 100.,
+                ))
+                .small(),
+                detail_line_progress[1],
+                right_side,
+            )
             .on_hover_small(
                 "Smaller planets are easier to destroy than larger ones, since it's easier \
                 to reach their core with a Death Ray, the weapon used by War Suns. The percentage \
                 indicates the initial probability a War Sun has of destroying this planet after a \
                 combat round.",
             );
-            ui.small(format!(
-                "{} Temperature: {}°C to {}°C",
-                planet.kind.temperature_emoji(),
-                planet.temperature.0,
-                planet.temperature.1
-            ));
-            ui.small(format!(
-                "🗺 Coordinates: ({}, {})",
-                planet.position.x.round(),
-                planet.position.y.round()
-            ))
+            draw_sliding_text(
+                ui,
+                RichText::new(format!(
+                    "{} Temperature: {}°C to {}°C",
+                    planet.kind.temperature_emoji(),
+                    planet.temperature.0,
+                    planet.temperature.1
+                ))
+                .small(),
+                detail_line_progress[2],
+                right_side,
+            );
+            draw_sliding_text(
+                ui,
+                RichText::new(format!(
+                    "🗺 Coordinates: ({}, {})",
+                    planet.position.x.round(),
+                    planet.position.y.round()
+                ))
+                .small(),
+                detail_line_progress[3],
+                right_side,
+            )
             .on_hover_small_ext("Position of the planet relative to the system's center.");
         });
     });
@@ -988,44 +1534,7 @@ fn draw_planet_overview(
                 ui.add_image_painter(images.get("abandon"), rect);
 
                 if response.clicked() {
-                    let mission = Mission::from_mission(
-                        settings.turn,
-                        player.id,
-                        planet,
-                        planet,
-                        &Mission::default(),
-                    );
-
-                    if !pending.push(TurnCommand::AbandonPlanet {
-                        planet_id: planet.id,
-                    }) {
-                        message.write(MessageMsg::error(
-                            "This turn already contains the maximum number of commands.",
-                        ));
-                        return;
-                    }
-                    planet.abandon();
-
-                    // Inject hidden report to show last_info that the planet is abandoned
-                    if planet.controlled.is_none() {
-                        player.push_report(MissionReport {
-                            id: rand::random(),
-                            turn: settings.turn,
-                            mission,
-                            planet: planet.clone(),
-                            scout_probes: 0,
-                            surviving_attacker: Army::new(),
-                            surviving_defender: Army::new(),
-                            planet_colonized: false,
-                            planet_destroyed: false,
-                            destination_owned: None,
-                            destination_controlled: None,
-                            combat_report: None,
-                            hidden: true,
-                        });
-                    }
-
-                    message.write(MessageMsg::info(format!("Planet {} abandoned.", planet.name)));
+                    *abandon_confirmation = Some(planet.id);
                 }
             });
         } else if controlled {
@@ -1066,6 +1575,51 @@ fn draw_planet_overview(
             );
         }
     }
+}
+
+/// Adds an approved abandon command and updates the local turn projection.
+fn abandon_planet(
+    id: PlanetId,
+    map: &mut Map,
+    player: &mut Player,
+    settings: &Settings,
+    message: &mut MessageWriter<MessageMsg>,
+    pending: &mut PendingTurnCommands,
+) {
+    let planet = map.get_mut(id);
+    let mission =
+        Mission::from_mission(settings.turn, player.id, planet, planet, &Mission::default());
+
+    if !pending.push(TurnCommand::AbandonPlanet {
+        planet_id: planet.id,
+    }) {
+        message
+            .write(MessageMsg::error("This turn already contains the maximum number of commands."));
+        return;
+    }
+    planet.abandon();
+
+    // Inject hidden report to show last_info that the planet is abandoned.
+    if planet.controlled.is_none() {
+        player.push_report(MissionReport {
+            id: rand::random(),
+            turn: settings.turn,
+            mission,
+            planet: planet.clone(),
+            scout_probes: 0,
+            surviving_attacker: Army::new(),
+            surviving_defender: Army::new(),
+            planet_colonized: false,
+            planet_destroyed: false,
+            destination_owned: None,
+            destination_controlled: None,
+            combat_report: None,
+            hidden: true,
+        });
+    }
+
+    // The map presentation observes this command-backed ownership change and announces it with
+    // the same focused animation used for newly colonized and conquered planets.
 }
 
 /// Draws the overview interface and emits any resulting local actions.
@@ -1469,10 +2023,9 @@ fn draw_combat_report(
         .player_name(attacker_id)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let defender_name = defender_id.map_or_else(
-        || "Neutral defenses".to_string(),
-        |id| session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}")),
-    );
+    let defender_name = defender_id.map(|id| {
+        session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
+    });
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
@@ -1494,9 +2047,14 @@ fn draw_combat_report(
         ui.vertical(|ui| {
             ui.set_width(defender_w);
             ui.label(
-                RichText::new(format!("Defender · {defender_name}"))
-                    .strong()
-                    .color(defend_c.to_color32()),
+                RichText::new(
+                    defender_name.map_or_else(
+                        || "Defender".to_string(),
+                        |name| format!("Defender · {name}"),
+                    ),
+                )
+                .strong()
+                .color(defend_c.to_color32()),
             );
             ui.visuals_mut().widgets.noninteractive.bg_stroke.color = defend_c.to_color32();
             ui.separator();
@@ -1814,10 +2372,6 @@ fn draw_combat_selection(
 
     ui.vertical_centered(|ui| {
         ui.label("Select a battle");
-        ui.small(
-            RichText::new("Choose a battle to view its combat.")
-                .color(Color32::from_rgb(151, 167, 184)),
-        );
     });
 
     ui.vertical_centered(|ui| {
@@ -1833,9 +2387,7 @@ fn draw_combat_selection(
 
                 let (rect, response) =
                     ui.allocate_exact_size([ui.available_width(), 72.].into(), Sense::click());
-                let response = response
-                    .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text("View this combat");
+                let response = response.on_hover_cursor(CursorIcon::PointingHand);
                 let hovered = response.hovered();
                 let pressed = response.is_pointer_button_down_on();
                 let attacker_id = report.mission.owner;
@@ -1846,17 +2398,14 @@ fn draw_combat_selection(
                 } else {
                     Some(attacker_id)
                 };
-                let opponent_name = opponent_id.map_or_else(
-                    || "Neutral defenses".to_string(),
-                    |id| {
+                let opponent = opponent_id.map(|id| {
+                    (
                         session
                             .player_name(id)
                             .map(str::to_owned)
-                            .unwrap_or_else(|| format!("Player {id}"))
-                    },
-                );
-                let opponent_color = opponent_id.map_or(Color32::from_rgb(150, 158, 170), |id| {
-                    session.player_color(id).color().to_color32()
+                            .unwrap_or_else(|| format!("Player {id}")),
+                        session.player_color(id).color().to_color32(),
+                    )
                 });
 
                 let fill = if pressed {
@@ -1928,24 +2477,33 @@ fn draw_combat_selection(
 
                 let text_painter = ui.painter().with_clip_rect(text_rect);
                 text_painter.text(
-                    egui::pos2(text_rect.left(), center_y - 9.0),
+                    egui::pos2(
+                        text_rect.left(),
+                        if opponent.is_some() {
+                            center_y - 9.0
+                        } else {
+                            center_y
+                        },
+                    ),
                     Align2::LEFT_CENTER,
                     format!("Battle of {}", destination.name),
                     TextStyle::Body.resolve(ui.style()),
                     Color32::WHITE,
                 );
-                text_painter.circle_filled(
-                    egui::pos2(text_rect.left() + 3.0, center_y + 13.0),
-                    3.0,
-                    opponent_color,
-                );
-                text_painter.text(
-                    egui::pos2(text_rect.left() + 11.0, center_y + 13.0),
-                    Align2::LEFT_CENTER,
-                    format!("Against {opponent_name}"),
-                    TextStyle::Small.resolve(ui.style()),
-                    opponent_color,
-                );
+                if let Some((opponent_name, opponent_color)) = opponent {
+                    text_painter.circle_filled(
+                        egui::pos2(text_rect.left() + 2.5, center_y + 13.0),
+                        2.5,
+                        opponent_color,
+                    );
+                    text_painter.text(
+                        egui::pos2(text_rect.left() + 10.0, center_y + 13.0),
+                        Align2::LEFT_CENTER,
+                        opponent_name,
+                        egui::FontId::new(14.0, FontFamily::Proportional),
+                        opponent_color,
+                    );
+                }
 
                 if response.clicked() {
                     state.in_combat = Some(report.id);
@@ -2007,6 +2565,7 @@ pub fn draw_ui(
     keyboard: Res<ButtonInput<KeyCode>>,
     images: Res<ImageIds>,
     window: Single<&Window>,
+    mut planet_panel_slide: Local<PlanetPanelSlide>,
 ) {
     if game_state.get().is_modal_menu() {
         return;
@@ -2016,22 +2575,21 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
-            draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
             draw_enemy_players_widget(context, &session, &player);
+            draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
+            draw_resources_widget(context, &settings, &map, &player, &images);
         }
-        draw_panel(
-            &mut contexts,
-            "resources",
-            "thin panel",
-            (window.width() * 0.5 - 625., window.height() * 0.01),
-            (1250., 70.),
-            &images,
-            |ui| draw_resources(ui, &settings, &map, &player, &images),
-        );
     }
 
-    // Store whether the next panel should be shown on the right side or not
-    let right_side = if let Some(id) = state.planet_hover.or(state.planet_selected) {
+    if !state.mission {
+        state.mission_planet_hover = None;
+    }
+
+    // Mission-panel planet links preview only known units. Map hover and selection retain the
+    // complete planet interface and map annotations.
+    let planet_panel = visible_planet_panel(&state);
+
+    if let Some((id, mode)) = planet_panel {
         let right_side = state.planet_selected.is_some()
             || window.cursor_position().map(|pos| pos.x < width * 0.5).unwrap_or_default();
 
@@ -2043,10 +2601,30 @@ pub fn draw_ui(
             (205., 630.)
         };
 
-        let mut draw_planet_info = |contexts, id, map, player, extension| {
+        let delta_seconds =
+            contexts.ctx_mut().map_or(0.0, |context| context.input(|input| input.stable_dt));
+        let slide_progress = planet_panel_slide.progress(
+            PlanetPanelSlideTarget {
+                id,
+                mode,
+                right_side,
+            },
+            delta_seconds,
+        );
+        let slide_distance = window_w + 518.0;
+        let slide_x = planet_panel_slide_offset(slide_progress, right_side, slide_distance);
+        let detail_line_progress =
+            std::array::from_fn(|line| planet_panel_slide.detail_progress(line));
+        if planet_panel_slide.is_animating() {
+            if let Ok(context) = contexts.ctx_mut() {
+                context.request_repaint();
+            }
+        }
+
+        let mut draw_planet_info = |contexts, id, map, player, abandon_confirmation, extension| {
             let (window_w2, window_h2) = (518., 216.);
 
-            draw_panel(
+            draw_sliding_panel(
                 contexts,
                 "planet overview",
                 "panel",
@@ -2066,10 +2644,11 @@ pub fn draw_ui(
                             } else {
                                 0.
                             }
-                    },
+                    } + slide_x,
                     height * 0.5 - window_h * 0.5 + 27.,
                 ),
                 (window_w2, window_h2),
+                slide_distance,
                 &images,
                 |ui| {
                     draw_planet_overview(
@@ -2080,6 +2659,9 @@ pub fn draw_ui(
                         &settings,
                         &mut message,
                         &mut pending,
+                        abandon_confirmation,
+                        &detail_line_progress,
+                        right_side,
                         &images,
                     )
                 },
@@ -2090,7 +2672,7 @@ pub fn draw_ui(
         let info = player.last_info(planet, &missions.0);
 
         if player.controls(planet) || player.spectator {
-            draw_panel(
+            draw_sliding_panel(
                 &mut contexts,
                 "overview",
                 "panel",
@@ -2099,20 +2681,29 @@ pub fn draw_ui(
                         width * 0.998 - window_w
                     } else {
                         width * 0.002
-                    },
+                    } + slide_x,
                     height * 0.5 - window_h * 0.5,
                 ),
                 (window_w, window_h),
+                slide_distance,
                 &images,
                 |ui| draw_overview(ui, planet, &images),
             );
 
-            draw_planet_info(&mut contexts, id, &mut map, &mut player, true);
-            !right_side
+            if mode == PlanetPanelMode::Full {
+                draw_planet_info(
+                    &mut contexts,
+                    id,
+                    &mut map,
+                    &mut player,
+                    &mut state.abandon_confirmation,
+                    true,
+                );
+            }
         } else if let Some(info) = info {
             // Don't use has_army since no units is also valid information
             if !planet.is_destroyed && !info.army.is_empty() {
-                draw_panel(
+                draw_sliding_panel(
                     &mut contexts,
                     "report overview",
                     "panel",
@@ -2121,31 +2712,48 @@ pub fn draw_ui(
                             width * 0.998 - window_w
                         } else {
                             width * 0.002
-                        },
+                        } + slide_x,
                         height * 0.5 - window_h * 0.5,
                     ),
                     (window_w, window_h),
+                    slide_distance,
                     &images,
                     |ui| draw_report_overview(ui, planet, &info, &images),
                 );
 
-                draw_planet_info(&mut contexts, id, &mut map, &mut player, true);
-                !right_side
-            } else if !planet.is_destroyed {
-                draw_planet_info(&mut contexts, id, &mut map, &mut player, false);
-                !right_side
-            } else {
-                right_side
+                if mode == PlanetPanelMode::Full {
+                    draw_planet_info(
+                        &mut contexts,
+                        id,
+                        &mut map,
+                        &mut player,
+                        &mut state.abandon_confirmation,
+                        true,
+                    );
+                }
+            } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
+                draw_planet_info(
+                    &mut contexts,
+                    id,
+                    &mut map,
+                    &mut player,
+                    &mut state.abandon_confirmation,
+                    false,
+                );
             }
-        } else if !planet.is_destroyed {
-            draw_planet_info(&mut contexts, id, &mut map, &mut player, false);
-            !right_side
-        } else {
-            right_side
+        } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
+            draw_planet_info(
+                &mut contexts,
+                id,
+                &mut map,
+                &mut player,
+                &mut state.abandon_confirmation,
+                false,
+            );
         }
     } else {
-        true
-    };
+        planet_panel_slide.hide();
+    }
 
     if let Some(mission_id) = state.mission_hover {
         let Some(mission) = missions.get(mission_id) else {
@@ -2153,40 +2761,29 @@ pub fn draw_ui(
             return;
         };
 
-        let (window_w, window_h) = (110., 630.);
+        let (fleet_x, info_x) =
+            mission_hover_panel_x_positions(window.cursor_position().map(|pos| pos.x), width);
+        let window_h = 630.0;
 
         draw_panel(
             &mut contexts,
             "mission hover fleet",
             "panel",
-            (
-                if right_side {
-                    width * 0.998 - window_w
-                } else {
-                    width * 0.002
-                },
-                height * 0.5 - window_h * 0.5,
-            ),
-            (window_w, window_h),
+            (fleet_x, height * 0.5 - window_h * 0.5),
+            (MISSION_HOVER_FLEET_WIDTH, window_h),
             &images,
             |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &images),
         );
 
-        let (window_w2, window_h2) = (270., 280.);
+        // Objective names such as "Missile Strike" must fit beside their icon and label.
+        let window_h2 = 280.0;
 
         draw_panel(
             &mut contexts,
             "mission hover info",
             "panel",
-            (
-                if right_side {
-                    width * 0.998 - window_w - window_w2 - 1.
-                } else {
-                    width * 0.002 + window_w + 1.
-                },
-                height * 0.5 - window_h * 0.5 + 27.,
-            ),
-            (window_w2, window_h2),
+            (info_x, height * 0.5 - window_h * 0.5 + 27.0),
+            (MISSION_HOVER_INFO_WIDTH, window_h2),
             &images,
             |ui| draw_mission_info_hover(ui, mission, &settings, &map, &player, &images),
         );
@@ -2298,4 +2895,37 @@ pub fn draw_ui(
             },
         );
     }
+
+    if let Some(id) = state.abandon_confirmation {
+        let planet = map.get(id);
+        let can_abandon = pending.is_editable()
+            && !planet.is_moon()
+            && player.owns(planet)
+            && player.home_planet != id
+            && planet.buy.is_empty();
+
+        if !can_abandon {
+            state.abandon_confirmation = None;
+        } else {
+            if let Ok(context) = contexts.ctx_mut() {
+                if let Some(action) = draw_abandon_confirmation(context, &images) {
+                    state.abandon_confirmation = None;
+                    if action == AbandonConfirmationAction::Confirm {
+                        abandon_planet(
+                            id,
+                            &mut map,
+                            &mut player,
+                            &settings,
+                            &mut message,
+                            &mut pending,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/core/ui_systems.rs"]
+mod tests;

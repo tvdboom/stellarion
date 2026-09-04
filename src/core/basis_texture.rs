@@ -89,6 +89,8 @@ struct BasisTextureLoader {
 pub(crate) struct BasisTextureSettings {
     /// Discards baked RGB while preserving transparency and antialiased edges in every mip.
     pub alpha_mask: bool,
+    /// Registers an egui-safe, premultiplied copy as the `ui` labeled asset.
+    pub ui_variant: bool,
     /// Encodes RGB with alpha for egui's premultiplied blending.
     pub premultiply_alpha: bool,
     /// Smooths scaled artwork and mip transitions without changing its pixels or GPU format.
@@ -135,9 +137,9 @@ impl AssetLoader for BasisTextureLoader {
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        if settings.alpha_mask {
-            // Map sprites need straight-alpha white masks. Egui instead needs the original
-            // artwork with premultiplied RGB; sharing the mask paints a solid white square.
+        if settings.ui_variant {
+            // Bevy sprites need straight alpha while egui needs premultiplied RGB. Keeping the
+            // variants separate also lets detailed map artwork retain its original shading.
             let ui_image = transcode_basis_texture(
                 &bytes,
                 self.target,
