@@ -8,6 +8,7 @@ const MISSION_PLANET_CELL_HEIGHT: f32 = 100.0;
 const MISSION_PLANET_IMAGE_SIZE: f32 = 60.0;
 const MISSION_PLANET_NAME_HEIGHT: f32 = 18.0;
 const MISSION_PLANET_NAME_OVERLAP: f32 = 14.0;
+const MISSION_ROUTE_PREVIEW_HEIGHT: f32 = 34.0;
 const MISSION_LOG_BADGE_SIZE: f32 = 20.0;
 const MISSION_COLUMN_GAP: f32 = 24.0;
 const MISSION_ROW_HORIZONTAL_INSET: f32 = 16.0;
@@ -17,6 +18,10 @@ const MISSION_FLEET_IMAGE_SCALE: f32 = 0.9;
 const MISSION_COLONY_IMAGE_SCALE: f32 = 0.86;
 const MISSION_SPY_IMAGE_SCALE: f32 = 0.82;
 const MISSION_REPORT_IMAGE_SLOT_SIZE: f32 = 52.0;
+const MISSION_REPORT_LIST_TOP_PADDING: f32 = 2.0;
+const MISSION_REPORT_HOVER_STROKE_WIDTH: f32 = 1.5;
+const MISSION_REPORT_IMAGE_SIZE: f32 = 48.0;
+const MISSION_REPORT_SELECTED_IMAGE_SIZE: f32 = 52.0;
 const MISSION_MISSILE_IMAGE_OFFSET_X: f32 = -4.0;
 
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
@@ -71,7 +76,8 @@ fn draw_route_preview(
     player: &Player,
     color: Color32,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 34.0), Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, MISSION_ROUTE_PREVIEW_HEIGHT), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
     // Keep even the missile trail fully inside the lane instead of clipping glyphs at its edges.
     let left = rect.left() + 12.0;
@@ -183,6 +189,15 @@ fn mission_report_image_offset(image: &str) -> egui::Vec2 {
     }
 }
 
+/// Keeps report thumbnails stable under the pointer while retaining selected-row emphasis.
+fn mission_report_image_base_size(selected: bool) -> f32 {
+    if selected {
+        MISSION_REPORT_SELECTED_IMAGE_SIZE
+    } else {
+        MISSION_REPORT_IMAGE_SIZE
+    }
+}
+
 /// Places a mission-row planet and its name on one shared layout for both route endpoints.
 fn mission_planet_rects(cell: egui::Rect) -> (egui::Rect, egui::Rect) {
     let image = egui::Rect::from_center_size(
@@ -195,6 +210,14 @@ fn mission_planet_rects(cell: egui::Rect) -> (egui::Rect, egui::Rect) {
     );
 
     (image, name)
+}
+
+/// Aligns the route lane with the planet artwork rather than the taller planet-and-name cell.
+fn mission_route_rect(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(cell.center().x, cell.top() + MISSION_PLANET_IMAGE_SIZE * 0.5),
+        egui::vec2(cell.width(), MISSION_ROUTE_PREVIEW_HEIGHT),
+    )
 }
 
 /// Draws one active-mission planet link without letting overlay widgets shift its name.
@@ -991,7 +1014,12 @@ fn draw_active_missions(
                                 );
                             }
 
-                            let response = ui.cell(route_column_width, |ui| {
+                            let (route_cell, response) = ui.allocate_exact_size(
+                                egui::vec2(route_column_width, MISSION_PLANET_CELL_HEIGHT),
+                                Sense::hover(),
+                            );
+                            let route_rect = mission_route_rect(route_cell);
+                            ui.scope_builder(UiBuilder::new().max_rect(route_rect), |ui| {
                                 ui.horizontal_centered(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.;
 
@@ -1022,8 +1050,6 @@ fn draw_active_missions(
                                         .strong(),
                                     );
                                 })
-                                .response
-                                .interact(Sense::hover())
                             });
 
                             if response.hovered() {
@@ -1089,6 +1115,10 @@ fn draw_mission_reports(
         ScrollArea::vertical().show(ui, |ui| {
             ui.set_width(150.);
 
+            // The hover stroke is painted outside the row, so inset the first row far enough to
+            // keep its top edge inside the scroll area's clip rectangle.
+            ui.add_space(MISSION_REPORT_LIST_TOP_PADDING);
+
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 5.;
 
@@ -1111,13 +1141,9 @@ fn draw_mission_reports(
 
                             let [red, green, blue] =
                                 session.player_color(report.mission.owner).rgb();
-                            let size = if state.mission_report == Some(report.mission.id)
-                                || (response.hovered() && !response.is_pointer_button_down_on())
-                            {
-                                52.0
-                            } else {
-                                48.0
-                            };
+                            let size = mission_report_image_base_size(
+                                state.mission_report == Some(report.mission.id),
+                            );
                             let mission_image = report.mission.image(player);
                             draw_mission_image(
                                 ui,
@@ -1156,7 +1182,7 @@ fn draw_mission_reports(
                             rect,
                             4.0,
                             Stroke::new(
-                                1.5,
+                                MISSION_REPORT_HOVER_STROKE_WIDTH,
                                 if response.is_pointer_button_down_on() {
                                     Color32::from_rgb(95, 131, 175)
                                 } else {

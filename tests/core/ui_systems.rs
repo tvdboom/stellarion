@@ -64,6 +64,16 @@ fn shape_has_fill(shape: &egui::Shape, fill: Color32) -> bool {
     }
 }
 
+fn shape_has_line_segment(shape: &egui::Shape) -> bool {
+    match shape {
+        egui::Shape::LineSegment {
+            ..
+        } => true,
+        egui::Shape::Vec(shapes) => shapes.iter().any(shape_has_line_segment),
+        _ => false,
+    }
+}
+
 fn image_rect(
     shapes: &[egui::epaint::ClippedShape],
     texture_id: egui::TextureId,
@@ -420,7 +430,7 @@ fn strategic_hud_panels_scale_with_viewports() {
         baseline.1,
         large.1
     );
-    assert_eq!(baseline.2, egui::vec2(70.0, 44.0));
+    assert_eq!(baseline.2, egui::vec2(64.0, 40.0));
     assert!((small.2 - baseline.2 * HUD_MIN_SCALE).length() < 0.01);
     assert!((large.2 - baseline.2 * HUD_MAX_SCALE).length() < 0.01);
     assert_eq!(baseline.3, egui::Vec2::splat(30.0));
@@ -490,7 +500,7 @@ fn resource_bar_uses_the_shared_hud_frame_without_the_legacy_texture() {
         text_rect(&output.shapes, label);
     }
     let turn_image = image_rect(&output.shapes, images.get("turn")).expect("missing turn image");
-    assert_eq!(turn_image.size(), egui::vec2(70.0, 44.0));
+    assert_eq!(turn_image.size(), egui::vec2(64.0, 40.0));
     assert!((turn_image.center().y - panel.center().y).abs() < 1.0);
     let turn_label = text_rect(&output.shapes, "TURN");
     let turn_value = text_rect(&output.shapes, "1");
@@ -511,11 +521,15 @@ fn resource_bar_uses_the_shared_hud_frame_without_the_legacy_texture() {
         image_rect(&output.shapes, images.get("crystal")).expect("missing crystal image").left()
             - text_rect(&output.shapes, "1500").right();
     assert!(planets_to_metal > metal_to_crystal + 15.0);
-    assert_eq!(text_font_size(&output.shapes, "1500"), 30.0);
-    assert!(text_rect(&output.shapes, "1500").height() > 30.0);
+    assert_eq!(text_font_size(&output.shapes, "1500"), 28.0);
+    assert!(text_rect(&output.shapes, "1500").height() > 28.0);
     assert!(
         image_rect(&output.shapes, legacy_texture).is_none(),
         "the removed thin-panel texture was still painted"
+    );
+    assert!(
+        output.shapes.iter().all(|shape| !shape_has_line_segment(&shape.shape)),
+        "the resource section divider was still painted"
     );
 }
 
@@ -536,7 +550,7 @@ fn resource_summaries_have_one_disjoint_hover_target_without_highlight_chrome() 
             first.on_hover_ui(|ui| {
                 ui.label("FIRST RESOURCE TOOLTIP");
             });
-            draw_resource_gap(ui, resource_bar_gap(false, 1.0), false, 1.0);
+            draw_resource_gap(ui, resource_bar_gap(false, 1.0), 1.0);
             let second =
                 draw_resource_summary(ui, egui::TextureId::User(2), "CRYSTAL", "1200", false, 1.0);
             targets.push(second.rect);
@@ -800,6 +814,12 @@ fn mission_hover_panels_stay_opposite_the_pointer() {
         assert!(!info.x_range().contains(pointer_x));
         assert_eq!(fleet_x > VIEWPORT_WIDTH * 0.5, pointer_x < VIEWPORT_WIDTH * 0.5);
     }
+}
+
+#[test]
+fn mission_list_hover_hides_route_details_but_map_hover_keeps_them() {
+    assert!(!mission_hover_shows_info_panel(true));
+    assert!(mission_hover_shows_info_panel(false));
 }
 
 #[test]

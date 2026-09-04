@@ -1,6 +1,7 @@
 //! In-game notifications rendered with the egui version bundled by `bevy_egui`.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
@@ -48,6 +49,8 @@ pub struct MessageMsg {
     pub action: Option<MessageAction>,
     /// Suppresses the generic notification tone when the action supplies its own cue.
     pub silent: bool,
+    /// Optional display lifetime used instead of the standard notification duration.
+    pub display_duration: Option<Duration>,
 }
 
 impl MessageMsg {
@@ -58,6 +61,7 @@ impl MessageMsg {
             level,
             action: None,
             silent: false,
+            display_duration: None,
         }
     }
 
@@ -70,6 +74,12 @@ impl MessageMsg {
     /// Keeps the notification visible while an action-specific sound plays.
     pub fn silent(mut self) -> Self {
         self.silent = true;
+        self
+    }
+
+    /// Overrides how long this notification remains visible.
+    pub fn with_duration(mut self, duration: Duration) -> Self {
+        self.display_duration = Some(duration);
         self
     }
 
@@ -109,11 +119,16 @@ impl Messages {
             text: message.message.clone(),
             level: message.level,
             action: message.action,
-            remaining_seconds: if matches!(message.action, Some(MessageAction::FocusColony(_))) {
-                10.0
-            } else {
-                MESSAGE_DURATION as f32
-            },
+            remaining_seconds: message.display_duration.map_or_else(
+                || {
+                    if matches!(message.action, Some(MessageAction::FocusColony(_))) {
+                        10.0
+                    } else {
+                        MESSAGE_DURATION as f32
+                    }
+                },
+                |duration| duration.as_secs_f32(),
+            ),
         });
 
         // Keep an error storm from permanently covering the game viewport.

@@ -67,6 +67,8 @@ impl ConnectionStatus {
 
 const RECONNECT_STATUS_GRACE: Duration = Duration::from_secs(3);
 const PRESENCE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
+const HOST_CLOSED_LOBBY_NOTICE: &str = "The host closed the lobby.";
+const HOST_CLOSED_LOBBY_NOTICE_DURATION: Duration = Duration::from_secs(2);
 
 /// Stable connection feedback that does not flash during a brief recovery attempt.
 #[derive(Resource, Default)]
@@ -1012,6 +1014,18 @@ fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
     }
 }
 
+/// Treats removal of a waiting lobby as a brief status update, not an actionable failure.
+fn host_closed_lobby_notification(
+    output: &BackendOutput,
+    session: &MultiplayerSession,
+) -> Option<MessageMsg> {
+    let host_closed_lobby = matches!(output, BackendOutput::Failed(_, BackendError::GameNotFound))
+        && session.active_game.as_ref().is_some_and(|record| record.status == MatchStatus::Lobby);
+    host_closed_lobby.then(|| {
+        MessageMsg::info(HOST_CLOSED_LOBBY_NOTICE).with_duration(HOST_CLOSED_LOBBY_NOTICE_DURATION)
+    })
+}
+
 /// Reports opposing players whose canonical presence changed from connected to disconnected.
 fn disconnected_player_notifications(
     output: &BackendOutput,
@@ -1059,6 +1073,7 @@ fn poll_backend_tasks(
             let restore_draft = matches!(&output, BackendOutput::Withdrawn(draft) if draft.turn == pending.turn)
                 || matches!(&output, BackendOutput::DraftLoaded(turn, _) if *turn == pending.turn);
             let notification = operation_notification(&output);
+            let lobby_closed_notification = host_closed_lobby_notification(&output, &session);
             let presence_notifications = disconnected_player_notifications(&output, &session);
             let gameplay_visible = *app_state.get() == AppState::Game;
             let previous_projection = session
@@ -1078,6 +1093,9 @@ fn poll_backend_tasks(
                 refresh_draft.write(RefreshTurnDraft);
             }
             if let Some(notification) = notification {
+                messages.write(notification);
+            }
+            if let Some(notification) = lobby_closed_notification {
                 messages.write(notification);
             }
             for notification in presence_notifications {
@@ -1411,15 +1429,16 @@ fn apply_output(
                         form.game_code.clear();
                         form.recovery_code.clear();
                         pending.reset(0);
-                        session.notice = Some(
-                            if was_lobby {
-                                "The host closed this lobby."
-                            } else {
-                                "This game is no longer available."
-                            }
-                            .to_string(),
-                        );
-                        session.menu_error.clone_from(&session.notice);
+                        session.notice = Some(if was_lobby {
+                            HOST_CLOSED_LOBBY_NOTICE.to_string()
+                        } else {
+                            "This game is no longer available.".to_string()
+                        });
+                        if was_lobby {
+                            session.menu_error = None;
+                        } else {
+                            session.menu_error.clone_from(&session.notice);
+                        }
                         next_state.set(AppState::MainMenu);
                     }
                     session.connection = ConnectionStatus::Connected;

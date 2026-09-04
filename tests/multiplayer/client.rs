@@ -860,6 +860,7 @@ fn lobby_departure_clears_guests_and_local_history() {
         } else {
             BackendOutput::Failed(Operation::Events, BackendError::GameNotFound)
         };
+        let notification = host_closed_lobby_notification(&output, &session);
         apply_output(output, &mut runtime, &mut session, &mut form, &mut pending, &mut next, false);
         assert!(!session.has_active_game());
         assert!(session.issued_recovery_code.is_none());
@@ -869,7 +870,14 @@ fn lobby_departure_clears_guests_and_local_history() {
         assert!(form.game_code.is_empty() && form.recovery_code.is_empty());
         assert!(matches!(next, NextState::Pending(AppState::MainMenu)));
         if !host {
-            assert_eq!(session.menu_error.as_deref(), Some("The host closed this lobby."));
+            let notification = notification.unwrap();
+            assert_eq!(notification.message, "The host closed the lobby.");
+            assert_eq!(notification.level, crate::core::messages::MessageLevel::Info);
+            assert_eq!(notification.display_duration, Some(Duration::from_secs(2)));
+            assert_eq!(session.notice.as_deref(), Some("The host closed the lobby."));
+            assert!(session.menu_error.is_none());
+        } else {
+            assert!(notification.is_none());
         }
     }
 }

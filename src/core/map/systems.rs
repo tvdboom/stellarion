@@ -59,6 +59,34 @@ pub(crate) struct PlanetAmbienceCmp {
 }
 
 #[derive(Component)]
+/// Root of the decorative, non-authoritative solar landmark.
+pub(crate) struct SolarStarCmp;
+
+#[derive(Component)]
+/// One sourced image participating in the solar surface crossfade.
+pub(crate) struct SolarStarFrameCmp {
+    index: usize,
+}
+
+#[derive(Component)]
+/// Slowly drifting transparent gas cloud behind the strategic worlds.
+pub(crate) struct NebulaCmp {
+    phase: f32,
+}
+
+#[derive(Component)]
+/// Decorative black-hole landmark sharing the stellar proximity ambience.
+pub(crate) struct BlackHoleCmp {
+    frames: Vec<Handle<Image>>,
+}
+
+#[derive(Component)]
+/// One of the two sprites used to crossfade between sourced NASA animation frames.
+pub(crate) struct BlackHoleFrameCmp {
+    slot: usize,
+}
+
+#[derive(Component)]
 /// One point in the wrapping foreground star layer.
 pub(crate) struct AmbientStarCmp {
     anchor: Vec2,
@@ -136,6 +164,19 @@ impl Default for AmbientCometSpawner {
 
 const AMBIENT_STAR_FIELD_SIZE: Vec2 = Vec2::new(5_200.0, 3_200.0);
 const AMBIENT_PULSAR_FIELD_SIZE: Vec2 = Vec2::new(2_200.0, 1_300.0);
+const SOLAR_STAR_FRAME_COUNT: usize = 4;
+const SOLAR_STAR_FRAME_SECONDS: f32 = 1.8;
+const SOLAR_STAR_SIZE: f32 = 1_440.0;
+const SOLAR_STAR_DEPTH: f32 = BACKGROUND_Z + 0.78;
+const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
+const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
+const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
+const BLACK_HOLE_SIZE: Vec2 = Vec2::new(480.0, 270.0);
+const BLACK_HOLE_DEPTH: f32 = BACKGROUND_Z + 0.7;
+const BLACK_HOLE_PARALLAX_FOLLOW: f32 = 0.82;
+const BLACK_HOLE_FRAME_COUNT: usize = 66;
+const BLACK_HOLE_FRAME_SECONDS: f32 = 0.08;
+const BLACK_HOLE_OPACITY: f32 = 0.4;
 
 impl PlanetCmp {
     /// Creates a new value from the supplied state.
@@ -461,7 +502,7 @@ fn spawn_ambient_stars(commands: &mut Commands) {
     spawn_ambient_star_layer(
         commands,
         AmbientStarLayer {
-            count: 420,
+            count: 525,
             seed: 0x14d2_8a31,
             depth: BACKGROUND_Z + 0.22,
             camera_follow: 0.66,
@@ -481,7 +522,7 @@ fn spawn_ambient_stars(commands: &mut Commands) {
     spawn_ambient_star_layer(
         commands,
         AmbientStarLayer {
-            count: 280,
+            count: 350,
             seed: 0xf274_9b13,
             depth: BACKGROUND_Z + 0.4,
             camera_follow: 0.43,
@@ -501,7 +542,7 @@ fn spawn_ambient_stars(commands: &mut Commands) {
     spawn_ambient_star_layer(
         commands,
         AmbientStarLayer {
-            count: 220,
+            count: 275,
             seed: 0xa8e5_3c79,
             depth: BACKGROUND_Z + 0.56,
             camera_follow: 0.2,
@@ -519,6 +560,199 @@ fn spawn_ambient_stars(commands: &mut Commands) {
         },
     );
     spawn_ambient_pulsars(commands);
+}
+
+fn scenery_corner_from_seed(seed: u32) -> Vec2 {
+    match seed & 3 {
+        0 => Vec2::new(-1.0, -1.0),
+        1 => Vec2::new(1.0, -1.0),
+        2 => Vec2::new(-1.0, 1.0),
+        _ => Vec2::ONE,
+    }
+}
+
+fn map_scenery_corner(map: &Map) -> Vec2 {
+    let seed = map.planets.iter().fold(0x915f_43b7_u32, |seed, planet| {
+        seed.rotate_left(7)
+            ^ planet.position.x.to_bits().wrapping_mul(0x9e37_79b9)
+            ^ planet.position.y.to_bits().rotate_left(13)
+    });
+    scenery_corner_from_seed(seed)
+}
+
+fn map_corner(map: &Map, direction: Vec2) -> Vec2 {
+    Vec2::new(
+        if direction.x < 0.0 {
+            map.rect.min.x
+        } else {
+            map.rect.max.x
+        },
+        if direction.y < 0.0 {
+            map.rect.min.y
+        } else {
+            map.rect.max.y
+        },
+    )
+}
+
+/// Hangs a large arc over a map-dependent corner while keeping most of the star off-map.
+fn solar_star_position(map: &Map) -> Vec2 {
+    let corner = map_scenery_corner(map);
+    map_corner(map, corner) + corner * SOLAR_STAR_SIZE * 0.3
+}
+
+fn black_hole_position(map: &Map) -> Vec2 {
+    let sun_corner = map_scenery_corner(map);
+    let edge_direction = Vec2::new(-sun_corner.x, 0.0);
+    let edge_x = if edge_direction.x < 0.0 {
+        map.rect.min.x
+    } else {
+        map.rect.max.x
+    };
+    let x = edge_x - edge_direction.x * BLACK_HOLE_SIZE.x * 0.42;
+    let usable_half_height = (map.rect.half_size().y - BLACK_HOLE_SIZE.y * 0.55).max(0.0);
+    let preferred_y = -sun_corner.y * usable_half_height * 0.48;
+    if map.planets.is_empty() {
+        return Vec2::new(x, map.rect.center().y + preferred_y);
+    }
+
+    [-0.72, -0.48, -0.24, 0.0, 0.24, 0.48, 0.72]
+        .into_iter()
+        .map(|slot| Vec2::new(x, map.rect.center().y + usable_half_height * slot))
+        .max_by(|left, right| {
+            let nearest = |candidate: Vec2| {
+                map.planets
+                    .iter()
+                    .map(|planet| candidate.distance_squared(planet.position))
+                    .fold(f32::INFINITY, f32::min)
+            };
+            nearest(*left).total_cmp(&nearest(*right))
+        })
+        .unwrap_or(Vec2::new(x, map.rect.center().y + preferred_y))
+}
+
+fn nebula_position(map: &Map) -> Vec2 {
+    let sun_corner = map_scenery_corner(map);
+    let direction = Vec2::new(-sun_corner.x, sun_corner.y);
+    map.rect.center() + direction * map.rect.half_size() * Vec2::new(0.28, 0.18)
+}
+
+fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
+    let nebula_anchor = nebula_position(map);
+    commands
+        .spawn((
+            Name::new("Decorative nebula parallax"),
+            Transform::from_xyz(0.0, 0.0, NEBULA_DEPTH),
+            Visibility::Inherited,
+            ParallaxCmp::new(NEBULA_PARALLAX_FOLLOW, 1.0, 0.025, Vec2::new(0.06, -0.03)),
+            Pickable::IGNORE,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Sprite {
+                    image: assets.image("nebula"),
+                    color: Color::srgba(0.86, 0.88, 1.0, 0.58),
+                    custom_size: Some(NEBULA_SIZE),
+                    ..default()
+                },
+                Transform::from_translation(nebula_anchor.extend(0.0)),
+                Pickable::IGNORE,
+                NebulaCmp {
+                    phase: visual_noise(0x24b7_96d1) * TAU,
+                },
+            ));
+        });
+
+    let black_hole_anchor = black_hole_position(map);
+    let black_hole_frames = (1..=BLACK_HOLE_FRAME_COUNT)
+        .map(|index| assets.image(format!("black hole {index}")))
+        .collect::<Vec<_>>();
+    commands
+        .spawn((
+            Name::new("Decorative black hole parallax"),
+            Transform::from_xyz(0.0, 0.0, BLACK_HOLE_DEPTH),
+            Visibility::Inherited,
+            ParallaxCmp::new(BLACK_HOLE_PARALLAX_FOLLOW, 1.0, 0.04, Vec2::new(-0.08, 0.04)),
+            Pickable::IGNORE,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Name::new("Animated NASA black hole"),
+                    Transform::from_translation(black_hole_anchor.extend(0.0)),
+                    Visibility::Inherited,
+                    Pickable::IGNORE,
+                    BlackHoleCmp {
+                        frames: black_hole_frames,
+                    },
+                ))
+                .with_children(|black_hole| {
+                    for slot in 0..2 {
+                        black_hole.spawn((
+                            Sprite {
+                                image: assets.image(format!("black hole {}", slot + 1)),
+                                color: Color::srgba(
+                                    0.72,
+                                    0.72,
+                                    0.72,
+                                    if slot == 0 {
+                                        BLACK_HOLE_OPACITY
+                                    } else {
+                                        0.0
+                                    },
+                                ),
+                                custom_size: Some(BLACK_HOLE_SIZE),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, slot as f32 * 0.001),
+                            Pickable::IGNORE,
+                            BlackHoleFrameCmp {
+                                slot,
+                            },
+                        ));
+                    }
+                });
+        });
+}
+
+fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
+    commands
+        .spawn((
+            Name::new("Decorative solar star"),
+            Transform::from_translation(solar_star_position(map).extend(SOLAR_STAR_DEPTH)),
+            Visibility::Inherited,
+            Pickable::IGNORE,
+            SolarStarCmp,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            for index in 0..SOLAR_STAR_FRAME_COUNT {
+                parent.spawn((
+                    Sprite {
+                        image: assets.image(format!("solar star {}", index + 1)),
+                        color: Color::srgba(
+                            1.0,
+                            1.0,
+                            1.0,
+                            if index == 0 {
+                                1.0
+                            } else {
+                                0.0
+                            },
+                        ),
+                        custom_size: Some(Vec2::splat(SOLAR_STAR_SIZE)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, index as f32 * 0.01),
+                    Pickable::IGNORE,
+                    SolarStarFrameCmp {
+                        index,
+                    },
+                ));
+            }
+        });
 }
 
 /// Selects a planet and updates the mission origin for worlds under the player's control.
@@ -601,6 +835,8 @@ pub fn draw_map(
         });
 
     spawn_ambient_stars(&mut commands);
+    spawn_background_landmarks(&mut commands, &assets, &map);
+    spawn_solar_star(&mut commands, &assets, &map);
 
     for planet in &map.planets {
         let planet_id = planet.id;
@@ -1551,6 +1787,41 @@ fn smoothstep(value: f32) -> f32 {
     value * value * (3.0 - 2.0 * value)
 }
 
+fn looping_frame_alpha(frame: usize, elapsed: f32, frame_count: usize, frame_seconds: f32) -> f32 {
+    let (current, next, blend) = looping_frame_sample(elapsed, frame_count, frame_seconds);
+    if frame == current {
+        1.0 - blend
+    } else if frame == next {
+        blend
+    } else {
+        0.0
+    }
+}
+
+fn looping_frame_sample(
+    elapsed: f32,
+    frame_count: usize,
+    frame_seconds: f32,
+) -> (usize, usize, f32) {
+    let phase = (elapsed / frame_seconds).rem_euclid(frame_count as f32);
+    let current = phase.floor() as usize;
+    (current, (current + 1) % frame_count, smoothstep(phase.fract()))
+}
+
+fn solar_star_frame_alpha(frame: usize, elapsed: f32) -> f32 {
+    looping_frame_alpha(frame, elapsed, SOLAR_STAR_FRAME_COUNT, SOLAR_STAR_FRAME_SECONDS)
+}
+
+fn black_hole_frame_state(slot: usize, elapsed: f32) -> (usize, f32) {
+    let (current, next, blend) =
+        looping_frame_sample(elapsed, BLACK_HOLE_FRAME_COUNT, BLACK_HOLE_FRAME_SECONDS);
+    if slot == 0 {
+        (current, (1.0 - blend) * BLACK_HOLE_OPACITY)
+    } else {
+        (next, blend * BLACK_HOLE_OPACITY)
+    }
+}
+
 fn comet_visibility(progress: f32) -> f32 {
     let fade_in = smoothstep(progress / 0.12);
     let fade_out = smoothstep((1.0 - progress) / 0.34);
@@ -1569,6 +1840,52 @@ fn pulsar_anchor(seed: u32, cycle: u32) -> Vec2 {
         (visual_noise(cycle_seed.wrapping_add(1)) - 0.5) * AMBIENT_PULSAR_FIELD_SIZE.x,
         (visual_noise(cycle_seed.wrapping_add(2)) - 0.5) * AMBIENT_PULSAR_FIELD_SIZE.y,
     )
+}
+
+/// Gives each sourced landmark a restrained presentation-only drift, pulse, or rotation.
+pub(crate) fn animate_space_scenery(
+    mut star_q: Query<
+        &mut Transform,
+        (With<SolarStarCmp>, Without<SolarStarFrameCmp>, Without<NebulaCmp>, Without<BlackHoleCmp>),
+    >,
+    mut solar_frame_q: Query<
+        (&SolarStarFrameCmp, &mut Sprite),
+        (Without<SolarStarCmp>, Without<BlackHoleFrameCmp>, Without<MainCamera>),
+    >,
+    mut nebula_q: Query<
+        (&NebulaCmp, &mut Transform),
+        (Without<SolarStarCmp>, Without<BlackHoleCmp>),
+    >,
+    black_hole_q: Query<(&BlackHoleCmp, &Children)>,
+    mut black_hole_frame_q: Query<
+        (&BlackHoleFrameCmp, &mut Sprite),
+        (Without<SolarStarFrameCmp>, Without<MainCamera>),
+    >,
+    time: Res<Time>,
+) {
+    let elapsed = time.elapsed_secs_f64() as f32;
+    for mut transform in &mut star_q {
+        transform.rotation = Quat::from_rotation_z(elapsed * 0.018);
+        transform.scale = Vec3::splat(1.0 + (elapsed * 0.72).sin() * 0.012);
+    }
+    for (frame, mut sprite) in &mut solar_frame_q {
+        sprite.color.set_alpha(solar_star_frame_alpha(frame.index, elapsed));
+    }
+    for (nebula, mut transform) in &mut nebula_q {
+        let phase = elapsed * 0.025 + nebula.phase;
+        transform.rotation = Quat::from_rotation_z((phase * 0.41).sin() * 0.018);
+        transform.scale = Vec3::splat(1.0 + (phase * 0.62).sin() * 0.018);
+    }
+    for (black_hole, children) in &black_hole_q {
+        for child in children.iter() {
+            let Ok((frame, mut sprite)) = black_hole_frame_q.get_mut(child) else {
+                continue;
+            };
+            let (frame_index, alpha) = black_hole_frame_state(frame.slot, elapsed);
+            sprite.image = black_hole.frames[frame_index].clone();
+            sprite.color.set_alpha(alpha);
+        }
+    }
 }
 
 fn next_comet_delay(sequence: u32) -> f32 {

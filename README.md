@@ -63,27 +63,23 @@ defenses.
 ### Mission types
 
 - **Deploy:** Move a fleet to another planet or moon you control.
-- **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet; moons
-  cannot be colonized. The Colony Ship is consumed. An empty planet receives level-one Metal,
-  Crystal, and Deuterium mines; an owned planet can produce resources and construct buildings.
+- **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
+  The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
+  planet.
 - **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
-  control, but not ownership. The previous owner loses both ownership and control, while surviving
+  control, but not ownership. The previous owner loses both ownership and control. Surviving
   buildings remain.
 - **Spy:** Send only Probes. Unless `combat probes` is enabled, they leave after the first combat
-  round; more returning Probes reveal better intelligence. Spy missions cannot be detected by a
+  round. More returning Probes reveal better intelligence. Spy missions cannot be detected by a
   Sensor Phalanx and do not reveal their origin.
 - **Missile Strike:** Launch only Interplanetary Missiles against a planet, not a moon. They bypass
-  ships and the Planetary Shield to hit defenses directly, and surviving missiles are consumed. A
+  ships and the Planetary Shield to hit defenses directly. Surviving missiles are consumed. A
   launched strike still hits if the destination later becomes friendly, reveals no enemy-unit
   intelligence, cannot be detected by a Sensor Phalanx, and does not reveal its origin.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
   enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet; the
-  chance falls in later rounds. The fleet returns whether or not destruction succeeds, and a
-  destroyed planet can never be colonized again.
-
-A **Jump Gate** modifies an eligible mission rather than being a separate objective. Travel between
-owned planets with gates takes one turn and no fuel, regardless of fleet composition; the origin
-gate's level limits how much fleet production can pass through it that turn.
+  chance falls in later rounds. The fleet returns whether destruction succeeds. A destroyed
+  planet can never be colonized again.
 
 ### Saved multiplayer games
 

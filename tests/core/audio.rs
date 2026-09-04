@@ -86,6 +86,28 @@ fn mission_launch_confirmation_is_considerably_attenuated() {
     assert_eq!(SoundEffect::ShipPurchased.request().volume, 0.0);
 }
 
+#[test]
+fn celestial_ambience_requires_both_close_zoom_and_proximity() {
+    let landmark = Vec2::new(1_000.0, 500.0);
+    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_FULL_ZOOM, landmark), -24.0);
+    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_SILENT_ZOOM, landmark), -60.0);
+    assert_eq!(
+        celestial_ambience_volume(
+            landmark + Vec2::new(STAR_AMBIENCE_FAR_DISTANCE, 0.0),
+            STAR_AMBIENCE_FULL_ZOOM,
+            landmark,
+        ),
+        -60.0
+    );
+
+    let audible = celestial_ambience_volume(
+        landmark + Vec2::new(STAR_AMBIENCE_NEAR_DISTANCE * 2.0, 0.0),
+        0.72,
+        landmark,
+    );
+    assert!((STAR_AMBIENCE_SILENCE..STAR_AMBIENCE_MAX_VOLUME).contains(&audible));
+}
+
 /// Builds the real playback system without opening a speaker or GPU device.
 fn audio_app() -> App {
     let mut app = App::new();

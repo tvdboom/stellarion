@@ -9,6 +9,8 @@ use bevy_egui::{egui, EguiContexts};
 use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
+use crate::core::camera::MainCamera;
+use crate::core::map::systems::{BlackHoleCmp, SolarStarCmp};
 use crate::core::map::utils::cursor;
 use crate::core::missions::Missions;
 use crate::core::settings::Settings;
@@ -122,6 +124,15 @@ impl PlayingAudio {
     pub const AMBIENCE_VOLUME: f32 = -12.;
     pub const TWEEN: AudioTween = AudioTween::new(Duration::from_secs(2), AudioEasing::OutPowi(2));
 }
+
+const STAR_AMBIENCE_NAME: &str = "star ambience";
+const STAR_AMBIENCE_MAX_VOLUME: f32 = -24.0;
+const STAR_AMBIENCE_SILENCE: f32 = -60.0;
+const STAR_AMBIENCE_NEAR_DISTANCE: f32 = 260.0;
+const STAR_AMBIENCE_FAR_DISTANCE: f32 = 1_100.0;
+const STAR_AMBIENCE_FULL_ZOOM: f32 = 0.6;
+const STAR_AMBIENCE_SILENT_ZOOM: f32 = 1.0;
+const STAR_AMBIENCE_TWEEN: AudioTween = AudioTween::linear(Duration::from_millis(350));
 
 #[derive(Message, Clone)]
 /// Message requesting playback of one named audio asset.
@@ -329,6 +340,91 @@ pub fn update_mission_hover_audio(
             stop.write(StopAudioMsg::new("booster"));
         }
         *playing = hovered;
+    }
+}
+
+fn smooth_audio_falloff(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
+fn celestial_ambience_volume(camera: Vec2, zoom: f32, landmark: Vec2) -> f32 {
+    let zoom_progress =
+        (zoom - STAR_AMBIENCE_FULL_ZOOM) / (STAR_AMBIENCE_SILENT_ZOOM - STAR_AMBIENCE_FULL_ZOOM);
+    let distance_progress = (camera.distance(landmark) - STAR_AMBIENCE_NEAR_DISTANCE)
+        / (STAR_AMBIENCE_FAR_DISTANCE - STAR_AMBIENCE_NEAR_DISTANCE);
+    let intensity = (1.0 - smooth_audio_falloff(zoom_progress))
+        * (1.0 - smooth_audio_falloff(distance_progress));
+    if intensity <= 0.001 {
+        STAR_AMBIENCE_SILENCE
+    } else {
+        (STAR_AMBIENCE_MAX_VOLUME + 20.0 * intensity.log10()).max(STAR_AMBIENCE_SILENCE)
+    }
+}
+
+/// Fades in one shared rumble near either massive landmark, but only while closely zoomed in.
+pub fn update_celestial_ambience_audio(
+    camera_q: Query<(&Transform, &Projection), With<MainCamera>>,
+    landmark_q: Query<
+        &GlobalTransform,
+        (Or<(With<SolarStarCmp>, With<BlackHoleCmp>)>, Without<MainCamera>),
+    >,
+    settings: Res<Settings>,
+    game_state: Res<State<GameState>>,
+    playing_audio: Res<PlayingAudio>,
+    mut audio_instances: ResMut<Assets<AudioInstance>>,
+    mut play: MessageWriter<PlayAudioMsg>,
+    mut stop: MessageWriter<StopAudioMsg>,
+    mut last_volume: Local<Option<f32>>,
+) {
+    let target_volume =
+        if settings.audio != AudioState::Mute && *game_state.get() == GameState::Playing {
+            camera_q.single().ok().and_then(|(camera, projection)| {
+                let Projection::Orthographic(projection) = projection else {
+                    return None;
+                };
+                landmark_q
+                    .iter()
+                    .map(|landmark| {
+                        celestial_ambience_volume(
+                            camera.translation.truncate(),
+                            projection.scale,
+                            landmark.translation().truncate(),
+                        )
+                    })
+                    .max_by(f32::total_cmp)
+            })
+        } else {
+            None
+        };
+
+    let Some(target_volume) = target_volume else {
+        if playing_audio.0.contains_key(STAR_AMBIENCE_NAME) {
+            stop.write(StopAudioMsg::new(STAR_AMBIENCE_NAME));
+        }
+        *last_volume = None;
+        return;
+    };
+
+    let Some(handles) = playing_audio.0.get(STAR_AMBIENCE_NAME) else {
+        let mut request = PlayAudioMsg::new(STAR_AMBIENCE_NAME).looped();
+        request.volume = STAR_AMBIENCE_SILENCE;
+        play.write(request);
+        *last_volume = None;
+        return;
+    };
+
+    if last_volume.is_none_or(|previous| (previous - target_volume).abs() >= 0.5) {
+        let mut updated = false;
+        for handle in handles {
+            if let Some(mut instance) = audio_instances.get_mut(handle) {
+                instance.set_decibels(target_volume, STAR_AMBIENCE_TWEEN);
+                updated = true;
+            }
+        }
+        if updated {
+            *last_volume = Some(target_volume);
+        }
     }
 }
 

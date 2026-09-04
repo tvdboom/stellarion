@@ -21,9 +21,9 @@ use crate::core::map::battle::BattleAftermathPlugin;
 use crate::core::map::colonization::ColonizationPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
-    animate_map_ambience, draw_map, hide_planet_details, run_map_animations, update_ambient_comets,
-    update_end_turn, update_planet_defenses, update_planet_info, update_voronoi,
-    AmbientCometSpawner,
+    animate_map_ambience, animate_space_scenery, draw_map, hide_planet_details, run_map_animations,
+    update_ambient_comets, update_end_turn, update_planet_defenses, update_planet_info,
+    update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -130,6 +130,7 @@ impl Plugin for GamePlugin {
                     toggle_audio,
                     update_audio,
                     update_mission_hover_audio,
+                    update_celestial_ambience_audio,
                     mute_audio,
                     pause_audio,
                     stop_audio,
@@ -211,7 +212,13 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    (update_end_turn, run_map_animations, animate_map_ambience, update_voronoi)
+                    (
+                        update_end_turn,
+                        run_map_animations,
+                        animate_map_ambience,
+                        animate_space_scenery,
+                        update_voronoi,
+                    )
                         .in_set(InGameSet),
                     (
                         update_planet_info,

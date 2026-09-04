@@ -15,6 +15,19 @@ fn mission_planet_names_share_the_same_centered_planet_relative_position() {
 }
 
 #[test]
+fn mission_route_is_centered_on_the_planet_artwork() {
+    let cell = egui::Rect::from_min_size(
+        egui::pos2(120.0, 20.0),
+        egui::vec2(480.0, MISSION_PLANET_CELL_HEIGHT),
+    );
+    let (planet, _) = mission_planet_rects(cell);
+    let route = mission_route_rect(cell);
+
+    assert!((route.center().y - planet.center().y).abs() <= f32::EPSILON);
+    assert_eq!(route.width(), cell.width());
+}
+
+#[test]
 fn active_mission_rows_are_centered_with_equal_outer_space() {
     for available_width in [700.0, 850.0, 1_200.0] {
         let (route_width, leading_space) = mission_row_layout(available_width);
@@ -128,6 +141,17 @@ fn missile_report_thumbnail_is_optically_shifted_left() {
         egui::vec2(MISSION_MISSILE_IMAGE_OFFSET_X, 0.0)
     );
     assert_eq!(mission_report_image_offset("mission"), egui::Vec2::ZERO);
+}
+
+#[test]
+fn report_thumbnail_size_changes_only_for_selection() {
+    assert_eq!(mission_report_image_base_size(false), MISSION_REPORT_IMAGE_SIZE);
+    assert_eq!(mission_report_image_base_size(true), MISSION_REPORT_SELECTED_IMAGE_SIZE);
+}
+
+#[test]
+fn report_list_top_padding_keeps_the_outside_hover_stroke_visible() {
+    assert!(MISSION_REPORT_LIST_TOP_PADDING >= MISSION_REPORT_HOVER_STROKE_WIDTH * 0.5);
 }
 
 #[test]

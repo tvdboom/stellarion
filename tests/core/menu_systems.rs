@@ -205,9 +205,32 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
     assert!(toast.left() > last_button.right());
     assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(toast));
 
-    app.world_mut().resource_mut::<MultiplayerSession>().menu_error = None;
     app.world_mut().resource_mut::<ConnectionIndicator>().status =
         crate::multiplayer::client::ConnectionStatus::Connected;
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    let connected_with_issues = visible_menu_label(&shapes, "Connected with issues").unwrap();
+    let warning_dot = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle)
+                if (circle.radius - 4.0).abs() < f32::EPSILON
+                    && circle.center.x < connected_with_issues.left()
+                    && (connected_with_issues.top()..=connected_with_issues.bottom())
+                        .contains(&circle.center.y) =>
+            {
+                Some(circle)
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert!(warning_dot.fill.r() > 200);
+    assert!(warning_dot.fill.g() > 150);
+    assert!(warning_dot.fill.b() < 150);
+
+    app.world_mut().resource_mut::<MultiplayerSession>().menu_error = None;
     for _ in 0..3 {
         menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
     }
@@ -228,6 +251,66 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
         .unwrap();
     assert!(u16::from(status_dot.fill.g()) > u16::from(status_dot.fill.r()) * 2);
     assert!(visible_menu_label(&shapes, "Unable to complete action").is_none());
+}
+
+#[test]
+fn every_menu_error_uses_the_right_hand_message_rail() {
+    let error = "backend protocol error: game record has an invalid save timestamp";
+    for viewport in [egui::vec2(1181.0, 745.0), egui::vec2(400.0, 400.0)] {
+        for (state, title) in [
+            (AppState::MainMenu, "Unable to complete action"),
+            (AppState::CreateGame, "Unable to complete action"),
+            (AppState::JoinGame, "Unable to join game"),
+            (AppState::RecoverPlayer, "Unable to recover game"),
+            (AppState::ResumeGame, "Unable to complete action"),
+            (AppState::Lobby, "Unable to continue game"),
+            (AppState::Settings, "Unable to complete action"),
+            (AppState::LoadingGame, "Unable to complete action"),
+        ] {
+            let (mut app, context) = menu_app();
+            app.world_mut().resource_mut::<MultiplayerSession>().menu_error =
+                Some(error.to_string());
+            app.world_mut().resource_mut::<ConnectionIndicator>().status =
+                crate::multiplayer::client::ConnectionStatus::Connected;
+            for _ in 0..3 {
+                menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            }
+            let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            let title_rect = visible_menu_label(&shapes, title)
+                .unwrap_or_else(|| panic!("missing error title for {state:?} at {viewport:?}"));
+            let message_rect = visible_menu_label(&shapes, error)
+                .unwrap_or_else(|| panic!("missing error message for {state:?} at {viewport:?}"));
+            let panel = shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.contains_rect(title_rect)
+                            && rect.rect.contains_rect(message_rect)
+                            && (rect.rect.right() - (viewport.x - 24.0)).abs() < 1.0 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing error panel for {state:?} at {viewport:?}"));
+            let status = visible_menu_label(&shapes, "Connected with issues").unwrap();
+            let message_count = shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == error)
+            })
+            .count();
+
+            assert_eq!(message_count, 1, "error was duplicated for {state:?}");
+            assert!(
+                panel.center().x > viewport.x * 0.5,
+                "error was not on the right for {state:?} at {viewport:?}: {panel:?}"
+            );
+            assert!((panel.right() - (viewport.x - 24.0)).abs() < 1.0);
+            assert!(panel.bottom() < status.top());
+            assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(panel));
+        }
+    }
 }
 
 #[test]
@@ -596,14 +679,15 @@ fn menu_button_registers_its_click_sound() {
 }
 
 #[test]
-fn resume_save_timestamp_uses_a_stable_utc_date_and_minute() {
-    assert_eq!(format_saved_timestamp(1_700_000_000), "Saved 2023-11-14 22:13 UTC");
-    assert_eq!(format_saved_timestamp(0), "Saved time unavailable");
+fn resume_save_timestamp_uses_the_local_date_and_minute_without_labels() {
+    let local_time = ChronoLocal.with_ymd_and_hms(2023, 11, 14, 22, 13, 0).single().unwrap();
+    assert_eq!(format_saved_timestamp(local_time.timestamp() as u64), "2023-11-14 22:13");
+    assert_eq!(format_saved_timestamp(0), "Time unavailable");
 }
 
 #[test]
 fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
-    for (height, visible_cards) in [(514.0, 2), (900.0, 5)] {
+    for (height, visible_cards) in [(514.0, 3), (900.0, 5)] {
         let context = egui::Context::default();
         context.add_font(egui::epaint::text::FontInsert::new(
             "firasans",
@@ -639,7 +723,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
             .iter()
             .filter(|shape| {
                 matches!(&shape.shape,
-                    egui::Shape::Rect(rect) if rect.rect.height() == 90.0
+                    egui::Shape::Rect(rect) if rect.rect.height() == 72.0
                         && shape.clip_rect.contains_rect(rect.rect)
                 )
             })
@@ -663,7 +747,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
 }
 
 #[test]
-fn resume_identity_fits_narrow_cards_and_busy_cards_do_not_resume() {
+fn resume_metadata_stays_on_one_row_and_busy_cards_do_not_resume() {
     for width in [280.0, 640.0] {
         for name in ["Nova".to_string(), "W".repeat(32)] {
             for enabled in [true, false] {
@@ -698,6 +782,26 @@ fn resume_identity_fits_narrow_cards_and_busy_cards_do_not_resume() {
                         _ => None,
                     })
                     .unwrap();
+                let metadata_bounds = shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text.contains("Turn 6") => {
+                            assert_eq!(text.galley.rows.len(), 1);
+                            assert!(text
+                                .galley
+                                .job
+                                .text
+                                .starts_with(&format_saved_timestamp(game.saved_at)));
+                            assert!(text.galley.job.text.ends_with("·   2 players   ·"));
+                            assert!(!text.galley.job.text.contains("Saved"));
+                            assert!(!text.galley.job.text.contains("UTC"));
+                            assert!(!text.galley.job.text.contains("Playing as"));
+                            assert!(!text.galley.job.text.contains('●'));
+                            Some(text.galley.rect.translate(text.pos.to_vec2()))
+                        },
+                        _ => None,
+                    })
+                    .unwrap();
                 let name_bounds = shapes
                     .iter()
                     .find_map(|shape| match &shape.shape {
@@ -708,26 +812,39 @@ fn resume_identity_fits_narrow_cards_and_busy_cards_do_not_resume() {
                         _ => None,
                     })
                     .unwrap();
+                assert!(card.contains_rect(metadata_bounds));
                 assert!(card.contains_rect(name_bounds));
                 assert!(name_bounds.right() <= card.right() - 38.0);
-                let [r, g, b] = game.player_color.rgb();
-                let color = egui::Color32::from_rgb(r, g, b);
-                assert!(shapes.iter().any(|shape| matches!(&shape.shape,
-                    egui::Shape::Circle(dot) if dot.radius == 5.0
-                        && dot.fill == if enabled { color } else { color.gamma_multiply(0.5) }
-                        && (dot.center.y - name_bounds.center().y).abs() < 1.0
-                        && dot.center.x + dot.radius < name_bounds.left()
-                )));
+                assert!(!metadata_bounds.intersects(name_bounds));
+                let [red, green, blue] = game.player_color.rgb();
+                let player_color = egui::Color32::from_rgb(red, green, blue);
+                let player_dot = shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Circle(dot)
+                            if dot.radius == 4.0
+                                && dot.fill
+                                    == if enabled {
+                                        player_color
+                                    } else {
+                                        player_color.gamma_multiply(0.5)
+                                    } =>
+                        {
+                            Some(dot.center)
+                        },
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!((player_dot.y - metadata_bounds.center().y).abs() < 1.0);
+                assert!(player_dot.x - 4.0 > metadata_bounds.right());
+                assert!(player_dot.x + 4.0 < name_bounds.left());
                 for shape in &shapes {
                     if let egui::Shape::Text(text) = &shape.shape {
                         let bounds = text.galley.rect.translate(text.pos.to_vec2());
                         assert!(card.contains_rect(bounds), "{}", text.galley.job.text);
-                        if text.galley.job.text.starts_with("Turn ") {
-                            assert!(!bounds.intersects(name_bounds));
-                        }
                     }
                 }
-                let (_, requests) = click_menu(&context, name_bounds.center(), draw);
+                let (_, requests) = click_menu(&context, card.center(), draw);
                 assert_eq!(requests.len(), usize::from(enabled));
             }
         }
@@ -780,10 +897,10 @@ fn recovery_is_accessible_from_an_empty_resume_list_and_returns_to_it() {
 
     let mut form = MultiplayerForm::default();
     let (shapes, _) = menu_frame(&context, vec![], |ui, requests| {
-        recovery_screen(ui, &mut form, false, None, requests, &mut next);
+        recovery_screen(ui, &mut form, false, requests, &mut next);
     });
     let (_, requests) = click_menu(&context, text_center(&shapes, "Back"), |ui, requests| {
-        recovery_screen(ui, &mut form, false, None, requests, &mut next);
+        recovery_screen(ui, &mut form, false, requests, &mut next);
     });
     assert!(requests.is_empty());
     assert!(matches!(next, NextState::Pending(AppState::ResumeGame)));
@@ -792,7 +909,7 @@ fn recovery_is_accessible_from_an_empty_resume_list_and_returns_to_it() {
     form.recovery_code = "0123-4567-89AB-CDEF".to_string();
     for busy in [false, true] {
         let requests = submit_menu(|ui, requests| {
-            recovery_screen(ui, &mut form, busy, None, requests, &mut next);
+            recovery_screen(ui, &mut form, busy, requests, &mut next);
         });
         if busy {
             assert!(requests.is_empty());
@@ -814,7 +931,7 @@ fn join_game_code_uses_the_labeled_help_card_above_the_actions() {
     };
     let mut next = NextState::default();
     let (shapes, _) = menu_frame(&context, vec![], |ui, requests| {
-        join_screen(ui, &mut form, false, None, requests, &mut next);
+        join_screen(ui, &mut form, false, requests, &mut next);
     });
 
     let title = visible_menu_label(&shapes, "Join Game").unwrap();
@@ -862,7 +979,7 @@ fn joining_reuses_saved_name_and_only_prompts_when_needed() {
         let (shapes, requests) = menu_frame(
             &egui::Context::default(),
             vec![enter_event(false, egui::Modifiers::NONE)],
-            |ui, requests| join_screen(ui, &mut form, false, None, requests, &mut next),
+            |ui, requests| join_screen(ui, &mut form, false, requests, &mut next),
         );
         assert_eq!(
             shapes.iter().any(|shape| {
@@ -876,7 +993,7 @@ fn joining_reuses_saved_name_and_only_prompts_when_needed() {
                 if display_name == expected_name && code == "ABCDEF"
         ));
         assert!(submit_menu(|ui, requests| {
-            join_screen(ui, &mut form, true, None, requests, &mut next);
+            join_screen(ui, &mut form, true, requests, &mut next);
         })
         .is_empty());
     }
@@ -913,6 +1030,61 @@ fn recovery_help_is_only_shown_on_hover() {
     menu_frame(&context, vec![], &mut draw);
     let (shapes, _) = menu_frame(&context, vec![], &mut draw);
     assert!(help_visible(&shapes));
+}
+
+#[test]
+fn lobby_code_text_can_be_drag_selected_and_copied() {
+    let context = egui::Context::default();
+    let viewport = egui::vec2(800.0, 300.0);
+    let code = "ABC123";
+    let run_frame = |events| {
+        context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                events,
+                ..default()
+            },
+            |ui| {
+                ui.set_width(560.0);
+                lobby_code_card(ui, "Game code", code, true);
+            },
+        )
+    };
+
+    let mut output = run_frame(vec![]);
+    let code_rect = visible_menu_label(&output.shapes, code).unwrap();
+    output.textures_delta.clear();
+    let start = egui::pos2(code_rect.left() - 2.0, code_rect.center().y);
+    let end = egui::pos2(code_rect.right() + 2.0, code_rect.center().y);
+    for events in [
+        vec![
+            egui::Event::PointerMoved(start),
+            egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        vec![egui::Event::PointerMoved(end)],
+        vec![egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    ] {
+        let mut output = run_frame(events);
+        output.textures_delta.clear();
+    }
+
+    let mut output = run_frame(vec![egui::Event::Copy]);
+    assert!(output
+        .platform_output
+        .commands
+        .iter()
+        .any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == code)));
+    output.textures_delta.clear();
 }
 
 #[test]
@@ -999,18 +1171,18 @@ fn enter_submits_forms_but_respects_validation_and_busy_state() {
     form.display_name = "Commander".to_string();
     form.game_code = "ABCDEF".to_string();
     let joined = submit_menu(|ui, requests| {
-        join_screen(ui, &mut form, false, None, requests, &mut next);
+        join_screen(ui, &mut form, false, requests, &mut next);
     });
     assert!(matches!(joined.as_slice(), [MultiplayerRequest::JoinGame { .. }]));
     form.display_name.clear();
     assert!(submit_menu(|ui, requests| {
-        join_screen(ui, &mut form, false, None, requests, &mut next);
+        join_screen(ui, &mut form, false, requests, &mut next);
     })
     .is_empty());
     form.display_name = "Commander".to_string();
     form.game_code.clear();
     assert!(submit_menu(|ui, requests| {
-        join_screen(ui, &mut form, false, None, requests, &mut next);
+        join_screen(ui, &mut form, false, requests, &mut next);
     })
     .is_empty());
 }
@@ -1039,57 +1211,6 @@ fn busy_lobby_always_allows_leaving_for_both_roles() {
             lobby_screen(ui, &session, requests, &mut next);
         });
         assert!(matches!(requests.as_slice(), [MultiplayerRequest::LeaveGame]));
-    }
-}
-
-#[test]
-fn recovery_error_panel_precedes_buttons_and_short_windows_keep_navigation_visible() {
-    for size in [egui::vec2(715.0, 715.0), egui::vec2(400.0, 400.0)] {
-        let context = egui::Context::default();
-        let mut form = MultiplayerForm::default();
-        let mut next = NextState::default();
-        let error = "This recovery code is already in use by a connected player. Use your own private recovery code.";
-        let mut draw = |ui: &mut egui::Ui, requests: &mut MessageWriter<MultiplayerRequest>| {
-            let width = (size.x * 0.4).clamp(320.0, 640.0).min(size.x - 32.0);
-            ui.allocate_ui(egui::vec2(width, size.y), |ui| {
-                ui.vertical_centered(|ui| {
-                    recovery_screen(ui, &mut form, false, Some(error), requests, &mut next)
-                });
-            });
-        };
-        // Allow the scroll animation to reveal the newly reported error.
-        for _ in 0..30 {
-            menu_frame_sized(&context, size, vec![], &mut draw);
-        }
-        let (shapes, _) = menu_frame_sized(&context, size, vec![], &mut draw);
-        let back = shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Back" => {
-                    Some(text.galley.rect.translate(text.pos.to_vec2()))
-                },
-                _ => None,
-            })
-            .unwrap();
-        assert!(back.bottom() < size.y - 96.0, "navigation overlapped footer at {size:?}");
-        {
-            let panel = shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(rect)
-                        if rect.fill == egui::Color32::from_rgba_unmultiplied(67, 23, 32, 232) =>
-                    {
-                        Some(rect.rect)
-                    },
-                    _ => None,
-                })
-                .unwrap();
-            assert!(panel.bottom() < back.top());
-            assert!(shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if text.galley.job.text == error
-                && shape.clip_rect.contains_rect(text.galley.rect.translate(text.pos.to_vec2()))
-                && panel.contains_rect(text.galley.rect.translate(text.pos.to_vec2())))));
-        }
     }
 }
 

@@ -282,6 +282,11 @@ fn mission_hover_panel_x_positions(cursor_x: Option<f32>, viewport_width: f32) -
     }
 }
 
+/// Map mission hovers include route details; mission-list hovers preview only the fleet.
+fn mission_hover_shows_info_panel(mission_hover_from_ui: bool) -> bool {
+    !mission_hover_from_ui
+}
+
 /// Draws the panel interface and emits any resulting local actions.
 fn draw_panel<R>(
     contexts: &mut EguiContexts,
@@ -1091,9 +1096,9 @@ const RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET: f32 = 2.0;
 
 fn resource_summary_style(compact: bool, scale: f32) -> (egui::Vec2, f32, f32, f32) {
     let (icon_size, spacing, label_size, value_size) = if compact {
-        (egui::vec2(52.0, 34.0), 8.0, 9.0, 24.0)
+        (egui::vec2(48.0, 31.0), 8.0, 9.0, 22.0)
     } else {
-        (egui::vec2(70.0, 44.0), 11.0, 11.0, 30.0)
+        (egui::vec2(64.0, 40.0), 11.0, 11.0, 28.0)
     };
 
     (icon_size * scale, spacing * scale, label_size * scale, value_size * scale)
@@ -1176,19 +1181,9 @@ fn draw_resource_summary(
     response
 }
 
-/// Reserves breathing room between resource summaries and optionally paints a section divider.
-fn draw_resource_gap(ui: &mut Ui, width: f32, divided: bool, scale: f32) {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, RESOURCE_BAR_ROW_HEIGHT * scale), Sense::hover());
-    if divided {
-        ui.painter().line_segment(
-            [
-                egui::pos2(rect.center().x, rect.top() + 5.0 * scale),
-                egui::pos2(rect.center().x, rect.bottom() - 5.0 * scale),
-            ],
-            Stroke::new(scale, Color32::from_rgba_unmultiplied(130, 170, 215, 55)),
-        );
-    }
+/// Reserves breathing room between resource summaries.
+fn draw_resource_gap(ui: &mut Ui, width: f32, scale: f32) {
+    ui.allocate_exact_size(egui::vec2(width, RESOURCE_BAR_ROW_HEIGHT * scale), Sense::hover());
 }
 
 fn resource_bar_gap(compact: bool, scale: f32) -> f32 {
@@ -1323,7 +1318,7 @@ fn draw_resources(
             });
         }
 
-        draw_resource_gap(ui, gap, false, scale);
+        draw_resource_gap(ui, gap, scale);
 
         let response = draw_resource_summary(
             ui,
@@ -1351,7 +1346,7 @@ fn draw_resources(
             });
         }
 
-        draw_resource_gap(ui, section_gap, true, scale);
+        draw_resource_gap(ui, section_gap, scale);
 
         for (index, resource) in ResourceName::iter().enumerate() {
             let response = draw_resource_summary(
@@ -1370,7 +1365,7 @@ fn draw_resources(
             }
 
             if index + 1 < resource_count {
-                draw_resource_gap(ui, gap, false, scale);
+                draw_resource_gap(ui, gap, scale);
             }
         }
     });
@@ -2775,18 +2770,20 @@ pub fn draw_ui(
             |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &images),
         );
 
-        // Objective names such as "Missile Strike" must fit beside their icon and label.
-        let window_h2 = 280.0;
+        if mission_hover_shows_info_panel(state.mission_hover_from_ui) {
+            // Objective names such as "Missile Strike" must fit beside their icon and label.
+            let window_h2 = 280.0;
 
-        draw_panel(
-            &mut contexts,
-            "mission hover info",
-            "panel",
-            (info_x, height * 0.5 - window_h * 0.5 + 27.0),
-            (MISSION_HOVER_INFO_WIDTH, window_h2),
-            &images,
-            |ui| draw_mission_info_hover(ui, mission, &settings, &map, &player, &images),
-        );
+            draw_panel(
+                &mut contexts,
+                "mission hover info",
+                "panel",
+                (info_x, height * 0.5 - window_h * 0.5 + 27.0),
+                (MISSION_HOVER_INFO_WIDTH, window_h2),
+                &images,
+                |ui| draw_mission_info_hover(ui, mission, &settings, &map, &player, &images),
+            );
+        }
     }
 
     // Keep the previous hover for drawing, but require the mission list to renew it.

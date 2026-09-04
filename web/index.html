@@ -55,6 +55,55 @@
     <script type="module">
       import init from "./stellarion.js";
 
+      // Clipboard.writeText can be denied inside an embedded game even after a click. Handle the
+      // synchronous copy event first, and retain the modern API as a browser-level fallback.
+      let copyCandidate = null;
+      window.stellarionSetCopyCandidate = (text) => { copyCandidate = String(text); };
+      window.stellarionClearCopyCandidate = () => { copyCandidate = null; };
+      document.addEventListener("copy", (event) => {
+        if (copyCandidate === null || !event.clipboardData) return;
+        event.clipboardData.setData("text/plain", copyCandidate);
+        event.preventDefault();
+      });
+      window.stellarionCopyText = (text) => {
+        const value = String(text);
+        const previousCandidate = copyCandidate;
+        const previousFocus = document.activeElement;
+        const source = document.createElement("textarea");
+        source.value = value;
+        source.readOnly = true;
+        source.setAttribute("aria-hidden", "true");
+        source.style.cssText = "position:fixed;left:-10000px;top:0;opacity:0;pointer-events:none";
+        document.body.append(source);
+        copyCandidate = value;
+
+        let copied = false;
+        try {
+          source.focus({ preventScroll: true });
+          source.select();
+          copied = document.execCommand("copy");
+        } catch (error) {
+          console.debug("Synchronous clipboard fallback was unavailable", error);
+        } finally {
+          source.remove();
+          copyCandidate = previousCandidate;
+          previousFocus?.focus?.({ preventScroll: true });
+        }
+        if (copied) return true;
+
+        try {
+          if (window.isSecureContext && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(value).catch((error) => {
+              console.warn("Clipboard write was rejected", error);
+            });
+            return true;
+          }
+        } catch (error) {
+          console.warn("Clipboard write was unavailable", error);
+        }
+        return false;
+      };
+
       const status = document.querySelector("#status");
       try {
         await init();

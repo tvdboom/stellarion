@@ -53,6 +53,7 @@ bevy_egui = { version = "0.42.0", default-features = false, features = [
 ] }
 bevy_kira_audio = "0.26.0"
 bevy_tweening = "0.16.0"
+chrono = "0.4.45"
 ewebsock = { version = "0.8.0", features = ["tls"] }
 futures-lite = "2.6.1"
 getrandom = "0.4.3"

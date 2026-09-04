@@ -356,9 +356,12 @@ fn normalized(path: &Path) -> Result<String, String> {
         .join("/"))
 }
 
-/// Chooses mipmaps only for independently sampled backgrounds and large planet previews.
+/// Chooses mipmaps for artwork that is independently sampled or continuously scaled.
 fn should_generate_mipmaps(source_relative: &str) -> bool {
-    source_relative.starts_with("images/bg/") || source_relative.ends_with(" large.png")
+    source_relative.starts_with("images/bg/")
+        || source_relative.ends_with(" large.png")
+        || source_relative.starts_with("images/animations/solar star ")
+        || source_relative.starts_with("images/ambient/")
 }
 
 /// Returns whether source and output bytes match their manifest fingerprints.

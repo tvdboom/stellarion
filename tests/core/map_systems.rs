@@ -5,6 +5,7 @@ use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
 use crate::multiplayer::model::GameRecord;
 use bevy::color::ColorToComponents;
+use bevy_kira_audio::AudioSource;
 
 /// Finds the defenses spawned by the real map setup without a window or GPU.
 fn test_defenses(
@@ -104,6 +105,123 @@ fn pulsars_flare_briefly_and_relocate_while_dark() {
 }
 
 #[test]
+fn scenery_uses_all_corners_and_keeps_most_of_the_large_sun_beyond_the_playfield() {
+    assert_eq!(scenery_corner_from_seed(0), Vec2::new(-1.0, -1.0));
+    assert_eq!(scenery_corner_from_seed(1), Vec2::new(1.0, -1.0));
+    assert_eq!(scenery_corner_from_seed(2), Vec2::new(-1.0, 1.0));
+    assert_eq!(scenery_corner_from_seed(3), Vec2::ONE);
+
+    let map = Map {
+        rect: Rect::new(-1_600.0, -900.0, 1_600.0, 900.0),
+        planets: Vec::new(),
+    };
+    let corner = map_scenery_corner(&map);
+    let sun_corner_position = map_corner(&map, corner);
+    let position = solar_star_position(&map);
+    let outside = (position - sun_corner_position) * corner;
+    assert!(outside.x > 0.0 && outside.y > 0.0);
+    let radius = SOLAR_STAR_SIZE * 0.5;
+    assert!(outside.x < radius && outside.y < radius);
+    assert!(outside.x > radius * 0.5 && outside.y > radius * 0.5);
+
+    let black_hole = black_hole_position(&map);
+    let opposite_edge_x = if corner.x > 0.0 {
+        map.rect.min.x
+    } else {
+        map.rect.max.x
+    };
+    assert!((black_hole.x - opposite_edge_x) * corner.x > 0.0);
+    assert!((black_hole.x - map.rect.center().x) * corner.x < 0.0);
+    assert!((map.rect.min.y..=map.rect.max.y).contains(&black_hole.y));
+    assert!(BLACK_HOLE_SIZE.x < SOLAR_STAR_SIZE * 0.5);
+
+    for sample in 0..=200 {
+        let elapsed = sample as f32 * SOLAR_STAR_FRAME_SECONDS / 20.0;
+        let alphas = (0..SOLAR_STAR_FRAME_COUNT)
+            .map(|frame| solar_star_frame_alpha(frame, elapsed))
+            .collect::<Vec<_>>();
+        assert!((alphas.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        assert!(alphas.iter().filter(|&&alpha| alpha > 0.0).count() <= 2);
+    }
+
+    for sample in 0..=200 {
+        let elapsed =
+            sample as f32 * BLACK_HOLE_FRAME_SECONDS * BLACK_HOLE_FRAME_COUNT as f32 / 200.0;
+        let states = [black_hole_frame_state(0, elapsed), black_hole_frame_state(1, elapsed)];
+        let alphas = states.map(|(_, alpha)| alpha);
+        assert!((alphas.iter().sum::<f32>() - BLACK_HOLE_OPACITY).abs() < 1e-5);
+        assert!(states.iter().all(|(frame, _)| *frame < BLACK_HOLE_FRAME_COUNT));
+        assert_eq!(states[1].0, (states[0].0 + 1) % BLACK_HOLE_FRAME_COUNT);
+    }
+    assert_ne!(
+        black_hole_frame_state(0, 0.0).0,
+        black_hole_frame_state(0, BLACK_HOLE_FRAME_SECONDS).0
+    );
+}
+
+#[test]
+fn distant_scenery_uses_soft_independent_parallax_layers() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .insert_resource(Map {
+            rect: Rect::new(-1_600.0, -900.0, 1_600.0, 900.0),
+            planets: Vec::new(),
+        })
+        .add_systems(Startup, |mut commands: Commands, assets: Res<WorldAssets>, map: Res<Map>| {
+            spawn_background_landmarks(&mut commands, &assets, &map);
+        })
+        .add_systems(Update, animate_space_scenery);
+    app.update();
+
+    let world = app.world_mut();
+    let mut layers = world.query::<(&ParallaxCmp, &Children)>();
+    let mut nebula_follow = None;
+    let mut black_hole_follow = None;
+    for (parallax, children) in layers.iter(world) {
+        for child in children.iter() {
+            if world.get::<NebulaCmp>(child).is_some() {
+                nebula_follow = Some(parallax.camera_follow);
+            }
+            if world.get::<BlackHoleCmp>(child).is_some() {
+                black_hole_follow = Some(parallax.camera_follow);
+                assert_eq!(
+                    world.get::<BlackHoleCmp>(child).unwrap().frames.len(),
+                    BLACK_HOLE_FRAME_COUNT
+                );
+            }
+        }
+    }
+
+    let mut black_hole_frames = world.query::<(&BlackHoleFrameCmp, &Sprite)>();
+    let frames = black_hole_frames.iter(world).collect::<Vec<_>>();
+    assert_eq!(frames.len(), 2);
+    assert!(
+        (frames.iter().map(|(_, sprite)| sprite.color.to_srgba().alpha).sum::<f32>()
+            - BLACK_HOLE_OPACITY)
+            .abs()
+            < 1e-5
+    );
+    for (frame, sprite) in frames {
+        assert!(frame.slot < 2);
+        assert_eq!(sprite.custom_size, Some(BLACK_HOLE_SIZE));
+        let color = sprite.color.to_srgba();
+        assert!((color.red - 0.72).abs() < f32::EPSILON);
+        assert!((color.green - 0.72).abs() < f32::EPSILON);
+        assert!((color.blue - 0.72).abs() < f32::EPSILON);
+        assert!((0.0..=BLACK_HOLE_OPACITY).contains(&color.alpha));
+    }
+
+    assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
+    assert_eq!(black_hole_follow, Some(BLACK_HOLE_PARALLAX_FOLLOW));
+    assert!(nebula_follow.unwrap() > black_hole_follow.unwrap());
+}
+
+#[test]
 fn ambience_uses_three_star_depths_and_cross_shaped_glints() {
     let mut app = App::new();
     app.add_plugins(TransformPlugin).add_systems(Startup, |mut commands: Commands| {
@@ -118,13 +236,20 @@ fn ambience_uses_three_star_depths_and_cross_shaped_glints() {
         .filter(|(_, children)| {
             children.iter().any(|child| world.get::<AmbientStarCmp>(child).is_some())
         })
-        .map(|(parallax, _)| (parallax.camera_follow, parallax.drift))
+        .map(|(parallax, children)| {
+            let star_count = children
+                .iter()
+                .filter(|child| world.get::<AmbientStarCmp>(*child).is_some())
+                .count();
+            (parallax.camera_follow, parallax.drift, star_count)
+        })
         .collect::<Vec<_>>();
     star_layers.sort_by(|left, right| right.0.total_cmp(&left.0));
     assert_eq!(star_layers.len(), 3);
+    assert_eq!(star_layers.iter().map(|layer| layer.2).collect::<Vec<_>>(), [525, 350, 275]);
     assert!(star_layers.windows(2).all(|layers| layers[0].0 > layers[1].0));
-    assert!(star_layers.iter().any(|(_, drift)| drift.x < 0.0));
-    assert!(star_layers.iter().any(|(_, drift)| drift.x > 0.0));
+    assert!(star_layers.iter().any(|(_, drift, _)| drift.x < 0.0));
+    assert!(star_layers.iter().any(|(_, drift, _)| drift.x > 0.0));
 
     let mut pulsars = world.query::<(&AmbientPulsarCmp, &Children)>();
     assert_eq!(pulsars.iter(world).count(), 18);

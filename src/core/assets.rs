@@ -131,6 +131,7 @@ impl WorldAssets {
             "construction",
             "booster",
             "launch",
+            "star ambience",
         ] {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
@@ -318,6 +319,33 @@ impl WorldAssets {
             "animations",
             &["explosion", "short explosion", "flame", "death ray"],
         );
+        for index in 1..=4 {
+            let name = format!("solar star {index}");
+            load_linear_image(
+                server,
+                &mut self.images,
+                &mut self.gameplay_handles,
+                &name,
+                &format!("images/animations/{name}.basisu.ktx2"),
+            );
+        }
+        load_linear_image(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
+            "nebula",
+            "images/ambient/nebula.basisu.ktx2",
+        );
+        for index in 1..=66 {
+            let name = format!("black hole {index}");
+            load_linear_image(
+                server,
+                &mut self.images,
+                &mut self.gameplay_handles,
+                &name,
+                &format!("images/ambient/{name}.basisu.ktx2"),
+            );
+        }
 
         for index in 0..65 {
             let name = format!("planet{index}");
@@ -526,6 +554,25 @@ fn load_image(
         return;
     }
     let handle: Handle<Image> = server.load(path.to_string());
+    group.push(handle.clone().untyped());
+    images.insert(name.to_string(), handle);
+}
+
+/// Loads artwork that is continuously scaled or rotated with smooth sampling.
+fn load_linear_image(
+    server: &AssetServer,
+    images: &mut HashMap<String, Handle<Image>>,
+    group: &mut Vec<UntypedHandle>,
+    name: &str,
+    path: &str,
+) {
+    if images.contains_key(name) {
+        return;
+    }
+    let handle: Handle<Image> = server
+        .load_builder()
+        .with_settings(|settings: &mut BasisTextureSettings| settings.linear_filtering = true)
+        .load(path.to_string());
     group.push(handle.clone().untyped());
     images.insert(name.to_string(), handle);
 }

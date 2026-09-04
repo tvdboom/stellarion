@@ -72,6 +72,17 @@ fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
 }
 
 #[test]
+fn notification_can_override_the_default_display_lifetime() {
+    let mut messages = Messages::default();
+    messages.push(
+        &MessageMsg::info("The host closed the lobby.")
+            .with_duration(std::time::Duration::from_secs(2)),
+    );
+
+    assert_eq!(messages.0.front().unwrap().remaining_seconds, 2.0);
+}
+
+#[test]
 fn notification_stack_does_not_scroll_with_the_mouse_wheel() {
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 320.0));

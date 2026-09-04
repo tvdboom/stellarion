@@ -24,7 +24,8 @@ use crate::core::constants::{
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::utils::{
-    spawn_main_button, SpriteAlphaLens, SpriteFrameLens, UiTransformScaleLens,
+    spawn_main_button, SpriteAlphaLens, SpriteFrameLens, UiTransformScaleLens, MAIN_BUTTON_BOTTOM,
+    MAIN_BUTTON_HEIGHT, MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
 };
 use crate::core::menu::systems::MenuBackground;
 use crate::core::menu::utils::{add_root_node, add_text};
@@ -38,6 +39,12 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Combat, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::{scale_duration, NameFromEnum};
+
+const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
+const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
+const COMBAT_SPEED_BUTTON_GAP: f32 = 20.0;
+const COMBAT_SPEED_WIDTH: f32 = 140.0;
+const PLANETARY_SHIELD_HEIGHT_FACTOR: f32 = 0.3;
 
 #[derive(Component)]
 /// Bevy component marking combat menu presentation entities.
@@ -463,7 +470,7 @@ pub fn setup_combat(
         "Attacker",
         Some(&attacker_name),
         attack_c,
-        Some(18.0),
+        Some(COMBAT_IDENTITY_EDGE_INSET),
         None,
         &assets,
         &window,
@@ -474,7 +481,7 @@ pub fn setup_combat(
         defender_name.as_deref(),
         defend_c,
         None,
-        Some(52.0),
+        Some(COMBAT_IDENTITY_EDGE_INSET),
         &assets,
         &window,
     );
@@ -526,24 +533,28 @@ pub fn setup_combat(
         && report.mission.objective != Icon::MissileStrike
         && (!defending_def.is_empty() || report.mission.bombing != BombingRaid::None);
 
+    // Keep the ground-defense cards below the planetary-shield bar. Deriving the row from
+    // both sprite heights preserves the gap across window sizes and projection scales.
+    let defense_row_y = if draw_ps {
+        let shield_y = pos.y - height * 0.25;
+        let shield_height = size * PLANETARY_SHIELD_HEIGHT_FACTOR;
+        shield_y - (size + shield_height) * 0.5 - COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+    } else {
+        defender_edge_row_y
+    };
+
     let ship_y = if defending_def.is_empty() && !draw_ps {
         defender_edge_row_y
     } else {
         pos.y - height * 0.1
     };
 
-    spawn_row(
-        &mut commands,
-        defending_def,
-        Side::Defender,
-        pos.y - height * 0.7,
-        defender_edge_row_y,
-    );
+    spawn_row(&mut commands, defending_def, Side::Defender, pos.y - height * 0.7, defense_row_y);
     spawn_row(&mut commands, defending_ships, Side::Defender, pos.y - height * 0.7, ship_y);
 
     // Spawn Planetary Shield image
     if draw_ps {
-        let (bar_width, bar_height) = (size * PS_WIDTH, size * 0.3);
+        let (bar_width, bar_height) = (size * PS_WIDTH, size * PLANETARY_SHIELD_HEIGHT_FACTOR);
         let w = size * 0.3;
 
         commands.spawn((
@@ -694,17 +705,26 @@ pub fn setup_combat(
         }
     }
 
-    commands.spawn((
-        Node {
-            bottom: Val::Px(10.),
-            left: Val::Px(10.),
-            position_type: PositionType::Absolute,
-            ..default()
-        },
-        add_text(format!("{}x", settings.combat_speed), "medium", 10., &assets, &window),
-        SpeedCmp,
-        CombatCmp,
-    ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(MAIN_BUTTON_BOTTOM),
+                right: Val::Px(MAIN_BUTTON_RIGHT + MAIN_BUTTON_WIDTH + COMBAT_SPEED_BUTTON_GAP),
+                width: Val::Px(COMBAT_SPEED_WIDTH),
+                height: Val::Px(MAIN_BUTTON_HEIGHT),
+                justify_content: JustifyContent::FlexEnd,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            Pickable::IGNORE,
+            ZIndex(6),
+            CombatCmp,
+        ))
+        .with_child((
+            add_text(format!("{}x", settings.combat_speed), "medium", 10., &assets, &window),
+            SpeedCmp,
+        ));
 
     spawn_main_button(&mut commands, "Exit combat", &assets)
         .insert((ZIndex(6), CombatCmp))

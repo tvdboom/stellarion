@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts};
+use chrono::{Local as ChronoLocal, TimeZone};
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, ChangeAudioMsg, MuteAudioMsg, SoundEffect};
@@ -98,6 +99,7 @@ pub fn draw_menu(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
+    clear_browser_copy_candidate();
     let menu_size = egui::vec2(window.width(), window.height());
     if !session.busy {
         *refreshing_games = false;
@@ -139,22 +141,12 @@ pub fn draw_menu(
                         &mut requests,
                         &mut next_state,
                     ),
-                    AppState::JoinGame => join_screen(
-                        ui,
-                        &mut form,
-                        session.busy,
-                        session.menu_error.as_deref(),
-                        &mut requests,
-                        &mut next_state,
-                    ),
-                    AppState::RecoverPlayer => recovery_screen(
-                        ui,
-                        &mut form,
-                        session.busy,
-                        session.menu_error.as_deref(),
-                        &mut requests,
-                        &mut next_state,
-                    ),
+                    AppState::JoinGame => {
+                        join_screen(ui, &mut form, session.busy, &mut requests, &mut next_state)
+                    },
+                    AppState::RecoverPlayer => {
+                        recovery_screen(ui, &mut form, session.busy, &mut requests, &mut next_state)
+                    },
                     AppState::ResumeGame => resume_screen(
                         ui,
                         &session,
@@ -181,20 +173,7 @@ pub fn draw_menu(
                         next_state.set(AppState::MainMenu);
                     },
                     AppState::Game => {},
-                }
-                if let Some(error) = session.menu_error.as_ref().filter(|_| {
-                    !matches!(
-                        *app_state.get(),
-                        AppState::Boot
-                            | AppState::MainMenu
-                            | AppState::JoinGame
-                            | AppState::RecoverPlayer
-                            | AppState::Lobby
-                    )
-                }) {
-                    ui.add_space(12.0);
-                    menu_error_panel(ui, "Unable to complete action", error);
-                }
+                };
             });
         });
 
@@ -230,34 +209,46 @@ pub fn draw_menu(
             };
             ui.set_min_width(220.0);
             ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                connection_status_badge(ui, connection_indicator.status, mode);
+                connection_status_badge(
+                    ui,
+                    connection_indicator.status,
+                    mode,
+                    session.menu_error.is_some(),
+                );
                 ui.label(egui::RichText::new("Created by Mavs").weak());
             });
         });
 
-    if let Some(error) = session.menu_error.as_deref().filter(|_| is_primary_navigation) {
-        let action_right = menu_size.x * 0.5 + 308.0_f32.min(content_width) * 0.5;
-        let clear_side_width = (menu_size.x - 36.0 - action_right).max(236.0);
-        let toast_width = (menu_size.x * 0.38)
-            .clamp(260.0, 400.0)
-            .min(clear_side_width)
-            .min((menu_size.x - 48.0).max(220.0));
-        egui::Area::new("stellarion_main_menu_error".into())
+    if let Some(error) = session.menu_error.as_deref() {
+        let toast_width = menu_error_width(menu_size, content_width, *app_state.get());
+        egui::Area::new("stellarion_menu_error".into())
             .pivot(egui::Align2::RIGHT_BOTTOM)
             .fixed_pos(egui::pos2(menu_size.x - 24.0, footer.response.rect.top() - 10.0))
             .constrain(false)
+            .interactable(false)
             .order(egui::Order::Foreground)
             .show(context, |ui| {
-                menu_error_panel_width(ui, "Unable to complete action", error, toast_width);
+                menu_error_panel_width(ui, menu_error_title(*app_state.get()), error, toast_width);
             });
     }
 }
 
 /// Draws the transport state as a compact badge that remains legible over menu artwork.
-fn connection_status_badge(ui: &mut egui::Ui, status: ConnectionStatus, mode: &str) {
+fn connection_status_badge(
+    ui: &mut egui::Ui,
+    status: ConnectionStatus,
+    mode: &str,
+    has_menu_error: bool,
+) {
     let foreground = ui.visuals().strong_text_color();
+    let connected_with_issues = has_menu_error && status == ConnectionStatus::Connected;
+    let status_label = if connected_with_issues {
+        "Connected with issues"
+    } else {
+        status.label()
+    };
     let label = ui.painter().layout_no_wrap(
-        format!("{}{}", status.label(), mode),
+        format!("{status_label}{mode}"),
         egui::FontId::proportional(14.0),
         foreground,
     );
@@ -274,7 +265,7 @@ fn connection_status_badge(ui: &mut egui::Ui, status: ConnectionStatus, mode: &s
     ui.painter().circle_filled(
         egui::pos2(rect.left() + 14.0, center_y),
         4.0,
-        connection_status_color(status),
+        connection_status_color(status, connected_with_issues),
     );
     ui.painter().galley(
         egui::pos2(rect.left() + 28.0, center_y - label.size().y * 0.5),
@@ -284,7 +275,10 @@ fn connection_status_badge(ui: &mut egui::Ui, status: ConnectionStatus, mode: &s
 }
 
 /// Maps each connection state to an immediately recognizable indicator color.
-fn connection_status_color(status: ConnectionStatus) -> egui::Color32 {
+fn connection_status_color(status: ConnectionStatus, connected_with_issues: bool) -> egui::Color32 {
+    if connected_with_issues {
+        return egui::Color32::from_rgb(246, 193, 88);
+    }
     match status {
         ConnectionStatus::Connected => egui::Color32::from_rgb(91, 214, 133),
         ConnectionStatus::Offline => egui::Color32::from_rgb(255, 107, 119),
@@ -292,6 +286,40 @@ fn connection_status_color(status: ConnectionStatus) -> egui::Color32 {
         ConnectionStatus::Reconnecting | ConnectionStatus::SyncConflict => {
             egui::Color32::from_rgb(246, 193, 88)
         },
+    }
+}
+
+/// Gives every non-game menu failure a contextual title in the shared message rail.
+fn menu_error_title(state: AppState) -> &'static str {
+    match state {
+        AppState::JoinGame => "Unable to join game",
+        AppState::RecoverPlayer => "Unable to recover game",
+        AppState::Lobby => "Unable to continue game",
+        AppState::Boot
+        | AppState::MainMenu
+        | AppState::SinglePlayerMenu
+        | AppState::CreateGame
+        | AppState::ResumeGame
+        | AppState::Settings
+        | AppState::LoadingGame
+        | AppState::Game => "Unable to complete action",
+    }
+}
+
+/// Sizes the right-hand message rail without covering centered content when space permits.
+fn menu_error_width(viewport: egui::Vec2, content_width: f32, state: AppState) -> f32 {
+    let occupied_width = if state == AppState::MainMenu {
+        308.0_f32.min(content_width)
+    } else {
+        content_width
+    };
+    let content_right = viewport.x * 0.5 + occupied_width * 0.5;
+    let clear_side_width = (viewport.x - 36.0 - content_right).max(0.0);
+    let preferred = (viewport.x * 0.38).clamp(260.0, 400.0).min((viewport.x - 48.0).max(220.0));
+    if clear_side_width >= 220.0 {
+        preferred.min(clear_side_width)
+    } else {
+        preferred
     }
 }
 
@@ -497,7 +525,6 @@ fn join_screen(
     ui: &mut egui::Ui,
     form: &mut MultiplayerForm,
     busy: bool,
-    error: Option<&str>,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
@@ -505,7 +532,7 @@ fn join_screen(
     ui.spacing_mut().item_spacing.y = 8.0;
     let saved_name = form.saved_display_name.as_deref().filter(|name| valid_name(name));
     let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
-    // Keep navigation visible while the form and a long error scroll on short viewports.
+    // Keep navigation visible while the form scrolls on short viewports.
     let form_height =
         (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
     egui::ScrollArea::vertical()
@@ -520,17 +547,7 @@ fn join_screen(
                     player_name_field(ui, &mut form.display_name, 340.0);
                     ui.add_space(12.0);
                 }
-                let game_code_field =
-                    ui.add_enabled_ui(!busy, |ui| join_game_code_field(ui, &mut form.game_code));
-                if let Some(error) = error {
-                    ui.add_space(12.0);
-                    menu_error_panel_width(
-                        ui,
-                        "Unable to join game",
-                        error,
-                        game_code_field.inner.rect.width(),
-                    );
-                }
+                ui.add_enabled_ui(!busy, |ui| join_game_code_field(ui, &mut form.game_code));
             });
         });
     let display_name = saved_name.unwrap_or(&form.display_name);
@@ -548,13 +565,6 @@ fn join_screen(
 }
 
 /// Keeps menu failures readable over the artwork without a dismissal timer.
-fn menu_error_panel(ui: &mut egui::Ui, title: &str, error: &str) -> egui::Response {
-    let (button_size, _, _) = menu_button_pair_metrics(ui);
-    let width = button_size.x * 2.0 + 12.0;
-    menu_error_panel_width(ui, title, error, width)
-}
-
-/// Matches an error container to the outer width of the form it describes.
 fn menu_error_panel_width(
     ui: &mut egui::Ui,
     title: &str,
@@ -590,33 +600,16 @@ fn menu_error_panel_width(
         .response
 }
 
-/// Reveals a newly reported error once while preserving subsequent manual scrolling.
-fn menu_error_changed(ui: &mut egui::Ui, key: &str, error: Option<&str>) -> bool {
-    let id = ui.make_persistent_id(key);
-    ui.data_mut(|data| {
-        let previous = data.get_temp_mut_or_default::<String>(id);
-        let current = error.unwrap_or_default();
-        if previous == current {
-            return false;
-        }
-        previous.clear();
-        previous.push_str(current);
-        error.is_some()
-    })
-}
-
 /// Opens an unlisted saved game using its shared code and the player's private code.
 fn recovery_screen(
     ui: &mut egui::Ui,
     form: &mut MultiplayerForm,
     busy: bool,
-    error: Option<&str>,
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
     ui.spacing_mut().item_spacing.y = 8.0;
-    let scroll_to_error = menu_error_changed(ui, "recovery_error", error);
     let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
     let form_height =
         (ui.ctx().content_rect().height() - 132.0 - button_size.y - button_spacing).max(80.0);
@@ -628,7 +621,7 @@ fn recovery_screen(
             ui.vertical_centered(|ui| {
                 ui.heading(egui::RichText::new("Recover Game").size(36.0));
                 ui.add_space(18.0);
-                let recovery_field = ui.add_enabled_ui(!busy, |ui| {
+                ui.add_enabled_ui(!busy, |ui| {
                     recovery_code_field(
                         ui,
                         "Game code",
@@ -645,18 +638,6 @@ fn recovery_screen(
                         "Enter recovery code",
                     )
                 });
-                if let Some(error) = error {
-                    ui.add_space(12.0);
-                    let panel = menu_error_panel_width(
-                        ui,
-                        "Unable to recover game",
-                        error,
-                        recovery_field.inner.rect.width(),
-                    );
-                    if scroll_to_error {
-                        panel.scroll_to_me(Some(egui::Align::Max));
-                    }
-                }
             });
         });
     let can_recover =
@@ -699,8 +680,8 @@ fn resume_screen(
                 resume_recovery_toast(ui);
             });
     } else {
-        // Fit five timestamped cards when space permits, leaving room for heading and actions.
-        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(112.0, 474.0);
+        // Fit five two-row cards when space permits, leaving room for heading and actions.
+        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(112.0, 384.0);
         egui::ScrollArea::vertical()
             .id_salt("stellarion_resume_games")
             .auto_shrink([false, true])
@@ -805,91 +786,67 @@ fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bo
     clicked
 }
 
-/// Formats an epoch timestamp without adding a platform-specific date dependency.
+/// Formats an epoch timestamp in the device's local timezone.
 fn format_saved_timestamp(timestamp: u64) -> String {
     if timestamp == 0 {
-        return "Saved time unavailable".to_string();
+        return "Time unavailable".to_string();
     }
 
-    let seconds = timestamp.min(i64::MAX as u64) as i64;
-    let days = seconds.div_euclid(86_400);
-    let day_seconds = seconds.rem_euclid(86_400);
-    // Howard Hinnant's civil-from-days conversion, with day zero at 1970-01-01.
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    }
-    .div_euclid(146_097);
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime
-        + if month_prime < 10 {
-            3
-        } else {
-            -9
-        };
-    year += i64::from(month <= 2);
-    let hour = day_seconds / 3_600;
-    let minute = day_seconds % 3_600 / 60;
-
-    format!("Saved {year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+    i64::try_from(timestamp)
+        .ok()
+        .and_then(|seconds| ChronoLocal.timestamp_opt(seconds, 0).single())
+        .map(|saved_at| saved_at.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "Time unavailable".to_string())
 }
 
-/// Draws a saved game with the caller's identity, using an extra row when needed.
+/// Draws a saved game as a title row and one compact metadata row.
 fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> bool {
     let secondary = if enabled {
         egui::Color32::from_rgb(166, 188, 211)
     } else {
         egui::Color32::from_rgb(112, 124, 137)
     };
-    let details_font = egui::FontId::proportional(14.0);
-    let details = ui.painter().layout_no_wrap(
-        format!(
-            "Turn {}   ·   {} player{}",
-            game.turn,
-            game.player_count,
-            if game.player_count == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ),
-        details_font.clone(),
-        secondary,
-    );
     let content_width = (ui.available_width() - 55.0).max(1.0);
-    let name =
-        ui.painter().layout_no_wrap(game.display_name.clone(), details_font.clone(), secondary);
-    let stacked = details.size().x + 36.0 + name.size().x > content_width;
-    let name_offset = if stacked {
-        18.0
-    } else {
-        details.size().x + 36.0
-    };
+    let [red, green, blue] = game.player_color.rgb();
+    let player_color = egui::Color32::from_rgb(red, green, blue);
+    let metadata = format!(
+        "{}   ·   Turn {}   ·   {} player{}   ·",
+        format_saved_timestamp(game.saved_at),
+        game.turn,
+        game.player_count,
+        if game.player_count == 1 {
+            ""
+        } else {
+            "s"
+        }
+    );
+    let metadata_font_size = 13.0;
+    let measured_text_width = ui
+        .painter()
+        .layout_no_wrap(
+            format!("{metadata} {}", game.display_name),
+            egui::FontId::proportional(metadata_font_size),
+            secondary,
+        )
+        .size()
+        .x;
+    let player_marker_width = 22.0;
+    let details_font = egui::FontId::proportional(
+        (metadata_font_size * (content_width - player_marker_width).max(1.0) / measured_text_width)
+            .clamp(9.0, metadata_font_size),
+    );
+    let metadata = ui.painter().layout_no_wrap(metadata, details_font.clone(), secondary);
+    let name_offset = metadata.size().x + player_marker_width;
     let mut name_job = egui::text::LayoutJob::simple_singleline(
         game.display_name.clone(),
-        details_font.clone(),
+        details_font,
         secondary,
     );
     name_job.wrap.max_width = (content_width - name_offset).max(1.0);
     name_job.wrap.max_rows = 1;
     name_job.wrap.break_anywhere = true;
     let name = ui.painter().layout_job(name_job);
-    let size = egui::vec2(
-        ui.available_width(),
-        if stacked {
-            112.0
-        } else {
-            90.0
-        },
-    );
+    let size = egui::vec2(ui.available_width(), 72.0);
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -925,8 +882,8 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
     );
     ui.painter().rect_filled(
         egui::Rect::from_min_max(
-            rect.min + egui::vec2(0.0, 12.0),
-            egui::pos2(rect.left() + 3.0, rect.bottom() - 12.0),
+            rect.min + egui::vec2(0.0, 10.0),
+            egui::pos2(rect.left() + 3.0, rect.bottom() - 10.0),
         ),
         2.0,
         if enabled {
@@ -938,54 +895,31 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
 
     let left = rect.left() + 17.0;
     ui.painter().text(
-        egui::pos2(left, rect.top() + 13.0),
+        egui::pos2(left, rect.top() + 10.0),
         egui::Align2::LEFT_TOP,
         game.code.as_str(),
         egui::FontId::proportional(19.0),
         foreground,
     );
-    ui.painter().text(
-        egui::pos2(left, rect.top() + 38.0),
-        egui::Align2::LEFT_TOP,
-        format_saved_timestamp(game.saved_at),
-        egui::FontId::proportional(12.0),
-        secondary,
-    );
-    let details_y = rect.top() + 72.0 - details.size().y * 0.5;
-    if !stacked {
-        ui.painter().text(
-            egui::pos2(left + details.size().x + 10.0, details_y),
-            egui::Align2::CENTER_CENTER,
-            "·",
-            details_font,
-            secondary,
-        );
-    }
-    ui.painter().galley(egui::pos2(left, details_y - details.size().y * 0.5), details, secondary);
-    let name_left = left + name_offset;
-    let name_y = details_y
-        + if stacked {
-            22.0
-        } else {
-            0.0
-        };
-    let [red, green, blue] = game.player_color.rgb();
-    let color = egui::Color32::from_rgb(red, green, blue);
+    let details_top = rect.top() + 39.0;
+    ui.painter().galley(egui::pos2(left, details_top), metadata.clone(), secondary);
+    let player_dot =
+        egui::pos2(left + metadata.size().x + 11.0, details_top + metadata.size().y * 0.5);
     ui.painter().circle_filled(
-        egui::pos2(name_left - 12.0, name_y),
-        5.0,
+        player_dot,
+        4.0,
         if enabled {
-            color
+            player_color
         } else {
-            color.gamma_multiply(0.5)
+            player_color.gamma_multiply(0.5)
         },
     );
-    ui.painter().galley(egui::pos2(name_left, name_y - name.size().y * 0.5), name, secondary);
+    ui.painter().galley(egui::pos2(left + name_offset, details_top), name, secondary);
 
     let (status, status_color) = resume_status_style(game.status, enabled);
     let status_right = rect.right() - 38.0;
     let status_rect = ui.painter().text(
-        egui::pos2(status_right, rect.top() + 16.0),
+        egui::pos2(status_right, rect.top() + 13.0),
         egui::Align2::RIGHT_TOP,
         status,
         egui::FontId::proportional(13.0),
@@ -1012,7 +946,6 @@ fn resume_game_card(ui: &mut egui::Ui, game: &GameSummary, enabled: bool) -> boo
         egui::Stroke::new(1.8, arrow_color),
     );
 
-    let response = response.on_hover_text(format!("Playing as {}", game.display_name));
     if enabled {
         let clicked = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         if clicked {
@@ -1120,7 +1053,6 @@ fn lobby_screen(
 
     let reconnecting = game.status == MatchStatus::Active && session.reconnect_lobby;
     ui.spacing_mut().item_spacing.y = 8.0;
-    let scroll_to_error = menu_error_changed(ui, "lobby_error", session.menu_error.as_deref());
     let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
     let content_height =
         (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
@@ -1158,13 +1090,6 @@ fn lobby_screen(
                     ui.add_space(12.0);
                     ui.label(egui::RichText::new(guidance).size(16.0));
                 }
-                if let Some(error) = &session.menu_error {
-                    ui.add_space(12.0);
-                    let panel = menu_error_panel(ui, "Unable to continue game", error);
-                    if scroll_to_error {
-                        panel.scroll_to_me(Some(egui::Align::Max));
-                    }
-                }
             });
         });
     ui.add_space(16.0);
@@ -1198,7 +1123,7 @@ fn lobby_screen(
     }
 }
 
-/// Explains the next step for the local role, including a host who has not returned yet.
+/// Explains the next step when the local player can act or must wait for the host.
 fn lobby_guidance(session: &MultiplayerSession) -> String {
     let Some(game) = &session.active_game else {
         return String::new();
@@ -1211,7 +1136,7 @@ fn lobby_guidance(session: &MultiplayerSession) -> String {
         return if game.members.iter().all(|member| member.connected) {
             "Everyone is connected. Resume the saved game for all players.".to_string()
         } else {
-            "Other players: open Resume Game in your window. If this game is missing, choose Recover Game with this game code and your own private recovery code.".to_string()
+            String::new()
         };
     }
     let host = game.members.iter().find(|member| member.is_creator);
@@ -1362,20 +1287,23 @@ fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) 
         ui.set_max_width(inner_width);
         code_card_heading(ui, label, tooltip, Some(code));
         ui.add_space(2.0);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(code)
-                    .size(if prominent {
-                        27.0
-                    } else {
-                        16.0
-                    })
-                    .strong()
-                    .monospace()
-                    .color(egui::Color32::WHITE),
-            )
-            .wrap(),
+        let font_size = if prominent {
+            27.0
+        } else {
+            16.0
+        };
+        let mut read_only_code = code;
+        let response = ui.add_sized(
+            egui::vec2(inner_width, font_size + 10.0),
+            egui::TextEdit::singleline(&mut read_only_code)
+                .id_salt(("lobby_code", label))
+                .font(egui::FontId::monospace(font_size))
+                .text_color(egui::Color32::WHITE)
+                .desired_width(inner_width)
+                .margin(egui::vec2(0.0, 4.0))
+                .frame(egui::Frame::NONE),
         );
+        set_browser_copy_candidate(&response, code);
     });
 }
 
@@ -1427,7 +1355,56 @@ fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) {
 
     if response.clicked() {
         mark_menu_click(ui);
-        ui.ctx().copy_text(value.to_string());
+        copy_text(ui, value);
+    }
+}
+
+/// Uses the page's synchronous copy-event bridge before egui's asynchronous fallback on web.
+fn copy_text(ui: &egui::Ui, value: &str) {
+    #[cfg(target_arch = "wasm32")]
+    if call_browser_clipboard_function("stellarionCopyText", Some(value))
+        .and_then(|result| result.as_bool())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    ui.ctx().copy_text(value.to_string());
+}
+
+/// Keeps the page-level copy event pointed at the read-only code field with keyboard focus.
+fn set_browser_copy_candidate(response: &egui::Response, value: &str) {
+    #[cfg(target_arch = "wasm32")]
+    if response.has_focus() {
+        let _ = call_browser_clipboard_function("stellarionSetCopyCandidate", Some(value));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (response, value);
+}
+
+/// Prevents a previously focused code from affecting an unrelated browser copy operation.
+fn clear_browser_copy_candidate() {
+    #[cfg(target_arch = "wasm32")]
+    let _ = call_browser_clipboard_function("stellarionClearCopyCandidate", None);
+}
+
+/// Calls one optional helper installed by the packaged browser shell.
+#[cfg(target_arch = "wasm32")]
+fn call_browser_clipboard_function(
+    name: &str,
+    value: Option<&str>,
+) -> Option<wasm_bindgen::JsValue> {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let window = web_sys::window()?;
+    let function = js_sys::Reflect::get(window.as_ref(), &JsValue::from_str(name))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    match value {
+        Some(value) => function.call1(window.as_ref(), &JsValue::from_str(value)).ok(),
+        None => function.call0(window.as_ref()).ok(),
     }
 }
 

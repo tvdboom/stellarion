@@ -12,6 +12,15 @@ use crate::core::audio::play_button_audio;
 use crate::core::constants::BUTTON_TEXT_SIZE;
 use crate::core::map::model::MapCmp;
 
+/// Bottom inset shared by the primary screen action and adjacent controls.
+pub const MAIN_BUTTON_BOTTOM: f32 = 30.0;
+/// Right inset used by the primary screen action.
+pub const MAIN_BUTTON_RIGHT: f32 = 50.0;
+/// Width of the primary screen action.
+pub const MAIN_BUTTON_WIDTH: f32 = 200.0;
+/// Height shared by the primary screen action and adjacent controls.
+pub const MAIN_BUTTON_HEIGHT: f32 = 48.0;
+
 #[derive(Component)]
 /// Bevy component marking main button presentation entities.
 pub struct MainButtonCmp;
@@ -40,10 +49,10 @@ pub fn spawn_main_button<'a>(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(30.),
-                right: Val::Px(50.),
-                width: Val::Px(200.),
-                height: Val::Px(48.),
+                bottom: Val::Px(MAIN_BUTTON_BOTTOM),
+                right: Val::Px(MAIN_BUTTON_RIGHT),
+                width: Val::Px(MAIN_BUTTON_WIDTH),
+                height: Val::Px(MAIN_BUTTON_HEIGHT),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
