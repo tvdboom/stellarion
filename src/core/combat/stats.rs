@@ -40,7 +40,8 @@ impl Description for CombatStats {
                 shield is regenerated every round."
             },
             CombatStats::Damage => "The amount of damage a unit deals per round.",
-            CombatStats::Speed => "The speed at which a unit travels through space (in AU / turn).",
+            CombatStats::Speed => "Movement rating: AU covered on the first turn. Each later turn \
+                adds two thirds of this rating to the distance covered. Fleets use their slowest unit.",
             CombatStats::FuelConsumption => {
                 "The amount of deuterium a unit requires to travel 1 AU."
             },

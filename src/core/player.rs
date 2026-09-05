@@ -94,6 +94,8 @@ pub struct Player {
     pub id: PlayerId,
     /// Stable home world whose loss eliminates this player.
     pub home_planet: PlanetId,
+    /// First acquisition order, retained through control changes and report pruning.
+    pub world_acquisition_order: Vec<PlanetId>,
     /// Resource production for a world or stockpile for a player.
     pub resources: Resources,
     /// Resolved mission reports visible to this player.
@@ -111,6 +113,7 @@ impl Default for Player {
         Self {
             id: 0,
             home_planet: 0,
+            world_acquisition_order: vec![0],
             resources: Resources {
                 metal: 1500,
                 crystal: 1200,
@@ -129,6 +132,7 @@ impl Player {
         Self {
             id,
             home_planet,
+            world_acquisition_order: vec![home_planet],
             color: Some(PlayerColor::for_player(id)),
             ..default()
         }
@@ -139,6 +143,13 @@ impl Player {
         self.color
             .filter(|color| color.is_valid())
             .unwrap_or_else(|| PlayerColor::for_player(self.id))
+    }
+
+    /// Records a world's first acquisition without moving already acquired worlds.
+    pub fn record_world_acquisition(&mut self, planet_id: PlanetId) {
+        if !self.world_acquisition_order.contains(&planet_id) {
+            self.world_acquisition_order.push(planet_id);
+        }
     }
 
     /// Appends a report while pruning the oldest entries from the bounded history.

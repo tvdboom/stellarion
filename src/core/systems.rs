@@ -150,13 +150,30 @@ pub fn check_keys_menu(
 }
 
 /// Checks keys combat input/state and applies the resulting transition.
-pub fn check_keys_combat(mut settings: ResMut<Settings>, keyboard: Res<ButtonInput<KeyCode>>) {
+pub fn check_keys_combat(
+    mut settings: ResMut<Settings>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut round_shortcuts: Local<[bool; 2]>,
+) {
+    let jumping = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+        && keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    for (index, key) in [KeyCode::ArrowLeft, KeyCode::ArrowRight].into_iter().enumerate() {
+        if keyboard.just_pressed(key) {
+            round_shortcuts[index] = jumping;
+        }
+        if keyboard.just_released(key) {
+            if !round_shortcuts[index] && !jumping {
+                settings.combat_speed = if index == 0 {
+                    (settings.combat_speed * 0.5).max(0.25)
+                } else {
+                    (settings.combat_speed * 2.).min(64.0)
+                };
+            }
+            round_shortcuts[index] = false;
+        }
+    }
     if keyboard.just_pressed(KeyCode::Space) {
         settings.combat_paused = !settings.combat_paused;
-    } else if keyboard.just_released(KeyCode::ArrowRight) {
-        settings.combat_speed = (settings.combat_speed * 2.).min(64.0);
-    } else if keyboard.just_released(KeyCode::ArrowLeft) {
-        settings.combat_speed = (settings.combat_speed * 0.5).max(0.25);
     }
 }
 

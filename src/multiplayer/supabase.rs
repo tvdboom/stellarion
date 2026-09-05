@@ -69,7 +69,7 @@ impl SupabaseBackend {
             .send()
             .await
             .map_err(network_error)?;
-        decode_auth(response).await
+        decode_auth(response, true).await
     }
 
     /// Creates a new anonymous Supabase Auth identity.
@@ -85,7 +85,7 @@ impl SupabaseBackend {
             .send()
             .await
             .map_err(network_error)?;
-        decode_auth(response).await
+        decode_auth(response, false).await
     }
 }
 
@@ -847,8 +847,11 @@ fn invalid_protocol<T>(message: impl Into<String>) -> Result<T, BackendError> {
 }
 
 /// Decodes a successful Auth response and maps rejected refresh credentials.
-async fn decode_auth(response: reqwest::Response) -> Result<AuthSession, BackendError> {
-    let auth: AuthResponse = decode_response(response).await?;
+async fn decode_auth(
+    response: reqwest::Response,
+    refreshing: bool,
+) -> Result<AuthSession, BackendError> {
+    let auth: AuthResponse = decode_response_context(response, refreshing).await?;
     if auth.user.id.trim().is_empty()
         || auth.access_token.trim().is_empty()
         || auth.refresh_token.trim().is_empty()
@@ -869,6 +872,14 @@ async fn decode_auth(response: reqwest::Response) -> Result<AuthSession, Backend
 async fn decode_response<T: DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, BackendError> {
+    decode_response_context(response, false).await
+}
+
+/// Only a rejected refresh request may trigger replacement of the saved identity.
+async fn decode_response_context<T: DeserializeOwned>(
+    response: reqwest::Response,
+    refreshing: bool,
+) -> Result<T, BackendError> {
     let status = response.status();
     let body = response.text().await.map_err(network_error)?;
     if status.is_success() {
@@ -880,7 +891,39 @@ async fn decode_response<T: DeserializeOwned>(
         .as_ref()
         .and_then(|error| error.message.as_ref().or(error.msg.as_ref()).cloned())
         .unwrap_or_else(|| body.chars().take(500).collect());
+    if refreshing
+        && matches!(
+            status,
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+        )
+        && rejected_refresh(&detail, parsed.as_ref())
+    {
+        return Err(BackendError::Unauthenticated);
+    }
     Err(map_supabase_error(status, &detail, parsed.as_ref()))
+}
+
+/// Auth also reports malformed refresh tokens with the generic validation_failed code.
+/// Match that case by its exact message so unrelated validation errors stay visible.
+fn rejected_refresh(message: &str, body: Option<&SupabaseErrorBody>) -> bool {
+    let code =
+        body.and_then(|body| body.error_code.as_deref().or_else(|| body.code.as_ref()?.as_str()));
+    if let Some(code) = code.filter(|code| *code != "validation_failed") {
+        return matches!(
+            code,
+            "refresh_token_not_found"
+                | "refresh_token_already_used"
+                | "session_not_found"
+                | "session_expired"
+        );
+    }
+    matches!(
+        message.trim().to_ascii_lowercase().as_str(),
+        "refresh token is not valid"
+            | "invalid refresh token: refresh token not found"
+            | "invalid refresh token: already used"
+            | "invalid refresh token: session not found"
+    )
 }
 
 /// Maps stable SQL error markers and HTTP statuses to the public backend error model.

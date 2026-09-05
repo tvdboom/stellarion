@@ -172,7 +172,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             .map(|arrow| arrow.style)
             .collect::<Vec<_>>();
         let expected_style = match hover {
-            Some(4) => Some(MissionRouteStyle::MissileStrike),
+            Some(4) => Some(MissionRouteStyle::Standard),
             Some(2) if model.players[viewer].id == 2 => Some(MissionRouteStyle::JumpGate),
             Some(2) => Some(MissionRouteStyle::Standard),
             _ => None,
@@ -187,13 +187,12 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
                 .collect::<Vec<_>>();
             assert!(!glyphs.is_empty());
             assert!(glyphs.iter().all(|glyph| *glyph == JUMP_GATE_ROUTE_GLYPH));
-            assert_eq!(JUMP_GATE_ROUTE_GLYPH, ")))");
         }
     }
 }
 
 #[test]
-fn jump_gate_wave_packets_face_the_route_destination() {
+fn jump_gate_wave_fronts_expand_toward_the_route_destination() {
     let markers = mission_route_markers(
         Vec2::ZERO,
         Vec2::new(0.0, 500.0),
@@ -205,6 +204,9 @@ fn jump_gate_wave_packets_face_the_route_destination() {
     );
 
     assert!(!markers.is_empty());
+    assert!(markers.windows(2).all(|pair| pair[1].0.scale.y > pair[0].0.scale.y));
+    assert!(markers.iter().all(|(transform, _)| transform.scale.is_finite()));
+    assert!(markers.iter().all(|(transform, _)| transform.scale.x < transform.scale.y));
     assert!(markers
         .iter()
         .all(|(transform, _)| { transform.rotation.mul_vec3(Vec3::X).dot(Vec3::Y) > 0.999 }));

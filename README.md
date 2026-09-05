@@ -21,8 +21,19 @@
 
 Stellarion is a turn-based strategy game, where players build interstellar empires. Expand your 
 colonies, manage resources, and command fleets that engage in strategic battles for dominance of 
-the galaxy. The goal of the game is to conquer or destroy the enemy's home planet. If you lose your home 
-planet, you lose the game.
+the galaxy. Win by eliminating rival empires or controlling enough of the map. If you lose your
+home planet, you are eliminated.
+
+### Win conditions
+
+- **Elimination:** Be the last player who still owns their original home planet. Conquering or
+  destroying an opponent's home planet eliminates that player. Mutual elimination is a draw.
+- **Territorial control:** Control at least `50% + 50% / n_players` of all non-moon planets.
+
+Victory is checked after all battles and ownership changes for the turn resolve, with no holding
+period or countdown. A player who loses their home planet that turn cannot win by territory.
+Local Practice has no territorial victory condition.
+
 
 ### Resources
 
@@ -81,13 +92,6 @@ defenses.
   chance falls in later rounds. The fleet returns whether destruction succeeds. A destroyed
   planet can never be colonized again.
 
-### Saved multiplayer games
-
-Starting a game permanently assigns the creator as host and every other member to the same client
-slot. Resuming never transfers the host role. Any member can open the saved game, but everyone first
-returns to a reconnect lobby; clients wait there until the original host reconnects and resumes the
-match for all connected players. The Resume Game list shows when each authoritative snapshot was
-last saved.
 
 ### Units
 
@@ -102,6 +106,14 @@ You can build three types of units on an owned planet:
 - **Defenses:** Defenses are stationary combat units. They have better price-to-stats ratios than
   ships, but are fixed to the planet. Be careful with stacking defenses! War Suns are capable of
   destroying a planet with any defense army. Missiles are also included with the defense units.
+
+
+### Fleet travel
+
+Ships and missiles accelerate throughout each journey. For movement rating `s`, distance covered
+after `t` turns is `s * t * (t + 2) / 3` AU. The first turn covers the same distance as before;
+each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating.
+
 
 ### Combat
 
@@ -170,6 +182,7 @@ Things to keep in mind:
 - `space`: Center the map on your home planet and select it.
 - `tab / mouse forward-backward`: Cycle through the shop/mission menu or rounds in a combat report.
 - `ctrl + tab`: Cycle through your owned planets (if any selected).
+- During combat: `space` pauses, `ctrl + left/right` changes speed, and `ctrl + shift + left/right` jumps rounds.
 - `Q`: Toggle the audio settings.
 - `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.

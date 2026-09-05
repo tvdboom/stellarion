@@ -55,14 +55,13 @@ fn route_marker_positions(
     (0..count).map(move |index| first + index as f32 * spacing)
 }
 
-/// Samples one open arc whose bowed side points toward the route destination.
+/// Projects a ring facing the ship as an ellipse with its long axis across the route.
 fn jump_gate_wave_front(center: egui::Pos2, half_height: f32, depth: f32) -> Vec<egui::Pos2> {
-    const SEGMENTS: usize = 8;
+    const SEGMENTS: usize = 32;
 
-    (0..=SEGMENTS)
+    (0..SEGMENTS)
         .map(|index| {
-            let angle = -std::f32::consts::FRAC_PI_2
-                + std::f32::consts::PI * index as f32 / SEGMENTS as f32;
+            let angle = std::f32::consts::TAU * index as f32 / SEGMENTS as f32;
             egui::pos2(center.x + depth * angle.cos(), center.y + half_height * angle.sin())
         })
         .collect()
@@ -79,7 +78,7 @@ fn draw_route_preview(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, MISSION_ROUTE_PREVIEW_HEIGHT), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
-    // Keep even the missile trail fully inside the lane instead of clipping glyphs at its edges.
+    // Keep wave fronts and chevrons inside the preview lane.
     let left = rect.left() + 12.0;
     let right = rect.right() - 8.0;
     let center_y = rect.center().y;
@@ -88,12 +87,10 @@ fn draw_route_preview(
     let phase = time * speed;
 
     let route_style = mission.route_style(player);
-    if route_style != MissionRouteStyle::MissileStrike {
-        painter.line_segment(
-            [egui::pos2(left, center_y), egui::pos2(right, center_y)],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(143, 158, 174, 52)),
-        );
-    }
+    painter.line_segment(
+        [egui::pos2(left, center_y), egui::pos2(right, center_y)],
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(143, 158, 174, 52)),
+    );
 
     match route_style {
         MissionRouteStyle::Standard => {
@@ -110,39 +107,21 @@ fn draw_route_preview(
             }
         },
         MissionRouteStyle::JumpGate => {
-            for (index, x) in route_marker_positions(left, right, 30.0, phase).enumerate() {
-                let pulse = ((time * 3.2 + index as f32 * 1.1).sin() * 0.5 + 0.5).max(0.0);
-                let height_scale = 0.9 + 0.2 * pulse;
-                for (offset, half_height, depth, alpha) in
-                    [(-6.0, 4.5, 2.4, 120), (-3.0, 6.0, 3.0, 165), (0.0, 7.5, 3.6, 220)]
-                {
-                    painter.line(
-                        jump_gate_wave_front(
-                            egui::pos2(x + offset, center_y),
-                            half_height * height_scale,
-                            depth,
+            for x in route_marker_positions(left, right, 30.0, phase * 0.5) {
+                // Fixed-size fronts keep the fast wave readable within the panel's narrow lane.
+                let fade = ((x - left).min(right - x) / 8.0).clamp(0.0, 1.0);
+                painter.add(egui::Shape::closed_line(
+                    jump_gate_wave_front(egui::pos2(x, center_y), 7.5, 3.0),
+                    Stroke::new(
+                        1.4,
+                        Color32::from_rgba_unmultiplied(
+                            color.r(),
+                            color.g(),
+                            color.b(),
+                            (220.0 * fade) as u8,
                         ),
-                        Stroke::new(
-                            1.4,
-                            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
-                        ),
-                    );
-                }
-            }
-        },
-        MissionRouteStyle::MissileStrike => {
-            const SPACING: f32 = 34.0;
-            for (index, x) in route_marker_positions(left, right, SPACING, phase).enumerate() {
-                let marker = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 235);
-                // The strategic map renders missile routes as horizontally stretched bullet
-                // glyphs. A thick, subtly pulsing dash is the equivalent treatment in Egui.
-                let pulse_phase = (index as f32 * 0.91 + phase / SPACING) * std::f32::consts::TAU;
-                let pulse = 0.85 + 0.2 * (pulse_phase.sin() * 0.5 + 0.5);
-                let half_width = 7.5 * pulse;
-                painter.line_segment(
-                    [egui::pos2(x - half_width, center_y), egui::pos2(x + half_width, center_y)],
-                    Stroke::new(4.5, marker),
-                );
+                    ),
+                ));
             }
         },
     }
@@ -218,6 +197,14 @@ fn mission_route_rect(cell: egui::Rect) -> egui::Rect {
         egui::pos2(cell.center().x, cell.top() + MISSION_PLANET_IMAGE_SIZE * 0.5),
         egui::vec2(cell.width(), MISSION_ROUTE_PREVIEW_HEIGHT),
     )
+}
+
+/// Reserves one grid cell; drawing its contents must not advance the parent grid again.
+fn mission_route_cell(ui: &mut Ui, width: f32) -> (Ui, Response) {
+    let (cell, response) =
+        ui.allocate_exact_size(egui::vec2(width, MISSION_PLANET_CELL_HEIGHT), Sense::hover());
+    let child = ui.new_child(UiBuilder::new().max_rect(mission_route_rect(cell)));
+    (child, response)
 }
 
 /// Draws one active-mission planet link without letting overlay widgets shift its name.
@@ -694,7 +681,7 @@ fn draw_new_mission(
 
                 ui.small(format!("📏 Distance: {distance:.1} AU"));
                 ui.small(format!(
-                    "🚀 Speed: {}",
+                    "🚀 Movement: {}",
                     if speed == 0. || speed == f32::MAX {
                         "---".to_string()
                     } else {
@@ -1014,42 +1001,36 @@ fn draw_active_missions(
                                 );
                             }
 
-                            let (route_cell, response) = ui.allocate_exact_size(
-                                egui::vec2(route_column_width, MISSION_PLANET_CELL_HEIGHT),
-                                Sense::hover(),
-                            );
-                            let route_rect = mission_route_rect(route_cell);
-                            ui.scope_builder(UiBuilder::new().max_rect(route_rect), |ui| {
-                                ui.horizontal_centered(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.;
+                            let (mut route_ui, response) =
+                                mission_route_cell(ui, route_column_width);
+                            route_ui.horizontal_centered(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.;
 
-                                    ui.add_image(
-                                        images.get(if mission.owner == player.id {
-                                            mission.objective.to_lowername()
-                                        } else {
-                                            Icon::Attacked.to_lowername()
-                                        }),
-                                        [25.; 2],
-                                    );
+                                ui.add_image(
+                                    images.get(if mission.owner == player.id {
+                                        mission.objective.to_lowername()
+                                    } else {
+                                        Icon::Attacked.to_lowername()
+                                    }),
+                                    [25.; 2],
+                                );
 
-                                    let [red, green, blue] =
-                                        session.player_color(mission.owner).rgb();
-                                    draw_route_preview(
-                                        ui,
-                                        route_preview_width,
-                                        mission,
-                                        player,
-                                        Color32::from_rgb(red, green, blue),
-                                    );
+                                let [red, green, blue] = session.player_color(mission.owner).rgb();
+                                draw_route_preview(
+                                    ui,
+                                    route_preview_width,
+                                    mission,
+                                    player,
+                                    Color32::from_rgb(red, green, blue),
+                                );
 
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "+{}",
-                                            mission.turns_to_destination(map)
-                                        ))
-                                        .strong(),
-                                    );
-                                })
+                                ui.label(
+                                    RichText::new(format!(
+                                        "+{}",
+                                        mission.turns_to_destination(map)
+                                    ))
+                                    .strong(),
+                                );
                             });
 
                             if response.hovered() {
@@ -1116,12 +1097,12 @@ fn draw_mission_reports(
         ScrollArea::vertical().show(ui, |ui| {
             ui.set_width(150.);
 
-            // The hover stroke is painted outside the row, so inset the first row far enough to
-            // keep its top edge inside the scroll area's clip rectangle.
-            ui.add_space(MISSION_REPORT_LIST_TOP_PADDING);
-
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 5.;
+
+                // The scroll area inherits the horizontal parent layout. Apply top padding here
+                // so the outside hover stroke clears the clip edge vertically.
+                ui.add_space(MISSION_REPORT_LIST_TOP_PADDING);
 
                 for report in reports.iter().rev() {
                     let destination = map.get(report.mission.destination);

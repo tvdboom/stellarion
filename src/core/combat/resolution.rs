@@ -20,6 +20,12 @@ pub const MAX_COMBAT_ROUNDS: usize = 100;
 /// Hard ceiling for one unit's probabilistic rapid-fire chain in one round.
 pub const MAX_SHOTS_PER_UNIT_PER_ROUND: usize = 256;
 
+/// Chance that one surviving Bomber destroys a building level during its single raid.
+pub const BOMBING_HIT_CHANCE: f32 = 0.1;
+
+/// Per-building raid limit; the three buildings in either category allow nine levels in total.
+pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;
+
 #[derive(Component, Clone, Default, Serialize, Deserialize)]
 /// Outcome of one combatant firing once at a selected target.
 pub struct ShotReport {
@@ -37,6 +43,13 @@ pub struct ShotReport {
     pub planetary_shield_damage: usize,
     /// Whether the shooter earned another rapid-fire shot.
     pub rapid_fire: bool,
+}
+
+impl ShotReport {
+    /// Whether this shot belongs to the building raid rather than ordinary weapon fire.
+    pub fn is_bombing(&self) -> bool {
+        self.unit.is_some_and(|unit| unit.is_building() && unit != Unit::planetary_shield())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -147,6 +160,7 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
     let mut returning_probes = 0;
     let mut used_antiballistic = vec![];
     let mut planet_destroyed = false;
+    let mut bombing_resolved = false;
     while ((!attack_army.is_empty() && !defend_army.is_empty()) || round == 1)
         && round <= MAX_COMBAT_ROUNDS
     {
@@ -307,36 +321,11 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
             }
         }
 
-        // Resolve bombing raids
-        if mission.bombing != BombingRaid::None && planetary_shield == 0 {
-            for cu in
-                attack_army.iter_mut().filter(|u| u.unit == Unit::Ship(Ship::Bomber) && u.hull > 0)
-            {
-                if let Some((u, c)) = buildings
-                    .iter_mut()
-                    .filter(|(unit, count)| {
-                        **count > 0
-                            && match mission.bombing {
-                                BombingRaid::Economic => unit.is_economic_building(),
-                                BombingRaid::Industrial => unit.is_industrial_building(),
-                                BombingRaid::None => false,
-                            }
-                    })
-                    .choose(&mut *rng)
-                {
-                    let mut shot = ShotReport {
-                        unit: Some(*u),
-                        ..Default::default()
-                    };
-                    if rng.random::<f32>() < 0.1 {
-                        *c -= 1;
-                        shot.killed = true;
-                    } else {
-                        shot.missed = true;
-                    }
-                    cu.shots.push(shot);
-                }
-            }
+        // One raid at the end of the first unshielded round. Surviving longer must not
+        // multiply building damage; Bombers destroyed during this round cannot take part.
+        if !bombing_resolved && mission.bombing != BombingRaid::None && planetary_shield == 0 {
+            bombing_resolved = true;
+            resolve_bombing_raid(&mission.bombing, &mut attack_army, &mut buildings, rng);
         }
 
         // Save snapshot of the state of the armies this turn
@@ -447,6 +436,48 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
     }
 }
 
+/// Records one bounded raid using the same deterministic stream as fleet combat.
+fn resolve_bombing_raid<R: Rng + ?Sized>(
+    raid: &BombingRaid,
+    attackers: &mut [CombatUnit],
+    buildings: &mut Army,
+    rng: &mut R,
+) {
+    let mut losses = Army::new();
+    for bomber in
+        attackers.iter_mut().filter(|cu| cu.unit == Unit::Ship(Ship::Bomber) && cu.hull > 0)
+    {
+        // Choose uniformly among eligible building types for every attempt. A depleted
+        // or capped building leaves the pool, so hits are never forced onto one type.
+        let Some((unit, levels)) = buildings
+            .iter_mut()
+            .filter(|(unit, count)| {
+                **count > 0
+                    && losses.amount(unit) < MAX_BOMBING_LEVELS_PER_BUILDING
+                    && match raid {
+                        BombingRaid::Economic => unit.is_economic_building(),
+                        BombingRaid::Industrial => unit.is_industrial_building(),
+                        BombingRaid::None => false,
+                    }
+            })
+            .choose(&mut *rng)
+        else {
+            break;
+        };
+        let hit = rng.random::<f32>() < BOMBING_HIT_CHANCE;
+        if hit {
+            *levels -= 1;
+            *losses.entry(*unit).or_default() += 1;
+        }
+        bomber.shots.push(ShotReport {
+            unit: Some(*unit),
+            killed: hit,
+            missed: !hit,
+            ..Default::default()
+        });
+    }
+}
+
 /// Returns whether a probabilistic rapid-fire chain ends after this shot.
 fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f32) -> bool {
     shots_fired >= MAX_SHOTS_PER_UNIT_PER_ROUND
@@ -456,3 +487,11 @@ fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f3
 #[cfg(test)]
 #[path = "../../../tests/core/combat_resolution.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_balance.rs"]
+mod balance_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_bombing.rs"]
+mod bombing_tests;

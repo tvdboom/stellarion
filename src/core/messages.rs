@@ -301,12 +301,13 @@ fn draw_notifications(
     clicked_message
 }
 
-/// Uses the same selection path as a planet click, without trusting stale toast targets.
+/// Selects and centers a colony without trusting stale toast targets.
 fn focus_colony(planet_id: PlanetId, map: &Map, player: &Player, state: &mut UiState) -> bool {
     let Some(planet) = map.try_get(planet_id).filter(|p| player.owns(p) && !p.is_destroyed) else {
         return false;
     };
     select_planet(planet, state, player);
+    state.to_selected = true;
     true
 }
 

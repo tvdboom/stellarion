@@ -1,6 +1,91 @@
 use super::*;
 
 #[test]
+fn active_mission_destination_stays_in_the_third_grid_column() {
+    for width in [700.0, 850.0, 1_200.0] {
+        let context = egui::Context::default();
+        for _ in 0..3 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 400.0),
+                    )),
+                    ..default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        let panel = ui.available_rect_before_wrap();
+                        let (route_width, leading) = mission_row_layout(panel.width());
+                        ui.horizontal(|ui| {
+                            ui.add_space(leading);
+                            egui::Grid::new("mission row regression")
+                                .spacing([MISSION_COLUMN_GAP, 0.0])
+                                .show(ui, |ui| {
+                                    for _ in 0..2 {
+                                        let (origin, _) = draw_mission_planet_link(
+                                            ui,
+                                            egui::TextureId::User(1),
+                                            "Origin",
+                                            Sense::click(),
+                                        );
+                                        draw_mission_log_badge(
+                                            ui,
+                                            egui::TextureId::User(2),
+                                            origin.rect,
+                                        );
+                                        let (mut route, _) = mission_route_cell(ui, route_width);
+                                        route.horizontal_centered(|ui| {
+                                            ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    route_width,
+                                                    MISSION_ROUTE_PREVIEW_HEIGHT,
+                                                ),
+                                                Sense::hover(),
+                                            );
+                                        });
+                                        let (destination, name) = draw_mission_planet_link(
+                                            ui,
+                                            egui::TextureId::User(1),
+                                            "Destination",
+                                            Sense::click(),
+                                        );
+                                        let expected_distance = MISSION_PLANET_COLUMN_WIDTH
+                                            + 2.0 * MISSION_COLUMN_GAP
+                                            + route_width;
+                                        // The invisible first pass measures columns using placeholder widths.
+                                        if ui.is_sizing_pass() {
+                                            ui.end_row();
+                                            continue;
+                                        }
+                                        assert!(
+                                            (destination.rect.center().x
+                                                - origin.rect.center().x
+                                                - expected_distance)
+                                                .abs()
+                                                < 0.5,
+                                            "width {width}: origin {:?}, destination {:?}, expected distance {expected_distance}",
+                                            origin.rect, destination.rect
+                                        );
+                                        assert!(
+                                            (destination.rect.top() - origin.rect.top()).abs()
+                                                < 0.5
+                                        );
+                                        assert!(panel.contains_rect(destination.rect));
+                                        assert!(panel.contains_rect(name.rect));
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        }
+    }
+}
+
+#[test]
 fn mission_planet_names_share_the_same_centered_planet_relative_position() {
     for left in [0.0, 640.0] {
         let cell = egui::Rect::from_min_size(
@@ -61,16 +146,17 @@ fn route_preview_marker_grid_handles_empty_or_invalid_lanes() {
 }
 
 #[test]
-fn jump_gate_wave_fronts_are_open_and_bow_toward_the_destination() {
+fn jump_gate_rings_span_both_sides_of_the_route_with_foreshortened_depth() {
     let center = egui::pos2(20.0, 30.0);
     let points = jump_gate_wave_front(center, 8.0, 4.0);
-    let middle = points[points.len() / 2];
-
-    assert!((points.first().unwrap().x - center.x).abs() <= f32::EPSILON);
-    assert!((points.last().unwrap().x - center.x).abs() <= f32::EPSILON);
-    assert_eq!(points.first().unwrap().y, center.y - 8.0);
-    assert_eq!(points.last().unwrap().y, center.y + 8.0);
-    assert!(middle.x > center.x);
+    for (index, offset) in [(0, (4.0, 0.0)), (8, (0.0, 8.0)), (16, (-4.0, 0.0)), (24, (0.0, -8.0))]
+    {
+        assert!(points[index].distance(center + egui::vec2(offset.0, offset.1)) < 0.0001);
+    }
+    assert!(points.iter().all(|point| {
+        let relative = *point - center;
+        ((relative.x / 4.0).powi(2) + (relative.y / 8.0).powi(2) - 1.0).abs() < 0.0001
+    }));
 }
 
 #[test]

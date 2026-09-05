@@ -22,13 +22,14 @@ use voronator::VoronoiDiagram;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
-    BACKGROUND_Z, BUTTON_TEXT_SIZE, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE,
-    TITLE_TEXT_SIZE, VORONOI_Z,
+    BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
+    OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::scenery::CelestialKind;
 use crate::core::map::utils::{
     cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens, TransformOrbitSpinLens,
 };
@@ -43,6 +44,8 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
+
+const MAP_ICON_IDLE_TINT: Color = Color::srgb(0.82, 0.82, 0.82);
 
 #[derive(Component)]
 /// Bevy component mapping a rendered planet entity to a stable planet ID.
@@ -75,14 +78,15 @@ pub(crate) struct NebulaCmp {
 }
 
 #[derive(Component)]
-/// Decorative black-hole landmark sharing the stellar proximity ambience.
-pub(crate) struct BlackHoleCmp {
+/// Sourced animated landmark; only stellar kinds use proximity ambience.
+pub(crate) struct CelestialCmp {
+    pub(crate) kind: CelestialKind,
     frames: Vec<Handle<Image>>,
 }
 
 #[derive(Component)]
 /// One of the two sprites used to crossfade between sourced NASA animation frames.
-pub(crate) struct BlackHoleFrameCmp {
+pub(crate) struct CelestialFrameCmp {
     slot: usize,
 }
 
@@ -171,12 +175,8 @@ const SOLAR_STAR_DEPTH: f32 = BACKGROUND_Z + 0.78;
 const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
 const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
-const BLACK_HOLE_SIZE: Vec2 = Vec2::new(480.0, 270.0);
-const BLACK_HOLE_DEPTH: f32 = BACKGROUND_Z + 0.7;
-const BLACK_HOLE_PARALLAX_FOLLOW: f32 = 0.82;
-const BLACK_HOLE_FRAME_COUNT: usize = 66;
-const BLACK_HOLE_FRAME_SECONDS: f32 = 0.08;
-const BLACK_HOLE_OPACITY: f32 = 0.4;
+const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
+const CELESTIAL_DEPTH: f32 = BACKGROUND_Z + 0.7;
 
 impl PlanetCmp {
     /// Creates a new value from the supplied state.
@@ -217,6 +217,22 @@ pub struct ExplosionCmp {
 #[derive(Component)]
 /// Bevy component marking planet name presentation entities.
 pub struct PlanetNameCmp;
+
+#[derive(Component)]
+/// Crown attached to the local home planet's name, inheriting its visibility.
+pub(crate) struct HomeCrownCmp;
+
+/// Places the crown before the measured name after font loading or text changes.
+pub(crate) fn position_home_crown(
+    names: Query<&bevy::text::TextLayoutInfo, With<PlanetNameCmp>>,
+    mut crowns: Query<(&ChildOf, &mut Transform), With<HomeCrownCmp>>,
+) {
+    for (parent, mut transform) in &mut crowns {
+        if let Ok(layout) = names.get(parent.parent()) {
+            transform.translation.x = -layout.size.x * 0.5 - TITLE_TEXT_SIZE * 0.7;
+        }
+    }
+}
 
 #[derive(Component)]
 /// Bevy component marking planet resources presentation entities.
@@ -571,13 +587,27 @@ fn scenery_corner_from_seed(seed: u32) -> Vec2 {
     }
 }
 
-fn map_scenery_corner(map: &Map) -> Vec2 {
-    let seed = map.planets.iter().fold(0x915f_43b7_u32, |seed, planet| {
+/// Only fixed coordinates contribute: conquest, destruction and economy cannot reroll scenery.
+fn map_scenery_seed(map: &Map) -> u32 {
+    map.planets.iter().fold(0x915f_43b7_u32, |seed, planet| {
         seed.rotate_left(7)
             ^ planet.position.x.to_bits().wrapping_mul(0x9e37_79b9)
             ^ planet.position.y.to_bits().rotate_left(13)
-    });
-    scenery_corner_from_seed(seed)
+    })
+}
+
+fn map_scenery_corner(map: &Map) -> Vec2 {
+    scenery_corner_from_seed(map_scenery_seed(map))
+}
+
+/// One compact landmark accompanies the large solar arc in every game.
+fn map_scenery_selection(map: &Map) -> CelestialKind {
+    let seed = map_scenery_seed(map);
+    match (seed >> 8) % 3 {
+        0 => CelestialKind::NeutronStar,
+        1 => CelestialKind::Magnetar,
+        _ => CelestialKind::BlackHole,
+    }
 }
 
 fn map_corner(map: &Map, direction: Vec2) -> Vec2 {
@@ -601,7 +631,7 @@ fn solar_star_position(map: &Map) -> Vec2 {
     map_corner(map, corner) + corner * SOLAR_STAR_SIZE * 0.3
 }
 
-fn black_hole_position(map: &Map) -> Vec2 {
+fn celestial_position(map: &Map) -> Vec2 {
     let sun_corner = map_scenery_corner(map);
     let edge_direction = Vec2::new(-sun_corner.x, 0.0);
     let edge_x = if edge_direction.x < 0.0 {
@@ -609,8 +639,10 @@ fn black_hole_position(map: &Map) -> Vec2 {
     } else {
         map.rect.max.x
     };
-    let x = edge_x - edge_direction.x * BLACK_HOLE_SIZE.x * 0.42;
-    let usable_half_height = (map.rect.half_size().y - BLACK_HOLE_SIZE.y * 0.55).max(0.0);
+    // Place the compact landmark beyond the playfield, opposite the large sun,
+    // leaving its full sprite clear of the central strategic area.
+    let x = edge_x + edge_direction.x * CELESTIAL_SIZE.x * 0.5;
+    let usable_half_height = (map.rect.half_size().y - CELESTIAL_SIZE.y * 0.55).max(0.0);
     let preferred_y = -sun_corner.y * usable_half_height * 0.48;
     if map.planets.is_empty() {
         return Vec2::new(x, map.rect.center().y + preferred_y);
@@ -638,6 +670,8 @@ fn nebula_position(map: &Map) -> Vec2 {
 }
 
 fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
+    let kind = map_scenery_selection(map);
+    spawn_solar_star(commands, assets, map);
     let nebula_anchor = nebula_position(map);
     commands
         .spawn((
@@ -664,57 +698,52 @@ fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map
             ));
         });
 
-    let black_hole_anchor = black_hole_position(map);
-    let black_hole_frames = (1..=BLACK_HOLE_FRAME_COUNT)
-        .map(|index| assets.image(format!("black hole {index}")))
+    let celestial_anchor = celestial_position(map);
+    let celestial_frames = (1..=kind.frame_count())
+        .map(|index| assets.image(format!("{} {index}", kind.name())))
         .collect::<Vec<_>>();
-    commands
-        .spawn((
-            Name::new("Decorative black hole parallax"),
-            Transform::from_xyz(0.0, 0.0, BLACK_HOLE_DEPTH),
-            Visibility::Inherited,
-            ParallaxCmp::new(BLACK_HOLE_PARALLAX_FOLLOW, 1.0, 0.04, Vec2::new(-0.08, 0.04)),
-            Pickable::IGNORE,
-            MapCmp,
-        ))
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    Name::new("Animated NASA black hole"),
-                    Transform::from_translation(black_hole_anchor.extend(0.0)),
-                    Visibility::Inherited,
-                    Pickable::IGNORE,
-                    BlackHoleCmp {
-                        frames: black_hole_frames,
-                    },
-                ))
-                .with_children(|black_hole| {
-                    for slot in 0..2 {
-                        black_hole.spawn((
-                            Sprite {
-                                image: assets.image(format!("black hole {}", slot + 1)),
-                                color: Color::srgba(
-                                    0.72,
-                                    0.72,
-                                    0.72,
-                                    if slot == 0 {
-                                        BLACK_HOLE_OPACITY
-                                    } else {
-                                        0.0
-                                    },
-                                ),
-                                custom_size: Some(BLACK_HOLE_SIZE),
-                                ..default()
-                            },
-                            Transform::from_xyz(0.0, 0.0, slot as f32 * 0.001),
-                            Pickable::IGNORE,
-                            BlackHoleFrameCmp {
-                                slot,
-                            },
-                        ));
-                    }
-                });
-        });
+    let mut celestial_layer = commands.spawn((
+        Name::new(format!("Decorative {} map edge", kind.name())),
+        Transform::from_xyz(0.0, 0.0, CELESTIAL_DEPTH),
+        Visibility::Inherited,
+        Pickable::IGNORE,
+        MapCmp,
+    ));
+    if kind == CelestialKind::NeutronStar {
+        // A distant star barely shifts during camera pans and zooms, with no ambient drift.
+        celestial_layer.insert(ParallaxCmp::new(0.9, 1.0, 0.8, Vec2::ZERO));
+    }
+    celestial_layer.with_children(|parent| {
+        parent
+            .spawn((
+                Name::new(format!("Animated {}", kind.name())),
+                Transform::from_translation(celestial_anchor.extend(0.0)),
+                Visibility::Inherited,
+                Pickable::IGNORE,
+                CelestialCmp {
+                    kind,
+                    frames: celestial_frames,
+                },
+            ))
+            .with_children(|celestial| {
+                for slot in 0..2 {
+                    let (frame, alpha) = celestial_frame_state(kind, slot, 0.0);
+                    celestial.spawn((
+                        Sprite {
+                            image: assets.image(format!("{} {}", kind.name(), frame + 1)),
+                            color: Color::srgba(0.72, 0.72, 0.72, alpha),
+                            custom_size: Some(CELESTIAL_SIZE * kind.size_scale()),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, slot as f32 * 0.001),
+                        Pickable::IGNORE,
+                        CelestialFrameCmp {
+                            slot,
+                        },
+                    ));
+                }
+            });
+    });
 }
 
 fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
@@ -755,11 +784,11 @@ fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
         });
 }
 
-/// Selects a planet and updates the mission origin for worlds under the player's control.
+/// Selects a planet without moving the camera and updates controlled worlds' mission origin.
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
     state.focus_planet = None;
-    state.to_selected = true;
+    state.to_selected = false;
     state.mission = false;
     state.combat_report = None;
     if player.owns(planet) || player.controls(planet) {
@@ -836,7 +865,6 @@ pub fn draw_map(
 
     spawn_ambient_stars(&mut commands);
     spawn_background_landmarks(&mut commands, &assets, &map);
-    spawn_solar_star(&mut commands, &assets, &map);
 
     for planet in &map.planets {
         let planet_id = planet.id;
@@ -875,12 +903,15 @@ pub fn draw_map(
             .observe(
                 move |event: On<Pointer<Click>>,
                       mut state: ResMut<UiState>,
-                      settings: Res<Settings>,
+                      mut settings: ResMut<Settings>,
                       map: Res<Map>,
                       player: Res<Player>| {
                     let planet = map.get(planet_id);
                     if event.button == PointerButton::Primary {
                         select_planet(planet, &mut state, &player);
+                        if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
+                            settings.show_menu = true;
+                        }
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
                         state.mission = true;
                         state.combat_report = None;
@@ -902,7 +933,7 @@ pub fn draw_map(
                 },
             )
             .with_children(|parent| {
-                parent.spawn((
+                let mut name = parent.spawn((
                     Text2d::new(&planet.name),
                     TextFont {
                         font: assets.font("bold").into(),
@@ -914,6 +945,39 @@ pub fn draw_map(
                     Pickable::IGNORE,
                     PlanetNameCmp,
                 ));
+                if planet.id == player.home_planet {
+                    name.with_children(|label| {
+                        label.spawn((
+                            Mesh2d(
+                                meshes.add(
+                                    Mesh::new(
+                                        PrimitiveTopology::TriangleList,
+                                        RenderAssetUsages::default(),
+                                    )
+                                    .with_inserted_attribute(
+                                        Mesh::ATTRIBUTE_POSITION,
+                                        HOME_CROWN_VERTICES
+                                            .map(|[x, y]| {
+                                                [
+                                                    (x - 0.5) * TITLE_TEXT_SIZE,
+                                                    (y - 0.5) * TITLE_TEXT_SIZE * 0.8,
+                                                    0.0,
+                                                ]
+                                            })
+                                            .to_vec(),
+                                    )
+                                    .with_inserted_indices(
+                                        Indices::U32(HOME_CROWN_INDICES.to_vec()),
+                                    ),
+                                ),
+                            ),
+                            MeshMaterial2d(materials.add(ColorMaterial::from(HOME_PLANET_COLOR))),
+                            Transform::from_xyz(0., 0., 0.01),
+                            HomeCrownCmp,
+                            Pickable::IGNORE,
+                        ));
+                    });
+                }
 
                 // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
@@ -923,6 +987,7 @@ pub fn draw_map(
                                 Sprite {
                                     image: assets.image(icon.to_lowername().as_str()),
                                     custom_size: Some(Vec2::splat(Icon::SIZE)),
+                                    color: MAP_ICON_IDLE_TINT,
                                     ..default()
                                 },
                                 Transform::from_translation(Vec3::new(
@@ -936,10 +1001,14 @@ pub fn draw_map(
                             .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                             .observe(cursor::<Out>(SystemCursorIcon::Default))
                             .observe(
-                                move |_: On<Pointer<Over>>,
+                                move |event: On<Pointer<Over>>,
+                                      mut sprites: Query<&mut Sprite, With<Icon>>,
                                       mut state: ResMut<UiState>,
                                       map: Res<Map>,
                                       missions: Res<Missions>| {
+                                    if let Ok(mut sprite) = sprites.get_mut(event.entity) {
+                                        sprite.color = Color::WHITE;
+                                    }
                                     state.planet_hover = Some(planet_id);
                                     state.mission_hover_from_ui = false;
                                     state.mission_hover = None;
@@ -958,11 +1027,18 @@ pub fn draw_map(
                                     }
                                 },
                             )
-                            .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                                state.planet_hover = None;
-                                state.mission_hover = None;
-                                state.mission_hover_from_ui = false;
-                            })
+                            .observe(
+                                |event: On<Pointer<Out>>,
+                                 mut sprites: Query<&mut Sprite, With<Icon>>,
+                                 mut state: ResMut<UiState>| {
+                                    if let Ok(mut sprite) = sprites.get_mut(event.entity) {
+                                        sprite.color = MAP_ICON_IDLE_TINT;
+                                    }
+                                    state.planet_hover = None;
+                                    state.mission_hover = None;
+                                    state.mission_hover_from_ui = false;
+                                },
+                            )
                             .observe(
                                 move |mut event: On<Pointer<Click>>,
                                       mut state: ResMut<UiState>,
@@ -978,8 +1054,7 @@ pub fn draw_map(
                                             && (player.owns(planet)
                                                 || (player.controls(planet) && planet.is_moon()))
                                         {
-                                            state.planet_selected = Some(planet_id);
-                                            state.mission = false;
+                                            select_planet(planet, &mut state, &player);
                                             settings.show_menu = true;
                                             if let Some(shop) = icon.shop() {
                                                 state.shop = shop;
@@ -1184,7 +1259,7 @@ pub fn draw_map(
 
                     // Vertex alpha supplies the scanner's soft field, rim glow, and fading trails.
                     let scanner_material = materials.add(ColorMaterial {
-                        color: Color::srgb(0.25, 0.95, 0.62),
+                        color: Color::WHITE,
                         ..default()
                     });
                     for (index, scanner) in ScannerCmp::layers().into_iter().enumerate() {
@@ -1299,7 +1374,13 @@ pub fn update_planet_info(
         ),
     >,
     mut scanner_q: Query<
-        (&mut Visibility, &mut Mesh2d, &mut Transform, &mut ScannerCmp),
+        (
+            &mut Visibility,
+            &mut Mesh2d,
+            &mut Transform,
+            &mut ScannerCmp,
+            &MeshMaterial2d<ColorMaterial>,
+        ),
         (
             Without<Icon>,
             Without<PlanetNameCmp>,
@@ -1317,6 +1398,7 @@ pub fn update_planet_info(
     assets: Res<WorldAssets>,
     time: Res<Time>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
 
@@ -1326,8 +1408,7 @@ pub fn update_planet_info(
         // Update destroyed planet image
         planet_s.image = assets.image(planet.image());
 
-        let selected =
-            state.planet_hover.or(state.planet_selected).map(|id| id == planet.id).unwrap_or(false);
+        let hovered = state.planet_hover == Some(planet.id);
 
         // Show/hide planet icons
         let mut count = 0;
@@ -1341,26 +1422,25 @@ pub fn update_planet_info(
                     }),
                     Icon::Buildings => {
                         (player.owns(planet) || (player.controls(planet) && planet.is_moon()))
-                            && (selected || icon.condition(planet) || settings.show_info)
+                            && (hovered || icon.condition(planet) || settings.show_info)
                     },
                     Icon::Fleet => {
                         // Shows when having an army on a not-owned planet, but hides when hovered
                         player.controls(planet)
                             && if player.owns(planet) || planet.is_moon() {
-                                selected || icon.condition(planet) || settings.show_info
+                                hovered || icon.condition(planet) || settings.show_info
                             } else {
-                                icon.condition(planet) && !selected && !settings.show_info
+                                icon.condition(planet) && !hovered && !settings.show_info
                             }
                     },
                     Icon::Defenses => {
                         player.owns(planet)
                             && !planet.is_moon()
-                            && (selected || icon.condition(planet) || settings.show_info)
+                            && (hovered || icon.condition(planet) || settings.show_info)
                     },
                     _ => {
-                        // Show icon if there is a mission with this objective towards this
-                        // planet or, if there's selected planet, it fulfills the condition,
-                        // else if any of the player's planets fulfills the condition
+                        // Existing missions stay visible; hover or the info toggle also shows
+                        // available objectives from worlds under the player's control.
                         let has_mission = missions.iter().any(|m| {
                             m.owner == player.id
                                 && m.objective == *icon
@@ -1391,7 +1471,7 @@ pub fn update_planet_info(
                             })
                         };
 
-                        has_mission || ((selected || settings.show_info) && has_condition)
+                        has_mission || ((hovered || settings.show_info) && has_condition)
                     },
                 };
 
@@ -1406,14 +1486,14 @@ pub fn update_planet_info(
 
             // Show/hide planet resources and name
             if let Ok(mut visibility) = name_q.get_mut(child) {
-                *visibility = if selected || settings.show_info {
+                *visibility = if hovered || settings.show_info {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
                 };
             }
             if let Ok(mut visibility) = resources_q.get_mut(child) {
-                *visibility = if (selected || settings.show_info) && !planet.is_destroyed {
+                *visibility = if (hovered || settings.show_info) && !planet.is_destroyed {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
@@ -1421,11 +1501,10 @@ pub fn update_planet_info(
             }
 
             // Show/hide scanner indicator
-            if let Ok((mut visibility, mut mesh, mut transform, mut scanner)) =
+            if let Ok((mut visibility, mut mesh, mut transform, mut scanner, material)) =
                 scanner_q.get_mut(child)
             {
                 // Range previews belong to map hover, using only the local player's scanners.
-                let hovered = state.planet_hover == Some(planet.id);
                 let mut radius = if hovered && !planet.is_moon() && player.owns(planet) {
                     PHALANX_DISTANCE
                         * Planet::SIZE
@@ -1441,6 +1520,9 @@ pub fn update_planet_info(
                 if radius > 0. && !planet.is_destroyed {
                     radius += planet.size() * 0.5; // Start at the edge of the planet
 
+                    if let Some(mut material) = materials.get_mut(&material.0) {
+                        material.color = player.color().color();
+                    }
                     *visibility = Visibility::Inherited;
                     scanner.update(
                         radius,
@@ -1807,13 +1889,19 @@ fn solar_star_frame_alpha(frame: usize, elapsed: f32) -> f32 {
     looping_frame_alpha(frame, elapsed, SOLAR_STAR_FRAME_COUNT, SOLAR_STAR_FRAME_SECONDS)
 }
 
-fn black_hole_frame_state(slot: usize, elapsed: f32) -> (usize, f32) {
+fn celestial_frame_state(kind: CelestialKind, slot: usize, elapsed: f32) -> (usize, f32) {
     let (current, next, blend) =
-        looping_frame_sample(elapsed, BLACK_HOLE_FRAME_COUNT, BLACK_HOLE_FRAME_SECONDS);
-    if slot == 0 {
-        (current, (1.0 - blend) * BLACK_HOLE_OPACITY)
+        looping_frame_sample(elapsed, kind.frame_count(), kind.frame_seconds());
+    // Slow neutron-star motion must not ease to a stop at every sampled frame.
+    let blend = if kind == CelestialKind::NeutronStar {
+        (elapsed / kind.frame_seconds()).rem_euclid(kind.frame_count() as f32).fract()
     } else {
-        (next, blend * BLACK_HOLE_OPACITY)
+        blend
+    };
+    if slot == 0 {
+        (current, (1.0 - blend) * kind.opacity())
+    } else {
+        (next, blend * kind.opacity())
     }
 }
 
@@ -1841,19 +1929,19 @@ fn pulsar_anchor(seed: u32, cycle: u32) -> Vec2 {
 pub(crate) fn animate_space_scenery(
     mut star_q: Query<
         &mut Transform,
-        (With<SolarStarCmp>, Without<SolarStarFrameCmp>, Without<NebulaCmp>, Without<BlackHoleCmp>),
+        (With<SolarStarCmp>, Without<SolarStarFrameCmp>, Without<NebulaCmp>, Without<CelestialCmp>),
     >,
     mut solar_frame_q: Query<
         (&SolarStarFrameCmp, &mut Sprite),
-        (Without<SolarStarCmp>, Without<BlackHoleFrameCmp>, Without<MainCamera>),
+        (Without<SolarStarCmp>, Without<CelestialFrameCmp>, Without<MainCamera>),
     >,
     mut nebula_q: Query<
         (&NebulaCmp, &mut Transform),
-        (Without<SolarStarCmp>, Without<BlackHoleCmp>),
+        (Without<SolarStarCmp>, Without<CelestialCmp>),
     >,
-    black_hole_q: Query<(&BlackHoleCmp, &Children)>,
-    mut black_hole_frame_q: Query<
-        (&BlackHoleFrameCmp, &mut Sprite),
+    celestial_q: Query<(&CelestialCmp, &Children)>,
+    mut celestial_frame_q: Query<
+        (&CelestialFrameCmp, &mut Sprite),
         (Without<SolarStarFrameCmp>, Without<MainCamera>),
     >,
     time: Res<Time>,
@@ -1871,13 +1959,13 @@ pub(crate) fn animate_space_scenery(
         transform.rotation = Quat::from_rotation_z((phase * 0.41).sin() * 0.018);
         transform.scale = Vec3::splat(1.0 + (phase * 0.62).sin() * 0.018);
     }
-    for (black_hole, children) in &black_hole_q {
+    for (celestial, children) in &celestial_q {
         for child in children.iter() {
-            let Ok((frame, mut sprite)) = black_hole_frame_q.get_mut(child) else {
+            let Ok((frame, mut sprite)) = celestial_frame_q.get_mut(child) else {
                 continue;
             };
-            let (frame_index, alpha) = black_hole_frame_state(frame.slot, elapsed);
-            sprite.image = black_hole.frames[frame_index].clone();
+            let (frame_index, alpha) = celestial_frame_state(celestial.kind, frame.slot, elapsed);
+            sprite.image = celestial.frames[frame_index].clone();
             sprite.color.set_alpha(alpha);
         }
     }

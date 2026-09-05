@@ -210,6 +210,8 @@ pub struct Planet {
     pub army: Army,
     /// Units queued for production at the next turn transition.
     pub buy: Vec<Unit>,
+    /// First-completion order of lunar artwork types, retained across saves and control changes.
+    pub lunar_build_order: [Option<Building>; 4],
 }
 
 impl Planet {
@@ -281,6 +283,7 @@ impl Planet {
             controlled: None,
             army: Army::new(),
             buy: vec![],
+            lunar_build_order: [None; 4],
         }
     }
 
@@ -291,12 +294,16 @@ impl Planet {
 
     /// Returns the runtime image key for this value.
     pub fn image(&self) -> String {
-        if self.is_destroyed {
-            "destroy".to_string()
-        } else if self.is_moon() {
-            format!("moon{}", self.image)
+        // Index zero is the destroyed artwork; "destroy" is the mission action icon.
+        let image = if self.is_destroyed {
+            0
         } else {
-            format!("planet{}", self.image)
+            self.image
+        };
+        if self.is_moon() {
+            format!("moon{image}")
+        } else {
+            format!("planet{image}")
         }
     }
 
@@ -390,7 +397,26 @@ impl Planet {
 
     /// Moves all queued units into the stationed army with saturating counts.
     pub fn produce(&mut self) {
+        let is_moon = self.is_moon();
         for unit in self.buy.drain(..) {
+            if let Unit::Building(building) = unit {
+                if is_moon
+                    && matches!(
+                        building,
+                        Building::LunarBase
+                            | Building::OrbitalRadar
+                            | Building::Laboratory
+                            | Building::Shipyard
+                    )
+                    && !self.lunar_build_order.contains(&Some(building))
+                {
+                    if let Some(slot) =
+                        self.lunar_build_order.iter_mut().find(|slot| slot.is_none())
+                    {
+                        *slot = Some(building);
+                    }
+                }
+            }
             let count = self.army.entry(unit).or_default();
             *count = count.saturating_add(1);
         }
@@ -523,5 +549,6 @@ impl Planet {
         self.army = Army::new();
         self.buy = Vec::new();
         self.is_destroyed = true;
+        self.lunar_build_order = [None; 4];
     }
 }

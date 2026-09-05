@@ -1,6 +1,71 @@
 use super::*;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
+use crate::core::units::Combat;
+use bevy::math::Vec2;
+
+#[test]
+fn world_acquisition_order_survives_reinforcement_colonization_and_resume() {
+    let mut model = started_model(2);
+    let home = model.players[0].home_planet;
+    let first = model.map.moons()[0].id;
+    let second = model
+        .map
+        .planets
+        .iter()
+        .rev()
+        .find(|planet| !planet.is_moon() && planet.controlled.is_none())
+        .unwrap()
+        .id;
+    for (index, (destination, objective)) in
+        [(first, Icon::Attack), (second, Icon::Colonize), (first, Icon::Deploy)]
+            .into_iter()
+            .enumerate()
+    {
+        let target = model.map.get_mut(destination);
+        if index < 2 {
+            target.army.clear();
+        }
+        let army = Army::from([(Unit::Ship(Ship::LightFighter), 1), (Unit::colony_ship(), 1)]);
+        let mut mission = Mission::new_with_id(
+            index as u64 + 1,
+            model.turn as usize,
+            1,
+            model.map.get(home),
+            model.map.get(destination),
+            objective,
+            army,
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = model.map.get(destination).position;
+        model.missions.push(mission);
+        empty_turn(&mut model);
+    }
+    assert_eq!(model.map.get(first).controlled, Some(1));
+    assert_eq!(model.map.get(second).owned, Some(1));
+    assert_eq!(model.players[0].world_acquisition_order, vec![home, first, second]);
+    // Moving between the owned and controlled groups preserves first acquisition.
+    model.map.get_mut(second).abandon();
+    model.map.get_mut(second).army.insert(Unit::colony_ship(), 1);
+    apply_colonize(&mut model, 1, second).unwrap();
+    model.players[0].reports.clear();
+    let loaded = PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
+    assert_eq!(loaded.state.players[0].world_acquisition_order, vec![home, first, second]);
+}
+
+#[test]
+fn invalid_world_acquisition_histories_are_rejected() {
+    let model = started_model(2);
+    let home = model.players[0].home_planet;
+    for history in [vec![], vec![home, home], vec![home, usize::MAX]] {
+        let mut invalid = model.clone();
+        invalid.players[0].world_acquisition_order = history;
+        assert!(invalid.validate().is_err());
+    }
+}
 
 /// Creates and starts a deterministic model for unit tests.
 fn started_model(player_count: u8) -> GameModel {
@@ -631,6 +696,173 @@ fn resolution_completes_game() {
     assert!(result.finished);
     assert_eq!(result.winner, Some(1));
     assert_eq!(model.status, MatchStatus::Finished);
+}
+
+fn give_territory(model: &mut GameModel, owner: PlayerId, count: usize) {
+    let homes = model.players.iter().map(|player| player.home_planet).collect::<HashSet<_>>();
+    let home = model.player(owner).unwrap().home_planet;
+    model.map.get_mut(home).controlled = Some(owner);
+    let ids = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && !homes.contains(&planet.id))
+        .map(|planet| planet.id)
+        .take(count - 1)
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), count - 1);
+    for id in ids {
+        model.map.get_mut(id).controlled = Some(owner);
+    }
+}
+
+fn empty_turn(model: &mut GameModel) -> TurnResult {
+    let submissions = model
+        .players
+        .iter()
+        .filter(|player| !player.spectator)
+        .map(|player| TurnSubmission::new(player.id, model.turn, vec![]))
+        .collect::<Vec<_>>();
+    resolve_turn(model, &submissions).unwrap()
+}
+
+#[test]
+fn territory_target_uses_starting_players_and_rounds_up() {
+    for (players, expected) in [(2, 15), (3, 20), (4, 25)] {
+        let mut model = started_model(players);
+        assert_eq!(model.planets_to_win(), expected);
+        model.players[0].spectator = true;
+        let id = model.players[0].home_planet;
+        model.map.get_mut(id).is_destroyed = true;
+        assert_eq!(model.planets_to_win(), expected);
+    }
+    let mut model = started_model(4);
+    model.map.planets =
+        model.map.planets.into_iter().filter(|planet| !planet.is_moon()).take(30).collect();
+    assert_eq!(model.planets_to_win(), 19);
+}
+
+#[test]
+fn territory_wins_on_threshold_without_eliminating_opponents_and_survives_save() {
+    for players in 2..=4 {
+        let mut model = started_model(players);
+        let owner = u64::from(players); // Winner must not default to the first surviving player.
+        let target = model.planets_to_win();
+        give_territory(&mut model, owner, target - 1);
+        assert!(!empty_turn(&mut model).finished);
+        give_territory(&mut model, owner, target);
+        let result = empty_turn(&mut model);
+        assert_eq!(result.winner, Some(owner));
+        assert!(result.finished);
+        assert!(model.players.iter().all(|player| player.spectator));
+        assert!(model.players.iter().all(|player| player.owns(model.map.get(player.home_planet))));
+        let loaded =
+            PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
+        assert_eq!(loaded.state.winner(), Some(owner));
+    }
+}
+
+#[test]
+fn moons_destroyed_worlds_and_eliminated_empires_cannot_supply_victory() {
+    let mut model = started_model(2);
+    let target = model.planets_to_win();
+    give_territory(&mut model, 2, target - 1);
+    for moon in model.map.planets.iter_mut().filter(|planet| planet.is_moon()) {
+        moon.controlled = Some(2);
+    }
+    assert_eq!(model.territorial_winner(), None);
+    give_territory(&mut model, 2, target);
+    let id = model
+        .map
+        .planets
+        .iter()
+        .find(|p| p.controlled == Some(2) && p.owned.is_none() && !p.is_moon())
+        .unwrap()
+        .id;
+    model.map.get_mut(id).is_destroyed = true;
+    assert_eq!(model.territorial_winner(), None);
+    model.map.get_mut(id).is_destroyed = false;
+    let home = model.players[1].home_planet;
+    model.map.get_mut(home).owned = None;
+    model.players[1].spectator = true;
+    assert_eq!(empty_turn(&mut model).winner, Some(1));
+}
+
+#[test]
+fn accelerated_arrival_resolves_on_the_displayed_turn() {
+    let mut model = started_model(2);
+    let origin = model.players[0].home_planet;
+    let destination =
+        model.map.planets.iter().find(|p| !p.is_moon() && p.controlled.is_none()).unwrap().id;
+    model.map.get_mut(origin).position = Vec2::ZERO;
+    let unit = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(destination).position = Vec2::X * Planet::SIZE * (unit.speed() * 8.0 + 1.4);
+    model.missions.push(Mission::new_with_id(
+        1,
+        1,
+        1,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        Army::from([(unit, 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    ));
+    for remaining in (1..=4).rev() {
+        assert_eq!(model.missions[0].duration(&model.map), remaining);
+        empty_turn(&mut model);
+        if remaining > 1 {
+            assert_eq!(model.map.get(destination).controlled, None);
+            model = PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap())
+                .unwrap()
+                .state;
+        }
+    }
+    assert!(model.missions.is_empty());
+    assert_eq!(model.map.get(destination).controlled, Some(1));
+}
+
+#[test]
+fn territorial_victory_waits_for_all_arriving_attacks() {
+    for take_home in [false, true] {
+        let mut model = started_model(2);
+        let target = model.planets_to_win();
+        give_territory(&mut model, 2, target);
+        assert_eq!(model.territorial_winner(), Some(2));
+        let destination = if take_home {
+            model.players[1].home_planet
+        } else {
+            model
+                .map
+                .planets
+                .iter()
+                .find(|p| !p.is_moon() && p.controlled == Some(2) && p.owned.is_none())
+                .unwrap()
+                .id
+        };
+        model.map.get_mut(destination).army.clear();
+        let origin = model.players[0].home_planet;
+        let mut mission = Mission::new_with_id(
+            1,
+            1,
+            1,
+            model.map.get(origin),
+            model.map.get(destination),
+            Icon::Attack,
+            Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = model.map.get(destination).position;
+        model.missions.push(mission);
+        let result = empty_turn(&mut model);
+        assert_eq!(result.winner, take_home.then_some(1));
+        assert_eq!(result.finished, take_home);
+    }
 }
 
 proptest::proptest! {

@@ -12,6 +12,7 @@ use strum::IntoEnumIterator;
 
 use crate::core::basis_texture::BasisTextureSettings;
 use crate::core::map::planet::PlanetKind;
+use crate::core::map::scenery::CelestialKind;
 use crate::utils::NameFromEnum;
 
 /// Image handle plus atlas metadata used by animated sprite systems.
@@ -211,6 +212,23 @@ impl WorldAssets {
             server,
             &mut self.images,
             &mut self.gameplay_handles,
+            "ambient",
+            &["wreckage"],
+        );
+        for name in ["development", "facilities", "gas-development"] {
+            let image: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.linear_filtering = true;
+                })
+                .load(format!("images/ambient/{name}.basisu.ktx2"));
+            self.gameplay_handles.push(image.clone().untyped());
+            self.images.insert(name.to_string(), image);
+        }
+        load_category(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
             "resources",
             &["turn", "owned", "metal", "crystal", "deuterium"],
         );
@@ -336,15 +354,17 @@ impl WorldAssets {
             "nebula",
             "images/ambient/nebula.basisu.ktx2",
         );
-        for index in 1..=66 {
-            let name = format!("black hole {index}");
-            load_linear_image(
-                server,
-                &mut self.images,
-                &mut self.gameplay_handles,
-                &name,
-                &format!("images/ambient/{name}.basisu.ktx2"),
-            );
+        for kind in CelestialKind::ALL {
+            for index in 1..=kind.frame_count() {
+                let name = format!("{} {index}", kind.name());
+                load_linear_image(
+                    server,
+                    &mut self.images,
+                    &mut self.gameplay_handles,
+                    &name,
+                    &format!("images/ambient/{name}.basisu.ktx2"),
+                );
+            }
         }
 
         for index in 0..65 {
@@ -489,13 +509,6 @@ impl FromWorld for WorldAssets {
             assets.menu_handles.push(handle.clone().untyped());
             assets.fonts.insert(name.to_string(), handle);
         }
-        load_category(
-            &server,
-            &mut assets.images,
-            &mut assets.menu_handles,
-            "icons",
-            &["mute", "no-music", "sound"],
-        );
         load_category(&server, &mut assets.images, &mut assets.menu_handles, "bg", &["menu"]);
         load_category(
             &server,

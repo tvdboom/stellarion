@@ -34,6 +34,15 @@ pub const SHIELD_COLOR: Color = Color::srgb_u8(0, 255, 255);
 pub const HEALTH_COLOR: Color = Color::srgb_u8(102, 224, 170);
 /// Map color used for the local player's ownership.
 pub const OWN_COLOR: Color = Color::srgb_u8(102, 128, 255);
+/// Accent for the local player's home planet in map and HUD labels.
+pub const HOME_PLANET_COLOR: Color = Color::srgb_u8(235, 199, 120);
+/// Crown silhouette in normalized coordinates, with Y pointing up.
+#[cfg(feature = "app")]
+pub(crate) const HOME_CROWN_VERTICES: [[f32; 2]; 7] =
+    [[0.12, 0.0], [0.88, 0.0], [1.0, 1.0], [0.75, 0.45], [0.5, 1.0], [0.25, 0.45], [0.0, 1.0]];
+/// Triangulation shared by the map and HUD crown renderers.
+#[cfg(feature = "app")]
+pub(crate) const HOME_CROWN_INDICES: [u32; 15] = [0, 1, 3, 1, 2, 3, 0, 3, 5, 3, 4, 5, 0, 5, 6];
 /// Map color used for enemy ownership.
 pub const ENEMY_COLOR: Color = Color::srgb_u8(255, 64, 32);
 
@@ -55,13 +64,13 @@ pub const SILO_CAPACITY_FACTOR: usize = 10;
 /// Probe capacity granted per shipyard production level.
 pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
 /// Planetary-shield strength granted per building level.
-pub const PS_SHIELD_PER_LEVEL: usize = 100;
+pub const PS_SHIELD_PER_LEVEL: usize = 250;
 /// Fraction of owned structures removable per demolition-nexus level.
 pub const NEXUS_FACTOR: f32 = 0.1;
-/// Sensor-phalanx range measured in planet-size units.
-pub const PHALANX_DISTANCE: f32 = 0.8;
-/// Orbital-radar range measured in planet-size units.
-pub const RADAR_DISTANCE: f32 = 1.0;
+/// Sensor-phalanx range granted per building level, measured in AU (planet-size units).
+pub const PHALANX_DISTANCE: f32 = 1.0;
+/// Orbital-radar range granted per building level, measured in AU (planet-size units).
+pub const RADAR_DISTANCE: f32 = 1.2;
 /// Hull points repaired by one crawler after each round.
 pub const CRAWLER_HEALING_PER_ROUND: usize = 50;
 

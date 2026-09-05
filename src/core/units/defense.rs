@@ -133,16 +133,16 @@ impl Price for Defense {
     /// Returns the resource cost of producing this unit.
     fn price(&self) -> Resources {
         match self {
-            Defense::Crawler => Resources::new(25, 0, 0),
-            Defense::RocketLauncher => Resources::new(25, 0, 0),
-            Defense::LightLaser => Resources::new(30, 5, 0),
-            Defense::HeavyLaser => Resources::new(45, 10, 0),
-            Defense::GaussCannon => Resources::new(80, 80, 0),
-            Defense::IonCannon => Resources::new(130, 130, 80),
-            Defense::PlasmaTurret => Resources::new(220, 140, 140),
+            Defense::Crawler => Resources::new(30, 0, 0),
+            Defense::RocketLauncher => Resources::new(30, 0, 0),
+            Defense::LightLaser => Resources::new(30, 10, 0),
+            Defense::HeavyLaser => Resources::new(50, 10, 0),
+            Defense::GaussCannon => Resources::new(100, 90, 0),
+            Defense::IonCannon => Resources::new(120, 100, 40),
+            Defense::PlasmaTurret => Resources::new(200, 130, 110),
             Defense::SpaceDock => Resources::new(1000, 750, 650),
             Defense::AntiballisticMissile => Resources::new(50, 0, 20),
-            Defense::InterplanetaryMissile => Resources::new(105, 20, 100),
+            Defense::InterplanetaryMissile => Resources::new(110, 20, 100),
         }
     }
 }
@@ -189,7 +189,7 @@ impl Combat for Defense {
             Defense::HeavyLaser => 20,
             Defense::GaussCannon => 80,
             Defense::IonCannon => 100,
-            Defense::PlasmaTurret => 120,
+            Defense::PlasmaTurret => 150,
             Defense::SpaceDock => 150,
             Defense::AntiballisticMissile => 0,
             Defense::InterplanetaryMissile => 800,
@@ -226,7 +226,7 @@ impl Combat for Defense {
     /// Returns the movement or animation speed represented by this value.
     fn speed(&self) -> f32 {
         match self {
-            Defense::InterplanetaryMissile => 3.,
+            Defense::InterplanetaryMissile => 4.,
             _ => 0.,
         }
     }

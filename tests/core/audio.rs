@@ -87,9 +87,390 @@ fn mission_launch_confirmation_is_considerably_attenuated() {
 }
 
 #[test]
+fn master_volume_preserves_the_mix_and_zero_is_silent() {
+    let explosion = PlayAudioMsg::new("large explosion");
+    assert_eq!(explosion.volume, -18.0);
+    for name in ["explosion", "short explosion", "death ray"] {
+        assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
+    }
+    for name in ["horn", "repair", "victory", "draw", "defeat"] {
+        assert_eq!(PlayAudioMsg::new(name).volume, -12.0);
+    }
+    let music = PlayAudioMsg::new("music").background();
+    for level in [1.0, 0.5, 0.25] {
+        let mixed = output_volume(explosion.volume, level);
+        assert!((mixed - output_volume(music.volume, level) - 12.0).abs() < 0.001);
+    }
+    assert!((output_volume(0.0, 0.5) + 6.0206).abs() < 0.001);
+    for level in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert_eq!(output_volume(explosion.volume, level), -60.0);
+    }
+    assert_eq!(output_volume(explosion.volume, 2.0), explosion.volume);
+}
+
+#[test]
+fn settings_without_a_volume_field_keep_the_default_mix() {
+    let mut json = serde_json::to_value(Settings::default()).unwrap();
+    json.as_object_mut().unwrap().remove("volume");
+    json.as_object_mut().unwrap().remove("unmuted_volume");
+    json.as_object_mut().unwrap().remove("unmuted_audio");
+    let settings: Settings = serde_json::from_value(json).unwrap();
+    assert_eq!(settings.volume, 1.0);
+    assert_eq!(settings.restored_audio_mode(), AudioState::NoMusic);
+}
+
+#[test]
+fn mute_toggle_restores_previous_mode_and_volume_through_playback_system() {
+    for mode in [AudioState::NoMusic, AudioState::Sound] {
+        let mut app = App::new();
+        app.insert_resource(Settings {
+            audio: mode,
+            volume: 0.37,
+            ..default()
+        })
+        .insert_resource(State::new(GameState::Playing))
+        .init_resource::<NextState<AudioState>>()
+        .add_message::<ChangeAudioMsg>()
+        .add_message::<PlayAudioMsg>()
+        .add_message::<PauseAudioMsg>()
+        .add_message::<StopAudioMsg>()
+        .add_message::<MuteAudioMsg>()
+        .add_systems(Update, update_audio);
+        for _ in 0..2 {
+            app.world_mut().write_message(ChangeAudioMsg(None));
+            app.update();
+            let muted = app.world().resource::<Settings>();
+            assert_eq!(muted.audio, AudioState::Mute);
+            assert_eq!(muted.volume, 0.0);
+            // Reapplying mute must not overwrite the remembered level.
+            app.world_mut().write_message(ChangeAudioMsg(Some(AudioState::Mute)));
+            app.update();
+            app.world_mut().write_message(ChangeAudioMsg(None));
+            app.update();
+            let restored = app.world().resource::<Settings>();
+            assert_eq!(restored.audio, mode);
+            assert_eq!(restored.volume, 0.37);
+        }
+    }
+}
+
+#[test]
+fn volume_arrow_keys_step_clamp_and_restore_audio_mode() {
+    let mut app = App::new();
+    app.insert_resource(Settings {
+        audio: AudioState::NoMusic,
+        volume: 0.37,
+        ..default()
+    })
+    .init_resource::<ButtonInput<KeyCode>>()
+    .insert_resource(State::new(GameState::Playing))
+    .init_resource::<NextState<AudioState>>()
+    .add_message::<ChangeAudioMsg>()
+    .add_message::<PlayAudioMsg>()
+    .add_message::<PauseAudioMsg>()
+    .add_message::<StopAudioMsg>()
+    .add_message::<MuteAudioMsg>()
+    .add_systems(Update, (toggle_audio, update_audio).chain());
+    let press = |app: &mut App, keys: &[KeyCode]| {
+        let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keyboard.reset_all();
+        for key in keys {
+            keyboard.press(*key);
+        }
+        app.update();
+    };
+    press(&mut app, &[KeyCode::ArrowUp]);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.47);
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+    app.update();
+    assert_eq!(app.world().resource::<Settings>().volume, 0.47, "holding does not repeat");
+    press(&mut app, &[KeyCode::ControlLeft, KeyCode::ArrowUp]);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.47);
+    press(&mut app, &[KeyCode::ArrowDown]);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.37);
+    for _ in 0..12 {
+        press(&mut app, &[KeyCode::ArrowUp]);
+    }
+    assert_eq!(app.world().resource::<Settings>().volume, 1.0);
+    for _ in 0..10 {
+        press(&mut app, &[KeyCode::ArrowDown]);
+    }
+    assert_eq!(app.world().resource::<Settings>().volume, 0.0);
+    assert_eq!(app.world().resource::<Settings>().audio, AudioState::Mute);
+    press(&mut app, &[KeyCode::ArrowDown]);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.0);
+    press(&mut app, &[KeyCode::ArrowUp]);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.1);
+    assert_eq!(app.world().resource::<Settings>().audio, AudioState::NoMusic);
+}
+
+#[test]
+fn muted_preferences_remember_the_mode_and_level_after_reload() {
+    let mut settings = Settings {
+        audio: AudioState::Sound,
+        volume: 0.62,
+        ..default()
+    };
+    settings.set_audio_mode(AudioState::Mute);
+    let mut loaded: Settings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    loaded.set_audio_mode(loaded.restored_audio_mode());
+    assert_eq!(loaded.audio, AudioState::Sound);
+    assert_eq!(loaded.volume, 0.62);
+}
+
+/// Runs the real hover popup and slider against pointer input on a small viewport.
+fn volume_frame(
+    context: &egui::Context,
+    settings: &mut Settings,
+    events: Vec<egui::Event>,
+) -> (egui::Rect, Option<egui::Rect>, egui::CursorIcon) {
+    volume_frame_in_state(context, settings, events, false)
+}
+
+fn volume_frame_in_state(
+    context: &egui::Context,
+    settings: &mut Settings,
+    events: Vec<egui::Event>,
+    in_combat: bool,
+) -> (egui::Rect, Option<egui::Rect>, egui::CursorIcon) {
+    let mut button_rect = egui::Rect::NOTHING;
+    let mut slider_rect = None;
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 240.0),
+            )),
+            events,
+            ..default()
+        },
+        |ui| {
+            let context = ui.ctx();
+            scroll_volume(context, settings, in_combat);
+            egui::Area::new(egui::Id::new("test audio"))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+                .show(context, |ui| {
+                    let button = audio_mode_button(ui, settings.audio);
+                    button_rect = button.rect;
+                    slider_rect = volume_popover(&button, settings).map(|response| response.rect);
+                });
+        },
+    );
+    output.textures_delta.clear();
+    (button_rect, slider_rect, output.platform_output.cursor_icon)
+}
+
+#[test]
+fn hover_volume_popup_allows_dragging_and_closes_after_leaving() {
+    let context = egui::Context::default();
+    let mut settings = Settings {
+        audio: AudioState::Sound,
+        volume: 0.73,
+        ..default()
+    };
+    settings.set_audio_mode(AudioState::Mute);
+    for _ in 0..3 {
+        volume_frame(&context, &mut settings, vec![]);
+    }
+    let (button, _, _) = volume_frame(&context, &mut settings, vec![]);
+    let hover = vec![egui::Event::PointerMoved(button.center())];
+    volume_frame(&context, &mut settings, hover.clone());
+    let (_, slider, _) = volume_frame(&context, &mut settings, hover);
+    let slider = slider.expect("hover opens the volume popup");
+    assert!(slider.left() >= 0.0 && slider.right() <= 320.0);
+    assert!(slider.top() >= 0.0 && slider.bottom() <= 240.0);
+
+    let middle = slider.center();
+    let (_, _, cursor) =
+        volume_frame(&context, &mut settings, vec![egui::Event::PointerMoved(middle)]);
+    assert_eq!(cursor, egui::CursorIcon::PointingHand);
+    let (_, shown, _) = volume_frame(
+        &context,
+        &mut settings,
+        vec![egui::Event::PointerButton {
+            pos: middle,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(shown.is_some());
+    assert!((settings.volume - 0.5).abs() < 0.1);
+    assert_eq!(settings.audio, AudioState::Sound, "dragging restores the pre-mute mode");
+    let outside = egui::pos2(0.0, 220.0);
+    let (_, shown, cursor) =
+        volume_frame(&context, &mut settings, vec![egui::Event::PointerMoved(outside)]);
+    assert!(shown.is_some(), "dragging beyond the popup keeps it open");
+    assert_eq!(cursor, egui::CursorIcon::PointingHand);
+    assert_eq!(settings.volume, 0.0);
+    assert_eq!(settings.audio, AudioState::Mute);
+    // Continuing the same drag above zero restores sound at the new level.
+    volume_frame(&context, &mut settings, vec![egui::Event::PointerMoved(middle)]);
+    assert_eq!(settings.audio, AudioState::Sound);
+    assert!((settings.volume - 0.5).abs() < 0.1);
+    volume_frame(&context, &mut settings, vec![egui::Event::PointerMoved(outside)]);
+    volume_frame(
+        &context,
+        &mut settings,
+        vec![egui::Event::PointerButton {
+            pos: outside,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(volume_frame(&context, &mut settings, vec![]).1.is_none());
+}
+
+#[test]
+fn hovered_volume_slider_scrolls_in_ten_percent_steps_even_during_combat() {
+    for in_combat in [false, true] {
+        for unit in [egui::MouseWheelUnit::Line, egui::MouseWheelUnit::Point] {
+            let context = egui::Context::default();
+            let mut settings = Settings {
+                audio: AudioState::NoMusic,
+                volume: 0.4,
+                ..default()
+            };
+            let frame = |settings: &mut Settings, events| {
+                volume_frame_in_state(&context, settings, events, in_combat)
+            };
+            for _ in 0..3 {
+                frame(&mut settings, vec![]);
+            }
+            let (button, _, _) = frame(&mut settings, vec![]);
+            for _ in 0..2 {
+                frame(&mut settings, vec![egui::Event::PointerMoved(button.center())]);
+            }
+            let (_, slider, _) = frame(&mut settings, vec![]);
+            let middle = slider.expect("hover opens slider").center();
+            frame(&mut settings, vec![egui::Event::PointerMoved(middle)]);
+            let wheel = |amount| egui::Event::MouseWheel {
+                unit,
+                delta: egui::vec2(0.0, amount),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            };
+            // OS scroll distance does not change the ten-percentage-point step.
+            frame(&mut settings, vec![wheel(20.0)]);
+            assert_eq!(settings.volume, 0.5);
+            frame(&mut settings, vec![]);
+            assert_eq!(settings.volume, 0.5, "no repeated adjustment on the next frame");
+            for _ in 0..5 {
+                frame(&mut settings, vec![wheel(-20.0)]);
+            }
+            assert_eq!(settings.volume, 0.0);
+            assert_eq!(settings.audio, AudioState::Mute);
+            frame(&mut settings, vec![wheel(-1.0)]);
+            assert_eq!(settings.volume, 0.0);
+            frame(&mut settings, vec![wheel(1.0)]);
+            assert_eq!(settings.volume, 0.1);
+            assert_eq!(settings.audio, AudioState::NoMusic);
+            for _ in 0..12 {
+                frame(&mut settings, vec![wheel(1.0)]);
+            }
+            assert_eq!(settings.volume, 1.0);
+            if !in_combat {
+                frame(&mut settings, vec![egui::Event::PointerMoved(egui::pos2(0.0, 220.0))]);
+                frame(&mut settings, vec![wheel(-1.0)]);
+                assert_eq!(settings.volume, 1.0, "scrolling away from the slider is ignored");
+            }
+        }
+    }
+}
+
+#[test]
+fn combat_wheel_changes_volume_once_and_popup_fades_after_scrolling() {
+    let context = egui::Context::default();
+    let mut settings = Settings {
+        audio: AudioState::Sound,
+        volume: 0.4,
+        ..default()
+    };
+    let wheel = |amount| egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, amount),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let frame = |time, events, in_combat, settings: &mut Settings| {
+        let mut popup = false;
+        let mut opacity = 0.0;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                scroll_volume(ui.ctx(), settings, in_combat);
+                // egui can repeat a layout pass in the same frame.
+                scroll_volume(ui.ctx(), settings, in_combat);
+                opacity = scroll_volume_opacity(ui.ctx());
+                let button = audio_mode_button(ui, settings.audio);
+                popup = volume_popover(&button, settings).is_some();
+            },
+        );
+        output.textures_delta.clear();
+        (popup, opacity)
+    };
+    frame(0.0, vec![wheel(1.0)], false, &mut settings);
+    assert_eq!(settings.volume, 0.4, "map/menu scrolling does not adjust volume");
+    assert_eq!(frame(0.1, vec![wheel(1.0)], true, &mut settings), (true, 1.0));
+    assert!((settings.volume - 0.5).abs() < 0.001);
+    frame(0.2, vec![wheel(-1.0); 10], true, &mut settings);
+    assert_eq!(settings.audio, AudioState::Mute);
+    assert_eq!(settings.volume, 0.0);
+    frame(0.3, vec![wheel(1.0)], true, &mut settings);
+    assert_eq!(settings.audio, AudioState::Sound);
+    assert!((settings.volume - 0.1).abs() < 0.001);
+    assert_eq!(frame(0.8, vec![], true, &mut settings), (true, 1.0));
+    let (shown, opacity) = frame(1.4, vec![], true, &mut settings);
+    assert!(shown);
+    assert!((opacity - 0.5).abs() < 0.01);
+    assert_eq!(frame(1.7, vec![], true, &mut settings), (false, 0.0));
+    frame(1.8, vec![wheel(1.0); 12], true, &mut settings);
+    assert_eq!(settings.volume, 1.0);
+    assert_eq!(frame(1.9, vec![], false, &mut settings), (false, 0.0));
+}
+
+#[test]
+fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
+    for scale in [1.0, 1.25, 2.0] {
+        for size in [egui::vec2(400.0, 400.0), egui::vec2(1280.0, 720.0)] {
+            let context = egui::Context::default();
+            context.set_pixels_per_point(scale);
+            let mut settings = Settings::default();
+            for mode in [AudioState::Mute, AudioState::NoMusic, AudioState::Sound] {
+                settings.audio = mode;
+                let mut button = egui::Rect::NOTHING;
+                for _ in 0..4 {
+                    let mut output = context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                            ..default()
+                        },
+                        |ui| button = audio_controls(ui.ctx(), &mut settings).rect,
+                    );
+                    output.textures_delta.clear();
+                }
+                assert!((button.top() - 20.0).abs() <= 1.0);
+                assert!((size.x - button.right() - 20.0).abs() <= 1.0);
+                assert_eq!(button.size(), egui::vec2(32.0, 32.0));
+            }
+        }
+    }
+}
+
+#[test]
 fn celestial_ambience_requires_both_close_zoom_and_proximity() {
     let landmark = Vec2::new(1_000.0, 500.0);
-    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_FULL_ZOOM, landmark), -24.0);
+    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_FULL_ZOOM, landmark), -21.0);
     assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_SILENT_ZOOM, landmark), -60.0);
     assert_eq!(
         celestial_ambience_volume(
@@ -135,11 +516,49 @@ fn repeated_clicks_are_queued_even_after_the_previous_instance_is_gone() {
     app.update();
     assert_eq!(app.world().resource::<PlayingAudio>().0["ui-click"].len(), 2);
 
-    // Without a playback device these handles have no AudioInstance, just
-    // like handles removed by Kira after a short effect has finished.
+    // Discard the device queue to model completed instances: neither the
+    // channel nor the asset store knows about the previous handles anymore.
+    app.insert_resource(Audio::default());
     app.world_mut().write_message(SoundEffect::Button.request());
     app.update();
     assert_eq!(app.world().resource::<PlayingAudio>().0["ui-click"].len(), 1);
+}
+
+#[test]
+fn combat_sound_bursts_are_capped_across_frames_and_release_finished_slots() {
+    let mut app = audio_app();
+    let effects = ["explosion", "short explosion", "large explosion", "death ray", "repair"];
+    for _ in 0..3 {
+        for name in effects {
+            for _ in 0..100 {
+                app.world_mut().write_message(PlayAudioMsg::new(name));
+            }
+        }
+        app.update();
+        for name in effects {
+            assert_eq!(app.world().resource::<PlayingAudio>().0[name].len(), 10);
+        }
+    }
+
+    // An unrelated cue still plays when all combat effects are at capacity.
+    app.world_mut().resource_mut::<Settings>().audio = AudioState::Sound;
+    app.world_mut().write_message(SoundEffect::Button.request());
+    app.world_mut().write_message(PlayAudioMsg::new("music").background());
+    app.update();
+    assert_eq!(app.world().resource::<PlayingAudio>().0["ui-click"].len(), 1);
+    assert_eq!(app.world().resource::<PlayingAudio>().0["music"].len(), 1);
+
+    // Model Kira having consumed the queue and removed completed instances.
+    app.insert_resource(Audio::default());
+    for name in effects {
+        for _ in 0..3 {
+            app.world_mut().write_message(PlayAudioMsg::new(name));
+        }
+    }
+    app.update();
+    for name in effects {
+        assert_eq!(app.world().resource::<PlayingAudio>().0[name].len(), 3);
+    }
 }
 
 #[test]

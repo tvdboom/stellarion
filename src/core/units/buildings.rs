@@ -93,7 +93,7 @@ impl Description for Building {
                 "The Planetary Shield is a defensive structure with high shield power but no \
                 damage. Enemy ships must first destroy the Planetary Shield before they can \
                 attack the planet's buildings or defenses (not ships!). Each level of the \
-                building increases the shield with 100. This shield does not regenerate after \
+                building increases the shield with 250. This shield does not regenerate after \
                 every combat round. Interplanetary Missiles ignore the Planetary Shield."
             },
             Building::Reactor => {
@@ -104,7 +104,7 @@ impl Description for Building {
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
-                A Phalanx of level N scans the space at 0.8 * N AU from the planet, and it only \
+                A Phalanx of level N scans the space at 1.0 * N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
                 revealed. Spying missions are not detected by the Phalanx."
             },
@@ -121,7 +121,7 @@ impl Description for Building {
             },
             Building::OrbitalRadar => {
                 "The Orbital Radar scans the universe for enemy fleets. A Radar of level N reveals \
-                missions at N AU from the moon, and it only sees units with production <= N. It \
+                missions at 1.2 * N AU from the moon, and it only sees units with production <= N. It \
                 works similar to the Sensor Phalanx, but has longer reach and detects any mission \
                 in range (including Spy and Missile Strike), and not only those targeting the moon. \
                 The Orbital radar can only be build on a moon."
@@ -135,16 +135,16 @@ impl Price for Building {
     fn price(&self) -> Resources {
         match self {
             Building::LunarBase => Resources::new(200, 200, 200),
-            Building::DemolitionNexus => Resources::new(300, 50, 50),
+            Building::DemolitionNexus => Resources::new(200, 50, 50),
             Building::MetalMine => Resources::new(0, 200, 200),
             Building::CrystalMine => Resources::new(300, 0, 200),
             Building::DeuteriumSynthesizer => Resources::new(300, 200, 0),
             Building::Shipyard => Resources::new(400, 200, 100),
             Building::Factory => Resources::new(300, 200, 100),
-            Building::MissileSilo => Resources::new(300, 300, 300),
+            Building::MissileSilo => Resources::new(200, 200, 200),
             Building::PlanetaryShield => Resources::new(200, 100, 200),
-            Building::Reactor => Resources::new(250, 150, 0),
-            Building::SensorPhalanx => Resources::new(400, 300, 300),
+            Building::Reactor => Resources::new(200, 100, 0),
+            Building::SensorPhalanx => Resources::new(250, 200, 150),
             Building::JumpGate => Resources::new(500, 300, 500),
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),

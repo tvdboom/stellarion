@@ -24,7 +24,7 @@ use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
 
 /// Current JSON persistence schema version.
-pub const PERSISTED_SCHEMA_VERSION: u32 = 1;
+pub const PERSISTED_SCHEMA_VERSION: u32 = 3;
 
 /// Supported number of players in a multiplayer game.
 pub const PLAYER_COUNT_RANGE: std::ops::RangeInclusive<u8> = 2..=MAX_MULTIPLAYER_PLAYERS;
@@ -109,7 +109,7 @@ pub enum MatchStatus {
     Lobby,
     /// Players are submitting simultaneous turns.
     Active,
-    /// At most one empire remains.
+    /// Elimination or territorial control has ended the match.
     Finished,
 }
 
@@ -133,6 +133,49 @@ pub struct GameModel {
 }
 
 impl GameModel {
+    /// Fixed territorial target, based on all non-moon worlds and starting player slots.
+    pub fn planets_to_win(&self) -> usize {
+        let planets = self.map.planets.iter().filter(|planet| !planet.is_moon()).count();
+        let players = u128::from(self.rules.player_count.max(1));
+        ((planets as u128 * (players + 1)).div_ceil(2 * players)) as usize
+    }
+
+    /// Returns a surviving empire that has reached the territorial target.
+    pub fn territorial_winner(&self) -> Option<PlayerId> {
+        if self.rules.practice_mode {
+            return None;
+        }
+        let target = self.planets_to_win();
+        self.players.iter().find_map(|player| {
+            (player.owns(self.map.get(player.home_planet))
+                && self
+                    .map
+                    .planets
+                    .iter()
+                    .filter(|planet| {
+                        !planet.is_moon()
+                            && !planet.is_destroyed
+                            && planet.controlled == Some(player.id)
+                    })
+                    .count()
+                    >= target)
+                .then_some(player.id)
+        })
+    }
+
+    /// Winner of a completed match, or none for an active match or mutual elimination.
+    pub fn winner(&self) -> Option<PlayerId> {
+        if self.status != MatchStatus::Finished {
+            return None;
+        }
+        self.territorial_winner().or_else(|| {
+            let mut survivors =
+                self.players.iter().filter(|player| player.owns(self.map.get(player.home_planet)));
+            let first = survivors.next()?;
+            survivors.next().is_none().then_some(first.id)
+        })
+    }
+
     /// Generates a complete lobby snapshot and deterministic home planets.
     pub fn new(seed: [u8; 32], rules: GameRules) -> Result<Self, GameError> {
         rules.validate()?;
@@ -225,6 +268,18 @@ impl GameModel {
         let planet_ids = self.map.planets.iter().map(|planet| planet.id).collect::<HashSet<_>>();
 
         for player in &self.players {
+            let mut acquired = HashSet::new();
+            if player.world_acquisition_order.first() != Some(&player.home_planet)
+                || player
+                    .world_acquisition_order
+                    .iter()
+                    .any(|id| !planet_ids.contains(id) || !acquired.insert(*id))
+            {
+                return Err(GameError::MalformedState(format!(
+                    "player {} has an invalid world acquisition order",
+                    player.id
+                )));
+            }
             if player.color.is_some_and(|color| !color.is_valid()) {
                 return Err(GameError::MalformedState(format!(
                     "player {} references an unsupported color",
@@ -329,6 +384,7 @@ impl GameModel {
                 || !mission_ids.insert(mission.id)
                 || !mission.position.is_finite()
                 || !origin_references_known_players
+                || !u64::try_from(mission.travel_turns).is_ok_and(|age| age <= self.turn)
             {
                 return Err(GameError::MalformedState(format!(
                     "mission {} contains an invalid reference",
@@ -583,15 +639,7 @@ pub fn resolve_turn(
 
     advance_simulation(&mut working)?;
     working.validate()?;
-    let winner = if working.status == MatchStatus::Finished {
-        working
-            .players
-            .iter()
-            .find(|player| player.owns(working.map.get(player.home_planet)))
-            .map(|player| player.id)
-    } else {
-        None
-    };
+    let winner = working.winner();
     let result = TurnResult {
         turn: working.turn,
         finished: working.status == MatchStatus::Finished,
@@ -869,6 +917,9 @@ fn apply_colonize(
         *count = count.saturating_sub(1);
     }
     planet.colonize(player_id);
+    if let Some(player) = model.players.iter_mut().find(|player| player.id == player_id) {
+        player.record_world_acquisition(planet_id);
+    }
     Ok(())
 }
 
@@ -1191,6 +1242,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     report.destination_owned = destination.owned;
                     report.destination_controlled = destination.controlled;
                     for player in &mut model.players {
+                        if player.controls(destination) {
+                            player.record_world_acquisition(destination.id);
+                        }
                         if report.planet.controlled == Some(player.id)
                             || report.mission.owner == player.id
                         {
@@ -1225,7 +1279,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
             playing.push(player.id);
         }
     }
-    if playing.len() > 1 || (model.rules.practice_mode && playing.len() == 1) {
+    let territory_won = model.territorial_winner().is_some();
+    if !territory_won && (playing.len() > 1 || (model.rules.practice_mode && playing.len() == 1)) {
         let eliminated = model
             .players
             .iter()
@@ -1316,6 +1371,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
     }
     if destination.is_destroyed {
         mission.destination = mission.check_origin(map);
+        mission.travel_turns = 0;
         mission.objective = Icon::Deploy;
         mission.logs.push_str(&format!(
             "\n- ({turn}) Destination changed to planet {}.",

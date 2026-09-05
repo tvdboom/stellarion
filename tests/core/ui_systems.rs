@@ -1,6 +1,134 @@
 use super::*;
 use crate::core::units::ships::Ship;
 
+#[test]
+fn world_shortcuts_follow_acquisition_order_with_home_first() {
+    let model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
+    let mut player = model.players[0].clone();
+    let mut worlds = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| planet.id != player.home_planet)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    worlds[0].name = "Zulu".into();
+    worlds[1].name = "Alpha".into();
+    worlds[2].name = "Beta".into();
+    for world in &worlds {
+        player.record_world_acquisition(world.id);
+    }
+    let expected = player.world_acquisition_order.clone();
+    worlds.push(model.map.get(player.home_planet).clone());
+    worlds.reverse();
+    worlds.sort_by_key(|planet| world_shortcut_order(planet, &player));
+    assert_eq!(worlds.iter().map(|planet| planet.id).collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
+    let mut model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let enemy_home = model.players[1].home_planet;
+    let hidden =
+        model.map.planets.iter().find(|p| !p.is_moon() && p.controlled.is_none()).unwrap().id;
+    model.map.get_mut(hidden).controlled = Some(2);
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(moon).controlled = Some(2);
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
+    let visible = Mission::new_with_id(
+        1,
+        1,
+        2,
+        model.map.get(enemy_home),
+        model.map.get(player.home_planet),
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(
+        known_planet_counts(&model.map, &player, std::slice::from_ref(&visible)).get(&2),
+        Some(&1)
+    );
+    // Unknown changes cannot update the count; it remains last-known intelligence.
+    model.map.get_mut(enemy_home).controlled = None;
+    assert_eq!(
+        known_planet_counts(&model.map, &player, std::slice::from_ref(&visible)).get(&2),
+        Some(&1)
+    );
+    model.map.get_mut(enemy_home).controlled = Some(player.id);
+    assert_eq!(
+        known_planet_counts(&model.map, &player, std::slice::from_ref(&visible)).get(&2),
+        None
+    );
+    model.map.get_mut(enemy_home).controlled = Some(2);
+    model.map.get_mut(enemy_home).is_destroyed = true;
+    assert_eq!(known_planet_counts(&model.map, &player, &[visible]).get(&2), None);
+}
+
+#[test]
+fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::{GameMembership, GameRecord};
+    let model = GameModel::new([21; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let id = GameId::new("enemy-progress");
+    for connected in [true, false] {
+        for width in [320.0, 480.0, 1280.0] {
+            let mut session = MultiplayerSession::default();
+            session.active_game = Some(GameRecord {
+                id: id.clone(),
+                code: GameCode::new("ABCDEF"),
+                revision: 0,
+                saved_at: 0,
+                max_players: 2,
+                status: MatchStatus::Active,
+                persisted: PersistedGame::new(model.clone()),
+                submitted_players: vec![],
+                members: vec![GameMembership {
+                    game_id: id.clone(),
+                    player_id: 2,
+                    user_id: UserId::new("enemy"),
+                    display_name: "An exceptionally long enemy player name".into(),
+                    is_creator: false,
+                    identity_version: 1,
+                    connected,
+                }],
+            });
+            let context = egui::Context::default();
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 360.0));
+            let mut shapes = vec![];
+            for _ in 0..3 {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(viewport),
+                        ..default()
+                    },
+                    |context| {
+                        draw_enemy_players_widget(context, &session, &player, &model.map, &[]);
+                    },
+                );
+                output.textures_delta.clear();
+                shapes = output.shapes;
+            }
+            let progress = text_rect(&shapes, "?/15");
+            assert!(viewport.contains_rect(progress), "width={width}, connected={connected}");
+            let name = text_rect(&shapes, "An exceptionally long enemy player name");
+            assert!(name.right() <= progress.left());
+            if !connected {
+                let status = text_rect(&shapes, "DISCONNECTED");
+                assert!(progress.right() <= status.left());
+                assert!(viewport.contains_rect(status));
+            }
+        }
+    }
+}
+
 fn text_rect(shapes: &[egui::epaint::ClippedShape], text: &str) -> egui::Rect {
     shapes
         .iter()
@@ -173,7 +301,7 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
         },
         |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                draw_world_shortcut(ui, &planet, fleet_color, &images, 1.0);
+                draw_world_shortcut(ui, &planet, false, fleet_color, &images, 1.0);
             });
         },
     );
@@ -202,13 +330,64 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
     let planet = Planet::new(2, "Galix".to_string(), Vec2::ZERO, false, 1.0);
     let mut output = context.run_ui(egui::RawInput::default(), |context| {
         egui::CentralPanel::default().show(context, |ui| {
-            draw_world_shortcut(ui, &planet, fleet_color, &images, 1.0);
+            draw_world_shortcut(ui, &planet, false, fleet_color, &images, 1.0);
         });
     });
     output.textures_delta.clear();
 
     assert!(image_rect(&output.shapes, mission_texture).is_none());
     assert!(!has_text(&output.shapes, "NO FLEET"));
+}
+
+#[test]
+fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
+    for scale in [0.72, 1.0] {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let mut planet =
+            Planet::new(1, "An exceptionally long home planet name".into(), Vec2::ZERO, false, 1.0);
+        planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
+        let planet_texture = egui::TextureId::User(1);
+        let fleet_texture = egui::TextureId::User(2);
+        let images = ImageIds(HashMap::from([
+            (planet.image(), planet_texture),
+            ("mission".into(), fleet_texture),
+        ]));
+        let mut row = egui::Rect::NOTHING;
+        let mut output = context.run_ui(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                ui.set_width(OWNED_WORLDS_WIDTH * scale);
+                let top = ui.cursor().min;
+                row = egui::Rect::from_min_size(
+                    top,
+                    egui::vec2(ui.available_width(), WORLD_SHORTCUT_HEIGHT * scale),
+                );
+                draw_world_shortcut(ui, &planet, true, Color32::WHITE, &images, scale);
+            });
+        });
+        output.textures_delta.clear();
+        let name = text_rect(&output.shapes, &planet.name);
+        assert!(!has_text(&output.shapes, "HOME"));
+        let home = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh)
+                    if mesh.vertices.iter().all(|v| v.color == HOME_PLANET_COLOR.to_color32()) =>
+                {
+                    Some(mesh.calc_bounds())
+                },
+                _ => None,
+            })
+            .expect("home crown");
+        let fleet = image_rect(&output.shapes, fleet_texture).unwrap();
+        assert!(row.contains_rect(home));
+        assert!(row.contains_rect(name));
+        assert!(row.contains_rect(fleet));
+        assert!(home.right() < name.left());
+        assert!((home.center().y - name.center().y).abs() < 1.0);
+        assert!(name.right() < fleet.left());
+    }
 }
 
 #[test]
@@ -724,18 +903,52 @@ fn mission_planet_hover_uses_a_units_only_panel_without_replacing_click_selectio
 }
 
 #[test]
-fn map_hover_and_click_selection_keep_the_full_planet_panel() {
-    for state in [
-        UiState {
-            planet_hover: Some(2),
-            ..default()
-        },
-        UiState {
-            planet_selected: Some(1),
-            ..default()
-        },
-    ] {
-        assert_eq!(visible_planet_panel(&state).map(|(_, mode)| mode), Some(PlanetPanelMode::Full));
+fn planet_details_follow_hover_without_pinning_the_selected_world() {
+    let mut state = UiState {
+        planet_selected: Some(1),
+        ..default()
+    };
+    assert_eq!(visible_planet_panel(&state), None);
+    for id in [1, 2] {
+        state.planet_hover = Some(id);
+        assert_eq!(visible_planet_panel(&state), Some((id, PlanetPanelMode::Full)));
+        state.planet_hover = None;
+        assert_eq!(visible_planet_panel(&state), None);
+        assert_eq!(state.planet_selected, Some(1));
+    }
+}
+
+#[test]
+fn planet_hover_switches_sides_even_with_a_selected_mission_origin() {
+    for selected in [None, Some(1), Some(2)] {
+        for units_only in [false, true] {
+            let state = UiState {
+                planet_selected: selected,
+                planet_hover: Some(2),
+                mission_planet_hover: units_only.then_some(3),
+                ..default()
+            };
+            for (cursor_x, right_side) in [(100.0, true), (611.5, false), (670.0, false)] {
+                let target = planet_hover_panel_target(&state, Some(cursor_x), 1223.0).unwrap();
+                assert_eq!(target.right_side, right_side);
+                assert_eq!(
+                    target.id,
+                    if units_only {
+                        3
+                    } else {
+                        2
+                    }
+                );
+                assert_eq!(
+                    target.mode,
+                    if units_only {
+                        PlanetPanelMode::UnitsOnly
+                    } else {
+                        PlanetPanelMode::Full
+                    }
+                );
+            }
+        }
     }
 }
 

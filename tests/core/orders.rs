@@ -6,7 +6,47 @@ use crate::core::random::DeterministicRngState;
 use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand, TurnSubmission};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Amount, Army, Combat, Unit};
+use crate::core::units::{Amount, Army, Combat, Price, Unit};
+
+#[test]
+fn construction_prices_use_multiples_of_ten() {
+    for unit in Unit::all().into_iter().flatten() {
+        let price = unit.price();
+        for amount in [price.metal, price.crystal, price.deuterium] {
+            assert_eq!(amount % 10, 0, "{unit:?} has a non-round resource cost");
+        }
+    }
+}
+
+#[test]
+fn missiles_reach_targets_between_three_and_four_au_in_one_turn_without_fuel() {
+    let mut game = game();
+    let origin_id = game.players[0].home_planet;
+    let destination_id = game.players[1].home_planet;
+    game.map.get_mut(origin_id).position = bevy::math::Vec2::ZERO;
+    // Arrival uses the distance to the planet's edge (center distance minus 0.7 AU).
+    game.map.get_mut(destination_id).position =
+        bevy::math::Vec2::X * crate::core::map::planet::Planet::SIZE * 4.5;
+    let mut mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        game.map.get(origin_id),
+        game.map.get(destination_id),
+        Icon::MissileStrike,
+        Army::from([(Unit::interplanetary_missile(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert!(mission.distance(&game.map) > 3.0);
+    assert!(mission.distance(&game.map) < 4.0);
+    assert_eq!(mission.duration(&game.map), 1);
+    assert_eq!(mission.fuel_consumption(&game.map), 0);
+    mission.advance(&game.map);
+    assert_eq!(mission.distance(&game.map), 0.0);
+}
 
 fn game() -> GameModel {
     let mut game = GameModel::new([7; 32], GameRules::default()).unwrap();

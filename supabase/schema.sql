@@ -294,7 +294,8 @@ begin
     v_planets := p_persisted #> '{state,map,planets}';
     v_missions := p_persisted #> '{state,missions}';
 
-    if v_schema is distinct from 1 then
+    -- Version 3 also persists each player's first world acquisition order for the HUD.
+    if v_schema is distinct from 3 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:schema_version';
     end if;
     if p_max_players is null

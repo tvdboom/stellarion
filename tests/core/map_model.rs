@@ -4,14 +4,43 @@ use rand_chacha::ChaCha8Rng;
 use super::*;
 
 #[test]
-fn destroyed_worlds_use_the_destroyed_icon() {
-    for moon in [false, true] {
+fn lunar_first_completions_survive_saves_and_upgrades() {
+    use crate::core::units::{buildings::Building, Unit};
+    let mut moon = Planet::new(1, "Moon".into(), Vec2::ZERO, true, 1.0);
+    moon.buy = vec![Unit::Building(Building::LunarBase), Unit::Building(Building::Shipyard)];
+    assert_eq!(moon.lunar_build_order, [None; 4]);
+    moon.produce();
+    moon.buy = vec![Unit::Building(Building::LunarBase), Unit::Building(Building::OrbitalRadar)];
+    moon.produce();
+    let encoded = serde_json::to_string(&moon).unwrap();
+    let mut restored: Planet = serde_json::from_str(&encoded).unwrap();
+    restored.buy = vec![Unit::Building(Building::Laboratory)];
+    restored.produce();
+    assert_eq!(
+        restored.lunar_build_order,
+        [
+            Some(Building::LunarBase),
+            Some(Building::Shipyard),
+            Some(Building::OrbitalRadar),
+            Some(Building::Laboratory)
+        ]
+    );
+    restored.destroy();
+    assert_eq!(restored.lunar_build_order, [None; 4]);
+}
+
+#[test]
+fn destroyed_worlds_use_the_destroyed_planet_and_moon_artwork() {
+    for (moon, expected_image) in [(false, "planet0"), (true, "moon0")] {
         let mut planet = Planet::new(1, "Masduk".to_string(), Vec2::ZERO, moon, 1.0);
-        assert_ne!(planet.image(), "destroy");
+        assert_ne!(planet.image(), expected_image);
 
         planet.destroy();
 
-        assert_eq!(planet.image(), "destroy");
+        assert_eq!(planet.image(), expected_image);
+        let saved = serde_json::to_string(&planet).unwrap();
+        let restored: Planet = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.image(), expected_image);
     }
 }
 

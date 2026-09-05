@@ -53,7 +53,7 @@ pub enum GameState {
 impl GameState {
     /// Returns whether this state is a modal in-game menu that blocks the map and its HUD.
     pub const fn is_modal_menu(self) -> bool {
-        matches!(self, Self::GameMenu | Self::Settings)
+        matches!(self, Self::GameMenu | Self::Settings | Self::EndGame)
     }
 }
 

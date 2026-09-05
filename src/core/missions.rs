@@ -30,9 +30,11 @@ pub(crate) enum MissionRouteStyle {
     Standard,
     /// A one-turn, fuel-free jump between two gates.
     JumpGate,
-    /// An interplanetary missile strike.
-    MissileStrike,
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/missions_movement.rs"]
+mod movement_tests;
 
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 /// Bevy resource containing the selected player's currently visible missions.
@@ -85,12 +87,18 @@ impl Description for BombingRaid {
             BombingRaid::None => "No bombing raid.",
             BombingRaid::Economic => {
                 "Bombers target resource production buildings: Metal Mine, Crystal Mine and \
-                Deuterium Synthesizer."
+                Deuterium Synthesizer. Once per battle, after the first round ending with the \
+                Planetary Shield down, each surviving Bomber has one 10% chance to destroy a \
+                level. Targets are chosen randomly, with at most 3 levels lost per building \
+                and 9 in total."
             },
             BombingRaid::Industrial => {
                 "Bombers target unit production buildings: Shipyard, Factory and Missile Silo. \
                 Reducing a Silo's level does not destroy the enemy's missiles that surpass the \
-                new capacity limit."
+                new capacity limit. Once per battle, after the first round ending with the \
+                Planetary Shield down, each surviving Bomber has one 10% chance to destroy a \
+                level. Targets are chosen randomly, with at most 3 levels lost per building \
+                and 9 in total."
             },
         }
     }
@@ -115,6 +123,8 @@ pub struct Mission {
     pub destination: PlanetId,
     /// Turn on which the mission was dispatched.
     pub send: usize,
+    /// Completed movement turns on this leg; acceleration resets on a new leg.
+    pub travel_turns: usize,
     /// Current world-space position.
     pub position: Vec2,
     /// Strategic objective applied on arrival.
@@ -186,6 +196,7 @@ impl Mission {
             origin_army: origin.army.clone(),
             destination: destination.id,
             send: turn,
+            travel_turns: 0,
             position: {
                 // Start at the edge of the origin planet
                 let direction = (-origin.position + destination.position).normalize_or_zero();
@@ -260,9 +271,7 @@ impl Mission {
     /// Returns the route treatment visible to this player.
     #[cfg(feature = "app")]
     pub(crate) fn route_style(&self, player: &Player) -> MissionRouteStyle {
-        if self.objective == Icon::MissileStrike {
-            MissionRouteStyle::MissileStrike
-        } else if self.owner == player.id && self.jump_gate {
+        if self.owner == player.id && self.jump_gate {
             MissionRouteStyle::JumpGate
         } else {
             MissionRouteStyle::Standard
@@ -297,7 +306,11 @@ impl Mission {
     /// Returns the route-marker speed shared by the strategic map and mission panels.
     #[cfg(feature = "app")]
     pub(crate) fn route_animation_speed(&self) -> f64 {
-        32.0 * self.route_speed_factor()
+        if self.jump_gate {
+            300.0
+        } else {
+            32.0 * self.route_speed_factor()
+        }
     }
 
     /// Returns remaining world-space distance from the mission to its destination.
@@ -321,15 +334,9 @@ impl Mission {
             .unwrap_or(0.)
     }
 
-    /// Returns travel duration after applying ship speed and jump-gate rules.
+    /// Returns remaining travel duration, including acceleration and jump-gate rules.
     pub fn duration(&self, map: &Map) -> usize {
-        let distance = self.distance(map);
-        let speed = self.speed();
-        if speed != 0. {
-            (distance / speed).ceil() as usize
-        } else {
-            0
-        }
+        self.turns_to_destination(map)
     }
 
     /// Returns the deuterium consumed for the supplied movement distance.
@@ -358,24 +365,47 @@ impl Mission {
 
     /// Moves the mission toward its destination without overshooting it.
     pub fn advance(&mut self, map: &Map) {
+        self.position = self.next_turn_position(map);
+        self.travel_turns = self.travel_turns.saturating_add(1);
+    }
+
+    /// Returns the next turn's displacement in AU, including the final arrival snap.
+    pub fn next_turn_movement(&self, map: &Map) -> f32 {
+        self.position.distance(self.next_turn_position(map)) / Planet::SIZE
+    }
+
+    fn next_turn_position(&self, map: &Map) -> Vec2 {
         let destination = map.get(self.destination);
 
-        if self.jump_gate {
-            self.position = destination.position;
+        if self.jump_gate || (self.speed() > 0.0 && self.turns_to_destination(map) <= 1) {
+            destination.position
         } else {
             let offset = destination.position - self.position;
-            let step = self.speed() * Planet::SIZE;
+            let step = self.speed() * (1.0 + 2.0 * self.travel_turns as f32 / 3.0) * Planet::SIZE;
             if offset.length() <= step {
-                self.position = destination.position;
+                destination.position
             } else {
-                self.position += offset.normalize_or_zero() * step;
+                self.position + offset.normalize_or_zero() * step
             }
         }
     }
 
     /// Returns whole turns remaining before this mission arrives.
     pub fn turns_to_destination(&self, map: &Map) -> usize {
-        (self.distance(map) / self.speed()).ceil() as usize
+        let distance = f64::from(self.distance(map));
+        if distance == 0.0 || self.speed() == 0.0 {
+            return 0;
+        }
+        if self.jump_gate {
+            return 1;
+        }
+        // D(t) = s*t*(t+2)/3. Solve D(t+n)-D(t) for remaining turns n.
+        // Rationalizing the root avoids cancellation late in long journeys.
+        let age = self.travel_turns as f64 + 1.0;
+        let scaled = 3.0 * distance / f64::from(self.speed());
+        let remaining = scaled / ((age * age + scaled).sqrt() + age);
+        // World positions use f32; absorb only their rounding noise at whole-turn boundaries.
+        (remaining - 1e-6).ceil().max(1.0) as usize
     }
 
     /// Returns jump-gate capacity consumed by this mission's fleet.

@@ -84,6 +84,97 @@ fn deadline_covers_a_response_body_that_never_finishes() {
     assert!(matches!(result, Err(BackendError::Offline(_))));
 }
 
+/// Exercises actual refresh responses, including startup fallback and in-game rejection.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn rejected_refresh_recovers_without_hiding_other_failures() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::time::Duration;
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    for (status, body, rejected) in [
+        (400, r#"{"code":400,"msg":"Refresh token is not valid"}"#, true),
+        (400, r#"{"error_code":"refresh_token_not_found","msg":"Rejected"}"#, true),
+        (400, r#"{"code":"refresh_token_already_used","message":"Rejected"}"#, true),
+        (422, r#"{"error_code":"session_not_found","msg":"Rejected"}"#, true),
+        (400, r#"{"error_code":"session_expired","msg":"Rejected"}"#, true),
+        (
+            400,
+            r#"{"code":400,"error_code":"validation_failed","msg":"Refresh token is not valid"}"#,
+            true,
+        ),
+        (400, r#"{"error_code":"validation_failed","msg":"Invalid request body"}"#, false),
+        (400, r#"{"error_code":"unexpected_failure","msg":"Refresh token is not valid"}"#, false),
+        (400, r#"{"msg":"Invalid API key"}"#, false),
+        (429, r#"{"msg":"Refresh token is not valid"}"#, false),
+        (503, r#"{"msg":"Refresh token is not valid"}"#, false),
+    ] {
+        for startup in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut requests = vec![("/auth/v1/token?grant_type=refresh_token", status, body)];
+                if startup && rejected {
+                    requests.push(("/auth/v1/signup", 200,
+                        r#"{"user":{"id":"replacement"},"access_token":"new-access","refresh_token":"new-refresh"}"#));
+                }
+                for (path, status, body) in requests {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(line, format!("POST {path} HTTP/1.1\r\n"));
+                    let mut length = 0;
+                    loop {
+                        line.clear();
+                        assert!(reader.read_line(&mut line).unwrap() > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut payload = vec![0; length];
+                    reader.read_exact(&mut payload).unwrap();
+                    if path.contains("grant_type") {
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+                            serde_json::json!({"refresh_token": "old-refresh"})
+                        );
+                    }
+                    write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+            });
+            let backend = SupabaseBackend::new(
+                SupabaseConfig::new(format!("http://{address}"), "public-test-key").unwrap(),
+            )
+            .unwrap();
+            let session = AuthSession::new(UserId::new("original"), "old-access", "old-refresh");
+            let result = if startup {
+                runtime.block_on(backend.authenticate(Some(&session)))
+            } else {
+                runtime.block_on(backend.refresh_session(&session))
+            };
+            server.join().unwrap();
+            if rejected && startup {
+                let replacement = result.unwrap();
+                assert_eq!(replacement.user_id, UserId::new("replacement"));
+                assert_eq!(replacement.refresh_token, "new-refresh");
+            } else if rejected {
+                assert!(matches!(result, Err(BackendError::Unauthenticated)));
+            } else if status == 503 {
+                assert!(matches!(result, Err(BackendError::Offline(_))));
+            } else {
+                assert!(matches!(result, Err(BackendError::Protocol(_))));
+            }
+        }
+    }
+}
+
 use super::*;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::multiplayer::model::{BackendEvent, BackendEventKind, JoinDisposition};

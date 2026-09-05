@@ -99,7 +99,10 @@ impl Description for Ship {
                 planetary assaults. It's the only ship with Rapid Fire against the Plasma Turret. \
                 Having Bombers in an offensive mission enables bombing raids, which destabilize \
                 the enemy's economy or industrial capabilities. Bombers target the Planetary \
-                Shield (if there is one) before any other unit when bombing."
+                Shield (if there is one) before any other unit when bombing. After the first \
+                round ending with the Shield down, each surviving Bomber gets one 10% chance \
+                to destroy a level of a random building in the selected category. This raid \
+                occurs once per battle and destroys at most 3 levels per building, 9 in total."
             },
             Ship::Battleship => {
                 "The Battleship is the mean between the Cruiser and the Dreadnought. Its Rapid \
@@ -127,11 +130,11 @@ impl Price for Ship {
         match self {
             Ship::Probe => Resources::new(0, 20, 0),
             Ship::ColonyShip => Resources::new(100, 400, 200),
-            Ship::LightFighter => Resources::new(30, 15, 0),
+            Ship::LightFighter => Resources::new(30, 20, 0),
             Ship::HeavyFighter => Resources::new(60, 30, 0),
             Ship::Destroyer => Resources::new(60, 50, 20),
-            Ship::Cruiser => Resources::new(100, 90, 0),
-            Ship::Bomber => Resources::new(80, 200, 35),
+            Ship::Cruiser => Resources::new(120, 100, 20),
+            Ship::Bomber => Resources::new(80, 200, 40),
             Ship::Battleship => Resources::new(150, 170, 100),
             Ship::Dreadnought => Resources::new(250, 200, 150),
             Ship::WarSun => Resources::new(1000, 500, 250),
@@ -145,14 +148,14 @@ impl Combat for Ship {
         match self {
             Ship::Probe => 10,
             Ship::ColonyShip => 0,
-            Ship::LightFighter => 30,
+            Ship::LightFighter => 50,
             Ship::HeavyFighter => 100,
             Ship::Destroyer => 150,
             Ship::Cruiser => 350,
             Ship::Bomber => 350,
             Ship::Battleship => 500,
             Ship::Dreadnought => 700,
-            Ship::WarSun => 1000,
+            Ship::WarSun => 1400,
         }
     }
 
@@ -177,14 +180,14 @@ impl Combat for Ship {
         match self {
             Ship::Probe => 0,
             Ship::ColonyShip => 0,
-            Ship::LightFighter => 5,
+            Ship::LightFighter => 10,
             Ship::HeavyFighter => 15,
             Ship::Destroyer => 30,
             Ship::Cruiser => 70,
             Ship::Bomber => 70,
             Ship::Battleship => 90,
             Ship::Dreadnought => 100,
-            Ship::WarSun => 150,
+            Ship::WarSun => 180,
         }
     }
 

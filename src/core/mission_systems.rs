@@ -1,6 +1,6 @@
 //! Bevy mission rendering, route animation, and command submission.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::PI;
 use std::time::Duration;
 
 use bevy::prelude::*;
@@ -23,9 +23,8 @@ use crate::core::units::{Amount, Army};
 use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 
 const MISSION_ROUTE_SPACING: f32 = 52.0;
-// Three forward-facing ASCII arcs form a wave packet without relying on Unicode glyph coverage.
-// Rotating the packet into the route direction makes its motion read as a travelling wave.
-const JUMP_GATE_ROUTE_GLYPH: &str = ")))";
+// A closed ring is foreshortened along the route: it faces the travelling ship, not the camera.
+const JUMP_GATE_ROUTE_GLYPH: &str = "O";
 const MISSION_SIZE: f32 = 50.0;
 const MISSION_HOVER_SIZE: f32 = 60.0;
 const WAR_SUN_MISSION_SIZE: f32 = 50.0;
@@ -83,7 +82,7 @@ fn mission_flame_transform(size: f32, map_rotation: f32) -> Transform {
 }
 
 #[derive(Component)]
-/// One animated chevron in the hovered mission's origin or destination trail.
+/// One animated chevron or wave front in the hovered mission's route.
 pub struct MissionRouteArrowCmp {
     index: usize,
     style: MissionRouteStyle,
@@ -216,7 +215,6 @@ fn mission_route_markers(
     let spacing = match style {
         MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
         MissionRouteStyle::JumpGate => 64.0,
-        MissionRouteStyle::MissileStrike => 58.0,
     };
     // Subtract clearances before clamping: overlapping endpoints must never reverse the trail.
     let length = (route.length() - start_clearance - end_clearance).max(0.0);
@@ -231,16 +229,11 @@ fn mission_route_markers(
             }
             // Fade whole glyphs at the edges instead of squeezing or clipping them to fit.
             let fade = (distance.min(length - distance) / 18.0).clamp(0.0, 1.0);
-            let phase = (index as f32 * 0.91 + offset / spacing) * TAU;
             let (rotation, scale) = match style {
                 MissionRouteStyle::Standard => (route_rotation, Vec3::ONE),
                 MissionRouteStyle::JumpGate => {
-                    let pulse = 0.9 + 0.2 * (phase.sin() * 0.5 + 0.5);
-                    (route_rotation, Vec3::new(0.9, pulse, 1.0))
-                },
-                MissionRouteStyle::MissileStrike => {
-                    let pulse = 0.85 + 0.2 * (phase.sin() * 0.5 + 0.5);
-                    (route_rotation, Vec3::new(1.55 * pulse, 0.62 * pulse, 1.0))
+                    let expansion = 0.5 + 2.5 * distance / length;
+                    (route_rotation, Vec3::new(0.4 * expansion, expansion, 1.0))
                 },
             };
             Some((
@@ -281,32 +274,44 @@ pub fn update_mission_route_arrow(
     let spacing = match style {
         MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
         MissionRouteStyle::JumpGate => 64.0,
-        MissionRouteStyle::MissileStrike => 58.0,
     };
     let animation_speed = mission.route_animation_speed();
     // Motion is measured in world units, so speed and spacing do not depend on route length.
     let offset =
         |speed: f64| (time.elapsed_secs_f64() * speed).rem_euclid(f64::from(spacing)) as f32;
-    let arrows = mission_route_markers(
-        origin.position,
-        mission.position,
-        origin.size() * 0.7,
-        48.0,
-        Color::srgba(0.72, 0.77, 0.84, 0.55),
-        offset(animation_speed * 0.625),
-        style,
-    )
-    .into_iter()
-    .chain(mission_route_markers(
-        mission.position,
-        destination.position,
-        38.0,
-        destination.size() * 0.7,
-        session.player_color(mission.owner).color(),
-        offset(animation_speed),
-        style,
-    ))
-    .collect::<Vec<_>>();
+    let arrows = if style == MissionRouteStyle::JumpGate {
+        // Keep one continuous wave from origin to destination, including across the fleet.
+        mission_route_markers(
+            origin.position,
+            destination.position,
+            origin.size() * 0.7,
+            destination.size() * 0.7,
+            session.player_color(mission.owner).color(),
+            offset(animation_speed * 0.5),
+            style,
+        )
+    } else {
+        mission_route_markers(
+            origin.position,
+            mission.position,
+            origin.size() * 0.7,
+            48.0,
+            Color::srgba(0.72, 0.77, 0.84, 0.55),
+            offset(animation_speed * 0.625),
+            style,
+        )
+        .into_iter()
+        .chain(mission_route_markers(
+            mission.position,
+            destination.position,
+            38.0,
+            destination.size() * 0.7,
+            session.player_color(mission.owner).color(),
+            offset(animation_speed),
+            style,
+        ))
+        .collect::<Vec<_>>()
+    };
     let mut present = vec![false; arrows.len()];
 
     for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {
@@ -330,7 +335,6 @@ pub fn update_mission_route_arrow(
         let (glyph, font_size) = match style {
             MissionRouteStyle::Standard => (">", 28.0),
             MissionRouteStyle::JumpGate => (JUMP_GATE_ROUTE_GLYPH, 26.0),
-            MissionRouteStyle::MissileStrike => ("•", 25.0),
         };
         commands.spawn((
             Text2d::new(glyph),

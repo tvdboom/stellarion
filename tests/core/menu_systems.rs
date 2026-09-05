@@ -6,6 +6,251 @@ use crate::core::identity::{GameCode, GameId, UserId};
 use crate::core::simulation::{GameModel, PersistedGame};
 use crate::multiplayer::model::GameMembership;
 
+#[test]
+fn options_stay_compact_while_navigation_uses_original_main_menu_height() {
+    for width in [288.0, 452.0] {
+        let context = egui::Context::default();
+        let mut audio = AudioState::NoMusic;
+        let mut shown = true;
+        let (shapes, _) = menu_frame(&context, vec![], |ui, _| {
+            ui.set_width(width);
+            apply_menu_style(ui);
+            // Theme padding must not enlarge buttons or shift later choices down.
+            ui.spacing_mut().interact_size.y = 60.0;
+            ui.spacing_mut().button_padding.y = 12.0;
+            ui.vertical_centered(|ui| {
+                choice_row(
+                    ui,
+                    "Audio",
+                    "Audio modes",
+                    &mut audio,
+                    &[
+                        (AudioState::Mute, "Muted"),
+                        (AudioState::NoMusic, "Effects"),
+                        (AudioState::Sound, "Music"),
+                    ],
+                );
+                choice_row(
+                    ui,
+                    "Map cells",
+                    "Map boundaries",
+                    &mut shown,
+                    &[(true, "Shown"), (false, "Hidden")],
+                );
+                menu_button_pair(ui, "Back", true, "Join", false, false);
+                main_menu_button(ui, "Settings", || {});
+            });
+        });
+        for labels in [
+            &["Muted", "Effects", "Music"][..],
+            &["Shown", "Hidden"],
+            &["Back", "Join"],
+            &["Settings"],
+        ] {
+            let mut previous: Option<egui::Rect> = None;
+            for label in labels {
+                let text = visible_menu_label(&shapes, label).unwrap();
+                let rect = shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill != egui::Color32::TRANSPARENT
+                                && rect.rect.contains_rect(text) =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .min_by(|a, b| a.area().total_cmp(&b.area()))
+                    .unwrap();
+                let expected_height = if matches!(*label, "Back" | "Join" | "Settings") {
+                    55.0
+                } else {
+                    36.0
+                };
+                assert!((rect.height() - expected_height).abs() < 0.1, "{label}: {rect:?}");
+                assert!(
+                    (text.center().y - rect.center().y).abs() < 1.0,
+                    "{label} text not centered"
+                );
+                if let Some(previous) = previous {
+                    assert!((previous.top() - rect.top()).abs() < 0.1, "{label} is staggered");
+                    assert!((previous.width() - rect.width()).abs() < 0.1, "{label} width differs");
+                }
+                previous = Some(rect);
+            }
+        }
+    }
+}
+/// Checks the rendered card geometry, including text and controls at narrow widths.
+fn assert_option_cards(shapes: &[egui::epaint::ClippedShape], labels: &[&str]) {
+    let mut previous: Option<egui::Rect> = None;
+    for label in labels {
+        let heading = visible_menu_label(shapes, label)
+            .unwrap_or_else(|| panic!("missing option heading: {label}"));
+        let card = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill != egui::Color32::TRANSPARENT
+                        && rect.rect.contains_rect(heading) =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing box for {label}"));
+        if let Some(previous) = previous {
+            assert!((previous.left() - card.left()).abs() < 1.0, "{label} misaligned");
+            assert!((previous.width() - card.width()).abs() < 1.0, "{label} width differs");
+            assert!(
+                (card.top() - previous.bottom() - 12.0).abs() < 1.0,
+                "{label} has inconsistent box spacing: {previous:?}, {card:?}"
+            );
+        }
+        assert!(shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+            if text.galley.job.text == "i"
+                && card.contains_rect(text.galley.rect.translate(text.pos.to_vec2())))));
+        for shape in shapes {
+            let bounds = match &shape.shape {
+                egui::Shape::Text(text) => text.galley.rect.translate(text.pos.to_vec2()),
+                egui::Shape::Circle(circle) => circle.visual_bounding_rect(),
+                _ => continue,
+            };
+            if bounds.center().y > card.top() && bounds.center().y < card.bottom() {
+                assert!(card.contains_rect(bounds), "content escapes {label}: {bounds:?}");
+            }
+        }
+        previous = Some(card);
+    }
+}
+
+/// Finds the painted button, distinguishing action labels from identical page titles.
+fn menu_action_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> egui::Rect {
+    shapes
+        .iter()
+        .find_map(|shape| {
+            let egui::Shape::Text(text) = &shape.shape else {
+                return None;
+            };
+            if text.galley.job.text != label {
+                return None;
+            }
+            let bounds = text.galley.rect.translate(text.pos.to_vec2());
+            shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill != egui::Color32::TRANSPARENT
+                        && rect.rect.contains_rect(bounds)
+                        && rect.rect.center().distance(bounds.center()) < 1.0
+                        && shape.clip_rect.contains_rect(rect.rect) =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| panic!("missing visible action: {label}"))
+}
+
+#[test]
+fn navigation_dimensions_match_across_menus_and_after_window_resize() {
+    let (mut app, context) = menu_app();
+    app.insert_resource(test_lobby());
+    for viewport in [egui::vec2(1600.0, 900.0), egui::vec2(400.0, 400.0), egui::vec2(770.0, 900.0)]
+    {
+        for (state, labels) in [
+            (AppState::MainMenu, &["New Game", "Join Game"][..]),
+            (AppState::CreateGame, &["Back", "Create Game"]),
+            (AppState::JoinGame, &["Back", "Join"]),
+            (AppState::ResumeGame, &["Back", "Refresh", "Recover Game"]),
+            (AppState::RecoverPlayer, &["Back", "Recover Game"]),
+            (AppState::Settings, &["Back"]),
+            (AppState::Lobby, &["Leave Lobby", "Start Game"]),
+            #[cfg(debug_assertions)]
+            (AppState::SinglePlayerMenu, &["Back", "Start Practice"]),
+        ] {
+            for _ in 0..4 {
+                menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            }
+            let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            for label in labels {
+                let rect = menu_action_rect(&shapes, label);
+                let columns = match state {
+                    AppState::MainMenu | AppState::Settings => 1.0,
+                    AppState::ResumeGame => 3.0,
+                    _ => 2.0,
+                };
+                let preferred_width = if state == AppState::ResumeGame {
+                    560.0_f32
+                } else {
+                    452.0_f32
+                };
+                let content_width = preferred_width.min(viewport.x - 32.0);
+                let expected = egui::vec2(
+                    308.0_f32.min((content_width - 12.0 * (columns - 1.0)) / columns),
+                    55.0,
+                );
+                assert!(
+                    (rect.size() - expected).length() < 1.0,
+                    "{state:?} {label} at {viewport:?}: {:?}, expected {expected:?}",
+                    rect.size()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn option_boxes_align_and_contain_controls_on_each_page() {
+    for width in [320.0, 400.0, 1600.0] {
+        let viewport = egui::vec2(width, 1200.0);
+        for (state, labels) in [
+            (
+                AppState::CreateGame,
+                vec![
+                    "PLAYER NAME",
+                    "PLAYER COLOR",
+                    "PLANETS PER PLAYER",
+                    "COLONIZABLE PLANETS",
+                    "MOONS PER PLANET",
+                ],
+            ),
+            (AppState::JoinGame, vec!["PLAYER NAME", "PLAYER COLOR", "GAME CODE"]),
+            (AppState::Settings, vec!["AUDIO", "MAP CELLS", "HOVER INFORMATION"]),
+        ] {
+            let (mut app, context) = menu_app();
+            for _ in 0..3 {
+                menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            }
+            let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            assert_option_cards(&shapes, &labels);
+        }
+    }
+}
+
+#[test]
+fn in_game_settings_boxes_fit_and_back_remains_reachable() {
+    for viewport in [egui::vec2(320.0, 480.0), egui::vec2(800.0, 900.0)] {
+        let (mut app, context) = menu_app();
+        app.insert_resource(State::new(GameState::Settings))
+            .init_resource::<NextState<GameState>>()
+            .add_systems(Update, draw_game_overlay);
+        for _ in 0..3 {
+            menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+        }
+        let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+        if viewport.y >= 900.0 {
+            assert_option_cards(&shapes, &["AUDIO", "MAP CELLS", "HOVER INFORMATION"]);
+        }
+        let back = visible_menu_label(&shapes, "Back").unwrap();
+        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(back));
+        click_menu_app(&mut app, &context, viewport, AppState::Game, back.center());
+        assert!(matches!(
+            app.world().resource::<NextState<GameState>>(),
+            NextState::Pending(GameState::GameMenu)
+        ));
+    }
+}
 /// Runs the production menu areas, including their persistent egui layout state.
 fn menu_app() -> (App, egui::Context) {
     let mut app = App::new();
@@ -77,6 +322,16 @@ fn visible_menu_label(shapes: &[egui::epaint::ClippedShape], label: &str) -> Opt
 
 fn assert_main_actions_visible(shapes: &[egui::epaint::ClippedShape], viewport: egui::Vec2) {
     let title = visible_menu_label(shapes, TITLE).unwrap();
+    let title_galley = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == TITLE => Some(&text.galley),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(title_galley.rows.len(), 1, "title wrapped at {viewport:?}");
+    assert!((title.center().x - viewport.x * 0.5).abs() <= 1.0, "title is not centered");
+    assert!(title.left() >= 23.0 && title.right() <= viewport.x - 23.0);
     let footer = visible_menu_label(shapes, "Created by Mavs").unwrap();
     for label in main_action_labels() {
         let text = visible_menu_label(shapes, label)
@@ -134,12 +389,42 @@ fn main_menu_shows_all_actions_after_boot_and_resize() {
         initial_size,
         egui::vec2(786.0, 660.0),
         egui::vec2(400.0, 600.0),
+        egui::vec2(611.0, 768.0),
         egui::vec2(1600.0, 900.0),
     ] {
         for _ in 0..3 {
             menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
         }
         let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+        if viewport.y == 600.0 {
+            // Preserve the original button size and scroll when the full stack cannot fit.
+            let first = menu_action_rect(&shapes, "New Game");
+            assert_eq!(first.size(), egui::vec2(308.0, 55.0));
+            menu_app_frame(
+                &mut app,
+                &context,
+                viewport,
+                AppState::MainMenu,
+                vec![
+                    egui::Event::PointerMoved(first.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -1000.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+            }
+            let scrolled = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+            assert_eq!(
+                menu_action_rect(&scrolled, main_action_labels().last().unwrap()).size(),
+                first.size()
+            );
+            continue;
+        }
         assert_main_actions_visible(&shapes, viewport);
     }
 }
@@ -371,6 +656,30 @@ fn main_menu_scrolls_short_windows_and_recovers_after_navigation_and_growth() {
     assert_main_actions_visible(&shapes, large);
 }
 
+#[test]
+fn settings_navigation_remains_reachable_on_short_windows() {
+    for viewport in [egui::vec2(400.0, 400.0), egui::vec2(786.0, 788.0)] {
+        let (mut app, context) = menu_app();
+        for _ in 0..3 {
+            menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+        }
+        let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        assert!(visible_menu_label(&shapes, "Volume  100%").is_none());
+        for label in ["Settings", "Back"] {
+            let rect = visible_menu_label(&shapes, label)
+                .unwrap_or_else(|| panic!("{label} clipped at {viewport:?}"));
+            assert!(screen.contains_rect(rect));
+        }
+        let back = visible_menu_label(&shapes, "Back").unwrap().center();
+        click_menu_app(&mut app, &context, viewport, AppState::Settings, back);
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Pending(AppState::MainMenu)
+        ));
+    }
+}
+
 #[cfg(debug_assertions)]
 #[test]
 fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
@@ -388,8 +697,10 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
         assert!(title.top() >= 0.0);
         for shape in &shapes {
             if let egui::Shape::Circle(circle) = &shape.shape {
-                assert!(shape.clip_rect.contains_rect(circle.visual_bounding_rect()));
-                assert!(circle.center.y > title.bottom());
+                if circle.radius >= 11.0 {
+                    assert!(shape.clip_rect.contains_rect(circle.visual_bounding_rect()));
+                    assert!(circle.center.y > title.bottom());
+                }
             }
         }
         assert_eq!(
@@ -483,6 +794,117 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
     }
 }
 
+#[test]
+fn online_setup_colors_are_clickable_and_survive_scrolling_and_submission() {
+    for state in [AppState::CreateGame, AppState::JoinGame] {
+        for viewport in
+            [egui::vec2(770.0, 724.0), egui::vec2(320.0, 480.0), egui::vec2(640.0, 360.0)]
+        {
+            let (mut app, context) = menu_app();
+            app.world_mut().resource_mut::<MultiplayerForm>().game_code = "ABCDEF".into();
+            for _ in 0..3 {
+                menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            }
+            let mut chosen_position = None;
+            for _ in 0..12 {
+                let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+                let [r, g, b] = PLAYER_COLOR_PALETTE[4].rgb();
+                chosen_position = shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle)
+                        if circle.radius == 11.0
+                            && circle.fill == egui::Color32::from_rgb(r, g, b)
+                            && shape.clip_rect.contains_rect(circle.visual_bounding_rect()) =>
+                    {
+                        Some(circle.center)
+                    },
+                    _ => None,
+                });
+                if chosen_position.is_some() {
+                    break;
+                }
+                menu_app_frame(
+                    &mut app,
+                    &context,
+                    viewport,
+                    state,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(viewport.x * 0.5, 100.0)),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -45.0),
+                            phase: egui::TouchPhase::Move,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                for _ in 0..20 {
+                    menu_app_frame(&mut app, &context, viewport, state, vec![]);
+                }
+            }
+            let position = chosen_position
+                .unwrap_or_else(|| panic!("color unreachable at {viewport:?} in {state:?}"));
+            app.world_mut().resource_mut::<MultiplayerSession>().busy = true;
+            menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            click_menu_app(&mut app, &context, viewport, state, position);
+            assert_eq!(
+                app.world().resource::<MultiplayerForm>().player_color,
+                PLAYER_COLOR_PALETTE[0]
+            );
+            app.world_mut().resource_mut::<MultiplayerSession>().busy = false;
+            menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            click_menu_app(&mut app, &context, viewport, state, position);
+            assert_eq!(
+                app.world().resource::<MultiplayerForm>().player_color,
+                PLAYER_COLOR_PALETTE[4]
+            );
+
+            let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            let footer = visible_menu_label(&shapes, "Created by Mavs").unwrap();
+            let label = if state == AppState::CreateGame {
+                "Create Game"
+            } else {
+                "Join"
+            };
+            let button = shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        let rect = text.galley.rect.translate(text.pos.to_vec2());
+                        shape.clip_rect.contains_rect(rect).then_some(rect)
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            assert!(button.bottom() < footer.top());
+            click_menu_app(&mut app, &context, viewport, state, button.center());
+            menu_app_frame(
+                &mut app,
+                &context,
+                viewport,
+                state,
+                vec![enter_event(false, egui::Modifiers::NONE)],
+            );
+            let requests: Vec<_> =
+                app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
+            assert_eq!(requests.len(), 2);
+            for request in requests {
+                match request {
+                    MultiplayerRequest::CreateGame {
+                        player_color,
+                        ..
+                    }
+                    | MultiplayerRequest::JoinGame {
+                        player_color,
+                        ..
+                    } => assert_eq!(player_color, PLAYER_COLOR_PALETTE[4]),
+                    _ => panic!("unexpected setup request"),
+                }
+            }
+        }
+    }
+}
+
 fn click_menu_app(
     app: &mut App,
     context: &egui::Context,
@@ -528,6 +950,95 @@ fn modal_gameplay_blocker_captures_the_whole_viewport() {
         );
         output.textures_delta.clear();
         assert!(blocked, "pointer at {pointer:?} escaped the modal layer");
+    }
+}
+
+#[test]
+fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
+    for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(640.0, 480.0)] {
+        let mut session = test_lobby();
+        let game = session.active_game.as_mut().unwrap();
+        game.status = MatchStatus::Finished;
+        game.persisted.state.status = MatchStatus::Finished;
+        let loser_home = game.persisted.state.players[1].home_planet;
+        game.persisted.state.map.get_mut(loser_home).owned = None;
+        game.persisted.state.map.get_mut(loser_home).controlled = None;
+        let winner = game.persisted.state.winner().unwrap();
+        let color = PLAYER_COLOR_PALETTE[4];
+        game.persisted.state.players.iter_mut().find(|player| player.id == winner).unwrap().color =
+            Some(color);
+        let winner_name = session.player_name(winner).unwrap().to_string();
+
+        let mut app = App::new();
+        app.init_resource::<EguiUserTextures>()
+            .init_resource::<Settings>()
+            .init_resource::<NextState<AppState>>()
+            .init_resource::<NextState<GameState>>()
+            .insert_resource(State::new(GameState::EndGame))
+            .insert_resource(session)
+            .add_message::<MultiplayerRequest>()
+            .add_message::<ChangeAudioMsg>()
+            .add_systems(
+                Update,
+                (crate::core::ui::systems::set_ui_style, draw_game_overlay).chain(),
+            );
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let mut context = EguiContext::default();
+        let egui = context.get_mut().clone();
+        app.world_mut().spawn((context, PrimaryEguiContext));
+
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = menu_app_frame(
+                &mut app,
+                &egui,
+                viewport,
+                AppState::Game,
+                vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))],
+            );
+        }
+        assert!(egui.is_pointer_over_egui(), "map corner must be blocked");
+        let announcement = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text == format!("{winner_name} wins by elimination.") =>
+                {
+                    Some(&text.galley.job)
+                },
+                _ => None,
+            })
+            .unwrap();
+        let name_section = &announcement.sections[0];
+        assert_eq!(
+            &announcement.text[name_section.byte_range.start.0..name_section.byte_range.end.0],
+            winner_name
+        );
+        assert_eq!(name_section.format.color, color.color().to_color32());
+        assert_ne!(announcement.sections[1].format.color, name_section.format.color);
+        assert!(visible_menu_label(&shapes, "Return to Main Menu").is_some());
+        let spectate = visible_menu_label(&shapes, "Spectate").unwrap().center();
+        for pressed in [true, false] {
+            menu_app_frame(
+                &mut app,
+                &egui,
+                viewport,
+                AppState::Game,
+                vec![
+                    egui::Event::PointerMoved(spectate),
+                    egui::Event::PointerButton {
+                        pos: spectate,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(matches!(
+            app.world().resource::<NextState<GameState>>(),
+            NextState::Pending(GameState::Playing)
+        ));
     }
 }
 
@@ -687,7 +1198,7 @@ fn resume_save_timestamp_uses_the_local_date_and_minute_without_labels() {
 
 #[test]
 fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
-    for (height, visible_cards) in [(514.0, 3), (900.0, 5)] {
+    for (height, visible_cards) in [(514.0, 2), (900.0, 6)] {
         let context = egui::Context::default();
         context.add_font(egui::epaint::text::FontInsert::new(
             "firasans",
@@ -888,6 +1399,10 @@ fn recovery_is_accessible_from_an_empty_resume_list_and_returns_to_it() {
     let recover = text_center(&shapes, "Recover Game");
     assert!(recover.x > refresh.x);
     assert!((recover.y - refresh.y).abs() < 1.0);
+    assert_eq!(
+        menu_action_rect(&shapes, "Recover Game").size(),
+        menu_action_rect(&shapes, "Refresh").size()
+    );
     let (_, requests) =
         click_menu(&context, text_center(&shapes, "Recover Game"), |ui, requests| {
             resume_screen(ui, &session, &mut refreshing, requests, &mut next)
@@ -937,14 +1452,14 @@ fn join_game_code_uses_the_labeled_help_card_above_the_actions() {
     let title = visible_menu_label(&shapes, "Join Game").unwrap();
     let heading = visible_menu_label(&shapes, "GAME CODE").unwrap();
     let hint = visible_menu_label(&shapes, "Enter game code").unwrap();
-    let info = visible_menu_label(&shapes, "i").unwrap();
     let back = visible_menu_label(&shapes, "Back").unwrap();
     let join = visible_menu_label(&shapes, "Join").unwrap();
     let card = shapes
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Rect(rect)
-                if rect.fill == egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232) =>
+                if rect.fill == egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232)
+                    && rect.rect.contains_rect(heading) =>
             {
                 Some(rect.rect)
             },
@@ -955,19 +1470,23 @@ fn join_game_code_uses_the_labeled_help_card_above_the_actions() {
     assert!(title.bottom() < card.top());
     assert!(card.contains_rect(heading));
     assert!(card.contains_rect(hint));
-    assert!(card.contains_rect(info));
+    assert!(shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+        if text.galley.job.text == "i"
+            && card.contains_rect(text.galley.rect.translate(text.pos.to_vec2())))));
     assert!(card.bottom() < back.top());
     assert!((back.center().y - join.center().y).abs() < 1.0);
 }
 
 #[test]
-fn joining_reuses_saved_name_and_only_prompts_when_needed() {
-    for (saved_name, draft, expected_name, asks_for_name) in [
-        (Some("Nova"), "", "Nova", false),
-        (Some("Nova"), "Unsubmitted edit", "Nova", false),
-        (None, "First Pilot", "First Pilot", true),
-        (Some("   "), "First Pilot", "First Pilot", true),
-        (Some("This saved player name is too long"), "First Pilot", "First Pilot", true),
+fn joining_always_prompts_and_uses_the_edited_name() {
+    for (saved_name, draft, can_join) in [
+        (Some("Nova"), "Nova", true),
+        (Some("Nova"), "New Pilot", true),
+        (Some("Nova"), "", false),
+        (Some("Nova"), "   ", false),
+        (Some("Nova"), "This edited player name is too long", false),
+        (None, "First Pilot", true),
+        (Some("   "), "First Pilot", true),
     ] {
         let mut form = MultiplayerForm {
             display_name: draft.to_string(),
@@ -981,21 +1500,177 @@ fn joining_reuses_saved_name_and_only_prompts_when_needed() {
             vec![enter_event(false, egui::Modifiers::NONE)],
             |ui, requests| join_screen(ui, &mut form, false, requests, &mut next),
         );
-        assert_eq!(
-            shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text)
-                    if text.galley.job.text == "Player name")
-            }),
-            asks_for_name,
-        );
-        assert!(matches!(requests.as_slice(),
-            [MultiplayerRequest::JoinGame { display_name, code }]
-                if display_name == expected_name && code == "ABCDEF"
-        ));
+        assert!(visible_menu_label(&shapes, "PLAYER NAME").is_some());
+        if can_join {
+            assert!(matches!(requests.as_slice(),
+                [MultiplayerRequest::JoinGame { display_name, code, .. }]
+                    if display_name == draft && code == "ABCDEF"
+            ));
+        } else {
+            assert!(requests.is_empty());
+        }
         assert!(submit_menu(|ui, requests| {
             join_screen(ui, &mut form, true, requests, &mut next);
         })
         .is_empty());
+    }
+}
+
+#[test]
+fn join_player_name_matches_create_game_styling() {
+    let name_box = |join| {
+        let mut form = MultiplayerForm::default();
+        let (shapes, _) = menu_frame(&egui::Context::default(), vec![], |ui, requests| {
+            ui.set_width(628.0);
+            ui.vertical_centered(|ui| {
+                if join {
+                    join_screen(ui, &mut form, false, requests, &mut NextState::default());
+                } else {
+                    create_screen(
+                        ui,
+                        &mut form,
+                        &mut Settings::default(),
+                        false,
+                        requests,
+                        &mut NextState::default(),
+                    );
+                }
+            });
+        });
+        let text = visible_menu_label(&shapes, &form.display_name).unwrap();
+        let heading = visible_menu_label(&shapes, "PLAYER NAME").unwrap();
+        let card = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill != egui::Color32::TRANSPARENT
+                        && rect.rect.contains_rect(text)
+                        && rect.rect.contains_rect(heading) =>
+                {
+                    Some(rect)
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert!((card.rect.width() - 452.0).abs() < 1.0);
+        if join {
+            let code_heading = visible_menu_label(&shapes, "GAME CODE").unwrap();
+            assert_eq!(heading.height(), code_heading.height());
+            let code_card = shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == card.fill && rect.rect.contains_rect(code_heading) =>
+                    {
+                        Some(rect)
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(card.rect.size(), code_card.rect.size());
+            assert_eq!(card.rect.left(), code_card.rect.left());
+        }
+        (card.rect.size(), card.fill, card.stroke, card.corner_radius)
+    };
+    assert_eq!(name_box(true), name_box(false));
+}
+
+#[test]
+fn create_game_keeps_navigation_visible_with_the_name_card_on_small_windows() {
+    for viewport in [egui::vec2(320.0, 480.0), egui::vec2(640.0, 360.0)] {
+        let (mut app, context) = menu_app();
+        for _ in 0..3 {
+            menu_app_frame(&mut app, &context, viewport, AppState::CreateGame, vec![]);
+        }
+        let shapes = menu_app_frame(&mut app, &context, viewport, AppState::CreateGame, vec![]);
+        assert!(visible_menu_label(&shapes, "PLAYER NAME").is_some());
+        let back = visible_menu_label(&shapes, "Back").unwrap();
+        let footer = visible_menu_label(&shapes, "Created by Mavs").unwrap();
+        assert!(back.top() >= 0.0 && back.bottom() < footer.top());
+        click_menu_app(&mut app, &context, viewport, AppState::CreateGame, back.center());
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Pending(AppState::MainMenu)
+        ));
+    }
+}
+
+#[test]
+fn join_name_is_editable_and_navigation_stays_visible_on_small_windows() {
+    for viewport in [egui::vec2(767.0, 506.0), egui::vec2(320.0, 480.0), egui::vec2(640.0, 360.0)] {
+        let (mut app, context) = menu_app();
+        *app.world_mut().resource_mut::<MultiplayerForm>() = MultiplayerForm {
+            display_name: "Nova".to_string(),
+            saved_display_name: Some("Nova".to_string()),
+            game_code: "ABCDEF".to_string(),
+            ..default()
+        };
+        let state = AppState::JoinGame;
+        for _ in 0..3 {
+            menu_app_frame(&mut app, &context, viewport, state, vec![]);
+        }
+        let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+        let name = visible_menu_label(&shapes, "Nova").unwrap();
+        click_menu_app(&mut app, &context, viewport, state, name.center());
+        let select_all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        menu_app_frame(
+            &mut app,
+            &context,
+            viewport,
+            state,
+            vec![select_all.clone(), egui::Event::Text("Orion".to_string())],
+        );
+        assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "Orion");
+        app.world_mut().resource_mut::<MultiplayerSession>().busy = true;
+        menu_app_frame(
+            &mut app,
+            &context,
+            viewport,
+            state,
+            vec![select_all, egui::Event::Text("Blocked edit".to_string())],
+        );
+        assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "Orion");
+        app.world_mut().resource_mut::<MultiplayerSession>().busy = false;
+
+        menu_app_frame(
+            &mut app,
+            &context,
+            viewport,
+            state,
+            vec![
+                egui::Event::PointerMoved(name.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -1000.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            menu_app_frame(&mut app, &context, viewport, state, vec![]);
+        }
+        let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+        assert!(visible_menu_label(&shapes, "ABCDEF").is_some());
+        let footer = visible_menu_label(&shapes, "Created by Mavs").unwrap();
+        for label in ["Back", "Join"] {
+            let button = visible_menu_label(&shapes, label).unwrap();
+            assert!(button.bottom() < footer.top());
+        }
+        let join = visible_menu_label(&shapes, "Join").unwrap();
+        click_menu_app(&mut app, &context, viewport, state, join.center());
+        let requests: Vec<_> =
+            app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
+        assert!(matches!(requests.as_slice(),
+            [MultiplayerRequest::JoinGame { display_name, code, .. }]
+                if display_name == "Orion" && code == "ABCDEF"
+        ));
     }
 }
 

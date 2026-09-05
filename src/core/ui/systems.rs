@@ -21,7 +21,8 @@ use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
-    BG2_COLOR, HEALTH_COLOR, PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
+    BG2_COLOR, HEALTH_COLOR, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
+    PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
@@ -143,8 +144,22 @@ const ABANDON_CONFIRMATION_TEXT_COLOR: Color32 = Color32::from_rgb(166, 188, 211
 const ABANDON_CONFIRMATION_BUTTON_FILL: Color32 = Color32::from_rgb(18, 28, 39);
 
 fn visible_planet_panel(state: &UiState) -> Option<(PlanetId, PlanetPanelMode)> {
-    state.mission_planet_hover.map(|id| (id, PlanetPanelMode::UnitsOnly)).or_else(|| {
-        state.planet_hover.or(state.planet_selected).map(|id| (id, PlanetPanelMode::Full))
+    state
+        .mission_planet_hover
+        .map(|id| (id, PlanetPanelMode::UnitsOnly))
+        .or_else(|| state.planet_hover.map(|id| (id, PlanetPanelMode::Full)))
+}
+
+/// Hover placement follows the pointer independently of the selected mission origin.
+fn planet_hover_panel_target(
+    state: &UiState,
+    cursor_x: Option<f32>,
+    viewport_width: f32,
+) -> Option<PlanetPanelSlideTarget> {
+    visible_planet_panel(state).map(|(id, mode)| PlanetPanelSlideTarget {
+        id,
+        mode,
+        right_side: cursor_x.is_some_and(|x| x < viewport_width * 0.5),
     })
 }
 
@@ -489,6 +504,7 @@ fn world_shortcut_fleet_image(planet: &Planet) -> Option<&'static str> {
 fn draw_world_shortcut(
     ui: &mut Ui,
     planet: &Planet,
+    is_home: bool,
     fleet_color: Color32,
     images: &ImageIds,
     scale: f32,
@@ -502,7 +518,12 @@ fn draw_world_shortcut(
     } else {
         0.0
     };
-    let text_width = (available_width - 46.0 * scale - fleet_icon_width).max(0.0);
+    let crown_width = if is_home {
+        19.0 * scale
+    } else {
+        0.0
+    };
+    let text_width = (available_width - 46.0 * scale - fleet_icon_width - crown_width).max(0.0);
     let name = egui::WidgetText::from(
         RichText::new(&planet.name).size(14.0 * scale).strong().color(Color32::WHITE),
     )
@@ -533,13 +554,28 @@ fn draw_world_shortcut(
         Color32::WHITE,
     );
 
-    let text_x = icon_rect.right() + 8.0 * scale;
+    let text_x = icon_rect.right() + 8.0 * scale + crown_width;
     let name_size = name.size();
-    ui.painter().galley(
-        egui::pos2(text_x, rect.center().y - name_size.y * 0.5),
-        name,
-        Color32::WHITE,
-    );
+    let name_top = rect.center().y - name_size.y * 0.5;
+    ui.painter().galley(egui::pos2(text_x, name_top), name, Color32::WHITE);
+    if is_home {
+        let crown_rect = egui::Rect::from_center_size(
+            egui::pos2(text_x - 12.0 * scale, rect.center().y),
+            egui::vec2(14.0, 11.0) * scale,
+        );
+        let mut crown = egui::Mesh::default();
+        for [x, y] in HOME_CROWN_VERTICES {
+            crown.colored_vertex(
+                egui::pos2(
+                    crown_rect.left() + x * crown_rect.width(),
+                    crown_rect.bottom() - y * crown_rect.height(),
+                ),
+                HOME_PLANET_COLOR.to_color32(),
+            );
+        }
+        crown.indices.extend(HOME_CROWN_INDICES);
+        ui.painter().add(crown);
+    }
 
     if let Some(fleet_image) = fleet_image {
         let fleet_icon_rect = egui::Rect::from_center_size(
@@ -579,6 +615,15 @@ const OWNED_WORLDS_WIDTH: f32 = 210.0;
 const WORLD_SHORTCUT_HEIGHT: f32 = 40.0;
 const WORLD_LIST_ITEM_SPACING: f32 = 3.0;
 
+/// Uses persisted acquisition history for both shortcut groups, with home always first.
+fn world_shortcut_order(planet: &Planet, player: &Player) -> (bool, usize, PlanetId) {
+    (
+        planet.id != player.home_planet,
+        player.world_acquisition_order.iter().position(|id| *id == planet.id).unwrap_or(usize::MAX),
+        planet.id,
+    )
+}
+
 /// Shows the local player's owned and controlled worlds as quick map shortcuts.
 fn draw_owned_worlds_widget(
     context: &egui::Context,
@@ -599,8 +644,8 @@ fn draw_owned_worlds_widget(
         .iter()
         .filter(|planet| !planet.is_destroyed && player.controls(planet) && !player.owns(planet))
         .collect::<Vec<_>>();
-    owned.sort_by(|left, right| left.name.cmp(&right.name));
-    controlled.sort_by(|left, right| left.name.cmp(&right.name));
+    owned.sort_by_key(|planet| world_shortcut_order(planet, player));
+    controlled.sort_by_key(|planet| world_shortcut_order(planet, player));
     let fleet_color = player.color().color().to_color32();
 
     egui::Area::new("stellarion_owned_worlds".into())
@@ -626,8 +671,16 @@ fn draw_owned_worlds_widget(
                 if !owned.is_empty() {
                     draw_world_group_header(ui, "OWNED PLANETS", owned.len(), scale);
                     for planet in &owned {
-                        if draw_world_shortcut(ui, planet, fleet_color, images, scale) {
+                        if draw_world_shortcut(
+                            ui,
+                            planet,
+                            planet.id == player.home_planet,
+                            fleet_color,
+                            images,
+                            scale,
+                        ) {
                             select_planet(planet, state, player);
+                            state.to_selected = true;
                             state.planet_hover = None;
                             settings.show_menu = true;
                         }
@@ -645,8 +698,16 @@ fn draw_owned_worlds_widget(
                         scale,
                     );
                     for planet in &controlled {
-                        if draw_world_shortcut(ui, planet, fleet_color, images, scale) {
+                        if draw_world_shortcut(
+                            ui,
+                            planet,
+                            planet.id == player.home_planet,
+                            fleet_color,
+                            images,
+                            scale,
+                        ) {
                             select_planet(planet, state, player);
+                            state.to_selected = true;
                             state.planet_hover = None;
                             settings.show_menu = true;
                         }
@@ -658,11 +719,29 @@ fn draw_owned_worlds_widget(
         .rect
 }
 
-/// Shows every opposing player's name beside the color used by their map cells.
+/// Counts only controller intelligence already visible through the map and mission reports.
+fn known_planet_counts(map: &Map, player: &Player, missions: &[Mission]) -> HashMap<u64, usize> {
+    let mut counts = HashMap::new();
+    for planet in map.planets.iter().filter(|planet| !planet.is_moon() && !planet.is_destroyed) {
+        let controller = if player.controls(planet) {
+            planet.controlled
+        } else {
+            player.last_info(planet, missions).and_then(|info| info.controlled)
+        };
+        if let Some(controller) = controller {
+            *counts.entry(controller).or_default() += 1;
+        }
+    }
+    counts
+}
+
+/// Shows opposing players and their known progress toward territorial victory.
 fn draw_enemy_players_widget(
     context: &egui::Context,
     session: &MultiplayerSession,
     local_player: &Player,
+    map: &Map,
+    missions: &[Mission],
 ) {
     let Some(game) = &session.active_game else {
         return;
@@ -675,6 +754,8 @@ fn draw_enemy_players_widget(
     if enemies.is_empty() {
         return;
     }
+    let counts = known_planet_counts(map, local_player, missions);
+    let target = game.persisted.state.planets_to_win();
 
     egui::Area::new("stellarion_enemy_players".into())
         .anchor(Align2::LEFT_BOTTOM, egui::vec2(18.0, -18.0))
@@ -687,7 +768,7 @@ fn draw_enemy_players_widget(
                 .inner_margin(egui::Margin::symmetric(12, 9))
                 .show(ui, |ui| {
                     let max_width = (context.content_rect().width() - 62.0).max(0.0);
-                    ui.set_width(220.0_f32.min(max_width));
+                    ui.set_width(270.0_f32.min(max_width));
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
                     ui.label(
                         RichText::new("ENEMY PLAYERS")
@@ -730,7 +811,24 @@ fn draw_enemy_players_widget(
                                     TextStyle::Body,
                                 )
                             });
-                            // Reserve the status width before truncating a long player name.
+                            let progress = egui::WidgetText::from(
+                                RichText::new(format!(
+                                    "{}/{}",
+                                    counts
+                                        .get(&member.player_id)
+                                        .map_or_else(|| "?".to_owned(), usize::to_string),
+                                    target,
+                                ))
+                                .size(13.0)
+                                .color(Color32::from_rgb(166, 188, 211)),
+                            )
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Extend),
+                                f32::INFINITY,
+                                TextStyle::Body,
+                            );
+                            // Keep progress and connection status visible even with long names.
                             let status_width = status.as_ref().map_or(0.0, |galley| {
                                 galley.size().x + 12.0 + 2.0 * ui.spacing().item_spacing.x
                             });
@@ -746,10 +844,14 @@ fn draw_enemy_players_widget(
                             .into_galley(
                                 ui,
                                 Some(egui::TextWrapMode::Truncate),
-                                (ui.available_width() - status_width).max(0.0),
+                                (ui.available_width() - status_width - progress.size().x
+                                    - ui.spacing().item_spacing.x).max(0.0),
                                 TextStyle::Body,
                             );
                             ui.add(egui::Label::new(name));
+                            ui.add(egui::Label::new(progress)).on_hover_text(
+                                "Known controlled planets / planets needed to win. ? means unknown. Intelligence may be outdated; moons do not count.",
+                            );
                             if let Some(status) = status {
                                 draw_disconnected_icon(ui);
                                 ui.add(egui::Label::new(status));
@@ -2318,15 +2420,7 @@ fn draw_mission_info_hover(
         ui.vertical(|ui| {
             ui.small(format!("📏 Distance: {:.1} AU", mission.distance(map)));
 
-            let speed = mission.speed();
-            ui.small(format!(
-                "🚀 Speed: {}",
-                if speed == f32::MAX {
-                    "---".to_string()
-                } else {
-                    format!("{speed} AU/turn")
-                }
-            ));
+            ui.small(format!("🚀 Movement: {:.2} AU/turn", mission.next_turn_movement(map)));
 
             let duration = mission.duration(map);
             ui.small(format!(
@@ -2572,7 +2666,7 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
-            draw_enemy_players_widget(context, &session, &player);
+            draw_enemy_players_widget(context, &session, &player, &map, &missions.0);
             draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
             draw_resources_widget(context, &settings, &map, &player, &images);
         }
@@ -2582,13 +2676,17 @@ pub fn draw_ui(
         state.mission_planet_hover = None;
     }
 
-    // Mission-panel planet links preview only known units. Map hover and selection retain the
-    // complete planet interface and map annotations.
-    let planet_panel = visible_planet_panel(&state);
+    // Mission-panel planet links preview only known units. Full details require map hover;
+    // selection keeps the shop and mission origin without pinning the details open.
+    let planet_panel =
+        planet_hover_panel_target(&state, window.cursor_position().map(|pos| pos.x), width);
 
-    if let Some((id, mode)) = planet_panel {
-        let right_side = state.planet_selected.is_some()
-            || window.cursor_position().map(|pos| pos.x < width * 0.5).unwrap_or_default();
+    if let Some(target) = planet_panel {
+        let PlanetPanelSlideTarget {
+            id,
+            mode,
+            right_side,
+        } = target;
 
         let planet = map.get(id);
 
@@ -2600,14 +2698,7 @@ pub fn draw_ui(
 
         let delta_seconds =
             contexts.ctx_mut().map_or(0.0, |context| context.input(|input| input.stable_dt));
-        let slide_progress = planet_panel_slide.progress(
-            PlanetPanelSlideTarget {
-                id,
-                mode,
-                right_side,
-            },
-            delta_seconds,
-        );
+        let slide_progress = planet_panel_slide.progress(target, delta_seconds);
         let slide_distance = window_w + 518.0;
         let slide_x = planet_panel_slide_offset(slide_progress, right_side, slide_distance);
         let detail_line_progress =

@@ -7,7 +7,7 @@ use chrono::{Local as ChronoLocal, TimeZone};
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, ChangeAudioMsg, MuteAudioMsg, SoundEffect};
-use crate::core::constants::{HOVERED_BUTTON_COLOR, NORMAL_BUTTON_COLOR, PRESSED_BUTTON_COLOR};
+use crate::core::constants::NORMAL_BUTTON_COLOR;
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
 use crate::core::settings::Settings;
@@ -20,7 +20,16 @@ use crate::multiplayer::model::{GameRecord, GameSummary};
 use crate::utils::ToColor32;
 use crate::TITLE;
 
-const MAIN_MENU_BUTTON_HEIGHT: f32 = 55.0;
+const MENU_CONTROL_HEIGHT: f32 = 36.0;
+const MENU_ACTION_WIDTH: f32 = 308.0;
+const MENU_ACTION_HEIGHT: f32 = 55.0;
+const MENU_ACTION_TEXT_SIZE: f32 = 21.6;
+// Form width stays independent of the larger standalone navigation buttons.
+const MENU_CONTENT_WIDTH: f32 = 452.0;
+const RESUME_MENU_WIDTH: f32 = 560.0;
+const FORM_CARD_GAP: f32 = 12.0;
+const FORM_TITLE_GAP: f32 = 28.0;
+const FORM_ACTION_GAP: f32 = 24.0;
 const MAIN_MENU_ACTION_COUNT: usize =
     4 + cfg!(debug_assertions) as usize + cfg!(not(target_arch = "wasm32")) as usize;
 
@@ -104,21 +113,33 @@ pub fn draw_menu(
     if !session.busy {
         *refreshing_games = false;
     }
-    let content_width =
-        (menu_size.x * 0.4).clamp(320.0, 640.0).min((menu_size.x - 32.0).max(240.0));
+    let preferred_width = if *app_state.get() == AppState::ResumeGame {
+        RESUME_MENU_WIDTH
+    } else {
+        MENU_CONTENT_WIDTH
+    };
+    let content_width = preferred_width.min((menu_size.x - 32.0).max(240.0));
     let is_primary_navigation = *app_state.get() == AppState::MainMenu;
     let (content_pivot, content_y) = if is_primary_navigation {
         (egui::Align2::CENTER_TOP, main_menu_top(context, menu_size))
     } else if matches!(
         *app_state.get(),
-        AppState::JoinGame
+        AppState::CreateGame
+            | AppState::JoinGame
             | AppState::ResumeGame
             | AppState::RecoverPlayer
             | AppState::Lobby
             | AppState::SinglePlayerMenu
+            | AppState::Settings
     ) {
         // Leave room for the connection/credit footer on smaller windows.
-        (egui::Align2::CENTER_CENTER, (menu_size.y - 96.0).max(0.0) * 0.5)
+        let footer_space =
+            if matches!(*app_state.get(), AppState::CreateGame | AppState::SinglePlayerMenu) {
+                48.0
+            } else {
+                96.0
+            };
+        (egui::Align2::CENTER_CENTER, (menu_size.y - footer_space).max(0.0) * 0.5)
     } else {
         (egui::Align2::CENTER_CENTER, menu_size.y * 0.5)
     };
@@ -182,15 +203,15 @@ pub fn draw_menu(
     }
 
     if is_primary_navigation {
+        let title = main_menu_title(context, menu_size);
         egui::Area::new("stellarion_main_title".into())
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(egui::pos2(menu_size.x * 0.5, menu_size.y * 0.17))
             .constrain(false)
             .interactable(false)
             .show(context, |ui| {
-                ui.heading(
-                    egui::RichText::new(TITLE).size((menu_size.y * 0.11).clamp(68.0, 104.0)),
-                );
+                let (rect, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
+                ui.painter().galley(rect.min, title, ui.visuals().strong_text_color());
             });
     }
 
@@ -323,22 +344,33 @@ fn menu_error_width(viewport: egui::Vec2, content_width: f32, state: AppState) -
     }
 }
 
+/// Measures one unwrapped title independently of the menu area's default width.
+fn main_menu_title(context: &egui::Context, viewport: egui::Vec2) -> std::sync::Arc<egui::Galley> {
+    let color = context.global_style().visuals.strong_text_color();
+    context.fonts_mut(|fonts| {
+        let font_size = (viewport.y * 0.11).clamp(68.0, 104.0);
+        let title =
+            fonts.layout_no_wrap(TITLE.to_string(), egui::FontId::proportional(font_size), color);
+        let available_width = (viewport.x - 48.0).max(1.0);
+        if title.size().x <= available_width {
+            title
+        } else {
+            fonts.layout_no_wrap(
+                TITLE.to_string(),
+                egui::FontId::proportional(font_size * available_width / title.size().x),
+                color,
+            )
+        }
+    })
+}
+
 /// Moves the actions up when needed, while preserving space below the measured title.
 fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f32 {
-    let title_height = context.fonts_mut(|fonts| {
-        fonts
-            .layout_no_wrap(
-                TITLE.to_string(),
-                egui::FontId::proportional((viewport.y * 0.11).clamp(68.0, 104.0)),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .y
-    });
+    let title_height = main_menu_title(context, viewport).size().y;
     let title_bottom = viewport.y * 0.17 + title_height * 0.5;
     let count = MAIN_MENU_ACTION_COUNT as f32;
-    let gap = context.global_style().spacing.item_spacing.y + 5.4;
-    let actions_height = MAIN_MENU_BUTTON_HEIGHT * count + gap * (count - 1.0);
+    let gap = FORM_CARD_GAP;
+    let actions_height = MENU_ACTION_HEIGHT * count + gap * (count - 1.0);
     (viewport.y * 0.365).min(viewport.y - 96.0 - actions_height).max(title_bottom + 24.0)
 }
 
@@ -375,13 +407,11 @@ fn main_screen(
     // An Area remembers its previous content height. Expand the parent before the
     // scroll area measures it, including after a small window grows again.
     ui.set_max_height(available_height);
+    let (button_size, _, _) = menu_button_metrics(ui);
     let count = MAIN_MENU_ACTION_COUNT as f32;
-    let preferred_gap = ui.spacing().item_spacing.y + 5.4;
-    let gap = preferred_gap
-        .min(((available_height - count * MAIN_MENU_BUTTON_HEIGHT) / (count - 1.0)).max(8.0));
-    let button_height =
-        ((available_height - gap * (count - 1.0)) / count).clamp(44.0, MAIN_MENU_BUTTON_HEIGHT);
-    let button_size = egui::vec2(308.0_f32.min(ui.available_width()), button_height);
+    let gap = ((available_height - count * MENU_ACTION_HEIGHT) / (count - 1.0))
+        .clamp(8.0, FORM_CARD_GAP)
+        .floor();
     egui::ScrollArea::vertical()
         .id_salt("stellarion_main_actions")
         .auto_shrink([false, true])
@@ -390,7 +420,7 @@ fn main_screen(
             ui.spacing_mut().item_spacing.y = gap;
             ui.vertical_centered(|ui| {
                 let button = |ui: &mut egui::Ui, label: &str| {
-                    menu_button_widget(ui, label, true, button_size, 21.6)
+                    menu_button_widget(ui, label, true, button_size, MENU_ACTION_TEXT_SIZE)
                 };
                 if button(ui, "New Game") {
                     next_state.set(AppState::CreateGame);
@@ -428,26 +458,14 @@ fn local_practice_screen(
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    // Bound the full setup, including the new color row, above the menu footer.
-    ui.set_max_height((ui.ctx().content_rect().height() - 128.0).max(160.0));
-    ui.heading(egui::RichText::new("Local Practice").size(36.0));
-    ui.add_space(28.0);
-    let (back_clicked, start_clicked) = egui::ScrollArea::vertical()
-        .id_salt("local_practice_setup")
-        .auto_shrink([false, true])
-        .max_height(ui.available_height())
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_enabled_ui(!busy, |ui| {
-                    practice_color_picker(ui, &mut form.practice_color);
-                    map_rule_rows(ui, settings);
-                });
-                ui.add_space(40.0);
-                local_practice_action_buttons(ui, !busy)
-            })
-            .inner
-        })
-        .inner;
+    menu_form(ui, "local_practice_setup", "Local Practice", 1, |ui| {
+        ui.add_enabled_ui(!busy, |ui| {
+            setup_color_picker(ui, &mut form.practice_color);
+            map_rule_rows(ui, settings);
+        });
+    });
+    let (back_clicked, start_clicked) =
+        menu_button_pair(ui, "Back", true, "Start Practice", !busy, false);
     if back_clicked {
         next_state.set(AppState::MainMenu);
     } else if !busy && (start_clicked || enter_pressed) {
@@ -465,25 +483,31 @@ fn local_practice_screen(
 }
 
 /// Shows every empire color and keeps the selected swatch outlined.
-#[cfg(debug_assertions)]
-fn practice_color_picker(ui: &mut egui::Ui, selected: &mut PlayerColor) {
-    ui.label(egui::RichText::new("Player color").size(20.0).strong());
-    ui.add_space(3.0);
-    let gap = 6.0;
-    let row_width = PLAYER_COLOR_PALETTE.len() as f32 * (34.0 + gap) - gap;
-    ui.allocate_ui_with_layout(
-        egui::vec2(row_width, 34.0),
-        egui::Layout::left_to_right(egui::Align::Center),
+fn setup_color_picker(ui: &mut egui::Ui, selected: &mut PlayerColor) {
+    form_option_card(
+        ui,
+        "Player color",
+        "Choose the color used to identify your empire and its worlds on the map.",
         |ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            for color in PLAYER_COLOR_PALETTE {
-                if player_color_swatch(ui, color, color == *selected) {
-                    *selected = color;
-                }
-            }
+            ui.vertical_centered(|ui| {
+                let gap = 6.0;
+                let row_width = (PLAYER_COLOR_PALETTE.len() as f32 * (34.0 + gap) - gap)
+                    .min(ui.available_width());
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_width, MENU_CONTROL_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for color in PLAYER_COLOR_PALETTE {
+                            if player_color_swatch(ui, color, color == *selected) {
+                                *selected = color;
+                            }
+                        }
+                    },
+                );
+            });
         },
     );
-    ui.add_space(6.0);
 }
 
 /// Collects creator name, exact 2..=4 capacity, and existing gameplay settings.
@@ -496,11 +520,13 @@ fn create_screen(
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    ui.heading(egui::RichText::new("Create Game").size(36.0));
-    ui.add_space(28.0);
-    player_name_field(ui, &mut form.display_name, 420.0);
-    map_rule_rows(ui, settings);
-    ui.add_space(40.0);
+    menu_form(ui, "stellarion_create_form", "Create Game", 1, |ui| {
+        ui.add_enabled_ui(!busy, |ui| {
+            player_name_field(ui, &mut form.display_name);
+            setup_color_picker(ui, &mut form.player_color);
+            map_rule_rows(ui, settings);
+        });
+    });
     let can_create = !busy && valid_name(&form.display_name);
     let (back_clicked, create_clicked) =
         menu_button_pair(ui, "Back", true, "Create Game", can_create, false);
@@ -509,6 +535,7 @@ fn create_screen(
     } else if can_create && (create_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::CreateGame {
             display_name: form.display_name.clone(),
+            player_color: form.player_color,
             rules: GameRules {
                 planets_per_player: settings.n_planets,
                 colonizable_percent: settings.p_colonizable,
@@ -520,7 +547,7 @@ fn create_screen(
     }
 }
 
-/// Collects the share code, asking for a player name only when none has been saved.
+/// Collects the share code and an editable player name, including for returning players.
 fn join_screen(
     ui: &mut egui::Ui,
     form: &mut MultiplayerForm,
@@ -529,36 +556,21 @@ fn join_screen(
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    ui.spacing_mut().item_spacing.y = 8.0;
-    let saved_name = form.saved_display_name.as_deref().filter(|name| valid_name(name));
-    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
-    // Keep navigation visible while the form scrolls on short viewports.
-    let form_height =
-        (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
-    egui::ScrollArea::vertical()
-        .id_salt("stellarion_join_form")
-        .auto_shrink([false, true])
-        .max_height(form_height)
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(egui::RichText::new("Join Game").size(36.0));
-                ui.add_space(18.0);
-                if saved_name.is_none() {
-                    player_name_field(ui, &mut form.display_name, 340.0);
-                    ui.add_space(12.0);
-                }
-                ui.add_enabled_ui(!busy, |ui| join_game_code_field(ui, &mut form.game_code));
-            });
+    menu_form(ui, "stellarion_join_form", "Join Game", 1, |ui| {
+        ui.add_enabled_ui(!busy, |ui| {
+            player_name_field(ui, &mut form.display_name);
+            setup_color_picker(ui, &mut form.player_color);
+            join_game_code_field(ui, &mut form.game_code);
         });
-    let display_name = saved_name.unwrap_or(&form.display_name);
-    let can_join = !busy && valid_name(display_name) && valid_game_code(&form.game_code);
-    ui.add_space(16.0);
+    });
+    let can_join = !busy && valid_name(&form.display_name) && valid_game_code(&form.game_code);
     let (back_clicked, join_clicked) = menu_button_pair(ui, "Back", true, "Join", can_join, false);
     if back_clicked {
         next_state.set(AppState::MainMenu);
     } else if can_join && (join_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::JoinGame {
-            display_name: display_name.to_string(),
+            display_name: form.display_name.clone(),
+            player_color: form.player_color,
             code: form.game_code.clone(),
         });
     }
@@ -609,40 +621,20 @@ fn recovery_screen(
     next_state: &mut NextState<AppState>,
 ) {
     let enter_pressed = menu_submit_pressed(ui);
-    ui.spacing_mut().item_spacing.y = 8.0;
-    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
-    let form_height =
-        (ui.ctx().content_rect().height() - 132.0 - button_size.y - button_spacing).max(80.0);
-    egui::ScrollArea::vertical()
-        .id_salt("stellarion_recovery_form")
-        .auto_shrink([false, true])
-        .max_height(form_height)
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(egui::RichText::new("Recover Game").size(36.0));
-                ui.add_space(18.0);
-                ui.add_enabled_ui(!busy, |ui| {
-                    recovery_code_field(
-                        ui,
-                        "Game code",
-                        &mut form.game_code,
-                        false,
-                        "Enter game code",
-                    );
-                    ui.add_space(12.0);
-                    recovery_code_field(
-                        ui,
-                        "Recovery code",
-                        &mut form.recovery_code,
-                        true,
-                        "Enter recovery code",
-                    )
-                });
-            });
+    menu_form(ui, "stellarion_recovery_form", "Recover Game", 1, |ui| {
+        ui.add_enabled_ui(!busy, |ui| {
+            recovery_code_field(ui, "Game code", &mut form.game_code, false, "Enter game code");
+            recovery_code_field(
+                ui,
+                "Recovery code",
+                &mut form.recovery_code,
+                true,
+                "Enter recovery code",
+            );
         });
+    });
     let can_recover =
         !busy && valid_game_code(&form.game_code) && !form.recovery_code.trim().is_empty();
-    ui.add_space(20.0);
     let (back_clicked, recover_clicked) =
         menu_button_pair(ui, "Back", !busy, "Recover Game", can_recover, busy);
     if back_clicked {
@@ -663,43 +655,20 @@ fn resume_screen(
     requests: &mut MessageWriter<MultiplayerRequest>,
     next_state: &mut NextState<AppState>,
 ) {
-    ui.spacing_mut().item_spacing.y = 8.0;
-    ui.heading(egui::RichText::new("Resume Game").size(38.0).strong());
-    ui.add_space(20.0);
-    let mut games =
-        session.games.iter().filter(|game| game.status != MatchStatus::Lobby).peekable();
-    if games.peek().is_none() {
-        // Keep the recovery actions visible when guidance wraps on small screens.
-        egui::ScrollArea::vertical()
-            .id_salt("stellarion_resume_guidance")
-            .auto_shrink([false, true])
-            .max_height((ui.ctx().content_rect().height() - 260.0).max(80.0))
-            .show(ui, |ui| {
-                resume_empty_state(ui);
-                ui.add_space(12.0);
-                resume_recovery_toast(ui);
-            });
-    } else {
-        // Fit five two-row cards when space permits, leaving room for heading and actions.
-        let list_height = (ui.ctx().content_rect().height() - 260.0).clamp(112.0, 384.0);
-        egui::ScrollArea::vertical()
-            .id_salt("stellarion_resume_games")
-            .auto_shrink([false, true])
-            .max_height(list_height)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 0.0;
-                while let Some(game) = games.next() {
-                    if resume_game_card(ui, game, !session.busy) {
-                        requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
-                    }
-                    if games.peek().is_some() {
-                        ui.add_space(6.0);
-                    }
+    menu_form(ui, "stellarion_resume_content", "Resume Game", 1, |ui| {
+        let mut games =
+            session.games.iter().filter(|game| game.status != MatchStatus::Lobby).peekable();
+        if games.peek().is_none() {
+            resume_empty_state(ui);
+            resume_recovery_toast(ui);
+        } else {
+            for game in games {
+                if resume_game_card(ui, game, !session.busy) {
+                    requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
                 }
-            });
-    }
-    ui.add_space(16.0);
+            }
+        }
+    });
     let (back_clicked, refresh_clicked, recover_clicked) =
         resume_action_buttons(ui, session.busy, *refreshing);
     if back_clicked {
@@ -714,9 +683,9 @@ fn resume_screen(
     }
 }
 
-/// Fits navigation, refresh, and recovery on one row, including narrow windows.
+/// Keeps all three resume actions on one row, adapting widths to smaller windows.
 fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bool, bool, bool) {
-    let (size, text_size, spacing) = menu_button_metrics(ui);
+    let (size, text_size, _) = menu_button_metrics(ui);
     let gap = 12.0;
     let width = size.x.min(((ui.available_width() - gap * 2.0) / 3.0).max(1.0));
     let labels = ["Back", "Refresh", "Recover Game"];
@@ -740,6 +709,7 @@ fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bo
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.spacing_mut().item_spacing.x = gap;
+                ui.spacing_mut().item_spacing.y = gap;
                 let button_size = egui::vec2(width, size.y);
                 let back =
                     menu_action_button(ui, labels[0], true, false, false, button_size, text_size);
@@ -782,7 +752,6 @@ fn resume_action_buttons(ui: &mut egui::Ui, busy: bool, refreshing: bool) -> (bo
             },
         )
         .inner;
-    ui.add_space(spacing);
     clicked
 }
 
@@ -998,11 +967,7 @@ fn resume_empty_state(ui: &mut egui::Ui) {
 
 /// Places persistent recovery guidance in its own toast below the empty-state panel.
 fn resume_recovery_toast(ui: &mut egui::Ui) {
-    let frame = egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(13, 22, 32, 242))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(132, 177, 213, 70)))
-        .corner_radius(7.0)
-        .inner_margin(egui::Margin::symmetric(18, 16));
+    let frame = code_card_frame();
     let width = (ui.available_width() - frame.total_margin().sum().x).max(1.0);
     frame.show(ui, |ui| {
         ui.set_width(width);
@@ -1052,49 +1017,31 @@ fn lobby_screen(
     };
 
     let reconnecting = game.status == MatchStatus::Active && session.reconnect_lobby;
-    ui.spacing_mut().item_spacing.y = 8.0;
-    let (button_size, _, button_spacing) = menu_button_pair_metrics(ui);
-    let content_height =
-        (ui.ctx().content_rect().height() - 128.0 - button_size.y - button_spacing).max(80.0);
-    egui::ScrollArea::vertical()
-        .id_salt("stellarion_lobby_content")
-        .auto_shrink([false, true])
-        .max_height(content_height)
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(
-                    egui::RichText::new(if reconnecting {
-                        "Resume Game"
-                    } else {
-                        "Game Lobby"
-                    })
-                    .size(36.0),
-                );
-                ui.add_space(20.0);
-                lobby_code_card(ui, "Game code", game.code.as_str(), true);
-                ui.add_space(10.0);
-                if let Some(code) = &session.issued_recovery_code {
-                    lobby_code_card(ui, "Recovery code", code, false);
-                }
-                ui.add_space(22.0);
-                lobby_players_card(
-                    ui,
-                    game,
-                    reconnecting,
-                    session.membership.as_ref().map(|member| member.player_id),
-                    session.busy,
-                    requests,
-                );
-                let guidance = lobby_guidance(session);
-                if !guidance.is_empty() {
-                    ui.add_space(12.0);
-                    ui.label(egui::RichText::new(guidance).size(16.0));
-                }
-            });
-        });
-    ui.add_space(16.0);
-
+    let title = if reconnecting {
+        "Resume Game"
+    } else {
+        "Game Lobby"
+    };
     let is_host = session.membership.as_ref().is_some_and(|member| member.is_creator);
+    menu_form(ui, "stellarion_lobby_content", title, 1, |ui| {
+        lobby_code_card(ui, "Game code", game.code.as_str(), true);
+        if let Some(code) = &session.issued_recovery_code {
+            lobby_code_card(ui, "Recovery code", code, false);
+        }
+        lobby_players_card(
+            ui,
+            game,
+            reconnecting,
+            session.membership.as_ref().map(|member| member.player_id),
+            session.busy,
+            requests,
+        );
+        let guidance = lobby_guidance(session);
+        if !guidance.is_empty() {
+            ui.label(egui::RichText::new(guidance).size(16.0));
+        }
+    });
+
     let can_continue = lobby_primary_enabled(session);
     let (leave_clicked, continue_clicked) = if is_host {
         menu_button_pair(
@@ -1191,36 +1138,39 @@ fn take_menu_submit(events: &mut Vec<egui::Event>) -> bool {
     pressed
 }
 
-/// Shares the access-code container between code display and recovery inputs.
+/// Shares the translucent container between form options and access codes.
 fn code_card_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(130, 170, 215, 115)))
         .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(18, 14))
+        .inner_margin(egui::Margin::symmetric(18, 12))
 }
 
-/// Labels an access-code card and keeps its explanation behind hover help.
+/// Labels a form card and keeps its explanation behind hover help.
 fn code_card_heading(ui: &mut egui::Ui, label: &str, tooltip: &str, copy_value: Option<&str>) {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label.to_uppercase())
-                .size(13.0)
-                .strong()
-                .color(egui::Color32::from_rgb(145, 184, 226)),
-        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(value) = copy_value {
                 copy_icon_button(ui, value, label);
             }
             code_info_icon(ui, tooltip);
+            // Reserve the help actions first so long headings wrap inside narrow cards.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.label(
+                    egui::RichText::new(label.to_uppercase())
+                        .size(16.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(145, 184, 226)),
+                );
+            });
         });
     });
 }
 
 /// Draws the shared game code field used to join an open lobby.
 fn join_game_code_field(ui: &mut egui::Ui, value: &mut String) -> egui::Response {
-    editable_code_field(
+    editable_form_card(
         ui,
         "Game code",
         value,
@@ -1243,11 +1193,36 @@ fn recovery_code_field(
     } else {
         "Enter the shared code of the game you want to recover. Find it in your saved codes or ask another player in that game."
     };
-    editable_code_field(ui, label, value, private, hint, tooltip)
+    editable_form_card(ui, label, value, private, hint, tooltip)
 }
 
-/// Draws a labeled access-code input card with contextual hover help.
-fn editable_code_field(
+/// Matches form cards to the combined width of the two navigation buttons.
+fn form_card_width(ui: &egui::Ui) -> f32 {
+    ui.available_width().min(MENU_CONTENT_WIDTH)
+}
+
+/// Gives every option on a page the same width, heading, and hover help.
+fn form_option_card(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: &str,
+    contents: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let frame = code_card_frame();
+    let inner_width = (form_card_width(ui) - frame.total_margin().sum().x).max(1.0);
+    frame
+        .show(ui, |ui| {
+            ui.set_width(inner_width);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            code_card_heading(ui, label, tooltip, None);
+            ui.add_space(FORM_CARD_GAP);
+            contents(ui);
+        })
+        .response
+}
+
+/// Draws a labeled input card with contextual hover help.
+fn editable_form_card(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut String,
@@ -1255,38 +1230,38 @@ fn editable_code_field(
     hint: &str,
     tooltip: &str,
 ) -> egui::Response {
-    let inner_width = (ui.available_width().min(560.0) - 36.0).max(1.0);
-    let panel = code_card_frame().show(ui, |ui| {
-        ui.set_width(inner_width);
-        code_card_heading(ui, label, tooltip, None);
-        ui.add_space(8.0);
+    form_option_card(ui, label, tooltip, |ui| {
         ui.add_sized(
-            egui::vec2(inner_width, 42.0),
+            egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT),
             egui::TextEdit::singleline(value)
                 .id_salt(label)
+                .horizontal_align(egui::Align::Center)
+                .vertical_align(egui::Align::Center)
+                .interactive(ui.is_enabled())
                 .font(egui::FontId::proportional(18.0))
                 .password(private)
                 .hint_text(egui::RichText::new(hint).size(18.0))
-                .margin(egui::vec2(12.0, 10.0)),
+                .margin(egui::vec2(12.0, 6.0)),
         );
-    });
-    panel.response
+    })
 }
 
 /// Draws one lobby access code as a compact card with an icon-only copy action.
 fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) {
-    let card_width = ui.available_width().min(560.0);
+    let frame = code_card_frame();
+    let card_width = form_card_width(ui);
     let tooltip = if label.eq_ignore_ascii_case("Game code") {
         "Share this code to invite players before the game starts. It also identifies the saved game when recovering with your private recovery code."
     } else {
         "Keep this code private. Enter it with the game code to restore your player and host or player role. The host resumes once everyone reconnects; finished games open for viewing."
     };
-    code_card_frame().show(ui, |ui| {
-        let inner_width = card_width - 36.0;
+    frame.show(ui, |ui| {
+        let inner_width = (card_width - frame.total_margin().sum().x).max(1.0);
         ui.set_min_width(inner_width);
         ui.set_max_width(inner_width);
+        ui.spacing_mut().item_spacing.y = 0.0;
         code_card_heading(ui, label, tooltip, Some(code));
-        ui.add_space(2.0);
+        ui.add_space(FORM_CARD_GAP);
         let font_size = if prominent {
             27.0
         } else {
@@ -1294,9 +1269,11 @@ fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) 
         };
         let mut read_only_code = code;
         let response = ui.add_sized(
-            egui::vec2(inner_width, font_size + 10.0),
+            egui::vec2(inner_width, MENU_CONTROL_HEIGHT),
             egui::TextEdit::singleline(&mut read_only_code)
                 .id_salt(("lobby_code", label))
+                .horizontal_align(egui::Align::Center)
+                .vertical_align(egui::Align::Center)
                 .font(egui::FontId::monospace(font_size))
                 .text_color(egui::Color32::WHITE)
                 .desired_width(inner_width)
@@ -1309,7 +1286,7 @@ fn lobby_code_card(ui: &mut egui::Ui, label: &str, code: &str, prominent: bool) 
 
 /// Shows the page's explanation without permanently crowding the code card.
 fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 30.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::hover());
     let center = rect.center();
     let color = if response.hovered() {
         egui::Color32::WHITE
@@ -1332,23 +1309,27 @@ fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
 
 /// Copies a value using a familiar overlapping-pages glyph instead of a text button.
 fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 30.0), egui::Sense::click());
-    let response = response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!("Copy {label}"));
-    let fill = if response.is_pointer_button_down_on() {
-        PRESSED_BUTTON_COLOR.to_color32()
-    } else if response.hovered() {
-        HOVERED_BUTTON_COLOR.to_color32()
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            format!("Copy {label}"),
+        )
+    });
+    let icon_color = if response.is_pointer_button_down_on() {
+        egui::Color32::from_rgb(145, 184, 226)
+    } else if response.hovered() || response.has_focus() {
+        egui::Color32::WHITE
     } else {
-        NORMAL_BUTTON_COLOR.to_color32()
+        egui::Color32::from_rgb(170, 190, 214)
     };
-    ui.painter().rect_filled(rect, 3.0, fill);
 
-    let icon_color = egui::Color32::from_rgb(225, 231, 240);
-    let back = egui::Rect::from_min_size(rect.min + egui::vec2(9.0, 6.0), egui::vec2(11.0, 13.0));
-    let front =
-        egui::Rect::from_min_size(rect.min + egui::vec2(14.0, 11.0), egui::vec2(11.0, 13.0));
+    // Center the complete glyph, including both overlapping pages, like the info icon.
+    let icon = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 17.0));
+    let back = egui::Rect::from_min_size(icon.min, egui::vec2(11.0, 12.0));
+    let front = egui::Rect::from_min_size(icon.min + egui::vec2(5.0, 5.0), egui::vec2(11.0, 12.0));
     let stroke = egui::Stroke::new(1.5, icon_color);
     ui.painter().rect_stroke(back, 1.0, stroke, egui::StrokeKind::Inside);
     ui.painter().rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
@@ -1421,174 +1402,176 @@ fn lobby_players_card(
         .members
         .iter()
         .any(|member| Some(member.player_id) == local_player_id && member.is_creator);
-    let card_width = ui.available_width().min(560.0);
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 232))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(130, 170, 215, 115)))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(18, 14))
-        .show(ui, |ui| {
-            let inner_width = card_width - 36.0;
-            ui.set_min_width(inner_width);
-            ui.set_max_width(inner_width);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Players").size(20.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} {}",
-                            game.members.len(),
-                            if game.members.len() == 1 {
-                                "player"
-                            } else {
-                                "players"
-                            }
-                        ))
-                        .size(13.0)
-                        .color(egui::Color32::from_rgb(175, 195, 218)),
-                    );
-                });
-            });
-            ui.add_space(8.0);
+    let card_width = form_card_width(ui);
+    let frame = code_card_frame();
+    frame.show(ui, |ui| {
+        let inner_width = (card_width - frame.total_margin().sum().x).max(1.0);
+        ui.set_min_width(inner_width);
+        ui.set_max_width(inner_width);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.horizontal(|ui| {
+            ui.set_min_height(24.0);
             ui.label(
-                egui::RichText::new(if reconnecting {
-                    if game.members.iter().all(|member| member.connected) {
-                        "Everyone is connected. The host can resume the game."
-                    } else {
-                        "Waiting for every existing player to reconnect…"
-                    }
-                } else if !is_host {
-                    "Waiting for the host to start..."
-                } else if game.members.len() < 2 {
-                    "Waiting for at least one more player…"
-                } else {
-                    "Ready to start — more players may still join."
-                })
-                .size(14.0)
-                .color(egui::Color32::from_rgb(175, 195, 218)),
+                egui::RichText::new("PLAYERS")
+                    .size(16.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(145, 184, 226)),
             );
-            ui.add_space(7.0);
-
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (index, member) in game.members.iter().enumerate() {
-                let picker_id =
-                    ui.make_persistent_id(("player_color_picker", &game.id, member.player_id));
-                let editable =
-                    game.status == MatchStatus::Lobby && local_player_id == Some(member.player_id);
-                let row_margin_x = 10.0;
-                let row_inner_width = inner_width - row_margin_x * 2.0;
-                let color_width = 26.0;
-                let id_width = 38.0;
-                let role_width = 56.0;
-                let status_width = if reconnecting {
-                    118.0
-                } else {
-                    0.0
-                };
-                let gap = 8.0;
-                let gap_count = 3.0 + u8::from(reconnecting) as f32;
-                let name_width = (row_inner_width
-                    - color_width
-                    - id_width
-                    - status_width
-                    - role_width
-                    - gap * gap_count)
-                    .max(0.0);
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14))
-                    .inner_margin(egui::Margin::symmetric(row_margin_x as i8, 4))
-                    .show(ui, |ui| {
-                        ui.set_min_width(row_inner_width);
-                        ui.set_max_width(row_inner_width);
-                        ui.spacing_mut().item_spacing.x = gap;
-                        ui.horizontal(|ui| {
-                            let color = game
-                                .persisted
-                                .state
-                                .player(member.player_id)
-                                .map(|player| player.color())
-                                .unwrap_or_else(|_| PlayerColor::for_player(member.player_id));
-                            let marker =
-                                player_color_dot(ui, color, color_width, editable && !busy);
-                            lobby_color_popover(
-                                &marker,
-                                picker_id,
-                                game,
-                                member.player_id,
-                                editable && !busy,
-                                requests,
-                            );
-                            ui.add_sized(
-                                [id_width, 22.0],
-                                egui::Label::new(
-                                    egui::RichText::new(format!("#{:02}", member.player_id))
-                                        .size(14.0)
-                                        .monospace()
-                                        .color(egui::Color32::from_rgb(145, 184, 226)),
-                                ),
-                            );
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(name_width, 22.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.set_min_size(egui::vec2(name_width, 22.0));
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&member.display_name)
-                                                .size(16.0)
-                                                .strong(),
-                                        )
-                                        .halign(egui::Align::LEFT)
-                                        .truncate(),
-                                    );
-                                },
-                            );
-                            if reconnecting {
-                                let (status, status_color) = if member.connected {
-                                    ("Connected", egui::Color32::from_rgb(102, 224, 170))
-                                } else {
-                                    ("Not connected", egui::Color32::from_rgb(243, 190, 92))
-                                };
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(status_width, 22.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().circle_filled(
-                                    egui::pos2(rect.left() + 3.5, rect.center().y),
-                                    3.5,
-                                    status_color,
-                                );
-                                ui.painter().text(
-                                    egui::pos2(rect.left() + 15.0, rect.center().y),
-                                    egui::Align2::LEFT_CENTER,
-                                    status,
-                                    egui::FontId::proportional(13.0),
-                                    status_color,
-                                );
-                            }
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(role_width, 22.0),
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(if member.is_creator {
-                                            "HOST"
-                                        } else {
-                                            "CLIENT"
-                                        })
-                                        .size(12.0)
-                                        .strong()
-                                        .color(egui::Color32::from_rgb(175, 195, 218)),
-                                    );
-                                },
-                            );
-                        });
-                    });
-                if index + 1 < game.members.len() {
-                    ui.add_space(3.0);
-                }
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} {}",
+                        game.members.len(),
+                        if game.members.len() == 1 {
+                            "player"
+                        } else {
+                            "players"
+                        }
+                    ))
+                    .size(13.0)
+                    .color(egui::Color32::from_rgb(175, 195, 218)),
+                );
+            });
         });
+        ui.add_space(FORM_CARD_GAP);
+        ui.label(
+            egui::RichText::new(if reconnecting {
+                if game.members.iter().all(|member| member.connected) {
+                    "Everyone is connected. The host can resume the game."
+                } else {
+                    "Waiting for every existing player to reconnect…"
+                }
+            } else if !is_host {
+                "Waiting for the host to start..."
+            } else if game.members.len() < 2 {
+                "Waiting for at least one more player…"
+            } else {
+                "Ready to start — more players may still join."
+            })
+            .size(14.0)
+            .color(egui::Color32::from_rgb(175, 195, 218)),
+        );
+        ui.add_space(FORM_CARD_GAP);
+
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for (index, member) in game.members.iter().enumerate() {
+            let picker_id =
+                ui.make_persistent_id(("player_color_picker", &game.id, member.player_id));
+            let editable =
+                game.status == MatchStatus::Lobby && local_player_id == Some(member.player_id);
+            let row_margin_x = 10.0;
+            let row_inner_width = inner_width - row_margin_x * 2.0;
+            let color_width = 26.0;
+            let id_width = 38.0;
+            let role_width = 56.0;
+            let status_width = if reconnecting {
+                118.0
+            } else {
+                0.0
+            };
+            let gap = 8.0;
+            let gap_count = 3.0 + u8::from(reconnecting) as f32;
+            let name_width = (row_inner_width
+                - color_width
+                - id_width
+                - status_width
+                - role_width
+                - gap * gap_count)
+                .max(0.0);
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14))
+                .inner_margin(egui::Margin::symmetric(row_margin_x as i8, 4))
+                .show(ui, |ui| {
+                    ui.set_min_width(row_inner_width);
+                    ui.set_max_width(row_inner_width);
+                    ui.spacing_mut().item_spacing.x = gap;
+                    ui.horizontal(|ui| {
+                        let color = game
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .map(|player| player.color())
+                            .unwrap_or_else(|_| PlayerColor::for_player(member.player_id));
+                        let marker = player_color_dot(ui, color, color_width, editable && !busy);
+                        lobby_color_popover(
+                            &marker,
+                            picker_id,
+                            game,
+                            member.player_id,
+                            editable && !busy,
+                            requests,
+                        );
+                        ui.add_sized(
+                            [id_width, 22.0],
+                            egui::Label::new(
+                                egui::RichText::new(format!("#{:02}", member.player_id))
+                                    .size(14.0)
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(145, 184, 226)),
+                            ),
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(name_width, 22.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_size(egui::vec2(name_width, 22.0));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&member.display_name)
+                                            .size(16.0)
+                                            .strong(),
+                                    )
+                                    .halign(egui::Align::LEFT)
+                                    .truncate(),
+                                );
+                            },
+                        );
+                        if reconnecting {
+                            let (status, status_color) = if member.connected {
+                                ("Connected", egui::Color32::from_rgb(102, 224, 170))
+                            } else {
+                                ("Not connected", egui::Color32::from_rgb(243, 190, 92))
+                            };
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(status_width, 22.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().circle_filled(
+                                egui::pos2(rect.left() + 3.5, rect.center().y),
+                                3.5,
+                                status_color,
+                            );
+                            ui.painter().text(
+                                egui::pos2(rect.left() + 15.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                status,
+                                egui::FontId::proportional(13.0),
+                                status_color,
+                            );
+                        }
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(role_width, 22.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(if member.is_creator {
+                                        "HOST"
+                                    } else {
+                                        "CLIENT"
+                                    })
+                                    .size(12.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(175, 195, 218)),
+                                );
+                            },
+                        );
+                    });
+                });
+            if index + 1 < game.members.len() {
+                ui.add_space(3.0);
+            }
+        }
+    });
 }
 
 /// Overlays the choices below the marker without changing the player card's size.
@@ -1771,10 +1754,7 @@ fn settings_screen(
     change_audio: &mut MessageWriter<ChangeAudioMsg>,
     next_state: &mut NextState<AppState>,
 ) {
-    ui.heading(egui::RichText::new("Settings").size(36.0));
-    ui.add_space(28.0);
     settings_choices(ui, settings, change_audio);
-    ui.add_space(40.0);
     back_button(ui, next_state, AppState::MainMenu);
 }
 
@@ -1784,26 +1764,74 @@ fn settings_choices(
     settings: &mut Settings,
     change_audio: &mut MessageWriter<ChangeAudioMsg>,
 ) {
+    menu_form(ui, "settings choices", "Settings", 1, |ui| {
+        settings_choice_rows(ui, settings, change_audio);
+    });
+}
+
+/// Shares form spacing and reserves navigation outside the scrolling content.
+fn menu_form(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    action_rows: usize,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    // Reset the remembered Area height so the form can expand after a window resize.
+    let height = (ui.ctx().content_rect().height() - 128.0).max(160.0);
+    ui.set_max_height(height);
+    let actions_height = action_rows as f32 * MENU_ACTION_HEIGHT
+        + action_rows.saturating_sub(1) as f32 * FORM_CARD_GAP;
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .auto_shrink([false, true])
+        .max_height((height - actions_height - FORM_ACTION_GAP).max(80.0))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new(title).size(36.0));
+                ui.add_space(FORM_TITLE_GAP);
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = FORM_CARD_GAP;
+                    contents(ui);
+                });
+            });
+        });
+    ui.add_space(FORM_ACTION_GAP);
+}
+
+fn settings_choice_rows(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    change_audio: &mut MessageWriter<ChangeAudioMsg>,
+) {
     let previous_audio = settings.audio;
+    let mut selected_audio = previous_audio;
     choice_row(
         ui,
         "Audio",
-        &mut settings.audio,
+        "Muted turns off all audio. Effects plays sound effects only. Music plays both music and sound effects.",
+        &mut selected_audio,
         &[
             (AudioState::Mute, "Muted"),
             (AudioState::NoMusic, "Effects"),
             (AudioState::Sound, "Music"),
         ],
     );
-    if settings.audio != previous_audio {
-        change_audio.write(ChangeAudioMsg(Some(settings.audio)));
+    if selected_audio != previous_audio {
+        change_audio.write(ChangeAudioMsg(Some(selected_audio)));
     }
-    ui.add_space(12.0);
-    choice_row(ui, "Map cells", &mut settings.show_cells, &[(true, "Shown"), (false, "Hidden")]);
-    ui.add_space(12.0);
+    choice_row(
+        ui,
+        "Map cells",
+        "Show or hide the cell boundaries on the star map.",
+        &mut settings.show_cells,
+        &[(true, "Shown"), (false, "Hidden")],
+    );
     choice_row(
         ui,
         "Hover information",
+        "Show or hide additional game information when hovering over map objects and controls.",
         &mut settings.show_hover,
         &[(true, "Shown"), (false, "Hidden")],
     );
@@ -1830,8 +1858,7 @@ pub fn draw_game_overlay(
         block_gameplay_pointer(context);
     }
     let viewport = context.viewport_rect();
-    let content_width =
-        (viewport.width() * 0.42).clamp(360.0, 560.0).min((viewport.width() - 32.0).max(280.0));
+    let content_width = MENU_CONTENT_WIDTH.min((viewport.width() - 32.0).max(240.0));
     egui::Area::new("stellarion_game_overlay".into())
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .movable(false)
@@ -1844,14 +1871,21 @@ pub fn draw_game_overlay(
                 GameState::GameMenu => {
                     main_menu_button(ui, "Continue", || next_game_state.set(GameState::Playing));
                     if session.has_active_game() && !session.local_practice {
-                        main_menu_button(ui, "Save Game", || {
-                            requests.write(MultiplayerRequest::SaveGame);
-                        });
                         if let Some(game) = session
                             .active_game
                             .as_ref()
                             .filter(|game| game.status == MatchStatus::Active)
                         {
+                            if session.membership.as_ref().is_some_and(|member| {
+                                game.persisted
+                                    .state
+                                    .player(member.player_id)
+                                    .is_ok_and(|player| !player.spectator)
+                            }) {
+                                main_menu_button(ui, "Save Game", || {
+                                    requests.write(MultiplayerRequest::SaveGame);
+                                });
+                            }
                             main_menu_button(ui, "Game Lobby", || {
                                 requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
                                 next_game_state.set(GameState::Playing);
@@ -1866,14 +1900,43 @@ pub fn draw_game_overlay(
                     });
                 },
                 GameState::Settings => {
-                    ui.heading(egui::RichText::new("Settings").size(36.0));
-                    ui.add_space(28.0);
                     settings_choices(ui, &mut settings, &mut change_audio);
-                    ui.add_space(40.0);
                     main_menu_button(ui, "Back", || next_game_state.set(GameState::GameMenu));
                 },
                 GameState::EndGame => {
                     ui.heading(egui::RichText::new("Game finished").size(36.0));
+                    if let Some(game) = &session.active_game {
+                        if let Some(winner) = game.persisted.state.winner() {
+                            let name = session.player_name(winner).unwrap_or("Unknown player");
+                            let reason =
+                                if game.persisted.state.territorial_winner() == Some(winner) {
+                                    "territorial control"
+                                } else {
+                                    "elimination"
+                                };
+                            let font_id = egui::TextStyle::Body.resolve(ui.style());
+                            let mut announcement = egui::text::LayoutJob::default();
+                            announcement.append(
+                                name,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: font_id.clone(),
+                                    color: session.player_color(winner).color().to_color32(),
+                                    ..default()
+                                },
+                            );
+                            announcement.append(
+                                &format!(" wins by {reason}."),
+                                0.0,
+                                egui::TextFormat {
+                                    font_id,
+                                    color: ui.visuals().text_color(),
+                                    ..default()
+                                },
+                            );
+                            ui.label(announcement);
+                        }
+                    }
                     ui.add_space(28.0);
                     main_menu_button(ui, "Spectate", || next_game_state.set(GameState::Playing));
                     main_menu_button(ui, "Return to Main Menu", || {
@@ -1932,14 +1995,13 @@ pub fn exit_end_game(mut mute_audio_msg: MessageWriter<MuteAudioMsg>) {
     mute_audio_msg.write(MuteAudioMsg);
 }
 
-/// Draws a slightly larger action for the top-level menu only.
+/// Draws a standalone action with the same dimensions as paired navigation.
 fn main_menu_button(ui: &mut egui::Ui, label: &str, on_click: impl FnOnce()) {
-    let (base_size, base_text_size, spacing) = menu_button_metrics(ui);
-    let size = egui::vec2((base_size.x * 1.4).min(ui.available_width()), base_size.y * 1.25);
-    if menu_button_widget(ui, label, true, size, base_text_size * 1.2) {
+    let (size, _, _) = menu_button_metrics(ui);
+    if menu_button_widget(ui, label, true, size, MENU_ACTION_TEXT_SIZE) {
         on_click();
     }
-    ui.add_space(spacing * 1.08);
+    ui.add_space(FORM_CARD_GAP);
 }
 
 /// Draws two standard menu actions on one centered row.
@@ -1953,95 +2015,59 @@ fn menu_button_pair(
 ) -> (bool, bool) {
     let (button_size, text_size, spacing) = menu_button_pair_metrics(ui);
     let gap = 12.0;
-    let row_width = button_size.x * 2.0 + gap;
+    let (pair_size, pair_layout) = menu_action_pair_layout(ui);
     let clicked = ui
-        .allocate_ui_with_layout(
-            egui::vec2(row_width, button_size.y),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                let left_clicked = menu_action_button(
-                    ui,
-                    left_label,
-                    left_enabled,
-                    false,
-                    false,
-                    button_size,
-                    text_size,
-                );
-                let right_clicked = menu_action_button(
-                    ui,
-                    right_label,
-                    right_enabled && !right_busy,
-                    true,
-                    right_busy,
-                    button_size,
-                    text_size,
-                );
-                (left_clicked, right_clicked)
-            },
-        )
+        .allocate_ui_with_layout(pair_size, pair_layout, |ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.spacing_mut().item_spacing.y = gap;
+            let left_clicked = menu_action_button(
+                ui,
+                left_label,
+                left_enabled,
+                false,
+                false,
+                button_size,
+                text_size,
+            );
+            let right_clicked = menu_action_button(
+                ui,
+                right_label,
+                right_enabled && !right_busy,
+                true,
+                right_busy,
+                button_size,
+                text_size,
+            );
+            (left_clicked, right_clicked)
+        })
         .inner;
     ui.add_space(spacing);
     clicked
 }
 
-/// Draws the larger Local Practice actions side by side, with navigation first.
-#[cfg(debug_assertions)]
-fn local_practice_action_buttons(ui: &mut egui::Ui, start_enabled: bool) -> (bool, bool) {
-    let (base_size, base_text_size, spacing) = menu_button_metrics(ui);
-    let gap = 12.0;
-    let button_width = (base_size.x * 1.1).min(((ui.available_width() - gap) * 0.5).max(1.0));
-    let button_size = egui::vec2(button_width, base_size.y * 1.1);
-    let row_width = button_width * 2.0 + gap;
-    let clicked = ui
-        .allocate_ui_with_layout(
-            egui::vec2(row_width, button_size.y),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                (
-                    menu_action_button(
-                        ui,
-                        "Back",
-                        true,
-                        false,
-                        false,
-                        button_size,
-                        base_text_size * 1.1,
-                    ),
-                    menu_action_button(
-                        ui,
-                        "Start Practice",
-                        start_enabled,
-                        true,
-                        false,
-                        button_size,
-                        base_text_size * 1.1,
-                    ),
-                )
-            },
-        )
-        .inner;
-    ui.add_space(spacing);
-    clicked
-}
-
-/// Returns the compact dimensions shared by all menu navigation actions.
+/// Returns the original main-menu dimensions shared by every navigation action.
 fn menu_button_metrics(ui: &egui::Ui) -> (egui::Vec2, f32, f32) {
-    let viewport = ui.max_rect().size();
     (
-        egui::vec2((viewport.x * 0.20).clamp(220.0, 340.0), (viewport.y * 0.075).clamp(44.0, 68.0)),
-        (viewport.y / 36.0).clamp(18.0, 26.0),
-        (viewport.y * 0.008).clamp(5.0, 8.0),
+        egui::vec2(MENU_ACTION_WIDTH.min(ui.available_width()), MENU_ACTION_HEIGHT),
+        MENU_ACTION_TEXT_SIZE,
+        0.0,
     )
 }
 
 /// Keeps paired actions and the client's single lobby action the same size.
 fn menu_button_pair_metrics(ui: &egui::Ui) -> (egui::Vec2, f32, f32) {
     let (size, text_size, spacing) = menu_button_metrics(ui);
-    let width = size.x.min(((ui.available_width() - 12.0) * 0.5).max(1.0));
+    let width = size.x.min(((ui.available_width() - FORM_CARD_GAP) * 0.5).max(1.0));
     (egui::vec2(width, size.y), text_size, spacing)
+}
+
+/// Keeps navigation actions aligned on a single row at any viewport width.
+fn menu_action_pair_layout(ui: &egui::Ui) -> (egui::Vec2, egui::Layout) {
+    let (size, _, _) = menu_button_pair_metrics(ui);
+    (
+        egui::vec2(size.x * 2.0 + FORM_CARD_GAP, size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+    )
 }
 
 /// Draws one shared rounded menu button with the established hover behavior.
@@ -2094,6 +2120,18 @@ fn menu_action_button(
         egui::Stroke::new(1.0, border),
         egui::StrokeKind::Inside,
     );
+    // Long navigation labels must fit the same button width on smaller windows.
+    let measured = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(text_size),
+        egui::Color32::WHITE,
+    );
+    let padding = if busy {
+        64.0
+    } else {
+        24.0
+    };
+    let text_size = text_size * ((size.x - padding).max(1.0) / measured.size().x).min(1.0);
     ui.painter().text(
         rect.center()
             + egui::vec2(
@@ -2158,81 +2196,83 @@ fn apply_menu_style(ui: &mut egui::Ui) {
     }
 }
 
-/// Draws the player-name field when creating a game or joining for the first time.
-fn player_name_field(ui: &mut egui::Ui, display_name: &mut String, max_width: f32) {
-    ui.label(egui::RichText::new("Player name").size(20.0).strong());
-    form_text_edit_width(ui, display_name, false, max_width);
-    ui.add_space(8.0);
+/// Draws the same player-name field when creating or joining a game.
+fn player_name_field(ui: &mut egui::Ui, display_name: &mut String) {
+    editable_form_card(
+        ui,
+        "Player name",
+        display_name,
+        false,
+        "Enter player name",
+        "Choose the name other players will see in this game.",
+    );
 }
 
-/// Draws a centered text input capped to the supplied form width.
-fn form_text_edit_width(ui: &mut egui::Ui, value: &mut String, password: bool, max_width: f32) {
-    let width = ui.available_width().min(max_width);
-    let editor = egui::TextEdit::singleline(value)
-        .password(password)
-        .frame(egui::Frame::NONE)
-        .horizontal_align(egui::Align::Center);
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(18, 28, 39, 228))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(150, 184, 215, 92)))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.add_sized([width - 24.0, 28.0], editor);
-        });
-}
-
-/// Draws the original menu's labeled rows of flat, discrete setting buttons.
+/// Draws equal-width discrete choices inside the shared option card.
 fn choice_row<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     label: &str,
+    tooltip: &str,
     value: &mut T,
     choices: &[(T, &str)],
 ) {
-    ui.label(egui::RichText::new(label).size(20.0).strong());
-    ui.add_space(3.0);
-    let gap = 8.0;
-    let width = ((ui.available_width().min(520.0) - gap * 2.0) / 3.0).max(72.0);
-    let row_width = width * choices.len() as f32 + gap * (choices.len() - 1) as f32;
-    ui.allocate_ui_with_layout(
-        egui::vec2(row_width, 40.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            for (candidate, text) in choices {
-                let selected = value == candidate;
-                let button = egui::Button::new(
-                    egui::RichText::new(*text)
-                        .size(18.0)
-                        .strong()
-                        .color(egui::Color32::TRANSPARENT),
-                )
-                .fill(if selected {
-                    egui::Color32::from_rgb(39, 94, 123)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(18, 28, 39, 228)
-                })
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    if selected {
-                        egui::Color32::from_rgba_unmultiplied(112, 206, 241, 145)
-                    } else {
-                        egui::Color32::from_rgba_unmultiplied(150, 184, 215, 92)
-                    },
-                ))
-                .corner_radius(6.0);
-                let response = ui
-                    .add_sized([width, 40.0], button)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                paint_choice_icon(ui, response.rect, text);
-                if response.clicked() {
-                    mark_menu_click(ui);
-                    *value = *candidate;
+    form_option_card(ui, label, tooltip, |ui| {
+        let gap = 8.0;
+        let count = choices.len().max(1) as f32;
+        let row_width = ui.available_width();
+        let width = ((row_width - gap * (count - 1.0)) / count).max(1.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(row_width, MENU_CONTROL_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (candidate, text) in choices {
+                    let selected = value == candidate;
+                    // Standard buttons add their own minimum size and padding. Allocate
+                    // the actual rectangle so every choice shares the same row baseline.
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(width, MENU_CONTROL_HEIGHT),
+                        egui::Sense::click(),
+                    );
+                    let hovered = response.hovered();
+                    ui.painter().rect(
+                        rect,
+                        6.0,
+                        if hovered {
+                            egui::Color32::from_rgb(48, 119, 155)
+                        } else if selected {
+                            egui::Color32::from_rgb(39, 94, 123)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(18, 28, 39, 228)
+                        },
+                        egui::Stroke::new(
+                            1.0,
+                            if selected {
+                                egui::Color32::from_rgba_unmultiplied(112, 206, 241, 145)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(150, 184, 215, 92)
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            selected,
+                            *text,
+                        )
+                    });
+                    paint_choice_icon(ui, response.rect, text);
+                    if response.clicked() {
+                        mark_menu_click(ui);
+                        *value = *candidate;
+                    }
                 }
-            }
-        },
-    );
-    ui.add_space(6.0);
+            },
+        );
+    });
 }
 
 /// Records an explicit menu interaction so audio does not depend on egui's response history.
@@ -2252,7 +2292,17 @@ fn paint_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
     };
     let painter = ui.painter();
     let color = ui.visuals().strong_text_color();
-    let font = egui::FontId::proportional(18.0);
+    // Fit the complete icon/label group within compact three-button cards.
+    let icon_space = if icon.is_some() {
+        23.0
+    } else {
+        0.0
+    };
+    let measured =
+        painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(18.0), color);
+    let font_size =
+        18.0 * ((rect.width() - 12.0 - icon_space).max(1.0) / measured.size().x).min(1.0);
+    let font = egui::FontId::proportional(font_size);
     let label_galley = painter.layout_no_wrap(label.to_owned(), font, color);
     let Some(icon) = icon else {
         painter.galley(rect.center() - label_galley.size() * 0.5, label_galley, color);
@@ -2346,18 +2396,21 @@ fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings) {
     choice_row(
         ui,
         "Planets per player",
+        "Sets the number of planets generated per player. More planets create a larger galaxy.",
         &mut settings.n_planets,
         &[(5, "5"), (10, "10"), (20, "20")],
     );
     choice_row(
         ui,
         "Colonizable planets",
+        "Sets the percentage of planets that can be colonized.",
         &mut settings.p_colonizable,
         &[(25, "25%"), (50, "50%"), (100, "100%")],
     );
     choice_row(
         ui,
         "Moons per planet",
+        "Sets the number of moons generated as a percentage of the planet count.",
         &mut settings.p_moons,
         &[(0, "0%"), (30, "30%"), (60, "60%")],
     );

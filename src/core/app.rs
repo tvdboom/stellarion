@@ -1,5 +1,6 @@
 //! Bevy application plugin and system scheduling.
 
+use crate::core::combat::playback::control_combat_playback;
 use bevy::prelude::*;
 use bevy_egui::{EguiPostUpdateSet, EguiPrimaryContextPass};
 use strum::IntoEnumIterator;
@@ -11,19 +12,21 @@ use crate::core::camera::{
     move_camera, move_camera_keyboard, reset_camera, setup_camera, update_parallax,
 };
 use crate::core::combat::systems::{
-    animate_combat, exit_combat, exit_combat_menu, run_combat_animations, setup_combat,
-    setup_combat_menu, update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
+    animate_combat, exit_combat, exit_combat_menu, restore_combat_camera, run_combat_animations,
+    setup_combat, setup_combat_menu, shake_combat_camera, update_combat_stats, CombatCmp,
+    CombatMenuCmp, SpawnShotMsg,
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
 };
 use crate::core::map::battle::BattleAftermathPlugin;
 use crate::core::map::colonization::ColonizationPlugin;
+use crate::core::map::details::MapDetailsPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
-    animate_map_ambience, animate_space_scenery, draw_map, hide_planet_details, run_map_animations,
-    update_ambient_comets, update_end_turn, update_planet_defenses, update_planet_info,
-    update_voronoi, AmbientCometSpawner,
+    animate_map_ambience, animate_space_scenery, draw_map, hide_planet_details,
+    position_home_crown, run_map_animations, update_ambient_comets, update_end_turn,
+    update_planet_defenses, update_planet_info, update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -86,6 +89,7 @@ impl Plugin for GamePlugin {
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
+            .add_plugins(MapDetailsPlugin)
             // Sets
             .configure_sets(First, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))
@@ -122,7 +126,6 @@ impl Plugin for GamePlugin {
                     .in_set(InPlayingGameSet),
             )
             // Audio
-            .add_systems(Startup, setup_audio)
             .add_systems(OnEnter(GameState::Playing), play_music)
             .add_systems(
                 PostUpdate,
@@ -135,6 +138,7 @@ impl Plugin for GamePlugin {
                     pause_audio,
                     stop_audio,
                     play_audio,
+                    update_master_volume,
                 )
                     .chain()
                     .after(EguiPostUpdateSet::EndPass)
@@ -142,7 +146,11 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                play_ui_audio.after(draw_menu).after(draw_ui).after(draw_game_overlay),
+                (draw_audio_controls, play_ui_audio)
+                    .chain()
+                    .after(draw_menu)
+                    .after(draw_ui)
+                    .after(draw_game_overlay),
             );
 
         // Menu
@@ -151,7 +159,7 @@ impl Plugin for GamePlugin {
                 .add_systems(OnExit(state), despawn::<MenuCmp>);
         }
 
-        for state in [GameState::GameMenu, GameState::Settings] {
+        for state in [GameState::GameMenu, GameState::Settings, GameState::EndGame] {
             // Clear hover-driven visuals once before the normal map systems are suspended.
             app.add_systems(
                 OnEnter(state),
@@ -194,8 +202,9 @@ impl Plugin for GamePlugin {
                 Update,
                 (
                     check_keys_menu,
-                    check_preference_keys
-                        .run_if(in_state(AppState::Game).or_else(in_state(AppState::Settings))),
+                    check_preference_keys.run_if(in_state(AppState::Settings).or_else(
+                        in_state(AppState::Game).and_then(not(in_state(GameState::EndGame))),
+                    )),
                     check_keys.in_set(InPlayingGameSet),
                     check_keys_combat
                         .run_if(
@@ -233,6 +242,13 @@ impl Plugin for GamePlugin {
                 ),
             )
             .add_systems(PostUpdate, check_turn_ended.in_set(InGameSet))
+            .add_systems(
+                PostUpdate,
+                position_home_crown
+                    .after(bevy::sprite::update_text2d_layout)
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .in_set(InGameSet),
+            )
             .add_systems(OnExit(AppState::Game), (despawn::<MapCmp>, reset_camera))
             .add_systems(OnEnter(GameState::CombatMenu), setup_combat_menu)
             .add_systems(
@@ -242,11 +258,20 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(GameState::Combat), setup_combat)
             .add_systems(
                 Update,
-                (animate_combat, run_combat_animations, update_combat_stats)
+                (
+                    control_combat_playback,
+                    animate_combat,
+                    run_combat_animations,
+                    shake_combat_camera,
+                    update_combat_stats,
+                )
                     .chain()
                     .run_if(in_state(GameState::Combat)),
             )
-            .add_systems(OnExit(GameState::Combat), (despawn::<CombatCmp>, exit_combat))
+            .add_systems(
+                OnExit(GameState::Combat),
+                (despawn::<CombatCmp>, restore_combat_camera, exit_combat),
+            )
             .add_systems(OnExit(GameState::EndGame), exit_end_game);
 
         #[cfg(debug_assertions)]

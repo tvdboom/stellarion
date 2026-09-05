@@ -174,6 +174,36 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  pages:
+    name: Deploy GitHub Pages
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    needs: [quality, wasm]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: stellarion-html
+          path: pages-artifact/
+      - name: Extract the packaged game
+        run: unzip -q pages-artifact/stellarion-html.zip -d game
+      - uses: actions/configure-pages@v5
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: game/
+      - name: Deploy GitHub Pages site
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   release:
     name: Publish GitHub release
     if: github.ref == 'refs/heads/master'

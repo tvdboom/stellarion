@@ -21,6 +21,7 @@ fn zero_damage_stalemate_terminates() {
         controlled: Some(2),
         army: Army::from([(Unit::probe(), 1)]),
         buy: Vec::new(),
+        lunar_build_order: [None; 4],
     };
     let origin = Planet {
         id: 0,

@@ -13,7 +13,7 @@ use std::thread;
 
 use sha2::{Digest, Sha256};
 
-const PIPELINE_VERSION: &str = "stellarion-ktx2-v7-uastc-q2-rdo1.5-zstd18-sha256";
+const PIPELINE_VERSION: &str = "stellarion-ktx2-v8-uastc-q2-rdo1.5-zstd18-sha256";
 const MANIFEST_NAME: &str = ".stellarion-assets";
 const MAX_JOBS: usize = 12;
 
@@ -361,6 +361,10 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
         || source_relative.ends_with(" large.png")
         || source_relative.starts_with("images/ambient/")
+        || matches!(
+            source_relative,
+            "images/icons/mute.png" | "images/icons/no-music.png" | "images/icons/sound.png"
+        )
 }
 
 /// Returns whether source and output bytes match their manifest fingerprints.

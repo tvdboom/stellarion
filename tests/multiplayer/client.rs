@@ -673,6 +673,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
                 operation: Operation::Recover,
                 result,
                 recovery_code: replacement,
+                color_notice: None,
             },
             &mut runtime,
             &mut session,
@@ -746,6 +747,7 @@ fn created_player_name_is_available_for_later_joins() {
             operation: Operation::Create,
             result,
             recovery_code,
+            color_notice: None,
         },
         &mut runtime,
         &mut session,
@@ -1193,4 +1195,156 @@ fn pending_turn_commands_are_bounded() {
         planet_id: 0
     }));
     assert_eq!(pending.commands.len(), MAX_COMMANDS_PER_SUBMISSION);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let host = block_on(backend.authenticate(None)).unwrap();
+    let guest = block_on(backend.authenticate(None)).unwrap();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(State::new(AppState::CreateGame))
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<MultiplayerForm>()
+        .init_resource::<BackendTasks>()
+        .init_resource::<PendingTurnCommands>()
+        .insert_resource(MultiplayerSession {
+            auth: Some(host.clone()),
+            ..default()
+        })
+        .insert_resource(ClientRuntime {
+            backend: Some(backend.clone()),
+            realtime_config: None,
+            storage: Arc::new(MemoryStorage::default()),
+            profile: ClientProfile::default(),
+            practice_return: None,
+        })
+        .add_message::<MultiplayerRequest>()
+        .add_message::<MessageMsg>()
+        .add_message::<RefreshGameplayProjection>()
+        .add_message::<RefreshTurnDraft>()
+        .add_systems(Update, (process_requests, poll_backend_tasks).chain());
+    let settle = |app: &mut App, request| {
+        app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().write(request);
+        for _ in 0..1000 {
+            app.update();
+            if app.world().resource::<BackendTasks>().0.is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("setup tasks failed to settle");
+    };
+    let host_color = PlayerColor::new(1).unwrap();
+    settle(
+        &mut app,
+        MultiplayerRequest::CreateGame {
+            display_name: "Host".into(),
+            rules: GameRules {
+                player_count: 4,
+                ..default()
+            },
+            player_color: host_color,
+        },
+    );
+    let created = app.world().resource::<MultiplayerSession>().active_game.clone().unwrap();
+    assert_eq!(created.persisted.state.player(1).unwrap().color(), host_color);
+    created.persisted.validate().unwrap();
+    let stored = block_on(backend.load_game(&host, &created.id)).unwrap();
+    assert_eq!(stored.persisted.state.player(1).unwrap().color(), host_color);
+
+    *app.world_mut().resource_mut::<MultiplayerSession>() = MultiplayerSession {
+        auth: Some(guest.clone()),
+        ..default()
+    };
+    app.world_mut().insert_resource(State::new(AppState::JoinGame));
+    let guest_color = PlayerColor::new(3).unwrap();
+    settle(
+        &mut app,
+        MultiplayerRequest::JoinGame {
+            display_name: "Guest".into(),
+            code: created.code.0.clone(),
+            player_color: guest_color,
+        },
+    );
+    let joined = app.world().resource::<MultiplayerSession>();
+    let game = joined.active_game.as_ref().unwrap();
+    assert_eq!(game.persisted.state.player(2).unwrap().color(), guest_color);
+    let stored = block_on(backend.load_game(&host, &game.id)).unwrap();
+    assert_eq!(stored.persisted.state.player(2).unwrap().color(), guest_color);
+
+    // A reconnect keeps the original color and does not issue an unusable recovery code.
+    settle(
+        &mut app,
+        MultiplayerRequest::JoinGame {
+            display_name: "Guest".into(),
+            code: created.code.0.clone(),
+            player_color: host_color,
+        },
+    );
+    let reconnected = app.world().resource::<MultiplayerSession>();
+    assert!(reconnected.issued_recovery_code.is_none());
+    assert_eq!(
+        reconnected.active_game.as_ref().unwrap().persisted.state.player(2).unwrap().color(),
+        guest_color
+    );
+
+    let third = block_on(backend.authenticate(None)).unwrap();
+    *app.world_mut().resource_mut::<MultiplayerSession>() = MultiplayerSession {
+        auth: Some(third),
+        ..default()
+    };
+    settle(
+        &mut app,
+        MultiplayerRequest::JoinGame {
+            display_name: "Third".into(),
+            code: created.code.0,
+            player_color: host_color,
+        },
+    );
+    let session = app.world().resource::<MultiplayerSession>();
+    assert_eq!(session.membership.as_ref().unwrap().player_id, 3);
+    assert!(session.issued_recovery_code.is_some());
+    assert!(session.notice.as_ref().unwrap().contains("already selected"));
+    let game = session.active_game.as_ref().unwrap();
+    assert_eq!(game.persisted.state.player(1).unwrap().color(), host_color);
+    assert_ne!(game.persisted.state.player(3).unwrap().color(), host_color);
+    game.persisted.validate().unwrap();
+    let messages: Vec<_> = app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect();
+    assert!(messages.iter().any(|message| message.message.contains("Choose a color in the lobby")));
+}
+
+#[test]
+fn join_color_retries_a_stale_revision_without_overwriting_another_member() {
+    let backend = InMemoryBackend::new();
+    let host = block_on(backend.authenticate(None)).unwrap();
+    let guest = block_on(backend.authenticate(None)).unwrap();
+    let created = block_on(backend.create_game(
+        &host,
+        CreateGameRequest {
+            code: GameCode::new("ABCDEF"),
+            display_name: "Host".into(),
+            recovery_hash: "a".repeat(64),
+            persisted: PersistedGame::new(GameModel::new([7; 32], GameRules::default()).unwrap()),
+        },
+    ))
+    .unwrap();
+    let mut joined = block_on(backend.join_game(
+        &guest,
+        JoinGameRequest {
+            code: created.game.code,
+            display_name: "Guest".into(),
+            recovery_hash: "b".repeat(64),
+        },
+    ))
+    .unwrap();
+    let host_color = PlayerColor::new(4).unwrap();
+    let guest_color = PlayerColor::new(5).unwrap();
+    let changed = recolored_lobby_snapshot(&joined.game, 1, host_color).unwrap();
+    block_on(backend.save_game(&host, &joined.game.id, joined.game.revision, changed)).unwrap();
+    block_on(apply_join_color(&backend, &guest, &mut joined, guest_color)).unwrap();
+    assert_eq!(joined.game.persisted.state.player(1).unwrap().color(), host_color);
+    assert_eq!(joined.game.persisted.state.player(2).unwrap().color(), guest_color);
 }
