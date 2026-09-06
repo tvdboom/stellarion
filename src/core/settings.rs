@@ -6,17 +6,15 @@ use serde::{Deserialize, Serialize};
 use crate::core::states::AudioState;
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Local preferences and map-generation values; deterministic values are copied into game rules.
 pub struct Settings {
     pub audio: AudioState,
     /// Master output level from zero (silent) to one (full volume).
-    #[serde(default = "default_volume")]
     pub volume: f32,
     /// Last enabled mode, restored when leaving mute.
-    #[serde(default)]
     pub unmuted_audio: AudioState,
     /// Last audible master level, retained while the slider shows zero.
-    #[serde(default = "default_volume")]
     pub unmuted_volume: f32,
     pub n_planets: usize,
     pub p_colonizable: usize,
@@ -55,7 +53,7 @@ impl Settings {
         self.audio = mode;
     }
 
-    /// Returns the enabled mode to restore, including for older saved preferences.
+    /// Returns the enabled mode to restore after muting.
     pub fn restored_audio_mode(&self) -> AudioState {
         match self.unmuted_audio {
             AudioState::Mute | AudioState::NoMusic => AudioState::NoMusic,

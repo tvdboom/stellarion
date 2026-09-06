@@ -2,6 +2,47 @@
 
 use super::*;
 
+pub(super) fn conversion_success_message(gain: usize, resource: ResourceName) -> MessageMsg {
+    MessageMsg::info(format!("Gained {} {}.", format_thousands(gain), resource.to_name()))
+}
+
+pub(super) fn energy_shortage_warning(
+    energy: EnergyGrid,
+    unit: Unit,
+    solar_band: Option<SolarBand>,
+) -> Option<MessageMsg> {
+    let after = energy.with_unit(unit, solar_band, 1);
+    (after.balance() < energy.balance() && energy.balance() >= 0 && after.balance() < 0).then(
+        || {
+            MessageMsg::warning(format!(
+                "This purchase leaves next turn's Energy at {}. Resource production and Planetary \
+            Shields will operate at {}% efficiency unless you generate more Energy.",
+                after.balance(),
+                after.efficiency_percent()
+            ))
+        },
+    )
+}
+
+pub(super) fn shop_unit_description(unit: Unit, senate_level_limit: usize) -> String {
+    if unit == Unit::Building(Building::Senate) {
+        let suffix = if senate_level_limit == 1 {
+            ""
+        } else {
+            "s"
+        };
+        return format!(
+            "{} Each level adds +1 planet slot. This match permits {} Senate level{}, for up to +{} planet slot{}.",
+            unit.description(),
+            senate_level_limit,
+            suffix,
+            senate_level_limit,
+            suffix,
+        );
+    }
+    unit.description().to_string()
+}
+
 /// Draws the unit hover interface and emits any resulting local actions.
 fn draw_unit_hover(
     ui: &mut Ui,
@@ -10,7 +51,10 @@ fn draw_unit_hover(
     state: &mut UiState,
     player: &mut Player,
     planet_id: PlanetId,
+    solar_band: Option<SolarBand>,
+    senate_level_limit: usize,
     pending: &mut PendingTurnCommands,
+    message: &mut MessageWriter<MessageMsg>,
     msg: Option<String>,
     images: &ImageIds,
 ) {
@@ -32,6 +76,16 @@ fn draw_unit_hover(
                     ui.label(price.to_string());
                     ui.add_space(30.);
                 }
+
+                let energy = EnergyGrid::for_unit(*unit, solar_band);
+                if unit.is_building() || energy != EnergyGrid::default() {
+                    ui.add_image(images.get("energy"), [50., 35.]);
+                    ui.label(if energy.supply > 0 {
+                        format!("+{}", energy.supply)
+                    } else {
+                        energy.demand.to_string()
+                    });
+                }
             });
 
             ui.separator();
@@ -40,7 +94,7 @@ fn draw_unit_hover(
                 ui.colored_label(Color32::RED, RichText::new(msg).small());
             }
 
-            ui.small(unit.description());
+            ui.small(shop_unit_description(*unit, senate_level_limit));
 
             ui.add_space(10.);
 
@@ -157,10 +211,14 @@ fn draw_unit_hover(
                             amount: state.lab_amount,
                         })
                     {
+                        // Confirm the control immediately; the informational toast adds its
+                        // separate notification cue when it reports the gained resource.
+                        set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
                         let source = player.resources.get_mut(from);
                         *source = source.saturating_sub(state.lab_amount);
                         let destination = player.resources.get_mut(to);
                         *destination = destination.saturating_add(gain);
+                        message.write(conversion_success_message(gain, *to));
                     }
 
                     ui.label(gain.to_string());
@@ -216,14 +274,18 @@ pub(super) fn draw_shop(
     settings: &Settings,
     player: &mut Player,
     planet: &mut Planet,
+    solar_band: Option<SolarBand>,
+    mut next_turn_energy: EnergyGrid,
+    senate_level_limit: usize,
     pending: &mut PendingTurnCommands,
+    message: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
 ) {
     ui.spacing_mut().item_spacing = emath::Vec2::new(4., 4.);
 
     ui.add_space(4.);
 
-    if planet.is_moon() && state.shop == Shop::Defenses {
+    if planet.is_moon() && matches!(state.shop, Shop::Orbitals | Shop::Defenses) {
         state.shop = Shop::default();
     }
 
@@ -252,11 +314,14 @@ pub(super) fn draw_shop(
 
         let (current, max) = match state.shop {
             Shop::Buildings => (planet.fields_consumed(), planet.max_fields()),
+            Shop::Orbitals => (0, 0),
             Shop::Fleet => (planet.fleet_production(), planet.max_fleet_production()),
             Shop::Defenses => (planet.battery_production(), planet.max_battery_production()),
         };
 
-        if state.shop != Shop::Buildings || planet.is_moon() {
+        if matches!(state.shop, Shop::Fleet | Shop::Defenses)
+            || (state.shop == Shop::Buildings && planet.is_moon())
+        {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 ui.add_space(45.);
                 ui.small(format!(
@@ -273,15 +338,21 @@ pub(super) fn draw_shop(
         }
     });
 
-    let idx = match state.shop {
-        Shop::Buildings => 0,
-        Shop::Fleet => 1,
-        Shop::Defenses => 2,
+    let units = match state.shop {
+        Shop::Buildings => Unit::buildings()
+            .into_iter()
+            .filter(|unit| unit.valid_on(planet.is_moon()))
+            .collect::<Vec<_>>(),
+        Shop::Orbitals => Unit::orbitals(),
+        Shop::Fleet => Unit::ships(),
+        Shop::Defenses => {
+            Unit::defenses().into_iter().filter(|unit| *unit != Unit::space_dock()).collect()
+        },
     };
 
     ui.add_space(10.);
 
-    for row in Unit::all_valid(planet.is_moon())[idx].chunks(5) {
+    for row in units.chunks(5) {
         ui.horizontal(|ui| {
             ui.add_space(25.);
 
@@ -289,7 +360,7 @@ pub(super) fn draw_shop(
                 let count = planet.army.amount(unit);
                 let bought = planet.buy.iter().filter(|u| *u == unit).count();
 
-                let purchase = purchase_limit(player, planet, *unit);
+                let purchase = purchase_limit(player, planet, *unit, senate_level_limit);
                 let limit = purchase.as_ref().copied().unwrap_or(0);
                 ui.add_enabled_ui(limit > 0 && pending.can_accept_commands(), |ui| {
                     ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
@@ -314,6 +385,12 @@ pub(super) fn draw_shop(
                     {
                         player.resources -= unit.price();
                         planet.buy.push(*unit);
+                        if let Some(warning) =
+                            energy_shortage_warning(next_turn_energy, *unit, solar_band)
+                        {
+                            message.write(warning);
+                        }
+                        next_turn_energy = next_turn_energy.with_unit(*unit, solar_band, 1);
                         set_ui_sound(ui.ctx(), Some(SoundEffect::purchase(*unit)));
                     }
 
@@ -386,7 +463,17 @@ pub(super) fn draw_shop(
                         response
                             .on_hover_ui(|ui| {
                                 draw_unit_hover(
-                                    ui, unit, count, state, player, planet.id, pending, None,
+                                    ui,
+                                    unit,
+                                    count,
+                                    state,
+                                    player,
+                                    planet.id,
+                                    solar_band,
+                                    senate_level_limit,
+                                    pending,
+                                    message,
+                                    None,
                                     images,
                                 );
                             })
@@ -398,7 +485,10 @@ pub(super) fn draw_shop(
                                     state,
                                     player,
                                     planet.id,
+                                    solar_band,
+                                    senate_level_limit,
                                     pending,
+                                    message,
                                     purchase.as_ref().err().map(ToString::to_string),
                                     images,
                                 );

@@ -161,8 +161,8 @@ pub fn move_camera_keyboard(
         1.0
     };
 
-    // Match the old 10-pixels-per-frame feel at 60 FPS without changing speed on high-refresh
-    // displays or after a slow frame.
+    // Move at 600 screen pixels per second without changing speed on high-refresh displays
+    // or after a slow frame.
     let transform = 600. * scale * time.delta_secs();
     if keyboard.pressed(KeyCode::KeyA) {
         camera_t.translation.x -= transform;

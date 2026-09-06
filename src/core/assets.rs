@@ -136,6 +136,17 @@ impl WorldAssets {
         ] {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
+        // Combat variants reuse mastered source cues with per-request pitch treatment.
+        // Aliases keep their cooldowns and simultaneous-instance limits independent.
+        for (name, source) in [
+            ("shield impact", "repair"),
+            ("beam fire", "death ray"),
+            ("missile fire", "launch"),
+            ("bomb release", "launch"),
+            ("probe retreat", "booster"),
+        ] {
+            load_audio_alias(server, &mut self.audio, &mut self.gameplay_handles, name, source);
+        }
 
         load_category(
             server,
@@ -143,17 +154,15 @@ impl WorldAssets {
             &mut self.gameplay_handles,
             "icons",
             &[
-                "user",
-                "info",
-                "message",
                 "won",
                 "lost",
                 "eye",
                 "missile",
                 "logs",
-                "repair",
                 "convert",
                 "convert hover",
+                "recall",
+                "recall hover",
             ],
         );
         // Faction-colored map artwork keeps neutral blue-silver relief under the sprite tint.
@@ -161,6 +170,9 @@ impl WorldAssets {
         for name in [
             "dock",
             "jump gate marker",
+            "solar satellite marker",
+            "command relay marker",
+            "sensor phalanx marker",
             "mission",
             "mission colonize",
             "mission destroy",
@@ -225,12 +237,46 @@ impl WorldAssets {
             self.gameplay_handles.push(image.clone().untyped());
             self.images.insert(name.to_string(), image);
         }
+        // Dedicated lunar silhouettes mirror their shop art instead of borrowing generic atlas
+        // tiles. Unique registry keys avoid colliding with the shop-card image handles.
+        for name in ["shipyard", "tidal generator", "orbital radar"] {
+            load_linear_image(
+                server,
+                &mut self.images,
+                &mut self.gameplay_handles,
+                &format!("moon {name}"),
+                &format!("images/moon-buildings/{name}.basisu.ktx2"),
+            );
+        }
+        load_linear_image(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
+            "planet robotics",
+            "images/planet-buildings/robotics.basisu.ktx2",
+        );
+        load_linear_image(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
+            "gas planet robotics",
+            "images/planet-buildings/robotics gas.basisu.ktx2",
+        );
+        for name in ["bennu", "eros", "gaspra", "mathilde"] {
+            load_linear_image(
+                server,
+                &mut self.images,
+                &mut self.gameplay_handles,
+                name,
+                &format!("images/asteroids/{name}.basisu.ktx2"),
+            );
+        }
         load_category(
             server,
             &mut self.images,
             &mut self.gameplay_handles,
             "resources",
-            &["turn", "owned", "metal", "crystal", "deuterium"],
+            &["turn", "owned", "metal", "crystal", "deuterium", "energy"],
         );
         load_category(
             server,
@@ -239,7 +285,7 @@ impl WorldAssets {
             "buildings",
             &[
                 "lunar base",
-                "demolition nexus",
+                "tidal generator",
                 "metal mine",
                 "crystal mine",
                 "deuterium synthesizer",
@@ -248,11 +294,18 @@ impl WorldAssets {
                 "missile silo",
                 "planetary shield",
                 "reactor",
-                "jump gate",
-                "sensor phalanx",
+                "robotics",
                 "laboratory",
                 "orbital radar",
+                "senate",
             ],
+        );
+        load_category(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
+            "orbitals",
+            &["solar satellite", "sensor phalanx", "command relay", "jump gate", "space dock"],
         );
         load_category(
             server,
@@ -261,13 +314,13 @@ impl WorldAssets {
             "defense",
             &[
                 "crawler",
+                "repair truck",
                 "rocket launcher",
                 "light laser",
                 "heavy laser",
                 "gauss cannon",
                 "ion cannon",
                 "plasma turret",
-                "space dock",
                 "antiballistic missile",
                 "interplanetary missile",
             ],
@@ -296,10 +349,10 @@ impl WorldAssets {
             &mut self.gameplay_handles,
             "mission",
             &[
-                "overview",
                 "abandon",
                 "attacked",
                 "buildings",
+                "orbitals",
                 "fleet",
                 "defenses",
                 "deploy",
@@ -539,6 +592,24 @@ fn load_audio(
     }
     let handle: Handle<AudioSource> = server.load(format!("audio/{name}.ogg"));
     group.push(handle.clone().untyped());
+    audio.insert(name.to_string(), handle);
+}
+
+fn load_audio_alias(
+    server: &AssetServer,
+    audio: &mut HashMap<String, Handle<AudioSource>>,
+    group: &mut Vec<UntypedHandle>,
+    name: &str,
+    source: &str,
+) {
+    if audio.contains_key(name) {
+        return;
+    }
+    let handle = audio.get(source).cloned().unwrap_or_else(|| {
+        let handle: Handle<AudioSource> = server.load(format!("audio/{source}.ogg"));
+        group.push(handle.clone().untyped());
+        handle
+    });
     audio.insert(name.to_string(), handle);
 }
 

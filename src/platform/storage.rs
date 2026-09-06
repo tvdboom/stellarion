@@ -14,8 +14,10 @@ const STORAGE_PREFIX: &str = "stellarion.v1.";
 
 /// Small local profile; authoritative multiplayer state never belongs here.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientProfile {
     /// Restorable anonymous authentication session.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub session: Option<AuthSession>,
     /// Recently opened game identifiers used only as a convenience hint.
     pub recent_games: Vec<GameId>,

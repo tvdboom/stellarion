@@ -7,11 +7,24 @@ use crate::multiplayer::model::GameRecord;
 use bevy::color::ColorToComponents;
 use bevy_kira_audio::AudioSource;
 
+#[test]
+fn destruction_animation_hides_the_planet_swap_under_the_blast() {
+    let mut planet = Planet::new(0, "Cindra".into(), Vec2::ZERO, false, 1.0);
+    let original_image = planet.image();
+    planet.destroy();
+
+    assert_eq!(map_planet_image(&planet, true), original_image);
+    assert_eq!(map_planet_image(&planet, false), "planet0");
+
+    planet.image = 0;
+    assert_eq!(map_planet_image(&planet, true), "planet0");
+}
+
 /// Finds the defenses spawned by the real map setup without a window or GPU.
 fn test_defenses(
     world: &mut World,
     planet: PlanetId,
-) -> (Entity, Entity, Entity, Handle<ColorMaterial>) {
+) -> (Entity, Entity, Entity, Entity, Entity, Entity, Handle<ColorMaterial>) {
     let planet = world
         .query::<(Entity, &PlanetCmp)>()
         .iter(world)
@@ -23,8 +36,14 @@ fn test_defenses(
         children.iter().find(|&child| world.get::<PlanetaryShieldCmp>(child).is_some()).unwrap();
     let dock = children.iter().find(|&child| world.get::<SpaceDockCmp>(child).is_some()).unwrap();
     let gate = children.iter().find(|&child| world.get::<JumpGateCmp>(child).is_some()).unwrap();
+    let satellite =
+        children.iter().find(|&child| world.get::<SolarSatelliteCmp>(child).is_some()).unwrap();
+    let relay =
+        children.iter().find(|&child| world.get::<CommandRelayCmp>(child).is_some()).unwrap();
+    let phalanx =
+        children.iter().find(|&child| world.get::<SensorPhalanxCmp>(child).is_some()).unwrap();
     let material = world.get::<MeshMaterial2d<ColorMaterial>>(shield).unwrap().0.clone();
-    (shield, dock, gate, material)
+    (shield, dock, gate, satellite, relay, phalanx, material)
 }
 
 #[test]
@@ -191,6 +210,144 @@ fn scenery_varies_between_maps_and_survives_save_roundtrips_and_world_changes() 
         assert!(selections.contains(&kind));
     }
     assert_eq!(selections.len(), 3);
+}
+
+#[test]
+fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible_tumbling() {
+    let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
+    let layout = asteroid_belt_layout(&map).unwrap();
+    let expected_count = asteroid_belt_asteroid_count(layout.radius);
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<Assets<Image>>()
+        .insert_resource(map)
+        .add_systems(
+            Startup,
+            |mut commands: Commands, map: Res<Map>, mut images: ResMut<Assets<Image>>| {
+                let images = [
+                    images.add(Image::default()),
+                    images.add(Image::default()),
+                    images.add(Image::default()),
+                    images.add(Image::default()),
+                ];
+                spawn_asteroid_belt(&mut commands, &map, &images);
+            },
+        )
+        .add_systems(Update, animate_asteroid_belts);
+    app.update();
+
+    let before = {
+        let world = app.world_mut();
+        let planets = world
+            .resource::<Map>()
+            .planets()
+            .into_iter()
+            .map(|planet| (planet.position, planet.size() * 0.5))
+            .collect::<Vec<_>>();
+        let mut asteroids =
+            world.query_filtered::<(Entity, &Transform, &Pickable, &Sprite), With<AsteroidCmp>>();
+        let mut image_ids = Vec::new();
+        let mut phases = Vec::new();
+        let asteroids = asteroids
+            .iter(world)
+            .map(|(entity, transform, pickable, sprite)| {
+                assert_eq!(*pickable, Pickable::IGNORE);
+                assert!(transform.translation.z < PLANET_Z);
+                assert!((0.0..=38.0).contains(&sprite.custom_size.unwrap().x));
+                assert_eq!(sprite.color, Color::srgba(0.68, 0.70, 0.74, 0.64));
+                for (planet_position, planet_radius) in &planets {
+                    let asteroid_radius = sprite.custom_size.unwrap().x * 0.5;
+                    assert!(
+                        transform.translation.truncate().distance(*planet_position)
+                            > planet_radius + asteroid_radius + ASTEROID_PLANET_CLEARANCE - 2.0
+                    );
+                }
+                assert!(world.get::<Children>(entity).is_none());
+                if !image_ids.contains(&sprite.image.id()) {
+                    image_ids.push(sprite.image.id());
+                }
+                phases.push(world.get::<AsteroidCmp>(entity).unwrap().phase.rem_euclid(TAU));
+                (entity, transform.clone())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(image_ids.len(), 4);
+        phases.sort_by(f32::total_cmp);
+        let largest_gap = phases
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .chain(std::iter::once(phases[0] + TAU - phases[phases.len() - 1]))
+            .fold(0.0_f32, f32::max);
+        assert!(largest_gap < TAU / phases.len() as f32 * 2.25);
+        asteroids
+    };
+    assert_eq!(before.len(), expected_count);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert!(before.iter().any(|(entity, transform)| {
+        app.world().get::<Transform>(*entity).unwrap().translation.distance(transform.translation)
+            > 0.5
+    }));
+    assert!(before.iter().any(|(entity, transform)| {
+        app.world().get::<Transform>(*entity).unwrap().rotation.angle_between(transform.rotation)
+            > 0.08
+    }));
+}
+
+#[test]
+fn every_supported_map_gets_exactly_one_seed_varied_complete_asteroid_field() {
+    let rules = [
+        GameRules {
+            planets_per_player: 5,
+            moons_percent: 0,
+            player_count: 1,
+            practice_mode: true,
+            ..default()
+        },
+        GameRules::default(),
+        GameRules {
+            planets_per_player: 20,
+            moons_percent: 100,
+            player_count: 4,
+            ..default()
+        },
+    ];
+    let mut radii = Vec::new();
+    for rules in rules {
+        for seed in 0..32_u8 {
+            let map = GameModel::new([seed; 32], rules.clone()).unwrap().map;
+            let layout = asteroid_belt_layout(&map).unwrap();
+            assert!((0..=1).contains(&layout.between_bands));
+            assert!(layout.radius.is_finite() && layout.radius > 0.0);
+            assert!((72..=160).contains(&asteroid_belt_asteroid_count(layout.radius)));
+            let gap = solar_band_gaps(&map)
+                .into_iter()
+                .find(|gap| gap.between_bands == layout.between_bands)
+                .unwrap();
+            assert!(layout.radius - layout.radial_half_width > gap.inner_center);
+            assert!(layout.radius + layout.radial_half_width < gap.outer_center);
+            let star = map.solar_star_position();
+            let planets = map.planets();
+            let placements = asteroid_belt_placements(&map, layout);
+            assert_eq!(placements.len(), asteroid_belt_asteroid_count(layout.radius));
+            for placement in &placements {
+                let position = star + Vec2::from_angle(placement.phase) * placement.radius;
+                for planet in &planets {
+                    assert!(
+                        position.distance(planet.position)
+                            > planet.size() * 0.5
+                                + placement.diameter * 0.5
+                                + ASTEROID_PLANET_CLEARANCE
+                                - 2.0
+                    );
+                }
+            }
+            radii.push(layout.radius.to_bits());
+        }
+    }
+    radii.sort_unstable();
+    radii.dedup();
+    assert!(radii.len() > 16);
 }
 
 #[test]
@@ -430,6 +587,9 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     let army = Army::from([
         (Unit::planetary_shield(), 1),
         (Unit::space_dock(), 1),
+        (Unit::Building(Building::SolarSatellite), 1),
+        (Unit::Building(Building::CommandRelay), 1),
+        (Unit::Building(Building::SensorPhalanx), 1),
         (Unit::Building(Building::JumpGate), 1),
     ]);
     for home in [own_home, enemy_home, unknown_home] {
@@ -491,10 +651,45 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             update_planet_defenses.before(bevy_tweening::AnimationSystem::AnimationUpdate),
         );
     app.world_mut().spawn((Camera2d, MainCamera));
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(220));
     app.update();
     let own = test_defenses(app.world_mut(), own_home);
     let enemy = test_defenses(app.world_mut(), enemy_home);
     let unknown = test_defenses(app.world_mut(), unknown_home);
+
+    // The dock and satellite keep independent orbits.
+    for (entity, radius, size, period) in [
+        (own.1, Planet::SIZE * 0.75, Planet::SIZE * 0.4, Duration::from_secs(12)),
+        (own.3, Planet::SIZE * 0.82, Planet::SIZE * 0.3, Duration::from_secs(14)),
+    ] {
+        let transform = app.world().get::<Transform>(entity).unwrap();
+        let sprite = app.world().get::<Sprite>(entity).unwrap();
+        let cycle = app.world().get::<TweenAnim>(entity).unwrap().tweenable().cycle_duration();
+        assert!((transform.translation.truncate().length() - radius).abs() < 0.01);
+        assert_eq!(sprite.custom_size, Some(Vec2::splat(size)));
+        assert_eq!(cycle, period);
+        assert_eq!(*app.world().get::<Pickable>(entity).unwrap(), Pickable::IGNORE);
+    }
+    let gate_anchor = app.world().get::<Transform>(own.2).unwrap().translation;
+    let gate_rotation = app.world().get::<Transform>(own.2).unwrap().rotation;
+    assert!((gate_anchor.truncate().length() - Planet::SIZE * 0.9).abs() < 0.01);
+    assert_eq!(
+        app.world().get::<Sprite>(own.2).unwrap().custom_size,
+        Some(Vec2::splat(Planet::SIZE * 0.36))
+    );
+    assert_eq!(
+        app.world().get::<TweenAnim>(own.2).unwrap().tweenable().cycle_duration(),
+        Duration::from_secs(17)
+    );
+    for (entity, size) in [(own.4, Planet::SIZE * 0.3), (own.5, Planet::SIZE * 0.34)] {
+        let transform = app.world().get::<Transform>(entity).unwrap();
+        let motion = app.world().get::<RangeMarkerMotionCmp>(entity).unwrap();
+        assert!((motion.anchor.length() - Planet::SIZE * 0.83).abs() < 0.01);
+        assert_eq!(transform.translation.truncate(), motion.anchor);
+        assert_eq!(app.world().get::<Sprite>(entity).unwrap().custom_size, Some(Vec2::splat(size)));
+        assert!(app.world().get::<TweenAnim>(entity).is_none());
+        assert_eq!(*app.world().get::<Pickable>(entity).unwrap(), Pickable::default());
+    }
 
     // An unseen capture must not leak the new controller through the defense color.
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).controlled = Some(3);
@@ -503,16 +698,21 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         {
             let mut session = app.world_mut().resource_mut::<MultiplayerSession>();
             let model = &mut session.active_game.as_mut().unwrap().persisted.state;
-            model.player_mut(1).unwrap().color = Some(color);
-            model.player_mut(2).unwrap().color = Some(enemy_color);
+            model.player_mut(1).unwrap().color = color;
+            model.player_mut(2).unwrap().color = enemy_color;
         }
         app.update();
-        for ((shield, dock, gate, material), expected) in [(&own, color), (&enemy, enemy_color)] {
+        for ((shield, dock, gate, satellite, relay, phalanx, material), expected) in
+            [(&own, color), (&enemy, enemy_color)]
+        {
             assert_eq!(*app.world().get::<Visibility>(*shield).unwrap(), Visibility::Inherited);
-            assert_eq!(*app.world().get::<Visibility>(*dock).unwrap(), Visibility::Inherited);
-            assert_eq!(*app.world().get::<Visibility>(*gate).unwrap(), Visibility::Inherited);
-            assert_eq!(app.world().get::<Sprite>(*dock).unwrap().color, expected.color());
-            assert_eq!(app.world().get::<Sprite>(*gate).unwrap().color, expected.color());
+            for orbital in [dock, gate, satellite, relay, phalanx] {
+                assert_eq!(
+                    *app.world().get::<Visibility>(*orbital).unwrap(),
+                    Visibility::Inherited
+                );
+                assert_eq!(app.world().get::<Sprite>(*orbital).unwrap().color, expected.color());
+            }
             let mut alphas = Vec::new();
             // Step across loop boundaries at a frame interval that does not divide the period.
             // Check the rendered material too: an opaque material ignores the animated alpha.
@@ -541,14 +741,14 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
                 }
             }
         }
-        for entity in [unknown.0, unknown.1, unknown.2] {
+        for entity in [unknown.0, unknown.1, unknown.2, unknown.3, unknown.4, unknown.5] {
             assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
         }
     }
 
-    // Once the local player captures it, both defenses adopt the new controller immediately.
+    // Once the local player captures it, all visible markers adopt the new controller immediately.
     let alpha_before_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.3).unwrap().color.alpha();
+        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.6).unwrap().color.alpha();
     let elapsed_before_capture =
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed();
     app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
@@ -557,6 +757,9 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     let own_color = app.world().get::<Sprite>(own.1).unwrap().color;
     assert_eq!(app.world().get::<Sprite>(enemy.1).unwrap().color, own_color);
     assert_eq!(app.world().get::<Sprite>(enemy.2).unwrap().color, own_color);
+    assert_eq!(app.world().get::<Sprite>(enemy.3).unwrap().color, own_color);
+    assert_eq!(app.world().get::<Sprite>(enemy.4).unwrap().color, own_color);
+    assert_eq!(app.world().get::<Sprite>(enemy.5).unwrap().color, own_color);
     assert_eq!(app.world().get::<PlanetaryShieldCmp>(enemy.0).unwrap().color, Some(own_color));
     assert_eq!(
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed(),
@@ -564,12 +767,39 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         "changing controller must not restart the fade"
     );
     let alpha_after_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.3).unwrap().color.alpha();
+        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.6).unwrap().color.alpha();
     assert!((alpha_after_capture - alpha_before_capture).abs() < 1e-6);
+    assert_eq!(
+        app.world().get::<Transform>(own.2).unwrap().translation,
+        gate_anchor,
+        "the Jump Gate spins without orbiting its planet"
+    );
+    assert!(
+        app.world().get::<Transform>(own.2).unwrap().rotation.angle_between(gate_rotation) > 0.01,
+        "the anchored Jump Gate still spins around itself"
+    );
+
+    let camera =
+        app.world_mut().query_filtered::<Entity, With<MainCamera>>().single(app.world()).unwrap();
+    let Projection::Orthographic(projection) =
+        &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
+    else {
+        panic!("map camera should use an orthographic projection");
+    };
+    projection.scale = crate::core::constants::MAX_ZOOM;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(220));
+    app.update();
+    for world in [&own, &enemy] {
+        assert_eq!(*app.world().get::<Visibility>(world.1).unwrap(), Visibility::Inherited);
+        assert_eq!(*app.world().get::<Visibility>(world.2).unwrap(), Visibility::Inherited);
+        assert_eq!(*app.world().get::<Visibility>(world.3).unwrap(), Visibility::Hidden);
+        assert_eq!(*app.world().get::<Visibility>(world.4).unwrap(), Visibility::Inherited);
+        assert_eq!(*app.world().get::<Visibility>(world.5).unwrap(), Visibility::Inherited);
+    }
 
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).is_destroyed = true;
     app.update();
-    for entity in [enemy.0, enemy.1, enemy.2] {
+    for entity in [enemy.0, enemy.1, enemy.2, enemy.3, enemy.4, enemy.5] {
         assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
     }
 }
@@ -678,10 +908,52 @@ fn planet_selection_stops_camera_focus_and_preserves_the_origin_for_other_owners
 }
 
 #[test]
-fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
+fn range_marker_idle_motion_pauses_for_a_stable_hover_target() {
+    let preview = MapRangePreview::CommandRelay(7);
+    let anchor = Vec2::new(-60.0, -55.0);
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<UiState>()
+        .add_systems(Update, animate_range_markers);
+    let marker = app
+        .world_mut()
+        .spawn((
+            Transform::from_translation(anchor.extend(0.7)),
+            Visibility::Inherited,
+            RangeMarkerMotionCmp {
+                anchor,
+                elapsed: 0.0,
+                phase: 0.4,
+                preview,
+            },
+        ))
+        .id();
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    let moving = app.world().get::<Transform>(marker).unwrap().clone();
+    assert!(moving.translation.truncate().distance(anchor) > 0.1);
+    assert!(moving.rotation.angle_between(Quat::IDENTITY) > 0.001);
+
+    app.world_mut().resource_mut::<UiState>().range_preview = Some(preview);
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(3));
+    app.update();
+    let held = app.world().get::<Transform>(marker).unwrap();
+    assert_eq!(held.translation, moving.translation);
+    assert_eq!(held.rotation, moving.rotation);
+
+    app.world_mut().resource_mut::<UiState>().range_preview = None;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(250));
+    app.update();
+    let resumed = app.world().get::<Transform>(marker).unwrap();
+    assert!(resumed.translation.distance(moving.translation) > 0.01);
+}
+
+#[test]
+fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover() {
     let mut model = GameModel::new([31; 32], GameRules::default()).unwrap();
     model.start().unwrap();
-    model.players[0].color = PlayerColor::new(4);
+    model.players[0].color = PlayerColor::new(4).unwrap();
     let player = model.players[0].clone();
     let scanner_color = player.color().color();
     let home = player.home_planet;
@@ -693,10 +965,12 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
     model.map.get_mut(enemy_moon).controlled = Some(model.players[1].id);
     for id in [home, enemy] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::SensorPhalanx), 2);
+        model.map.get_mut(id).army.insert(Unit::Building(Building::CommandRelay), 2);
     }
     for id in [moon, enemy_moon] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRadar), 3);
     }
+    let relay_radius = (spy_mission_range(&model.map, model.map.get(home)) + 0.7) * Planet::SIZE;
 
     let mut app = App::new();
     app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
@@ -717,16 +991,19 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
         .add_systems(Update, update_planet_info);
     app.world_mut().spawn((Camera2d, MainCamera));
 
-    for (hover, selected, expected) in [
-        (Some(home), None, Some(home)),
-        (None, Some(home), None), // Moving to the selected planet's shop hides the range.
-        (Some(moon), Some(home), Some(moon)),
-        (None, Some(moon), None),
-        (Some(enemy), None, None),
-        (Some(enemy_moon), None, None),
+    for (hover, preview, selected, expected) in [
+        (Some(home), None, None, None),
+        (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
+        (None, Some(MapRangePreview::CommandRelay(home)), None, Some((home, relay_radius))),
+        (Some(moon), None, Some(home), Some((moon, 395.0))),
+        (None, None, Some(moon), None),
+        (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),
+        (None, Some(MapRangePreview::CommandRelay(enemy)), None, None),
+        (Some(enemy_moon), None, None, None),
     ] {
         app.insert_resource(UiState {
             planet_hover: hover,
+            range_preview: preview,
             planet_selected: selected,
             ..default()
         });
@@ -741,8 +1018,11 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
         let mut outer_radius = 0.0_f32;
         for (parent, visibility, mesh, material) in scanners.iter(world) {
             let id = world.get::<PlanetCmp>(parent.parent()).unwrap().id;
-            assert_eq!(*visibility == Visibility::Inherited, expected == Some(id));
-            if expected != Some(id) {
+            assert_eq!(
+                *visibility == Visibility::Inherited,
+                expected.is_some_and(|(expected_id, _)| expected_id == id)
+            );
+            if expected.is_none_or(|(expected_id, _)| expected_id != id) {
                 continue;
             }
             visible += 1;
@@ -760,11 +1040,7 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
                 .unwrap();
             let radius =
                 positions.iter().map(|p| Vec2::new(p[0], p[1]).length()).reduce(f32::max).unwrap();
-            let expected_radius = if id == home {
-                250.0 // Two phalanx levels plus the planet radius.
-            } else {
-                395.0 // Three radar levels plus the moon radius.
-            };
+            let expected_radius = expected.unwrap().1;
             assert!(radius <= expected_radius + 0.01, "decorative arcs stay inside the range");
             outer_radius = outer_radius.max(radius);
         }
@@ -776,12 +1052,7 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
                 0
             }
         );
-        if let Some(id) = expected {
-            let expected_radius = if id == home {
-                250.0
-            } else {
-                395.0
-            };
+        if let Some((_, expected_radius)) = expected {
             assert!(
                 (outer_radius - expected_radius).abs() < 0.01,
                 "scanner uses its installed level"
@@ -789,21 +1060,29 @@ fn scanner_ranges_follow_owned_planet_and_controlled_moon_hover() {
         }
     }
 
-    // An absent scanner and a destroyed world have no range to display.
-    app.world_mut()
-        .resource_mut::<Map>()
-        .get_mut(home)
-        .army
-        .remove(&Unit::Building(Building::SensorPhalanx));
+    // Absent infrastructure and a destroyed world have no range to display.
+    for building in [Building::SensorPhalanx, Building::CommandRelay] {
+        app.world_mut().resource_mut::<Map>().get_mut(home).army.remove(&Unit::Building(building));
+    }
     app.world_mut().resource_mut::<Map>().get_mut(moon).is_destroyed = true;
-    for id in [home, moon] {
-        app.world_mut().resource_mut::<UiState>().planet_hover = Some(id);
+    for (hover, preview) in [
+        (None, Some(MapRangePreview::SensorPhalanx(home))),
+        (None, Some(MapRangePreview::CommandRelay(home))),
+        (Some(moon), None),
+    ] {
+        let mut state = app.world_mut().resource_mut::<UiState>();
+        state.planet_hover = hover;
+        state.range_preview = preview;
+        drop(state);
         app.update();
         let world = app.world_mut();
-        assert!(world
-            .query_filtered::<&Visibility, With<ScannerCmp>>()
+        let mut scanners = world.query_filtered::<(&ChildOf, &Visibility), With<ScannerCmp>>();
+        let visible = scanners
             .iter(world)
-            .all(|visibility| *visibility == Visibility::Hidden));
+            .filter(|(_, visibility)| **visibility == Visibility::Inherited)
+            .map(|(parent, _)| world.get::<PlanetCmp>(parent.parent()).unwrap().id)
+            .collect::<Vec<_>>();
+        assert!(visible.is_empty(), "hover={hover:?}, preview={preview:?}: {visible:?}");
     }
 }
 
@@ -882,6 +1161,64 @@ fn home_map_label_follows_the_same_hover_and_info_rules_as_other_planets() {
         let planet_entity = world.get::<ChildOf>(parent.parent()).unwrap().parent();
         assert_eq!(world.get::<PlanetCmp>(planet_entity).unwrap().id, player.home_planet);
     }
+}
+
+#[test]
+fn empty_orbitals_shortcut_only_appears_while_inspecting_an_owned_planet() {
+    let mut model = GameModel::new([41; 32], GameRules::default()).unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    model.map.get_mut(home).army.retain(|unit, _| !unit.is_orbital());
+
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Time>()
+        .init_resource::<UiState>()
+        .init_resource::<Settings>()
+        .init_resource::<Missions>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, update_planet_info);
+    app.world_mut().spawn((Camera2d, MainCamera));
+    app.update();
+
+    let planet_entity = app
+        .world_mut()
+        .query::<(Entity, &PlanetCmp)>()
+        .iter(app.world())
+        .find(|(_, planet)| planet.id == home)
+        .unwrap()
+        .0;
+    let orbital_icon = app
+        .world()
+        .get::<Children>(planet_entity)
+        .unwrap()
+        .iter()
+        .find(|&child| app.world().get::<Icon>(child) == Some(&Icon::Orbitals))
+        .unwrap();
+
+    assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Hidden));
+
+    app.world_mut().resource_mut::<UiState>().planet_hover = Some(home);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Inherited));
+
+    app.world_mut().resource_mut::<UiState>().planet_hover = None;
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(home)
+        .army
+        .insert(Unit::Building(crate::core::units::buildings::Building::SolarSatellite), 1);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Inherited));
 }
 
 #[test]
@@ -983,7 +1320,7 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         )
         .unwrap();
         if player_count == 2 {
-            model.players[0].color = PlayerColor::new(4);
+            model.players[0].color = PlayerColor::new(4).unwrap();
         }
         model.start().unwrap();
         let player = model.players[0].clone();

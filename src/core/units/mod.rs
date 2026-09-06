@@ -122,7 +122,7 @@ impl<'de> Deserialize<'de> for Unit {
 impl Unit {
     const LUNAR_BUILDINGS: [Self; 5] = [
         Self::Building(Building::LunarBase),
-        Self::Building(Building::DemolitionNexus),
+        Self::Building(Building::TidalGenerator),
         Self::Building(Building::Shipyard),
         Self::Building(Building::Laboratory),
         Self::Building(Building::OrbitalRadar),
@@ -130,7 +130,31 @@ impl Unit {
 
     /// Returns every building unit kind.
     pub fn buildings() -> Vec<Self> {
-        Building::iter().map(Unit::Building).collect()
+        let mut buildings = Building::iter()
+            .map(Unit::Building)
+            .filter(|unit| !unit.is_orbital())
+            .collect::<Vec<_>>();
+        let reactor = Self::Building(Building::Reactor);
+        if let Some(index) = buildings.iter().position(|unit| *unit == reactor) {
+            buildings.remove(index);
+        }
+        let after_resources = buildings
+            .iter()
+            .position(|unit| *unit == Self::Building(Building::DeuteriumSynthesizer))
+            .map_or(buildings.len(), |index| index + 1);
+        buildings.insert(after_resources, reactor);
+        buildings
+    }
+
+    /// Returns planet-only orbital structures in their shop display order.
+    pub fn orbitals() -> Vec<Self> {
+        vec![
+            Self::Building(Building::SolarSatellite),
+            Self::Building(Building::SensorPhalanx),
+            Self::Building(Building::CommandRelay),
+            Self::Building(Building::JumpGate),
+            Self::space_dock(),
+        ]
     }
 
     /// Returns every ship unit kind.
@@ -140,26 +164,25 @@ impl Unit {
 
     /// Returns every defense unit kind.
     pub fn defenses() -> Vec<Self> {
-        Defense::iter().map(Unit::Defense).collect()
+        Defense::iter().map(Unit::Defense).filter(|unit| *unit != Self::space_dock()).collect()
     }
 
     /// Returns every value in this unit category.
     pub fn all() -> Vec<Vec<Self>> {
-        vec![Self::buildings(), Self::ships(), Self::defenses()]
+        vec![Self::buildings(), Self::orbitals(), Self::ships(), Self::defenses()]
     }
 
     /// Returns units valid for the supplied planet and ownership context.
     pub fn all_valid(is_moon: bool) -> Vec<Vec<Self>> {
-        let mut groups = vec![
-            if is_moon {
-                Self::lunar_buildings()
-            } else {
-                Self::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect()
-            },
-            Self::ships(),
-        ];
-        if !is_moon {
-            groups.push(Self::defenses());
+        let mut groups = vec![if is_moon {
+            Self::lunar_buildings()
+        } else {
+            Self::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect()
+        }];
+        if is_moon {
+            groups.push(Self::ships());
+        } else {
+            groups.extend([Self::orbitals(), Self::ships(), Self::defenses()]);
         }
         groups
     }
@@ -185,11 +208,9 @@ impl Unit {
         Unit::ships()
             .into_iter()
             .chain(std::iter::once(Unit::space_dock()))
-            .chain(
-                Unit::defenses()
-                    .into_iter()
-                    .filter(|u| *u != Unit::crawler() && *u != Unit::space_dock()),
-            )
+            .chain(Unit::defenses().into_iter().filter(|u| {
+                *u != Unit::crawler() && *u != Unit::repair_truck() && *u != Unit::space_dock()
+            }))
             .collect()
     }
 
@@ -235,9 +256,14 @@ impl Unit {
         Unit::Ship(Ship::WarSun)
     }
 
-    /// Returns the canonical repair-crawler unit key.
+    /// Returns the canonical salvage-crawler unit key.
     pub fn crawler() -> Self {
         Unit::Defense(Defense::Crawler)
+    }
+
+    /// Returns the canonical repair-truck unit key.
+    pub fn repair_truck() -> Self {
+        Unit::Defense(Defense::RepairTruck)
     }
 
     /// Returns the canonical space-dock unit key.
@@ -270,9 +296,22 @@ impl Unit {
         matches!(self, Unit::Defense(_))
     }
 
+    /// Returns whether this unit belongs to the planet-only orbital roster.
+    pub fn is_orbital(&self) -> bool {
+        matches!(
+            self,
+            Unit::Building(
+                Building::SolarSatellite
+                    | Building::SensorPhalanx
+                    | Building::CommandRelay
+                    | Building::JumpGate
+            )
+        ) || *self == Self::space_dock()
+    }
+
     /// Returns whether this value turret.
     pub fn is_turret(&self) -> bool {
-        matches!(self, Unit::Defense(d) if *d != Defense::Crawler && *d != Defense::SpaceDock && !d.is_missile())
+        matches!(self, Unit::Defense(d) if !matches!(d, Defense::Crawler | Defense::RepairTruck | Defense::SpaceDock) && !d.is_missile())
     }
 
     /// Returns whether this value missile.
@@ -285,7 +324,14 @@ impl Unit {
         self.is_building()
             && !matches!(
                 self,
-                Unit::Building(Building::LunarBase) | Unit::Building(Building::DemolitionNexus)
+                Unit::Building(
+                    Building::LunarBase
+                        | Building::TidalGenerator
+                        | Building::SolarSatellite
+                        | Building::SensorPhalanx
+                        | Building::CommandRelay
+                        | Building::JumpGate
+                )
             )
     }
 
@@ -307,7 +353,7 @@ impl Unit {
     /// Returns the production-time/value score shared by economy and combat ordering.
     pub fn production(&self) -> usize {
         match self {
-            Unit::Building(_) => 1,
+            Unit::Building(building) => building.production(),
             Unit::Ship(s) => s.production(),
             Unit::Defense(d) => d.production(),
         }

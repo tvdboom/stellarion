@@ -23,10 +23,10 @@ pub fn initial_snapshot(
     let previous = model.player(1).map_err(invalid)?.color();
     for player in &mut model.players {
         if player.color() == color {
-            player.color = Some(previous);
+            player.color = previous;
         }
     }
-    model.player_mut(1).map_err(invalid)?.color = Some(color);
+    model.player_mut(1).map_err(invalid)?.color = color;
     Ok(PersistedGame::new(model))
 }
 
@@ -137,13 +137,13 @@ pub fn recolored_lobby_snapshot(
             .state
             .player_mut(displaced_player)
             .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = Some(previous);
+            .color = previous;
     }
     persisted
         .state
         .player_mut(player_id)
         .map_err(|error| BackendError::InvalidData(error.to_string()))?
-        .color = Some(color);
+        .color = color;
     persisted.validate().map_err(|error| BackendError::InvalidData(error.to_string()))?;
     Ok(persisted)
 }
@@ -176,7 +176,7 @@ pub fn started_snapshot_for_members(
         model
             .player_mut(member.player_id)
             .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = Some(color);
+            .color = color;
     }
     model.start().map_err(|error| BackendError::InvalidData(error.to_string()))?;
     Ok(PersistedGame::new(model))

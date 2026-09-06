@@ -9,9 +9,11 @@ use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::Mission;
 use crate::core::player::Player;
-use crate::core::units::{Army, Unit};
+use crate::core::resources::Resources;
+use crate::core::units::{Amount, Army, Price, Unit};
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Persisted outcome and visibility data produced when one mission resolves.
 pub struct MissionReport {
     /// Unique identifier for the report
@@ -42,12 +44,15 @@ pub struct MissionReport {
     pub planet_destroyed: bool,
 
     /// Owner of the planet after mission resolution
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub destination_owned: Option<PlayerId>,
 
     /// Controller of the planet after mission resolution
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub destination_controlled: Option<PlayerId>,
 
     /// Combat report (if combat took place)
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub combat_report: Option<CombatReport>,
 
     /// Whether to show this report in the report mission tab
@@ -55,6 +60,36 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns resources recovered from destroyed ground defenses by surviving Crawlers.
+    ///
+    /// Salvage is paid only after a defender victory. Each survivor recovers one percent of
+    /// every resource component, with the combined recovery capped at half the destroyed cost.
+    pub fn defender_salvage(&self) -> Resources {
+        let Some(defender) = self.planet.controlled else {
+            return Resources::default();
+        };
+        if self.winner() != Some(defender) {
+            return Resources::default();
+        }
+
+        let percent = self.surviving_defender.amount(&Unit::crawler()).min(50);
+        if percent == 0 {
+            return Resources::default();
+        }
+
+        let destroyed_cost = self
+            .planet
+            .army
+            .iter()
+            .filter(|(unit, _)| unit.is_defense() && !unit.is_missile() && !unit.is_orbital())
+            .map(|(unit, initial)| {
+                unit.price() * initial.saturating_sub(self.surviving_defender.amount(unit))
+            })
+            .sum::<Resources>();
+
+        destroyed_cost * percent / 100_usize
+    }
+
     /// Returns the winning combat side when the report is decisive.
     pub fn winner(&self) -> Option<PlayerId> {
         match self.mission.objective {
@@ -162,6 +197,7 @@ impl Side {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Complete ordered round history for one resolved combat.
 pub struct CombatReport {
     /// Combat rounds in deterministic playback order.
@@ -169,6 +205,7 @@ pub struct CombatReport {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Unit, shield, interception, and bombing state captured for one combat round.
 pub struct RoundReport {
     /// Attacking unit states captured for this round.

@@ -802,17 +802,13 @@ fn selected_lobby_is_not_saved_until_started() {
     sync_game_summary(&mut session, &lobby);
     assert!(session.games.is_empty());
     let mut started = record("game-a", 1, 1, MatchStatus::Active);
-    started.persisted.state.player_mut(1).unwrap().color = PlayerColor::new(4);
+    started.persisted.state.player_mut(1).unwrap().color = PlayerColor::new(4).unwrap();
     sync_game_summary(&mut session, &started);
     assert_eq!(session.games.len(), 1);
     assert_eq!(session.games[0].status, MatchStatus::Active);
     assert_eq!(session.games[0].player_id, 1);
     assert_eq!(session.games[0].display_name, "Host");
     assert_eq!(session.games[0].player_color, PlayerColor::new(4).unwrap());
-    started.persisted.state.player_mut(1).unwrap().color = None;
-    sync_game_summary(&mut session, &started);
-    assert_eq!(session.games.len(), 1);
-    assert_eq!(session.games[0].player_color, PlayerColor::for_player(1));
     sync_game_summary(&mut session, &lobby);
     assert!(session.games.is_empty());
 }
@@ -855,7 +851,7 @@ fn lobby_departure_clears_guests_and_local_history() {
         install_record(lobby.clone(), &mut runtime, &mut session, &mut pending, &mut next, false);
         assert!(runtime.profile.recent_games.is_empty());
         assert!(session.games.is_empty());
-        // A legacy profile may still contain the deleted lobby's identifier.
+        // A stale convenience hint may still contain the deleted lobby's identifier.
         runtime.profile.remember_game(lobby.id.clone());
         next = NextState::default();
         let output = if host {
@@ -1117,8 +1113,8 @@ fn start_snapshot_uses_current_members() {
     )
     .unwrap();
     model.status = MatchStatus::Lobby;
-    model.player_mut(1).unwrap().color = PlayerColor::new(4);
-    model.player_mut(2).unwrap().color = PlayerColor::new(5);
+    model.player_mut(1).unwrap().color = PlayerColor::new(4).unwrap();
+    model.player_mut(2).unwrap().color = PlayerColor::new(5).unwrap();
     let id = GameId::new("dynamic-lobby");
     let members = (1..=2)
         .map(|player_id| GameMembership {

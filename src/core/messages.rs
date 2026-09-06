@@ -247,7 +247,9 @@ fn draw_notifications(
     let mut clicked_message = None;
     egui::Area::new("stellarion_notifications".into())
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 70.0))
-        .order(egui::Order::Foreground)
+        // Combat uses foreground input layers of its own. Keep actionable notifications
+        // above them so a visible toast always owns pointer input inside its frame.
+        .order(egui::Order::Tooltip)
         .interactable(true)
         .layout(egui::Layout::top_down(egui::Align::Max))
         .show(context, |ui| {

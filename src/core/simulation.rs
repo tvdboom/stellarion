@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::core::combat::resolution::{
-    resolve_combat_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
+    resolve_combat_with_energy_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
 };
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -18,13 +18,10 @@ use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::{purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
-use crate::core::resources::ResourceName;
+use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
-
-/// Current JSON persistence schema version.
-pub const PERSISTED_SCHEMA_VERSION: u32 = 3;
 
 /// Supported number of players in a multiplayer game.
 pub const PLAYER_COUNT_RANGE: std::ops::RangeInclusive<u8> = 2..=MAX_MULTIPLAYER_PLAYERS;
@@ -38,8 +35,12 @@ pub const MAX_COMMANDS_PER_SUBMISSION: usize = 1024;
 /// Maximum number of simultaneous in-flight missions retained in persisted state.
 pub const MAX_ACTIVE_MISSIONS: usize = 4096;
 
+/// Supported per-player planet ownership percentages shown by match setup.
+pub const COLONIZABLE_PERCENT_OPTIONS: [usize; 3] = [25, 35, 50];
+
 /// Gameplay settings that affect deterministic state transitions.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameRules {
     /// Number of non-moon planets generated for each player.
     pub planets_per_player: usize,
@@ -50,13 +51,7 @@ pub struct GameRules {
     /// Number of generated player slots in this snapshot.
     pub player_count: u8,
     /// Allows the debug-only one-player practice flow to remain active without opponents.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub practice_mode: bool,
-}
-
-/// Keeps the normal multiplayer JSON shape unchanged when practice mode is disabled.
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 impl GameRules {
@@ -75,9 +70,9 @@ impl GameRules {
                 "planets_per_player must be in 5..=20".to_string(),
             ));
         }
-        if self.colonizable_percent == 0 || self.colonizable_percent > 100 {
+        if !COLONIZABLE_PERCENT_OPTIONS.contains(&self.colonizable_percent) {
             return Err(GameError::InvalidSettings(
-                "colonizable_percent must be in 1..=100".to_string(),
+                "colonizable_percent must be 25, 35, or 50".to_string(),
             ));
         }
         if self.moons_percent > 100 {
@@ -115,6 +110,7 @@ pub enum MatchStatus {
 
 /// Complete deterministic gameplay snapshot persisted in Supabase.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameModel {
     /// All configured player slots in stable identifier order.
     pub players: Vec<Player>,
@@ -280,7 +276,7 @@ impl GameModel {
                     player.id
                 )));
             }
-            if player.color.is_some_and(|color| !color.is_valid()) {
+            if !player.color.is_valid() {
                 return Err(GameError::MalformedState(format!(
                     "player {} references an unsupported color",
                     player.id
@@ -396,20 +392,18 @@ impl GameModel {
     }
 }
 
-/// Versioned envelope stored in the database JSON column.
+/// Validated snapshot stored in the database JSON column.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersistedGame {
-    /// Version of the serialized schema, independent of database revision.
-    pub schema_version: u32,
     /// Complete deterministic game state.
     pub state: GameModel,
 }
 
 impl PersistedGame {
-    /// Wraps current game state in the latest persistence schema.
+    /// Wraps current game state for persistence.
     pub fn new(state: GameModel) -> Self {
         Self {
-            schema_version: PERSISTED_SCHEMA_VERSION,
             state,
         }
     }
@@ -422,11 +416,8 @@ impl PersistedGame {
         Ok(persisted)
     }
 
-    /// Validates the schema envelope and every core cross-reference after transport decoding.
+    /// Validates every core cross-reference after transport decoding.
     pub fn validate(&self) -> Result<(), GameError> {
-        if self.schema_version != PERSISTED_SCHEMA_VERSION {
-            return Err(GameError::UnsupportedSchema(self.schema_version));
-        }
         self.state.validate()
     }
 
@@ -438,7 +429,7 @@ impl PersistedGame {
 
 /// Intentional gameplay command submitted by one player.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnCommand {
     /// Adds debug-only testing resources and units to a local turn draft.
     PracticeBoost {
@@ -494,10 +485,16 @@ pub enum TurnCommand {
         /// Whether to use a jump gate.
         jump_gate: bool,
     },
+    /// Recalls an active fleet to the planet from which it was originally dispatched.
+    RecallMission {
+        /// Stable identifier of the active mission to recall.
+        mission_id: u64,
+    },
 }
 
 /// All commands one player commits for one simultaneous turn.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnSubmission {
     /// Stable player slot submitting the commands.
     pub player_id: PlayerId,
@@ -505,7 +502,6 @@ pub struct TurnSubmission {
     pub turn: u64,
     /// Readiness attempt, advanced when the player continues an unfinished turn.
     /// This orders network retries only; it does not affect deterministic gameplay.
-    #[serde(default)]
     pub generation: u64,
     /// Commands in the intentional order selected by that player.
     pub commands: Vec<TurnCommand>,
@@ -525,12 +521,14 @@ impl TurnSubmission {
 
 /// Summary of one accepted deterministic turn resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnResult {
     /// Newly available turn after resolution.
     pub turn: u64,
     /// Whether the match ended during this resolution.
     pub finished: bool,
     /// Sole remaining player when the match ended, if any.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub winner: Option<PlayerId>,
 }
 
@@ -543,9 +541,6 @@ pub enum GameError {
     /// A creator-selected setting is unsupported.
     #[error("invalid game settings: {0}")]
     InvalidSettings(String),
-    /// Persisted state uses an unsupported schema.
-    #[error("unsupported persisted schema version {0}")]
-    UnsupportedSchema(u32),
     /// Persisted state failed structural validation.
     #[error("malformed persisted game state: {0}")]
     MalformedState(String),
@@ -685,7 +680,19 @@ fn choose_home_planets<R: Rng + ?Sized>(
     count: usize,
     rng: &mut R,
 ) -> Result<Vec<PlanetId>, GameError> {
-    let planets = map.planets();
+    let all_planets = map.planets();
+    let temperate = all_planets
+        .iter()
+        .copied()
+        .filter(|planet| {
+            map.solar_band(planet.id) == Some(crate::core::map::planet::SolarBand::Temperate)
+        })
+        .collect::<Vec<_>>();
+    let planets = if temperate.len() >= count {
+        temperate
+    } else {
+        all_planets
+    };
     if count == 0 || planets.len() < count {
         return Err(GameError::InvalidSettings(
             "not enough planets for configured player slots".to_string(),
@@ -762,7 +769,35 @@ fn apply_command(
             *combat_probes,
             *jump_gate,
         ),
+        TurnCommand::RecallMission {
+            mission_id,
+        } => apply_recall(model, player_id, *mission_id),
     }
+}
+
+/// Reverses one owned active mission without charging resources or moving it immediately.
+fn apply_recall(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    mission_id: u64,
+) -> Result<(), GameError> {
+    model.player(player_id)?;
+    let turn = usize::try_from(model.turn)
+        .map_err(|_| invalid_error(player_id, "turn cannot be represented on this platform"))?;
+    let (map, missions) = (&model.map, &mut model.missions);
+    let mission = missions
+        .iter_mut()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| invalid_error(player_id, "mission does not exist"))?;
+    if mission.owner != player_id {
+        return invalid(player_id, "mission belongs to another player");
+    }
+    if mission.is_returning() {
+        return invalid(player_id, "mission is already returning");
+    }
+
+    mission.recall(map, turn);
+    Ok(())
 }
 
 /// Keeps testing shortcuts in the same ordered draft as the orders that depend on them.
@@ -771,6 +806,9 @@ fn apply_practice_boost(
     player_id: PlayerId,
     owned_worlds_only: bool,
 ) -> Result<(), GameError> {
+    let home_planet = model.player(player_id)?.home_planet;
+    let senate_level_limit =
+        Player::senate_level_limit(&model.map, model.rules.colonizable_percent);
     model.player_mut(player_id)?.resources += 1_000usize;
     for planet in model.map.planets.iter_mut().filter(|planet| {
         !planet.is_destroyed
@@ -781,11 +819,18 @@ fn apply_practice_boost(
         // Testing shortcuts bypass costs and capacity, but never create a unit on a world where
         // that unit cannot normally be constructed.
         for unit in Unit::all_valid(planet.is_moon()).into_iter().flatten() {
+            if unit == Unit::Building(Building::Senate) && planet.id != home_planet {
+                continue;
+            }
+            if let Unit::Building(building) = unit {
+                planet.record_surface_building(building);
+            }
             let amount = planet.army.entry(unit).or_default();
-            if unit.is_building() {
-                *amount = Building::MAX_LEVEL;
-            } else {
-                *amount = amount.saturating_add(3);
+            match unit {
+                Unit::Building(Building::Senate) => *amount = senate_level_limit,
+                Unit::Defense(crate::core::units::defense::Defense::SpaceDock) => *amount = 1,
+                Unit::Building(_) => *amount = Building::MAX_LEVEL,
+                Unit::Ship(_) | Unit::Defense(_) => *amount = amount.saturating_add(3),
             }
         }
     }
@@ -803,6 +848,8 @@ fn apply_purchase(
     if count == 0 {
         return invalid(player_id, "purchase count must be positive");
     }
+    let senate_level_limit =
+        Player::senate_level_limit(&model.map, model.rules.colonizable_percent);
     let player_index = model
         .players
         .iter()
@@ -815,9 +862,13 @@ fn apply_purchase(
         .position(|planet| planet.id == planet_id)
         .ok_or_else(|| invalid_error(player_id, "purchase planet does not exist"))?;
 
-    let limit =
-        purchase_limit(&model.players[player_index], &model.map.planets[planet_index], unit)
-            .map_err(|error| invalid_error(player_id, error.to_string()))?;
+    let limit = purchase_limit(
+        &model.players[player_index],
+        &model.map.planets[planet_index],
+        unit,
+        senate_level_limit,
+    )
+    .map_err(|error| invalid_error(player_id, error.to_string()))?;
     if count > limit {
         return invalid(player_id, "purchase exceeds available resources or production capacity");
     }
@@ -895,9 +946,7 @@ fn apply_colonize(
     player_id: PlayerId,
     planet_id: PlanetId,
 ) -> Result<(), GameError> {
-    let max_owned = ((model.map.planets().len() as f32 * model.rules.colonizable_percent as f32
-        / 100.0)
-        .ceil()) as usize;
+    let max_owned = colony_limit(model, player_id)?;
     let owned = model.map.planets.iter().filter(|planet| planet.owned == Some(player_id)).count();
     let planet = model
         .map
@@ -983,7 +1032,7 @@ fn apply_mission(
         jump_gate,
         None,
     );
-    validate_mission(model.player(player_id)?, origin, &destination, &mission)
+    validate_mission(model.player(player_id)?, &model.map, origin, &destination, &mission)
         .map_err(|error| invalid_error(player_id, error.to_string()))?;
     let fuel = mission.fuel_consumption(&model.map);
     let player_index = model
@@ -1022,8 +1071,16 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         planet.jump_gate = 0;
     }
     for player in &mut model.players {
-        player.resources += player.resource_production(&model.map.planets);
+        player.resources += player.resource_production(&model.map);
     }
+
+    // Lock grids before any missions resolve. Conquest and destruction affect the next turn,
+    // never a later battle in the current randomized mission order.
+    let energy_grids = model
+        .players
+        .iter()
+        .map(|player| (player.id, player.energy_grid(&model.map)))
+        .collect::<std::collections::HashMap<_, _>>();
 
     let mut player_order = model.players.iter().map(|player| player.id).collect::<Vec<_>>();
     player_order.shuffle(&mut rng);
@@ -1031,8 +1088,18 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let mut new_missions = Vec::new();
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
 
+    let mut colony_limits = model
+        .players
+        .iter()
+        .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
     for mission in &mut model.missions {
-        check_mission(mission, &model.map, turn, model.rules.colonizable_percent);
+        check_mission(
+            mission,
+            &model.map,
+            turn,
+            colony_limits.get(&mission.owner).copied().unwrap_or(0),
+        );
     }
 
     for player_id in player_order {
@@ -1055,7 +1122,19 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                 for mission in regroup_missions(&arrived) {
                     let new_origin = model.map.get(mission.check_origin(&model.map)).clone();
                     let destination = model.map.get_mut(mission.destination);
-                    let mut report = resolve_combat_with_rng(turn, &mission, destination, &mut rng);
+                    let energy = destination
+                        .controlled
+                        .or(destination.owned)
+                        .and_then(|owner| energy_grids.get(&owner))
+                        .copied()
+                        .unwrap_or_default();
+                    let mut report = resolve_combat_with_energy_with_rng(
+                        turn,
+                        &mission,
+                        destination,
+                        energy,
+                        &mut rng,
+                    );
                     report.mission.logs.push_str(&format!(
                         "\n- ({turn}) Mission arrived in {}.",
                         destination.name
@@ -1201,13 +1280,6 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 "\n- ({turn}) Planet {} colonized.",
                                 destination.name
                             ));
-                            if !destination.has_buildings() {
-                                destination.army.insert(Unit::Building(Building::MetalMine), 1);
-                                destination.army.insert(Unit::Building(Building::CrystalMine), 1);
-                                destination
-                                    .army
-                                    .insert(Unit::Building(Building::DeuteriumSynthesizer), 1);
-                            }
                         }
 
                         if !(mission.objective == Icon::Deploy
@@ -1217,7 +1289,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             destination.army.retain(|unit, _| unit.is_building());
                         }
                         if mission.objective != Icon::Destroy {
-                            destination.control_with_rng(mission.owner, &mut rng);
+                            destination.control(mission.owner);
                             destination.dock(
                                 report
                                     .surviving_attacker
@@ -1239,9 +1311,22 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         destination.army.clone_from(&report.surviving_defender);
                     }
 
+                    let defender_salvage = report.defender_salvage();
+                    if defender_salvage != Resources::default() {
+                        report.mission.logs.push_str(&format!(
+                            "\n- ({turn}) Crawlers recovered {} metal, {} crystal, and {} deuterium.",
+                            defender_salvage.metal,
+                            defender_salvage.crystal,
+                            defender_salvage.deuterium
+                        ));
+                    }
+
                     report.destination_owned = destination.owned;
                     report.destination_controlled = destination.controlled;
                     for player in &mut model.players {
+                        if report.planet.controlled == Some(player.id) {
+                            player.resources += defender_salvage;
+                        }
                         if player.controls(destination) {
                             player.record_world_acquisition(destination.id);
                         }
@@ -1254,8 +1339,18 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                 }
 
                 let arrived_ids = arrived.iter().map(|mission| mission.id).collect::<HashSet<_>>();
+                colony_limits = model
+                    .players
+                    .iter()
+                    .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
+                    .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
                 for mission in &mut model.missions {
-                    check_mission(mission, &model.map, turn, model.rules.colonizable_percent);
+                    check_mission(
+                        mission,
+                        &model.map,
+                        turn,
+                        colony_limits.get(&mission.owner).copied().unwrap_or(0),
+                    );
                 }
                 model.missions.retain(|mission| !arrived_ids.contains(&mission.id));
             }
@@ -1344,7 +1439,7 @@ fn next_unique_mission_id<R: Rng + ?Sized>(
 }
 
 /// Updates a mission whose destination ownership changed earlier in the turn.
-fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_percent: usize) {
+fn check_mission(mission: &mut Mission, map: &Map, turn: usize, max_owned: usize) {
     let old_objective = mission.objective;
     let destination = map.get(mission.destination);
     // Colonization intent survives friendly ownership changes while the fleet travels.
@@ -1357,8 +1452,6 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
         mission.objective = Icon::Attack;
     }
     let owned = map.planets.iter().filter(|planet| planet.owned == Some(mission.owner)).count();
-    let max_owned =
-        (map.planets().len() as f32 * colonizable_percent as f32 / 100.0).ceil() as usize;
     if mission.objective == Icon::Colonize
         && destination.owned != Some(mission.owner)
         && owned >= max_owned
@@ -1379,7 +1472,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
         ));
     }
     if old_objective != mission.objective {
-        if mission.objective != Icon::Deploy {
+        if mission.objective != Icon::Deploy && !mission.is_returning() {
             mission.return_objective = None;
         }
         mission.logs.push_str(&format!(
@@ -1387,6 +1480,12 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, colonizable_perc
             mission.objective.to_name()
         ));
     }
+}
+
+/// Returns the configured colonization limit plus the operational home-world Senate bonus.
+fn colony_limit(model: &GameModel, player_id: PlayerId) -> Result<usize, GameError> {
+    let player = model.player(player_id)?;
+    Ok(player.colony_limit(&model.map, model.rules.colonizable_percent))
 }
 
 /// Builds a typed invalid-command result without mutating the original model.

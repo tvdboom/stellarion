@@ -142,6 +142,22 @@ pub struct TransformOrbitSpinLens {
     pub rotations: f32,
 }
 
+/// Tween: local rotation that preserves an entity's anchored position.
+#[derive(Debug, Clone, Copy)]
+pub struct TransformSpinLens {
+    /// Orientation at the start of the cycle.
+    pub offset: f32,
+    /// Number of local rotations completed during one cycle.
+    pub rotations: f32,
+}
+
+impl Lens<Transform> for TransformSpinLens {
+    /// Rotates around the entity's own center without changing its translation.
+    fn lerp(&mut self, mut target: Mut<Transform>, ratio: f32) {
+        target.rotation = Quat::from_rotation_z(self.offset + TAU * self.rotations * ratio);
+    }
+}
+
 impl Lens<Transform> for TransformOrbitSpinLens {
     /// Interpolates orbital position and local orientation with one seamless phase.
     fn lerp(&mut self, mut target: Mut<Transform>, ratio: f32) {

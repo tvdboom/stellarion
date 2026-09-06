@@ -21,6 +21,8 @@ use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::Unit;
 use crate::multiplayer::client::{MultiplayerRequest, PendingTurnCommands, SubmissionState};
 
+const PLANET_DESTRUCTION_EXPLOSION_SCALE: f32 = 1.75;
+
 /// Requests presentation work after a new canonical turn is installed.
 #[derive(Message)]
 pub struct StartTurnMsg {
@@ -252,7 +254,11 @@ pub fn start_turn(
                 Sprite {
                     image: texture.image,
                     texture_atlas: Some(texture.atlas),
-                    custom_size: Some(Vec2::splat(1.5 * planet.size())),
+                    // The atlas has transparent padding. This makes the bright blast cover the
+                    // world before its sprite changes to the destroyed artwork.
+                    custom_size: Some(Vec2::splat(
+                        PLANET_DESTRUCTION_EXPLOSION_SCALE * planet.size(),
+                    )),
                     ..default()
                 },
                 Transform::from_xyz(transform.translation.x, transform.translation.y, EXPLOSION_Z),

@@ -4,6 +4,7 @@ use bevy::prelude::Component;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+use crate::core::constants::MIN_SPY_PROBES;
 use crate::core::map::planet::Planet;
 #[cfg(feature = "app")]
 use crate::core::ui::systems::Shop;
@@ -29,6 +30,8 @@ pub enum Icon {
     Attacked,
     /// The buildings value.
     Buildings,
+    /// The orbitals value.
+    Orbitals,
     /// The fleet value.
     Fleet,
     /// The defenses value.
@@ -43,7 +46,7 @@ impl Icon {
 
     /// Handles the units interaction.
     pub fn on_units(&self) -> bool {
-        matches!(self, Icon::Buildings | Icon::Fleet | Icon::Defenses)
+        matches!(self, Icon::Buildings | Icon::Orbitals | Icon::Fleet | Icon::Defenses)
     }
 
     /// Handles the planet only interaction.
@@ -74,6 +77,7 @@ impl Icon {
     pub fn shop(&self) -> Option<Shop> {
         match self {
             Icon::Buildings => Some(Shop::Buildings),
+            Icon::Orbitals => Some(Shop::Orbitals),
             Icon::Fleet => Some(Shop::Fleet),
             Icon::Defenses => Some(Shop::Defenses),
             _ => None,
@@ -108,11 +112,14 @@ impl Icon {
     pub fn condition(&self, origin: &Planet) -> bool {
         match self {
             Icon::Buildings => origin.has_buildings(),
+            Icon::Orbitals => {
+                origin.army.iter().any(|(unit, count)| unit.is_orbital() && *count > 0)
+            },
             Icon::Fleet => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
             Icon::Colonize => origin.has(&Unit::colony_ship()),
             Icon::Attack => origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
-            Icon::Spy => origin.has(&Unit::probe()),
+            Icon::Spy => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
@@ -126,7 +133,9 @@ impl Icon {
             army.has_army() && army.iter().all(|(unit, count)| *count == 0 || predicate(unit))
         };
         match self {
-            Self::Spy => only(|unit| *unit == Unit::probe()),
+            Self::Spy => {
+                only(|unit| *unit == Unit::probe()) && army.amount(&Unit::probe()) >= MIN_SPY_PROBES
+            },
             Self::MissileStrike => only(|unit| *unit == Unit::interplanetary_missile()),
             Self::Deploy => only(Unit::is_ship),
             Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
@@ -135,7 +144,9 @@ impl Icon {
                 only(Unit::is_ship)
                     && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
-            Self::Attacked | Self::Buildings | Self::Fleet | Self::Defenses => false,
+            Self::Attacked | Self::Buildings | Self::Orbitals | Self::Fleet | Self::Defenses => {
+                false
+            },
         }
     }
 
@@ -147,7 +158,7 @@ impl Icon {
                 reached or destination is a moon."
             },
             Icon::Attack => "No combat ships on the origin planet.",
-            Icon::Spy => "No Probes on the origin planet.",
+            Icon::Spy => "At least 5 Probes are required on the origin planet.",
             Icon::MissileStrike => {
                 "No Interplanetary Missiles on the origin planet or destination is a moon."
             },
@@ -176,20 +187,20 @@ impl Description for Icon {
                 target planet remain."
             },
             Icon::Spy => {
-                "Send only Probes to gather intelligence on an enemy planet. Probes leave combat \
-                after the first round, and report on the enemy units. The more Probes return, the \
-                better the intelligence. Spying missions aren't detected by the Sensor Phalanx \
-                and don't reveal the planet of origin."
+                "Send at least 5 Probes to gather intelligence on an enemy planet. Spy range is \
+                limited by the Command Relay on the origin planet. Probes leave combat after the \
+                first round and report on enemy units; more returning Probes reveal better \
+                intelligence. Spy missions aren't detected by the Sensor Phalanx and don't reveal \
+                the planet of origin."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary Missiles ignore any ships \
                 and the Planetary Shield at the target planet, directly hitting any defenses. \
-                At the end of combat, all surviving missiles are destroyed. Once launched, a \
-                missile strike always hits the destination planet, even if it has been colonized \
-                by the player. Missile Strikes don't report any intelligence about the enemy \
-                units. They cannot be detected by the Sensor Phalanx and don't reveal the planet \
-                of origin."
+                At the end of combat, all surviving missiles are destroyed. Unless recalled, a \
+                missile strike hits the destination planet even if it has been colonized by the \
+                player. Missile Strikes don't report any intelligence about the enemy units. They \
+                cannot be detected by the Sensor Phalanx and don't reveal the planet of origin."
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \

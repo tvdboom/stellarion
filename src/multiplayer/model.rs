@@ -8,6 +8,7 @@ use crate::core::simulation::{MatchStatus, PersistedGame, TurnSubmission};
 
 /// Restorable anonymous-auth session returned by Supabase or the mock backend.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthSession {
     /// Stable authenticated user identifier.
     pub user_id: UserId,
@@ -16,6 +17,7 @@ pub struct AuthSession {
     /// Refresh token persisted in client-local storage.
     pub refresh_token: String,
     /// Unix timestamp at which the access token expires, when known.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub expires_at: Option<u64>,
 }
 
@@ -37,6 +39,7 @@ impl AuthSession {
 
 /// One authenticated user's mapping to a stable player slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameMembership {
     /// Game containing the slot.
     pub game_id: GameId,
@@ -51,12 +54,12 @@ pub struct GameMembership {
     /// Incremented whenever recovery replaces the associated identity.
     pub identity_version: u64,
     /// Whether this player's selected client has a current heartbeat lease.
-    #[serde(default)]
     pub connected: bool,
 }
 
 /// Complete backend record returned when loading a game.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameRecord {
     /// Backend-assigned game identifier.
     pub id: GameId,
@@ -65,18 +68,16 @@ pub struct GameRecord {
     /// Optimistic-concurrency revision.
     pub revision: u64,
     /// Unix timestamp of the most recent authoritative snapshot save.
-    #[serde(default)]
     pub saved_at: u64,
     /// Join capacity in a lobby, then the finalized player count after start.
     pub max_players: u8,
     /// Persisted gameplay lifecycle status.
     pub status: MatchStatus,
-    /// Versioned deterministic game snapshot.
+    /// Deterministic game snapshot.
     pub persisted: PersistedGame,
     /// Current authenticated memberships.
     pub members: Vec<GameMembership>,
     /// Players currently ready to finish the turn.
-    #[serde(default)]
     pub submitted_players: Vec<PlayerId>,
 }
 
@@ -89,6 +90,7 @@ impl GameRecord {
 
 /// Lightweight item displayed in the resume-game list.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameSummary {
     /// Backend game identifier.
     pub id: GameId,
@@ -97,7 +99,6 @@ pub struct GameSummary {
     /// Current optimistic revision.
     pub revision: u64,
     /// Unix timestamp of the most recent authoritative snapshot save.
-    #[serde(default)]
     pub saved_at: u64,
     /// Current lifecycle status.
     pub status: MatchStatus,
@@ -107,7 +108,7 @@ pub struct GameSummary {
     pub player_id: PlayerId,
     /// Calling user's saved name in this game.
     pub display_name: String,
-    /// Calling user's selected empire color, including legacy snapshot fallback.
+    /// Calling user's selected empire color.
     pub player_color: PlayerColor,
     /// Current lobby membership count.
     pub player_count: usize,
@@ -117,6 +118,7 @@ pub struct GameSummary {
 
 /// Data required to create a fresh game and its creator membership.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateGameRequest {
     /// Candidate human-friendly code; the caller retries collisions.
     pub code: GameCode,
@@ -124,12 +126,13 @@ pub struct CreateGameRequest {
     pub display_name: String,
     /// Hash of the creator's high-entropy recovery secret.
     pub recovery_hash: String,
-    /// Initial versioned deterministic lobby state.
+    /// Initial deterministic lobby state.
     pub persisted: PersistedGame,
 }
 
 /// Data required to claim the next available slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JoinGameRequest {
     /// Human-friendly code locating the lobby.
     pub code: GameCode,
@@ -141,6 +144,7 @@ pub struct JoinGameRequest {
 
 /// Data required to replace a lost authenticated identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoverPlayerRequest {
     /// Human-friendly code locating the game.
     pub code: GameCode,
@@ -162,6 +166,7 @@ pub enum JoinDisposition {
 
 /// Game and identity mapping returned by create, join, or recovery operations.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MembershipResult {
     /// Current complete game record.
     pub game: GameRecord,
@@ -183,6 +188,7 @@ pub enum SubmissionDisposition {
 
 /// Persisted submission plus its canonical content digest.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredTurnSubmission {
     /// Gameplay command payload.
     pub submission: TurnSubmission,
@@ -194,6 +200,7 @@ pub struct StoredTurnSubmission {
 
 /// Monotonic notification emitted by the persistence backend.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackendEvent {
     /// Per-game cursor used to discard stale or duplicated notifications.
     pub sequence: u64,
@@ -202,10 +209,13 @@ pub struct BackendEvent {
     /// Semantic event category.
     pub kind: BackendEventKind,
     /// Revision current after the event, when applicable.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub revision: Option<u64>,
     /// Turn associated with the event, when applicable.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub turn: Option<u64>,
     /// Player associated with the event, when applicable.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub player_id: Option<PlayerId>,
 }
 
@@ -239,6 +249,7 @@ pub enum BackendEventKind {
 
 /// Batch returned by a resumable subscription cursor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventBatch {
     /// Events strictly newer than the requested cursor.
     pub events: Vec<BackendEvent>,

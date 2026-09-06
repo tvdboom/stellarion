@@ -85,6 +85,7 @@ struct BasisTextureLoader {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Per-image filtering and alpha options for artwork and player-color silhouettes.
 pub(crate) struct BasisTextureSettings {
     /// Discards baked RGB while preserving transparency and antialiased edges in every mip.

@@ -99,7 +99,20 @@ fn large_salvos_are_bounded_without_losing_recorded_damage() {
 }
 
 #[test]
-fn all_weapon_families_use_the_original_shared_hit_sound() {
+fn damaged_units_emit_sparks_without_the_recurring_blue_flicker() {
+    let mut app = app();
+    let damaged = unit(&mut app, Unit::Ship(Ship::Cruiser), Side::Defender, Vec3::ZERO, 70, 0);
+    app.world_mut().get_mut::<CombatUnitCmp>(damaged).unwrap().max_hull = 100;
+
+    step(&mut app, 0.);
+    step(&mut app, 1.5);
+
+    let particles = app.world_mut().query::<&Particle>().iter(app.world()).count();
+    assert_eq!(particles, 3, "ambient damage should retain only its three sparks");
+}
+
+#[test]
+fn weapon_families_use_distinct_launch_and_shield_impact_cues() {
     let kinds = [
         Unit::Ship(Ship::LightFighter),
         Unit::Ship(Ship::HeavyFighter),
@@ -135,13 +148,20 @@ fn all_weapon_families_use_the_original_shared_hit_sound() {
         }
         step(&mut app, 0.);
         step(&mut app, 2.);
-        let names = app
-            .world_mut()
-            .resource_mut::<Messages<PlayAudioMsg>>()
-            .drain()
-            .map(|m| m.name)
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["short explosion"], "fast-forward must not layer every hit");
+        let cues =
+            app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
+        let mut expected =
+            Weapon::for_unit(kind).launch_cue().map_or_else(Vec::new, |cue| vec![cue.name]);
+        expected.push("shield impact");
+        assert_eq!(
+            cues.iter().map(|cue| cue.name).collect::<Vec<_>>(),
+            expected,
+            "fast-forward must not layer every shot"
+        );
+        assert_eq!(
+            cues.iter().find(|cue| cue.name == "shield impact").unwrap().playback_rate,
+            1.35
+        );
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().shield, 70);
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().hull, 100);
     }
@@ -211,10 +231,114 @@ fn every_weapon_ends_at_its_leading_tip_without_overshooting_the_target() {
                     transform.translation + transform.rotation * Vec3::X * transform.scale.x * 0.5;
                 let expected = impact.position(progress);
                 assert!(tip.truncate().distance(expected.truncate()) < 0.001, "{kind:?}");
-                assert!(tip.y >= 0., "{kind:?} must stop at the enemy row, including misses");
+                assert!(
+                    impact.destination.truncate().abs().cmple(Vec2::splat(50.0)).all(),
+                    "{kind:?} must terminate inside the 100px target card, including misses"
+                );
             }
         }
     }
+}
+
+#[test]
+fn interceptors_finish_inside_the_incoming_missile_image() {
+    let mut app = app();
+    let interceptor = Unit::antiballistic_missile();
+    let incoming = Unit::interplanetary_missile();
+    let source = unit(&mut app, interceptor, Side::Attacker, Vec3::Y * -200., 0, 0);
+    let target = unit(&mut app, incoming, Side::Defender, Vec3::ZERO, 0, 0);
+
+    for missed in [false, true] {
+        for _ in 0..3 {
+            fire(
+                &mut app,
+                source,
+                interceptor,
+                incoming,
+                ShotReport {
+                    missed,
+                    killed: !missed,
+                    ..default()
+                },
+                false,
+            );
+        }
+    }
+    step(&mut app, 0.);
+
+    let target_center = app.world().get::<Transform>(target).unwrap().translation;
+    let impacts = app
+        .world_mut()
+        .query::<&PendingImpact>()
+        .iter(app.world())
+        .map(|impact| (impact.destination - target_center, impact.missed))
+        .collect::<Vec<_>>();
+    assert_eq!(impacts.len(), 6);
+    for (offset, _) in &impacts {
+        assert!(offset.x.abs() <= 50. && offset.y.abs() <= 50., "{offset:?}");
+    }
+    assert!(impacts.iter().filter(|(_, missed)| *missed).all(|(offset, _)| offset.x > 25.));
+    assert!(impacts.iter().filter(|(_, missed)| !*missed).all(|(offset, _)| offset.x.abs() < 25.));
+}
+
+#[test]
+fn missiles_use_a_slower_shallower_flight() {
+    assert_eq!(Weapon::Missile.flight(), MISSILE_FLIGHT_TIME);
+    const { assert!(MISSILE_FLIGHT_TIME >= 0.9) };
+
+    let impact = PendingImpact {
+        target: Entity::PLACEHOLDER,
+        source: None,
+        origin: Vec3::new(0., 200., 0.),
+        destination: Vec3::ZERO,
+        size: 100.,
+        weapon: Weapon::Missile,
+        missed: false,
+        hull: 0,
+        shield: 0,
+        planetary: 0,
+        levels: 0,
+        elapsed: 0.,
+        delay: 0.,
+        lane: 1.,
+        launched: false,
+        trail_clock: 0.,
+    };
+    let midpoint = impact.position(0.5);
+    let direct_midpoint = impact.origin.lerp(impact.destination, 0.5);
+    assert!(midpoint.distance(direct_midpoint) <= impact.size * 0.6);
+}
+
+#[test]
+fn bombing_uses_a_large_slow_missile_profile_and_still_targets_the_building() {
+    let mut app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let building = Unit::resource_buildings()[0];
+    let source = unit(&mut app, bomber, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut app, building, Side::Defender, Vec3::ZERO, 5, 0);
+    fire(
+        &mut app,
+        source,
+        bomber,
+        building,
+        ShotReport {
+            missed: true,
+            ..default()
+        },
+        false,
+    );
+    step(&mut app, 0.0);
+
+    let impact = app.world_mut().query::<&PendingImpact>().single(app.world()).unwrap();
+    assert_eq!(impact.weapon, Weapon::Bomb);
+    assert!(Weapon::Bomb.flight() > Weapon::Missile.flight() * 1.5);
+    assert!(
+        Weapon::Bomb.projectile_size(100.0).length()
+            > Weapon::Missile.projectile_size(100.0).length() * 1.4
+    );
+    let cue = Weapon::Bomb.launch_cue().unwrap();
+    assert_eq!((cue.name, cue.playback_rate), ("bomb release", 0.72));
+    assert!(impact.destination.truncate().abs().cmple(Vec2::splat(50.0)).all());
 }
 
 #[test]
@@ -246,7 +370,7 @@ fn pause_freezes_projectiles_particles_and_damage_then_speed_resumes_them() {
     assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 100);
     app.world_mut().resource_mut::<Settings>().combat_paused = false;
     app.world_mut().resource_mut::<Settings>().combat_speed = 8.;
-    step(&mut app, 0.1);
+    step(&mut app, 0.11);
     assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 80);
 }
 
@@ -274,13 +398,22 @@ fn misses_show_feedback_without_moving_cards_and_repair_drones_deliver_once() {
     step(&mut app, 0.3);
     assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 100);
     assert_eq!(app.world().get::<Transform>(defender).unwrap().translation, Vec3::ZERO);
-    assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|label| label.0 == "MISS"));
+    let (font_size, scale) = app
+        .world_mut()
+        .query::<(&Text2d, &TextFont, &Transform)>()
+        .iter(app.world())
+        .find_map(|(label, font, transform)| {
+            (label.0 == "MISS").then_some((font.font_size, transform.scale))
+        })
+        .unwrap();
+    assert_eq!(scale, Vec3::splat(COMBAT_READOUT_RASTER_SCALE));
+    assert!(matches!(font_size, FontSize::Px(size) if size > 100.0));
     app.world_mut().get_mut::<CombatUnitCmp>(defender).unwrap().hull = 30;
     for _ in 0..10 {
         fire(
             &mut app,
             source,
-            Unit::crawler(),
+            Unit::repair_truck(),
             kind,
             ShotReport {
                 hull_damage: 5,
@@ -342,6 +475,37 @@ fn planet_destruction_effect_requires_a_recorded_planet_kill() {
         step(&mut app, DEATH_RAY_DURATION + 0.1);
         assert_eq!(app.world_mut().query::<&Particle>().iter(app.world()).count(), 0);
     }
+}
+
+#[test]
+fn planet_kill_uses_a_heavy_sustained_beam_and_irregular_fissures() {
+    let mut app = app();
+    app.world_mut().spawn((
+        Cinematic::new(Vec3::Y * 300., Vec3::ZERO, Vec2::new(900., 600.), 100., true),
+        CombatCmp,
+    ));
+
+    step(&mut app, 2.01);
+    let beam_widths = {
+        let world = app.world_mut();
+        let mut query = world.query_filtered::<&Sprite, With<CinematicBeam>>();
+        query
+            .iter(world)
+            .filter_map(|sprite| sprite.custom_size.map(|size| size.y))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(beam_widths.len(), 3, "the discharge should have three energetic layers");
+    assert!(
+        beam_widths.iter().copied().fold(0.0, f32::max) >= 230.,
+        "the outer beam envelope should look heavier than the firing ship"
+    );
+
+    step(&mut app, 0.72);
+    assert!(
+        app.world_mut().query_filtered::<Entity, With<PlanetFissure>>().iter(app.world()).count()
+            > 30,
+        "the surface should split into several segmented and branching paths"
+    );
 }
 
 #[test]

@@ -148,6 +148,8 @@ const MAX_COMBAT_SOUND_INSTANCES: usize = 10;
 pub struct PlayAudioMsg {
     pub name: &'static str,
     pub volume: f32,
+    /// Per-cue pitch and duration multiplier used to distinguish related combat sounds.
+    pub playback_rate: f64,
     pub is_background: bool,
     /// Repeats the asset until stopped, independently of the music mute mode.
     pub is_looped: bool,
@@ -159,13 +161,22 @@ impl PlayAudioMsg {
         Self {
             name,
             volume: match name {
-                "explosion" | "short explosion" | "large explosion" | "death ray" => -18.0,
+                "explosion" | "short explosion" | "large explosion" | "death ray"
+                | "shield impact" | "beam fire" | "missile fire" | "bomb release"
+                | "probe retreat" => -18.0,
                 "horn" | "repair" | "victory" | "draw" | "defeat" => -12.0,
                 _ => 0.0,
             },
+            playback_rate: 1.0,
             is_background: false,
             is_looped: false,
         }
+    }
+
+    /// Adjusts this one cue without changing the shared audio channel's playback rate.
+    pub fn rate(mut self, playback_rate: f64) -> Self {
+        self.playback_rate = playback_rate;
+        self
     }
 
     /// Repeats an effect at its normal volume until explicitly stopped.
@@ -228,9 +239,18 @@ pub struct MuteAudioMsg;
 /// Selects an audio mode, or toggles mute when no mode is supplied.
 pub struct ChangeAudioMsg(pub Option<AudioState>);
 
+#[derive(Message)]
+/// Requests the same temporary volume readout used by combat mouse-wheel input.
+pub struct VolumeFeedbackMsg;
+
 // Hold the wheel feedback briefly, then fade it without affecting ordinary hover interaction.
 const VOLUME_SCROLL_HOLD: f64 = 0.9;
 const VOLUME_SCROLL_FADE: f64 = 0.4;
+
+fn show_volume_feedback(context: &egui::Context) {
+    let now = context.input(|input| input.time);
+    context.data_mut(|data| data.insert_temp(egui::Id::new("audio volume scroll"), now));
+}
 
 fn scroll_volume(context: &egui::Context, settings: &mut Settings, in_combat: bool) {
     let id = egui::Id::new("audio volume scroll");
@@ -473,6 +493,7 @@ pub fn draw_audio_controls(
     app_state: Res<State<AppState>>,
     game_state: Res<State<GameState>>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
+    mut volume_feedback: MessageReader<VolumeFeedbackMsg>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
@@ -483,6 +504,10 @@ pub fn draw_audio_controls(
         &mut settings,
         *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat,
     );
+    if !volume_feedback.is_empty() {
+        volume_feedback.clear();
+        show_volume_feedback(context);
+    }
     if audio_controls(context, &mut settings).clicked() {
         change_audio.write(ChangeAudioMsg(None));
         set_ui_sound(context, Some(SoundEffect::Button));
@@ -540,6 +565,7 @@ pub fn toggle_audio(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut settings: ResMut<Settings>,
     mut change_audio_msg: MessageWriter<ChangeAudioMsg>,
+    mut volume_feedback: MessageWriter<VolumeFeedbackMsg>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyQ) {
         change_audio_msg.write(ChangeAudioMsg(None));
@@ -569,6 +595,7 @@ pub fn toggle_audio(
         // Work in displayed percentages so repeated presses reach zero without float residue.
         let volume = ((current * 100.0).round() + step as f32 * 10.0).clamp(0.0, 100.0) / 100.0;
         settings.set_volume(volume);
+        volume_feedback.write(VolumeFeedbackMsg);
         if settings.audio != previous_audio {
             change_audio_msg.write(ChangeAudioMsg(Some(settings.audio)));
         }
@@ -749,7 +776,15 @@ pub fn play_audio(
 
         if matches!(
             message.name,
-            "explosion" | "short explosion" | "large explosion" | "death ray" | "repair"
+            "explosion"
+                | "short explosion"
+                | "large explosion"
+                | "death ray"
+                | "repair"
+                | "shield impact"
+                | "beam fire"
+                | "missile fire"
+                | "bomb release"
         ) && playing_audio
             .0
             .get(message.name)
@@ -761,6 +796,7 @@ pub fn play_audio(
 
         let mut playback = audio.play(assets.audio(message.name));
         playback.with_volume(output_volume(message.volume, settings.volume));
+        playback.with_playback_rate(message.playback_rate);
         if message.is_background {
             playback.fade_in(PlayingAudio::TWEEN);
         }

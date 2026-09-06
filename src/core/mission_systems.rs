@@ -15,8 +15,12 @@ use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::MissionCmp;
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{Mission, MissionRouteStyle, Missions, SendMissionMsg};
+use crate::core::missions::{
+    Mission, MissionRouteStyle, Missions, RecallMissionMsg, SendMissionMsg,
+    SuppressedReturningSpies,
+};
 use crate::core::player::Player;
+use crate::core::settings::Settings;
 use crate::core::simulation::TurnCommand;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::{Amount, Army};
@@ -31,8 +35,13 @@ const WAR_SUN_MISSION_SIZE: f32 = 50.0;
 const WAR_SUN_MISSION_HOVER_SIZE: f32 = 60.0;
 const COLONY_SHIP_MISSION_SIZE: f32 = 44.0;
 const COLONY_SHIP_MISSION_HOVER_SIZE: f32 = 53.0;
-const SPY_MISSION_SIZE: f32 = 36.0;
+pub(crate) const SPY_MISSION_SIZE: f32 = 36.0;
 const SPY_MISSION_HOVER_SIZE: f32 = 43.0;
+const RECALL_ANIMATION_SECONDS: f32 = 1.25;
+const RECALL_TURN_SECONDS: f32 = 0.65;
+const RECALL_PULSE_COUNT: usize = 3;
+const RECALL_PULSE_INTERVAL_SECONDS: f32 = 0.16;
+const RECALL_PULSE_SECONDS: f32 = 0.85;
 // The probe artwork's exhaust is diagonal. Rotate only its map presentation so that exhaust
 // aligns with the route's trailing flame without changing the shared source image.
 const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
@@ -62,6 +71,17 @@ fn mission_map_flip_y(image: &str, direction: Vec2) -> bool {
     image == "mission colonize" && direction.x < 0.0
 }
 
+/// Keeps a fleet facing along its route when it is already sitting on the destination point.
+fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
+    let destination = map.get(mission.destination);
+    let remaining = destination.position - mission.position;
+    if remaining.length_squared() > f32::EPSILON {
+        remaining.normalize()
+    } else {
+        (destination.position - map.get(mission.origin).position).normalize_or_zero()
+    }
+}
+
 fn mission_map_rotation(mission: &Mission) -> f32 {
     if mission.return_objective.unwrap_or(mission.objective) == Icon::Spy {
         SPY_MISSION_MAP_ROTATION
@@ -70,14 +90,31 @@ fn mission_map_rotation(mission: &Mission) -> f32 {
     }
 }
 
-fn mission_flame_transform(size: f32, map_rotation: f32) -> Transform {
+fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32 {
+    if mission.return_objective == Some(Icon::Spy) {
+        0.0
+    } else {
+        route_angle + mission_map_rotation(mission)
+    }
+}
+
+fn mission_map_flip_x(mission: &Mission) -> bool {
+    mission.return_objective == Some(Icon::Spy)
+}
+
+fn mission_flame_transform(size: f32, route_angle: f32, image_rotation: f32) -> Transform {
     let distance = size * 0.5;
+    let relative_angle = route_angle + PI - image_rotation;
     Transform {
-        // Counter-rotate the child offset so the flame remains behind the route while the probe
-        // artwork turns to place its lower exhaust over that anchor.
-        translation: Vec3::new(-distance * map_rotation.cos(), distance * map_rotation.sin(), -0.1),
+        // Counter-rotate the child so its world-space position remains behind the route even
+        // when upright returning-spy artwork no longer rotates with that route.
+        translation: Vec3::new(
+            distance * relative_angle.cos(),
+            distance * relative_angle.sin(),
+            -0.1,
+        ),
         scale: Vec3::splat(0.35),
-        rotation: Quat::from_rotation_z(PI - map_rotation),
+        rotation: Quat::from_rotation_z(relative_angle),
     }
 }
 
@@ -88,30 +125,66 @@ pub struct MissionRouteArrowCmp {
     style: MissionRouteStyle,
 }
 
+#[derive(Message)]
+#[doc(hidden)]
+pub struct MissionRecallAnimationMsg {
+    mission_id: u64,
+    position: Vec2,
+    color: Color,
+    radius: f32,
+    from_rotation: Quat,
+    from_flip_x: bool,
+    from_flip_y: bool,
+    to_rotation: Quat,
+    to_flip_x: bool,
+    to_flip_y: bool,
+}
+
+#[derive(Component)]
+pub(crate) struct MissionRecallAnimation {
+    timer: Timer,
+    from_rotation: Quat,
+    from_flip_x: bool,
+    from_flip_y: bool,
+    to_rotation: Quat,
+    to_flip_x: bool,
+    to_flip_y: bool,
+}
+
+#[derive(Component)]
+pub(crate) struct MissionRecallEffect {
+    timer: Timer,
+}
+
+#[derive(Component)]
+pub(crate) struct MissionRecallPulse {
+    delay: f32,
+    radius: f32,
+}
+
 /// Advances the visible ECS mission projection after canonical turn installation.
 pub fn update_missions(
     mut commands: Commands,
-    mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &MissionCmp)>,
+    mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &mut Visibility, &MissionCmp)>,
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
+    suppressed_spies: Option<Res<SuppressedReturningSpies>>,
 ) {
     let player_id = player.id;
 
     for mission in missions.iter() {
-        if !mission_q.iter().any(|(_, _, _, m)| m.id == mission.id) {
+        if !mission_q.iter().any(|(_, _, _, _, m)| m.id == mission.id) {
             let id = mission.id;
             let owner = mission.owner;
 
-            let destination = map.get(mission.destination);
-
-            let direction = (-mission.position + destination.position).normalize();
+            let direction = mission_map_direction(mission, &map);
             let angle = direction.y.atan2(direction.x);
             let size = mission_size(mission, false);
-            let map_rotation = mission_map_rotation(mission);
+            let image_rotation = mission_world_rotation(mission, angle);
             let image = mission.image(&player);
 
             let texture = assets.texture("flame");
@@ -121,20 +194,26 @@ pub fn update_missions(
                         image: assets.image(image),
                         color: session.player_color(owner).color(),
                         custom_size: Some(Vec2::splat(size)),
+                        flip_x: mission_map_flip_x(mission),
                         flip_y: mission_map_flip_y(image, direction),
                         ..default()
                     },
                     Transform {
                         translation: mission.position.extend(MISSION_Z),
-                        rotation: Quat::from_rotation_z(angle + map_rotation),
+                        rotation: Quat::from_rotation_z(image_rotation),
                         ..default()
                     },
                     Pickable::default(),
+                    if suppressed_spies.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
+                        Visibility::Hidden
+                    } else {
+                        Visibility::Inherited
+                    },
                     MissionCmp::new(id),
                     MapCmp,
                     children![(
                         Sprite::from_atlas_image(texture.image, texture.atlas),
-                        mission_flame_transform(size, map_rotation),
+                        mission_flame_transform(size, angle, image_rotation),
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::Linear,
@@ -169,19 +248,26 @@ pub fn update_missions(
         }
     }
 
-    for (mission_e, mut mission_s, mut mission_t, mission_c) in &mut mission_q {
+    for (mission_e, mut mission_s, mut mission_t, mut visibility, mission_c) in &mut mission_q {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
+            *visibility = if suppressed_spies
+                .as_ref()
+                .is_some_and(|suppressed| suppressed.contains(mission.id))
+            {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
             // Update the direction the image is pointing at
             // Could change if the destination planet was destroyed
-            let destination = map.get(mission.destination);
-
-            let direction = (-mission.position + destination.position).normalize();
+            let direction = mission_map_direction(mission, &map);
             let angle = direction.y.atan2(direction.x);
             let image = mission.image(&player);
 
-            mission_t.rotation = Quat::from_rotation_z(angle + mission_map_rotation(mission));
+            mission_t.rotation = Quat::from_rotation_z(mission_world_rotation(mission, angle));
             mission_s.image = assets.image(image);
             mission_s.color = session.player_color(mission.owner).color();
+            mission_s.flip_x = mission_map_flip_x(mission);
             mission_s.flip_y = mission_map_flip_y(image, direction);
 
             if state.mission_hover.is_some_and(|id| id == mission.id) {
@@ -375,7 +461,8 @@ pub fn send_mission(
             .find(|p| p.id == mission.origin)
             .zip(map.planets.iter().find(|p| p.id == mission.destination));
         let valid = worlds.is_some_and(|(origin, destination)| {
-            crate::core::orders::validate_mission(&player, origin, destination, mission).is_ok()
+            crate::core::orders::validate_mission(&player, &map, origin, destination, mission)
+                .is_ok()
         });
         if !valid
             || !pending.can_accept_commands()
@@ -431,6 +518,182 @@ pub fn send_mission(
     }
 }
 
+/// Validates an owned active mission, queues its deterministic recall, and updates the preview.
+pub fn recall_mission(
+    mut recalls: MessageReader<RecallMissionMsg>,
+    mut message: MessageWriter<MessageMsg>,
+    mut animations: MessageWriter<MissionRecallAnimationMsg>,
+    map: Res<Map>,
+    player: Res<Player>,
+    settings: Res<Settings>,
+    mut missions: ResMut<Missions>,
+    mut pending: ResMut<PendingTurnCommands>,
+) {
+    for RecallMissionMsg {
+        mission_id,
+    } in recalls.read()
+    {
+        let Some(mission) = missions.0.iter_mut().find(|mission| mission.id == *mission_id) else {
+            message.write(MessageMsg::error("This mission is no longer active."));
+            continue;
+        };
+        if mission.owner != player.id || mission.is_returning() || !pending.can_accept_commands() {
+            message.write(MessageMsg::error(
+                "This mission cannot be recalled. Continue your turn before changing orders.",
+            ));
+            continue;
+        }
+        if !pending.push(TurnCommand::RecallMission {
+            mission_id: *mission_id,
+        }) {
+            message.write(MessageMsg::error(
+                "This turn already contains the maximum number of commands.",
+            ));
+            continue;
+        }
+
+        let from_direction = mission_map_direction(mission, &map);
+        let image = mission.image(&player).to_owned();
+        let from_angle = from_direction.y.atan2(from_direction.x);
+        let from_rotation = Quat::from_rotation_z(mission_world_rotation(mission, from_angle));
+        let from_flip_x = mission_map_flip_x(mission);
+        let from_flip_y = mission_map_flip_y(&image, from_direction);
+        let position = mission.position;
+        let radius = mission_size(mission, false) * 1.25;
+
+        mission.recall(&map, settings.turn);
+        let to_direction = mission_map_direction(mission, &map);
+        let to_angle = to_direction.y.atan2(to_direction.x);
+        animations.write(MissionRecallAnimationMsg {
+            mission_id: *mission_id,
+            position,
+            color: player.color().color(),
+            radius,
+            from_rotation,
+            from_flip_x,
+            from_flip_y,
+            to_rotation: Quat::from_rotation_z(mission_world_rotation(mission, to_angle)),
+            to_flip_x: mission_map_flip_x(mission),
+            to_flip_y: mission_map_flip_y(&image, to_direction),
+        });
+        message.write(MessageMsg::info("Mission recalled.").silent());
+    }
+}
+
+/// Plays a map-only recall cue while the authoritative mission is already returning.
+pub(crate) fn animate_mission_recalls(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut starts: MessageReader<MissionRecallAnimationMsg>,
+    mut missions: Query<
+        (Entity, &MissionCmp, &mut Sprite, &mut Transform, Option<&mut MissionRecallAnimation>),
+        Without<MissionRecallPulse>,
+    >,
+    mut effects: Query<(Entity, &mut MissionRecallEffect, &Children)>,
+    mut pulses: Query<
+        (&MissionRecallPulse, &mut Transform, &MeshMaterial2d<ColorMaterial>),
+        Without<MissionCmp>,
+    >,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for start in starts.read() {
+        let Some((entity, _, mut sprite, mut transform, animation)) =
+            missions.iter_mut().find(|(_, mission, _, _, _)| mission.id == start.mission_id)
+        else {
+            continue;
+        };
+        if animation.is_some() {
+            continue;
+        }
+
+        transform.rotation = start.from_rotation;
+        transform.scale = Vec3::ONE;
+        sprite.flip_x = start.from_flip_x;
+        sprite.flip_y = start.from_flip_y;
+        commands.entity(entity).insert(MissionRecallAnimation {
+            timer: Timer::from_seconds(RECALL_ANIMATION_SECONDS, TimerMode::Once),
+            from_rotation: start.from_rotation,
+            from_flip_x: start.from_flip_x,
+            from_flip_y: start.from_flip_y,
+            to_rotation: start.to_rotation,
+            to_flip_x: start.to_flip_x,
+            to_flip_y: start.to_flip_y,
+        });
+
+        let ring = meshes.add(Annulus::new(0.965, 1.0));
+        commands
+            .spawn((
+                Transform::from_translation(start.position.extend(0.0)),
+                Visibility::Inherited,
+                Pickable::IGNORE,
+                MapCmp,
+                MissionRecallEffect {
+                    timer: Timer::from_seconds(RECALL_ANIMATION_SECONDS, TimerMode::Once),
+                },
+            ))
+            .with_children(|parent| {
+                for index in 0..RECALL_PULSE_COUNT {
+                    parent.spawn((
+                        Mesh2d(ring.clone()),
+                        MeshMaterial2d(materials.add(start.color.with_alpha(0.0))),
+                        Transform::from_xyz(0.0, 0.0, MISSION_Z + 0.2),
+                        Pickable::IGNORE,
+                        MissionRecallPulse {
+                            delay: index as f32 * RECALL_PULSE_INTERVAL_SECONDS,
+                            radius: start.radius,
+                        },
+                    ));
+                }
+            });
+    }
+
+    for (entity, _, mut sprite, mut transform, animation) in &mut missions {
+        let Some(mut animation) = animation else {
+            continue;
+        };
+        animation.timer.tick(time.delta());
+        let elapsed = animation.timer.elapsed_secs();
+
+        let progress = (elapsed / RECALL_TURN_SECONDS).clamp(0.0, 1.0);
+        let eased = progress * progress * (3.0 - 2.0 * progress);
+        transform.rotation = animation.from_rotation.slerp(animation.to_rotation, eased);
+        transform.scale = Vec3::ONE;
+        if progress < 1.0 {
+            sprite.flip_x = animation.from_flip_x;
+            sprite.flip_y = animation.from_flip_y;
+        } else {
+            sprite.flip_x = animation.to_flip_x;
+            sprite.flip_y = animation.to_flip_y;
+        }
+
+        if animation.timer.is_finished() {
+            transform.scale = Vec3::ONE;
+            commands.entity(entity).remove::<MissionRecallAnimation>();
+        }
+    }
+
+    for (effect_entity, mut effect, children) in &mut effects {
+        effect.timer.tick(time.delta());
+        if effect.timer.is_finished() {
+            commands.entity(effect_entity).despawn();
+            continue;
+        }
+        let elapsed = effect.timer.elapsed_secs();
+        for child in children.iter() {
+            let Ok((pulse, mut transform, material)) = pulses.get_mut(child) else {
+                continue;
+            };
+            let progress = ((elapsed - pulse.delay) / RECALL_PULSE_SECONDS).clamp(0.0, 1.0);
+            transform.scale = Vec3::splat(pulse.radius * (0.08 + progress));
+            let alpha = (progress * 10.0).min(1.0) * (1.0 - progress).powi(2) * 0.8;
+            if let Some(mut material) = materials.get_mut(&material.0) {
+                material.color.set_alpha(alpha);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/core/missions_systems_player_color.rs"]
 mod player_color_tests;
@@ -438,3 +701,7 @@ mod player_color_tests;
 #[cfg(test)]
 #[path = "../../tests/core/missions_systems_audio.rs"]
 mod audio_tests;
+
+#[cfg(test)]
+#[path = "../../tests/core/missions_recall_animation.rs"]
+mod recall_animation_tests;

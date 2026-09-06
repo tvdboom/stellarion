@@ -26,6 +26,9 @@ const GOLD: Color = Color::srgb(1.0, 0.57, 0.16);
 const MINT: Color = Color::srgb(0.35, 1.0, 0.68);
 const VIOLET: Color = Color::srgb(0.75, 0.38, 1.0);
 const MAX_PARTICLES: usize = 1800;
+const COMBAT_READOUT_RASTER_SCALE: f32 = 0.05;
+const MISSILE_FLIGHT_TIME: f32 = 0.95;
+const MISSILE_CURVE_HEIGHT: f32 = 0.58;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,7 +63,8 @@ impl Weapon {
                 Ship::WarSun => Self::Solar,
             },
             Unit::Defense(defense) => match defense {
-                Defense::Crawler => Self::Repair,
+                Defense::RepairTruck => Self::Repair,
+                Defense::Crawler => Self::Laser,
                 Defense::LightLaser => Self::Laser,
                 Defense::HeavyLaser => Self::HeavyLaser,
                 Defense::GaussCannon => Self::Railgun,
@@ -94,8 +98,9 @@ impl Weapon {
         match self {
             Self::Laser | Self::HeavyLaser | Self::Repeater => 0.28,
             Self::TwinLaser | Self::Railgun => 0.32,
-            Self::Missile => 0.64,
-            Self::Bomb => 0.9,
+            Self::Missile => MISSILE_FLIGHT_TIME,
+            // A raid should read as a deliberate, heavy drop rather than gunfire.
+            Self::Bomb => 1.75,
             Self::Broadside => 0.46,
             Self::Plasma | Self::Ion => 0.42,
             Self::Lance => 0.5,
@@ -148,11 +153,24 @@ impl Weapon {
             Self::TwinLaser => Vec2::new(0.5, 0.045),
             Self::Repeater => Vec2::new(0.4, 0.17),
             Self::Railgun => Vec2::new(1.25, 0.055),
-            Self::Missile => Vec2::new(0.23, 0.09),
-            Self::Bomb => Vec2::new(0.3, 0.16),
+            Self::Missile => Vec2::new(0.30, 0.11),
+            Self::Bomb => Vec2::new(0.48, 0.20),
             Self::Broadside => Vec2::new(0.65, 0.10),
             Self::Repair => Vec2::splat(0.15),
             Self::Plasma | Self::Ion | Self::Lance | Self::Solar | Self::Siege => Vec2::ONE,
+        }
+    }
+
+    fn launch_cue(self) -> Option<PlayAudioMsg> {
+        match self {
+            Self::Missile => Some(PlayAudioMsg::new("missile fire").rate(1.0)),
+            Self::Bomb => Some(PlayAudioMsg::new("bomb release").rate(0.72)),
+            Self::Plasma => Some(PlayAudioMsg::new("beam fire").rate(1.35)),
+            Self::Ion => Some(PlayAudioMsg::new("beam fire").rate(1.6)),
+            Self::Lance => Some(PlayAudioMsg::new("beam fire").rate(1.1)),
+            Self::Solar => Some(PlayAudioMsg::new("beam fire").rate(0.78)),
+            Self::Siege => Some(PlayAudioMsg::new("beam fire").rate(0.92)),
+            _ => None,
         }
     }
 }
@@ -188,7 +206,7 @@ impl PendingImpact {
         let delta = self.destination - self.origin;
         let normal = Vec3::new(-delta.y, delta.x, 0.).normalize_or_zero();
         if self.weapon == Weapon::Repair {
-            // Fly out, orbit the repair site, then return to the crawler.
+            // Fly out, orbit the repair site, then return to the Repair Truck.
             if p < 0.25 {
                 return self.origin.lerp(self.destination, smooth(p * 4.));
             }
@@ -203,7 +221,7 @@ impl PendingImpact {
         let curve = if self.weapon == Weapon::Bomb {
             self.size * (self.lane - 0.5) * 1.4
         } else if self.weapon == Weapon::Missile {
-            self.size * self.lane * 0.9
+            self.size * self.lane * MISSILE_CURVE_HEIGHT
         } else {
             0.
         };
@@ -291,6 +309,7 @@ pub struct Particle {
     delay: f32,
     lifetime: f32,
     spin: f32,
+    sustained: bool,
 }
 
 #[derive(Component)]
@@ -300,6 +319,14 @@ pub struct BlastFrames(usize);
 #[derive(Component)]
 /// Opaque cover while the planetary backdrop switches under its explosion cloud.
 pub struct PlanetFlash;
+
+#[derive(Component)]
+/// The War Sun's main discharge holds at full intensity before its final fade.
+struct CinematicBeam;
+
+#[derive(Component)]
+/// One short, irregular molten segment in the planet-destruction fracture pattern.
+struct PlanetFissure;
 
 #[derive(Component)]
 /// A brief miss or repair label, timed with the same playback clock.
@@ -317,6 +344,7 @@ pub struct EffectTextures {
     ring: Handle<Image>,
     shard: Handle<Image>,
     beam: Handle<Image>,
+    missile: Handle<Image>,
     ready: bool,
 }
 
@@ -325,7 +353,7 @@ impl EffectTextures {
         if self.ready {
             return;
         }
-        for kind in 0..4 {
+        for kind in 0..5 {
             let resolution = if kind == 2 {
                 32
             } else {
@@ -345,6 +373,20 @@ impl EffectTextures {
                         3 => {
                             (1. - uv.y.abs()).clamp(0., 1.).powf(2.)
                                 * ((1. - uv.x.abs()) * 14.).clamp(0., 1.)
+                        },
+                        4 => {
+                            // Pointed nose, substantial body and swept fins remain legible
+                            // after the mask is stretched into both missiles and heavy bombs.
+                            let body = (-0.72..=0.5).contains(&uv.x) && uv.y.abs() <= 0.25;
+                            let nose =
+                                (0.5..=0.96).contains(&uv.x) && uv.y.abs() <= (0.96 - uv.x) * 0.55;
+                            let fins = (-0.72..=-0.3).contains(&uv.x)
+                                && uv.y.abs() <= 0.68 - (uv.x + 0.72) * 0.9;
+                            if body || nose || fins {
+                                1.0
+                            } else {
+                                0.0
+                            }
                         },
                         _ => (1. - r).clamp(0., 1.).powf(2.5),
                     };
@@ -369,6 +411,7 @@ impl EffectTextures {
                 1 => self.ring = images.add(image),
                 2 => self.shard = images.add(image),
                 3 => self.beam = images.add(image),
+                4 => self.missile = images.add(image),
                 _ => self.glow = images.add(image),
             }
         }
@@ -411,6 +454,10 @@ impl Painter<'_, '_, '_> {
     }
 
     fn glow(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32) {
+        self.glow_after(origin, size, color, lifetime, 0.);
+    }
+
+    fn glow_after(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) {
         self.particle(
             false,
             Particle {
@@ -420,14 +467,19 @@ impl Painter<'_, '_, '_> {
                 end_size: Vec2::splat(size * 1.8),
                 color,
                 elapsed: 0.,
-                delay: 0.,
+                delay,
                 lifetime,
                 spin: 0.,
+                sustained: false,
             },
         );
     }
 
     fn ring(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32) {
+        self.ring_after(origin, size, color, lifetime, 0.);
+    }
+
+    fn ring_after(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) {
         self.particle(
             true,
             Particle {
@@ -437,9 +489,10 @@ impl Painter<'_, '_, '_> {
                 end_size: Vec2::splat(size),
                 color,
                 elapsed: 0.,
-                delay: 0.,
+                delay,
                 lifetime,
                 spin: 0.,
+                sustained: false,
             },
         );
     }
@@ -491,6 +544,7 @@ impl Painter<'_, '_, '_> {
                     } else {
                         0.
                     },
+                    sustained: false,
                 },
             );
         }
@@ -529,6 +583,7 @@ impl Painter<'_, '_, '_> {
                 delay,
                 lifetime,
                 spin: 0.,
+                sustained: false,
             },
             BlastFrames(texture.last_index),
             CombatCmp,
@@ -537,45 +592,84 @@ impl Painter<'_, '_, '_> {
     }
 
     fn beam(&mut self, from: Vec3, to: Vec3, width: f32, color: Color, lifetime: f32) {
+        self.beam_after(from, to, width, color, lifetime, 0., false);
+    }
+
+    fn sustained_beam(&mut self, from: Vec3, to: Vec3, width: f32, color: Color, lifetime: f32) {
+        self.beam_after(from, to, width, color, lifetime, 0., true);
+    }
+
+    fn fissure(
+        &mut self,
+        from: Vec3,
+        to: Vec3,
+        width: f32,
+        color: Color,
+        lifetime: f32,
+        delay: f32,
+    ) {
+        if let Some(entity) = self.beam_after(from, to, width, color, lifetime, delay, false) {
+            self.commands.entity(entity).insert(PlanetFissure);
+        }
+    }
+
+    fn beam_after(
+        &mut self,
+        from: Vec3,
+        to: Vec3,
+        width: f32,
+        color: Color,
+        lifetime: f32,
+        delay: f32,
+        sustained: bool,
+    ) -> Option<Entity> {
         if self.budget == 0 {
-            return;
+            return None;
         }
         let d = to - from;
         if d.length_squared() < 0.01 {
-            return;
+            return None;
         }
-        self.commands.spawn((
-            Sprite {
-                image: self.textures.beam.clone(),
-                color,
-                custom_size: Some(Vec2::new(d.length(), width)),
-                ..default()
-            },
-            Transform::from_translation(Vec3::new(
-                (from.x + to.x) * 0.5,
-                (from.y + to.y) * 0.5,
-                COMBAT_EXPLOSION_Z + 0.1,
-            ))
-            .with_rotation(Quat::from_rotation_z(d.y.atan2(d.x))),
-            Particle {
-                origin: Vec3::new(
+        let entity = self
+            .commands
+            .spawn((
+                Sprite {
+                    image: self.textures.beam.clone(),
+                    color,
+                    custom_size: Some(Vec2::new(d.length(), width)),
+                    ..default()
+                },
+                Transform::from_translation(Vec3::new(
                     (from.x + to.x) * 0.5,
                     (from.y + to.y) * 0.5,
                     COMBAT_EXPLOSION_Z + 0.1,
-                ),
-                velocity: Vec3::ZERO,
-                start_size: Vec2::new(d.length(), width),
-                end_size: Vec2::new(d.length(), width * 0.4),
-                color,
-                elapsed: 0.,
-                delay: 0.,
-                lifetime,
-                spin: 0.,
-            },
-            CombatCmp,
-            Pickable::IGNORE,
-        ));
+                ))
+                .with_rotation(Quat::from_rotation_z(d.y.atan2(d.x))),
+                Particle {
+                    origin: Vec3::new(
+                        (from.x + to.x) * 0.5,
+                        (from.y + to.y) * 0.5,
+                        COMBAT_EXPLOSION_Z + 0.1,
+                    ),
+                    velocity: Vec3::ZERO,
+                    start_size: Vec2::new(d.length(), width),
+                    end_size: Vec2::new(d.length(), width * 0.4),
+                    color,
+                    elapsed: 0.,
+                    delay,
+                    lifetime,
+                    spin: 0.,
+                    sustained,
+                },
+                CombatCmp,
+                Pickable::IGNORE,
+            ))
+            .id();
+        if sustained {
+            self.commands.entity(entity).insert(CinematicBeam);
+        }
         self.budget -= 1;
+        Some(entity)
     }
 }
 
@@ -586,10 +680,10 @@ fn smooth(p: f32) -> f32 {
 fn queue_combat_sound(
     audio: &mut MessageWriter<PlayAudioMsg>,
     cooldowns: &mut BTreeMap<&'static str, f32>,
-    name: &'static str,
+    cue: PlayAudioMsg,
 ) {
-    if let std::collections::btree_map::Entry::Vacant(entry) = cooldowns.entry(name) {
-        audio.write(PlayAudioMsg::new(name));
+    if let std::collections::btree_map::Entry::Vacant(entry) = cooldowns.entry(cue.name) {
+        audio.write(cue);
         entry.insert(0.12);
     }
 }
@@ -616,9 +710,17 @@ pub fn shake_combat_camera(
         }
     }
     for ray in &rays {
-        let age = ray.elapsed - 3.7;
-        if ray.destroys_planet && (0.0..0.65).contains(&age) {
-            shake += Vec2::new((age * 65.).sin(), (age * 81.).sin()) * 5. * (1. - age / 0.65);
+        let impact_age = ray.elapsed - 2.;
+        if (0.0..0.28).contains(&impact_age) {
+            shake += Vec2::new((impact_age * 92.).sin(), (impact_age * 71.).cos())
+                * 2.2
+                * (1. - impact_age / 0.28);
+        }
+        let blast_age = ray.elapsed - 3.7;
+        if ray.destroys_planet && (0.0..0.65).contains(&blast_age) {
+            shake += Vec2::new((blast_age * 65.).sin(), (blast_age * 81.).sin())
+                * 5.
+                * (1. - blast_age / 0.65);
         }
     }
     for (entity, mut transform, projection, motion) in &mut cameras {
@@ -728,14 +830,23 @@ pub fn run_combat_animations(
         else {
             continue;
         };
+        let target_dimensions = sprite.custom_size.unwrap_or(Vec2::splat(120.));
         let (mut destination, size) = if cu.unit == Unit::planetary_shield() {
             shields
                 .iter()
                 .next()
-                .map(|(s, t)| (t.translation(), s.custom_size.unwrap_or(Vec2::splat(120.)).x))
+                .map(|(s, t)| {
+                    let dimensions = s.custom_size.unwrap_or(Vec2::splat(120.));
+                    let effect_size = if dimensions.x > dimensions.y * 2.0 {
+                        dimensions.y * 0.65
+                    } else {
+                        dimensions.x
+                    };
+                    (t.translation(), effect_size)
+                })
                 .unwrap_or((transform.translation, 120.))
         } else {
-            (transform.translation, sprite.custom_size.unwrap_or(Vec2::splat(120.)).x)
+            (transform.translation, target_dimensions.x)
         };
         let source = message.source.map(|s| s.0);
         let key = (target, source, message.repair, message.shot.missed);
@@ -754,10 +865,30 @@ pub fn run_combat_animations(
         };
         let lane = *count % weapon.salvo_limit();
         *count += 1;
-        if message.shot.missed {
-            destination.x += size * (0.8 + lane as f32 * 0.12);
+        let interceptor = message.source.is_some_and(|(_, unit, _)| {
+            unit == Unit::antiballistic_missile()
+                && message.shot.unit == Some(Unit::interplanetary_missile())
+        });
+        if interceptor {
+            // Every interceptor resolves against the incoming missile card. Successful
+            // shots spread across its body; failed shots finish near its rim so the MISS
+            // readout communicates the result without the projectile flying into space.
+            let center_lane = (weapon.salvo_limit() - 1) as f32 * 0.5;
+            let lane_offset = lane as f32 - center_lane;
+            if message.shot.missed {
+                destination.x += target_dimensions.x * 0.36;
+                destination.y += lane_offset * target_dimensions.y * 0.09;
+            } else {
+                destination.x += lane_offset * target_dimensions.x * 0.17;
+            }
+        } else if message.shot.missed {
+            // Outcome feedback communicates the miss. The projectile itself still
+            // terminates within the target artwork instead of firing into empty space.
+            destination.x += size * (0.22 + lane as f32 * 0.06);
+            destination.y += size * (lane as f32 - 1.0) * 0.08;
         } else {
-            destination.x += (lane as f32 - 1.) * size * 0.17;
+            let center_lane = (weapon.salvo_limit() - 1) as f32 * 0.5;
+            destination.x += (lane as f32 - center_lane) * size * 0.17;
         }
         let impact = grouped
             .entry((target, source, message.repair, message.shot.missed, lane))
@@ -817,22 +948,25 @@ pub fn run_combat_animations(
                             delay: 0.,
                             lifetime: impact.delay,
                             spin: 0.,
+                            sustained: false,
                         },
                     );
                 }
             }
         }
         let weapon = impact.weapon;
-        let soft = matches!(weapon, Weapon::Missile | Weapon::Repair);
+        let projectile_image = if matches!(weapon, Weapon::Missile | Weapon::Bomb) {
+            textures.missile.clone()
+        } else if weapon == Weapon::Repair {
+            textures.glow.clone()
+        } else {
+            textures.beam.clone()
+        };
         painter
             .commands
             .spawn((
                 Sprite {
-                    image: if soft {
-                        textures.glow.clone()
-                    } else {
-                        textures.beam.clone()
-                    },
+                    image: projectile_image.clone(),
                     color: color.with_alpha(0.55),
                     custom_size: Some(Vec2::ONE),
                     ..default()
@@ -850,11 +984,7 @@ pub fn run_combat_animations(
                     let offset = (barrel as f32 - (weapon.barrels() - 1) as f32 * 0.5) * 0.55;
                     parent.spawn((
                         Sprite {
-                            image: if soft {
-                                textures.glow.clone()
-                            } else {
-                                textures.beam.clone()
-                            },
+                            image: projectile_image.clone(),
                             color: if weapon == Weapon::Repair {
                                 MINT
                             } else {
@@ -862,7 +992,8 @@ pub fn run_combat_animations(
                             },
                             custom_size: Some(Vec2::new(
                                 0.96,
-                                if soft {
+                                if matches!(weapon, Weapon::Missile | Weapon::Bomb | Weapon::Repair)
+                                {
                                     0.5
                                 } else {
                                     0.18
@@ -889,7 +1020,8 @@ pub fn run_combat_animations(
             });
     }
 
-    let mut hit_sound = false;
+    let mut hull_hit_sound = false;
+    let mut shield_hit_sound = false;
     let mut repair_sound = false;
     for (entity, mut impact, mut sprite, mut transform, mut visibility) in &mut pending {
         impact.elapsed += dt;
@@ -899,6 +1031,9 @@ pub fn run_combat_animations(
         if !impact.launched {
             impact.launched = true;
             *visibility = Visibility::Inherited;
+            if let Some(cue) = impact.weapon.launch_cue() {
+                queue_combat_sound(&mut audio, &mut sound_cooldowns, cue);
+            }
             if let Some(source) = impact.source {
                 if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(source) {
                     if impact.weapon != Weapon::Repair {
@@ -1081,6 +1216,10 @@ pub fn run_combat_animations(
             continue;
         }
         if impact.missed {
+            if impact.weapon == Weapon::Bomb {
+                painter.ring(impact.destination, impact.size * 0.55, GOLD.with_alpha(0.42), 0.45);
+                painter.sparks(impact.destination, impact.size * 0.35, GOLD, 5, false);
+            }
             if let Some(mut motion) = motion {
                 if motion.miss_cooldown > 0. {
                     continue;
@@ -1088,7 +1227,7 @@ pub fn run_combat_animations(
                 motion.miss_flash = 0.4;
                 motion.miss_cooldown = 1.15;
             }
-            let center = target_t.translation.truncate().extend(COMBAT_EXPLOSION_Z + 0.5);
+            let center = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5);
             let color = Color::srgb(0.9, 0.95, 1.0);
             for offset in [-0.12, 0.12] {
                 painter.beam(
@@ -1103,11 +1242,14 @@ pub fn run_combat_animations(
             painter.commands.spawn((
                 Text2d::new("MISS"),
                 TextFont {
-                    font_size: (impact.size * 0.15).into(),
+                    // Rasterize well above the final display size and scale down in world
+                    // space. Small directly-rasterized glyphs look blocky over moving cards.
+                    font_size: (impact.size * 0.15 / COMBAT_READOUT_RASTER_SCALE).into(),
                     ..default()
                 },
                 TextColor(color),
-                Transform::from_translation(origin),
+                Transform::from_translation(origin)
+                    .with_scale(Vec3::splat(COMBAT_READOUT_RASTER_SCALE)),
                 CombatReadout {
                     age: 0.,
                     origin,
@@ -1119,8 +1261,6 @@ pub fn run_combat_animations(
             ));
             continue;
         }
-        // All weapon hits use the original shared combat cue, including shield hits.
-        hit_sound = true;
         if matches!(impact.weapon, Weapon::Solar | Weapon::Siege) {
             painter.ring(
                 impact.destination,
@@ -1140,6 +1280,7 @@ pub fn run_combat_animations(
             cu.hull = cu.hull.saturating_sub(impact.hull);
         }
         if old_shield > cu.shield {
+            shield_hit_sound = true;
             painter.ring(impact.destination, impact.size * 1.15, ICE.with_alpha(0.8), 0.4);
             if cu.shield == 0 {
                 painter.ring(impact.destination, impact.size * 1.8, ICE, 0.65);
@@ -1154,6 +1295,7 @@ pub fn run_combat_animations(
             }
         }
         if impact.hull > 0 || impact.levels > 0 {
+            hull_hit_sound = true;
             painter.blast(impact.destination, impact.size * 0.65, 0.42);
             painter.glow(impact.destination, impact.size * 0.62, GOLD, 0.24);
             painter.glow(impact.destination, impact.size * 0.28, Color::WHITE, 0.1);
@@ -1195,11 +1337,18 @@ pub fn run_combat_animations(
             }
         }
     }
-    if hit_sound {
-        queue_combat_sound(&mut audio, &mut sound_cooldowns, "short explosion");
+    if hull_hit_sound {
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("short explosion"));
+    }
+    if shield_hit_sound {
+        queue_combat_sound(
+            &mut audio,
+            &mut sound_cooldowns,
+            PlayAudioMsg::new("shield impact").rate(1.35),
+        );
     }
     if repair_sound {
-        queue_combat_sound(&mut audio, &mut sound_cooldowns, "repair");
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("repair"));
     }
 
     // Existing card tweens control scale. Add/remove only our translation offset,
@@ -1245,7 +1394,6 @@ pub fn run_combat_animations(
             let size = sprite.custom_size.unwrap_or(Vec2::splat(120.)).x;
             let origin = transform.translation + Vec3::new(size * 0.22, -size * 0.12, 0.);
             painter.sparks(origin, size * 0.3, GOLD.with_alpha(0.65), 3, false);
-            painter.glow(origin - Vec3::Y * size * 0.12, size * 0.24, ICE.with_alpha(0.4), 0.13);
         }
     }
 
@@ -1317,6 +1465,7 @@ pub fn run_combat_animations(
                     delay: 0.,
                     lifetime: DEATH_RAY_DURATION,
                     spin: 0.,
+                    sustained: false,
                 },
                 CombatCmp,
                 Pickable::IGNORE,
@@ -1336,6 +1485,7 @@ pub fn run_combat_animations(
                         delay: 0.,
                         lifetime: 1.65,
                         spin: 0.,
+                        sustained: false,
                     },
                 );
             }
@@ -1352,6 +1502,7 @@ pub fn run_combat_animations(
                         delay: 0.,
                         lifetime: 1.9,
                         spin: radius,
+                        sustained: false,
                     },
                 );
             }
@@ -1371,25 +1522,95 @@ pub fn run_combat_animations(
         }
         if ray.stage == 2 && ray.elapsed >= 2.0 {
             ray.stage = 3;
-            painter.beam(focus, ray.target, ray.size * 1.5, GOLD.with_alpha(0.6), 1.9);
-            painter.beam(focus, ray.target, ray.size * 0.6, GOLD, 1.9);
-            painter.beam(focus, ray.target, ray.size * 0.17, Color::WHITE, 1.9);
-            painter.glow(ray.target, ray.size * 4.5, GOLD, 1.9);
-            painter.ring(ray.target, ray.size * 5., GOLD, 1.8);
-            painter.sparks(ray.target, ray.size * 2.5, Color::WHITE, 32, false);
+            // A broad heated envelope, dense energy column and white-hot core make
+            // the discharge read as one sustained weapon instead of a quick tracer.
+            painter.sustained_beam(focus, ray.target, ray.size * 2.35, GOLD.with_alpha(0.38), 1.72);
+            painter.sustained_beam(focus, ray.target, ray.size * 1.05, GOLD, 1.72);
+            painter.sustained_beam(
+                focus,
+                ray.target,
+                ray.size * 0.32,
+                Color::srgb(1., 0.97, 0.78),
+                1.72,
+            );
+
+            // The surface absorbs several visible pulses before it gives way.
+            painter.glow(ray.target, ray.size * 3.4, GOLD.with_alpha(0.8), 1.5);
+            painter.glow(ray.target, ray.size * 1.65, Color::WHITE, 0.72);
+            painter.ring(ray.target, ray.size * 2.7, GOLD.with_alpha(0.75), 0.75);
+            painter.ring_after(
+                ray.target,
+                ray.size * 3.4,
+                Color::srgb(1., 0.75, 0.28).with_alpha(0.55),
+                0.75,
+                0.2,
+            );
+            painter.glow_after(ray.target, ray.size * 2.3, Color::WHITE, 0.55, 0.38);
+            painter.blast_after(ray.target, ray.size * 2.2, 0.7, 0.12);
+            painter.sparks(ray.target, ray.size * 3.2, Color::WHITE, 42, false);
         }
-        if ray.stage == 3 && ray.elapsed >= 2.9 {
+        if ray.stage == 3 && ray.elapsed >= 2.72 {
             ray.stage = 4;
             if ray.destroys_planet {
-                // Branching fissures spread outward before the planet breaks apart.
-                for i in 0..12 {
-                    let angle = i as f32 * TAU / 12.;
-                    let direction = Vec3::new(angle.cos(), angle.sin(), 0.);
-                    let elbow = ray.target + direction * ray.size * (0.8 + (i % 3) as f32 * 0.2);
-                    let end = elbow
-                        + Vec3::new((angle + 0.3).cos(), (angle + 0.3).sin(), 0.) * ray.size * 1.4;
-                    painter.beam(ray.target, elbow, ray.size * 0.06, GOLD, 1.0);
-                    painter.beam(elbow, end, ray.size * 0.035, GOLD, 1.0);
+                // Deterministic uneven paths grow a segment at a time. Offshoots
+                // break the old wheel-spoke silhouette while keeping replay stable.
+                let angles = [0.18_f32, 1.08, 2.46, 3.72, 5.04];
+                for (path, base_angle) in angles.into_iter().enumerate() {
+                    let direction = Vec3::new(base_angle.cos(), base_angle.sin(), 0.);
+                    let mut point =
+                        ray.target + direction * ray.size * (0.13 + path as f32 * 0.012);
+                    let mut angle = base_angle;
+                    for segment in 0..4 {
+                        let bend_sign = if (path + segment) % 2 == 0 {
+                            1.
+                        } else {
+                            -1.
+                        };
+                        let bend =
+                            bend_sign * (0.1 + ((path * 3 + segment * 2) % 4) as f32 * 0.045);
+                        angle += bend;
+                        let length =
+                            ray.size * (0.24 + segment as f32 * 0.065 + (path % 3) as f32 * 0.025);
+                        let next = point + Vec3::new(angle.cos(), angle.sin(), 0.) * length;
+                        let delay = segment as f32 * 0.075 + (path % 2) as f32 * 0.025;
+                        painter.fissure(
+                            point,
+                            next,
+                            ray.size * (0.058 - segment as f32 * 0.008),
+                            Color::srgb(1., 0.34, 0.06),
+                            0.82,
+                            delay,
+                        );
+                        painter.fissure(
+                            point,
+                            next,
+                            ray.size * (0.018 - segment as f32 * 0.002),
+                            Color::srgb(1., 0.88, 0.42),
+                            0.82,
+                            delay + 0.018,
+                        );
+                        if segment == 1 || (segment == 2 && path % 2 == 0) {
+                            let branch_angle = angle
+                                + if (path + segment) % 2 == 0 {
+                                    0.78
+                                } else {
+                                    -0.7
+                                };
+                            let branch_end = next
+                                + Vec3::new(branch_angle.cos(), branch_angle.sin(), 0.)
+                                    * ray.size
+                                    * (0.22 + segment as f32 * 0.07);
+                            painter.fissure(
+                                next,
+                                branch_end,
+                                ray.size * 0.032,
+                                Color::srgb(1., 0.52, 0.12),
+                                0.68,
+                                delay + 0.08,
+                            );
+                        }
+                        point = next;
+                    }
                 }
             }
         }
@@ -1421,6 +1642,7 @@ pub fn run_combat_animations(
                     delay: 0.,
                     lifetime: 1.0,
                     spin: 0.,
+                    sustained: false,
                 },
                 PlanetFlash,
                 CombatCmp,
@@ -1431,39 +1653,29 @@ pub fn run_combat_animations(
                     backdrop.image = art.image("destroyed bg");
                 }
             }
-            for row in 0..4 {
-                for column in 0..6 {
-                    let x = column as f32 - 2.5;
-                    let y = row as f32 - 1.5;
-                    let center = ray.target
-                        + Vec3::new(x * ray.viewport.x * 0.18, y * ray.viewport.y * 0.25, 0.);
-                    painter.blast_after(
-                        center,
-                        ray.viewport.max_element() * 0.53,
-                        1.75,
-                        (x.abs() + y.abs()) * 0.07,
-                    );
-                }
-            }
-            painter.glow(ray.target, ray.size * 8., Color::WHITE, 0.35);
-            painter.blast(ray.target, ray.size * 6., 1.8);
-            painter.glow(ray.target, ray.size * 11., GOLD, 1.7);
-            painter.beam(
-                ray.target - Vec3::X * ray.viewport.x * 0.65,
-                ray.target + Vec3::X * ray.viewport.x * 0.65,
-                ray.size * 0.13,
-                Color::WHITE,
-                0.7,
-            );
-            for (factor, color) in [(1.2, Color::WHITE), (1.8, GOLD), (2.2, VIOLET)] {
-                painter.ring(
-                    ray.target,
-                    ray.viewport.max_element() * factor,
-                    color.with_alpha(0.65),
-                    2.1,
+            let extent = ray.viewport.max_element();
+            painter.blast(ray.target, extent * 0.72, 1.85);
+            for i in 0..14 {
+                let angle = i as f32 * 2.399_963;
+                let radius = ray.viewport.min_element() * (0.08 + (i % 5) as f32 * 0.075);
+                let center = ray.target + Vec3::new(angle.cos(), angle.sin(), 0.) * radius;
+                painter.blast_after(
+                    center,
+                    extent * (0.28 + (i % 4) as f32 * 0.045),
+                    1.55,
+                    0.12 + (i % 5) as f32 * 0.075,
                 );
             }
-            painter.sparks(ray.target, ray.size * 6., GOLD, 80, true);
+            painter.glow(ray.target, ray.size * 9., Color::WHITE, 0.3);
+            painter.glow(ray.target, ray.size * 12., GOLD.with_alpha(0.85), 1.55);
+            // One subdued amber pressure front replaces the cool concentric rings.
+            painter.ring(
+                ray.target,
+                extent * 1.45,
+                Color::srgb(1., 0.42, 0.08).with_alpha(0.32),
+                1.75,
+            );
+            painter.sparks(ray.target, ray.size * 7., GOLD, 96, true);
             for (entity, sprite, transform, cu, _) in &units {
                 if cu.side == Side::Defender {
                     painter.commands.entity(entity).insert(Wreck::new(
@@ -1484,7 +1696,7 @@ pub fn run_combat_animations(
             } else {
                 "explosion"
             };
-            queue_combat_sound(&mut audio, &mut sound_cooldowns, cue);
+            queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new(cue));
             ray.boom_stage += 1;
         }
     }
@@ -1515,6 +1727,8 @@ pub fn run_combat_animations(
         sprite.custom_size = Some(particle.start_size.lerp(particle.end_size, smooth(p)));
         let envelope = if planet_flash.is_some() {
             ((1. - p) / 0.6).min(1.)
+        } else if particle.sustained {
+            (p * 28.).min(1.) * ((1. - p) / 0.22).min(1.)
         } else {
             (p * 18.).min(1.) * (1. - p).powf(1.3)
         };

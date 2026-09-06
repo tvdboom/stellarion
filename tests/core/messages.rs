@@ -163,6 +163,62 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
 }
 
 #[test]
+fn report_toast_remains_clickable_above_combat_overlays() {
+    let context = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    let mut messages = Messages::default();
+    messages.push(
+        &MessageMsg::info("Battle won at planet Ganymede.")
+            .with_action(MessageAction::OpenMissionReport(42)),
+    );
+    let frame = |events| {
+        let mut clicked = None;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..default()
+            },
+            |ui| {
+                clicked = draw_notifications(ui.ctx(), &messages, false);
+                egui::Area::new("combat foreground overlay".into())
+                    .fixed_pos(screen.min)
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                    });
+            },
+        );
+        output.textures_delta.clear();
+        clicked
+    };
+
+    frame(vec![]);
+    frame(vec![]);
+    let rect = context
+        .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
+        .unwrap();
+    let pos = rect.center();
+    frame(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: default(),
+        },
+    ]);
+    let clicked = frame(vec![egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: default(),
+    }]);
+
+    assert_eq!(clicked, Some((0, MessageAction::OpenMissionReport(42))));
+}
+
+#[test]
 fn spy_toast_click_opens_the_requested_mission_report() {
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 640.0));

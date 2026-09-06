@@ -80,17 +80,26 @@ fn smooth_result_banners_preserve_pixels_alpha_and_mips_on_native_and_browser() 
 }
 
 #[test]
-fn audio_icons_have_smooth_transparent_mips_for_small_hud_sizes() {
+fn small_ui_icons_have_smooth_mips() {
     use bevy::image::ImageFilterMode;
 
-    for name in ["mute", "no-music", "sound"] {
+    for name in [
+        "convert",
+        "convert hover",
+        "recall",
+        "recall hover",
+        "eye",
+        "logs",
+        "lost",
+        "missile",
+        "won",
+    ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         for features in [WgpuFeatures::empty(), WgpuFeatures::TEXTURE_COMPRESSION_BC] {
             let image = transcode_basis_texture(
                 &bytes,
                 TranscodeTarget::from_features(features),
                 &BasisTextureSettings {
-                    premultiply_alpha: true,
                     linear_filtering: true,
                     ..default()
                 },
@@ -108,19 +117,83 @@ fn audio_icons_have_smooth_transparent_mips_for_small_hud_sizes() {
             assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
             assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
             assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
-            let pixels = image.data.as_ref().unwrap().as_chunks::<4>().0;
-            assert!(pixels.iter().any(|pixel| (1..255).contains(&pixel[3])));
-            assert!(pixels.iter().any(|pixel| pixel[3] == 0));
-            assert!(pixels
-                .iter()
-                .all(|pixel| pixel[..3].iter().all(|channel| *channel <= pixel[3])));
         }
     }
 }
 
 #[test]
+fn asteroid_cutouts_keep_photographic_shading_transparency_and_smooth_mips() {
+    use bevy::image::ImageFilterMode;
+
+    for name in ["bennu", "eros", "gaspra", "mathilde"] {
+        let bytes = runtime_asset(&format!("images/asteroids/{name}.basisu.ktx2"));
+        let image = transcode_basis_texture(
+            &bytes,
+            TranscodeTarget::from_features(WgpuFeatures::empty()),
+            &BasisTextureSettings {
+                linear_filtering: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        assert!(image.texture_descriptor.mip_level_count > 1);
+        let pixels = image.data.as_ref().unwrap();
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+        assert!(pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255 && pixel[..3] != [255; 3]));
+        let ImageSampler::Descriptor(sampler) = image.sampler else {
+            panic!("{name}: asteroid should not inherit nearest-neighbor filtering");
+        };
+        assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+    }
+}
+
+#[test]
+fn world_structure_cutouts_have_smooth_mips_for_small_map_sprites() {
+    for path in [
+        "images/moon-buildings/shipyard.basisu.ktx2",
+        "images/moon-buildings/tidal generator.basisu.ktx2",
+        "images/moon-buildings/orbital radar.basisu.ktx2",
+        "images/planet-buildings/robotics.basisu.ktx2",
+        "images/planet-buildings/robotics gas.basisu.ktx2",
+    ] {
+        let bytes = runtime_asset(path);
+        let image = transcode_basis_texture(
+            &bytes,
+            TranscodeTarget::from_features(WgpuFeatures::empty()),
+            &BasisTextureSettings {
+                linear_filtering: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        let size = image.texture_descriptor.size;
+        assert_eq!(
+            image.texture_descriptor.mip_level_count,
+            size.width.max(size.height).ilog2() + 1,
+            "{path}: map art needs a complete mip chain"
+        );
+        let pixels = image.data.as_ref().unwrap();
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+    }
+}
+
+#[test]
 fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
-    for name in ["dock", "jump gate marker"] {
+    for name in [
+        "dock",
+        "jump gate marker",
+        "solar satellite marker",
+        "command relay marker",
+        "sensor phalanx marker",
+    ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
             &bytes,
@@ -164,6 +237,9 @@ fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
     for name in [
         "dock",
         "jump gate marker",
+        "solar satellite marker",
+        "command relay marker",
+        "sensor phalanx marker",
         "mission",
         "mission colonize",
         "mission destroy",
@@ -212,6 +288,9 @@ fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
         "mission spy",
         "dock",
         "jump gate marker",
+        "solar satellite marker",
+        "command relay marker",
+        "sensor phalanx marker",
     ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(

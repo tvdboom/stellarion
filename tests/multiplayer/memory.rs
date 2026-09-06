@@ -2,6 +2,7 @@ use futures_lite::future::block_on;
 
 use super::*;
 use crate::core::identity::GameCode;
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{resolve_turn, GameModel, GameRules};
 use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 
@@ -230,7 +231,9 @@ fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
     let (host, recovery) = identity(&backend);
     let (restored, replacement) = identity(&backend);
     let mut expected = Vec::new();
-    for (name, color) in [("Nova", PlayerColor::new(4)), ("Orion", None)] {
+    for (name, color) in
+        [("Nova", PlayerColor::new(4).unwrap()), ("Orion", PlayerColor::for_player(1))]
+    {
         let mut model = GameModel::new([7; 32], GameRules::default()).unwrap();
         model.player_mut(1).unwrap().color = color;
         let created = block_on(backend.create_game(
@@ -244,7 +247,7 @@ fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
         ))
         .unwrap();
         start_with_guest(&backend, &host, &created.game);
-        expected.push((created.game.id.clone(), name, color.unwrap_or(PlayerColor::for_player(1))));
+        expected.push((created.game.id.clone(), name, color));
         let listed = block_on(backend.list_games(&host)).unwrap();
         let summary = listed.iter().find(|summary| summary.id == created.game.id).unwrap();
         assert_eq!(summary.display_name, name);
@@ -272,6 +275,8 @@ fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
 #[test]
 fn expired_games_are_deleted_with_their_memberships_and_codes() {
     let backend = InMemoryBackend::new();
+    let now = Instant::now() + Duration::from_secs(100 * 60 * 60);
+    backend.lock().unwrap().now = Some(now);
     let (session, recovery) = identity(&backend);
     let (stranger, _) = identity(&backend);
     let mut expected = Vec::new();
@@ -289,7 +294,7 @@ fn expired_games_are_deleted_with_their_memberships_and_codes() {
             let stored = state.games.get_mut(&created.game.id).unwrap();
             stored.record.status = status;
             stored.record.persisted.state.status = status;
-            stored.finished_at = Some(Instant::now() - Duration::from_secs(age * 60 * 60));
+            stored.finished_at = Some(now - Duration::from_secs(age * 60 * 60));
         }
         if visible {
             expected.push(created.game.id.clone());
@@ -337,6 +342,8 @@ fn expired_games_are_deleted_with_their_memberships_and_codes() {
 #[test]
 fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
     let backend = InMemoryBackend::new();
+    let now = Instant::now() + FINISHED_GAME_RETENTION;
+    backend.lock().unwrap().now = Some(now);
     let (session, recovery) = identity(&backend);
     let created = create(&backend, &session, &recovery, 2);
     let finished_at = {
@@ -346,7 +353,7 @@ fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
         finished.state.status = MatchStatus::Finished;
         commit_state(stored, finished);
         assert!(stored.finished_at.is_some());
-        let at = Instant::now() - Duration::from_secs(47 * 60 * 60);
+        let at = now - Duration::from_secs(47 * 60 * 60);
         stored.finished_at = Some(at);
         at
     };
@@ -356,7 +363,7 @@ fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
     assert_eq!(backend.lock().unwrap().games[&created.game.id].finished_at, Some(finished_at));
     assert_eq!(block_on(backend.list_games(&session)).unwrap().len(), 1);
     backend.lock().unwrap().games.get_mut(&created.game.id).unwrap().finished_at =
-        Some(Instant::now() - FINISHED_GAME_RETENTION);
+        Some(now - FINISHED_GAME_RETENTION);
     assert!(block_on(backend.list_games(&session)).unwrap().is_empty());
     assert!(matches!(
         block_on(backend.load_game(&session, &created.game.id)),

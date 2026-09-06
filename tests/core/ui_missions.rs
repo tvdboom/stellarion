@@ -86,6 +86,80 @@ fn active_mission_destination_stays_in_the_third_grid_column() {
 }
 
 #[test]
+fn compact_recall_action_sits_between_eta_and_destination() {
+    let context = egui::Context::default();
+    let images = ImageIds::default();
+    let mut positions = None;
+
+    for _ in 0..3 {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 300.0),
+                )),
+                ..default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let (route_width, leading) = mission_row_layout(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.add_space(leading);
+                        egui::Grid::new("inline recall regression")
+                            .spacing([MISSION_COLUMN_GAP, 0.0])
+                            .show(ui, |ui| {
+                                draw_mission_planet_link(
+                                    ui,
+                                    egui::TextureId::User(1),
+                                    "Origin",
+                                    Sense::click(),
+                                );
+                                let (mut route, _) = mission_route_cell(ui, route_width);
+                                let mut eta_and_recall = None;
+                                route.horizontal_centered(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    ui.allocate_exact_size([25.0, 25.0].into(), Sense::hover());
+                                    ui.allocate_exact_size(
+                                        [
+                                            (route_width - MISSION_ROUTE_FIXED_CONTENT_WIDTH)
+                                                .max(180.0),
+                                            MISSION_ROUTE_PREVIEW_HEIGHT,
+                                        ]
+                                        .into(),
+                                        Sense::hover(),
+                                    );
+                                    let eta = ui.label(RichText::new("+3").strong());
+                                    ui.add_space(10.0);
+                                    let recall = draw_recall_button(ui, &images, true);
+                                    eta_and_recall = Some((eta.rect, recall.rect));
+                                });
+                                let (destination, _) = draw_mission_planet_link(
+                                    ui,
+                                    egui::TextureId::User(2),
+                                    "Destination",
+                                    Sense::click(),
+                                );
+                                if !ui.is_sizing_pass() {
+                                    let (eta, recall) = eta_and_recall.unwrap();
+                                    positions = Some((eta, recall, destination.rect));
+                                }
+                                ui.end_row();
+                            });
+                    });
+                });
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    let (eta, recall, destination) = positions.unwrap();
+    assert!(eta.right() < recall.left());
+    assert!(recall.right() < destination.left());
+    assert!((recall.center().y - destination.center().y).abs() < 0.5);
+    assert_eq!(recall.size(), egui::Vec2::splat(MISSION_RECALL_BUTTON_SIZE));
+}
+
+#[test]
 fn mission_planet_names_share_the_same_centered_planet_relative_position() {
     for left in [0.0, 640.0] {
         let cell = egui::Rect::from_min_size(
@@ -126,6 +200,33 @@ fn active_mission_rows_are_centered_with_equal_outer_space() {
 }
 
 #[test]
+fn active_mission_eta_never_displays_plus_zero() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
+    let map = Map {
+        rect: Rect::default(),
+        planets: vec![origin.clone(), destination.clone()],
+    };
+    let mut mission = Mission::new_with_id(
+        7,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.recall(&map, 1);
+
+    assert_eq!(mission.turns_to_destination(&map), 0);
+    assert_eq!(mission_display_turns(&mission, &map), 1);
+}
+
+#[test]
 fn route_preview_markers_remain_evenly_spaced_throughout_animation() {
     const SPACING: f32 = 27.0;
 
@@ -143,6 +244,52 @@ fn route_preview_markers_remain_evenly_spaced_throughout_animation() {
 fn route_preview_marker_grid_handles_empty_or_invalid_lanes() {
     assert!(route_marker_positions(20.0, 10.0, 27.0, 0.0).next().is_none());
     assert!(route_marker_positions(10.0, 20.0, 0.0, 0.0).next().is_none());
+}
+
+#[test]
+fn returning_routes_keep_the_outbound_planet_layout() {
+    let outbound = Mission {
+        owner: 7,
+        origin: 3,
+        origin_controlled: Some(7),
+        destination: 9,
+        objective: Icon::Attack,
+        ..default()
+    };
+    let returning = Mission {
+        owner: 7,
+        origin: 9,
+        origin_controlled: Some(2),
+        destination: 3,
+        objective: Icon::Deploy,
+        ..default()
+    };
+    let marked_returning = Mission {
+        origin_controlled: Some(7),
+        return_objective: Some(Icon::Spy),
+        ..returning.clone()
+    };
+    let recalled_deploy = Mission {
+        return_objective: Some(Icon::Deploy),
+        ..marked_returning.clone()
+    };
+
+    assert_eq!(mission_route_presentation(&outbound), (3, 9, false));
+    assert_eq!(mission_route_presentation(&returning), (3, 9, true));
+    assert_eq!(mission_route_presentation(&marked_returning), (3, 9, true));
+    assert_eq!(mission_route_presentation(&recalled_deploy), (3, 9, true));
+}
+
+#[test]
+fn route_chevrons_face_the_displayed_travel_direction() {
+    let center = egui::pos2(20.0, 30.0);
+    let outgoing = route_chevron(center, false);
+    let returning = route_chevron(center, true);
+
+    assert!(outgoing[0][1].x > outgoing[0][0].x);
+    assert!(returning[0][1].x < returning[0][0].x);
+    assert_eq!(outgoing[0][1], center + egui::vec2(2.0, 0.0));
+    assert_eq!(returning[0][1], center + egui::vec2(-2.0, 0.0));
 }
 
 #[test]

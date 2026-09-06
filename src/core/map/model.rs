@@ -7,14 +7,15 @@ use rand::seq::index::sample;
 use rand::{rng, Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
-use crate::core::constants::{HEIGHT, PLANET_NAMES, WIDTH};
-use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::constants::{HEIGHT, PLANET_NAMES, SOLAR_STAR_SIZE, WIDTH};
+use crate::core::map::planet::{Planet, PlanetId, SolarBand};
 
 #[derive(Component)]
 /// Bevy component marking map presentation entities.
 pub struct MapCmp;
 
 #[derive(Resource, Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Complete strategic map bounds and stable ordered planet collection.
 pub struct Map {
     /// World-space bounds of the generated strategic map.
@@ -68,6 +69,7 @@ impl Map {
             .map(|td| (1. + (td - mean) / max_dev).clamp(1., 2.))
             .collect::<Vec<_>>();
 
+        let bands = solar_bands(rect, &positions, &moons);
         let names = PLANET_NAMES.iter().sample(rng, n_total);
         Self {
             rect,
@@ -75,9 +77,18 @@ impl Map {
                 .iter()
                 .zip(positions)
                 .zip(factors)
+                .zip(bands)
                 .enumerate()
-                .map(|(id, ((name, pos), f))| {
-                    Planet::new_with_rng(id, name.to_string(), pos, moons[id], f, rng)
+                .map(|(id, (((name, pos), f), band))| {
+                    Planet::new_in_solar_band_with_rng(
+                        id,
+                        name.to_string(),
+                        pos,
+                        moons[id],
+                        f,
+                        band,
+                        rng,
+                    )
                 })
                 .collect(),
         }
@@ -114,6 +125,116 @@ impl Map {
     pub fn moons(&self) -> Vec<&Planet> {
         self.planets.iter().filter(|p| p.is_moon()).collect()
     }
+
+    /// Returns a stable seed derived only from generated world coordinates.
+    pub fn scenery_seed(&self) -> u32 {
+        scenery_seed(self.planets.iter().map(|planet| planet.position))
+    }
+
+    /// Returns the map corner occupied by the primary solar landmark.
+    pub fn solar_corner(&self) -> Vec2 {
+        solar_corner(self.scenery_seed())
+    }
+
+    /// Returns the authoritative center of the rendered primary star.
+    pub fn solar_star_position(&self) -> Vec2 {
+        let corner = self.solar_corner();
+        map_corner(self.rect, corner) + corner * SOLAR_STAR_SIZE * 0.3
+    }
+
+    /// Returns the relative solar band for a non-moon planet.
+    pub fn solar_band(&self, planet_id: PlanetId) -> Option<SolarBand> {
+        if self.try_get(planet_id).is_none_or(Planet::is_moon) {
+            return None;
+        }
+        let moons = self.planets.iter().map(Planet::is_moon).collect::<Vec<_>>();
+        solar_bands(
+            self.rect,
+            &self.planets.iter().map(|planet| planet.position).collect::<Vec<_>>(),
+            &moons,
+        )
+        .get(planet_id)
+        .copied()
+        .flatten()
+    }
+}
+
+fn scenery_seed(positions: impl IntoIterator<Item = Vec2>) -> u32 {
+    positions.into_iter().fold(0x915f_43b7_u32, |seed, position| {
+        seed.rotate_left(7)
+            ^ position.x.to_bits().wrapping_mul(0x9e37_79b9)
+            ^ position.y.to_bits().rotate_left(13)
+    })
+}
+
+fn solar_corner(seed: u32) -> Vec2 {
+    match seed & 3 {
+        0 => Vec2::new(-1.0, -1.0),
+        1 => Vec2::new(1.0, -1.0),
+        2 => Vec2::new(-1.0, 1.0),
+        _ => Vec2::ONE,
+    }
+}
+
+fn map_corner(rect: Rect, direction: Vec2) -> Vec2 {
+    Vec2::new(
+        if direction.x < 0.0 {
+            rect.min.x
+        } else {
+            rect.max.x
+        },
+        if direction.y < 0.0 {
+            rect.min.y
+        } else {
+            rect.max.y
+        },
+    )
+}
+
+fn solar_bands(rect: Rect, positions: &[Vec2], moons: &[bool]) -> Vec<Option<SolarBand>> {
+    let seed = scenery_seed(positions.iter().copied());
+    let corner = solar_corner(seed);
+    let star = map_corner(rect, corner) + corner * SOLAR_STAR_SIZE * 0.3;
+    let mut ordered = positions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, position)| (!moons[index]).then_some((index, position.distance(star))))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+
+    let inner_count = ordered.len().div_ceil(4);
+    let outer_start = ordered.len().saturating_sub(ordered.len() / 4);
+    let mut bands = vec![None; positions.len()];
+    for (rank, &(index, _)) in ordered.iter().enumerate() {
+        bands[index] = Some(if rank < inner_count {
+            SolarBand::Inner
+        } else if rank >= outer_start {
+            SolarBand::Outer
+        } else {
+            SolarBand::Temperate
+        });
+    }
+
+    // Planet ranks establish the same radial boundaries shown on the map. Classify
+    // moons by their actual stellar distance so their airless surface temperature
+    // follows where they are located without changing planet-only band gameplay.
+    let boundary = |split: usize| {
+        ordered
+            .get(split.saturating_sub(1))
+            .zip(ordered.get(split))
+            .map(|(near, far)| (near.1 + far.1) * 0.5)
+    };
+    let inner_boundary = boundary(inner_count);
+    let outer_boundary = boundary(outer_start);
+    for (index, position) in positions.iter().enumerate().filter(|(index, _)| moons[*index]) {
+        let distance = position.distance(star);
+        bands[index] = Some(match (inner_boundary, outer_boundary) {
+            (Some(inner), _) if distance < inner => SolarBand::Inner,
+            (_, Some(outer)) if distance >= outer => SolarBand::Outer,
+            _ => SolarBand::Temperate,
+        });
+    }
+    bands
 }
 
 /// Minimum center-to-center separation, leaving a visible gap beyond the sprite radii.

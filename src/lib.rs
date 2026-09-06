@@ -5,6 +5,7 @@
 pub mod core;
 pub mod multiplayer;
 pub mod platform;
+mod serialization;
 pub mod utils;
 
 /// Human-readable application title used by native and browser builds.

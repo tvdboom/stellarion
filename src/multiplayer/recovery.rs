@@ -9,7 +9,6 @@ use crate::core::identity::GameCode;
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const RECOVERY_BYTES: usize = 10;
 const RECOVERY_SYMBOLS: usize = 16;
-const LEGACY_RECOVERY_SYMBOLS: usize = 39;
 
 /// Recovery secret shown only to the player who owns a slot.
 pub struct RecoveryCode(String);
@@ -27,7 +26,7 @@ impl RecoveryCode {
     /// Parses and canonicalizes a user-entered recovery code.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, RecoveryCodeError> {
         let canonical = normalize(value.as_ref());
-        if !matches!(canonical.len(), RECOVERY_SYMBOLS | LEGACY_RECOVERY_SYMBOLS)
+        if canonical.len() != RECOVERY_SYMBOLS
             || !canonical.bytes().all(|byte| CROCKFORD.contains(&byte))
         {
             return Err(RecoveryCodeError::Malformed);

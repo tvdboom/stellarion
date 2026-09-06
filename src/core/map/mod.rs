@@ -6,6 +6,8 @@ pub(crate) mod battle;
 pub(crate) mod colonization;
 #[cfg(feature = "app")]
 pub(crate) mod details;
+#[cfg(feature = "app")]
+pub(crate) mod detection;
 pub mod icon;
 pub mod model;
 pub mod planet;

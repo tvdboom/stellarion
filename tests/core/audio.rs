@@ -93,6 +93,10 @@ fn master_volume_preserves_the_mix_and_zero_is_silent() {
     for name in ["explosion", "short explosion", "death ray"] {
         assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
     }
+    for name in ["shield impact", "beam fire", "missile fire", "bomb release"] {
+        assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
+    }
+    assert_eq!(PlayAudioMsg::new("beam fire").rate(0.8).playback_rate, 0.8);
     for name in ["horn", "repair", "victory", "draw", "defeat"] {
         assert_eq!(PlayAudioMsg::new(name).volume, -12.0);
     }
@@ -109,14 +113,10 @@ fn master_volume_preserves_the_mix_and_zero_is_silent() {
 }
 
 #[test]
-fn settings_without_a_volume_field_keep_the_default_mix() {
+fn incomplete_settings_are_rejected() {
     let mut json = serde_json::to_value(Settings::default()).unwrap();
     json.as_object_mut().unwrap().remove("volume");
-    json.as_object_mut().unwrap().remove("unmuted_volume");
-    json.as_object_mut().unwrap().remove("unmuted_audio");
-    let settings: Settings = serde_json::from_value(json).unwrap();
-    assert_eq!(settings.volume, 1.0);
-    assert_eq!(settings.restored_audio_mode(), AudioState::NoMusic);
+    assert!(serde_json::from_value::<Settings>(json).is_err());
 }
 
 #[test]
@@ -166,6 +166,7 @@ fn volume_arrow_keys_step_clamp_and_restore_audio_mode() {
     .insert_resource(State::new(GameState::Playing))
     .init_resource::<NextState<AudioState>>()
     .add_message::<ChangeAudioMsg>()
+    .add_message::<VolumeFeedbackMsg>()
     .add_message::<PlayAudioMsg>()
     .add_message::<PauseAudioMsg>()
     .add_message::<StopAudioMsg>()
@@ -179,13 +180,16 @@ fn volume_arrow_keys_step_clamp_and_restore_audio_mode() {
         }
         app.update();
     };
+    let mut feedback = app.world().resource::<Messages<VolumeFeedbackMsg>>().get_cursor();
     press(&mut app, &[KeyCode::ArrowUp]);
     assert_eq!(app.world().resource::<Settings>().volume, 0.47);
+    assert_eq!(feedback.read(app.world().resource::<Messages<VolumeFeedbackMsg>>()).count(), 1);
     app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
     app.update();
     assert_eq!(app.world().resource::<Settings>().volume, 0.47, "holding does not repeat");
     press(&mut app, &[KeyCode::ControlLeft, KeyCode::ArrowUp]);
     assert_eq!(app.world().resource::<Settings>().volume, 0.47);
+    assert_eq!(feedback.read(app.world().resource::<Messages<VolumeFeedbackMsg>>()).count(), 0);
     press(&mut app, &[KeyCode::ArrowDown]);
     assert_eq!(app.world().resource::<Settings>().volume, 0.37);
     for _ in 0..12 {
@@ -437,6 +441,32 @@ fn combat_wheel_changes_volume_once_and_popup_fades_after_scrolling() {
     frame(1.8, vec![wheel(1.0); 12], true, &mut settings);
     assert_eq!(settings.volume, 1.0);
     assert_eq!(frame(1.9, vec![], false, &mut settings), (false, 0.0));
+}
+
+#[test]
+fn keyboard_volume_feedback_uses_the_same_hold_and_fade_as_scrolling() {
+    let context = egui::Context::default();
+    let frame = |time, trigger| {
+        let mut opacity = 0.0;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..default()
+            },
+            |ui| {
+                if trigger {
+                    show_volume_feedback(ui.ctx());
+                }
+                opacity = scroll_volume_opacity(ui.ctx());
+            },
+        );
+        output.textures_delta.clear();
+        opacity
+    };
+    assert_eq!(frame(2.0, true), 1.0);
+    assert_eq!(frame(2.8, false), 1.0);
+    assert!((frame(3.1, false) - 0.5).abs() < 0.01);
+    assert_eq!(frame(3.4, false), 0.0);
 }
 
 #[test]

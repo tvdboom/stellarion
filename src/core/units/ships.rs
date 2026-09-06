@@ -195,16 +195,20 @@ impl Combat for Ship {
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
         match self {
             Ship::Probe | Ship::ColonyShip => HashMap::new(),
-            Ship::LightFighter | Ship::HeavyFighter => {
-                HashMap::from([(Unit::Ship(Ship::Probe), 80)])
-            },
+            Ship::LightFighter | Ship::HeavyFighter => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::Crawler), 80),
+            ]),
             Ship::Destroyer => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 70),
-                (Unit::Defense(Defense::Crawler), 70),
+                (Unit::Defense(Defense::Crawler), 80),
                 (Unit::Defense(Defense::RocketLauncher), 70),
             ]),
-            Ship::Cruiser => HashMap::from([(Unit::Ship(Ship::Probe), 80)]),
+            Ship::Cruiser => HashMap::from([
+                (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::Crawler), 80),
+            ]),
             Ship::Bomber => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
@@ -217,12 +221,14 @@ impl Combat for Ship {
             ]),
             Ship::Battleship => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::Crawler), 80),
                 (Unit::Ship(Ship::HeavyFighter), 70),
                 (Unit::Ship(Ship::Destroyer), 60),
                 (Unit::Ship(Ship::Cruiser), 50),
             ]),
             Ship::Dreadnought => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
+                (Unit::Defense(Defense::Crawler), 80),
                 (Unit::Ship(Ship::Bomber), 40),
                 (Unit::Ship(Ship::Battleship), 40),
                 (Unit::Ship(Ship::Dreadnought), 30),

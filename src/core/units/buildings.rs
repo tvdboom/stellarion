@@ -15,8 +15,8 @@ use crate::core::units::{Description, Price};
 pub enum Building {
     /// The lunar base building.
     LunarBase,
-    /// The demolition nexus building.
-    DemolitionNexus,
+    /// The tidal generator building.
+    TidalGenerator,
     /// The metal mine building.
     MetalMine,
     /// The crystal mine building.
@@ -33,6 +33,12 @@ pub enum Building {
     PlanetaryShield,
     /// The reactor building.
     Reactor,
+    /// The robotics building.
+    Robotics,
+    /// The orbital solar-satellite network.
+    SolarSatellite,
+    /// The orbital command-relay network.
+    CommandRelay,
     /// The sensor phalanx building.
     SensorPhalanx,
     /// The jump gate building.
@@ -41,11 +47,25 @@ pub enum Building {
     Laboratory,
     /// The orbital radar building.
     OrbitalRadar,
+    /// The home-world senate building.
+    Senate,
 }
 
 impl Building {
     /// Highest construction level supported for upgradeable buildings.
     pub const MAX_LEVEL: usize = 5;
+
+    /// Returns the production-equivalent tier used when Probes reveal this building.
+    pub fn production(&self) -> usize {
+        match self {
+            Building::MetalMine | Building::CrystalMine | Building::DeuteriumSynthesizer => 1,
+            Building::Shipyard | Building::Factory | Building::MissileSilo => 2,
+            Building::PlanetaryShield | Building::Reactor => 3,
+            Building::Robotics => 4,
+            Building::Senate => 5,
+            _ => 1,
+        }
+    }
 }
 
 impl Description for Building {
@@ -56,11 +76,10 @@ impl Description for Building {
                 "The Lunar Base increases the number of fields on the moon, allowing extra buildings \
                 to be built. Every level of the Base increases the number of fields by 1."
             },
-            Building::DemolitionNexus => {
-                "A hardened subterranean safeguard facility designed to deny invaders the full \
-                value of your moon. When the moon is conquered by an enemy, one level of a random \
-                lunar building (excluding the Lunar Base) is destroyed for each level of the Nexus. \
-                The Demolition Nexus don't take up lunar fields."
+            Building::TidalGenerator => {
+                "The Tidal Generator converts gravitational stress between a moon and its parent \
+                planet into power for the empire-wide grid. The Tidal Generator doesn't take up \
+                lunar fields."
             },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
@@ -92,15 +111,29 @@ impl Description for Building {
             Building::PlanetaryShield => {
                 "The Planetary Shield is a defensive structure with high shield power but no \
                 damage. Enemy ships must first destroy the Planetary Shield before they can \
-                attack the planet's buildings or defenses (not ships!). Each level of the \
-                building increases the shield with 250. This shield does not regenerate after \
-                every combat round. Interplanetary Missiles ignore the Planetary Shield."
+                attack the planet's buildings or defenses. Each level of the building increases \
+                the shield with 300. This shield does not regenerate after every combat round. \
+                Interplanetary Missiles ignore the Planetary Shield."
             },
             Building::Reactor => {
                 "The Reactor is a high-output energy facility that enhances the efficiency of \
                 every ship launched from the planet. It optimizes fuel consumption through \
-                advanced power regulation and heat-recovery systems. Each level of the Reactor \
-                reduces the deuterium required for fleet travel with 10%."
+                advanced power regulation and heat-recovery systems. Each level reduces the \
+                deuterium required for fleet travel by 10%."
+            },
+            Building::Robotics => {
+                "Robotics automates repetitive work in the Shipyard and Factory. Each completed \
+                level adds 2 production capacity to both facilities on this planet, but does not \
+                unlock units above their own building level."
+            },
+            Building::SolarSatellite => {
+                "Solar Satellites collect stellar radiation in orbit and transmit power to the \
+                empire-wide grid. Solar Satellites can only be constructed around planets."
+            },
+            Building::CommandRelay => {
+                "The Command Relay extends the range of Spy missions launched from its planet. \
+                Without a Relay, Probes can reach one sixth of the galaxy from that origin. Each \
+                completed level adds another sixth, and level 5 can reach every world."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
@@ -126,6 +159,11 @@ impl Description for Building {
                 in range (including Spy and Missile Strike), and not only those targeting the moon. \
                 The Orbital radar can only be build on a moon."
             },
+            Building::Senate => {
+                "The Senate coordinates an empire's colonial administration. Only one Senate may \
+                be constructed on the home planet. Larger, more restrictive galaxies permit up to \
+                three levels."
+            },
         }
     }
 }
@@ -135,7 +173,7 @@ impl Price for Building {
     fn price(&self) -> Resources {
         match self {
             Building::LunarBase => Resources::new(200, 200, 200),
-            Building::DemolitionNexus => Resources::new(200, 50, 50),
+            Building::TidalGenerator => Resources::new(200, 50, 50),
             Building::MetalMine => Resources::new(0, 200, 200),
             Building::CrystalMine => Resources::new(300, 0, 200),
             Building::DeuteriumSynthesizer => Resources::new(300, 200, 0),
@@ -144,10 +182,14 @@ impl Price for Building {
             Building::MissileSilo => Resources::new(200, 200, 200),
             Building::PlanetaryShield => Resources::new(200, 100, 200),
             Building::Reactor => Resources::new(200, 100, 0),
+            Building::Robotics => Resources::new(300, 250, 100),
+            Building::SolarSatellite => Resources::new(100, 150, 0),
+            Building::CommandRelay => Resources::new(300, 250, 250),
             Building::SensorPhalanx => Resources::new(250, 200, 150),
             Building::JumpGate => Resources::new(500, 300, 500),
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),
+            Building::Senate => Resources::new(1000, 750, 500),
         }
     }
 }

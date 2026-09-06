@@ -255,6 +255,12 @@ fn validates_resume_player_identity() {
     });
     let summary: GameSummary = serde_json::from_value(payload.clone()).unwrap();
     assert!(validate_summaries(vec![summary]).is_ok());
+    let mut missing = payload.clone();
+    missing.as_object_mut().unwrap().remove("saved_at");
+    assert!(serde_json::from_value::<GameSummary>(missing).is_err());
+    let mut extended = payload.clone();
+    extended["removed_field"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<GameSummary>(extended).is_err());
     for (field, value) in [
         ("display_name", serde_json::json!("")),
         ("display_name", serde_json::json!(" Nova ")),

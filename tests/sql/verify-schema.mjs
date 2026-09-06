@@ -55,13 +55,13 @@ console.log(
 await db.exec(`
   insert into auth.users values ('00000000-0000-0000-0000-000000000001');
   insert into public.stellarion_games
-    (id, code, created_by, max_players, status, persisted_schema_version, state, current_turn)
+    (id, code, created_by, max_players, status, state, current_turn)
   values ('10000000-0000-0000-0000-000000000001', 'ABCDEF',
-    '00000000-0000-0000-0000-000000000001', 2, 'lobby', 1, '{}'::jsonb, 1);
+    '00000000-0000-0000-0000-000000000001', 2, 'lobby', '{}'::jsonb, 1);
   create table public.obsolete_game_data (id int);
   insert into public.obsolete_game_data values (1);
   create function public.obsolete_game_rpc() returns int language sql as $$ select 1 $$;
-  select cron.schedule('stellarion-old-cleanup', '0 0 * * *', 'select 1');
+  select cron.schedule('stellarion-stale-cleanup', '0 0 * * *', 'select 1');
   select cron.schedule('external-job', '0 0 * * *', 'select 2');
   insert into cron.job_run_details select jobid, 'succeeded' from cron.job;
 `);
@@ -113,11 +113,11 @@ console.log(
 );
 await db.exec(`
   insert into public.stellarion_games
-    (id, code, created_by, max_players, status, persisted_schema_version, state, current_turn, finished_at)
+    (id, code, created_by, max_players, status, state, current_turn, finished_at)
   select ('20000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
     lpad(i::text, 6, '0'), '00000000-0000-0000-0000-000000000001', 2,
     case when i = 1 then 'lobby' when i = 2 then 'active' else 'finished' end,
-    1, '{}'::jsonb, 7,
+    '{}'::jsonb, 7,
     case when i = 3 then now() - interval '47 hours' else now() - interval '48 hours' end
   from generate_series(1, 4) i;
   insert into public.stellarion_game_players
@@ -159,17 +159,17 @@ console.log(
   "Current cleanup command, 48-hour cutoff, cascading deletion, and restricted cleanup permissions passed.",
 );
 
-// Cross both deadlines for every lifecycle state. Recent presence must not keep
-// an old snapshot alive, and recent completion must not override save expiry.
+// Cross both deadlines for every lifecycle state. Recent presence must not extend
+// snapshot retention, and recent completion must not override save expiry.
 await db.exec(`
   delete from public.stellarion_games;
   insert into public.stellarion_games
-    (id, code, created_by, max_players, status, persisted_schema_version,
+    (id, code, created_by, max_players, status,
      state, current_turn, created_at, saved_at, updated_at, finished_at)
   select ('20000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
     lpad(i::text, 6, '0'), '00000000-0000-0000-0000-000000000001', 2,
     case when i <= 3 then 'lobby' when i <= 6 then 'active' else 'finished' end,
-    1, '{}'::jsonb, 7, now() - interval '90 days',
+    '{}'::jsonb, 7, now() - interval '90 days',
     now() - case when i % 3 = 1 then interval '29 days'
                 when i % 3 = 2 then interval '30 days'
                 else interval '31 days' end,
@@ -213,11 +213,20 @@ const rpc = async (actor, sql, params = [], role = "authenticated") => {
     await db.exec("reset role");
   }
 };
-const create = (actor, code = "ABCDEF", role = "authenticated") => rpc(actor,
+const create = (actor, code = "ABCDEF", role = "authenticated", persisted = fixtures.lobby) => rpc(actor,
   "select public.stellarion_create_game($1, $2, $3, $4, $5) as result",
-  [code, "Host", "a".repeat(64), 4, fixtures.lobby], role);
+  [code, "Host", "a".repeat(64), 4, persisted], role);
 await assert.rejects(create(null, "ABCDEF", "anon"), /permission denied/);
 await assert.rejects(create(null), /STLR_UNAUTHENTICATED/);
+const incompleteLobby = structuredClone(fixtures.lobby);
+delete incompleteLobby.state.rules.practice_mode;
+await assert.rejects(create(host, "ABCDEG", "authenticated", incompleteLobby), /STLR_INVALID_DATA:rules/);
+const unsupportedColonization = structuredClone(fixtures.lobby);
+unsupportedColonization.state.rules.colonizable_percent = 100;
+await assert.rejects(create(host, "ABCDEJ", "authenticated", unsupportedColonization), /STLR_INVALID_DATA:rules/);
+const snapshotWithRemovedField = structuredClone(fixtures.lobby);
+snapshotWithRemovedField.removed_field = true;
+await assert.rejects(create(host, "ABCDEH", "authenticated", snapshotWithRemovedField), /STLR_INVALID_DATA:persisted object/);
 const created = await create(host);
 const id = created.game.id;
 assert.equal(created.membership.player_id, 1);
@@ -248,6 +257,9 @@ const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) 
 const save = (actor, record, persisted) => rpc(actor,
   "select public.stellarion_save_game($1, $2, $3) as result", [id, record.revision, persisted]);
 let lobby = joined.game;
+const missingColor = structuredClone(lobby.persisted);
+delete missingColor.state.players[0].color;
+await assert.rejects(save(host, lobby, missingColor), /STLR_INVALID_DATA:players/);
 const occupied = structuredClone(lobby.persisted);
 occupied.state.players[0].color = occupied.state.players[1].color;
 await assert.rejects(save(host, lobby, occupied), /STLR_INVALID_DATA:color_unavailable/);
@@ -297,6 +309,9 @@ const publish = (actor, persisted = fixtures.resolved, revision = active.revisio
 await assert.rejects(submit(host, 2), /STLR_FORBIDDEN/);
 await assert.rejects(submit(outsider, 1), /STLR_FORBIDDEN/);
 await assert.rejects(submit(host, 1, 2), /STLR_STALE_SUBMISSION/);
+await assert.rejects(rpc(host,
+  "select public.stellarion_submit_turn($1, $2) as result",
+  [id, { player_id: 1, turn: 1, commands: [] }]), /STLR_INVALID_DATA:submission/);
 await assert.rejects(publish(host), /STLR_TURN_INCOMPLETE/);
 assert.equal((await submit(host, 1)).disposition, "inserted");
 assert.equal((await submit(host, 1)).disposition, "duplicate");

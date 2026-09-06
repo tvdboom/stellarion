@@ -30,6 +30,14 @@ fn combatant(unit: Unit) -> bool {
     !unit.is_building() && !unit.is_missile() && unit != Unit::colony_ship()
 }
 
+fn conclusion_phase(report: &MissionReport) -> CombatState {
+    if report.defender_salvage() == default() {
+        CombatState::EndCombat
+    } else {
+        CombatState::Salvage
+    }
+}
+
 /// Reconstructs a card from a round boundary, including hull retained from prior rounds.
 fn snapshot_card(
     report: &MissionReport,
@@ -248,7 +256,11 @@ pub fn control_combat_playback(world: &mut World) {
                 index.saturating_add(1).min(last),
                 index >= last,
                 if index >= last {
-                    CombatState::EndCombat
+                    if phase == CombatState::Salvage {
+                        CombatState::EndCombat
+                    } else {
+                        conclusion_phase(report)
+                    }
                 } else {
                     CombatState::DisplayRound
                 },
@@ -289,7 +301,7 @@ pub fn control_combat_playback(world: &mut World) {
             } else if death_ray {
                 CombatState::DeathRay
             } else {
-                CombatState::EndCombat
+                conclusion_phase(report)
             },
         )
     };

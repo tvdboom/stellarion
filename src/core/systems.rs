@@ -38,6 +38,7 @@ pub(crate) fn suspend_gameplay_interactions(
     if let Some(state) = state.as_mut() {
         state.planet_hover = None;
         state.mission_planet_hover = None;
+        state.range_preview = None;
         state.mission_hover = None;
         state.mission_hover_from_ui = false;
         state.combat_report_hover = None;

@@ -9,6 +9,8 @@ const MISSION_PLANET_IMAGE_SIZE: f32 = 60.0;
 const MISSION_PLANET_NAME_HEIGHT: f32 = 18.0;
 const MISSION_PLANET_NAME_OVERLAP: f32 = 14.0;
 const MISSION_ROUTE_PREVIEW_HEIGHT: f32 = 34.0;
+const MISSION_RECALL_BUTTON_SIZE: f32 = 32.0;
+const MISSION_ROUTE_FIXED_CONTENT_WIDTH: f32 = 122.0;
 const MISSION_LOG_BADGE_SIZE: f32 = 20.0;
 const MISSION_COLUMN_GAP: f32 = 24.0;
 const MISSION_ROW_HORIZONTAL_INSET: f32 = 16.0;
@@ -37,6 +39,34 @@ fn mission_row_layout(available_width: f32) -> (f32, f32) {
     (route_column_width, leading_space)
 }
 
+/// Active missions always need at least the next turn to finish, including a recall at home.
+fn mission_display_turns(mission: &Mission, map: &Map) -> usize {
+    mission.turns_to_destination(map).max(1)
+}
+
+/// Paints the compact circular-arrow action used by resource conversion.
+fn draw_recall_button(ui: &mut Ui, images: &ImageIds, editable: bool) -> Response {
+    let sense = if editable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(MISSION_RECALL_BUTTON_SIZE), sense);
+    let image = if editable && response.hovered() && !response.is_pointer_button_down_on() {
+        images.get("recall hover")
+    } else {
+        images.get("recall")
+    };
+    ui.add_image_painter(image, rect);
+
+    if editable {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    }
+}
+
 /// Returns marker centers on one continuous spacing grid, independent of the preview width.
 fn route_marker_positions(
     left: f32,
@@ -53,6 +83,32 @@ fn route_marker_positions(
     };
 
     (0..count).map(move |index| first + index as f32 * spacing)
+}
+
+/// Keeps a return leg on the same left-to-right planet layout as its outbound leg.
+fn mission_route_presentation(mission: &Mission) -> (PlanetId, PlanetId, bool) {
+    let returning = mission.is_returning();
+    if returning {
+        (mission.destination, mission.origin, true)
+    } else {
+        (mission.origin, mission.destination, false)
+    }
+}
+
+/// Builds a route chevron that faces in the mission's displayed travel direction.
+fn route_chevron(center: egui::Pos2, returning: bool) -> [[egui::Pos2; 2]; 2] {
+    let direction = if returning {
+        -1.0
+    } else {
+        1.0
+    };
+    let tail_x = center.x - 4.0 * direction;
+    let tip_x = center.x + 2.0 * direction;
+
+    [
+        [egui::pos2(tail_x, center.y - 5.0), egui::pos2(tip_x, center.y)],
+        [egui::pos2(tip_x, center.y), egui::pos2(tail_x, center.y + 5.0)],
+    ]
 }
 
 /// Projects a ring facing the ship as an ellipse with its long axis across the route.
@@ -74,6 +130,7 @@ fn draw_route_preview(
     mission: &Mission,
     player: &Player,
     color: Color32,
+    returning: bool,
 ) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, MISSION_ROUTE_PREVIEW_HEIGHT), Sense::hover());
@@ -84,7 +141,13 @@ fn draw_route_preview(
     let center_y = rect.center().y;
     let time = ui.input(|input| input.time) as f32;
     let speed = mission.route_animation_speed() as f32;
-    let phase = time * speed;
+    let phase = time
+        * speed
+        * if returning {
+            -1.0
+        } else {
+            1.0
+        };
 
     let route_style = mission.route_style(player);
     painter.line_segment(
@@ -96,14 +159,9 @@ fn draw_route_preview(
         MissionRouteStyle::Standard => {
             for x in route_marker_positions(left, right, 27.0, phase) {
                 let marker = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 220);
-                painter.line_segment(
-                    [egui::pos2(x - 4.0, center_y - 5.0), egui::pos2(x + 2.0, center_y)],
-                    Stroke::new(2.0, marker),
-                );
-                painter.line_segment(
-                    [egui::pos2(x + 2.0, center_y), egui::pos2(x - 4.0, center_y + 5.0)],
-                    Stroke::new(2.0, marker),
-                );
+                for segment in route_chevron(egui::pos2(x, center_y), returning) {
+                    painter.line_segment(segment, Stroke::new(2.0, marker));
+                }
             }
         },
         MissionRouteStyle::JumpGate => {
@@ -385,6 +443,7 @@ fn draw_new_mission(
     let distance = state.mission_info.distance(map);
     let duration = state.mission_info.duration(map);
     let fuel = state.mission_info.fuel_consumption(map);
+    let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
 
     ui.add_space(10.);
 
@@ -679,7 +738,25 @@ fn draw_new_mission(
                     ui.small(state.mission_info.objective.to_name());
                 });
 
-                ui.small(format!("📏 Distance: {distance:.1} AU"));
+                ui.small(format!("📏 Target distance: {distance:.1} AU")).on_hover_small(
+                    "AU means astronomical unit, the distance scale used on the galaxy map. \
+                        Target distance is the length of the route from the origin world to the \
+                        destination world.",
+                );
+                if state.mission_info.objective == Icon::Spy {
+                    let range = spy_mission_range(map, origin);
+                    let text = format!("📡 Spy reach: {range:.1} AU");
+                    let response = if distance <= range + f32::EPSILON {
+                        ui.small(text)
+                    } else {
+                        ui.colored_label(Color32::RED, RichText::new(text).small())
+                    };
+                    response.on_hover_small(
+                        "Spy missions launched from here can target worlds up to this distance \
+                        away. Each completed Command Relay level on the origin world extends \
+                        this reach.",
+                    );
+                }
                 ui.small(format!(
                     "🚀 Movement: {}",
                     if speed == 0. || speed == f32::MAX {
@@ -687,7 +764,8 @@ fn draw_new_mission(
                     } else {
                         format!("{speed} AU/turn")
                     }
-                ));
+                ))
+                .on_hover_small("How many astronomical units the selected fleet moves per turn.");
                 ui.small(format!(
                     "⏱ Duration: {}",
                     if duration == 0 {
@@ -705,8 +783,13 @@ fn draw_new_mission(
                         )
                     }
                 ));
-                ui.small(format!("⛽ Fuel consumption: {fuel}"))
-                    .on_hover_small("Amount of deuterium it costs to send this mission.");
+                let fuel_text = format!("⛽ Fuel consumption: {fuel}");
+                let fuel_response = if fuel_check {
+                    ui.small(fuel_text)
+                } else {
+                    ui.colored_label(Color32::RED, RichText::new(fuel_text).small())
+                };
+                fuel_response.on_hover_small("Amount of deuterium it costs to send this mission.");
 
                 if matches!(
                     state.mission_info.objective,
@@ -841,9 +924,9 @@ fn draw_new_mission(
             ui.add_space(60.);
 
             let army_check = state.mission_info.army.has_army();
-            let fuel_check = player.resources.get(&ResourceName::Deuterium) >= fuel;
-            let objective_check =
-                validate_mission(player, origin, destination, &state.mission_info).is_ok();
+            let validation =
+                validate_mission(player, map, origin, destination, &state.mission_info);
+            let objective_check = validation.is_ok();
 
             ui.horizontal(|ui| {
                 ui.add_space(40.);
@@ -855,10 +938,8 @@ fn draw_new_mission(
                                 ui.small("No ships selected for the mission.");
                             } else if !fuel_check {
                                 ui.small("Not enough fuel (deuterium) for the mission.");
-                            } else {
-                                ui.small(
-                                    "The ship requirements for the mission objective is not met.",
-                                );
+                            } else if let Err(error) = &validation {
+                                ui.small(error.to_string());
                             }
                         });
 
@@ -890,12 +971,14 @@ fn draw_new_mission(
 fn draw_active_missions(
     ui: &mut Ui,
     missions: Vec<&Mission>,
+    recall_mission: &mut MessageWriter<RecallMissionMsg>,
     state: &mut UiState,
     map: &Map,
     player: &Player,
     session: &MultiplayerSession,
     is_hovered: bool,
     images: &ImageIds,
+    editable: bool,
 ) {
     if missions.is_empty() {
         ui.add_space(40.);
@@ -908,7 +991,7 @@ fn draw_active_missions(
     // Sort by turns remaining ascending
     let missions = missions
         .iter()
-        .sorted_by(|a, b| a.turns_to_destination(map).cmp(&b.turns_to_destination(map)));
+        .sorted_by(|a, b| mission_display_turns(a, map).cmp(&mission_display_turns(b, map)));
 
     ui.add_space(30.);
 
@@ -921,7 +1004,8 @@ fn draw_active_missions(
         .show(&mut frame.content_ui, |ui| {
             let available_width = ui.available_width();
             let (route_column_width, leading_space) = mission_row_layout(available_width);
-            let route_preview_width = (route_column_width - 82.0).max(220.0);
+            let route_preview_width =
+                (route_column_width - MISSION_ROUTE_FIXED_CONTENT_WIDTH).max(180.0);
 
             ui.horizontal(|ui| {
                 ui.add_space(leading_space);
@@ -962,8 +1046,10 @@ fn draw_active_missions(
                     .striped(false)
                     .show(ui, |ui| {
                         for mission in missions {
-                            let origin = map.get(mission.origin);
-                            let destination = map.get(mission.destination);
+                            let (left_planet, right_planet, returning) =
+                                mission_route_presentation(mission);
+                            let origin = map.get(left_planet);
+                            let destination = map.get(right_planet);
 
                             if mission.owner == player.id
                                 || !mission.objective.is_hidden()
@@ -1022,15 +1108,31 @@ fn draw_active_missions(
                                     mission,
                                     player,
                                     Color32::from_rgb(red, green, blue),
+                                    returning,
                                 );
 
                                 ui.label(
                                     RichText::new(format!(
                                         "+{}",
-                                        mission.turns_to_destination(map)
+                                        mission_display_turns(mission, map)
                                     ))
                                     .strong(),
                                 );
+
+                                if mission.owner == player.id && !mission.is_returning() {
+                                    ui.add_space(10.0);
+                                    let recall = draw_recall_button(ui, images, editable)
+                                        .on_hover_small(if editable {
+                                            "Recall this mission. The fleet will turn around immediately and return to the planet of origin at no extra cost."
+                                                .to_string()
+                                        } else {
+                                            "Continue your turn before changing mission orders."
+                                                .to_string()
+                                        });
+                                    if recall.clicked() {
+                                        recall_mission.write(RecallMissionMsg::new(mission.id));
+                                    }
+                                }
                             });
 
                             if response.hovered() {
@@ -1457,6 +1559,7 @@ pub(super) fn draw_mission(
     ui: &mut Ui,
     missions: &[Mission],
     send_mission: &mut MessageWriter<SendMissionMsg>,
+    recall_mission: &mut MessageWriter<RecallMissionMsg>,
     settings: &Settings,
     state: &mut UiState,
     map: &mut Map,
@@ -1492,22 +1595,26 @@ pub(super) fn draw_mission(
         MissionTab::ActiveMissions => draw_active_missions(
             ui,
             missions.iter().filter(|m| m.owner == player.id).collect(),
+            recall_mission,
             state,
             map,
             player,
             session,
             is_hovered,
             images,
+            editable,
         ),
         MissionTab::EnemyMissions => draw_active_missions(
             ui,
             missions.iter().filter(|m| m.owner != player.id).collect(),
+            recall_mission,
             state,
             map,
             player,
             session,
             is_hovered,
             images,
+            editable,
         ),
         MissionTab::MissionReports => {
             draw_mission_reports(ui, state, map, player, session, is_hovered, images)

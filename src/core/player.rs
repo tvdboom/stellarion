@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
+use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
@@ -12,7 +13,13 @@ use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::resources::Resources;
 use crate::core::settings::Settings;
+use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
+
+/// Largest Senate level supported by any match configuration.
+pub const SENATE_MAX_LEVEL: usize = 3;
+/// Number of map planets required to unlock another possible Senate level.
+pub const SENATE_PLANETS_PER_LEVEL: usize = 20;
 
 /// Maximum number of resolved mission reports retained for one player.
 pub const MAX_REPORTS_PER_PLAYER: usize = 512;
@@ -88,6 +95,7 @@ pub struct PlanetInfo {
 }
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Persisted player slot, economy, home world, reports, and elimination state.
 pub struct Player {
     /// Stable identifier used to cross-reference this value.
@@ -102,9 +110,8 @@ pub struct Player {
     pub reports: Vec<MissionReport>,
     /// Whether this player is eliminated and no longer submits turns.
     pub spectator: bool,
-    /// Lobby-selected identity color; absent only in snapshots created before color selection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<PlayerColor>,
+    /// Lobby-selected identity color.
+    pub color: PlayerColor,
 }
 
 impl Default for Player {
@@ -121,7 +128,7 @@ impl Default for Player {
             },
             reports: Vec::new(),
             spectator: false,
-            color: None,
+            color: PlayerColor::for_player(0),
         }
     }
 }
@@ -133,16 +140,14 @@ impl Player {
             id,
             home_planet,
             world_acquisition_order: vec![home_planet],
-            color: Some(PlayerColor::for_player(id)),
+            color: PlayerColor::for_player(id),
             ..default()
         }
     }
 
-    /// Returns the selected color or a deterministic fallback for older snapshots.
+    /// Returns the selected empire color.
     pub fn color(&self) -> PlayerColor {
         self.color
-            .filter(|color| color.is_valid())
-            .unwrap_or_else(|| PlayerColor::for_player(self.id))
     }
 
     /// Records a world's first acquisition without moving already acquired worlds.
@@ -179,17 +184,49 @@ impl Player {
     }
 
     /// Computes resource production for the current owned worlds.
-    pub fn resource_production(&self, planets: &[Planet]) -> Resources {
-        planets.iter().filter(|p| p.owned == Some(self.id)).map(|p| p.resource_production()).sum()
+    pub fn resource_production(&self, map: &Map) -> Resources {
+        let raw = map
+            .planets
+            .iter()
+            .filter(|planet| planet.owned == Some(self.id))
+            .map(Planet::resource_production)
+            .sum();
+        self.energy_grid(map).scale_resources(raw)
+    }
+
+    /// Returns this player's non-stored energy supply and infrastructure demand.
+    pub fn energy_grid(&self, map: &Map) -> EnergyGrid {
+        EnergyGrid::for_player(self.id, map)
     }
 
     /// Counts non-moon planets currently owned by this player.
     pub fn planets_owned(&self, map: &Map, settings: &Settings) -> (usize, usize) {
         let n_owned = map.planets().iter().filter(|p| p.owned == Some(self.id)).count();
-        let n_max =
-            (map.planets().len() as f32 * settings.p_colonizable as f32 / 100.).ceil() as usize;
+        (n_owned, self.colony_limit(map, settings.p_colonizable))
+    }
 
-        (n_owned, n_max)
+    /// Returns the configured ownership cap, including one slot per home-world Senate level.
+    pub fn colony_limit(&self, map: &Map, colonizable_percent: usize) -> usize {
+        let total = map.planets().len();
+        let base = base_colony_limit(total, colonizable_percent);
+        let senate_levels = map
+            .try_get(self.home_planet)
+            .map_or(0, |planet| planet.army.amount(&Unit::Building(Building::Senate)))
+            .min(Self::senate_level_limit(map, colonizable_percent));
+        base.saturating_add(senate_levels).min(total)
+    }
+
+    /// Returns the Senate level cap derived from galaxy size and the ownership setting.
+    pub fn senate_level_limit(map: &Map, colonizable_percent: usize) -> usize {
+        let setting_limit = match colonizable_percent {
+            25 => 3,
+            35 => 2,
+            50 => 1,
+            _ => 0,
+        };
+        let map_limit = map.planets().len().saturating_add(SENATE_PLANETS_PER_LEVEL - 1)
+            / SENATE_PLANETS_PER_LEVEL;
+        setting_limit.min(map_limit).min(SENATE_MAX_LEVEL)
     }
 
     /// Returns the most recent information report for a planet when present.
@@ -322,4 +359,13 @@ impl Player {
             best
         })
     }
+}
+
+fn base_colony_limit(total: usize, colonizable_percent: usize) -> usize {
+    total
+        .saturating_mul(colonizable_percent)
+        .saturating_add(99)
+        .checked_div(100)
+        .unwrap_or_default()
+        .min(total)
 }

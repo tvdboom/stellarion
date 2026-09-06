@@ -3,8 +3,13 @@ use std::time::Duration;
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+use crate::core::combat::report::MissionReport;
+use crate::core::map::icon::Icon;
+use crate::core::missions::{BombingRaid, Mission};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{GameModel, GameRules, TurnCommand};
+use crate::core::units::buildings::Building;
+use crate::core::units::{Army, Unit};
 
 fn presentation_app() -> (App, PlanetId, PlanetId) {
     let mut model = GameModel::new(
@@ -44,8 +49,99 @@ fn presentation_app() -> (App, PlanetId, PlanetId) {
         .add_message::<MessageMsg>()
         .add_systems(Startup, initialize_colonies)
         .add_systems(Update, (celebrate_colonies, animate_colonies).chain());
+    app.world_mut()
+        .run_system_once(
+            |mut assets: ResMut<WorldAssets>,
+             server: Res<AssetServer>,
+             mut layouts: ResMut<Assets<TextureAtlasLayout>>| {
+                assets.begin_gameplay_loading(&server, &mut layouts);
+            },
+        )
+        .unwrap();
     app.update();
     (app, neutral[0], neutral[1])
+}
+
+#[test]
+fn successful_colony_mission_flies_in_and_lands_before_conquest_celebrates() {
+    let (mut app, planet_id, _) = presentation_app();
+    let player_id = app.world().resource::<Player>().id;
+    let origin = {
+        let player = app.world().resource::<Player>();
+        app.world().resource::<Map>().get(player.home_planet).clone()
+    };
+    let before = {
+        let mut map = app.world_mut().resource_mut::<Map>();
+        let planet = map.get_mut(planet_id);
+        planet.army.insert(Unit::Building(Building::MetalMine), 1);
+        planet.clone()
+    };
+    let mission = Mission::new_with_id(
+        41,
+        1,
+        player_id,
+        &origin,
+        &before,
+        Icon::Colonize,
+        Army::from([(Unit::colony_ship(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    app.world_mut().resource_mut::<Player>().reports.push(MissionReport {
+        id: 41,
+        turn: 1,
+        mission,
+        planet: before,
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: Army::new(),
+        planet_colonized: true,
+        planet_destroyed: false,
+        destination_owned: Some(player_id),
+        destination_controlled: Some(player_id),
+        combat_report: None,
+        hidden: false,
+    });
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).colonize(player_id);
+
+    app.update();
+    app.update();
+    let (effect, children) =
+        app.world_mut().query::<(&ColonyEffect, &Children)>().single(app.world()).unwrap();
+    assert_eq!(effect.event, ColonyEvent::Conquered);
+    let arrival = children
+        .iter()
+        .find(|child| {
+            matches!(app.world().get::<EffectPart>(*child), Some(EffectPart::Arrival { .. }))
+        })
+        .unwrap();
+    let sprite = app.world().get::<Sprite>(arrival).unwrap();
+    assert_eq!(sprite.image, app.world().resource::<WorldAssets>().image("mission colonize"));
+
+    let (start, orbit, landing) = match app.world().get::<EffectPart>(arrival).unwrap() {
+        EffectPart::Arrival {
+            start,
+            orbit,
+            landing,
+        } => (*start, *orbit, *landing),
+        _ => unreachable!(),
+    };
+    assert!(start.length() > orbit.length());
+    assert!(orbit.length() > landing.length());
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.6));
+    app.update();
+    let approaching = app.world().get::<Transform>(arrival).unwrap().translation.truncate();
+    assert!(approaching.distance(start) > 0.0);
+    assert!(approaching.length() > orbit.length());
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.5));
+    app.update();
+    let landing_position = app.world().get::<Transform>(arrival).unwrap().translation.truncate();
+    assert!(landing_position.length() < orbit.length());
+    assert!(app.world().get::<Sprite>(arrival).unwrap().color.alpha() > 0.0);
 }
 
 fn take_toasts(app: &mut App) -> Vec<MessageMsg> {
@@ -178,7 +274,7 @@ fn colony_celebration_uses_the_viewing_players_color_for_every_part() {
     let viewer_color = PlayerColor::new(4).unwrap();
     let player_id = {
         let mut player = app.world_mut().resource_mut::<Player>();
-        player.color = Some(viewer_color);
+        player.color = viewer_color;
         player.id
     };
     app.world_mut().resource_mut::<Map>().get_mut(planet).colonize(player_id);

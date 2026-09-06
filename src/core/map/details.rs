@@ -24,6 +24,8 @@ use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 
 const DEBRIS_TURNS: usize = 3;
+const PLANET_ROBOTICS_ART_ASPECT: f32 = 1137.0 / 1383.0;
+pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 
 /// A coarse public trace, deliberately containing no army composition or intelligence.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -88,10 +90,11 @@ fn detail_alpha(scale: f32) -> f32 {
 }
 
 #[derive(Default)]
-struct DevelopmentVisibility(f32);
+/// Local fade progress shared by close-zoom development-style presentation.
+pub struct DevelopmentVisibility(f32);
 
 impl DevelopmentVisibility {
-    fn update(&mut self, visible: bool, delta_secs: f32) -> f32 {
+    pub(crate) fn update(&mut self, visible: bool, delta_secs: f32) -> f32 {
         // Zoom chooses an endpoint; elapsed time completes the fade even when zoom stops.
         let step = delta_secs / 0.22;
         self.0 = if visible {
@@ -117,13 +120,16 @@ struct Development {
     mining: usize,
     refinery: usize,
     factory: usize,
+    robotics: usize,
     shipyard: usize,
     reactor: usize,
     laboratory: usize,
     silo: usize,
     lunar_base: usize,
+    tidal_generator: usize,
+    senate: bool,
     sensor: bool,
-    lunar_build_order: [Option<Building>; 4],
+    surface_build_order: [Option<Building>; 4],
 }
 
 fn tier(level: usize) -> usize {
@@ -156,15 +162,16 @@ fn development(planet: &Planet, army: Option<&Army>) -> Development {
         mining: tier(level(Building::MetalMine).max(level(Building::CrystalMine))),
         refinery: tier(level(Building::DeuteriumSynthesizer)),
         factory: tier(level(Building::Factory)),
+        robotics: tier(level(Building::Robotics)),
         shipyard: tier(level(Building::Shipyard)),
         reactor: tier(level(Building::Reactor)),
         laboratory: tier(level(Building::Laboratory)),
         silo: tier(level(Building::MissileSilo)),
         lunar_base: tier(level(Building::LunarBase)),
+        tidal_generator: tier(level(Building::TidalGenerator)),
+        senate: level(Building::Senate) > 0,
         sensor: level(Building::SensorPhalanx) > 0 || level(Building::OrbitalRadar) > 0,
-        lunar_build_order: planet
-            .lunar_build_order
-            .map(|building| building.filter(|b| level(*b) > 0)),
+        surface_build_order: planet.surface_build_order,
     }
 }
 
@@ -209,10 +216,14 @@ struct DetailAnimationTime(f32);
 struct SurfaceLight {
     center: Vec2,
     diameter: f32,
-    seed: u32,
+    position_seed: u32,
+    flicker_seed: u32,
     offset: Vec2,
     brightness: f32,
 }
+
+#[derive(Component)]
+struct SurfaceLightBackdrop;
 
 #[derive(Component)]
 struct FloatingDetail {
@@ -280,6 +291,84 @@ impl FromWorld for StructureShadow {
     }
 }
 
+const SURFACE_LIGHT_CELL_SIZE: u32 = 16;
+const SURFACE_LIGHT_VARIANTS: usize = 4;
+
+/// Small procedural light silhouettes avoid repeating the same rectangular dot across a world.
+#[derive(Resource)]
+struct SurfaceLightAtlas(Handle<Image>);
+
+impl FromWorld for SurfaceLightAtlas {
+    fn from_world(world: &mut World) -> Self {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+        let width = SURFACE_LIGHT_CELL_SIZE * SURFACE_LIGHT_VARIANTS as u32;
+        let mut pixels = Vec::with_capacity((width * SURFACE_LIGHT_CELL_SIZE * 4) as usize);
+        let spot = |point: Vec2, center: Vec2, scale: Vec2, intensity: f32| {
+            let radius = ((point - center) / scale).length();
+            let halo = (1.0 - radius).clamp(0.0, 1.0).powi(2) * 0.42;
+            let core = (1.0 - radius * 3.2).clamp(0.0, 1.0);
+            ((halo + core).min(1.0) * intensity).clamp(0.0, 1.0)
+        };
+        for y in 0..SURFACE_LIGHT_CELL_SIZE {
+            for variant in 0..SURFACE_LIGHT_VARIANTS {
+                for x in 0..SURFACE_LIGHT_CELL_SIZE {
+                    let point = Vec2::new(
+                        (x as f32 + 0.5) / SURFACE_LIGHT_CELL_SIZE as f32 * 2.0 - 1.0,
+                        (y as f32 + 0.5) / SURFACE_LIGHT_CELL_SIZE as f32 * 2.0 - 1.0,
+                    );
+                    let shape = if point.abs().max_element() > 0.86 {
+                        0.0
+                    } else {
+                        match variant {
+                            0 => spot(point, Vec2::ZERO, Vec2::splat(0.82), 1.0),
+                            1 => spot(point, Vec2::new(-0.18, 0.08), Vec2::new(0.72, 0.62), 1.0)
+                                .max(spot(point, Vec2::new(0.38, -0.22), Vec2::splat(0.34), 0.78)),
+                            2 => [
+                                (Vec2::new(-0.38, 0.18), 0.48, 0.72),
+                                (Vec2::new(0.02, -0.05), 0.56, 1.0),
+                                (Vec2::new(0.40, 0.24), 0.31, 0.62),
+                            ]
+                            .into_iter()
+                            .map(|(center, scale, intensity)| {
+                                spot(point, center, Vec2::splat(scale), intensity)
+                            })
+                            .fold(0.0, f32::max),
+                            _ => spot(point, Vec2::new(-0.06, 0.02), Vec2::new(0.82, 0.38), 1.0)
+                                .max(spot(point, Vec2::new(0.36, 0.28), Vec2::splat(0.28), 0.66)),
+                        }
+                    };
+                    // A dark outer fringe preserves contrast on illuminated terrain while the
+                    // warm-white core still reads as emitted light on night-side surfaces.
+                    let core = ((shape - 0.16) / 0.58).clamp(0.0, 1.0);
+                    let core = core * core * (3.0 - 2.0 * core);
+                    let channel = |edge: f32| (edge + (255.0 - edge) * core).round() as u8;
+                    pixels.extend_from_slice(&[
+                        channel(38.0),
+                        channel(24.0),
+                        channel(12.0),
+                        (shape.sqrt() * 255.0).round() as u8,
+                    ]);
+                }
+            }
+        }
+        let mut image = Image::new(
+            Extent3d {
+                width,
+                height: SURFACE_LIGHT_CELL_SIZE,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            pixels,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        image.sampler = bevy::image::ImageSampler::linear();
+        Self(world.resource_mut::<Assets<Image>>().add(image))
+    }
+}
+
 struct DevelopmentArt<'a> {
     base: &'a Handle<Image>,
     base_size: Vec2,
@@ -287,13 +376,20 @@ struct DevelopmentArt<'a> {
     facilities_size: Vec2,
     gas: &'a Handle<Image>,
     gas_size: Vec2,
+    moon_shipyard: &'a Handle<Image>,
+    moon_tidal_generator: &'a Handle<Image>,
+    moon_orbital_radar: &'a Handle<Image>,
+    planet_robotics: &'a Handle<Image>,
+    gas_planet_robotics: &'a Handle<Image>,
+    surface_lights: &'a Handle<Image>,
     shadow: &'a Handle<Image>,
 }
 
 /// Selects a new surface position only while the cluster is fully dark.
-fn light_sample(seed: u32, seconds: f32) -> (Vec2, f32) {
-    let phase = seconds / 14.0 + noise(seed);
-    let cycle_seed = seed.wrapping_add((phase.floor() as u32).wrapping_mul(0x9e37_79b9));
+fn light_sample(position_seed: u32, flicker_seed: u32, seconds: f32) -> (Vec2, f32) {
+    let cycle_seconds = 11.0 + noise(position_seed.wrapping_add(3)) * 8.0;
+    let phase = seconds / cycle_seconds + noise(position_seed);
+    let cycle_seed = position_seed.wrapping_add((phase.floor() as u32).wrapping_mul(0x9e37_79b9));
     let position = Vec2::from_angle(noise(cycle_seed) * TAU)
         * (0.08 + noise(cycle_seed.wrapping_add(1)) * 0.3);
     let progress = phase.fract();
@@ -301,8 +397,14 @@ fn light_sample(seed: u32, seconds: f32) -> (Vec2, f32) {
         let x = value.clamp(0.0, 1.0);
         x * x * (3.0 - 2.0 * x)
     };
-    let envelope = smooth(progress / 0.12) * smooth((1.0 - progress) / 0.12);
-    let flicker = 0.78 + 0.22 * (seconds * 1.8 + noise(seed.wrapping_add(2)) * TAU).sin().powi(2);
+    let fade_fraction = 0.06 + noise(position_seed.wrapping_add(4)) * 0.05;
+    let envelope = smooth(progress / fade_fraction) * smooth((1.0 - progress) / fade_fraction);
+    let speed = 0.8 + noise(flicker_seed.wrapping_add(1)) * 3.8;
+    let depth = 0.04 + noise(flicker_seed.wrapping_add(2)) * 0.21;
+    let flicker_phase = noise(flicker_seed.wrapping_add(3)) * TAU;
+    let slow = (seconds * speed + flicker_phase).sin().powi(2);
+    let sparkle = (seconds * speed * 2.7 + flicker_phase * 1.7).sin().powi(8);
+    let flicker = 1.0 - depth + depth * (slow * 0.72 + sparkle * 0.28);
     (position, envelope * flicker)
 }
 
@@ -316,7 +418,8 @@ fn animate_surface_lights(
         elapsed.0 += time.delta_secs();
     }
     for (mut light, mut transform) in &mut lights {
-        let (position, brightness) = light_sample(light.seed, elapsed.0);
+        let (position, brightness) =
+            light_sample(light.position_seed, light.flicker_seed, elapsed.0);
         let position = light.center + position * light.diameter + light.offset;
         transform.translation.x = position.x;
         transform.translation.y = position.y;
@@ -413,30 +516,64 @@ fn spawn_debris(
 fn spawn_light(
     commands: &mut Commands,
     planet: &Planet,
-    seed: u32,
+    position_seed: u32,
+    appearance_seed: u32,
     offset: Vec2,
-    size: Vec2,
-    color: Color,
+    image: Handle<Image>,
 ) {
-    commands.spawn((
-        Sprite::from_color(color, size),
-        Transform::from_translation(planet.position.extend(PLANET_Z + 0.12)),
-        Visibility::Hidden,
-        Pickable::IGNORE,
-        Detail {
-            planet: planet.id,
-            opacity: color.alpha(),
-            debris_turn: None,
-        },
-        SurfaceLight {
-            center: planet.position,
-            diameter: planet.size(),
-            seed,
-            offset,
-            brightness: 0.0,
-        },
-        MapCmp,
-    ));
+    let variant = ((noise(appearance_seed) * SURFACE_LIGHT_VARIANTS as f32) as usize)
+        .min(SURFACE_LIGHT_VARIANTS - 1);
+    let diameter = planet.size() * (0.042 + noise(appearance_seed.wrapping_add(1)) * 0.025);
+    let aspect = 0.68 + noise(appearance_seed.wrapping_add(2)) * 0.72;
+    let size = Vec2::new(diameter * aspect.sqrt(), diameter / aspect.sqrt());
+    let opacity = 0.96 + noise(appearance_seed.wrapping_add(3)) * 0.04;
+    let color = Color::srgba(
+        1.0,
+        0.88 + noise(appearance_seed.wrapping_add(4)) * 0.10,
+        0.62 + noise(appearance_seed.wrapping_add(5)) * 0.28,
+        opacity,
+    );
+    let cell = Vec2::splat(SURFACE_LIGHT_CELL_SIZE as f32);
+    let min = Vec2::new(variant as f32 * cell.x, 0.0);
+    let rotation = Quat::from_rotation_z(noise(appearance_seed.wrapping_add(6)) * TAU);
+    for (scale, layer_color, layer_opacity, depth, backdrop) in [
+        (1.28, Color::srgba(0.06, 0.018, 0.002, 0.76), 0.76, 0.115, true),
+        (1.0, color, opacity, 0.12, false),
+    ] {
+        let mut entity = commands.spawn((
+            Sprite {
+                image: image.clone(),
+                rect: Some(Rect::from_corners(min, min + cell)),
+                custom_size: Some(size * scale),
+                color: layer_color,
+                ..default()
+            },
+            Transform {
+                translation: planet.position.extend(PLANET_Z + depth),
+                rotation,
+                ..default()
+            },
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            Detail {
+                planet: planet.id,
+                opacity: layer_opacity,
+                debris_turn: None,
+            },
+            SurfaceLight {
+                center: planet.position,
+                diameter: planet.size(),
+                position_seed,
+                flicker_seed: appearance_seed,
+                offset,
+                brightness: 0.0,
+            },
+            MapCmp,
+        ));
+        if backdrop {
+            entity.insert(SurfaceLightBackdrop);
+        }
+    }
 }
 
 fn structure_sprite(
@@ -497,6 +634,181 @@ fn structure_sprite(
     }
 }
 
+fn moon_structure_sprite(
+    commands: &mut Commands,
+    planet: &Planet,
+    art: &DevelopmentArt,
+    building: Building,
+    facilities: bool,
+    variant: usize,
+    offset: Vec2,
+    diameter: f32,
+) {
+    let dedicated = match building {
+        Building::Shipyard => Some(art.moon_shipyard),
+        Building::TidalGenerator => Some(art.moon_tidal_generator),
+        Building::OrbitalRadar => Some(art.moon_orbital_radar),
+        _ => None,
+    };
+    let Some(image) = dedicated else {
+        structure_sprite(commands, planet, art, facilities, variant, offset, diameter);
+        return;
+    };
+    for (sprite, depth) in [
+        (
+            Sprite {
+                image: art.shadow.clone(),
+                custom_size: Some(Vec2::splat(diameter * 1.18)),
+                ..default()
+            },
+            0.13,
+        ),
+        (
+            Sprite {
+                image: image.clone(),
+                custom_size: Some(Vec2::splat(diameter)),
+                ..default()
+            },
+            0.14,
+        ),
+    ] {
+        commands.spawn((
+            sprite,
+            Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            Detail {
+                planet: planet.id,
+                opacity: 1.0,
+                debris_turn: None,
+            },
+            MapCmp,
+        ));
+    }
+}
+
+fn planet_structure_sprite(
+    commands: &mut Commands,
+    planet: &Planet,
+    art: &DevelopmentArt,
+    building: Option<Building>,
+    facilities: bool,
+    variant: usize,
+    offset: Vec2,
+    diameter: f32,
+) {
+    if building != Some(Building::Robotics) {
+        structure_sprite(commands, planet, art, facilities, variant, offset, diameter);
+        return;
+    }
+    let gas = planet.kind == PlanetKind::Gas;
+    let robotics_image = if gas {
+        art.gas_planet_robotics
+    } else {
+        art.planet_robotics
+    };
+    let robotics_size = Vec2::new(
+        diameter,
+        diameter
+            * if gas {
+                1.0
+            } else {
+                PLANET_ROBOTICS_ART_ASPECT
+            },
+    );
+    for (sprite, depth) in [
+        (
+            Sprite {
+                image: art.shadow.clone(),
+                custom_size: Some(Vec2::splat(diameter * 1.18)),
+                ..default()
+            },
+            0.13,
+        ),
+        (
+            Sprite {
+                image: robotics_image.clone(),
+                custom_size: Some(robotics_size),
+                ..default()
+            },
+            0.14,
+        ),
+    ] {
+        // Gas giants suspend the facility in their atmosphere and therefore have no footprint.
+        if gas && depth < 0.14 {
+            continue;
+        }
+        let mut entity = commands.spawn((
+            sprite,
+            Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            Detail {
+                planet: planet.id,
+                opacity: 1.0,
+                debris_turn: None,
+            },
+            MapCmp,
+        ));
+        if gas {
+            entity.insert(floating_detail(planet, offset, planet.position + offset));
+        }
+    }
+}
+
+fn planet_structure_spec(
+    development: Development,
+    building: Building,
+    gas: bool,
+) -> Option<(usize, Option<Building>, bool, usize)> {
+    let spec = match building {
+        Building::MetalMine => {
+            (development.mining.max(development.refinery).max(development.reactor), None, false, 0)
+        },
+        Building::Shipyard => {
+            (development.shipyard.max(development.factory), None, true, usize::from(gas))
+        },
+        Building::MissileSilo => (
+            development.silo,
+            None,
+            true,
+            if gas {
+                2
+            } else {
+                4
+            },
+        ),
+        Building::Senate => (
+            usize::from(development.senate),
+            None,
+            false,
+            if gas {
+                3
+            } else {
+                1
+            },
+        ),
+        Building::Robotics => (development.robotics, Some(Building::Robotics), false, 0),
+        _ => return None,
+    };
+    (spec.0 > 0).then_some(spec)
+}
+
+fn moon_structure_spec(
+    development: Development,
+    building: Building,
+) -> Option<(usize, bool, usize)> {
+    let spec = match building {
+        Building::LunarBase => (development.lunar_base, false, 2),
+        Building::TidalGenerator => (development.tidal_generator, false, 0),
+        Building::OrbitalRadar => (usize::from(development.sensor), false, 1),
+        Building::Laboratory => (development.laboratory, true, 2),
+        Building::Shipyard => (development.shipyard, true, 0),
+        _ => return None,
+    };
+    (spec.0 > 0).then_some(spec)
+}
+
 fn spawn_gas_development(
     commands: &mut Commands,
     planet: &Planet,
@@ -510,19 +822,15 @@ fn spawn_gas_development(
         Vec2::new(-0.05, -0.27),
         Vec2::new(0.13, 0.0),
     ];
-    for ((_, variant), slot) in [
-        (development.mining.max(development.refinery).max(development.reactor), 0),
-        (development.shipyard.max(development.factory), 1),
-        (development.silo, 2),
-        (usize::from(development.sensor), 3),
-    ]
-    .into_iter()
-    .zip(slots)
-    .filter(|((level, _), _)| *level > 0)
-    {
+    for (building, slot) in development.surface_build_order.into_iter().zip(slots) {
+        let Some((_, dedicated, _, variant)) =
+            building.and_then(|building| planet_structure_spec(development, building, true))
+        else {
+            continue;
+        };
         let offset = slot * planet.size();
         let diameter = 0.29 * planet.size();
-        structure_sprite(commands, planet, art, false, variant, offset, diameter);
+        planet_structure_sprite(commands, planet, art, dedicated, false, variant, offset, diameter);
         // Beacons stay attached to the platform instead of migrating across the gas surface.
         for (index, lamp) in [Vec2::new(-0.31, -0.13), Vec2::new(0.32, -0.19), Vec2::new(0.0, 0.42)]
             .into_iter()
@@ -568,72 +876,67 @@ fn spawn_development(
     }
     let seed = (planet.id as u32).wrapping_mul(43);
     {
-        for index in 0..development.settlement * 4 {
-            let seed = seed.wrapping_add(index as u32 * 11);
-            for lamp in 0..3 {
-                let offset =
-                    Vec2::new(lamp as f32 * size * 0.017, (lamp % 2) as f32 * size * 0.012);
+        // A few uneven clusters read as settlements without carpeting the whole surface.
+        for index in 0..development.settlement * 3 {
+            let position_seed = seed.wrapping_add(index as u32 * 11);
+            let lamp_count = 2 + usize::from(noise(position_seed.wrapping_add(7)) > 0.58);
+            for lamp in 0..lamp_count {
+                let appearance_seed =
+                    position_seed.wrapping_add((lamp as u32 + 1).wrapping_mul(0x85eb_ca6b));
+                let angle = noise(appearance_seed.wrapping_add(8)) * TAU;
+                let spacing = size
+                    * (0.006
+                        + lamp as f32 * (0.009 + noise(appearance_seed.wrapping_add(9)) * 0.008));
+                let offset = Vec2::from_angle(angle) * spacing;
                 spawn_light(
                     commands,
                     planet,
-                    seed,
+                    position_seed,
+                    appearance_seed,
                     offset,
-                    Vec2::splat(size * 0.038),
-                    Color::srgba(1.0, 0.66, 0.22, 0.22),
-                );
-                spawn_light(
-                    commands,
-                    planet,
-                    seed,
-                    offset,
-                    Vec2::new(size * 0.016, size * 0.012),
-                    Color::srgba(1.0, 0.93, 0.7, 1.0),
+                    art.surface_lights.clone(),
                 );
             }
         }
     }
-    // Leave the right-hand status icon column clear, including on smaller moons.
-    // The fixed priority shows a stable sample of completed buildings within the image budget.
+    // Leave the right-hand status icon column clear, including on smaller moons. Stored slots are
+    // never compacted, so destroyed structures leave holes instead of moving their neighbors.
     let slots = [
         Vec2::new(-0.08, 0.30),
         Vec2::new(-0.30, 0.0),
         Vec2::new(-0.08, -0.30),
         Vec2::new(0.12, 0.0),
     ];
-    let limit = if planet.is_moon() {
-        3
-    } else {
-        4
-    };
-    let structures = if planet.is_moon() {
-        let mut lunar = [
-            (Building::LunarBase, development.lunar_base, false, 2),
-            (Building::OrbitalRadar, usize::from(development.sensor), false, 1),
-            (Building::Laboratory, development.laboratory, true, 2),
-            (Building::Shipyard, development.shipyard, true, 0),
-        ];
-        lunar.sort_by_key(|(building, _, _, _)| {
-            development
-                .lunar_build_order
-                .iter()
-                .position(|entry| *entry == Some(*building))
-                .unwrap_or(4)
-        });
-        lunar.map(|(_, level, facilities, variant)| (level, facilities, variant))
-    } else {
-        [
-            (development.mining.max(development.refinery).max(development.reactor), false, 0),
-            (development.shipyard.max(development.factory), true, 0),
-            (development.silo, true, 4),
-            (usize::from(development.sensor), false, 1),
-        ]
-    };
-    for ((level, facilities, variant), slot) in
-        structures.into_iter().filter(|(level, _, _)| *level > 0).zip(slots.into_iter().take(limit))
-    {
+    if planet.is_moon() {
+        for (building, slot) in
+            development.surface_build_order.into_iter().zip(slots.into_iter().take(3))
+        {
+            let Some(building) = building else {
+                continue;
+            };
+            let Some((level, facilities, variant)) = moon_structure_spec(development, building)
+            else {
+                continue;
+            };
+            let offset = slot * size;
+            let diameter = size * (0.285 + level as f32 * 0.018);
+            moon_structure_sprite(
+                commands, planet, art, building, facilities, variant, offset, diameter,
+            );
+        }
+        return;
+    }
+    for (building, slot) in development.surface_build_order.into_iter().zip(slots) {
+        let Some((level, dedicated, facilities, variant)) =
+            building.and_then(|building| planet_structure_spec(development, building, false))
+        else {
+            continue;
+        };
         let offset = slot * size;
         let diameter = size * (0.285 + level as f32 * 0.018);
-        structure_sprite(commands, planet, art, facilities, variant, offset, diameter);
+        planet_structure_sprite(
+            commands, planet, art, dedicated, facilities, variant, offset, diameter,
+        );
     }
 }
 
@@ -649,6 +952,7 @@ fn refresh_details(
     assets: Res<WorldAssets>,
     images: Res<Assets<Image>>,
     shadow: Res<StructureShadow>,
+    surface_lights: Res<SurfaceLightAtlas>,
 ) {
     if !map.is_changed()
         && !player.is_changed()
@@ -673,6 +977,11 @@ fn refresh_details(
     let Some(gas_size) = images.get(&gas_image).map(|image| image.size().as_vec2()) else {
         return;
     };
+    let moon_shipyard = assets.image("moon shipyard");
+    let moon_tidal_generator = assets.image("moon tidal generator");
+    let moon_orbital_radar = assets.image("moon orbital radar");
+    let planet_robotics = assets.image("planet robotics");
+    let gas_planet_robotics = assets.image("gas planet robotics");
     let art = DevelopmentArt {
         base: &development_image,
         base_size: development_size,
@@ -680,6 +989,12 @@ fn refresh_details(
         facilities_size,
         gas: &gas_image,
         gas_size,
+        moon_shipyard: &moon_shipyard,
+        moon_tidal_generator: &moon_tidal_generator,
+        moon_orbital_radar: &moon_orbital_radar,
+        planet_robotics: &planet_robotics,
+        gas_planet_robotics: &gas_planet_robotics,
+        surface_lights: &surface_lights.0,
         shadow: &shadow.0,
     };
     // Canonical reports already persist on participants. Deduplicate their copies, exposing only
@@ -763,7 +1078,8 @@ fn fade_details(
         Projection::Orthographic(ref projection) => projection.scale,
         _ => f32::INFINITY,
     };
-    let development_alpha = development_visibility.update(scale <= 0.9, time.delta_secs());
+    let development_alpha =
+        development_visibility.update(scale <= DEVELOPMENT_MAX_SCALE, time.delta_secs());
     for (detail, mut sprite, mut visibility, mut pickable, light, platform_light) in &mut details {
         let alpha = if detail.debris_turn.is_some() {
             detail_alpha(scale)
@@ -808,6 +1124,7 @@ impl Plugin for MapDetailsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DetailCache>()
             .init_resource::<StructureShadow>()
+            .init_resource::<SurfaceLightAtlas>()
             .init_resource::<DetailAnimationTime>()
             .add_systems(OnEnter(AppState::Game), |mut cache: ResMut<DetailCache>| {
                 *cache = DetailCache::default()

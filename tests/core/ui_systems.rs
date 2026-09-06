@@ -1,5 +1,89 @@
 use super::*;
+
+#[test]
+fn shop_navigation_places_orbitals_between_buildings_and_fleet_and_skips_them_on_moons() {
+    assert_eq!(Shop::Buildings.next(false), Shop::Orbitals);
+    assert_eq!(Shop::Orbitals.next(false), Shop::Fleet);
+    assert_eq!(Shop::Fleet.previous(false), Shop::Orbitals);
+    assert_eq!(Shop::Orbitals.previous(false), Shop::Buildings);
+    assert_eq!(Icon::Orbitals.shop(), Some(Shop::Orbitals));
+    assert_eq!(Shop::Buildings.next(true), Shop::Fleet);
+    assert_eq!(Shop::Fleet.previous(true), Shop::Buildings);
+}
+
+#[test]
+fn planet_unit_hover_panel_has_room_for_all_four_categories() {
+    assert_eq!(Unit::all_valid(false).len(), 4);
+    assert!(PLANET_UNITS_PANEL_WIDTH >= 270.0);
+    assert!(PLANET_UNITS_PANEL_WIDTH > MOON_UNITS_PANEL_WIDTH);
+}
+
+#[test]
+fn reactor_follows_resource_buildings_in_the_shop_and_planet_hover() {
+    let expected = vec![
+        Unit::Building(Building::MetalMine),
+        Unit::Building(Building::CrystalMine),
+        Unit::Building(Building::DeuteriumSynthesizer),
+        Unit::Building(Building::Reactor),
+        Unit::Building(Building::Shipyard),
+        Unit::Building(Building::Factory),
+        Unit::Building(Building::MissileSilo),
+        Unit::Building(Building::PlanetaryShield),
+        Unit::Building(Building::Robotics),
+        Unit::Building(Building::Senate),
+    ];
+    let shop =
+        Unit::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect::<Vec<_>>();
+
+    assert_eq!(shop, expected);
+    assert_eq!(Unit::all_valid(false)[0], expected);
+}
 use crate::core::units::ships::Ship;
+
+#[test]
+fn laboratory_conversion_uses_a_sounding_information_toast_with_the_gained_resource() {
+    let notification = shop::conversion_success_message(12_345, ResourceName::Metal);
+
+    assert_eq!(notification.message, "Gained 12.345 Metal.");
+    assert_eq!(notification.level, crate::core::messages::MessageLevel::Info);
+    assert!(!notification.silent);
+}
+
+#[test]
+fn senate_hover_states_the_exact_match_level_and_slot_cap() {
+    let description = shop::shop_unit_description(Unit::Building(Building::Senate), 3);
+
+    assert!(description.contains("Each level adds +1 planet slot."));
+    assert!(description.contains("up to +3 planet slots."));
+}
+
+#[test]
+fn combat_selection_uses_prebattle_planet_artwork() {
+    let mut destination = Planet::new(0, "Cindra".into(), Vec2::ZERO, false, 1.0);
+    let original_image = destination.image();
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            destination: destination.id,
+            ..default()
+        },
+        planet: destination.clone(),
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: Army::new(),
+        planet_colonized: false,
+        planet_destroyed: true,
+        destination_owned: None,
+        destination_controlled: None,
+        combat_report: None,
+        hidden: false,
+    };
+    destination.destroy();
+
+    assert_eq!(combat_selection_planet_image(&report), original_image);
+    assert_ne!(combat_selection_planet_image(&report), destination.image());
+}
 
 #[test]
 fn world_shortcuts_follow_acquisition_order_with_home_first() {
@@ -68,6 +152,71 @@ fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
     model.map.get_mut(enemy_home).controlled = Some(2);
     model.map.get_mut(enemy_home).is_destroyed = true;
     assert_eq!(known_planet_counts(&model.map, &player, &[visible]).get(&2), None);
+}
+
+#[test]
+fn spy_reports_reveal_planet_buildings_one_intelligence_tier_at_a_time() {
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let mut target = Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
+    target.owned = Some(2);
+    target.controlled = Some(2);
+
+    let tiers = [
+        (Building::MetalMine, 1),
+        (Building::CrystalMine, 1),
+        (Building::DeuteriumSynthesizer, 1),
+        (Building::Shipyard, 2),
+        (Building::Factory, 2),
+        (Building::MissileSilo, 2),
+        (Building::PlanetaryShield, 3),
+        (Building::Reactor, 3),
+        (Building::Robotics, 4),
+        (Building::Senate, 5),
+    ];
+    target.army = tiers.iter().map(|(building, _)| (Unit::Building(*building), 1)).collect();
+
+    for (returning_probes, visible_tier) in [(5, 1), (6, 2), (11, 3), (16, 4), (21, 5)] {
+        let mission = Mission::new_with_id(
+            1,
+            1,
+            1,
+            &origin,
+            &target,
+            Icon::Spy,
+            Army::from([(Unit::probe(), returning_probes)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        let mut player = Player::new(1, origin.id);
+        player.push_report(MissionReport {
+            id: 1,
+            turn: 2,
+            mission,
+            planet: target.clone(),
+            scout_probes: returning_probes,
+            surviving_attacker: Army::from([(Unit::probe(), returning_probes)]),
+            surviving_defender: target.army.clone(),
+            planet_colonized: false,
+            planet_destroyed: false,
+            destination_owned: target.owned,
+            destination_controlled: target.controlled,
+            combat_report: None,
+            hidden: false,
+        });
+
+        let known = player.last_info(&target, &[]).expect("Spy report should create intelligence");
+        for (building, tier) in tiers {
+            assert_eq!(
+                known.army.amount(&Unit::Building(building)),
+                usize::from(tier <= visible_tier),
+                "{building:?} visibility with {returning_probes} returning Probes"
+            );
+        }
+    }
 }
 
 #[test]
@@ -624,17 +773,17 @@ fn strategic_hud_panels_scale_with_viewports() {
 }
 
 #[test]
-fn resource_bar_uses_the_shared_hud_frame_without_the_legacy_texture() {
+fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     let context = egui::Context::default();
     context.set_global_style(NordDark.custom_style());
-    let legacy_texture = egui::TextureId::User(99);
+    let unused_texture = egui::TextureId::User(99);
     let images = ImageIds(HashMap::from([
         ("turn".to_string(), egui::TextureId::User(1)),
         ("owned".to_string(), egui::TextureId::User(2)),
         ("metal".to_string(), egui::TextureId::User(3)),
         ("crystal".to_string(), egui::TextureId::User(4)),
         ("deuterium".to_string(), egui::TextureId::User(5)),
-        ("thin panel".to_string(), legacy_texture),
+        ("thin panel".to_string(), unused_texture),
     ]));
     let map = Map {
         rect: Rect::default(),
@@ -675,7 +824,7 @@ fn resource_bar_uses_the_shared_hud_frame_without_the_legacy_texture() {
     );
     assert_eq!(hud_panel_frame().fill, HUD_PANEL_FILL);
     assert_eq!(hud_panel_frame().stroke.color, HUD_PANEL_STROKE);
-    for label in ["TURN", "PLANETS", "METAL", "CRYSTAL", "DEUTERIUM"] {
+    for label in ["TURN", "PLANETS", "METAL", "CRYSTAL", "DEUTERIUM", "ENERGY"] {
         text_rect(&output.shapes, label);
     }
     let turn_image = image_rect(&output.shapes, images.get("turn")).expect("missing turn image");
@@ -703,13 +852,180 @@ fn resource_bar_uses_the_shared_hud_frame_without_the_legacy_texture() {
     assert_eq!(text_font_size(&output.shapes, "1500"), 28.0);
     assert!(text_rect(&output.shapes, "1500").height() > 28.0);
     assert!(
-        image_rect(&output.shapes, legacy_texture).is_none(),
+        image_rect(&output.shapes, unused_texture).is_none(),
         "the removed thin-panel texture was still painted"
     );
     assert!(
         output.shapes.iter().all(|shape| !shape_has_line_segment(&shape.shape)),
         "the resource section divider was still painted"
     );
+}
+
+#[test]
+fn energy_summary_shows_signed_balance_and_colors_only_shortages_red() {
+    for (energy, expected, color) in [
+        (
+            EnergyGrid {
+                supply: 12,
+                demand: 7,
+            },
+            "+5",
+            Color32::WHITE,
+        ),
+        (
+            EnergyGrid {
+                supply: 7,
+                demand: 12,
+            },
+            "-5",
+            Color32::RED,
+        ),
+        (
+            EnergyGrid {
+                supply: 7,
+                demand: 7,
+            },
+            "0",
+            Color32::WHITE,
+        ),
+    ] {
+        assert_eq!(energy_balance_text(energy), expected);
+        assert_eq!(energy_balance_color(energy), color);
+
+        let context = egui::Context::default();
+        let mut output = context.run_ui(Default::default(), |ui| {
+            draw_resource_summary_with_value_color(
+                ui,
+                egui::TextureId::Managed(0),
+                "ENERGY",
+                expected,
+                color,
+                false,
+                1.0,
+            );
+        });
+        output.textures_delta.clear();
+        assert_eq!(text_color(&output.shapes, expected), color);
+    }
+}
+
+#[test]
+fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_names() {
+    let mut model = crate::core::simulation::GameModel::new([46; 32], Default::default()).unwrap();
+    let mut player = model.players[0].clone();
+    for world in &mut model.map.planets {
+        world.owned = None;
+        world.controlled = None;
+        world.army.clear();
+    }
+    let home_id = player.home_planet;
+    let planet_id = model.map.planets().into_iter().find(|planet| planet.id != home_id).unwrap().id;
+    let moon_id = model.map.moons().first().unwrap().id;
+
+    let home = model.map.get_mut(home_id);
+    home.name = "Home".into();
+    home.colonize(player.id);
+    home.army.insert(Unit::Building(Building::Reactor), 1);
+    home.army.insert(Unit::Building(Building::MetalMine), 1);
+    let planet = model.map.get_mut(planet_id);
+    planet.name = "Colony".into();
+    planet.colonize(player.id);
+    planet.army.insert(Unit::Building(Building::MetalMine), 2);
+    let moon = model.map.get_mut(moon_id);
+    moon.name = "Darian".into();
+    moon.control(player.id);
+    moon.army.insert(Unit::Building(Building::TidalGenerator), 1);
+    moon.army.insert(Unit::Building(Building::Laboratory), 1);
+    player.world_acquisition_order = vec![home_id, moon_id, planet_id];
+
+    let energy = energy_world_breakdown(&model.map, &player);
+    assert_eq!(
+        energy.lines().map(|line| line.split_once(':').unwrap().0).collect::<Vec<_>>(),
+        ["Home", "Darian", "Colony"]
+    );
+    assert!(!energy.contains("(Moon)"));
+
+    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal);
+    assert_eq!(
+        metal.lines().map(|line| line.split_once(':').unwrap().0).collect::<Vec<_>>(),
+        ["Home", "Colony"]
+    );
+}
+
+#[test]
+fn energy_tooltip_groups_production_and_efficiency_above_its_description() {
+    let context = egui::Context::default();
+    let texture = context.load_texture(
+        "energy tooltip test",
+        egui::ColorImage::filled([1, 1], Color32::WHITE),
+        default(),
+    );
+    let images = ImageIds(HashMap::from([("energy".to_string(), texture.id())]));
+    let model = crate::core::simulation::GameModel::new([48; 32], Default::default()).unwrap();
+    let player = &model.players[0];
+
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_energy_tooltip(ui, &model.map, player, &images);
+    });
+    output.textures_delta.clear();
+
+    let production = text_rect(&output.shapes, "Production: 3/3");
+    let efficiency = text_rect(&output.shapes, "Efficiency: 100%");
+    assert!(efficiency.top() - production.bottom() <= 3.0);
+    assert!(has_text(&output.shapes, ENERGY_DESCRIPTION));
+    assert!(text_rect(&output.shapes, ENERGY_DESCRIPTION).top() > efficiency.bottom());
+    assert_eq!(
+        EFFICIENCY_DESCRIPTION,
+        "Metal, Crystal, and Deuterium are produced at this efficiency, and Planetary Shields \
+        operate at this strength."
+    );
+    assert!(!EFFICIENCY_DESCRIPTION.chars().any(|character| character.is_ascii_digit()));
+}
+
+#[test]
+fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
+    let mine = Unit::Building(Building::MetalMine);
+    let warning = shop::energy_shortage_warning(
+        EnergyGrid {
+            supply: 3,
+            demand: 3,
+        },
+        mine,
+        None,
+    )
+    .unwrap();
+    assert!(warning.message.contains("next turn's Energy at -1"));
+    assert!(warning.message.contains("90% efficiency"));
+    assert_eq!(warning.level, crate::core::messages::MessageLevel::Warning);
+
+    assert!(shop::energy_shortage_warning(
+        EnergyGrid {
+            supply: 1,
+            demand: 0,
+        },
+        Unit::space_dock(),
+        None,
+    )
+    .is_some());
+
+    assert!(shop::energy_shortage_warning(
+        EnergyGrid {
+            supply: 3,
+            demand: 4,
+        },
+        mine,
+        None,
+    )
+    .is_none());
+    assert!(shop::energy_shortage_warning(
+        EnergyGrid {
+            supply: 3,
+            demand: 3,
+        },
+        Unit::Ship(Ship::LightFighter),
+        None,
+    )
+    .is_none());
 }
 
 #[test]

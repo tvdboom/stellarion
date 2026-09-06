@@ -112,15 +112,17 @@ fn spawn_unit(app: &mut App, unit: Unit, count: usize, side: Side, fire: FireSta
 }
 
 #[test]
-fn combat_cards_only_spawn_bars_for_stats_the_unit_has() {
+fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let mut report = report(1, 0, true, 7);
     report.mission.objective = Icon::MissileStrike;
     report.mission.bombing = BombingRaid::None;
     report.mission.army = Army::from([(Unit::interplanetary_missile(), 4)]);
     report.planet.army.insert(Unit::antiballistic_missile(), 3);
     report.planet.army.insert(Unit::crawler(), 1);
+    report.planet.army.insert(Unit::repair_truck(), 1);
     let mut rng = DeterministicRngState::from_u64(7).next_rng();
-    let report = resolve_combat_with_rng(1, &report.mission, &report.planet, &mut rng);
+    let mut report = resolve_combat_with_rng(1, &report.mission, &report.planet, &mut rng);
+    report.mission.army.insert(Unit::probe(), 1);
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
@@ -136,8 +138,13 @@ fn combat_cards_only_spawn_bars_for_stats_the_unit_has() {
         .iter(app.world())
         .map(|(entity, card)| (entity, card.unit))
         .collect::<Vec<_>>();
-    for expected in [Unit::antiballistic_missile(), Unit::interplanetary_missile(), Unit::crawler()]
-    {
+    for expected in [
+        Unit::antiballistic_missile(),
+        Unit::interplanetary_missile(),
+        Unit::crawler(),
+        Unit::repair_truck(),
+        Unit::probe(),
+    ] {
         assert!(cards.iter().any(|(_, unit)| *unit == expected));
     }
     for (entity, unit) in cards {
@@ -155,9 +162,72 @@ fn combat_cards_only_spawn_bars_for_stats_the_unit_has() {
             .iter()
             .filter(|&&child| app.world().get::<ShieldCmp>(child).is_some())
             .count();
+        let empty_shield_slots = descendants
+            .iter()
+            .filter(|&&child| app.world().get::<EmptyShieldCmp>(child).is_some())
+            .count();
         assert_eq!(hull_bars, usize::from(unit.hull() > 0), "{unit:?} hull bars");
         assert_eq!(shield_bars, usize::from(unit.shield() > 0), "{unit:?} shield bars");
+        assert_eq!(
+            empty_shield_slots,
+            usize::from(
+                unit == Unit::probe() || unit == Unit::crawler() || unit == Unit::repair_truck()
+            ),
+            "{unit:?} empty shield slots"
+        );
+
+        for empty in descendants
+            .iter()
+            .copied()
+            .filter(|&child| app.world().get::<EmptyShieldCmp>(child).is_some())
+        {
+            let fill = app.world().get::<Sprite>(empty).unwrap();
+            assert_eq!(fill.color, Color::srgb_u8(92, 96, 102));
+            let frame = app.world().get::<ChildOf>(empty).unwrap().parent();
+            assert_eq!(
+                app.world().get::<Sprite>(frame).unwrap().color,
+                Color::BLACK.with_alpha(0.8)
+            );
+        }
     }
+}
+
+#[test]
+fn planetary_shield_is_a_defense_covering_dome_with_a_compact_strength_readout() {
+    let report = report(5, 3, true, 11);
+    let mut rng = DeterministicRngState::from_u64(11).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let dome = app
+        .world_mut()
+        .query_filtered::<&Sprite, With<PlanetaryShieldDomeCmp>>()
+        .single(app.world())
+        .unwrap();
+    let dimensions = dome.custom_size.unwrap();
+    assert!(dimensions.x > dimensions.y * 5.0, "the field spans the defense row");
+    assert!(dome.color.alpha() > 0.0 && dome.color.alpha() < 0.5);
+
+    let meter = app
+        .world_mut()
+        .query_filtered::<&Sprite, With<ShieldCmp>>()
+        .iter(app.world())
+        .map(|sprite| sprite.custom_size.unwrap().x)
+        .max_by(f32::total_cmp)
+        .unwrap();
+    assert!(meter < dimensions.x * 0.35, "strength remains a secondary readout");
+    let label = app
+        .world_mut()
+        .query_filtered::<&Text2d, With<PlanetaryShieldStrengthCmp>>()
+        .single(app.world())
+        .unwrap();
+    assert!(label.0.contains("900 / 900"));
 }
 
 #[test]
@@ -176,6 +246,31 @@ fn single_round_battles_go_directly_to_fire_without_a_round_banner() {
         .iter(app.world())
         .next()
         .is_none());
+}
+
+#[test]
+fn surviving_probes_play_one_flyaway_cue_when_their_retreat_begins() {
+    let mut report = report(12, 5, true, 2);
+    assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
+    report.mission.bombing = BombingRaid::None;
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    let probe = spawn_unit(&mut app, Unit::probe(), 3, Side::Attacker, FireState::Fired);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<ProbeRetreatCmp>(probe).is_some());
+    assert!(app.world().get::<TweenAnim>(probe).is_some());
+    let sounds =
+        app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(sounds[0].name, "probe retreat");
+    assert_eq!(sounds[0].playback_rate, 1.2);
+
+    // The marker prevents later first-round phases from retriggering the same retreat cue.
+    app.world_mut().resource_mut::<UiState>().combat_round = 0;
+    app.world_mut().insert_resource(NextState::<CombatState>::Unchanged);
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().resource::<Messages<PlayAudioMsg>>().is_empty());
 }
 
 #[test]
@@ -453,9 +548,9 @@ fn round_waits_for_travelling_damage_before_finishing() {
 }
 
 #[test]
-fn crawler_replays_real_resolver_repairs_and_restores_exact_recorded_hull() {
+fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull() {
     // Find a deterministic battle with surviving, damaged turrets. Missing shields
-    // or a reduced unit count alone are not eligible for crawler repairs.
+    // or a reduced unit count alone are not eligible for Repair Truck repairs.
     let mut selected = None;
     for seed in 0..40 {
         let mut rng = DeterministicRngState::from_u64(seed).next_rng();
@@ -464,7 +559,7 @@ fn crawler_replays_real_resolver_repairs_and_restores_exact_recorded_hull() {
         let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
         target.colonize(2);
         target.army = Army::from([
-            (Unit::crawler(), 8),
+            (Unit::repair_truck(), 8),
             (Unit::Defense(Defense::GaussCannon), 8),
             (Unit::Defense(Defense::PlasmaTurret), 3),
         ]);
@@ -515,15 +610,16 @@ fn crawler_replays_real_resolver_repairs_and_restores_exact_recorded_hull() {
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::Repair)
     ));
-    let crawler = targets.iter().find(|(kind, _, _, _)| *kind == Unit::crawler()).unwrap().1;
+    let repair_truck =
+        targets.iter().find(|(kind, _, _, _)| *kind == Unit::repair_truck()).unwrap().1;
     app.world_mut().insert_resource(State::new(CombatState::Repair));
-    app.world_mut().get_mut::<CombatUnitCmp>(crawler).unwrap().fire = FireState::Firing;
+    app.world_mut().get_mut::<CombatUnitCmp>(repair_truck).unwrap().fire = FireState::Firing;
     app.world_mut().run_system_once(animate_combat).unwrap();
     let messages = app.world().resource::<Messages<SpawnShotMsg>>();
     let mut cursor = messages.get_cursor();
     let messages = cursor.read(messages).collect::<Vec<_>>();
     assert!(!messages.is_empty());
-    assert!(messages.iter().all(|m| m.repair && m.source.unwrap().0 == crawler));
+    assert!(messages.iter().all(|m| m.repair && m.source.unwrap().0 == repair_truck));
     app.add_systems(Update, run_combat_animations);
     app.update();
     assert!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count() > 0);
@@ -539,4 +635,41 @@ fn crawler_replays_real_resolver_repairs_and_restores_exact_recorded_hull() {
             .count()
             > 0
     );
+}
+
+#[test]
+fn crawler_salvage_run_and_totals_finish_before_the_combat_result() {
+    let mut report = report(1, 0, true, 19);
+    report.planet.army =
+        Army::from([(Unit::crawler(), 4), (Unit::Defense(Defense::RocketLauncher), 5)]);
+    report.surviving_attacker.clear();
+    report.surviving_defender =
+        Army::from([(Unit::crawler(), 2), (Unit::Defense(Defense::RocketLauncher), 3)]);
+    assert_eq!(report.defender_salvage(), crate::core::resources::Resources::new(2, 0, 0));
+
+    let mut app = playback_app(report, 0, CombatState::Salvage);
+    app.add_plugins(bevy_tweening::TweeningPlugin);
+    spawn_unit(&mut app, Unit::crawler(), 2, Side::Defender, FireState::Fired);
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert_eq!(app.world_mut().query::<&SalvageCrawlerCmp>().iter(app.world()).count(), 2);
+    assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 1);
+    assert_eq!(app.world_mut().query::<&SalvageSummaryCmp>().iter(app.world()).count(), 0);
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(1_500));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    let summary = app
+        .world_mut()
+        .query_filtered::<&Text, With<SalvageSummaryCmp>>()
+        .single(app.world())
+        .unwrap();
+    assert!(summary.0.contains("+2 Metal"));
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(2_600));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::EndCombat)
+    ));
 }

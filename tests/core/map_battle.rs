@@ -76,6 +76,8 @@ fn presentation_app() -> (App, Planet) {
             ..default()
         })
         .init_resource::<BattleSites>()
+        .init_resource::<SuppressedReturningSpies>()
+        .init_resource::<Missions>()
         .init_resource::<WorldAssets>()
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<ColorMaterial>>()
@@ -252,74 +254,120 @@ fn spy_aftermath_approaches_from_the_reported_origin_without_revealing_enemy_ori
 
     let own_spy = SpyPresentation::from_report(&report, player, map).unwrap();
     assert!(own_spy.direction.distance(expected_direction) < 0.000_001);
-    let (start, end) = spy_path(planet.size(), 0.0, own_spy.direction);
-    assert!((end - start).normalize().distance(expected_direction) < 0.000_001);
-    assert!(start.dot(expected_direction) < end.dot(expected_direction));
+    assert!(!own_spy.intercepted);
+    let (start, station) = spy_path(planet.size(), own_spy.direction);
+    assert!((station - start).normalize().distance(expected_direction) < 0.000_001);
+    assert!(start.dot(expected_direction) < station.dot(expected_direction));
 
     let defender = Player::new(2, planet.id);
     let detected_spy = SpyPresentation::from_report(&report, &defender, map).unwrap();
     assert_eq!(detected_spy.direction, Vec2::X);
+    assert!(!detected_spy.intercepted);
+
+    report.scout_probes = 0;
+    let destroyed_spy = SpyPresentation::from_report(&report, &defender, map).unwrap();
+    assert!(destroyed_spy.intercepted);
 }
 
 #[test]
-fn spy_sweep_stops_on_the_planet_before_fading_out() {
+fn spy_probe_stops_outside_the_planet_to_scan_from_orbit() {
     let size = 100.0;
     let direction = Vec2::new(3.0, 4.0).normalize();
 
-    for lateral_offset in [-0.28, 0.32] {
-        let (start, end) = spy_path(size, lateral_offset, direction);
-        let eased_fade_start =
-            SPY_FADE_OUT_START * SPY_FADE_OUT_START * (3.0 - 2.0 * SPY_FADE_OUT_START);
-        let fade_start = start.lerp(end, eased_fade_start);
-        assert!(start.length() > size);
-        assert!(fade_start.length() < size * 0.5);
-        assert!(end.length() < size * 0.5);
-        assert!(start.dot(direction) < end.dot(direction));
-    }
-
-    assert_eq!(spy_sweep_alpha(0.0), 0.0);
-    assert_eq!(spy_sweep_alpha(0.1), 1.0);
-    assert_eq!(spy_sweep_alpha(SPY_FADE_OUT_START), 1.0);
-    assert!(spy_sweep_alpha(0.85) < 1.0);
-    assert_eq!(spy_sweep_alpha(1.0), 0.0);
+    let (start, station) = spy_path(size, direction);
+    assert!(start.length() > size);
+    assert!(station.length() > size * 0.5);
+    assert!(station.length() < start.length());
+    assert!((station - start).normalize().distance(direction) < 0.000_001);
+    assert!(spy_scan_radius(size, station) < station.length() - size * 0.45);
 }
 
 #[test]
-fn spy_aftermath_sweeps_probes_and_uses_scan_ripples_without_explosions() {
+fn successful_spy_aftermath_parks_one_probe_and_scans_without_an_interception() {
     let (mut app, planet) = presentation_app();
     let mut report = battle_report(9, &planet, Outcome::Victory);
     report.mission.objective = Icon::Spy;
     report.mission.army = Army::from([(Unit::probe(), 3)]);
     report.combat_report = None;
     report.scout_probes = 2;
+    let player = app.world().resource::<Player>().clone();
+    let home = app.world().resource::<Map>().get(player.home_planet).clone();
+    let returning_id = 90;
+    app.world_mut().resource_mut::<Missions>().0.push(
+        Mission::new_with_id(
+            returning_id,
+            2,
+            player.id,
+            &planet,
+            &home,
+            Icon::Deploy,
+            Army::from([(Unit::probe(), 2)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        )
+        .with_return_objective(Icon::Spy),
+    );
+    let return_position =
+        app.world().resource::<Missions>().get(returning_id).unwrap().position - planet.position;
     app.world_mut().resource_mut::<Player>().reports.push(report);
 
     app.update();
+    assert!(app.world().resource::<SuppressedReturningSpies>().contains(returning_id));
     app.update();
     let entity = effects(&mut app)[0];
     let children = app.world().get::<Children>(entity).unwrap().to_vec();
+    let probe = *children
+        .iter()
+        .find(|&&child| {
+            matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyProbe { .. }))
+        })
+        .unwrap();
     assert_eq!(
-        children
-            .iter()
-            .filter(|&&child| matches!(
-                app.world().get::<EffectPart>(child),
-                Some(EffectPart::SpySweep { .. })
-            ))
-            .count(),
-        2
+        app.world().get::<Sprite>(probe).unwrap().image,
+        app.world().resource::<WorldAssets>().image("mission spy")
     );
     assert_eq!(
         children
             .iter()
             .filter(|&&child| matches!(
                 app.world().get::<EffectPart>(child),
-                Some(EffectPart::Ripple { .. })
+                Some(EffectPart::SpyProbe { .. })
             ))
             .count(),
-        RIPPLE_COUNT
+        1
+    );
+    assert_eq!(
+        children
+            .iter()
+            .filter(|&&child| matches!(
+                app.world().get::<EffectPart>(child),
+                Some(EffectPart::SpyScanArc { .. })
+            ))
+            .count(),
+        SPY_SCAN_ARC_COUNT
+    );
+    assert_eq!(
+        children
+            .iter()
+            .filter(|&&child| matches!(
+                app.world().get::<EffectPart>(child),
+                Some(EffectPart::SpyPlanetWave { .. })
+            ))
+            .count(),
+        SPY_SCAN_ARC_COUNT
     );
     assert!(children.iter().all(|&child| {
-        !matches!(app.world().get::<EffectPart>(child), Some(EffectPart::Explosion { .. }))
+        !matches!(
+            app.world().get::<EffectPart>(child),
+            Some(
+                EffectPart::Ripple { .. }
+                    | EffectPart::Explosion { .. }
+                    | EffectPart::SpyInterceptor { .. }
+                    | EffectPart::SpyExplosion { .. }
+            )
+        )
     }));
     assert!(app
         .world_mut()
@@ -331,7 +379,113 @@ fn spy_aftermath_sweeps_probes_and_uses_scan_ripples_without_explosions() {
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.55));
     app.update();
     assert!(children.iter().any(|&child| {
-        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpySweep { .. }))
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyProbe { .. }))
+            && app.world().get::<Sprite>(child).is_some_and(|sprite| sprite.color.alpha() > 0.0)
+    }));
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(1.0));
+    app.update();
+    assert!(children.iter().any(|&child| {
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyScanArc { .. }))
+            && app
+                .world()
+                .get::<MeshMaterial2d<ColorMaterial>>(child)
+                .and_then(|handle| app.world().resource::<Assets<ColorMaterial>>().get(&handle.0))
+                .is_some_and(|material| material.color.alpha() > 0.0)
+    }));
+    assert!(children.iter().any(|&child| {
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyPlanetWave { .. }))
+            && app
+                .world()
+                .get::<MeshMaterial2d<ColorMaterial>>(child)
+                .and_then(|handle| app.world().resource::<Assets<ColorMaterial>>().get(&handle.0))
+                .is_some_and(|material| material.color.alpha() > 0.0)
+    }));
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(
+        SPY_DEPART_START_SECONDS + SPY_DEPART_SECONDS - 1.55 - 0.01,
+    ));
+    app.update();
+    assert!(app.world().resource::<SuppressedReturningSpies>().contains(returning_id));
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.02));
+    app.update();
+    assert!(!app.world().resource::<SuppressedReturningSpies>().contains(returning_id));
+    assert!(
+        app.world()
+            .get::<Transform>(probe)
+            .unwrap()
+            .translation
+            .truncate()
+            .distance(return_position)
+            < 0.000_001
+    );
+    assert_eq!(app.world().get::<Sprite>(probe).unwrap().color.alpha(), 0.0);
+    assert!(app.world().get::<Sprite>(probe).unwrap().flip_x);
+    assert_eq!(app.world().get::<Transform>(probe).unwrap().rotation, Quat::IDENTITY);
+}
+
+#[test]
+fn spy_scan_mesh_is_a_partial_arc_instead_of_a_full_ring() {
+    let mesh = spy_scan_arc_mesh();
+    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+    assert_eq!(positions.len(), 50);
+    assert!(positions.iter().all(|position| position[0] > 0.0));
+    assert!(positions.iter().any(|position| position[1] < 0.0));
+    assert!(positions.iter().any(|position| position[1] > 0.0));
+}
+
+#[test]
+fn failed_spy_aftermath_launches_ships_that_destroy_the_probe_during_the_scan() {
+    let (mut app, planet) = presentation_app();
+    let mut report = battle_report(10, &planet, Outcome::Defeat);
+    report.mission.objective = Icon::Spy;
+    report.mission.army = Army::from([(Unit::probe(), 3)]);
+    report.combat_report = None;
+    report.scout_probes = 0;
+    app.world_mut().resource_mut::<Player>().reports.push(report);
+
+    app.update();
+    app.update();
+    let entity = effects(&mut app)[0];
+    let children = app.world().get::<Children>(entity).unwrap().to_vec();
+    assert_eq!(
+        children
+            .iter()
+            .filter(|&&child| matches!(
+                app.world().get::<EffectPart>(child),
+                Some(EffectPart::SpyInterceptor { .. })
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(
+        children
+            .iter()
+            .filter(|&&child| matches!(
+                app.world().get::<EffectPart>(child),
+                Some(EffectPart::SpyExplosion { .. })
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(app.world().resource::<Messages<PlayAudioMsg>>().len(), 1);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(1.55));
+    app.update();
+    assert!(children.iter().any(|&child| {
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyInterceptor { .. }))
+            && app.world().get::<Sprite>(child).is_some_and(|sprite| sprite.color.alpha() > 0.0)
+    }));
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.5));
+    app.update();
+    assert!(children.iter().any(|&child| {
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyProbe { .. }))
+            && app.world().get::<Sprite>(child).is_some_and(|sprite| sprite.color.alpha() == 0.0)
+    }));
+    assert!(children.iter().any(|&child| {
+        matches!(app.world().get::<EffectPart>(child), Some(EffectPart::SpyExplosion { .. }))
             && app.world().get::<Sprite>(child).is_some_and(|sprite| sprite.color.alpha() > 0.0)
     }));
 }
@@ -471,6 +625,19 @@ fn conquest_ripples_expand_fade_and_finish_before_the_result_label() {
     app.update();
     let entity = effects(&mut app)[0];
     let children = app.world().get::<Children>(entity).unwrap().to_vec();
+    let arrival = *children
+        .iter()
+        .find(|&&child| {
+            matches!(
+                app.world().get::<EffectPart>(child),
+                Some(EffectPart::TerritoryArrival { .. })
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        app.world().get::<Sprite>(arrival).unwrap().image,
+        app.world().resource::<WorldAssets>().image("mission")
+    );
     let label =
         *children.iter().find(|&&child| app.world().get::<TextColor>(child).is_some()).unwrap();
     let ripples = children
@@ -484,6 +651,18 @@ fn conquest_ripples_expand_fade_and_finish_before_the_result_label() {
 
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.8));
     app.update();
+    assert!(app.world().get::<Sprite>(arrival).unwrap().color.alpha() > 0.0);
+    let arrival_position = app.world().get::<Transform>(arrival).unwrap().translation.truncate();
+    let EffectPart::TerritoryArrival {
+        start,
+        orbit,
+        ..
+    } = app.world().get::<EffectPart>(arrival).unwrap()
+    else {
+        unreachable!();
+    };
+    assert!(arrival_position.distance(*start) > 0.0);
+    assert!(arrival_position.distance(*orbit) < start.distance(*orbit));
     let active_ripples = ripples
         .iter()
         .filter_map(|&ripple| {
@@ -524,7 +703,7 @@ fn planet_aftermath_uses_the_viewing_players_color_for_every_part() {
     let viewer_color = PlayerColor::new(4).unwrap();
     let local_player = {
         let mut player = app.world_mut().resource_mut::<Player>();
-        player.color = Some(viewer_color);
+        player.color = viewer_color;
         player.id
     };
     let mut report = battle_report(1, &planet, Outcome::Victory);

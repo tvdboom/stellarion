@@ -537,7 +537,7 @@ async fn create_local_practice(
     let mut model = GameModel::new(seed, rules)
         .map_err(|error| BackendError::InvalidData(error.to_string()))?;
     model.player_mut(1).map_err(|error| BackendError::InvalidData(error.to_string()))?.color =
-        Some(player_color);
+        player_color;
     let mut result = backend
         .create_game(
             &auth,
@@ -746,10 +746,10 @@ fn process_requests(
                     let previous = model.players[0].color();
                     for player in &mut model.players {
                         if player.color() == player_color {
-                            player.color = Some(previous);
+                            player.color = previous;
                         }
                     }
-                    model.players[0].color = Some(player_color);
+                    model.players[0].color = player_color;
                     for _ in 0..8 {
                         let code = match generate_game_code() {
                             Ok(code) => code,
@@ -1750,6 +1750,9 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
     let Some(membership) = &session.membership else {
         return;
     };
+    let Ok(player) = record.persisted.state.player(membership.player_id) else {
+        return;
+    };
     let summary = GameSummary {
         id: record.id.clone(),
         code: record.code.clone(),
@@ -1759,10 +1762,7 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
         turn: record.persisted.state.turn,
         player_id: membership.player_id,
         display_name: membership.display_name.clone(),
-        player_color: record.persisted.state.player(membership.player_id).map_or_else(
-            |_| PlayerColor::for_player(membership.player_id),
-            |player| player.color(),
-        ),
+        player_color: player.color(),
         player_count: record.members.len(),
         max_players: record.max_players,
     };

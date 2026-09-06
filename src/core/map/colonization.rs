@@ -20,8 +20,11 @@ use crate::core::simulation::TurnCommand;
 use crate::core::states::{AppState, GameState};
 use crate::multiplayer::client::PendingTurnCommands;
 
-const CELEBRATION_SECONDS: f32 = 4.2;
+const CELEBRATION_SECONDS: f32 = 5.0;
 const WAVE_BANDS: usize = 4;
+const ARRIVAL_APPROACH_SECONDS: f32 = 0.86;
+const ARRIVAL_LANDING_SECONDS: f32 = 0.44;
+const ACQUISITION_CELEBRATION_DELAY: f32 = 1.12;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ColonyEvent {
@@ -166,6 +169,11 @@ struct ColonyEffect {
 
 #[derive(Component)]
 enum EffectPart {
+    Arrival {
+        start: Vec2,
+        orbit: Vec2,
+        landing: Vec2,
+    },
     Territory {
         boundary: Vec<Vec2>,
         reach: f32,
@@ -221,11 +229,13 @@ fn celebrate_colonies(
                 meshes.get(&mesh.0)?.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
             Some(positions.iter().map(|p| Vec2::new(p[0], p[1]) - planet.position).collect())
         });
+        let arrival_direction = colony_arrival_direction(&map, &player, id, settings.turn);
         spawn_celebration(
             &mut commands,
             planet,
             event,
             player.color().color(),
+            arrival_direction,
             boundary,
             &mut meshes,
             &mut materials,
@@ -234,11 +244,35 @@ fn celebrate_colonies(
     }
 }
 
+/// Reconstructs the final leg of the successful colony mission without persisting UI state.
+fn colony_arrival_direction(
+    map: &Map,
+    player: &Player,
+    planet: PlanetId,
+    turn: usize,
+) -> Option<Vec2> {
+    let report = player.reports.iter().rev().find(|report| {
+        report.turn == turn
+            && report.mission.destination == planet
+            && report.mission.owner == player.id
+            && report.planet_colonized
+    })?;
+    let origin = map.try_get(report.mission.origin)?;
+    let destination = map.try_get(planet)?;
+    let direction = (destination.position - origin.position).normalize_or_zero();
+    Some(if direction == Vec2::ZERO {
+        Vec2::X
+    } else {
+        direction
+    })
+}
+
 fn spawn_celebration(
     commands: &mut Commands,
     planet: &Planet,
     event: ColonyEvent,
     color: Color,
+    arrival_direction: Option<Vec2>,
     boundary: Option<Vec<Vec2>>,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -261,6 +295,31 @@ fn spawn_celebration(
             },
         ))
         .with_children(|parent| {
+            if let Some(direction) = arrival_direction {
+                let start = -direction * size * 1.7;
+                let orbit = -direction * size * 0.73;
+                let landing = -direction * size * 0.1;
+                parent.spawn((
+                    Sprite {
+                        image: assets.image("mission colonize"),
+                        custom_size: Some(Vec2::splat(size * 0.44)),
+                        color: color.with_alpha(0.0),
+                        flip_y: direction.x < 0.0,
+                        ..default()
+                    },
+                    Transform {
+                        translation: start.extend(PLANET_Z + 1.25),
+                        rotation: Quat::from_rotation_z(direction.y.atan2(direction.x)),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                    EffectPart::Arrival {
+                        start,
+                        orbit,
+                        landing,
+                    },
+                ));
+            }
             if let Some(polygon) = boundary.filter(|p| p.len() >= 3) {
                 let boundary = sample_boundary(&polygon);
                 // Outer Voronoi cells extend far beyond the playable map; bound the visual.
@@ -408,6 +467,7 @@ fn animate_colonies(
     mut parts: Query<(
         &EffectPart,
         &mut Transform,
+        Option<&mut Sprite>,
         Option<&Mesh2d>,
         Option<&MeshMaterial2d<ColorMaterial>>,
         Option<&mut TextColor>,
@@ -438,16 +498,49 @@ fn animate_colonies(
             continue;
         }
         let elapsed = effect.timer.elapsed_secs();
+        let celebration_delay = if effect.event == ColonyEvent::Abandoned {
+            0.0
+        } else {
+            ACQUISITION_CELEBRATION_DELAY
+        };
+        let celebration_elapsed = elapsed - celebration_delay;
         for child in children.iter() {
-            let Ok((part, mut transform, mesh, material, text)) = parts.get_mut(child) else {
+            let Ok((part, mut transform, sprite, mesh, material, text)) = parts.get_mut(child)
+            else {
                 continue;
             };
             let alpha = match part {
+                EffectPart::Arrival {
+                    start,
+                    orbit,
+                    landing,
+                } => {
+                    let approach = (elapsed / ARRIVAL_APPROACH_SECONDS).clamp(0.0, 1.0);
+                    let approach_eased = approach * approach * (3.0 - 2.0 * approach);
+                    transform.translation =
+                        start.lerp(*orbit, approach_eased).extend(PLANET_Z + 1.25);
+                    let landing_progress = ((elapsed - ARRIVAL_APPROACH_SECONDS)
+                        / ARRIVAL_LANDING_SECONDS)
+                        .clamp(0.0, 1.0);
+                    if landing_progress > 0.0 {
+                        let landing_eased =
+                            landing_progress * landing_progress * (3.0 - 2.0 * landing_progress);
+                        transform.translation =
+                            orbit.lerp(*landing, landing_eased).extend(PLANET_Z + 1.25);
+                        transform.scale = Vec3::splat(1.0 - 0.58 * landing_eased);
+                    }
+                    let alpha = (approach / 0.14).clamp(0.0, 1.0)
+                        * ((1.0 - landing_progress) / 0.28).clamp(0.0, 1.0);
+                    if let Some(mut sprite) = sprite {
+                        sprite.color.set_alpha(alpha);
+                    }
+                    alpha
+                },
                 EffectPart::Territory {
                     boundary,
                     reach,
                 } => {
-                    let progress = ((elapsed - 0.35) / 2.8).clamp(0.0, 1.0);
+                    let progress = ((celebration_elapsed - 0.25) / 2.8).clamp(0.0, 1.0);
                     if let Some(mut mesh) = mesh.and_then(|handle| meshes.get_mut(&handle.0)) {
                         advance_wave(&mut mesh, boundary, progress * (reach + 150.0));
                     }
@@ -460,7 +553,7 @@ fn animate_colonies(
                 EffectPart::Flare {
                     size,
                 } => {
-                    let progress = (elapsed / 1.1).clamp(0.0, 1.0);
+                    let progress = (celebration_elapsed / 1.1).clamp(0.0, 1.0);
                     transform.scale = (*size * (0.4 + progress * 0.7)).extend(1.0);
                     (progress * 7.0).min(1.0) * (1.0 - progress).powi(2)
                 },
@@ -468,14 +561,14 @@ fn animate_colonies(
                     delay,
                     radius,
                 } => {
-                    let progress = ((elapsed - delay) / 1.35).clamp(0.0, 1.0);
+                    let progress = ((celebration_elapsed - delay) / 1.35).clamp(0.0, 1.0);
                     transform.scale = Vec3::splat(radius * (0.08 + progress));
                     (progress * 10.0).min(1.0) * (1.0 - progress).powi(2) * 0.8
                 },
                 EffectPart::Label {
                     y,
                 } => {
-                    let fade_in = ((elapsed - 0.55) / 0.4).clamp(0.0, 1.0);
+                    let fade_in = ((celebration_elapsed - 0.4) / 0.4).clamp(0.0, 1.0);
                     transform.translation.y = y + 10.0 * (1.0 - fade_in);
                     fade_in * ((CELEBRATION_SECONDS - elapsed) / 0.8).clamp(0.0, 1.0)
                 },

@@ -1,6 +1,7 @@
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+use crate::core::ui::systems::MapRangePreview;
 
 #[test]
 fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
@@ -8,6 +9,7 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     app.insert_resource(UiState {
         planet_hover: Some(1),
         mission_planet_hover: Some(3),
+        range_preview: Some(MapRangePreview::CommandRelay(1)),
         planet_selected: Some(2),
         mission_hover: Some(5),
         mission_hover_from_ui: true,
@@ -30,6 +32,7 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     let state = app.world().resource::<UiState>();
     assert_eq!(state.planet_hover, None);
     assert_eq!(state.mission_planet_hover, None);
+    assert_eq!(state.range_preview, None);
     assert_eq!(state.planet_selected, Some(2), "persistent selection is preserved");
     assert_eq!(state.mission_hover, None);
     assert!(!state.mission_hover_from_ui);

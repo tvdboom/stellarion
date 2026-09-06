@@ -1,4 +1,4 @@
-//! Legacy Bevy menu widget construction helpers retained by the styled UI.
+//! Bevy menu widget construction helpers shared by the styled UI.
 
 use bevy::prelude::*;
 

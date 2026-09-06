@@ -2,12 +2,13 @@
 
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
-use rand::{rng, Rng, RngExt};
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
-use crate::core::constants::{CRAWLER_HEALING_PER_ROUND, PS_SHIELD_PER_LEVEL};
+use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
+use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
@@ -27,9 +28,11 @@ pub const BOMBING_HIT_CHANCE: f32 = 0.1;
 pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;
 
 #[derive(Component, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Outcome of one combatant firing once at a selected target.
 pub struct ShotReport {
     /// Unit kind represented by this record or presentation component.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub unit: Option<Unit>,
     /// Damage absorbed by the target's ordinary shield.
     pub shield_damage: usize,
@@ -53,6 +56,7 @@ impl ShotReport {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Per-unit combat state retained for deterministic reports and animation playback.
 pub struct CombatUnit {
     /// Stable identifier used to cross-reference this value.
@@ -70,11 +74,6 @@ pub struct CombatUnit {
 }
 
 impl CombatUnit {
-    /// Creates a combat unit with a process-random presentation identifier.
-    pub fn new(unit: &Unit) -> Self {
-        Self::new_with_rng(unit, &mut rng())
-    }
-
     /// Creates a combat unit from the supplied deterministic stream.
     pub fn new_with_rng<R: Rng + ?Sized>(unit: &Unit, rng: &mut R) -> Self {
         Self {
@@ -88,16 +87,31 @@ impl CombatUnit {
     }
 }
 
-/// Resolves one legacy local combat using process randomness; deterministic callers inject a stream.
-pub fn resolve_combat(turn: usize, mission: &Mission, destination: &Planet) -> MissionReport {
-    resolve_combat_with_rng(turn, mission, destination, &mut rng())
-}
-
-/// Resolves combat using only the supplied deterministic random stream.
+/// Resolves combat with fully powered defenses and the supplied deterministic random stream.
 pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
     turn: usize,
     mission: &Mission,
     destination: &Planet,
+    rng: &mut R,
+) -> MissionReport {
+    resolve_combat_with_energy_with_rng(
+        turn,
+        mission,
+        destination,
+        EnergyGrid {
+            supply: 1,
+            demand: 1,
+        },
+        rng,
+    )
+}
+
+/// Resolves combat with the defender's turn-start energy grid determining shield power.
+pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
+    turn: usize,
+    mission: &Mission,
+    destination: &Planet,
+    energy: EnergyGrid,
     rng: &mut R,
 ) -> MissionReport {
     if mission.objective == Icon::Deploy
@@ -126,7 +140,7 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
     let mut planetary_shield =
-        destination.army.amount(&Unit::planetary_shield()) * PS_SHIELD_PER_LEVEL;
+        energy.planetary_shield(destination.army.amount(&Unit::planetary_shield()));
 
     let mut attack_army = Vec::new();
     for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
@@ -305,17 +319,19 @@ pub fn resolve_combat_with_rng<R: Rng + ?Sized>(
             }
         }
 
-        // Repair defense turrets
-        let n_crawlers =
-            defend_army.iter().filter(|u| u.unit == Unit::crawler() && u.hull > 0).count();
+        // Repair Trucks restore damaged defense turrets after both sides have fired.
+        let n_repair_trucks = defend_army
+            .iter()
+            .filter(|unit| unit.unit == Unit::repair_truck() && unit.hull > 0)
+            .count();
 
-        for _ in 0..n_crawlers {
+        for _ in 0..n_repair_trucks {
             let pool = defend_army
                 .iter_mut()
                 .filter(|u| u.unit.is_turret() && u.hull > 0 && u.hull < u.unit.hull());
 
             if let Some(target) = pool.choose(&mut *rng) {
-                let heal = (target.unit.hull() - target.hull).min(CRAWLER_HEALING_PER_ROUND);
+                let heal = (target.unit.hull() - target.hull).min(REPAIR_TRUCK_HEALING_PER_ROUND);
                 target.repairs.push(heal);
                 target.hull += heal;
             }
@@ -481,7 +497,7 @@ fn resolve_bombing_raid<R: Rng + ?Sized>(
 /// Returns whether a probabilistic rapid-fire chain ends after this shot.
 fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f32) -> bool {
     shots_fired >= MAX_SHOTS_PER_UNIT_PER_ROUND
-        || *attacker.rapid_fire().get(target).unwrap_or(&101) as f32 / 100.0 > roll
+        || roll >= *attacker.rapid_fire().get(target).unwrap_or(&0) as f32 / 100.0
 }
 
 #[cfg(test)]

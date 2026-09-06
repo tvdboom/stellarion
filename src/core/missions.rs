@@ -1,15 +1,18 @@
 //! Persisted fleet missions, movement calculations, visibility, and optional Bevy adapters.
 
+use std::collections::BTreeSet;
+
 #[cfg(feature = "app")]
 pub use super::mission_systems::{
-    send_mission, update_mission_route_arrow, update_missions, MissionRouteArrowCmp,
+    recall_mission, send_mission, update_mission_route_arrow, update_missions,
+    MissionRecallAnimationMsg, MissionRouteArrowCmp,
 };
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::core::constants::{NEXUS_FACTOR, PHALANX_DISTANCE, RADAR_DISTANCE};
+use crate::core::constants::{PHALANX_DISTANCE, RADAR_DISTANCE, REACTOR_FUEL_REDUCTION_FACTOR};
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
@@ -21,6 +24,29 @@ use crate::utils::NameFromEnum;
 
 /// Stable identifier of a persisted fleet mission.
 pub type MissionId = u64;
+
+/// Presentation-only mission IDs temporarily hidden by a map aftermath animation.
+#[derive(Resource, Default)]
+#[doc(hidden)]
+pub struct SuppressedReturningSpies(BTreeSet<MissionId>);
+
+impl SuppressedReturningSpies {
+    pub(crate) fn contains(&self, mission: MissionId) -> bool {
+        self.0.contains(&mission)
+    }
+
+    pub(crate) fn suppress(&mut self, mission: MissionId) {
+        self.0.insert(mission);
+    }
+
+    pub(crate) fn release(&mut self, mission: MissionId) {
+        self.0.remove(&mission);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
 
 #[cfg(feature = "app")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,6 +94,22 @@ impl SendMissionMsg {
     }
 }
 
+#[derive(Message)]
+/// Bevy message requesting that one active local fleet begin its return leg.
+pub struct RecallMissionMsg {
+    /// Stable mission selected for recall by the local UI.
+    pub mission_id: MissionId,
+}
+
+impl RecallMissionMsg {
+    /// Creates a recall request for the selected mission.
+    pub fn new(mission_id: MissionId) -> Self {
+        Self {
+            mission_id,
+        }
+    }
+}
+
 #[derive(EnumIter, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 /// Optional building category targeted by bombers after combat.
 pub enum BombingRaid {
@@ -105,6 +147,7 @@ impl Description for BombingRaid {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Complete persisted fleet movement and objective state.
 pub struct Mission {
     /// Stable identifier used to cross-reference this value.
@@ -114,8 +157,10 @@ pub struct Mission {
     /// Stable planet from which the fleet was dispatched.
     pub origin: PlanetId,
     /// Owner of the origin when the mission was dispatched.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub origin_owned: Option<PlayerId>,
     /// Controller of the origin when the mission was dispatched.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub origin_controlled: Option<PlayerId>,
     /// Origin army snapshot used by later intelligence reports.
     pub origin_army: Army,
@@ -129,8 +174,8 @@ pub struct Mission {
     pub position: Vec2,
     /// Strategic objective applied on arrival.
     pub objective: Icon,
-    /// Original objective whose silhouette is retained while a resolved mission returns home.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Original objective whose silhouette is retained while a mission returns home.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
     pub return_objective: Option<Icon>,
     /// Units stationed on this world or travelling with this mission.
     pub army: Army,
@@ -296,10 +341,43 @@ impl Mission {
         self
     }
 
+    /// Returns whether this fleet is already travelling back from an outbound mission.
+    pub(crate) fn is_returning(&self) -> bool {
+        self.return_objective.is_some()
+            || (self.objective == Icon::Deploy && self.origin_controlled != Some(self.owner))
+    }
+
+    /// Starts a free return leg from the fleet's exact current position to its original world.
+    pub(crate) fn recall(&mut self, map: &Map, turn: usize) {
+        debug_assert!(!self.is_returning());
+        let original_origin = self.origin;
+        let outbound_destination = map.get(self.destination);
+        let original_objective = self.objective;
+
+        // Return legs use the outbound destination as their presentation/report origin. The fleet
+        // has not reached that world, so its persisted world-space position deliberately stays put.
+        self.origin = outbound_destination.id;
+        self.origin_owned = outbound_destination.owned;
+        self.origin_controlled = outbound_destination.controlled;
+        self.origin_army.clone_from(&outbound_destination.army);
+        self.destination = original_origin;
+        self.send = turn;
+        self.travel_turns = 0;
+        self.objective = Icon::Deploy;
+        self.return_objective = Some(original_objective);
+        self.bombing = BombingRaid::None;
+        self.combat_probes = false;
+        self.jump_gate = false;
+        self.logs.push_str(&format!(
+            "\n- ({turn}) Mission recalled to planet {}.",
+            map.get(original_origin).name
+        ));
+    }
+
     /// Returns whether the optional return-trip presentation metadata is internally consistent.
     pub(crate) fn has_valid_return_objective(&self) -> bool {
         self.return_objective.is_none_or(|objective| {
-            self.objective == Icon::Deploy && matches!(objective, Icon::Spy | Icon::Destroy)
+            objective.is_mission() && matches!(self.objective, Icon::Deploy | Icon::Attack)
         })
     }
 
@@ -354,7 +432,7 @@ impl Mission {
                 .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
                 .sum::<f32>();
 
-            (fuel * (1. - NEXUS_FACTOR * reactor)).ceil() as usize
+            (fuel * (1. - REACTOR_FUEL_REDUCTION_FACTOR * reactor)).ceil() as usize
         }
     }
 

@@ -137,3 +137,21 @@ fn next_turn_movement_handles_jump_gates_and_stationary_fleets() {
     assert!((movement - before.distance(mission.position) / Planet::SIZE).abs() < 1e-5);
     assert_eq!(mission.next_turn_movement(&map), 0.0);
 }
+
+#[test]
+fn recalled_leg_keeps_the_current_position_and_accelerates_toward_home() {
+    let (map, mut mission) = journey(20.0, Army::from([(Unit::Ship(Ship::ColonyShip), 1)]));
+    mission.advance(&map);
+    mission.advance(&map);
+    let position_at_recall = mission.position;
+    let distance_home = position_at_recall.distance(map.get(mission.origin).position);
+
+    mission.recall(&map, 8);
+
+    assert_eq!(mission.position, position_at_recall);
+    assert_eq!(mission.travel_turns, 0);
+    assert_eq!(mission.destination, map.planets[0].id);
+    assert!(mission.is_returning());
+    mission.advance(&map);
+    assert!(mission.position.distance(map.planets[0].position) < distance_home);
+}

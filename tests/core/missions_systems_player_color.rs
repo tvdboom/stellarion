@@ -22,7 +22,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
     .unwrap();
     for (index, player) in model.players.iter_mut().enumerate() {
         // Chosen colors deliberately differ from the player-slot defaults.
-        player.color = Some(PLAYER_COLOR_PALETTE[(index + 2) % PLAYER_COLOR_PALETTE.len()]);
+        player.color = PLAYER_COLOR_PALETTE[(index + 2) % PLAYER_COLOR_PALETTE.len()];
     }
     model.start().unwrap();
     let missions = Missions(
@@ -88,6 +88,21 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             &mut world.resource_mut::<Assets<TextureAtlasLayout>>(),
         );
     });
+
+    let mut suppressed = SuppressedReturningSpies::default();
+    suppressed.suppress(3);
+    app.insert_resource(suppressed);
+    app.update();
+    let spy_entity = app
+        .world_mut()
+        .query::<(Entity, &MissionCmp)>()
+        .iter(app.world())
+        .find_map(|(entity, mission)| (mission.id == 3).then_some(entity))
+        .unwrap();
+    assert_eq!(*app.world().get::<Visibility>(spy_entity).unwrap(), Visibility::Hidden);
+    app.world_mut().resource_mut::<SuppressedReturningSpies>().release(3);
+    app.update();
+    assert_eq!(*app.world().get::<Visibility>(spy_entity).unwrap(), Visibility::Inherited);
 
     // Covers the first rendered frame, hover, and switching the inspected player's view.
     for (viewer, hover) in [(0, None), (0, Some(2)), (1, Some(2)), (0, Some(4)), (1, None)] {
@@ -221,14 +236,34 @@ fn spy_map_rotation_keeps_the_flame_behind_the_route() {
     let map_rotation = mission_map_rotation(&spy);
     assert_eq!(map_rotation, SPY_MISSION_MAP_ROTATION);
 
-    let parent_rotation = Quat::from_rotation_z(map_rotation);
-    let flame = mission_flame_transform(SPY_MISSION_SIZE, map_rotation);
+    let image_rotation = mission_world_rotation(&spy, 0.0);
+    let parent_rotation = Quat::from_rotation_z(image_rotation);
+    let flame = mission_flame_transform(SPY_MISSION_SIZE, 0.0, image_rotation);
     let world_flame_offset = parent_rotation * flame.translation;
     assert!((world_flame_offset.x + SPY_MISSION_SIZE * 0.5).abs() < 0.0001);
     assert!(world_flame_offset.y.abs() < 0.0001);
 
     let world_flame_rotation = parent_rotation * flame.rotation;
     assert!(world_flame_rotation.dot(Quat::from_rotation_z(PI)).abs() > 1.0 - 0.0001);
+}
+
+#[test]
+fn returning_spy_stays_upright_and_keeps_the_flame_behind_its_route() {
+    let spy = Mission {
+        objective: Icon::Deploy,
+        return_objective: Some(Icon::Spy),
+        ..default()
+    };
+    let route_angle = PI;
+    let image_rotation = mission_world_rotation(&spy, route_angle);
+    assert_eq!(image_rotation, 0.0);
+    assert!(mission_map_flip_x(&spy));
+
+    let parent_rotation = Quat::from_rotation_z(image_rotation);
+    let flame = mission_flame_transform(SPY_MISSION_SIZE, route_angle, image_rotation);
+    let world_flame_offset = parent_rotation * flame.translation;
+    assert!((world_flame_offset.x - SPY_MISSION_SIZE * 0.5).abs() < 0.0001);
+    assert!(world_flame_offset.y.abs() < 0.0001);
 }
 
 #[test]

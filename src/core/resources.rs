@@ -68,6 +68,7 @@ impl Description for ResourceName {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Saturating bundle of metal, crystal, and deuterium amounts.
 pub struct Resources {
     /// Stored metal amount.

@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 /// Serializable seed plus monotonically increasing simulation stream number.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeterministicRngState {
     /// Secret-independent game seed persisted with the game state.
     pub seed: [u8; 32],

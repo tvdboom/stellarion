@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::core::identity::{GameId, PlayerId, UserId};
-use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
@@ -63,6 +62,8 @@ struct MemoryState {
     sessions: HashMap<String, UserId>,
     games: HashMap<GameId, StoredGame>,
     codes: HashMap<crate::core::identity::GameCode, GameId>,
+    #[cfg(test)]
+    now: Option<Instant>,
 }
 
 /// Canonical mock game plus hidden recovery hashes, submissions, and durable events.
@@ -87,14 +88,19 @@ impl InMemoryBackend {
             BackendError::Protocol("in-memory backend lock was poisoned".to_string())
         })?;
         let timestamp = current_unix_timestamp();
+        #[cfg(test)]
+        let now = state.now.unwrap_or_else(Instant::now);
+        #[cfg(not(test))]
+        let now = Instant::now();
         state.games.retain(|_, stored| {
             timestamp.saturating_sub(stored.record.saved_at) < SAVED_GAME_RETENTION.as_secs()
                 && (stored.record.status != MatchStatus::Finished
-                    || stored.finished_at.is_none_or(|at| at.elapsed() < FINISHED_GAME_RETENTION))
+                    || stored.finished_at.is_none_or(|at| {
+                        now.saturating_duration_since(at) < FINISHED_GAME_RETENTION
+                    }))
         });
         // Project the heartbeat lease on every access, including loads and resume checks.
         // A client that vanishes cannot leave its saved connection flag true forever.
-        let now = Instant::now();
         for stored in state.games.values_mut() {
             for member in &mut stored.record.members {
                 member.connected =
@@ -335,6 +341,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 .filter_map(|stored| {
                     let member =
                         stored.record.members.iter().find(|member| member.user_id == user_id)?;
+                    let player = stored.record.persisted.state.player(member.player_id).ok()?;
                     Some(GameSummary {
                         id: stored.record.id.clone(),
                         code: stored.record.code.clone(),
@@ -344,15 +351,7 @@ impl MultiplayerBackend for InMemoryBackend {
                         turn: stored.record.persisted.state.turn,
                         player_id: member.player_id,
                         display_name: member.display_name.clone(),
-                        player_color: stored
-                            .record
-                            .persisted
-                            .state
-                            .player(member.player_id)
-                            .map_or_else(
-                                |_| PlayerColor::for_player(member.player_id),
-                                |player| player.color(),
-                            ),
+                        player_color: player.color(),
                         player_count: stored.record.members.len(),
                         max_players: stored.record.max_players,
                     })

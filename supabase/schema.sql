@@ -1,5 +1,4 @@
 -- Sole database source of truth: complete destructive reset and current install.
--- Edit this file directly; Stellarion does not use SQL migrations.
 -- Running this file removes every existing Stellarion game, player, turn,
 -- event, policy, and RPC before recreating the current database contract.
 -- Run the entire file in the Supabase SQL Editor as postgres to install or reset.
@@ -7,13 +6,12 @@
 -- This file is the entire application backend setup. The game calls these SQL
 -- RPCs directly through PostgREST using its authenticated user token. There is
 -- no Edge Function, Docker, service-role client key, or separate server deployment.
--- Rebuild/restart the client after changing its RPC contract; SQL cannot update
--- an already running native executable or an older cached browser build.
+-- Rebuild/restart the client after changing its RPC contract so every client
+-- uses the exact database contract defined here.
 -- The shared Rust model on clients generates maps and resolves turns. PostgreSQL
 -- validates payload structure, membership, lifecycle, revisions, and submission
 -- completeness, but does not independently execute the Rust simulation. This is
 -- a client-simulated game, not an anti-cheat server for modified clients.
--- Existing games are intentionally discarded; no compatibility or backfill is needed.
 -- For local verification: use Node.js 24 and Rust, then run just verify-sql.
 -- Test tooling is installed under ignored target/sql-verification/.
 -- This generates current Rust test snapshots and executes disposable PostgreSQL
@@ -44,8 +42,8 @@ begin
 end;
 $$;
 
--- Jobs live outside public, so remove obsolete application jobs on every reset.
--- Recreate only the current jobs below, without affecting unrelated schedules.
+-- Jobs live outside public, so replace every Stellarion job on each reset while
+-- preserving unrelated schedules.
 delete from cron.job_run_details
  where jobid in (
      select jobid from cron.job
@@ -65,21 +63,19 @@ create table public.stellarion_games (
     created_by uuid not null references auth.users(id) on delete restrict,
     max_players smallint not null,
     status text not null,
-    persisted_schema_version integer not null,
     state jsonb not null,
     revision bigint not null default 0,
     current_turn bigint not null,
     event_sequence bigint not null default 0,
     created_at timestamptz not null default clock_timestamp(),
     -- Snapshot save time is intentionally separate from updated_at: presence and
-    -- durable notification traffic must not make an old save look recent.
+    -- durable notification traffic must not make a stale save look recent.
     saved_at timestamptz not null default clock_timestamp(),
     updated_at timestamptz not null default clock_timestamp(),
     finished_at timestamptz,
     constraint stellarion_games_code_format check (code ~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$'),
     constraint stellarion_games_player_count check (max_players between 2 and 4),
     constraint stellarion_games_status check (status in ('lobby', 'active', 'finished')),
-    constraint stellarion_games_schema_version check (persisted_schema_version > 0),
     constraint stellarion_games_revision check (revision >= 0),
     constraint stellarion_games_turn check (current_turn >= 1),
     constraint stellarion_games_event_sequence check (event_sequence >= 0),
@@ -244,7 +240,7 @@ create policy stellarion_events_member_select
     to authenticated
     using (public.stellarion_is_game_member(game_id));
 
--- Validates the database-visible invariants of a versioned Rust snapshot.
+-- Validates the database-visible invariants of the Rust snapshot.
 -- Detailed gameplay validation remains in the deterministic Rust core.
 create function public.stellarion_validate_persisted(
     p_persisted jsonb,
@@ -257,13 +253,13 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 declare
-    v_schema integer;
     v_player_count integer;
     v_turn bigint;
     v_status text;
     v_players jsonb;
     v_total integer;
     v_unique integer;
+    v_unique_colors integer;
     v_min_id bigint;
     v_max_id bigint;
     v_planets_per_player integer;
@@ -279,11 +275,16 @@ begin
     if p_persisted is null
        or jsonb_typeof(p_persisted) is distinct from 'object'
        or pg_column_size(p_persisted) > 67108864
-       or jsonb_typeof(p_persisted -> 'state') is distinct from 'object' then
+       or jsonb_typeof(p_persisted -> 'state') is distinct from 'object'
+       or not (p_persisted ?& array['state'])
+       or p_persisted - array['state'] <> '{}'::jsonb
+       or not ((p_persisted -> 'state') ?&
+           array['players', 'map', 'missions', 'turn', 'rng', 'rules', 'status'])
+       or (p_persisted -> 'state') -
+           array['players', 'map', 'missions', 'turn', 'rng', 'rules', 'status'] <> '{}'::jsonb then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:persisted object';
     end if;
 
-    v_schema := (p_persisted ->> 'schema_version')::integer;
     v_player_count := (p_persisted #>> '{state,rules,player_count}')::integer;
     v_turn := (p_persisted #>> '{state,turn}')::bigint;
     v_status := p_persisted #>> '{state,status}';
@@ -294,10 +295,6 @@ begin
     v_planets := p_persisted #> '{state,map,planets}';
     v_missions := p_persisted #> '{state,missions}';
 
-    -- Version 3 also persists each player's first world acquisition order for the HUD.
-    if v_schema is distinct from 3 then
-        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:schema_version';
-    end if;
     if p_max_players is null
        or p_max_players not between 2 and 4
        or v_player_count is distinct from p_max_players then
@@ -314,9 +311,14 @@ begin
        or v_status not in ('lobby', 'active', 'finished') then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:status';
     end if;
-    if coalesce(p_persisted #> '{state,rules,practice_mode}', 'false'::jsonb) <> 'false'::jsonb
+    if jsonb_typeof(p_persisted #> '{state,rules}') is distinct from 'object'
+       or not ((p_persisted #> '{state,rules}') ?&
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'player_count', 'practice_mode'])
+       or (p_persisted #> '{state,rules}') -
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'player_count', 'practice_mode'] <> '{}'::jsonb
+       or p_persisted #> '{state,rules,practice_mode}' is distinct from 'false'::jsonb
        or v_planets_per_player is null or v_planets_per_player not between 5 and 20
-       or v_colonizable_percent is null or v_colonizable_percent not between 1 and 100
+       or v_colonizable_percent is null or v_colonizable_percent not in (25, 35, 50)
        or v_moons_percent is null or v_moons_percent not between 0 and 100 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:rules';
     end if;
@@ -338,6 +340,27 @@ begin
         from jsonb_array_elements(v_players) as entries(entry)
         where case
             when jsonb_typeof(entry) is distinct from 'object' then true
+            when not (entry ?& array[
+                'id', 'home_planet', 'world_acquisition_order', 'resources',
+                'reports', 'spectator', 'color'
+            ]) then true
+            when entry - array[
+                'id', 'home_planet', 'world_acquisition_order', 'resources',
+                'reports', 'spectator', 'color'
+            ] <> '{}'::jsonb then true
+            when jsonb_typeof(entry -> 'spectator') is distinct from 'boolean' then true
+            when jsonb_typeof(entry -> 'color') is distinct from 'number' then true
+            when entry ->> 'color' !~ '^[0-5]$' then true
+            else false
+        end
+    ) then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:players';
+    end if;
+
+    if exists (
+        select 1
+        from jsonb_array_elements(v_players) as entries(entry)
+        where case
             when jsonb_typeof(entry -> 'reports') is distinct from 'array' then true
             else jsonb_array_length(entry -> 'reports') > 512
         end
@@ -347,9 +370,10 @@ begin
 
     select count(*),
            count(distinct (entry ->> 'id')::bigint),
+           count(distinct (entry ->> 'color')::integer),
            min((entry ->> 'id')::bigint),
            max((entry ->> 'id')::bigint)
-      into v_total, v_unique, v_min_id, v_max_id
+      into v_total, v_unique, v_unique_colors, v_min_id, v_max_id
       from jsonb_array_elements(v_players) as entries(entry);
 
     if v_total <> p_max_players
@@ -357,6 +381,9 @@ begin
        or v_min_id <> 1
        or v_max_id <> p_max_players then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:player_ids';
+    end if;
+    if v_unique_colors <> p_max_players then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:color_unavailable';
     end if;
 
     select count(*),
@@ -562,7 +589,6 @@ begin
             created_by,
             max_players,
             status,
-            persisted_schema_version,
             state,
             current_turn
         ) values (
@@ -570,7 +596,6 @@ begin
             v_user_id,
             p_max_players,
             'lobby',
-            (p_persisted ->> 'schema_version')::integer,
             p_persisted,
             (p_persisted #>> '{state,turn}')::bigint
         )
@@ -771,8 +796,7 @@ $$;
 -- Lobbies exist only to coordinate a live host and guests. They are never saved
 -- games: only active/finished matches appear in Resume Game. A host leaving an
 -- unstarted lobby deletes its entire record through stellarion_set_connected.
--- Include the caller's game-specific name and saved empire color. Snapshots made
--- before color selection use the same player-slot palette fallback as the client.
+-- Include the caller's game-specific name and selected empire color.
 create function public.stellarion_list_games()
 returns jsonb
 language sql
@@ -795,11 +819,11 @@ as $$
                         'turn', g.current_turn,
                         'player_id', mine.player_id,
                         'display_name', mine.display_name,
-                        'player_color', coalesce((
+                        'player_color', (
                             select (player ->> 'color')::integer
                             from jsonb_array_elements(g.state -> 'state' -> 'players') as player
                             where (player ->> 'id')::bigint = mine.player_id
-                        ), (mine.player_id - 1) % 6),
+                        ),
                         'player_count', (
                             select count(*)
                             from public.stellarion_game_players as all_players
@@ -909,7 +933,6 @@ begin
        set state = p_persisted,
            max_players = v_player_count,
            status = 'active',
-           persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            revision = revision + 1,
            saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
@@ -1004,7 +1027,6 @@ begin
 
     update public.stellarion_games
        set state = p_persisted,
-           persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            revision = revision + 1,
            saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
@@ -1039,6 +1061,8 @@ begin
     end if;
     if p_submission is null or jsonb_typeof(p_submission) is distinct from 'object'
        or pg_column_size(p_submission) > 1048576
+       or not (p_submission ?& array['player_id', 'turn', 'generation', 'commands'])
+       or p_submission - array['player_id', 'turn', 'generation', 'commands'] <> '{}'::jsonb
        or jsonb_typeof(p_submission -> 'commands') is distinct from 'array'
        or (case
            when jsonb_typeof(p_submission -> 'commands') = 'array'
@@ -1050,13 +1074,13 @@ begin
     begin
         v_player_id := (p_submission ->> 'player_id')::bigint;
         v_turn := (p_submission ->> 'turn')::bigint;
-        v_generation := coalesce((p_submission ->> 'generation')::bigint, 0);
+        v_generation := (p_submission ->> 'generation')::bigint;
     exception
         when invalid_text_representation or numeric_value_out_of_range then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission_ids';
     end;
     if v_player_id is null or v_player_id not between 1 and 4
-       or v_turn is null or v_turn < 1 or v_generation < 0 then
+       or v_turn is null or v_turn < 1 or v_generation is null or v_generation < 0 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission_ids';
     end if;
 
@@ -1079,7 +1103,7 @@ begin
         select 1
         from jsonb_array_elements(v_game.state #> '{state,players}') as players(player)
         where (player ->> 'id')::bigint = v_player_id
-          and not coalesce((player ->> 'spectator')::boolean, false)
+          and (player ->> 'spectator')::boolean = false
     ) then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
@@ -1162,7 +1186,7 @@ begin
     if not found or not exists (
         select 1 from jsonb_array_elements(v_game.state #> '{state,players}') as players(player)
         where (player ->> 'id')::bigint = v_player_id
-          and not coalesce((player ->> 'spectator')::boolean, false)
+          and (player ->> 'spectator')::boolean = false
     ) then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
@@ -1193,7 +1217,7 @@ begin
     end if;
     if not exists (
         select 1 from jsonb_array_elements(v_game.state #> '{state,players}') as players(player)
-        where not coalesce((player ->> 'spectator')::boolean, false)
+        where (player ->> 'spectator')::boolean = false
           and not exists (
               select 1 from public.stellarion_turn_submissions s
               where s.game_id = p_game_id and s.turn = p_turn
@@ -1322,7 +1346,7 @@ begin
     if exists (
         select 1
         from jsonb_array_elements(v_game.state #> '{state,players}') as players(player)
-        where not coalesce((player ->> 'spectator')::boolean, false)
+        where (player ->> 'spectator')::boolean = false
           and not exists (
               select 1
               from public.stellarion_turn_submissions as submission
@@ -1338,7 +1362,6 @@ begin
     update public.stellarion_games
        set state = p_persisted,
            status = v_next_status,
-           persisted_schema_version = (p_persisted ->> 'schema_version')::integer,
            current_turn = p_resolved_turn + 1,
            revision = revision + 1,
            saved_at = clock_timestamp(),

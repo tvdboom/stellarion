@@ -12,6 +12,7 @@ pub mod basis_texture;
 mod camera;
 pub mod combat;
 pub mod constants;
+pub mod energy;
 pub mod identity;
 #[cfg(feature = "app")]
 mod loading;

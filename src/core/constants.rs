@@ -57,28 +57,40 @@ pub const LERP_FACTOR: f32 = 0.05;
 
 /// GAME
 pub const SHIPYARD_PRODUCTION_FACTOR: usize = 5;
+/// Ship-production capacity granted by a stationed Space Dock.
+pub const SPACE_DOCK_FLEET_PRODUCTION: usize = 5;
+/// Jump-gate transport capacity granted per completed Jump Gate level.
+pub const JUMP_GATE_CAPACITY_PER_LEVEL: usize = 5;
+/// Energy supplied by each Reactor level while retaining its fuel-reduction effect.
+pub const REACTOR_ENERGY_PER_LEVEL: usize = 3;
+/// Energy supplied by each lunar Tidal Generator level.
+pub const TIDAL_GENERATOR_ENERGY_PER_LEVEL: usize = 5;
+/// Fully powered Planetary Shield strength granted per building level.
+pub const PS_SHIELD_PER_LEVEL: usize = 300;
 /// Defense-production capacity granted per factory level.
 pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
+/// Fleet- and defense-production capacity granted per Robotics level.
+pub const ROBOTICS_PRODUCTION_FACTOR: usize = 2;
 /// Missile capacity granted per silo level.
 pub const SILO_CAPACITY_FACTOR: usize = 10;
 /// Probe capacity granted per shipyard production level.
 pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
-/// Planetary-shield strength granted per building level.
-pub const PS_SHIELD_PER_LEVEL: usize = 250;
-/// Fraction of owned structures removable per demolition-nexus level.
-pub const NEXUS_FACTOR: f32 = 0.1;
+/// Smallest probe group capable of performing a dedicated Spy mission.
+pub const MIN_SPY_PROBES: usize = 5;
+/// Fleet-fuel reduction granted by each Reactor level.
+pub const REACTOR_FUEL_REDUCTION_FACTOR: f32 = 0.1;
 /// Sensor-phalanx range granted per building level, measured in AU (planet-size units).
 pub const PHALANX_DISTANCE: f32 = 1.0;
 /// Orbital-radar range granted per building level, measured in AU (planet-size units).
 pub const RADAR_DISTANCE: f32 = 1.2;
-/// Hull points repaired by one crawler after each round.
-pub const CRAWLER_HEALING_PER_ROUND: usize = 50;
+/// Hull points repaired by one Repair Truck after each round.
+pub const REPAIR_TRUCK_HEALING_PER_ROUND: usize = 50;
 
 /// Combat
 pub const SETUP_TIME: u64 = 2;
 /// Rendered combat-unit sprite size in pixels.
 pub const UNIT_SIZE: f32 = 120.;
-/// Rendered width of the planetary-shield arc.
+/// Rendered width of the planetary-shield combat dome in unit-card widths.
 pub const PS_WIDTH: f32 = 11.;
 /// Render layer of the combat backdrop.
 pub const COMBAT_BACKGROUND_Z: f32 = 10.;
@@ -97,6 +109,8 @@ pub const PLANET_Z: f32 = 2.;
 pub const MISSION_Z: f32 = PLANET_Z + 0.4;
 /// Render layer of strategic map explosions.
 pub const EXPLOSION_Z: f32 = 4.;
+/// Rendered diameter of the large solar landmark used as the solar-band origin.
+pub const SOLAR_STAR_SIZE: f32 = 1_440.0;
 
 /// Unique names sampled for generated planets and moons.
 pub const PLANET_NAMES: [&str; 162] = [

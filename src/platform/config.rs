@@ -14,7 +14,7 @@ pub const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_MfB5egfDId8rzjBMieLCi
 pub struct SupabaseConfig {
     /// HTTPS base URL of the Supabase project.
     pub url: String,
-    /// Publishable or legacy anonymous public key; never a secret/service-role key.
+    /// Publishable or anonymous public key; never a secret/service-role key.
     pub publishable_key: String,
 }
 
@@ -37,7 +37,7 @@ impl SupabaseConfig {
         Self::new(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
     }
 
-    /// Validates URL shape and rejects modern or legacy server-only credentials.
+    /// Validates URL shape and rejects server-only credentials.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.url.is_empty() || self.publishable_key.is_empty() {
             return Err(ConfigError::Invalid(
@@ -90,7 +90,7 @@ impl SupabaseConfig {
     }
 }
 
-/// Detects both modern secret prefixes and the role claim in legacy JWT service keys.
+/// Detects secret prefixes and the service-role claim in JWT keys.
 fn is_server_only_key(key: &str) -> bool {
     if key.to_ascii_lowercase().starts_with("sb_secret_") {
         return true;

@@ -19,22 +19,26 @@ use crate::core::combat::systems::{
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
 };
-use crate::core::map::battle::BattleAftermathPlugin;
+use crate::core::map::battle::{BattleAftermathPlugin, BattleAftermathSet};
 use crate::core::map::colonization::ColonizationPlugin;
 use crate::core::map::details::MapDetailsPlugin;
+use crate::core::map::detection::MissionDetectionPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
-    animate_map_ambience, animate_space_scenery, draw_map, hide_planet_details,
-    position_home_crown, run_map_animations, update_ambient_comets, update_end_turn,
-    update_planet_defenses, update_planet_info, update_voronoi, AmbientCometSpawner,
+    animate_asteroid_belts, animate_map_ambience, animate_range_markers, animate_space_scenery,
+    draw_map, hide_planet_details, position_home_crown, run_map_animations, update_ambient_comets,
+    update_end_turn, update_planet_defenses, update_planet_info, update_voronoi,
+    AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
     draw_game_overlay, draw_menu, exit_end_game, fit_menu_background, setup_menu,
 };
 use crate::core::messages::MessageMsg;
+use crate::core::mission_systems::animate_mission_recalls;
 use crate::core::missions::{
-    send_mission, update_mission_route_arrow, update_missions, SendMissionMsg,
+    recall_mission, send_mission, update_mission_route_arrow, update_missions,
+    MissionRecallAnimationMsg, RecallMissionMsg, SendMissionMsg,
 };
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
@@ -76,9 +80,12 @@ impl Plugin for GamePlugin {
             .add_message::<StopAudioMsg>()
             .add_message::<MuteAudioMsg>()
             .add_message::<ChangeAudioMsg>()
+            .add_message::<VolumeFeedbackMsg>()
             .add_message::<MessageMsg>()
             .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
+            .add_message::<RecallMissionMsg>()
+            .add_message::<MissionRecallAnimationMsg>()
             .add_message::<SpawnShotMsg>()
             // Resources
             .init_resource::<Settings>()
@@ -89,6 +96,7 @@ impl Plugin for GamePlugin {
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
+            .add_plugins(MissionDetectionPlugin)
             .add_plugins(MapDetailsPlugin)
             // Sets
             .configure_sets(First, InGameSet.run_if(in_state(AppState::Game)))
@@ -224,6 +232,8 @@ impl Plugin for GamePlugin {
                     (
                         update_end_turn,
                         run_map_animations,
+                        animate_asteroid_belts,
+                        animate_range_markers,
                         animate_map_ambience,
                         animate_space_scenery,
                         update_voronoi,
@@ -235,7 +245,12 @@ impl Plugin for GamePlugin {
                             .before(bevy_tweening::AnimationSystem::AnimationUpdate),
                         update_ambient_comets,
                         send_mission,
-                        update_missions,
+                        recall_mission,
+                        update_missions
+                            .after(BattleAftermathSet)
+                            .after(send_mission)
+                            .after(recall_mission),
+                        animate_mission_recalls.after(update_missions).after(recall_mission),
                         update_mission_route_arrow,
                     )
                         .in_set(InPlayingGameSet),

@@ -43,6 +43,8 @@ The game presents three resource types:
 - **Crystal:** Crystal is a more advanced resource, essential for high-level buildings and ships.
 - **Deuterium:** Deuterium is the least frequent resource in the galaxy, primarily used for 
   high-level ships and as fuel.
+- **Energy**: Energy is not a stockpiled resource, but a per-turn capacity. It powers continuously
+  operating infrastructure. An energy deficit reduces resource income and Planetary Shield strength.
 
 Planets produce a varying amount of each of these resources. Be aware of your home planet's 
 resource production! It should influence the type of strategy you might want to consider for the
@@ -64,7 +66,10 @@ gives full intelligence on the attacking units to the planet's owner. Also when 
 If losing combat on a controlled planet, no intelligence is gained.
 
 There is a limit to the amount of planets that can be owned by a player. Spots are only freed 
-if a planet is abandoned, conquered or destroyed.
+if a planet is abandoned, conquered or destroyed. A Senate on the home planet raises this limit
+by one planet per level. Galaxy size permits one Senate level per 20 planets, rounded up to a
+maximum of three; the 25%, 35%, and 50% ownership settings further cap it at three, two, and one
+levels respectively.
 
 Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets, 
 players can build on a controlled moon. Moons only have a limited number of fields on which to 
@@ -80,13 +85,17 @@ defenses.
 - **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
   control, but not ownership. The previous owner loses both ownership and control. Surviving
   buildings remain.
-- **Spy:** Send only Probes. Unless `combat probes` is enabled, they leave after the first combat
-  round. More returning Probes reveal better intelligence. Spy missions cannot be detected by a
-  Sensor Phalanx and do not reveal their origin.
+- **Spy:** Send at least five Probes. Their range begins at one sixth of the galaxy from the origin;
+  each completed Command Relay level adds another sixth, with level five reaching every world.
+  Unless `combat probes` is enabled, Probes leave after the first combat round. More returning
+  Probes reveal better intelligence. Resource buildings are visible at the first intelligence
+  tier; the Shipyard, Factory, and Missile Silo use tier two; the Planetary Shield and Reactor use
+  tier three; Robotics uses tier four; and the Senate is only visible at tier five. Spy missions
+  cannot be detected by a Sensor Phalanx and do not reveal their origin.
 - **Missile Strike:** Launch only Interplanetary Missiles against a planet, not a moon. They bypass
   ships and the Planetary Shield to hit defenses directly. Surviving missiles are consumed. A
-  launched strike still hits if the destination later becomes friendly, reveals no enemy-unit
-  intelligence, cannot be detected by a Sensor Phalanx, and does not reveal its origin.
+  strike that is not recalled still hits if the destination later becomes friendly, reveals no
+  enemy-unit intelligence, cannot be detected by a Sensor Phalanx, and does not reveal its origin.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
   enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet; the
   chance falls in later rounds. The fleet returns whether destruction succeeds. A destroyed
@@ -95,17 +104,35 @@ defenses.
 
 ### Units
 
-You can build three types of units on an owned planet:
+You can build four types of units on an owned planet:
 
-- **Buildings:** Buildings are used for varied reasons. Core buildings like the mines, Shipyard
-  or Factory are essential to expand your empire. Advanced buildings like the Jump gate or 
-  Sensor Phalanx should be built more strategically.
+- **Buildings:** Buildings are used for varied reasons. Core buildings like the mines, Shipyard,
+  Factory, Reactor, Robotics, and Senate are essential to expand your empire. Each Robotics level
+  adds two local production capacity to both the Shipyard and Factory, without unlocking units.
+- **Orbitals:** Solar Satellites, Sensor Phalanxes, Command Relays, Jump Gates, and Space Docks are
+  constructed without Shipyard capacity. One level of each kind may be queued per turn, but
+  different kinds may be queued together. Command Relays extend the range of Spy missions launched
+  from their planet, while each Jump Gate level supplies its own 5 transport capacity. Orbitals
+  cannot be constructed around moons.
 - **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
   them better or worse suited for certain strategies. Some ships are also stronger or weaker against
   other specific ship types, so try to build your fleet according to your enemy's composition.
 - **Defenses:** Defenses are stationary combat units. They have better price-to-stats ratios than
   ships, but are fixed to the planet. Be careful with stacking defenses! War Suns are capable of
-  destroying a planet with any defense army. Missiles are also included with the defense units.
+  destroying a planet with any defense army. Repair Trucks restore damaged defense turrets after
+  each round. Crawlers do not attack; after a defender victory, each survivor recovers 1% of the
+  resource cost of destroyed ground defenses, up to 50%. Ships have 80% Rapid Fire against them.
+  Missiles are also included with the defense units.
+
+### Energy
+
+Energy is per-turn capacity, not a stockpiled resource. Reactors supply 3 energy per level, while
+lunar Tidal Generators supply 5 and Solar Satellite output depends on the solar zone.
+Infrastructure that operates continuously creates energy demand; most construction, storage,
+transport, and administrative buildings do not draw permanent power. Surplus energy is discarded
+and gives no bonus. A shortage scales resource income down with a 25% minimum and reduces Planetary
+Shield power with a gentler curve; a fully powered Shield supplies 300 strength per level. Robotics
+consumes 1 energy per level, while the Senate consumes 2.
 
 
 ### Fleet travel
@@ -113,6 +140,9 @@ You can build three types of units on an owned planet:
 Ships and missiles accelerate throughout each journey. For movement rating `s`, distance covered
 after `t` turns is `s * t * (t + 2) / 3` AU. The first turn covers the same distance as before;
 each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating.
+Clicking a fleet on the map opens its active-mission panel. Any owned mission that is not already
+returning can be recalled for no additional cost; it reverses from its current position and begins
+a new journey back to its original planet.
 
 
 ### Combat

@@ -16,6 +16,8 @@ use crate::core::units::{Combat, Description, Price, Unit};
 pub enum Defense {
     /// The crawler defense or missile.
     Crawler,
+    /// The repair-truck support unit.
+    RepairTruck,
     /// The rocket launcher defense or missile.
     RocketLauncher,
     /// The light laser defense or missile.
@@ -41,6 +43,7 @@ impl Defense {
     pub fn production(&self) -> usize {
         match self {
             Defense::Crawler => 1,
+            Defense::RepairTruck => 1,
             Defense::RocketLauncher => 1,
             Defense::LightLaser => 2,
             Defense::HeavyLaser => 2,
@@ -64,10 +67,15 @@ impl Description for Defense {
     fn description(&self) -> &str {
         match self {
             Defense::Crawler => {
-                "Crawlers are robots that perform repairing operations on damaged defenses. \
-                They have no damage, and are targeted during combat as any other unit. After every \
-                combat round, each surviving crawler repairs 50 hull points from a random defense \
-                turret."
+                "Crawlers are cheap battlefield salvage robots. They take part in combat but do \
+                not attack or repair. If the defender wins, every surviving Crawler recovers 1% \
+                of the metal, crystal, and deuterium cost of destroyed ground defenses, up to \
+                50%."
+            },
+            Defense::RepairTruck => {
+                "Repair Trucks deploy maintenance drones during combat. They deal no damage and \
+                remain vulnerable to enemy fire. After every combat round, each surviving Repair \
+                Truck restores up to 50 hull points to a random damaged defense turret."
             },
             Defense::RocketLauncher => {
                 "The Rocket Launcher is the weakest defense you can build. They are used as \
@@ -103,10 +111,14 @@ impl Description for Defense {
             },
             Defense::SpaceDock => {
                 "The Space Dock is a colossal orbital-support facility that hovers close to a \
-                planet's surface. Its the most powerful of the defenses, and the only unit with \
+                planet's surface. The moment construction finishes, its immense silhouette \
+                appears orbiting the planet on every player's map—even without scan \
+                intelligence—and its color reveals the owner. Its orbital assembly lines add 5 \
+                fleet-production capacity to the planet, while the Shipyard still determines \
+                which ships can be built. It is the most powerful defense and the only unit with \
                 Rapid Fire against the War Sun. Although it can't move, a Space Dock counts as a \
                 ship during combat (preventing War Suns from firing their Death Rays). Only one \
-                can be build per planet."
+                can be built per planet."
             }
             Defense::AntiballisticMissile => {
                 "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \
@@ -133,7 +145,8 @@ impl Price for Defense {
     /// Returns the resource cost of producing this unit.
     fn price(&self) -> Resources {
         match self {
-            Defense::Crawler => Resources::new(30, 0, 0),
+            Defense::Crawler => Resources::new(20, 0, 0),
+            Defense::RepairTruck => Resources::new(50, 20, 0),
             Defense::RocketLauncher => Resources::new(30, 0, 0),
             Defense::LightLaser => Resources::new(30, 10, 0),
             Defense::HeavyLaser => Resources::new(50, 10, 0),
@@ -152,6 +165,7 @@ impl Combat for Defense {
     fn hull(&self) -> usize {
         match self {
             Defense::Crawler => 50,
+            Defense::RepairTruck => 100,
             Defense::RocketLauncher => 80,
             Defense::LightLaser => 100,
             Defense::HeavyLaser => 180,
@@ -168,6 +182,7 @@ impl Combat for Defense {
     fn shield(&self) -> usize {
         match self {
             Defense::Crawler => 0,
+            Defense::RepairTruck => 0,
             Defense::RocketLauncher => 2,
             Defense::LightLaser => 6,
             Defense::HeavyLaser => 10,
@@ -184,6 +199,7 @@ impl Combat for Defense {
     fn damage(&self) -> usize {
         match self {
             Defense::Crawler => 0,
+            Defense::RepairTruck => 0,
             Defense::RocketLauncher => 8,
             Defense::LightLaser => 14,
             Defense::HeavyLaser => 20,

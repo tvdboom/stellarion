@@ -75,6 +75,8 @@ pub enum CombatState {
     Bomb,
     /// Applies the death-ray effect.
     DeathRay,
+    /// Animates surviving Crawlers recovering destroyed ground-defense resources.
+    Salvage,
     /// Cleans up the current combat.
     EndCombat,
 }

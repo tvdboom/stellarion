@@ -371,6 +371,18 @@ fn gameplay_asset_failure_replaces_spinner_with_escape_action() {
 
     assert!(visible_menu_label(&shapes, "Starting game…").is_none());
     assert!(visible_menu_label(&shapes, "Game assets could not be loaded.").is_some());
+    let failure_title = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if text.galley.job.text == "Game assets could not be loaded." =>
+            {
+                Some(&text.galley)
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(failure_title.rows.len(), 1);
     let back = visible_menu_label(&shapes, "Back to Menu").unwrap();
     click_menu_app(&mut app, &context, viewport, AppState::LoadingGame, back.center());
     let requests: Vec<_> =
@@ -966,7 +978,7 @@ fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
         let winner = game.persisted.state.winner().unwrap();
         let color = PLAYER_COLOR_PALETTE[4];
         game.persisted.state.players.iter_mut().find(|player| player.id == winner).unwrap().color =
-            Some(color);
+            color;
         let winner_name = session.player_name(winner).unwrap().to_string();
 
         let mut app = App::new();

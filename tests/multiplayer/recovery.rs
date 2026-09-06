@@ -12,10 +12,14 @@ fn recovery_codes_are_strong_and_parseable() {
 }
 
 #[test]
-/// Previously issued ten-block recovery codes remain usable after shortening new codes.
-fn accepts_legacy_recovery_codes() {
-    let legacy = group(&"0".repeat(LEGACY_RECOVERY_SYMBOLS), 4);
-    assert!(RecoveryCode::parse(legacy).is_ok());
+/// Only the current four-block recovery-code shape is accepted.
+fn rejects_non_current_recovery_code_lengths() {
+    for length in [RECOVERY_SYMBOLS - 1, RECOVERY_SYMBOLS + 1, 39] {
+        assert!(matches!(
+            RecoveryCode::parse(group(&"0".repeat(length), 4)),
+            Err(RecoveryCodeError::Malformed)
+        ));
+    }
 }
 
 #[test]

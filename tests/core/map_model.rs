@@ -2,13 +2,40 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
+use crate::core::map::planet::PlanetKind;
+
+#[test]
+fn empty_planet_colonization_starts_with_a_balanced_resource_grid() {
+    use crate::core::energy::EnergyGrid;
+    use crate::core::units::{buildings::Building, Army, Unit};
+
+    let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
+    planet.colonize(7);
+
+    assert_eq!(
+        planet.army,
+        Army::from([
+            (Unit::Building(Building::MetalMine), 1),
+            (Unit::Building(Building::CrystalMine), 1),
+            (Unit::Building(Building::DeuteriumSynthesizer), 1),
+            (Unit::Building(Building::Reactor), 1),
+        ])
+    );
+    let grid = planet
+        .army
+        .iter()
+        .fold(EnergyGrid::default(), |grid, (unit, count)| grid.with_unit(*unit, None, *count));
+    assert_eq!(grid.supply, 3);
+    assert_eq!(grid.demand, 3);
+    assert_eq!(grid.balance(), 0);
+}
 
 #[test]
 fn lunar_first_completions_survive_saves_and_upgrades() {
     use crate::core::units::{buildings::Building, Unit};
     let mut moon = Planet::new(1, "Moon".into(), Vec2::ZERO, true, 1.0);
     moon.buy = vec![Unit::Building(Building::LunarBase), Unit::Building(Building::Shipyard)];
-    assert_eq!(moon.lunar_build_order, [None; 4]);
+    assert_eq!(moon.surface_build_order, [None; 4]);
     moon.produce();
     moon.buy = vec![Unit::Building(Building::LunarBase), Unit::Building(Building::OrbitalRadar)];
     moon.produce();
@@ -17,7 +44,7 @@ fn lunar_first_completions_survive_saves_and_upgrades() {
     restored.buy = vec![Unit::Building(Building::Laboratory)];
     restored.produce();
     assert_eq!(
-        restored.lunar_build_order,
+        restored.surface_build_order,
         [
             Some(Building::LunarBase),
             Some(Building::Shipyard),
@@ -26,7 +53,44 @@ fn lunar_first_completions_survive_saves_and_upgrades() {
         ]
     );
     restored.destroy();
-    assert_eq!(restored.lunar_build_order, [None; 4]);
+    assert_eq!(restored.surface_build_order, [None; 4]);
+}
+
+#[test]
+fn planetary_surface_slots_follow_first_completion_and_never_repack() {
+    use crate::core::units::{buildings::Building, Unit};
+    use Building::*;
+
+    let mut planet = Planet::new(1, "Planet".into(), Vec2::ZERO, false, 1.0);
+    planet.buy = vec![Unit::Building(Robotics)];
+    planet.produce();
+    planet.buy = vec![
+        Unit::Building(MetalMine),
+        Unit::Building(CrystalMine),
+        Unit::Building(Reactor),
+        Unit::Building(Factory),
+        Unit::Building(Shipyard),
+        Unit::Building(MissileSilo),
+        Unit::Building(Senate),
+    ];
+    planet.produce();
+    assert_eq!(
+        planet.surface_build_order,
+        [Some(Robotics), Some(MetalMine), Some(Shipyard), Some(MissileSilo)]
+    );
+
+    planet.army.remove(&Unit::Building(Robotics));
+    let encoded = serde_json::to_string(&planet).unwrap();
+    let mut restored: Planet = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(restored.surface_build_order, planet.surface_build_order);
+
+    let previous_field_name = encoded.replace("surface_build_order", "lunar_build_order");
+    let previous_save: Planet = serde_json::from_str(&previous_field_name).unwrap();
+    assert_eq!(previous_save.surface_build_order, planet.surface_build_order);
+
+    restored.buy = vec![Unit::Building(Robotics)];
+    restored.produce();
+    assert_eq!(restored.surface_build_order, planet.surface_build_order);
 }
 
 #[test]
@@ -113,6 +177,72 @@ fn map_generation_is_reproducible_and_seeded() {
     };
     assert_eq!(make_map(42), make_map(42));
     assert_ne!(make_map(42), make_map(43));
+}
+
+#[test]
+fn solar_bands_have_stable_quarters_and_matching_planet_kinds() {
+    let mut rng = ChaCha8Rng::seed_from_u64(91);
+    let map = Map::new_with_rng(20, 30, &mut rng);
+    let mut counts = [0; 3];
+
+    for world in &map.planets {
+        let band = map.solar_band(world.id);
+        if world.is_moon() {
+            assert_eq!(band, None);
+            continue;
+        }
+        match band.unwrap() {
+            SolarBand::Inner => {
+                counts[0] += 1;
+                assert!(matches!(world.kind, PlanetKind::Dry | PlanetKind::Metallic));
+            },
+            SolarBand::Temperate => counts[1] += 1,
+            SolarBand::Outer => {
+                counts[2] += 1;
+                assert!(matches!(
+                    world.kind,
+                    PlanetKind::Gas | PlanetKind::Ice | PlanetKind::Water
+                ));
+            },
+        }
+    }
+
+    assert_eq!(counts, [5, 10, 5]);
+}
+
+#[test]
+fn lunar_temperatures_follow_their_distance_from_the_star() {
+    let mut rng = ChaCha8Rng::seed_from_u64(91);
+    let map = Map::new_with_rng(80, 100, &mut rng);
+    let positions = map.planets.iter().map(|world| world.position).collect::<Vec<_>>();
+    let moons = map.planets.iter().map(Planet::is_moon).collect::<Vec<_>>();
+    let bands = solar_bands(map.rect, &positions, &moons);
+    let mut seen = [false; 3];
+
+    for moon in map.moons() {
+        match bands[moon.id].unwrap() {
+            SolarBand::Inner => {
+                seen[0] = true;
+                assert!((-100..0).contains(&moon.temperature.0));
+                assert!((100..=240).contains(&moon.temperature.1));
+                assert_eq!(moon.temperature_emoji(), "🔥");
+            },
+            SolarBand::Temperate => {
+                seen[1] = true;
+                assert!((-180..-100).contains(&moon.temperature.0));
+                assert!((40..=130).contains(&moon.temperature.1));
+                assert_eq!(moon.temperature_emoji(), "☀");
+            },
+            SolarBand::Outer => {
+                seen[2] = true;
+                assert!((-260..-180).contains(&moon.temperature.0));
+                assert!((-120..=-20).contains(&moon.temperature.1));
+                assert_eq!(moon.temperature_emoji(), "❄");
+            },
+        }
+    }
+
+    assert_eq!(seen, [true; 3]);
 }
 
 /// Moons can occupy space that would be rejected for a pair of full-sized planets.

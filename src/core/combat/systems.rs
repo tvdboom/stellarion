@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
+use bevy::asset::RenderAssetUsages;
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_tweening::lens::{TransformPositionLens, TransformScaleLens};
 use bevy_tweening::{
     AnimCompletedEvent, PlaybackState, RepeatCount, RepeatStrategy, Tween, TweenAnim,
@@ -50,6 +52,8 @@ const COMBAT_SPEED_WIDTH: f32 = 140.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
 const PLANETARY_SHIELD_HEIGHT_FACTOR: f32 = 0.3;
+const PLANETARY_SHIELD_DOME_HEIGHT_FACTOR: f32 = 1.55;
+const PLANETARY_SHIELD_METER_WIDTH_FACTOR: f32 = 2.7;
 
 #[derive(Component)]
 /// Bevy component marking combat menu presentation entities.
@@ -129,6 +133,18 @@ pub struct CombatUnitCmp {
 pub struct PSCombatImageCmp;
 
 #[derive(Component)]
+/// Marks the attacker probe card once its first-round retreat has begun.
+pub struct ProbeRetreatCmp;
+
+#[derive(Component)]
+/// Translucent field whose opacity tracks the shared planetary-shield strength.
+pub struct PlanetaryShieldDomeCmp;
+
+#[derive(Component)]
+/// Exact current and maximum planetary-shield points shown beneath the dome.
+pub struct PlanetaryShieldStrengthCmp;
+
+#[derive(Component)]
 /// Bevy component marking count presentation entities.
 pub struct CountCmp;
 
@@ -141,8 +157,24 @@ pub struct HullCmp;
 pub struct ShieldCmp;
 
 #[derive(Component)]
+/// Bevy component marking the neutral fill used when a combat unit has no shield stat.
+pub struct EmptyShieldCmp;
+
+#[derive(Component)]
 /// Bevy component marking death ray presentation entities.
 pub struct DeathRayCmp;
+
+#[derive(Component)]
+/// One temporary Crawler making a post-combat salvage run.
+pub struct SalvageCrawlerCmp;
+
+#[derive(Component)]
+/// Invisible animation target timing the Crawler salvage run.
+pub struct SalvageTimerCmp;
+
+#[derive(Component)]
+/// Post-combat resource-recovery summary shown before the battle result.
+pub struct SalvageSummaryCmp;
 
 #[derive(Message)]
 /// Bevy message requesting one visible projectile or beam animation.
@@ -245,6 +277,48 @@ fn spawn_combat_identity(
         });
 }
 
+fn planetary_shield_dome_texture(images: &mut Assets<Image>) -> Handle<Image> {
+    const WIDTH: usize = 512;
+    const HEIGHT: usize = 192;
+    let mut pixels = Vec::with_capacity(WIDTH * HEIGHT * 4);
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let nx = x as f32 / (WIDTH - 1) as f32 * 2.0 - 1.0;
+            let ny = 1.0 - y as f32 / (HEIGHT - 1) as f32;
+            let radius = Vec2::new(nx, ny).length();
+            let inside = radius <= 1.0;
+            let rim = (1.0 - ((radius - 0.975) / 0.025).abs()).clamp(0.0, 1.0);
+            let base = (1.0 - ny / 0.035).clamp(0.0, 1.0);
+            let latitude = (1.0 - ((radius - 0.68) / 0.012).abs()).clamp(0.0, 1.0);
+            let meridian = (1.0 - nx.abs() / 0.009).clamp(0.0, 1.0) * (1.0 - ny * 0.45);
+            let field = if inside {
+                0.10 + (1.0 - radius) * 0.09
+            } else {
+                0.0
+            };
+            let alpha = if inside {
+                field.max(rim * 0.95).max(base * 0.7).max(latitude * 0.25).max(meridian * 0.18)
+            } else {
+                0.0
+            };
+            pixels.extend_from_slice(&[255, 255, 255, (alpha * 255.0) as u8]);
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: WIDTH as u32,
+            height: HEIGHT as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    image.sampler = bevy::image::ImageSampler::linear();
+    images.add(image)
+}
+
 /// Creates the combat menu entities and resources required on state entry.
 pub fn setup_combat_menu(
     mut commands: Commands,
@@ -292,6 +366,7 @@ pub fn exit_combat_menu(
 /// Creates the combat entities and resources required on state entry.
 pub fn setup_combat(
     mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
     settings: Res<Settings>,
     state: Res<UiState>,
     map: Res<Map>,
@@ -404,26 +479,50 @@ pub fn setup_combat(
                     CombatCmp,
                 ))
                 .with_children(|parent| {
-                    // Missing stats have no bar. Shrinking a full bar toward zero leaves
-                    // subpixel slivers that flicker along the left edge of missile cards.
-                    if u.shield() > 0 {
-                        parent.spawn((
-                            Sprite {
-                                color: BG2_COLOR,
-                                custom_size: Some(Vec2::new(size, size * 0.14)),
-                                ..default()
-                            },
-                            Transform::from_xyz(0., -size * 0.57, 0.1),
-                            children![(
+                    // Unshielded support units keep the same two-slot card layout as shielded units,
+                    // but their neutral fill makes the absent shield explicit. Missile cards
+                    // still omit stats they do not have.
+                    if u.shield() > 0
+                        || *u == Unit::probe()
+                        || *u == Unit::crawler()
+                        || *u == Unit::repair_truck()
+                    {
+                        let has_shield = u.shield() > 0;
+                        parent
+                            .spawn((
                                 Sprite {
-                                    color: SHIELD_COLOR,
-                                    custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
+                                    color: if has_shield {
+                                        BG2_COLOR
+                                    } else {
+                                        Color::BLACK.with_alpha(0.8)
+                                    },
+                                    custom_size: Some(Vec2::new(size, size * 0.14)),
                                     ..default()
                                 },
-                                Transform::from_xyz(0., 0., 0.2),
-                                ShieldCmp,
-                            )],
-                        ));
+                                Transform::from_xyz(0., -size * 0.57, 0.1),
+                            ))
+                            .with_children(|bar| {
+                                let fill = (
+                                    Sprite {
+                                        color: if has_shield {
+                                            SHIELD_COLOR
+                                        } else {
+                                            Color::srgb_u8(92, 96, 102)
+                                        },
+                                        custom_size: Some(Vec2::new(
+                                            size * 0.96,
+                                            size * 0.14 * 0.75,
+                                        )),
+                                        ..default()
+                                    },
+                                    Transform::from_xyz(0., 0., 0.2),
+                                );
+                                if has_shield {
+                                    bar.spawn((fill, ShieldCmp));
+                                } else {
+                                    bar.spawn((fill, EmptyShieldCmp));
+                                }
+                            });
                     }
                     if u.hull() > 0 {
                         parent.spawn((
@@ -548,64 +647,82 @@ pub fn setup_combat(
     spawn_row(&mut commands, defending_def, Side::Defender, pos.y - height * 0.7, defense_row_y);
     spawn_row(&mut commands, defending_ships, Side::Defender, pos.y - height * 0.7, ship_y);
 
-    // Spawn Planetary Shield image
+    // The shared shield is a field over the ground defenses. Its compact meter and exact
+    // point readout preserve damage information without turning the shield itself into a bar.
     if draw_ps {
-        let (bar_width, bar_height) = (size * PS_WIDTH, size * PLANETARY_SHIELD_HEIGHT_FACTOR);
-        let w = size * 0.3;
+        let dome_width = size * PS_WIDTH;
+        let dome_height = size * PLANETARY_SHIELD_DOME_HEIGHT_FACTOR;
+        let meter_width = size * PLANETARY_SHIELD_METER_WIDTH_FACTOR;
+        let meter_height = size * 0.12;
+        let shield_points = ps * PS_SHIELD_PER_LEVEL;
+        let home = Vec3::new(pos.x, defense_row_y - size * 0.58, COMBAT_SHIP_Z + 0.12);
+        let dome = planetary_shield_dome_texture(&mut images);
 
         commands.spawn((
             Sprite {
-                color: BG2_COLOR,
-                custom_size: Some(Vec2::new(bar_width, bar_height)),
+                color: Color::NONE,
+                custom_size: Some(Vec2::new(dome_width, dome_height)),
                 ..default()
             },
             Transform::from_xyz(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
-            CombatCardHome(Vec3::new(pos.x, pos.y - height * 0.25, COMBAT_SHIP_Z)),
+            CombatCardHome(home),
             CombatUnitCmp {
                 unit: Unit::planetary_shield(),
                 side: Side::Defender,
                 fire: FireState::Idle,
-                shield: ps * PS_SHIELD_PER_LEVEL,
-                max_shield: ps * PS_SHIELD_PER_LEVEL,
+                shield: shield_points,
+                max_shield: shield_points,
                 hull: ps,
                 max_hull: ps,
             },
             children![
                 (
                     Sprite {
-                        color: SHIELD_COLOR,
-                        custom_size: Some(Vec2::new(bar_width * 0.997, bar_height * 0.9)),
+                        image: dome,
+                        color: SHIELD_COLOR.with_alpha(0.32),
+                        custom_size: Some(Vec2::new(dome_width, dome_height)),
                         ..default()
                     },
-                    Transform::from_xyz(0., 0., 0.1),
-                    ShieldCmp,
+                    Transform::from_xyz(0., dome_height * 0.5, 0.08),
+                    PSCombatImageCmp,
+                    PlanetaryShieldDomeCmp,
                 ),
                 (
                     Sprite {
                         image: assets.image("planetary shield"),
-                        custom_size: Some(Vec2::splat(size)),
+                        custom_size: Some(Vec2::splat(size * 0.55)),
                         ..default()
                     },
-                    Transform::from_xyz((-bar_width + size) * 0.5, (-bar_height - size) * 0.5, 0.,),
-                    PSCombatImageCmp,
+                    Transform::from_xyz(-meter_width * 0.68, -size * 0.18, 0.3),
+                ),
+                (
+                    Sprite {
+                        color: BG2_COLOR.with_alpha(0.9),
+                        custom_size: Some(Vec2::new(meter_width, meter_height)),
+                        ..default()
+                    },
+                    Transform::from_xyz(size * 0.18, -size * 0.25, 0.3),
                     children![(
                         Sprite {
-                            color: Color::BLACK.with_alpha(0.5),
-                            custom_size: Some(Vec2::splat(w)),
+                            color: SHIELD_COLOR,
+                            custom_size: Some(Vec2::new(meter_width * 0.96, meter_height * 0.68)),
                             ..default()
                         },
-                        Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + w * 0.5, 0.1),
-                        children![(
-                            Text2d::new(ps.to_string()),
-                            TextFont {
-                                font: assets.font("bold").into(),
-                                font_size: (600. * projection.scale).into(),
-                                ..default()
-                            },
-                            TextColor(WHITE.into()),
-                            Transform::from_scale(Vec3::splat(0.05)),
-                        )]
+                        Transform::from_xyz(0., 0., 0.1),
+                        ShieldCmp,
                     )],
+                ),
+                (
+                    Text2d::new(format!("PLANETARY SHIELD  {shield_points} / {shield_points}")),
+                    TextFont {
+                        font: assets.font("bold").into(),
+                        font_size: (360. * projection.scale).into(),
+                        ..default()
+                    },
+                    TextColor(WHITE.into()),
+                    Transform::from_xyz(size * 0.18, -size * 0.07, 0.35)
+                        .with_scale(Vec3::splat(0.05)),
+                    PlanetaryShieldStrengthCmp,
                 )
             ],
             TweenAnim::new(Tween::new(
@@ -613,7 +730,7 @@ pub fn setup_combat(
                 Duration::from_secs(SETUP_TIME),
                 TransformPositionLens {
                     start: Vec3::new(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
-                    end: Vec3::new(pos.x, pos.y - height * 0.25, COMBAT_SHIP_Z),
+                    end: home,
                 },
             )),
             Pickable::IGNORE,
@@ -768,7 +885,13 @@ pub fn animate_combat(
     bg_q: Single<&mut Sprite, With<BackgroundImageCmp>>,
     text_q: Option<Single<Entity, With<DisplayTextCmp>>>,
     mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
-    death_ray_q: Query<Entity, With<DeathRayCmp>>,
+    phase_entities: (
+        Query<(), With<ProbeRetreatCmp>>,
+        Query<Entity, With<DeathRayCmp>>,
+        Query<Entity, With<SalvageCrawlerCmp>>,
+        Query<Entity, With<SalvageTimerCmp>>,
+        Query<Entity, With<SalvageSummaryCmp>>,
+    ),
     mut state: ResMut<UiState>,
     player: Res<Player>,
     combat_state: Res<State<CombatState>>,
@@ -781,6 +904,8 @@ pub fn animate_combat(
     pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
     settings: Res<Settings>,
 ) {
+    let (retreating_probe_q, death_ray_q, salvage_crawler_q, salvage_timer_q, salvage_summary_q) =
+        phase_entities;
     let (assets, window, round_jump) = presentation;
     if settings.combat_paused
         || (round_jump.is_some() && !matches!(*next_combat_state, NextState::Unchanged))
@@ -829,8 +954,8 @@ pub fn animate_combat(
                     cu.fire == FireState::Idle
                         && cu.unit == *unit
                         && cu.side == side
-                        && (cu.unit.damage() > 0 || cu.unit == Unit::crawler())
-                        && (cu.unit == Unit::crawler()
+                        && (cu.unit.damage() > 0 || cu.unit == Unit::repair_truck())
+                        && (cu.unit == Unit::repair_truck()
                             || round.units(&side).iter().any(|shooter| {
                                 shooter.unit == *unit
                                     && shooter.shots.iter().any(|shot| !shot.is_bombing())
@@ -862,31 +987,35 @@ pub fn animate_combat(
         }
 
         // Scout probes fly away
-        if state.combat_round == 0 && combat.rounds.len() > 1 {
+        if state.combat_round == 0 && combat.rounds.len() > 1 && retreating_probe_q.is_empty() {
             if let Some((unit_e, unit_t, _)) = unit_q.iter_mut().find(|(_, _, cu)| {
                 cu.hull > 0 && cu.unit == Unit::probe() && cu.side == Side::Attacker
             }) {
-                commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
-                    EaseFunction::QuadraticIn,
-                    Duration::from_secs(SETUP_TIME),
-                    TransformPositionLens {
-                        start: unit_t.translation,
-                        end: Vec3::new(
-                            pos.x,
-                            pos.y + projection.area.height() * 0.9,
-                            COMBAT_SHIP_Z + 0.9,
-                        ),
-                    },
-                )));
+                commands.entity(unit_e).insert((
+                    TweenAnim::new(Tween::new(
+                        EaseFunction::QuadraticIn,
+                        Duration::from_secs(SETUP_TIME),
+                        TransformPositionLens {
+                            start: unit_t.translation,
+                            end: Vec3::new(
+                                pos.x,
+                                pos.y + projection.area.height() * 0.9,
+                                COMBAT_SHIP_Z + 0.9,
+                            ),
+                        },
+                    )),
+                    ProbeRetreatCmp,
+                ));
+                play_audio_msg.write(PlayAudioMsg::new("probe retreat").rate(1.2));
             }
         }
 
-        // Crawlers repair defense turrets
+        // Repair Trucks restore defense turrets after the recorded exchange of fire.
         if round.units(&Side::Defender).iter().any(|cu| cu.repairs.iter().any(|r| *r > 0))
             && *combat_state.get() == CombatState::Fire
         {
             if let Some((_, _, mut cu)) =
-                unit_q.iter_mut().find(|(_, _, cu)| cu.hull > 0 && cu.unit == Unit::crawler())
+                unit_q.iter_mut().find(|(_, _, cu)| cu.hull > 0 && cu.unit == Unit::repair_truck())
             {
                 cu.fire = FireState::Select;
                 next_combat_state.set(CombatState::Repair);
@@ -930,7 +1059,11 @@ pub fn animate_combat(
         }
 
         next_combat_state.set(if state.combat_round == combat.rounds.len() - 1 {
-            CombatState::EndCombat
+            if report.defender_salvage() == default() {
+                CombatState::EndCombat
+            } else {
+                CombatState::Salvage
+            }
         } else {
             state.combat_round += 1;
             CombatState::DisplayRound
@@ -1156,6 +1289,131 @@ pub fn animate_combat(
                 }
             }
         },
+        CombatState::Salvage => {
+            let salvage = report.defender_salvage();
+            if salvage == default() {
+                next_combat_state.set(CombatState::EndCombat);
+                return;
+            }
+
+            if let Some(summary_e) = salvage_summary_q.iter().next() {
+                if anim_completed_msg.read().any(|message| message.anim_entity == summary_e) {
+                    commands.entity(summary_e).despawn();
+                    next_combat_state.set(CombatState::EndCombat);
+                }
+                return;
+            }
+
+            if let Some(timer_e) = salvage_timer_q.iter().next() {
+                if anim_completed_msg.read().any(|message| message.anim_entity == timer_e) {
+                    for crawler_e in &salvage_crawler_q {
+                        commands.entity(crawler_e).despawn();
+                    }
+                    commands.entity(timer_e).despawn();
+                    commands.spawn((
+                        add_root_node(false),
+                        children![(
+                            add_text(
+                                format!(
+                                    "SALVAGE RECOVERED\n+{} Metal   +{} Crystal   +{} Deuterium",
+                                    salvage.metal, salvage.crystal, salvage.deuterium
+                                ),
+                                "medium",
+                                COMBAT_STATUS_FONT_SIZE,
+                                &assets,
+                                &window,
+                            ),
+                            TextShadow::default(),
+                            UiTransform {
+                                translation: Val2::new(
+                                    Val::ZERO,
+                                    Val::Percent(COMBAT_STATUS_OFFSET),
+                                ),
+                                scale: Vec2::ZERO,
+                                ..default()
+                            },
+                            TweenAnim::new(
+                                Tween::new(
+                                    EaseFunction::QuadraticInOut,
+                                    Duration::from_millis(1_250),
+                                    UiTransformScaleLens {
+                                        start: Vec2::ZERO,
+                                        end: Vec2::ONE,
+                                    },
+                                )
+                                .with_repeat_count(RepeatCount::Finite(2))
+                                .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
+                            ),
+                            SalvageSummaryCmp,
+                            DisplayTextCmp,
+                            CombatCmp,
+                        )],
+                        CombatCmp,
+                    ));
+                }
+                return;
+            }
+
+            let Some((_, crawler_t, _)) = unit_q.iter().find(|(_, _, unit)| {
+                unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0
+            }) else {
+                next_combat_state.set(CombatState::EndCombat);
+                return;
+            };
+            let trips = report.surviving_defender.amount(&Unit::crawler()).min(5);
+            let middle = (trips.saturating_sub(1)) as f32 * 0.5;
+            for index in 0..trips {
+                let lane = index as f32 - middle;
+                let start = crawler_t.translation
+                    + Vec3::new(lane * size * 0.12, (index % 2) as f32 * size * 0.08, 0.6);
+                let end = Vec3::new(
+                    pos.x + lane * size * 1.05,
+                    crawler_t.translation.y + size * (0.18 + 0.12 * (index % 2) as f32),
+                    COMBAT_SHIP_Z + 0.6,
+                );
+                commands.spawn((
+                    Sprite {
+                        image: assets.image(Unit::crawler().to_lowername()),
+                        custom_size: Some(Vec2::splat(size * 0.52)),
+                        ..default()
+                    },
+                    Transform::from_translation(start),
+                    TweenAnim::new(
+                        Tween::new(
+                            EaseFunction::QuadraticInOut,
+                            Duration::from_millis(700),
+                            TransformPositionLens {
+                                start,
+                                end,
+                            },
+                        )
+                        .with_repeat_count(RepeatCount::Finite(2))
+                        .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
+                    ),
+                    Pickable::IGNORE,
+                    SalvageCrawlerCmp,
+                    CombatCmp,
+                ));
+            }
+            commands.spawn((
+                Transform::default(),
+                TweenAnim::new(
+                    Tween::new(
+                        EaseFunction::Linear,
+                        Duration::from_millis(700),
+                        TransformScaleLens {
+                            start: Vec3::ONE,
+                            end: Vec3::ONE,
+                        },
+                    )
+                    .with_repeat_count(RepeatCount::Finite(2))
+                    .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
+                ),
+                SalvageTimerCmp,
+                CombatCmp,
+            ));
+            play_audio_msg.write(PlayAudioMsg::new("construction").rate(1.15));
+        },
         CombatState::EndCombat => {
             if text_q.is_none() {
                 let result = report.status(&player);
@@ -1201,9 +1459,16 @@ pub fn animate_combat(
 pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp)>,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
-    mut count_q: Query<&mut Text2d, With<CountCmp>>,
-    mut shield_q: Query<(&mut Transform, &mut Sprite), With<ShieldCmp>>,
-    mut hull_q: Query<(&mut Transform, &mut Sprite), (With<HullCmp>, Without<ShieldCmp>)>,
+    mut count_q: Query<&mut Text2d, (With<CountCmp>, Without<PlanetaryShieldStrengthCmp>)>,
+    shield_display: (
+        Query<&mut Text2d, (With<PlanetaryShieldStrengthCmp>, Without<CountCmp>)>,
+        Query<(&mut Transform, &mut Sprite), (With<ShieldCmp>, Without<PlanetaryShieldDomeCmp>)>,
+        Query<&mut Sprite, (With<PlanetaryShieldDomeCmp>, Without<ShieldCmp>, Without<HullCmp>)>,
+        Query<
+            (&mut Transform, &mut Sprite),
+            (With<HullCmp>, Without<ShieldCmp>, Without<PlanetaryShieldDomeCmp>),
+        >,
+    ),
     mut speed_q: Single<&mut Text, With<SpeedCmp>>,
     mut paused_q: Single<&mut Visibility, With<CombatPausedCmp>>,
     mut display_q: Query<&mut Visibility, (With<DisplayTextCmp>, Without<CombatPausedCmp>)>,
@@ -1215,6 +1480,7 @@ pub fn update_combat_stats(
     camera_q: Single<&Projection, With<MainCamera>>,
     time: Res<Time>,
 ) {
+    let (mut shield_strength_q, mut shield_q, mut dome_q, mut hull_q) = shield_display;
     let Projection::Orthographic(projection) = camera_q.into_inner() else {
         return;
     };
@@ -1305,10 +1571,19 @@ pub fn update_combat_stats(
                 text.0 = count.to_string();
             }
 
+            if let Ok(mut text) = shield_strength_q.get_mut(child) {
+                text.0 = format!("PLANETARY SHIELD  {} / {}", cu.shield, cu.max_shield);
+            }
+
+            if let Ok(mut dome) = dome_q.get_mut(child) {
+                let strength = cu.shield as f32 / cu.max_shield.max(1) as f32;
+                dome.color = SHIELD_COLOR.with_alpha(0.12 + strength * 0.20);
+            }
+
             if let Ok((mut shield_t, mut shield_s)) = shield_q.get_mut(child) {
                 if let Some(shield_size) = shield_s.custom_size.as_mut() {
                     let full_size = if cu.unit == Unit::planetary_shield() {
-                        size * PS_WIDTH * 0.997
+                        size * PLANETARY_SHIELD_METER_WIDTH_FACTOR * 0.96
                     } else {
                         size * 0.96
                     };

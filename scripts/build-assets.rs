@@ -13,7 +13,8 @@ use std::thread;
 
 use sha2::{Digest, Sha256};
 
-const PIPELINE_VERSION: &str = "stellarion-ktx2-v8-uastc-q2-rdo1.5-zstd18-sha256";
+const PIPELINE_VERSION: &str =
+    "stellarion-ktx2-v10-world-building-mips-uastc-q2-rdo1.5-zstd18-sha256";
 const MANIFEST_NAME: &str = ".stellarion-assets";
 const MAX_JOBS: usize = 12;
 
@@ -22,20 +23,15 @@ const MAX_JOBS: usize = 12;
 // runtime downloads.
 const UNUSED_IMAGES: &[&str] = &[
     "images/bg/cover.png",
-    "images/buildings/robotics.png",
-    "images/buildings/senate.png",
     "images/buildings/small_shield.png",
     "images/buildings/terraformer.png",
-    "images/defense/truck.png",
     "images/planets/planets.png",
-    "images/resources/energy.png",
     "images/scenery/combat.png",
     "images/scenery/incombat.png",
     "images/scenery/map.png",
     "images/scenery/mission.png",
     "images/scenery/report.png",
     "images/scenery/shop.png",
-    "images/ships/sattelite.png",
 ];
 
 #[derive(Clone, Debug)]
@@ -361,9 +357,22 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
         || source_relative.ends_with(" large.png")
         || source_relative.starts_with("images/ambient/")
+        || source_relative.starts_with("images/asteroids/")
+        || source_relative.starts_with("images/moon-buildings/")
+        || source_relative.starts_with("images/planet-buildings/")
         || matches!(
             source_relative,
-            "images/icons/mute.png" | "images/icons/no-music.png" | "images/icons/sound.png"
+            "images/icons/convert.png"
+                | "images/icons/convert hover.png"
+                | "images/icons/recall.png"
+                | "images/icons/recall hover.png"
+                | "images/icons/eye.png"
+                | "images/icons/logs.png"
+                | "images/icons/lost.png"
+                | "images/icons/missile.png"
+                | "images/icons/command relay marker.png"
+                | "images/icons/sensor phalanx marker.png"
+                | "images/icons/won.png"
         )
 }
 
@@ -435,28 +444,19 @@ fn read_manifest(path: &Path) -> Result<Option<AssetManifest>, String> {
             {
                 return Err(format!("invalid asset manifest record: {line}"));
             }
-        } else if let Some(value) = line.strip_prefix("file=") {
-            // Version 6 recorded names only. Parsing it lets the normal stale-output path
-            // regenerate and upgrade the manifest without treating the file as corrupt.
-            normalized(Path::new(value))?;
-            records.entry(value.to_string()).or_insert_with(|| AssetRecord {
-                source_relative: String::new(),
-                source_hash: String::new(),
-                output_hash: String::new(),
-            });
         } else if !line.trim().is_empty() {
             return Err(format!("invalid asset manifest line: {line}"));
         }
     }
     Ok(Some(AssetManifest {
         version: version.ok_or_else(|| "asset manifest has no version".to_string())?,
-        tool: tool.unwrap_or_else(|| "unknown".to_string()),
+        tool: tool.ok_or_else(|| "asset manifest has no tool".to_string())?,
         records,
     }))
 }
 
 #[derive(Debug)]
-/// Versioned, hash-pinned description of every generated runtime asset.
+/// Hash-pinned description of every generated runtime asset.
 struct AssetManifest {
     version: String,
     tool: String,

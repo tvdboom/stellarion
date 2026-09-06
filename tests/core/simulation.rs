@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::constants::MIN_SPY_PROBES;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Combat;
@@ -95,6 +96,10 @@ fn every_home_planet_starts_with_five_rocket_launchers() {
         .unwrap();
         model.start().unwrap();
         for player in &model.players {
+            assert_eq!(
+                model.map.solar_band(player.home_planet),
+                Some(crate::core::map::planet::SolarBand::Temperate)
+            );
             assert_eq!(
                 model
                     .map
@@ -212,10 +217,10 @@ fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
         }
         for unit in Unit::all().into_iter().flatten() {
             let expected = if unit.valid_on(false) {
-                if unit.is_building() {
-                    Building::MAX_LEVEL
-                } else {
-                    model.map.get(home).army.amount(&unit) + 3
+                match unit {
+                    Unit::Building(Building::Senate) | Unit::Defense(Defense::SpaceDock) => 1,
+                    Unit::Building(_) => Building::MAX_LEVEL,
+                    Unit::Ship(_) | Unit::Defense(_) => model.map.get(home).army.amount(&unit) + 3,
                 }
             } else {
                 0
@@ -226,8 +231,27 @@ fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
                 "unexpected testing amount for {unit:?} on a planet"
             );
         }
-        let expected_resources = preview.players[0].resources
-            + preview.players[0].resource_production(&preview.map.planets);
+        assert_eq!(
+            preview
+                .map
+                .planets
+                .iter()
+                .map(|planet| planet.army.amount(&Unit::Building(Building::Senate)))
+                .sum::<usize>(),
+            1,
+            "the testing shortcut must create only the home-world Senate"
+        );
+        for planet in &preview.map.planets {
+            let targeted =
+                !owned_worlds_only || planet.owned == Some(1) || planet.controlled == Some(1);
+            assert_eq!(
+                planet.army.amount(&Unit::space_dock()),
+                usize::from(targeted && !planet.is_moon()),
+                "the testing shortcut must create at most one Space Dock per planet"
+            );
+        }
+        let expected_resources =
+            preview.players[0].resources + preview.players[0].resource_production(&preview.map);
         resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
         assert_eq!(model.turn, 2);
         assert_eq!(model.status, MatchStatus::Active);
@@ -319,10 +343,36 @@ fn abandoning_a_planet_keeps_control_only_while_a_fleet_remains() {
 }
 
 #[test]
-/// Keeps normal multiplayer snapshots backward-compatible and rejects mixed practice rules.
-fn practice_rules_are_explicit_and_json_compatible() {
+fn direct_colonization_adds_balanced_starter_infrastructure() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let planet_id =
+        model.map.planets().into_iter().find(|planet| planet.controlled.is_none()).unwrap().id;
+    let planet = model.map.get_mut(planet_id);
+    planet.controlled = Some(player_id);
+    planet.army.clear();
+    planet.army.insert(Unit::colony_ship(), 1);
+
+    apply_colonize(&mut model, player_id, planet_id).unwrap();
+
+    let planet = model.map.get(planet_id);
+    for building in [
+        Building::MetalMine,
+        Building::CrystalMine,
+        Building::DeuteriumSynthesizer,
+        Building::Reactor,
+    ] {
+        assert_eq!(planet.army.amount(&Unit::Building(building)), 1, "{building:?}");
+    }
+    assert_eq!(planet.army.amount(&Unit::colony_ship()), 0);
+    assert_eq!(crate::core::energy::EnergyGrid::for_world(&model.map, planet).balance(), 0);
+}
+
+#[test]
+/// Persists practice mode explicitly and rejects mixed practice rules.
+fn practice_rules_are_explicit() {
     let json = serde_json::to_value(GameRules::default()).unwrap();
-    assert!(json.get("practice_mode").is_none());
+    assert_eq!(json.get("practice_mode"), Some(&serde_json::json!(false)));
     let loaded: GameRules = serde_json::from_value(json).unwrap();
     assert!(!loaded.practice_mode);
     assert!(matches!(
@@ -418,6 +468,139 @@ fn mission_commands_ignore_zero_count_units() {
 
     assert_eq!(model.missions[0].army, Army::from([(heavy_fighter, 2)]));
     assert_eq!(model.map.get(origin).army.amount(&heavy_fighter), 0);
+}
+
+#[test]
+fn every_active_mission_type_can_be_recalled_from_its_current_position_for_free() {
+    let model = started_model(2);
+    let player_id = model.players[0].id;
+    let original_origin = model.players[0].home_planet;
+    let outbound_destination = model.players[1].home_planet;
+    let current_position = model
+        .map
+        .get(original_origin)
+        .position
+        .lerp(model.map.get(outbound_destination).position, 0.6);
+
+    for (index, (objective, army)) in [
+        (Icon::Deploy, Army::from([(Unit::Ship(Ship::LightFighter), 1)])),
+        (Icon::Colonize, Army::from([(Unit::colony_ship(), 1)])),
+        (Icon::Attack, Army::from([(Unit::Ship(Ship::Bomber), 1)])),
+        (Icon::Spy, Army::from([(Unit::probe(), MIN_SPY_PROBES)])),
+        (Icon::MissileStrike, Army::from([(Unit::interplanetary_missile(), 1)])),
+        (Icon::Destroy, Army::from([(Unit::war_sun(), 1)])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut state = model.clone();
+        let mut mission = Mission::new_with_id(
+            100 + index as u64,
+            state.turn as usize,
+            player_id,
+            state.map.get(original_origin),
+            state.map.get(outbound_destination),
+            objective,
+            army,
+            if objective == Icon::Attack {
+                BombingRaid::Economic
+            } else {
+                BombingRaid::None
+            },
+            objective == Icon::Spy,
+            false,
+            None,
+        );
+        mission.position = current_position;
+        mission.travel_turns = 1;
+        state.missions.push(mission);
+        let resources = state.player(player_id).unwrap().resources;
+
+        let preview = preview_commands(
+            &state,
+            player_id,
+            &[TurnCommand::RecallMission {
+                mission_id: 100 + index as u64,
+            }],
+        )
+        .unwrap();
+        preview.validate().unwrap();
+        let recalled = &preview.missions[0];
+
+        assert_eq!(preview.player(player_id).unwrap().resources, resources);
+        assert_eq!(recalled.position, current_position);
+        assert_eq!(recalled.origin, outbound_destination);
+        assert_eq!(recalled.destination, original_origin);
+        assert_eq!(recalled.travel_turns, 0);
+        assert_eq!(recalled.objective, Icon::Deploy);
+        assert_eq!(recalled.return_objective, Some(objective));
+        assert_eq!(recalled.bombing, BombingRaid::None);
+        assert!(!recalled.combat_probes);
+        assert!(!recalled.jump_gate);
+        assert!(recalled.is_returning());
+        assert!(recalled.logs.contains("Mission recalled to planet"));
+    }
+}
+
+#[test]
+fn recall_commands_reject_foreign_missing_and_already_returning_missions() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    model.missions.push(Mission::new_with_id(
+        71,
+        model.turn as usize,
+        player_id,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    ));
+
+    assert!(matches!(
+        preview_commands(
+            &model,
+            model.players[1].id,
+            &[TurnCommand::RecallMission {
+                mission_id: 71
+            }]
+        ),
+        Err(GameError::InvalidCommand { .. })
+    ));
+    assert!(matches!(
+        preview_commands(
+            &model,
+            player_id,
+            &[TurnCommand::RecallMission {
+                mission_id: u64::MAX
+            }]
+        ),
+        Err(GameError::InvalidCommand { .. })
+    ));
+
+    let recalled = preview_commands(
+        &model,
+        player_id,
+        &[TurnCommand::RecallMission {
+            mission_id: 71,
+        }],
+    )
+    .unwrap();
+    assert!(matches!(
+        preview_commands(
+            &recalled,
+            player_id,
+            &[TurnCommand::RecallMission {
+                mission_id: 71
+            }]
+        ),
+        Err(GameError::InvalidCommand { .. })
+    ));
 }
 
 #[test]
@@ -529,6 +712,18 @@ fn colonize_missions_preserve_intent_through_friendly_ownership_changes() {
         assert_eq!(target.controlled, Some(player.id));
         assert_eq!(target.army.amount(&fighter), 3);
         assert_eq!(target.army.amount(&Unit::colony_ship()), usize::from(owned_on_arrival));
+        for building in [
+            Building::MetalMine,
+            Building::CrystalMine,
+            Building::DeuteriumSynthesizer,
+            Building::Reactor,
+        ] {
+            assert_eq!(
+                target.army.amount(&Unit::Building(building)),
+                usize::from(!owned_on_arrival),
+                "{building:?}"
+            );
+        }
         assert!(model.missions.is_empty());
         let report = model.players[0].reports.last().unwrap();
         assert_eq!(report.mission.objective, Icon::Colonize);
@@ -599,14 +794,18 @@ fn resolved_spy_and_destroy_missions_preserve_their_images_on_the_return_trip() 
 }
 
 #[test]
-/// Rejects unsupported envelopes and broken cross-references without partially loading them.
+/// Rejects incomplete snapshots and broken cross-references without partially loading them.
 fn rejects_malformed_persisted_state() {
     let persisted = PersistedGame::new(started_model(2));
-    let mut wrong_schema = persisted.to_json().unwrap();
-    wrong_schema["schema_version"] = serde_json::json!(999);
+    let mut unknown_field = persisted.to_json().unwrap();
+    unknown_field["removed_field"] = serde_json::json!(true);
+    assert!(matches!(PersistedGame::from_json(unknown_field), Err(GameError::MalformedState(_))));
+
+    let mut missing_rules_field = persisted.to_json().unwrap();
+    missing_rules_field["state"]["rules"].as_object_mut().unwrap().remove("practice_mode");
     assert!(matches!(
-        PersistedGame::from_json(wrong_schema),
-        Err(GameError::UnsupportedSchema(999))
+        PersistedGame::from_json(missing_rules_field),
+        Err(GameError::MalformedState(_))
     ));
 
     let mut missing_home = persisted.to_json().unwrap();
@@ -656,24 +855,44 @@ fn rejects_malformed_persisted_state() {
         combat_report: None,
         hidden: false,
     });
-    let mut invalid_report = PersistedGame::new(with_report).to_json().unwrap();
+    let mut invalid_report = PersistedGame::new(with_report.clone()).to_json().unwrap();
     invalid_report["state"]["players"][0]["reports"][0]["mission"]["destination"] =
         serde_json::json!(u64::MAX);
     assert!(matches!(PersistedGame::from_json(invalid_report), Err(GameError::MalformedState(_))));
+
+    let mut incomplete_report = PersistedGame::new(with_report).to_json().unwrap();
+    incomplete_report["state"]["players"][0]["reports"][0]["mission"]
+        .as_object_mut()
+        .unwrap()
+        .remove("return_objective");
+    assert!(matches!(
+        PersistedGame::from_json(incomplete_report),
+        Err(GameError::MalformedState(_))
+    ));
 }
 
 #[test]
-/// Snapshots created before lobby colors receive distinct deterministic slot colors.
-fn legacy_players_without_colors_remain_compatible() {
+/// Turn submissions require the complete current wire shape.
+fn rejects_incomplete_or_extended_turn_submissions() {
+    let submission = TurnSubmission::new(1, 1, Vec::new());
+    let mut missing = serde_json::to_value(&submission).unwrap();
+    missing.as_object_mut().unwrap().remove("generation");
+    assert!(serde_json::from_value::<TurnSubmission>(missing).is_err());
+
+    let mut extended = serde_json::to_value(submission).unwrap();
+    extended["removed_field"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<TurnSubmission>(extended).is_err());
+}
+
+#[test]
+/// Player colors are mandatory in every persisted snapshot.
+fn rejects_players_without_colors() {
     let mut json = PersistedGame::new(started_model(4)).to_json().unwrap();
     for player in json["state"]["players"].as_array_mut().unwrap() {
         player.as_object_mut().unwrap().remove("color");
     }
 
-    let loaded = PersistedGame::from_json(json).unwrap();
-    for player in &loaded.state.players {
-        assert_eq!(player.color(), crate::core::player::PlayerColor::for_player(player.id));
-    }
+    assert!(matches!(PersistedGame::from_json(json), Err(GameError::MalformedState(_))));
 }
 
 #[test]
@@ -740,6 +959,66 @@ fn territory_target_uses_starting_players_and_rounds_up() {
     model.map.planets =
         model.map.planets.into_iter().filter(|planet| !planet.is_moon()).take(30).collect();
     assert_eq!(model.planets_to_win(), 19);
+}
+
+#[test]
+fn senate_levels_scale_with_galaxy_size_and_the_ownership_setting() {
+    let mut model = GameModel::new(
+        [93; 32],
+        GameRules {
+            planets_per_player: 20,
+            player_count: 4,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    let player_id = model.players[0].id;
+    let home = model.players[0].home_planet;
+    let total = model.map.planets().len();
+    assert_eq!(total, 80);
+    model.map.get_mut(home).army.insert(Unit::Building(Building::Senate), 3);
+
+    for (percent, senate_levels, expected_limit) in [(25, 3, 23), (35, 2, 30), (50, 1, 41)] {
+        model.rules.colonizable_percent = percent;
+        assert_eq!(Player::senate_level_limit(&model.map, percent), senate_levels);
+        assert_eq!(colony_limit(&model, player_id).unwrap(), expected_limit);
+    }
+}
+
+#[test]
+fn smaller_galaxies_reduce_the_senate_level_cap() {
+    for (players, planets_per_player, expected) in [(2, 5, 1), (2, 20, 2), (4, 20, 3)] {
+        let model = GameModel::new(
+            [players; 32],
+            GameRules {
+                planets_per_player,
+                player_count: players,
+                ..GameRules::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(Player::senate_level_limit(&model.map, 25), expected);
+    }
+}
+
+#[test]
+fn only_offered_colonization_percentages_are_valid() {
+    for percent in [25, 35, 50] {
+        assert!(GameRules {
+            colonizable_percent: percent,
+            ..GameRules::default()
+        }
+        .validate()
+        .is_ok());
+    }
+    for percent in [1, 34, 100] {
+        assert!(GameRules {
+            colonizable_percent: percent,
+            ..GameRules::default()
+        }
+        .validate()
+        .is_err());
+    }
 }
 
 #[test]

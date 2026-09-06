@@ -1733,7 +1733,7 @@ fn loading_screen(
     requests: &mut MessageWriter<MultiplayerRequest>,
 ) {
     if session.menu_error.is_some() {
-        ui.label(egui::RichText::new("Game assets could not be loaded.").size(30.0).strong());
+        loading_failure_title(ui);
         ui.add_space(18.0);
         let (size, text_size, spacing) = menu_button_metrics(ui);
         if menu_button_widget(ui, "Back to Menu", true, size, text_size) {
@@ -1745,6 +1745,25 @@ fn loading_screen(
     ui.add(egui::Spinner::new().size(42.0));
     ui.add_space(14.0);
     ui.label(egui::RichText::new("Starting game…").size(36.0).strong());
+}
+
+/// Keeps the asset failure title on one centered line, shrinking it on narrow viewports.
+fn loading_failure_title(ui: &mut egui::Ui) {
+    const TEXT: &str = "Game assets could not be loaded.";
+    let color = ui.visuals().strong_text_color();
+    let mut font_size = 30.0;
+    let mut title =
+        ui.painter().layout_no_wrap(TEXT.to_string(), egui::FontId::proportional(font_size), color);
+    if title.size().x > ui.available_width() {
+        font_size *= ui.available_width() / title.size().x;
+        title = ui.painter().layout_no_wrap(
+            TEXT.to_string(),
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    }
+    let (rect, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
+    ui.painter().galley(rect.min, title, color);
 }
 
 /// Edits preferences that do not affect deterministic turn resolution.
@@ -2405,7 +2424,7 @@ fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings) {
         "Colonizable planets",
         "Sets the percentage of planets that can be colonized.",
         &mut settings.p_colonizable,
-        &[(25, "25%"), (50, "50%"), (100, "100%")],
+        &[(25, "25%"), (35, "35%"), (50, "50%")],
     );
     choice_row(
         ui,

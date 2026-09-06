@@ -24,13 +24,16 @@ use crate::core::constants::{
     BG2_COLOR, HEALTH_COLOR, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
     PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
 };
+use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::planet::{Planet, PlanetId, SolarBand};
 use crate::core::map::systems::select_planet;
 use crate::core::messages::MessageMsg;
-use crate::core::missions::{BombingRaid, Mission, MissionId, Missions, SendMissionMsg};
-use crate::core::orders::{purchase_limit, validate_mission};
+use crate::core::missions::{
+    BombingRaid, Mission, MissionId, Missions, RecallMissionMsg, SendMissionMsg,
+};
+use crate::core::orders::{purchase_limit, spy_mission_range, validate_mission};
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -60,6 +63,8 @@ pub struct UiCmp;
 pub enum Shop {
     #[default]
     Buildings,
+    /// Planet-only orbital infrastructure.
+    Orbitals,
     Fleet,
     Defenses,
 }
@@ -68,7 +73,9 @@ impl Shop {
     /// Returns the category reached by moving one tab to the right.
     pub(crate) fn next(self, is_moon: bool) -> Self {
         match self {
-            Self::Buildings => Self::Fleet,
+            Self::Buildings if is_moon => Self::Fleet,
+            Self::Buildings => Self::Orbitals,
+            Self::Orbitals => Self::Fleet,
             Self::Fleet if is_moon => Self::Buildings,
             Self::Fleet => Self::Defenses,
             Self::Defenses => Self::Buildings,
@@ -80,7 +87,9 @@ impl Shop {
         match self {
             Self::Buildings if is_moon => Self::Fleet,
             Self::Buildings => Self::Defenses,
-            Self::Fleet => Self::Buildings,
+            Self::Orbitals => Self::Buildings,
+            Self::Fleet if is_moon => Self::Buildings,
+            Self::Fleet => Self::Orbitals,
             Self::Defenses => Self::Fleet,
         }
     }
@@ -100,6 +109,8 @@ pub enum MissionTab {
 /// Local-only panel, selection, hover, and report navigation state.
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
+    /// Infrastructure marker whose strategic-map range is currently being previewed.
+    pub(crate) range_preview: Option<MapRangePreview>,
     /// Mission-panel world hover, which previews known units without map or planet details.
     pub(crate) mission_planet_hover: Option<PlanetId>,
     pub planet_selected: Option<PlanetId>,
@@ -126,6 +137,13 @@ pub struct UiState {
     pub in_combat: Option<ReportId>,
     pub combat_round: usize,
     pub end_turn: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Hover-only range previews exposed by stationary strategic-map infrastructure markers.
+pub(crate) enum MapRangePreview {
+    SensorPhalanx(PlanetId),
+    CommandRelay(PlanetId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +258,8 @@ fn draw_sliding_text(ui: &mut Ui, text: RichText, progress: f32, right_side: boo
 const MISSION_HOVER_FLEET_WIDTH: f32 = 110.0;
 const MISSION_HOVER_INFO_WIDTH: f32 = 330.0;
 const MISSION_HOVER_PANEL_GAP: f32 = 1.0;
+const PLANET_UNITS_PANEL_WIDTH: f32 = 270.0;
+const MOON_UNITS_PANEL_WIDTH: f32 = 145.0;
 
 const HUD_PANEL_FILL: Color32 = Color32::from_rgba_unmultiplied_const(10, 16, 23, 226);
 const HUD_PANEL_STROKE: Color32 = Color32::from_rgba_unmultiplied_const(130, 170, 215, 95);
@@ -849,8 +869,8 @@ fn draw_enemy_players_widget(
                                 TextStyle::Body,
                             );
                             ui.add(egui::Label::new(name));
-                            ui.add(egui::Label::new(progress)).on_hover_text(
-                                "Known controlled planets / planets needed to win. ? means unknown. Intelligence may be outdated; moons do not count.",
+                            ui.add(egui::Label::new(progress)).on_hover_small(
+                                "Known controlled planets needed to win. Intelligence may be outdated.",
                             );
                             if let Some(status) = status {
                                 draw_disconnected_icon(ui);
@@ -1013,14 +1033,14 @@ fn draw_combat_army_grid(
                 _ => shots.iter().filter(|s| s.killed).count(),
             };
 
-            let hovering_crawler =
-                matches!(state.combat_report_hover, Some((Unit::Defense(Defense::Crawler), _)));
+            let hovering_repair_truck =
+                matches!(state.combat_report_hover, Some((Unit::Defense(Defense::RepairTruck), _)));
 
             ui.add_enabled_ui(
                 state
                     .combat_report_hover
                     .as_ref()
-                    .is_none_or(|(u, s)| (*s != side || *u == Unit::crawler()) || *u == unit),
+                    .is_none_or(|(u, s)| (*s != side || *u == Unit::repair_truck()) || *u == unit),
                 |ui| {
                     let response = ui
                         .add_image(images.get(unit.to_lowername()), [70.; 2])
@@ -1031,7 +1051,7 @@ fn draw_combat_army_grid(
                         state.combat_report_hover = Some((unit, side.clone()));
                     }
 
-                    let text = if hovering_crawler && side == Side::Defender {
+                    let text = if hovering_repair_truck && side == Side::Defender {
                         if n_repaired > 0 {
                             Some(format!("❤{n_repaired}"))
                         } else {
@@ -1070,7 +1090,7 @@ fn draw_combat_army_grid(
                     );
 
                     let all_cu: Vec<_> = own.iter().filter(|cu| cu.unit == unit).collect();
-                    let (hull, shield) = if hovering_crawler && side == Side::Defender {
+                    let (hull, shield) = if hovering_repair_truck && side == Side::Defender {
                         (
                             all_cu
                                 .iter()
@@ -1242,6 +1262,19 @@ fn draw_resource_summary(
     compact: bool,
     scale: f32,
 ) -> Response {
+    draw_resource_summary_with_value_color(ui, icon, label, value, Color32::WHITE, compact, scale)
+}
+
+/// Draws one resource summary with an explicit value color for warning states.
+fn draw_resource_summary_with_value_color(
+    ui: &mut Ui,
+    icon: egui::TextureId,
+    label: &str,
+    value: &str,
+    value_color: Color32,
+    compact: bool,
+    scale: f32,
+) -> Response {
     let (icon_size, spacing, label_size, value_size) = resource_summary_style(compact, scale);
     let label = ui.painter().layout_no_wrap(
         label.to_owned(),
@@ -1251,7 +1284,7 @@ fn draw_resource_summary(
     let value = ui.painter().layout_no_wrap(
         value.to_owned(),
         egui::FontId::new(value_size, FontFamily::Proportional),
-        Color32::WHITE,
+        value_color,
     );
     let horizontal_padding = RESOURCE_SUMMARY_HORIZONTAL_PADDING * scale;
     let width =
@@ -1278,9 +1311,88 @@ fn draw_resource_summary(
         rect.center().y - text_height * 0.5 + RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET * scale;
     let value_top = text_top + label.size().y;
     ui.painter().galley(egui::pos2(text_x, text_top), label, Color32::WHITE);
-    ui.painter().galley(egui::pos2(text_x, value_top), value, Color32::WHITE);
+    ui.painter().galley(egui::pos2(text_x, value_top), value, value_color);
 
     response
+}
+
+fn energy_balance_text(energy: EnergyGrid) -> String {
+    match energy.balance() {
+        balance if balance > 0 => format!("+{balance}"),
+        balance => balance.to_string(),
+    }
+}
+
+fn energy_balance_color(energy: EnergyGrid) -> Color32 {
+    if energy.balance() < 0 {
+        Color32::RED
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn energy_world_breakdown(map: &Map, player: &Player) -> String {
+    map.planets
+        .iter()
+        .filter(|planet| {
+            planet.controlled.or(planet.owned) == Some(player.id) && !planet.is_destroyed
+        })
+        .sorted_by_key(|planet| world_shortcut_order(planet, player))
+        .map(|planet| {
+            let energy = EnergyGrid::for_world(map, planet);
+            format!("{}: {}", planet.name, energy_balance_text(energy))
+        })
+        .join("\n")
+}
+
+fn resource_world_breakdown(map: &Map, player: &Player, resource: ResourceName) -> String {
+    map.planets
+        .iter()
+        .filter(|planet| player.owns(planet))
+        .sorted_by_key(|planet| world_shortcut_order(planet, player))
+        .map(|planet| {
+            let production = player
+                .energy_grid(map)
+                .scale_resources(planet.resource_production())
+                .get(&resource);
+            format!("{}: {production}", planet.name)
+        })
+        .join("\n")
+}
+
+const ENERGY_DESCRIPTION: &str = "Efficiency is the percentage of listed resource production and \
+    Planetary Shield strength you receive. Each missing Energy lowers it by 10 percentage points, \
+    to a minimum of 30%. Energy is not stored, so surplus energy is discarded.";
+
+const EFFICIENCY_DESCRIPTION: &str = "Metal, Crystal, and Deuterium are produced at this \
+    efficiency, and Planetary Shields operate at this strength.";
+
+fn draw_energy_tooltip(ui: &mut Ui, map: &Map, player: &Player, images: &ImageIds) -> egui::Rect {
+    let energy = player.energy_grid(map);
+    ui.horizontal(|ui| {
+        let image_rect = ui.add_image(images.get("energy"), [130.0, 90.0]).rect;
+        ui.vertical(|ui| {
+            ui.set_max_width(360.0);
+            ui.label(RichText::new("Energy").strong());
+            ui.separator();
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.style_mut().interaction.selectable_labels = true;
+                ui.small(format!("Production: {}/{}", energy.supply, energy.demand))
+                    .on_hover_cursor(CursorIcon::Default)
+                    .on_hover_text_at_pointer(
+                        RichText::new(energy_world_breakdown(map, player)).small(),
+                    );
+                ui.small(format!("Efficiency: {}%", energy.efficiency_percent()))
+                    .on_hover_cursor(CursorIcon::Default)
+                    .on_hover_text_at_pointer(RichText::new(EFFICIENCY_DESCRIPTION).small());
+            });
+            ui.add_space(3.0);
+            ui.small(ENERGY_DESCRIPTION);
+        });
+        image_rect
+    })
+    .inner
 }
 
 /// Reserves breathing room between resource summaries.
@@ -1332,8 +1444,10 @@ fn resource_bar_content_width(
             scale,
         );
     }
+    let energy = player.energy_grid(map);
+    width += resource_summary_width(ui, "ENERGY", &energy_balance_text(energy), compact, scale);
 
-    width + resource_bar_gap(compact, scale) * 3.0 + resource_bar_section_gap(compact, scale)
+    width + resource_bar_gap(compact, scale) * 4.0 + resource_bar_section_gap(compact, scale)
 }
 
 fn draw_resource_tooltip(
@@ -1353,24 +1467,11 @@ fn draw_resource_tooltip(
                 ui.style_mut().interaction.selectable_labels = true;
                 ui.small(format!(
                     "Production: +{}",
-                    player.resource_production(&map.planets).get(&resource)
+                    player.resource_production(map).get(&resource)
                 ))
                 .on_hover_cursor(CursorIcon::Default)
                 .on_hover_text_at_pointer(
-                    RichText::new(
-                        map.planets()
-                            .iter()
-                            .filter_map(|planet| {
-                                player.owns(planet).then_some((
-                                    planet.name.clone(),
-                                    planet.resource_production().get(&resource),
-                                ))
-                            })
-                            .sorted_by(|left, right| right.1.cmp(&left.1))
-                            .map(|(name, production)| format!("{name}: {production}"))
-                            .join("\n"),
-                    )
-                    .small(),
+                    RichText::new(resource_world_breakdown(map, player, resource)).small(),
                 );
             });
             ui.add_space(3.0);
@@ -1469,6 +1570,23 @@ fn draw_resources(
             if index + 1 < resource_count {
                 draw_resource_gap(ui, gap, scale);
             }
+        }
+
+        draw_resource_gap(ui, gap, scale);
+        let energy = player.energy_grid(map);
+        let response = draw_resource_summary_with_value_color(
+            ui,
+            images.get("energy"),
+            "ENERGY",
+            &energy_balance_text(energy),
+            energy_balance_color(energy),
+            compact,
+            scale,
+        );
+        if settings.show_hover {
+            response.on_hover_ui(|ui| {
+                draw_energy_tooltip(ui, map, player, images);
+            });
         }
     });
 }
@@ -1580,7 +1698,7 @@ fn draw_planet_overview(
                 ui,
                 RichText::new(format!(
                     "{} Temperature: {}°C to {}°C",
-                    planet.kind.temperature_emoji(),
+                    planet.temperature_emoji(),
                     planet.temperature.0,
                     planet.temperature.1
                 ))
@@ -1733,9 +1851,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
             .size()
             .x;
 
-        ui.spacing_mut().item_spacing.x = 7.;
-        ui.add_space((ui.available_width() - size_x - 27.) * 0.5);
-        ui.add_image(images.get("overview"), [20.; 2]);
+        ui.add_space((ui.available_width() - size_x) * 0.5);
         ui.small(text);
     });
 
@@ -2060,7 +2176,7 @@ fn draw_combat_report(
                         ui,
                         "❤",
                         total_repaired.to_string(),
-                        "Total hull points repaired by Crawlers.",
+                        "Total hull points repaired by Repair Trucks.",
                     );
                 }
                 draw_row(
@@ -2437,6 +2553,11 @@ fn draw_mission_info_hover(
     });
 }
 
+/// Uses the pre-mission world artwork so selection cannot reveal the resolved outcome.
+fn combat_selection_planet_image(report: &MissionReport) -> String {
+    report.planet.image()
+}
+
 /// Draws the combat selection interface and emits any resulting local actions.
 fn draw_combat_selection(
     ui: &mut Ui,
@@ -2560,7 +2681,7 @@ fn draw_combat_selection(
                     player_color,
                 );
                 ui.painter().image(
-                    images.get(destination.image()),
+                    images.get(combat_selection_planet_image(report)),
                     planet_rect,
                     uv,
                     Color32::WHITE,
@@ -2642,7 +2763,10 @@ pub fn add_ui_images(
 /// Draws the ui interface and emits any resulting local actions.
 pub fn draw_ui(
     mut contexts: EguiContexts,
-    mut send_mission: MessageWriter<SendMissionMsg>,
+    (mut send_mission, mut recall_mission): (
+        MessageWriter<SendMissionMsg>,
+        MessageWriter<RecallMissionMsg>,
+    ),
     mut message: MessageWriter<MessageMsg>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -2691,9 +2815,9 @@ pub fn draw_ui(
         let planet = map.get(id);
 
         let (window_w, window_h) = if planet.is_moon() {
-            (145., 630.)
+            (MOON_UNITS_PANEL_WIDTH, 630.)
         } else {
-            (205., 630.)
+            (PLANET_UNITS_PANEL_WIDTH, 630.)
         };
 
         let delta_seconds =
@@ -2898,6 +3022,7 @@ pub fn draw_ui(
                     ui,
                     &missions.0,
                     &mut send_mission,
+                    &mut recall_mission,
                     &settings,
                     &mut state,
                     &mut map,
@@ -2914,6 +3039,9 @@ pub fn draw_ui(
         if settings.show_menu && !player.spectator {
             // Hide shop if hovering another planet
             if state.planet_hover.is_none_or(|planet_id| planet_id == id) {
+                let solar_band = map.solar_band(id);
+                let next_turn_energy = EnergyGrid::for_player_next_turn(player.id, &map);
+                let senate_level_limit = Player::senate_level_limit(&map, settings.p_colonizable);
                 let planet = map.get_mut(id);
 
                 if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
@@ -2933,7 +3061,11 @@ pub fn draw_ui(
                                 &settings,
                                 &mut player,
                                 planet,
+                                solar_band,
+                                next_turn_energy,
+                                senate_level_limit,
                                 &mut pending,
+                                &mut message,
                                 &images,
                             )
                         },

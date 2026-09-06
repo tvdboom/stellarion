@@ -142,16 +142,21 @@ impl Scenario {
             false,
             None,
         );
-        validate_mission(&Player::new(1, 0), &origin, &destination, &mission)
+        let mut map = crate::core::map::model::Map {
+            rect: bevy::math::Rect::default(),
+            planets: vec![origin, destination],
+        };
+        map.planets[0].army.insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);
+        validate_mission(&Player::new(1, 0), &map, &map.planets[0], &map.planets[1], &mission)
             .unwrap_or_else(|e| panic!("invalid scenario {}: {e}", self.id));
-        for (unit, count) in &destination.army {
+        for (unit, count) in &map.planets[1].army {
             assert!(*count > 0 && unit.valid_on(self.moon), "{}: invalid defender", self.id);
             if unit.is_building() {
                 assert!(*count <= Building::MAX_LEVEL);
             }
         }
-        assert!(destination.army.amount(&Unit::space_dock()) <= 1);
-        (destination, mission)
+        assert!(map.planets[1].army.amount(&Unit::space_dock()) <= 1);
+        (map.planets.remove(1), mission)
     }
 }
 
@@ -176,11 +181,28 @@ fn affordable(unit: Unit, budget: usize, valuation: Budget) -> Army {
 
 // Weights are fractions of spending, not unit-count ratios. Unspent rounding is reported.
 fn composition(budget: usize, shares: &[(Unit, usize)]) -> Army {
+    weighted_composition(budget, shares, Budget::Raw)
+}
+
+fn valued_composition(budget: usize, shares: &[(Unit, usize)], valuation: Budget) -> Army {
+    let mut result = weighted_composition(budget, shares, valuation);
+    if let Some((cheapest, _)) =
+        shares.iter().min_by(|(a, _), (b, _)| valuation.value(*a).total_cmp(&valuation.value(*b)))
+    {
+        let remaining = (budget as f64 - valuation.army_value(&result)).max(0.);
+        let extra = (remaining / valuation.value(*cheapest)).floor() as usize;
+        *result.entry(*cheapest).or_default() += extra;
+    }
+    result
+}
+
+fn weighted_composition(budget: usize, shares: &[(Unit, usize)], valuation: Budget) -> Army {
     let weight: usize = shares.iter().map(|(_, w)| w).sum();
     shares
         .iter()
         .filter_map(|(u, w)| {
-            let n = (budget as f64 * *w as f64 / weight as f64 / total(u.price())).floor() as usize;
+            let n =
+                (budget as f64 * *w as f64 / weight as f64 / valuation.value(*u)).floor() as usize;
             (n > 0).then_some((*u, n))
         })
         .collect()
@@ -280,6 +302,106 @@ fn scenarios() -> Vec<Scenario> {
             all.push(Scenario::new("mixed", format!("{b:?}-vs-{an}"), sb, sa));
         }
     }
+    // Diverse fleets use deuterium-sensitive equal budgets. Spending shares produce many cheap
+    // screening ships and progressively fewer capital ships rather than equal unit counts.
+    let varied_fleets = [
+        (
+            "fighter-swarm",
+            vec![
+                (Unit::Ship(S::LightFighter), 55),
+                (Unit::Ship(S::HeavyFighter), 25),
+                (Unit::Ship(S::Destroyer), 20),
+            ],
+        ),
+        (
+            "skirmish",
+            vec![
+                (Unit::Ship(S::LightFighter), 40),
+                (Unit::Ship(S::HeavyFighter), 15),
+                (Unit::Ship(S::Destroyer), 25),
+                (Unit::Ship(S::Cruiser), 20),
+            ],
+        ),
+        (
+            "line-fleet",
+            vec![
+                (Unit::Ship(S::LightFighter), 35),
+                (Unit::Ship(S::Destroyer), 15),
+                (Unit::Ship(S::Cruiser), 25),
+                (Unit::Ship(S::Battleship), 15),
+                (Unit::Ship(S::Dreadnought), 10),
+            ],
+        ),
+        (
+            "siege",
+            vec![
+                (Unit::Ship(S::LightFighter), 35),
+                (Unit::Ship(S::Destroyer), 15),
+                (Unit::Ship(S::Cruiser), 15),
+                (Unit::Ship(S::Bomber), 25),
+                (Unit::Ship(S::Battleship), 10),
+            ],
+        ),
+        (
+            "anti-heavy",
+            vec![
+                (Unit::Ship(S::LightFighter), 30),
+                (Unit::Ship(S::Destroyer), 10),
+                (Unit::Ship(S::Cruiser), 15),
+                (Unit::Ship(S::Battleship), 25),
+                (Unit::Ship(S::Dreadnought), 20),
+            ],
+        ),
+        (
+            "screened-sun",
+            vec![
+                (Unit::Ship(S::LightFighter), 40),
+                (Unit::Ship(S::Destroyer), 15),
+                (Unit::Ship(S::Cruiser), 15),
+                (Unit::Ship(S::Battleship), 10),
+                (Unit::Ship(S::Dreadnought), 10),
+                (Unit::Ship(S::WarSun), 10),
+            ],
+        ),
+        (
+            "full-spectrum",
+            vec![
+                (Unit::Ship(S::LightFighter), 30),
+                (Unit::Ship(S::HeavyFighter), 10),
+                (Unit::Ship(S::Destroyer), 12),
+                (Unit::Ship(S::Cruiser), 12),
+                (Unit::Ship(S::Bomber), 10),
+                (Unit::Ship(S::Battleship), 8),
+                (Unit::Ship(S::Dreadnought), 8),
+                (Unit::Ship(S::WarSun), 10),
+            ],
+        ),
+        (
+            "capital-screen",
+            vec![
+                (Unit::Ship(S::LightFighter), 35),
+                (Unit::Ship(S::Destroyer), 10),
+                (Unit::Ship(S::Cruiser), 10),
+                (Unit::Ship(S::Battleship), 10),
+                (Unit::Ship(S::Dreadnought), 15),
+                (Unit::Ship(S::WarSun), 20),
+            ],
+        ),
+    ];
+    for budget in [24_000, 48_000] {
+        for (attacker_name, attacker_shares) in &varied_fleets {
+            for (defender_name, defender_shares) in &varied_fleets {
+                let mut scenario = Scenario::new(
+                    "varied-fleet",
+                    format!("{budget}-{attacker_name}-vs-{defender_name}"),
+                    valued_composition(budget, attacker_shares, Budget::Scarcity),
+                    valued_composition(budget, defender_shares, Budget::Scarcity),
+                );
+                scenario.budget = Budget::Scarcity;
+                all.push(scenario);
+            }
+        }
+    }
     // Fixed-spend defensive alternatives distinguish free extra support from real choices.
     let batteries = [
         ("gauss", vec![(Unit::Defense(D::GaussCannon), 1)]),
@@ -295,6 +417,7 @@ fn scenarios() -> Vec<Scenario> {
         (
             "layered",
             vec![
+                (Unit::Defense(D::RepairTruck), 1),
                 (Unit::Defense(D::RocketLauncher), 1),
                 (Unit::Defense(D::Crawler), 1),
                 (Unit::Defense(D::IonCannon), 2),
@@ -399,7 +522,7 @@ fn scenarios() -> Vec<Scenario> {
             }
         }
     }
-    for target in TURRETS.into_iter().chain([D::Crawler, D::SpaceDock]) {
+    for target in TURRETS.into_iter().chain([D::Crawler, D::RepairTruck, D::SpaceDock]) {
         all.push({
             let mut s = Scenario::new(
                 "missile",
@@ -523,7 +646,7 @@ fn success(s: &Scenario, r: &MissionReport) -> bool {
         Icon::Spy => r.scout_probes > 0,
         Icon::MissileStrike => {
             total(losses(&s.defender, &r.surviving_defender, |u| {
-                u.is_turret() || *u == Unit::crawler()
+                u.is_turret() || *u == Unit::crawler() || *u == Unit::repair_truck()
             })) > 0.
         },
         Icon::Deploy => r.combat_report.is_none() && r.surviving_attacker == s.attacker,
@@ -573,7 +696,9 @@ fn check_report(s: &Scenario, r: &MissionReport) {
     if s.objective == Icon::MissileStrike {
         assert_eq!(c.rounds.len(), 1);
         for shot in c.rounds[0].attacker.iter().flat_map(|u| &u.shots) {
-            assert!(shot.unit.is_some_and(|u| u.is_turret() || u == Unit::crawler()));
+            assert!(shot.unit.is_some_and(|u| u.is_turret()
+                || u == Unit::crawler()
+                || u == Unit::repair_truck()));
             assert_eq!(shot.planetary_shield_damage, 0);
         }
         for (u, n) in &s.defender {
@@ -867,6 +992,10 @@ fn campaign(seed_value: u64) -> (GameModel, usize, usize) {
     let target = game.map.planets.iter().find(|p| p.owned.is_none() && !p.is_moon()).unwrap().id;
     game.map.get_mut(origin).position = Vec2::ZERO;
     game.map.get_mut(target).position = Vec2::X * Planet::SIZE * 2.5;
+    game.map
+        .get_mut(origin)
+        .army
+        .insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);
     game.players[0].resources = Resources::new(100_000, 100_000, 100_000);
     (game, origin, target)
 }
@@ -1131,7 +1260,7 @@ fn taking_home_world_wins_match_without_a_colony_ship() {
 }
 
 #[test]
-fn moon_conquest_applies_nexus_without_destroying_lunar_base() {
+fn moon_conquest_preserves_tidal_generator_and_lunar_buildings() {
     for i in 0..32 {
         let (mut game, origin, _) = campaign(seed(i));
         let target = game.map.moons()[0].id;
@@ -1140,7 +1269,7 @@ fn moon_conquest_applies_nexus_without_destroying_lunar_base() {
         moon.controlled = Some(2);
         moon.army = army(&[
             (Unit::Building(Building::LunarBase), 5),
-            (Unit::Building(Building::DemolitionNexus), 3),
+            (Unit::Building(Building::TidalGenerator), 3),
             (Unit::Building(Building::Laboratory), 2),
             (Unit::Building(Building::OrbitalRadar), 3),
         ]);
@@ -1161,12 +1290,9 @@ fn moon_conquest_applies_nexus_without_destroying_lunar_base() {
         assert_eq!(moon.controlled, Some(1));
         assert_eq!(moon.owned, None);
         assert_eq!(moon.army.amount(&Unit::Building(Building::LunarBase)), 5);
-        assert_eq!(moon.army.amount(&Unit::Building(Building::DemolitionNexus)), 3);
-        assert_eq!(
-            moon.army.amount(&Unit::Building(Building::Laboratory))
-                + moon.army.amount(&Unit::Building(Building::OrbitalRadar)),
-            2
-        );
+        assert_eq!(moon.army.amount(&Unit::Building(Building::TidalGenerator)), 3);
+        assert_eq!(moon.army.amount(&Unit::Building(Building::Laboratory)), 2);
+        assert_eq!(moon.army.amount(&Unit::Building(Building::OrbitalRadar)), 3);
     }
 }
 
@@ -1180,7 +1306,7 @@ fn jump_deployment_moves_production_weighted_fleet_without_fuel_or_combat() {
     }
     game.map.get_mut(origin).army.insert(Unit::war_sun(), 1);
     let before = game.players[0].resources;
-    let income = game.players[0].resource_production(&game.map.planets);
+    let income = game.players[0].resource_production(&game.map);
     turn(
         &mut game,
         vec![send(
