@@ -163,6 +163,26 @@ fn colonial_withdrawal_creates_one_normal_deploy_and_survives_save_reload() {
 }
 
 #[test]
+fn lone_colony_ship_withdraws_as_a_mission_without_combat_playback() {
+    let (mut model, home, colony, _) = withdrawing_colony_model(7.);
+    model.map.get_mut(colony).army = Army::from([
+        (Unit::colony_ship(), 1),
+        (Unit::Building(Building::ColonialAdministration), 5),
+    ]);
+
+    empty_turn(&mut model);
+
+    assert_eq!(model.missions.len(), 1);
+    let flight = &model.missions[0];
+    assert_eq!((flight.owner, flight.origin, flight.destination), (1, colony, home));
+    assert_eq!(flight.objective, Icon::Deploy);
+    assert_eq!(flight.army, Army::from([(Unit::colony_ship(), 1)]));
+    let report =
+        model.players.iter().find(|player| player.id == 1).unwrap().reports.last().unwrap();
+    assert!(!report.has_combat_playback());
+}
+
+#[test]
 fn one_turn_colonial_withdrawal_docks_at_home_in_the_battle_turn() {
     let (mut model, home, colony, ships) = withdrawing_colony_model(2.);
     empty_turn(&mut model);

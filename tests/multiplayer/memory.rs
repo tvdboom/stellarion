@@ -1,4 +1,5 @@
 use futures_lite::future::block_on;
+use std::sync::{Arc, Barrier};
 
 use super::*;
 use crate::core::identity::GameCode;
@@ -81,6 +82,53 @@ fn supports_all_lobby_sizes_and_duplicate_joining() {
             Err(BackendError::GameFull)
         ));
     }
+}
+
+#[test]
+fn simultaneous_color_claims_have_one_winner_and_restore_the_loser() {
+    let backend = InMemoryBackend::new();
+    let (host, host_recovery) = identity(&backend);
+    let (guest, guest_recovery) = identity(&backend);
+    let created = create(&backend, &host, &host_recovery, 4);
+    let joined = block_on(backend.join_game(
+        &guest,
+        JoinGameRequest {
+            code: created.game.code,
+            display_name: "Guest".into(),
+            recovery_hash: guest_recovery.hash().0,
+        },
+    ))
+    .unwrap();
+    let game_id = joined.game.id.clone();
+    let initial_host = joined.game.persisted.state.player(1).unwrap().color();
+    let initial_guest = joined.game.persisted.state.player(2).unwrap().color();
+    let claimed = PlayerColor::new(5).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let claim = |session: AuthSession| {
+        let backend = backend.clone();
+        let game_id = game_id.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            block_on(backend.set_player_color(&session, &game_id, claimed)).unwrap()
+        })
+    };
+    let host_claim = claim(host.clone());
+    let guest_claim = claim(guest);
+    barrier.wait();
+    host_claim.join().unwrap();
+    guest_claim.join().unwrap();
+
+    let final_game = block_on(backend.load_game(&host, &game_id)).unwrap();
+    let host_color = final_game.persisted.state.player(1).unwrap().color();
+    let guest_color = final_game.persisted.state.player(2).unwrap().color();
+    assert_eq!(usize::from(host_color == claimed) + usize::from(guest_color == claimed), 1);
+    if host_color == claimed {
+        assert_eq!(guest_color, initial_guest);
+    } else {
+        assert_eq!(host_color, initial_host);
+    }
+    final_game.persisted.validate().unwrap();
 }
 
 #[test]

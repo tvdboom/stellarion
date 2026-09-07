@@ -161,9 +161,9 @@ impl PlayAudioMsg {
         Self {
             name,
             volume: match name {
-                "explosion" | "short explosion" | "large explosion" | "death ray"
-                | "shield impact" | "beam fire" | "missile fire" | "bomb release"
-                | "probe retreat" => -18.0,
+                "explosion" | "short explosion" | "large explosion" | "death ray" | "beam fire"
+                | "bomb release" | "probe retreat" => -18.0,
+                "shield impact" | "laser fire" | "missile fire" => -14.0,
                 "horn" | "repair" | "victory" | "draw" | "defeat" => -12.0,
                 _ => 0.0,
             },
@@ -782,6 +782,7 @@ pub fn play_audio(
                 | "death ray"
                 | "repair"
                 | "shield impact"
+                | "laser fire"
                 | "beam fire"
                 | "missile fire"
                 | "bomb release"

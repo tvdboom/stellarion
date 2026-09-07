@@ -102,6 +102,22 @@ fn level_five_immediate_retreat_leaves_before_any_shot() {
         .all(|unit| unit.shots.is_empty()));
     assert_eq!(report.winner(), Some(1));
     assert!(!report.is_stalemate());
+    assert!(report.has_combat_playback());
+}
+
+#[test]
+fn colony_ship_only_immediate_retreat_has_no_combat_playback() {
+    let report = battle(
+        5,
+        FleetWithdrawal::Immediate,
+        Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        Army::from([(Unit::colony_ship(), 1)]),
+        Some(2),
+    );
+    let retreat = report.combat_report.as_ref().unwrap().defender_retreat.as_ref().unwrap();
+    assert_eq!(retreat.after_round, None);
+    assert_eq!(retreat.ships.amount(&Unit::colony_ship()), 1);
+    assert!(!report.has_combat_playback());
 }
 
 #[test]

@@ -226,7 +226,66 @@ impl PlanetPanelSlide {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct PlanetPanelHoverHold {
+    target: Option<PlanetPanelSlideTarget>,
+    panel_rects: [Option<egui::Rect>; 2],
+    remaining: f32,
+}
+
+impl PlanetPanelHoverHold {
+    fn update(
+        &mut self,
+        direct_target: Option<PlanetPanelSlideTarget>,
+        pointer: Option<egui::Pos2>,
+        delta_seconds: f32,
+    ) -> Option<PlanetPanelSlideTarget> {
+        if let Some(target) = direct_target {
+            if target.mode == PlanetPanelMode::Full {
+                self.target = Some(target);
+                self.remaining = PLANET_PANEL_HOVER_HOLD_DURATION;
+            } else {
+                // Mission links are transient unit previews and must not revive a previous map
+                // hover once their own pointer leaves.
+                self.clear();
+                return Some(target);
+            }
+        } else if self.target.is_some() {
+            let over_panel = pointer.is_some_and(|pointer| {
+                self.panel_rects.iter().flatten().any(|rect| rect.contains(pointer))
+            });
+            if over_panel {
+                self.remaining = PLANET_PANEL_HOVER_HOLD_DURATION;
+            } else {
+                self.remaining = (self.remaining - delta_seconds.max(0.0)).max(0.0);
+                if self.remaining == 0.0 {
+                    self.clear();
+                }
+            }
+        }
+
+        self.target
+    }
+
+    fn set_panel_rects(&mut self, panel_rects: [Option<egui::Rect>; 2]) {
+        self.panel_rects = panel_rects;
+    }
+
+    fn clear(&mut self) {
+        self.target = None;
+        self.panel_rects = [None; 2];
+        self.remaining = 0.0;
+    }
+}
+
+fn include_planet_panel_rect(panel_rects: &mut [Option<egui::Rect>; 2], rect: Option<egui::Rect>) {
+    if let (Some(slot), Some(rect)) = (panel_rects.iter_mut().find(|slot| slot.is_none()), rect) {
+        *slot = Some(rect);
+    }
+}
+
 const PLANET_PANEL_SLIDE_DURATION: f32 = 0.22;
+const PLANET_PANEL_HOVER_HOLD_DURATION: f32 = 0.8;
 const PLANET_DETAIL_LINE_DURATION: f32 = 0.12;
 const PLANET_DETAIL_LINE_STAGGER: f32 = 0.04;
 const PLANET_DETAIL_LINE_COUNT: usize = 4;
@@ -334,7 +393,8 @@ fn draw_panel<R>(
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) {
-    draw_panel_with_horizontal_overflow(contexts, name, image, pos, size, 0.0, images, content);
+    let _ =
+        draw_panel_with_horizontal_overflow(contexts, name, image, pos, size, 0.0, images, content);
 }
 
 /// Draws a panel while permitting an animated horizontal entrance beyond the viewport edge.
@@ -347,7 +407,7 @@ fn draw_sliding_panel<R>(
     horizontal_overflow: f32,
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
-) {
+) -> Option<egui::Rect> {
     draw_panel_with_horizontal_overflow(
         contexts,
         name,
@@ -357,7 +417,7 @@ fn draw_sliding_panel<R>(
         horizontal_overflow,
         images,
         content,
-    );
+    )
 }
 
 fn draw_panel_with_horizontal_overflow<R>(
@@ -369,9 +429,9 @@ fn draw_panel_with_horizontal_overflow<R>(
     horizontal_overflow: f32,
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
-) {
+) -> Option<egui::Rect> {
     let Ok(context) = contexts.ctx_mut() else {
-        return;
+        return None;
     };
     let mut window = egui::Window::new(name)
         .frame(egui::Frame {
@@ -394,12 +454,14 @@ fn draw_panel_with_horizontal_overflow<R>(
             .constrain_to(context.content_rect().expand2(egui::vec2(horizontal_overflow, 0.0)));
     }
 
-    window.show(context, |ui| {
-        let response =
-            ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
+    window
+        .show(context, |ui| {
+            let response =
+                ui.add(egui::Image::new(SizedTexture::new(images.get(image), ui.available_size())));
 
-        ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
-    });
+            ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
+        })
+        .map(|response| response.response.rect)
 }
 
 /// Draws a centered, input-blocking abandon prompt over the game interface.
@@ -764,9 +826,9 @@ fn draw_enemy_players_widget(
     local_player: &Player,
     map: &Map,
     missions: &[Mission],
-) {
+) -> egui::Rect {
     let Some(game) = &session.active_game else {
-        return;
+        return egui::Rect::NOTHING;
     };
     let enemies = game
         .members
@@ -774,40 +836,46 @@ fn draw_enemy_players_widget(
         .filter(|member| member.player_id != local_player.id)
         .collect::<Vec<_>>();
     if enemies.is_empty() {
-        return;
+        return egui::Rect::NOTHING;
     }
     let counts = known_planet_counts(map, local_player, missions);
     let target = game.persisted.state.planets_to_win();
+    let scale = owned_worlds_hud_scale(context.content_rect().size());
 
     egui::Area::new("stellarion_enemy_players".into())
-        .anchor(Align2::LEFT_BOTTOM, egui::vec2(18.0, -18.0))
+        .anchor(
+            Align2::LEFT_BOTTOM,
+            egui::vec2(OWNED_WORLDS_LEFT * scale, -18.0 * scale),
+        )
         .movable(false)
         .constrain(true)
         .order(Order::Middle)
         .show(context, |ui| {
-            hud_panel_frame()
+            scaled_hud_panel_frame(scale)
                 .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 218))
-                .inner_margin(egui::Margin::symmetric(12, 9))
                 .show(ui, |ui| {
-                    let max_width = (context.content_rect().width() - 62.0).max(0.0);
-                    ui.set_width(270.0_f32.min(max_width));
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                    let max_width = (context.content_rect().width() - 62.0 * scale).max(0.0);
+                    ui.set_width((OWNED_WORLDS_WIDTH * scale).min(max_width));
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0) * scale;
                     ui.label(
                         RichText::new("ENEMY PLAYERS")
-                            .size(11.0)
+                            .size(11.0 * scale)
                             .strong()
                             .color(Color32::from_rgb(166, 188, 211)),
                     );
-                    ui.add_space(5.0);
+                    ui.add_space(5.0 * scale);
                     for member in enemies {
                         ui.horizontal(|ui| {
                             let color = session.player_color(member.player_id);
                             let [red, green, blue] = color.rgb();
                             let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(18.0, 22.0), egui::Sense::hover());
+                                .allocate_exact_size(
+                                    egui::vec2(18.0, 22.0) * scale,
+                                    egui::Sense::hover(),
+                                );
                             ui.painter().circle_filled(
                                 rect.center(),
-                                6.0,
+                                6.0 * scale,
                                 Color32::from_rgba_unmultiplied(
                                     red,
                                     green,
@@ -822,7 +890,7 @@ fn draw_enemy_players_widget(
                             let status = (!member.connected).then(|| {
                                 egui::WidgetText::from(
                                     RichText::new("DISCONNECTED")
-                                        .size(9.0)
+                                        .size(9.0 * scale)
                                         .strong()
                                         .color(Color32::from_rgb(255, 112, 112)),
                                 )
@@ -841,7 +909,7 @@ fn draw_enemy_players_widget(
                                         .map_or_else(|| "?".to_owned(), usize::to_string),
                                     target,
                                 ))
-                                .size(13.0)
+                                .size(13.0 * scale)
                                 .color(Color32::from_rgb(166, 188, 211)),
                             )
                             .into_galley(
@@ -852,10 +920,12 @@ fn draw_enemy_players_widget(
                             );
                             // Keep progress and connection status visible even with long names.
                             let status_width = status.as_ref().map_or(0.0, |galley| {
-                                galley.size().x + 12.0 + 2.0 * ui.spacing().item_spacing.x
+                                galley.size().x
+                                    + 12.0 * scale
+                                    + 2.0 * ui.spacing().item_spacing.x
                             });
                             let name = egui::WidgetText::from(
-                                RichText::new(&member.display_name).size(14.0).strong().color(
+                                RichText::new(&member.display_name).size(14.0 * scale).strong().color(
                                     if member.connected {
                                         ui.visuals().text_color()
                                     } else {
@@ -875,36 +945,40 @@ fn draw_enemy_players_widget(
                                 "Known controlled planets needed to win. Intelligence may be outdated.",
                             );
                             if let Some(status) = status {
-                                draw_disconnected_icon(ui);
+                                draw_disconnected_icon(ui, scale);
                                 ui.add(egui::Label::new(status));
                             }
                         });
                     }
                 });
-        });
+        })
+        .response
+        .rect
 }
 
 /// Draws a small slashed Wi-Fi symbol without depending on a font's icon coverage.
-fn draw_disconnected_icon(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), Sense::hover());
+fn draw_disconnected_icon(ui: &mut Ui, scale: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0) * scale, Sense::hover());
     let center = rect.center();
     let color = Color32::from_rgb(255, 112, 112);
-    let stroke = Stroke::new(1.2, color);
+    let stroke = Stroke::new(1.2 * scale, color);
     for (width, top, bottom) in [(5.0, -5.0, -1.0), (3.0, -2.0, 1.0)] {
         ui.painter().add(egui::epaint::QuadraticBezierShape::from_points_stroke(
             [
-                center + egui::vec2(-width, bottom),
-                center + egui::vec2(0.0, top),
-                center + egui::vec2(width, bottom),
+                center + egui::vec2(-width, bottom) * scale,
+                center + egui::vec2(0.0, top) * scale,
+                center + egui::vec2(width, bottom) * scale,
             ],
             false,
             Color32::TRANSPARENT,
             stroke,
         ));
     }
-    ui.painter().circle_filled(center + egui::vec2(0.0, 3.0), 1.0, color);
-    ui.painter()
-        .line_segment([center - egui::vec2(5.0, 5.0), center + egui::vec2(5.0, 5.0)], stroke);
+    ui.painter().circle_filled(center + egui::vec2(0.0, 3.0) * scale, scale, color);
+    ui.painter().line_segment(
+        [center - egui::vec2(5.0, 5.0) * scale, center + egui::vec2(5.0, 5.0) * scale],
+        stroke,
+    );
 }
 
 /// Draws the army grid interface and emits any resulting local actions.
@@ -1359,7 +1433,11 @@ fn energy_balance_color(energy: EnergyGrid) -> Color32 {
     }
 }
 
-fn energy_world_breakdown(map: &Map, player: &Player) -> String {
+fn energy_world_breakdown(
+    map: &Map,
+    player: &Player,
+    timing: ResourceProductionTiming,
+) -> Vec<(String, EnergyGrid)> {
     map.planets
         .iter()
         .filter(|planet| {
@@ -1367,10 +1445,10 @@ fn energy_world_breakdown(map: &Map, player: &Player) -> String {
         })
         .sorted_by_key(|planet| world_shortcut_order(planet, player))
         .map(|planet| {
-            let energy = EnergyGrid::for_world(map, planet);
-            format!("{}: {}", planet.name, energy_balance_text(energy))
+            let projected = timing.planet(planet);
+            (planet.name.clone(), EnergyGrid::for_world(map, &projected))
         })
-        .join("\n")
+        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1380,20 +1458,44 @@ struct ResourceWorldProduction {
     terraformer_modifier_percent: i32,
 }
 
-fn projected_resource_production(planet: &Planet) -> Resources {
-    let mut projected = planet.clone();
-    projected.produce();
-    projected.resource_production()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResourceProductionTiming {
+    Current,
+    NextTurn,
 }
 
-fn next_turn_resource_production(map: &Map, player: &Player) -> Resources {
+impl ResourceProductionTiming {
+    fn energy(self, map: &Map, player: &Player) -> EnergyGrid {
+        match self {
+            Self::Current => player.energy_grid(map),
+            Self::NextTurn => EnergyGrid::for_player_next_turn(player.id, map),
+        }
+    }
+
+    fn planet(self, planet: &Planet) -> Planet {
+        let mut projected = planet.clone();
+        if self == Self::NextTurn {
+            projected.produce();
+        }
+        projected
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Current => "Production",
+            Self::NextTurn => "Production next turn",
+        }
+    }
+}
+
+fn resource_production(map: &Map, player: &Player, timing: ResourceProductionTiming) -> Resources {
     let raw = map
         .planets
         .iter()
         .filter(|planet| player.owns(planet))
-        .map(projected_resource_production)
+        .map(|planet| timing.planet(planet).resource_production())
         .sum();
-    EnergyGrid::for_player_next_turn(player.id, map).scale_resources(raw)
+    timing.energy(map, player).scale_resources(raw)
 }
 
 fn terraformer_modifier_percent(planet: &Planet, resource: ResourceName) -> i32 {
@@ -1419,30 +1521,45 @@ fn resource_world_breakdown(
     map: &Map,
     player: &Player,
     resource: ResourceName,
+    timing: ResourceProductionTiming,
 ) -> Vec<ResourceWorldProduction> {
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
+    let energy = timing.energy(map, player);
+    let mut accumulated_raw = 0usize;
+    let mut accumulated_scaled = 0usize;
     map.planets
         .iter()
         .filter(|planet| player.owns(planet))
         .sorted_by_key(|planet| world_shortcut_order(planet, player))
         .map(|planet| {
-            let mut projected = planet.clone();
-            projected.produce();
+            let projected = timing.planet(planet);
+            let raw = projected.resource_production().get(&resource);
+            accumulated_raw = accumulated_raw.saturating_add(raw);
+            let mut accumulated = Resources::default();
+            *accumulated.get_mut(&resource) = accumulated_raw;
+            let scaled = energy.scale_resources(accumulated).get(&resource);
+            let amount = scaled.saturating_sub(accumulated_scaled);
+            accumulated_scaled = scaled;
             ResourceWorldProduction {
                 name: planet.name.clone(),
-                amount: energy.scale_resources(projected.resource_production()).get(&resource),
+                amount,
                 terraformer_modifier_percent: terraformer_modifier_percent(&projected, resource),
             }
         })
         .collect()
 }
 
-fn draw_resource_world_breakdown(ui: &mut Ui, map: &Map, player: &Player, resource: ResourceName) {
+fn draw_resource_world_breakdown(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    resource: ResourceName,
+    timing: ResourceProductionTiming,
+) {
     ui.spacing_mut().item_spacing.y = 2.0;
-    for world in resource_world_breakdown(map, player, resource) {
-        ui.horizontal(|ui| {
+    for world in resource_world_breakdown(map, player, resource, timing) {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.small(format!("{}: {}", world.name, world.amount));
+            ui.small(format!("{}: +{}", world.name, world.amount));
             if world.terraformer_modifier_percent != 0 {
                 let color = if world.terraformer_modifier_percent > 0 {
                     HEALTH_COLOR.to_color32()
@@ -1458,12 +1575,80 @@ fn draw_resource_world_breakdown(ui: &mut Ui, map: &Map, player: &Player, resour
     }
 }
 
-const ENERGY_DESCRIPTION: &str = "Efficiency is the percentage of listed resource production and \
-    Planetary Shield strength you receive. Each missing Energy lowers it by 10 percentage points, \
-    to a minimum of 30%. Energy is not stored, so surplus energy is discarded.";
+fn draw_resource_production_row(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    resource: ResourceName,
+    timing: ResourceProductionTiming,
+) -> Response {
+    let energy = timing.energy(map, player);
+    let production = resource_production(map, player, timing).get(&resource);
+    let response = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let production = ui.small(format!("{}: +{production}", timing.label()));
+            let energy_penalty = 100usize.saturating_sub(energy.efficiency_percent());
+            if energy_penalty > 0 {
+                production.union(ui.colored_label(
+                    Color32::RED,
+                    RichText::new(format!("(-{energy_penalty}%)")).small(),
+                ))
+            } else {
+                production
+            }
+        })
+        .inner
+        .on_hover_cursor(CursorIcon::Default);
+    if response.hovered() {
+        ui.add_space(2.0);
+        ui.indent(timing.label(), |ui| {
+            draw_resource_world_breakdown(ui, map, player, resource, timing);
+        });
+        ui.add_space(2.0);
+    }
+    response
+}
+
+const ENERGY_DESCRIPTION: &str = "Energy powers and maintains buildings across your empire.";
 
 const EFFICIENCY_DESCRIPTION: &str = "Metal, Crystal, and Deuterium are produced at this \
     efficiency, and Planetary Shields operate at this strength.";
+
+fn draw_energy_world_breakdown(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    timing: ResourceProductionTiming,
+) {
+    ui.spacing_mut().item_spacing.y = 2.0;
+    for (name, energy) in energy_world_breakdown(map, player, timing) {
+        ui.colored_label(
+            energy_balance_color(energy),
+            RichText::new(format!("{name}: {}", energy_balance_text(energy))).small(),
+        );
+    }
+}
+
+fn draw_energy_production_row(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    timing: ResourceProductionTiming,
+) -> Response {
+    let energy = timing.energy(map, player);
+    let response = ui
+        .small(format!("{}: {}/{}", timing.label(), energy.supply, energy.demand))
+        .on_hover_cursor(CursorIcon::Default);
+    if response.hovered() {
+        ui.add_space(2.0);
+        ui.indent(timing.label(), |ui| {
+            draw_energy_world_breakdown(ui, map, player, timing);
+        });
+        ui.add_space(2.0);
+    }
+    response
+}
 
 fn draw_energy_tooltip(ui: &mut Ui, map: &Map, player: &Player, images: &ImageIds) -> egui::Rect {
     let energy = player.energy_grid(map);
@@ -1476,11 +1661,9 @@ fn draw_energy_tooltip(ui: &mut Ui, map: &Map, player: &Player, images: &ImageId
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.style_mut().interaction.selectable_labels = true;
-                ui.small(format!("Production: {}/{}", energy.supply, energy.demand))
-                    .on_hover_cursor(CursorIcon::Default)
-                    .on_hover_text_at_pointer(
-                        RichText::new(energy_world_breakdown(map, player)).small(),
-                    );
+                draw_energy_production_row(ui, map, player, ResourceProductionTiming::Current);
+                draw_energy_production_row(ui, map, player, ResourceProductionTiming::NextTurn);
+                ui.add_space(6.0);
                 ui.small(format!("Efficiency: {}%", energy.efficiency_percent()))
                     .on_hover_cursor(CursorIcon::Default)
                     .on_hover_text_at_pointer(RichText::new(EFFICIENCY_DESCRIPTION).small());
@@ -1555,9 +1738,6 @@ fn draw_resource_tooltip(
     player: &Player,
     images: &ImageIds,
 ) -> egui::Rect {
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
-    let production = next_turn_resource_production(map, player).get(&resource);
-    let energy_penalty = 100usize.saturating_sub(energy.efficiency_percent());
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
         ui.vertical(|ui| {
@@ -1565,20 +1745,22 @@ fn draw_resource_tooltip(
             ui.label(RichText::new(resource.to_name()).strong());
             ui.separator();
             ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 ui.style_mut().interaction.selectable_labels = true;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.small(format!("Production next turn: +{production}"));
-                    if energy_penalty > 0 {
-                        ui.colored_label(
-                            Color32::RED,
-                            RichText::new(format!("(-{energy_penalty}%)")).small(),
-                        );
-                    }
-                })
-                .response
-                .on_hover_cursor(CursorIcon::Default)
-                .on_hover_ui(|ui| draw_resource_world_breakdown(ui, map, player, resource));
+                draw_resource_production_row(
+                    ui,
+                    map,
+                    player,
+                    resource,
+                    ResourceProductionTiming::Current,
+                );
+                draw_resource_production_row(
+                    ui,
+                    map,
+                    player,
+                    resource,
+                    ResourceProductionTiming::NextTurn,
+                );
             });
             ui.add_space(3.0);
             ui.small(resource.description());
@@ -1946,7 +2128,7 @@ fn abandon_planet(
 }
 
 /// Draws the overview interface and emits any resulting local actions.
-fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
+fn draw_overview(ui: &mut Ui, planet: &Planet, home_planet: PlanetId, images: &ImageIds) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -1968,7 +2150,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 
         ui.add_space(10.);
 
-        for units in Unit::all_valid(planet.is_moon()) {
+        for units in Unit::all_for_world(planet.is_moon(), planet.id == home_planet) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -1995,7 +2177,13 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, images: &ImageIds) {
 }
 
 /// Draws the report overview interface and emits any resulting local actions.
-fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images: &ImageIds) {
+fn draw_report_overview(
+    ui: &mut Ui,
+    planet: &Planet,
+    info: &PlanetInfo,
+    home_planet: PlanetId,
+    images: &ImageIds,
+) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -2018,7 +2206,7 @@ fn draw_report_overview(ui: &mut Ui, planet: &Planet, info: &PlanetInfo, images:
         ui.spacing_mut().item_spacing = emath::Vec2::new(7., 4.);
 
         ui.add_space(10.);
-        for units in Unit::all_valid(planet.is_moon()) {
+        for units in Unit::all_for_world(planet.is_moon(), planet.id == home_planet) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -2681,7 +2869,7 @@ fn draw_combat_selection(
         .filter(|r| {
             r.turn == settings.turn
                 && !r.hidden
-                && r.combat_report.is_some()
+                && r.has_combat_playback()
                 && r.can_see(&Side::Defender, player.id)
         })
         .collect::<Vec<_>>();
@@ -2886,9 +3074,14 @@ pub fn draw_ui(
     keyboard: Res<ButtonInput<KeyCode>>,
     images: Res<ImageIds>,
     window: Single<&Window>,
-    mut planet_panel_slide: Local<PlanetPanelSlide>,
+    (mut planet_panel_slide, mut planet_panel_hover_hold): (
+        Local<PlanetPanelSlide>,
+        Local<PlanetPanelHoverHold>,
+    ),
 ) {
     if game_state.get().is_modal_menu() {
+        planet_panel_slide.hide();
+        planet_panel_hover_hold.clear();
         return;
     }
 
@@ -2906,10 +3099,24 @@ pub fn draw_ui(
         state.mission_planet_hover = None;
     }
 
-    // Mission-panel planet links preview only known units. Full details require map hover;
-    // selection keeps the shop and mission origin without pinning the details open.
-    let planet_panel =
-        planet_hover_panel_target(&state, window.cursor_position().map(|pos| pos.x), width);
+    let cursor_position = window.cursor_position();
+    let delta_seconds =
+        contexts.ctx_mut().map_or(0.0, |context| context.input(|input| input.stable_dt));
+    // Selection keeps the shop and mission origin without pinning the details open. A map-hover
+    // panel remains briefly after PointerOut so the pointer can reach it, then stays visible for as
+    // long as any of its constituent panels are hovered.
+    let direct_planet_panel =
+        planet_hover_panel_target(&state, cursor_position.map(|pos| pos.x), width);
+    let planet_panel = planet_panel_hover_hold.update(
+        direct_planet_panel,
+        cursor_position.map(|pos| egui::pos2(pos.x, pos.y)),
+        delta_seconds,
+    );
+    if direct_planet_panel.is_none() && planet_panel.is_some() {
+        if let Ok(context) = contexts.ctx_mut() {
+            context.request_repaint();
+        }
+    }
 
     if let Some(target) = planet_panel {
         let PlanetPanelSlideTarget {
@@ -2926,8 +3133,6 @@ pub fn draw_ui(
             (PLANET_UNITS_PANEL_WIDTH, 630.)
         };
 
-        let delta_seconds =
-            contexts.ctx_mut().map_or(0.0, |context| context.input(|input| input.stable_dt));
         let slide_progress = planet_panel_slide.progress(target, delta_seconds);
         let slide_distance = window_w + 518.0;
         let slide_x = planet_panel_slide_offset(slide_progress, right_side, slide_distance);
@@ -2983,47 +3188,20 @@ pub fn draw_ui(
                         &images,
                     )
                 },
-            );
+            )
         };
+
+        let mut panel_rects = [None; 2];
 
         // Check whether there is a report on this planet
         let info = player.last_info(planet, &missions.0);
 
         if player.controls(planet) || player.spectator {
-            draw_sliding_panel(
-                &mut contexts,
-                "overview",
-                "panel",
-                (
-                    if right_side {
-                        width * 0.998 - window_w
-                    } else {
-                        width * 0.002
-                    } + slide_x,
-                    height * 0.5 - window_h * 0.5,
-                ),
-                (window_w, window_h),
-                slide_distance,
-                &images,
-                |ui| draw_overview(ui, planet, &images),
-            );
-
-            if mode == PlanetPanelMode::Full {
-                draw_planet_info(
-                    &mut contexts,
-                    id,
-                    &mut map,
-                    &mut player,
-                    &mut state.abandon_confirmation,
-                    true,
-                );
-            }
-        } else if let Some(info) = info {
-            // Don't use has_army since no units is also valid information
-            if !planet.is_destroyed && !info.army.is_empty() {
+            include_planet_panel_rect(
+                &mut panel_rects,
                 draw_sliding_panel(
                     &mut contexts,
-                    "report overview",
+                    "overview",
                     "panel",
                     (
                         if right_side {
@@ -3036,10 +3214,13 @@ pub fn draw_ui(
                     (window_w, window_h),
                     slide_distance,
                     &images,
-                    |ui| draw_report_overview(ui, planet, &info, &images),
-                );
+                    |ui| draw_overview(ui, planet, player.home_planet, &images),
+                ),
+            );
 
-                if mode == PlanetPanelMode::Full {
+            if mode == PlanetPanelMode::Full {
+                include_planet_panel_rect(
+                    &mut panel_rects,
                     draw_planet_info(
                         &mut contexts,
                         id,
@@ -3047,9 +3228,62 @@ pub fn draw_ui(
                         &mut player,
                         &mut state.abandon_confirmation,
                         true,
+                    ),
+                );
+            }
+        } else if let Some(info) = info {
+            // Don't use has_army since no units is also valid information
+            if !planet.is_destroyed && !info.army.is_empty() {
+                include_planet_panel_rect(
+                    &mut panel_rects,
+                    draw_sliding_panel(
+                        &mut contexts,
+                        "report overview",
+                        "panel",
+                        (
+                            if right_side {
+                                width * 0.998 - window_w
+                            } else {
+                                width * 0.002
+                            } + slide_x,
+                            height * 0.5 - window_h * 0.5,
+                        ),
+                        (window_w, window_h),
+                        slide_distance,
+                        &images,
+                        |ui| draw_report_overview(ui, planet, &info, player.home_planet, &images),
+                    ),
+                );
+
+                if mode == PlanetPanelMode::Full {
+                    include_planet_panel_rect(
+                        &mut panel_rects,
+                        draw_planet_info(
+                            &mut contexts,
+                            id,
+                            &mut map,
+                            &mut player,
+                            &mut state.abandon_confirmation,
+                            true,
+                        ),
                     );
                 }
             } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
+                include_planet_panel_rect(
+                    &mut panel_rects,
+                    draw_planet_info(
+                        &mut contexts,
+                        id,
+                        &mut map,
+                        &mut player,
+                        &mut state.abandon_confirmation,
+                        false,
+                    ),
+                );
+            }
+        } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
+            include_planet_panel_rect(
+                &mut panel_rects,
                 draw_planet_info(
                     &mut contexts,
                     id,
@@ -3057,20 +3291,13 @@ pub fn draw_ui(
                     &mut player,
                     &mut state.abandon_confirmation,
                     false,
-                );
-            }
-        } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
-            draw_planet_info(
-                &mut contexts,
-                id,
-                &mut map,
-                &mut player,
-                &mut state.abandon_confirmation,
-                false,
+                ),
             );
         }
+        planet_panel_hover_hold.set_panel_rects(panel_rects);
     } else {
         planet_panel_slide.hide();
+        planet_panel_hover_hold.set_panel_rects([None; 2]);
     }
 
     if let Some(mission_id) = state.mission_hover {

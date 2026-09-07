@@ -137,7 +137,7 @@ impl Description for BombingRaid {
             BombingRaid::Economic => {
                 "Bombers target resource production buildings: Metal Mine, Crystal Mine and \
                 Deuterium Synthesizer. Once per battle, after the first round ending with the \
-                Planetary Shield down, each surviving Bomber has one 10% chance to destroy a \
+                Planetary Shield down, each surviving Bomber has one 25% chance to destroy a \
                 level. Targets are chosen randomly, with at most 3 levels lost per building \
                 and 9 in total."
             },
@@ -145,7 +145,7 @@ impl Description for BombingRaid {
                 "Bombers target unit production buildings: Shipyard, Factory and Missile Silo. \
                 Reducing a Silo's level does not destroy the enemy's missiles that surpass the \
                 new capacity limit. Once per battle, after the first round ending with the \
-                Planetary Shield down, each surviving Bomber has one 10% chance to destroy a \
+                Planetary Shield down, each surviving Bomber has one 25% chance to destroy a \
                 level. Targets are chosen randomly, with at most 3 levels lost per building \
                 and 9 in total."
             },
@@ -294,10 +294,14 @@ impl Mission {
     /// Returns the mission silhouette, keeping jump-gate details private to the owner.
     pub fn image(&self, player: &Player) -> &str {
         let image_objective = self.return_objective.unwrap_or(self.objective);
-        if image_objective == Icon::Colonize || self.uses_colony_ship_image() {
+        if image_objective == Icon::Colonize {
             "mission colonize"
         } else if self.uses_war_sun_image() {
-            "mission destroy"
+            if self.owner == player.id && self.jump_gate {
+                "mission destroy jump"
+            } else {
+                "mission destroy"
+            }
         } else if image_objective == Icon::MissileStrike {
             "mission missile"
         } else if image_objective == Icon::Spy {
@@ -307,12 +311,6 @@ impl Mission {
         } else {
             "mission"
         }
-    }
-
-    /// Returns whether every dispatched unit is a colony ship.
-    pub(crate) fn uses_colony_ship_image(&self) -> bool {
-        self.army.amount(&Unit::colony_ship()) > 0
-            && self.army.iter().all(|(unit, count)| *count == 0 || *unit == Unit::colony_ship())
     }
 
     /// Returns whether this fleet uses the War Sun silhouette on the strategic map.

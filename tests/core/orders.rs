@@ -27,6 +27,17 @@ fn senate_has_a_capstone_building_price() {
 }
 
 #[test]
+fn five_colonial_administration_levels_cost_less_than_one_space_dock() {
+    let administration = Unit::Building(Building::ColonialAdministration).price();
+    let full_investment = administration * Building::MAX_LEVEL;
+    let space_dock = Unit::space_dock().price();
+
+    assert_eq!(administration, crate::core::resources::Resources::new(200, 100, 50));
+    assert_eq!(full_investment, crate::core::resources::Resources::new(1_000, 500, 250));
+    assert!(full_investment < space_dock);
+}
+
+#[test]
 fn senate_purchase_respects_the_match_level_limit() {
     let mut game = game();
     let home = game.players[0].home_planet;
@@ -40,6 +51,50 @@ fn senate_purchase_respects_the_match_level_limit() {
     assert_eq!(purchase_limit(player, planet, senate, 1), Err(OrderError::Building));
     planet.army.insert(senate, 2);
     assert_eq!(purchase_limit(player, planet, senate, 2), Err(OrderError::Building));
+}
+
+#[test]
+fn tidal_generators_consume_lunar_fields() {
+    let mut game = game();
+    let player_id = game.players[0].id;
+    let moon_id = game.map.moons()[0].id;
+    let moon = game.map.get_mut(moon_id);
+    moon.controlled = Some(player_id);
+    moon.army.clear();
+
+    assert_eq!(
+        purchase_limit(
+            &game.players[0],
+            game.map.get(moon_id),
+            Unit::Building(Building::TidalGenerator),
+            Building::MAX_LEVEL,
+        ),
+        Err(OrderError::Fields)
+    );
+
+    let moon = game.map.get_mut(moon_id);
+    moon.army.insert(Unit::Building(Building::LunarBase), 1);
+    assert_eq!(
+        purchase_limit(
+            &game.players[0],
+            game.map.get(moon_id),
+            Unit::Building(Building::TidalGenerator),
+            Building::MAX_LEVEL,
+        ),
+        Ok(1)
+    );
+
+    game.map.get_mut(moon_id).army.insert(Unit::Building(Building::TidalGenerator), 1);
+    assert_eq!(game.map.get(moon_id).fields_consumed(), 1);
+    assert_eq!(
+        purchase_limit(
+            &game.players[0],
+            game.map.get(moon_id),
+            Unit::Building(Building::Laboratory),
+            Building::MAX_LEVEL,
+        ),
+        Err(OrderError::Fields)
+    );
 }
 
 #[test]

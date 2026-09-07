@@ -211,7 +211,7 @@ pub fn start_turn(
 
         if !request.skip_battle
             && new_reports.iter().any(|report| {
-                report.combat_report.is_some()
+                report.has_combat_playback()
                     && report.can_see(&Side::Attacker, player.id)
                     && report.can_see(&Side::Defender, player.id)
             })

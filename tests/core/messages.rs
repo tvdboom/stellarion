@@ -329,3 +329,20 @@ fn return_toast_opens_the_reports_panel_without_selecting_a_hidden_report() {
     assert_eq!(state.mission_report, Some(17), "the last visible report remains selected");
     assert_eq!(state.combat_report, None);
 }
+
+#[test]
+fn enemy_detection_toast_opens_the_enemy_missions_panel() {
+    let mut state = UiState {
+        planet_selected: Some(4),
+        mission_tab: MissionTab::MissionReports,
+        combat_report: Some(9),
+        ..default()
+    };
+
+    open_enemy_missions(&mut state);
+
+    assert_eq!(state.planet_selected, None);
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::EnemyMissions);
+    assert_eq!(state.combat_report, None);
+}

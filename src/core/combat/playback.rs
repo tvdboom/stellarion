@@ -46,6 +46,9 @@ fn snapshot_card(
     unit: Unit,
     side: Side,
 ) -> Option<CombatUnitCmp> {
+    if unit == Unit::colony_ship() {
+        return None;
+    }
     let combat = report.combat_report.as_ref()?;
     let round = combat.rounds.get(index)?;
     let previous = index.checked_sub(1).and_then(|i| combat.rounds.get(i));
@@ -57,7 +60,7 @@ fn snapshot_card(
             if index > departure || (finished && index >= departure) {
                 return None;
             }
-            if retreat.after_round.is_none() || unit == Unit::colony_ship() {
+            if retreat.after_round.is_none() {
                 let count = report.planet.army.amount(&unit);
                 return Some(CombatUnitCmp {
                     unit,
@@ -244,7 +247,7 @@ pub fn control_combat_playback(world: &mut World) {
             return None;
         }
         match (keys.just_pressed(KeyCode::ArrowLeft), keys.just_pressed(KeyCode::ArrowRight)) {
-            (true, false) if index > 0 => Some(false),
+            (true, false) => Some(false),
             (false, true) if phase != CombatState::EndCombat => Some(true),
             _ => None,
         }
@@ -288,7 +291,7 @@ pub fn control_combat_playback(world: &mut World) {
                 },
             )
         } else {
-            (index - 1, false, CombatState::DisplayRound)
+            (index.saturating_sub(1), false, CombatState::DisplayRound)
         }
     } else {
         // Withdrawal has its own recorded departure boundary. Early-completion shortcuts could

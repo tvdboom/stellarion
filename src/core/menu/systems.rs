@@ -523,7 +523,6 @@ fn create_screen(
     menu_form(ui, "stellarion_create_form", "Create Game", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
             player_name_field(ui, &mut form.display_name);
-            setup_color_picker(ui, &mut form.player_color);
             map_rule_rows(ui, settings);
         });
     });
@@ -535,7 +534,6 @@ fn create_screen(
     } else if can_create && (create_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::CreateGame {
             display_name: form.display_name.clone(),
-            player_color: form.player_color,
             rules: GameRules {
                 planets_per_player: settings.n_planets,
                 colonizable_percent: settings.p_colonizable,
@@ -559,7 +557,6 @@ fn join_screen(
     menu_form(ui, "stellarion_join_form", "Join Game", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
             player_name_field(ui, &mut form.display_name);
-            setup_color_picker(ui, &mut form.player_color);
             join_game_code_field(ui, &mut form.game_code);
         });
     });
@@ -570,7 +567,6 @@ fn join_screen(
     } else if can_join && (join_clicked || enter_pressed) {
         requests.write(MultiplayerRequest::JoinGame {
             display_name: form.display_name.clone(),
-            player_color: form.player_color,
             code: form.game_code.clone(),
         });
     }
@@ -1028,13 +1024,20 @@ fn lobby_screen(
         if let Some(code) = &session.issued_recovery_code {
             lobby_code_card(ui, "Recovery code", code, false);
         }
+        if game.status == MatchStatus::Lobby {
+            lobby_color_card(
+                ui,
+                game,
+                session.membership.as_ref().map(|member| member.player_id),
+                session.busy,
+                requests,
+            );
+        }
         lobby_players_card(
             ui,
             game,
             reconnecting,
             session.membership.as_ref().map(|member| member.player_id),
-            session.busy,
-            requests,
         );
         let guidance = lobby_guidance(session);
         if !guidance.is_empty() {
@@ -1395,8 +1398,6 @@ fn lobby_players_card(
     game: &GameRecord,
     reconnecting: bool,
     local_player_id: Option<u64>,
-    busy: bool,
-    requests: &mut MessageWriter<MultiplayerRequest>,
 ) {
     let is_host = game
         .members
@@ -1455,10 +1456,6 @@ fn lobby_players_card(
 
         ui.spacing_mut().item_spacing.y = 0.0;
         for (index, member) in game.members.iter().enumerate() {
-            let picker_id =
-                ui.make_persistent_id(("player_color_picker", &game.id, member.player_id));
-            let editable =
-                game.status == MatchStatus::Lobby && local_player_id == Some(member.player_id);
             let row_margin_x = 10.0;
             let row_inner_width = inner_width - row_margin_x * 2.0;
             let color_width = 26.0;
@@ -1492,15 +1489,7 @@ fn lobby_players_card(
                             .player(member.player_id)
                             .map(|player| player.color())
                             .unwrap_or_else(|_| PlayerColor::for_player(member.player_id));
-                        let marker = player_color_dot(ui, color, color_width, editable && !busy);
-                        lobby_color_popover(
-                            &marker,
-                            picker_id,
-                            game,
-                            member.player_id,
-                            editable && !busy,
-                            requests,
-                        );
+                        player_color_dot(ui, color, color_width);
                         ui.add_sized(
                             [id_width, 22.0],
                             egui::Label::new(
@@ -1574,102 +1563,87 @@ fn lobby_players_card(
     });
 }
 
-/// Overlays the choices below the marker without changing the player card's size.
-fn lobby_color_popover(
-    marker: &egui::Response,
-    picker_id: egui::Id,
+/// Shows every lobby color, while disabling colors already held by another member.
+fn lobby_color_card(
+    ui: &mut egui::Ui,
     game: &GameRecord,
-    player_id: u64,
-    editable: bool,
+    player_id: Option<u64>,
+    busy: bool,
     requests: &mut MessageWriter<MultiplayerRequest>,
 ) {
-    let was_open = marker.ctx.data(|data| data.get_temp::<bool>(picker_id).unwrap_or(false));
-    let colors = available_player_colors(game, player_id);
-    let popup = egui::Popup::from_response(marker)
-        .id(picker_id)
-        .gap(0.0)
-        .width(colors.len() as f32 * 44.0 - 10.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .frame(
-            egui::Frame::new()
-                .fill(egui::Color32::from_rgb(14, 22, 31))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(130, 170, 215, 180),
-                ))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(8, 6)),
-        );
-    // The shared hover region lets the pointer travel diagonally into the palette.
-    let hovering_picker = popup.get_popup_rect().is_some_and(|rect| {
-        marker
-            .ctx
-            .pointer_hover_pos()
-            .is_some_and(|pos| rect.union(marker.rect).expand(3.0).contains(pos))
-    });
-    let mut open = editable && (marker.hovered() || (was_open && hovering_picker));
-    if let Some(response) =
-        popup.open_bool(&mut open).show(|ui| lobby_color_picker(ui, &colors, requests))
-    {
-        if response.inner {
-            open = false;
-        }
-    }
-    marker.ctx.data_mut(|data| data.insert_temp(picker_id, open));
-}
-
-/// Offers only other colors that have not been claimed by another player.
-fn available_player_colors(game: &GameRecord, player_id: u64) -> Vec<PlayerColor> {
+    let Some(player_id) = player_id else {
+        return;
+    };
     let selected = game
         .persisted
         .state
         .player(player_id)
         .map(|player| player.color())
         .unwrap_or_else(|_| PlayerColor::for_player(player_id));
+    let available_colors = available_player_colors(game, player_id);
+    form_option_card(
+        ui,
+        "Player color",
+        "Choose the color used to identify your empire. Colors held by other players are unavailable.",
+        |ui| {
+            ui.vertical_centered(|ui| {
+                let gap = 6.0;
+                let row_width = (PLAYER_COLOR_PALETTE.len() as f32 * (34.0 + gap) - gap)
+                    .min(ui.available_width());
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_width, MENU_CONTROL_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for color in PLAYER_COLOR_PALETTE {
+                            let available = !busy && available_colors.contains(&color);
+                            let clicked = ui
+                                .add_enabled_ui(available, |ui| {
+                                    player_color_swatch(ui, color, color == selected)
+                                })
+                                .inner;
+                            if clicked && color != selected {
+                                requests.write(MultiplayerRequest::SetPlayerColor(color));
+                            }
+                        }
+                    },
+                );
+            });
+        },
+    );
+}
 
+/// Returns colors not currently held by another lobby member.
+fn available_player_colors(game: &GameRecord, player_id: u64) -> Vec<PlayerColor> {
     PLAYER_COLOR_PALETTE
         .into_iter()
         .filter(|color| {
-            *color != selected
-                && !game.members.iter().any(|member| {
-                    member.player_id != player_id
-                        && game
-                            .persisted
-                            .state
-                            .player(member.player_id)
-                            .map(|player| player.color())
-                            .unwrap_or_else(|_| PlayerColor::for_player(member.player_id))
-                            == *color
-                })
+            !game.members.iter().any(|member| {
+                member.player_id != player_id
+                    && game
+                        .persisted
+                        .state
+                        .player(member.player_id)
+                        .is_ok_and(|player| player.color() == *color)
+            })
         })
         .collect()
-}
-
-/// Draws clickable swatches without informational hover tooltips.
-fn lobby_color_picker(
-    ui: &mut egui::Ui,
-    colors: &[PlayerColor],
-    requests: &mut MessageWriter<MultiplayerRequest>,
-) -> bool {
-    let mut chosen = false;
-    ui.set_width(colors.len() as f32 * 44.0 - 10.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        for color in colors {
-            if player_color_swatch(ui, *color, false) {
-                requests.write(MultiplayerRequest::SetPlayerColor(*color));
-                chosen = true;
-            }
-        }
-    });
-    chosen
 }
 
 /// Draws a shared lobby/practice swatch with selection, hover, and click feedback.
 fn player_color_swatch(ui: &mut egui::Ui, color: PlayerColor, selected: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
     let [red, green, blue] = color.rgb();
-    ui.painter().circle_filled(rect.center(), 11.0, egui::Color32::from_rgb(red, green, blue));
+    let fill = egui::Color32::from_rgb(red, green, blue);
+    ui.painter().circle_filled(
+        rect.center(),
+        11.0,
+        if ui.is_enabled() {
+            fill
+        } else {
+            fill.gamma_multiply(0.32)
+        },
+    );
     if selected || response.hovered() || response.has_focus() {
         ui.painter().circle_stroke(
             rect.center(),
@@ -1677,20 +1651,16 @@ fn player_color_swatch(ui: &mut egui::Ui, color: PlayerColor, selected: bool) ->
             egui::Stroke::new(1.5, egui::Color32::WHITE),
         );
     }
-    let clicked = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    let clicked =
+        ui.is_enabled() && response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     if clicked {
         mark_menu_click(ui);
     }
     clicked
 }
 
-/// Paints the player marker used to hover-open the local player's color choices.
-fn player_color_dot(
-    ui: &mut egui::Ui,
-    color: PlayerColor,
-    width: f32,
-    editable: bool,
-) -> egui::Response {
+/// Paints the player color marker in the lobby roster.
+fn player_color_dot(ui: &mut egui::Ui, color: PlayerColor, width: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
     let [red, green, blue] = color.rgb();
     let fill = egui::Color32::from_rgb(red, green, blue);
@@ -1700,18 +1670,7 @@ fn player_color_dot(
         6.0,
         egui::Stroke::new(1.0, egui::Color32::from_white_alpha(180)),
     );
-    if editable && response.hovered() {
-        ui.painter().circle_stroke(
-            rect.center(),
-            10.0,
-            egui::Stroke::new(1.0, egui::Color32::WHITE),
-        );
-    }
-    if editable {
-        response.on_hover_cursor(egui::CursorIcon::PointingHand)
-    } else {
-        response
-    }
+    response
 }
 
 /// Draws the only lobby action available to a non-host player.

@@ -209,13 +209,12 @@ fn option_boxes_align_and_contain_controls_on_each_page() {
                 AppState::CreateGame,
                 vec![
                     "PLAYER NAME",
-                    "PLAYER COLOR",
                     "PLANETS PER PLAYER",
                     "COLONIZABLE PLANETS",
                     "MOONS PER PLANET",
                 ],
             ),
-            (AppState::JoinGame, vec!["PLAYER NAME", "PLAYER COLOR", "GAME CODE"]),
+            (AppState::JoinGame, vec!["PLAYER NAME", "GAME CODE"]),
             (AppState::Settings, vec!["AUDIO", "MAP CELLS", "HOVER INFORMATION"]),
         ] {
             let (mut app, context) = menu_app();
@@ -807,7 +806,7 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
 }
 
 #[test]
-fn online_setup_colors_are_clickable_and_survive_scrolling_and_submission() {
+fn online_setup_omits_colors_and_submits_only_name_code_and_rules() {
     for state in [AppState::CreateGame, AppState::JoinGame] {
         for viewport in
             [egui::vec2(770.0, 724.0), egui::vec2(320.0, 480.0), egui::vec2(640.0, 360.0)]
@@ -817,60 +816,9 @@ fn online_setup_colors_are_clickable_and_survive_scrolling_and_submission() {
             for _ in 0..3 {
                 menu_app_frame(&mut app, &context, viewport, state, vec![]);
             }
-            let mut chosen_position = None;
-            for _ in 0..12 {
-                let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
-                let [r, g, b] = PLAYER_COLOR_PALETTE[4].rgb();
-                chosen_position = shapes.iter().find_map(|shape| match &shape.shape {
-                    egui::Shape::Circle(circle)
-                        if circle.radius == 11.0
-                            && circle.fill == egui::Color32::from_rgb(r, g, b)
-                            && shape.clip_rect.contains_rect(circle.visual_bounding_rect()) =>
-                    {
-                        Some(circle.center)
-                    },
-                    _ => None,
-                });
-                if chosen_position.is_some() {
-                    break;
-                }
-                menu_app_frame(
-                    &mut app,
-                    &context,
-                    viewport,
-                    state,
-                    vec![
-                        egui::Event::PointerMoved(egui::pos2(viewport.x * 0.5, 100.0)),
-                        egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Point,
-                            delta: egui::vec2(0.0, -45.0),
-                            phase: egui::TouchPhase::Move,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                );
-                for _ in 0..20 {
-                    menu_app_frame(&mut app, &context, viewport, state, vec![]);
-                }
-            }
-            let position = chosen_position
-                .unwrap_or_else(|| panic!("color unreachable at {viewport:?} in {state:?}"));
-            app.world_mut().resource_mut::<MultiplayerSession>().busy = true;
-            menu_app_frame(&mut app, &context, viewport, state, vec![]);
-            click_menu_app(&mut app, &context, viewport, state, position);
-            assert_eq!(
-                app.world().resource::<MultiplayerForm>().player_color,
-                PLAYER_COLOR_PALETTE[0]
-            );
-            app.world_mut().resource_mut::<MultiplayerSession>().busy = false;
-            menu_app_frame(&mut app, &context, viewport, state, vec![]);
-            click_menu_app(&mut app, &context, viewport, state, position);
-            assert_eq!(
-                app.world().resource::<MultiplayerForm>().player_color,
-                PLAYER_COLOR_PALETTE[4]
-            );
-
             let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
+            assert!(visible_menu_label(&shapes, "Player color").is_none());
+            assert!(filled_circles(&shapes, 11.0).is_empty());
             let footer = visible_menu_label(&shapes, "Created by Mavs").unwrap();
             let label = if state == AppState::CreateGame {
                 "Create Game"
@@ -901,17 +849,11 @@ fn online_setup_colors_are_clickable_and_survive_scrolling_and_submission() {
                 app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
             assert_eq!(requests.len(), 2);
             for request in requests {
-                match request {
-                    MultiplayerRequest::CreateGame {
-                        player_color,
-                        ..
-                    }
-                    | MultiplayerRequest::JoinGame {
-                        player_color,
-                        ..
-                    } => assert_eq!(player_color, PLAYER_COLOR_PALETTE[4]),
-                    _ => panic!("unexpected setup request"),
-                }
+                assert!(matches!(
+                    (state, request),
+                    (AppState::CreateGame, MultiplayerRequest::CreateGame { .. })
+                        | (AppState::JoinGame, MultiplayerRequest::JoinGame { .. })
+                ));
             }
         }
     }
@@ -1926,81 +1868,40 @@ fn enter_in_lobby_requires_a_ready_host() {
 }
 
 #[test]
-fn hovering_player_color_opens_overlay_without_moving_the_page() {
+fn lobby_color_card_shows_defaults_and_only_allows_unclaimed_colors() {
     let session = test_lobby();
     let game = session.active_game.as_ref().unwrap();
     let context = egui::Context::default();
     let draw = |ui: &mut egui::Ui, requests: &mut MessageWriter<MultiplayerRequest>| {
-        lobby_players_card(ui, game, false, Some(1), false, requests);
+        lobby_color_card(ui, game, Some(1), false, requests);
     };
     let (shapes, requests) = menu_frame(&context, vec![], draw);
     assert!(requests.is_empty());
-    assert!(filled_circles(&shapes, 11.0).is_empty());
-    let markers = filled_circles(&shapes, 6.0);
-    assert_eq!(markers.len(), 2);
-
-    let host = shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "HOST" => Some(text),
-            _ => None,
-        })
-        .unwrap();
-    let row = shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Rect(rect)
-                if rect.fill == egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) =>
-            {
-                Some(rect.rect)
-            },
-            _ => None,
-        })
-        .unwrap();
-    let host_right = host.pos.x + host.galley.rect.right();
-    assert!(
-        (host_right - (row.right() - 10.0)).abs() < 1.0,
-        "host right edge {host_right}, player row {row:?}"
-    );
-
-    let (shapes, requests) =
-        menu_frame(&context, vec![egui::Event::PointerMoved(markers[1])], draw);
-    assert!(requests.is_empty());
-    assert!(filled_circles(&shapes, 11.0).is_empty());
-    let (_, requests) = menu_frame(&context, vec![egui::Event::PointerMoved(markers[0])], draw);
-    assert!(requests.is_empty());
-    // Popup areas use their first frame to measure; no click is needed to open them.
-    let (shapes, _) = menu_frame(&context, vec![], draw);
     let swatches = filled_circles(&shapes, 11.0);
+    assert_eq!(swatches.len(), PLAYER_COLOR_PALETTE.len());
     let available = available_player_colors(game, 1);
-    assert_eq!(swatches.len(), available.len());
-    assert!(swatches.iter().all(|pos| pos.y > markers[0].y + 20.0));
-    assert_eq!(filled_circles(&shapes, 6.0), markers);
-
     let selected = game.persisted.state.player(1).unwrap().color();
     let occupied = game.persisted.state.player(2).unwrap().color();
-    assert!(!available.contains(&selected));
+    assert!(available.contains(&selected));
     assert!(!available.contains(&occupied));
-    let (shapes, requests) =
-        menu_frame(&context, vec![egui::Event::PointerMoved(swatches[0])], draw);
+
+    let occupied_position = swatches[usize::from(occupied.index())];
+    let (_, requests) = click_menu(&context, occupied_position, draw);
     assert!(requests.is_empty());
-    assert_eq!(filled_circles(&shapes, 11.0).len(), available.len());
-    let (_, requests) = click_menu(&context, swatches[0], draw);
+
+    let free = available.into_iter().find(|color| *color != selected).unwrap();
+    let free_position = swatches[usize::from(free.index())];
+    let (_, requests) = click_menu(&context, free_position, draw);
     assert!(matches!(
         requests.as_slice(),
-        [MultiplayerRequest::SetPlayerColor(color)] if *color == available[0]
+        [MultiplayerRequest::SetPlayerColor(color)] if *color == free
     ));
-    let (shapes, _) = menu_frame(&context, vec![], draw);
-    assert!(filled_circles(&shapes, 11.0).is_empty());
-    assert_eq!(filled_circles(&shapes, 6.0), markers);
 
-    menu_frame(&context, vec![egui::Event::PointerMoved(markers[0])], draw);
-    let (shapes, _) = menu_frame(&context, vec![], draw);
-    assert_eq!(filled_circles(&shapes, 11.0).len(), available.len());
-    let (shapes, _) =
-        menu_frame(&context, vec![egui::Event::PointerMoved(egui::pos2(1000.0, 700.0))], draw);
-    assert!(filled_circles(&shapes, 11.0).is_empty());
-    assert_eq!(filled_circles(&shapes, 6.0), markers);
+    let busy_draw = |ui: &mut egui::Ui, requests: &mut MessageWriter<MultiplayerRequest>| {
+        lobby_color_card(ui, game, Some(1), true, requests);
+    };
+    let (_, requests) = click_menu(&context, free_position, busy_draw);
+    assert!(requests.is_empty());
 }
 
 #[test]

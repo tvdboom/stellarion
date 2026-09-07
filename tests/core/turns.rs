@@ -245,7 +245,7 @@ fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report(
 }
 
 #[test]
-fn war_sun_fleets_use_the_destroy_icon_for_attack_and_deploy() {
+fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
     let player = Player::default();
     let mut mission = Mission {
         owner: player.id,
@@ -254,7 +254,7 @@ fn war_sun_fleets_use_the_destroy_icon_for_attack_and_deploy() {
         jump_gate: true,
         ..default()
     };
-    assert_eq!(mission.image(&player), "mission destroy");
+    assert_eq!(mission.image(&player), "mission destroy jump");
 
     mission.objective = Icon::Deploy;
     mission.jump_gate = false;
@@ -265,7 +265,7 @@ fn war_sun_fleets_use_the_destroy_icon_for_attack_and_deploy() {
 }
 
 #[test]
-fn colonize_objectives_and_colony_ship_only_fleets_use_the_colony_icon() {
+fn only_colonize_objectives_and_their_returns_use_the_colony_icon() {
     let player = Player::default();
     let mut mission = Mission {
         owner: player.id,
@@ -280,12 +280,13 @@ fn colonize_objectives_and_colony_ship_only_fleets_use_the_colony_icon() {
 
     mission.objective = Icon::Deploy;
     mission.army = Army::from([(Unit::colony_ship(), 2), (Unit::probe(), 0)]);
-    assert!(mission.uses_colony_ship_image());
-    assert_eq!(mission.image(&player), "mission colonize");
-
-    mission.army.insert(Unit::probe(), 1);
-    assert!(!mission.uses_colony_ship_image());
     assert_eq!(mission.image(&player), "mission jump");
+
+    mission.jump_gate = false;
+    assert_eq!(mission.image(&player), "mission");
+
+    mission.return_objective = Some(Icon::Colonize);
+    assert_eq!(mission.image(&player), "mission colonize");
 }
 
 #[test]

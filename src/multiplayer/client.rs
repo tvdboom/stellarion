@@ -19,7 +19,7 @@ use crate::core::simulation::{
     resolved_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnSubmission,
 };
 use crate::core::states::AppState;
-use crate::multiplayer::authority::{recolored_lobby_snapshot, started_snapshot_for_members};
+use crate::multiplayer::authority::started_snapshot_for_members;
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend};
 use crate::multiplayer::memory::InMemoryBackend;
 use crate::multiplayer::model::{
@@ -115,8 +115,6 @@ pub struct MultiplayerForm {
     pub game_code: String,
     /// High-entropy recovery code entered on a replacement device.
     pub recovery_code: String,
-    /// Preferred empire color when creating or joining an online lobby.
-    pub player_color: PlayerColor,
     /// Empire color selected for the next local practice match.
     #[cfg(debug_assertions)]
     pub practice_color: PlayerColor,
@@ -138,7 +136,6 @@ impl Default for MultiplayerForm {
             saved_display_name: None,
             game_code: String::new(),
             recovery_code: String::new(),
-            player_color: PlayerColor::for_player(1),
             #[cfg(debug_assertions)]
             practice_color: PlayerColor::for_player(1),
         }
@@ -248,8 +245,6 @@ pub enum MultiplayerRequest {
     CreateGame {
         /// Name shown to other lobby members.
         display_name: String,
-        /// Empire color selected in the setup form.
-        player_color: PlayerColor,
         /// Deterministic rules chosen by the creator.
         rules: GameRules,
     },
@@ -257,8 +252,6 @@ pub enum MultiplayerRequest {
     JoinGame {
         /// Name shown to other lobby members.
         display_name: String,
-        /// Preferred empire color, applied if available in the joined lobby.
-        player_color: PlayerColor,
         /// User-entered human-friendly code.
         code: String,
     },
@@ -710,12 +703,10 @@ fn process_requests(
             MultiplayerRequest::CreateGame {
                 display_name,
                 rules,
-                player_color,
             } => {
                 let display_name = display_name.trim().to_string();
                 runtime.profile.display_name.clone_from(&display_name);
                 let rules = rules.clone();
-                let player_color = *player_color;
                 spawn_backend_task(&mut tasks, async move {
                     let mut seed = [0_u8; 32];
                     if let Err(error) = getrandom::fill(&mut seed) {
@@ -733,7 +724,7 @@ fn process_requests(
                             )
                         },
                     };
-                    let mut model = match GameModel::new(seed, rules) {
+                    let model = match GameModel::new(seed, rules) {
                         Ok(model) => model,
                         Err(error) => {
                             return BackendOutput::Failed(
@@ -742,14 +733,6 @@ fn process_requests(
                             )
                         },
                     };
-                    // Swap the unoccupied slot's color so the initial snapshot stays unique.
-                    let previous = model.players[0].color();
-                    for player in &mut model.players {
-                        if player.color() == player_color {
-                            player.color = previous;
-                        }
-                    }
-                    model.players[0].color = player_color;
                     for _ in 0..8 {
                         let code = match generate_game_code() {
                             Ok(code) => code,
@@ -790,7 +773,6 @@ fn process_requests(
             MultiplayerRequest::JoinGame {
                 display_name,
                 code,
-                player_color,
             } => {
                 runtime.profile.display_name = display_name.trim().to_string();
                 let recovery = match RecoveryCode::generate() {
@@ -805,21 +787,13 @@ fn process_requests(
                     display_name: display_name.trim().to_string(),
                     recovery_hash: recovery.hash().0,
                 };
-                let player_color = *player_color;
                 spawn_backend_task(&mut tasks, async move {
                     match backend.join_game(&auth, request).await {
-                        Ok(mut result) => {
-                            let color_notice = apply_join_color(
-                                backend.as_ref(), &auth, &mut result, player_color,
-                            ).await.err().map(|error| format!(
-                                "Joined game, but your selected color could not be applied: {error} Choose a color in the lobby."
-                            ));
-                            BackendOutput::Membership {
-                                operation: Operation::Join,
-                                result,
-                                recovery_code: recovery,
-                                color_notice,
-                            }
+                        Ok(result) => BackendOutput::Membership {
+                            operation: Operation::Join,
+                            result,
+                            recovery_code: recovery,
+                            color_notice: None,
                         },
                         Err(error) => BackendOutput::Failed(Operation::Join, error),
                     }
@@ -908,22 +882,13 @@ fn process_requests(
                 });
             },
             MultiplayerRequest::SetPlayerColor(color) => {
-                let (Some(record), Some(membership)) =
-                    (session.active_game.clone(), session.membership.clone())
-                else {
+                let Some(record) = session.active_game.clone() else {
                     request_error(&mut session, "No lobby player is selected.");
                     continue;
                 };
-                let persisted =
-                    match recolored_lobby_snapshot(&record, membership.player_id, *color) {
-                        Ok(persisted) => persisted,
-                        Err(error) => {
-                            request_error(&mut session, &error.to_string());
-                            continue;
-                        },
-                    };
+                let color = *color;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.save_game(&auth, &record.id, record.revision, persisted).await {
+                    match backend.set_player_color(&auth, &record.id, color).await {
                         Ok(record) => BackendOutput::Record(Operation::Color, record),
                         Err(error) => BackendOutput::Failed(Operation::Color, error),
                     }
@@ -2039,40 +2004,6 @@ async fn load_game_for_resume(
         Ok(record) => BackendOutput::Record(Operation::ResumeLoad, record),
         Err(error) => BackendOutput::Failed(Operation::ResumeLoad, error),
     }
-}
-
-/// Applies a new member's preference through the existing authenticated lobby save.
-/// A failed color change must never discard a successful join or its recovery secret.
-async fn apply_join_color(
-    backend: &dyn MultiplayerBackend,
-    auth: &AuthSession,
-    result: &mut MembershipResult,
-    color: PlayerColor,
-) -> Result<(), BackendError> {
-    if result.disposition == JoinDisposition::Reconnected {
-        return Ok(());
-    }
-    let player_id = result.membership.player_id;
-    for attempt in 0..3 {
-        if result.game.persisted.state.player(player_id).is_ok_and(|player| player.color() == color)
-        {
-            return Ok(());
-        }
-        let persisted = recolored_lobby_snapshot(&result.game, player_id, color)?;
-        match backend.save_game(auth, &result.game.id, result.game.revision, persisted).await {
-            Ok(game) => {
-                result.game = game;
-                return Ok(());
-            },
-            Err(BackendError::Conflict {
-                ..
-            }) if attempt < 2 => {
-                result.game = backend.load_game(auth, &result.game.id).await?;
-            },
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
 
 /// Recovers an unlinked slot, or opens the current membership if recovery is redundant.

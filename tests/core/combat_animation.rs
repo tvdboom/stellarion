@@ -112,7 +112,7 @@ fn spawn_unit(app: &mut App, unit: Unit, count: usize, side: Side, fire: FireSta
 }
 
 #[test]
-fn colonial_withdrawal_flies_only_surviving_ships_away_and_finishes_once() {
+fn colonial_withdrawal_hides_colony_ships_and_flies_combat_ships_to_an_upper_corner() {
     use crate::core::combat::resolution::resolve_combat_with_retreat_with_rng;
     use crate::core::energy::EnergyGrid;
     use crate::core::units::buildings::{Building, FleetWithdrawal};
@@ -149,8 +149,6 @@ fn colonial_withdrawal_flies_only_surviving_ships_away_and_finishes_once() {
             Side::Defender,
             FireState::Fired,
         );
-        let transport =
-            spawn_unit(&mut app, Unit::colony_ship(), 1, Side::Defender, FireState::Fired);
         let ground = spawn_unit(
             &mut app,
             Unit::Defense(Defense::GaussCannon),
@@ -164,17 +162,22 @@ fn colonial_withdrawal_flies_only_surviving_ships_away_and_finishes_once() {
         app.world_mut().resource_mut::<Settings>().combat_paused = false;
         app.world_mut().run_system_once(animate_combat).unwrap();
         assert!(app.world().get::<FleetRetreatCmp>(ship).is_some());
-        assert!(app.world().get::<FleetRetreatCmp>(transport).is_some());
         assert!(app.world().get::<FleetRetreatCmp>(ground).is_none());
-        TweenAnim::step_all(app.world_mut(), Duration::from_millis(600));
-        assert!(app.world().get::<Transform>(ship).unwrap().translation.y < 0.);
+        assert!(app
+            .world_mut()
+            .query::<&CombatUnitCmp>()
+            .iter(app.world())
+            .all(|unit| unit.unit != Unit::colony_ship()));
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(450));
+        let retreat_position = app.world().get::<Transform>(ship).unwrap().translation;
+        assert!(retreat_position.x > 0.);
+        assert!(retreat_position.y > 0.);
         assert_eq!(app.world().get::<Transform>(ground).unwrap().translation, Vec3::ZERO);
         app.world_mut().run_system_once(animate_combat).unwrap();
         assert!(app.world().get_entity(ship).is_ok());
-        TweenAnim::step_all(app.world_mut(), Duration::from_millis(650));
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(500));
         app.world_mut().run_system_once(animate_combat).unwrap();
         assert!(app.world().get_entity(ship).is_err());
-        assert!(app.world().get_entity(transport).is_err());
         assert!(app.world().get_entity(ground).is_ok());
         app.world_mut().run_system_once(animate_combat).unwrap();
         let playback =
@@ -182,6 +185,29 @@ fn colonial_withdrawal_flies_only_surviving_ships_away_and_finishes_once() {
         assert!(playback.complete);
         assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
     }
+}
+
+#[test]
+fn combat_setup_never_spawns_colony_ship_cards() {
+    let mut report = report(1, 0, true, 29);
+    report.mission.army.insert(Unit::colony_ship(), 2);
+    report.planet.army.insert(Unit::colony_ship(), 3);
+    let mut rng = DeterministicRngState::from_u64(29).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    assert!(app
+        .world_mut()
+        .query::<&CombatUnitCmp>()
+        .iter(app.world())
+        .all(|unit| unit.unit != Unit::colony_ship()));
 }
 
 #[test]
@@ -256,19 +282,20 @@ fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
             .filter(|&child| app.world().get::<EmptyShieldCmp>(child).is_some())
         {
             let fill = app.world().get::<Sprite>(empty).unwrap();
-            assert_eq!(fill.color, Color::srgb_u8(92, 96, 102));
+            assert_eq!(fill.color, BG2_COLOR);
             let frame = app.world().get::<ChildOf>(empty).unwrap().parent();
-            assert_eq!(
-                app.world().get::<Sprite>(frame).unwrap().color,
-                Color::BLACK.with_alpha(0.8)
-            );
+            assert_eq!(app.world().get::<Sprite>(frame).unwrap().color, BG2_COLOR);
         }
     }
 }
 
 #[test]
-fn planetary_shield_is_a_defense_covering_dome_with_a_compact_strength_readout() {
-    let report = report(5, 3, true, 11);
+fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
+    let mut report = report(5, 3, true, 11);
+    for unit in Unit::ships().into_iter().filter(|unit| *unit != Unit::colony_ship()) {
+        report.planet.army.insert(unit, 1);
+    }
+    report.planet.army.insert(Unit::space_dock(), 1);
     let mut rng = DeterministicRngState::from_u64(11).next_rng();
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
@@ -280,29 +307,167 @@ fn planetary_shield_is_a_defense_covering_dome_with_a_compact_strength_readout()
     app.insert_resource(map).init_resource::<MultiplayerSession>();
     app.world_mut().run_system_once(setup_combat).unwrap();
 
-    let dome = app
+    let (shield_entity, dimensions, shield_home) = app
         .world_mut()
-        .query_filtered::<&Sprite, With<PlanetaryShieldDomeCmp>>()
-        .single(app.world())
-        .unwrap();
-    let dimensions = dome.custom_size.unwrap();
-    assert!(dimensions.x > dimensions.y * 5.0, "the field spans the defense row");
-    assert!(dome.color.alpha() > 0.0 && dome.color.alpha() < 0.5);
-
-    let meter = app
-        .world_mut()
-        .query_filtered::<&Sprite, With<ShieldCmp>>()
+        .query::<(Entity, &Sprite, &CombatUnitCmp, &CombatCardHome)>()
         .iter(app.world())
-        .map(|sprite| sprite.custom_size.unwrap().x)
-        .max_by(f32::total_cmp)
+        .find_map(|(entity, sprite, card, home)| {
+            (card.unit == Unit::planetary_shield()).then_some((
+                entity,
+                sprite.custom_size.unwrap(),
+                home.0,
+            ))
+        })
         .unwrap();
-    assert!(meter < dimensions.x * 0.35, "strength remains a secondary readout");
-    let label = app
+    assert!(dimensions.x > dimensions.y * 30.0, "the old shield is a full-width bar");
+
+    let descendants = app
         .world_mut()
-        .query_filtered::<&Text2d, With<PlanetaryShieldStrengthCmp>>()
-        .single(app.world())
+        .run_system_once(move |children: Query<&Children>| {
+            children.iter_descendants(shield_entity).collect::<Vec<_>>()
+        })
         .unwrap();
-    assert!(label.0.contains("900 / 900"));
+    let fill = descendants
+        .iter()
+        .find_map(|&entity| {
+            app.world().get::<ShieldCmp>(entity).and_then(|_| app.world().get::<Sprite>(entity))
+        })
+        .unwrap();
+    assert!(fill.custom_size.unwrap().x > dimensions.x * 0.99);
+    assert!(descendants
+        .iter()
+        .any(|&entity| app.world().get::<PSCombatImageCmp>(entity).is_some()));
+    assert!(descendants
+        .iter()
+        .any(|&entity| { app.world().get::<Text2d>(entity).is_some_and(|text| text.0 == "3") }));
+    let shield_icon_offset = descendants
+        .iter()
+        .find_map(|&entity| {
+            app.world()
+                .get::<PSCombatImageCmp>(entity)
+                .and_then(|_| app.world().get::<Transform>(entity))
+                .map(|transform| transform.translation.x)
+        })
+        .unwrap();
+    let (probe_home, dock_home) = app
+        .world_mut()
+        .query::<(&CombatUnitCmp, &CombatCardHome)>()
+        .iter(app.world())
+        .fold((None, None), |(probe, dock), (card, home)| {
+            (
+                probe.or((card.unit == Unit::probe()).then_some(home.0)),
+                dock.or((card.unit == Unit::space_dock()).then_some(home.0)),
+            )
+        });
+    let probe_home = probe_home.unwrap();
+    let dock_home = dock_home.unwrap();
+    assert!(
+        (shield_home.x + shield_icon_offset - probe_home.x).abs() < 0.01,
+        "the planetary shield icon sits directly beneath the probe"
+    );
+    assert!(
+        (shield_home.x + dimensions.x * 0.5 - (dock_home.x + UNIT_SIZE * 0.5)).abs() < 0.01,
+        "the planetary shield bar ends flush with the space dock"
+    );
+}
+
+#[test]
+fn defense_cards_clear_combat_controls_and_bombing_targets() {
+    let mut report = report(5, 3, true, 11);
+    for unit in Unit::defenses() {
+        if !unit.is_missile() && unit != Unit::space_dock() {
+            report.planet.army.insert(unit, 1);
+        }
+    }
+    let mut rng = DeterministicRngState::from_u64(11).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    let camera =
+        app.world_mut().query_filtered::<Entity, With<MainCamera>>().single(app.world()).unwrap();
+    let mut projection = OrthographicProjection::default_2d();
+    projection.area = Rect::new(-960.0, -540.0, 960.0, 540.0);
+    app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let homes = app
+        .world_mut()
+        .query::<(&CombatUnitCmp, &CombatCardHome)>()
+        .iter(app.world())
+        .map(|(card, home)| (card.unit, home.0))
+        .collect::<Vec<_>>();
+    let defenses = homes
+        .iter()
+        .filter(|(unit, _)| matches!(unit, Unit::Defense(_)) && !unit.is_missile())
+        .map(|(_, home)| *home)
+        .collect::<Vec<_>>();
+    let buildings = homes
+        .iter()
+        .filter(|(unit, _)| unit.is_building() && *unit != Unit::planetary_shield())
+        .map(|(_, home)| *home)
+        .collect::<Vec<_>>();
+    assert!(!defenses.is_empty() && !buildings.is_empty());
+
+    let size = UNIT_SIZE;
+    let defense_bottom = defenses
+        .iter()
+        .map(|home| home.y - size * COMBAT_CARD_LOWER_EXTENT_FACTOR)
+        .fold(f32::INFINITY, f32::min);
+    let controls_top = -540.0 + MAIN_BUTTON_BOTTOM + MAIN_BUTTON_HEIGHT;
+    assert!(
+        defense_bottom >= controls_top + COMBAT_SHIELD_DEFENSE_GAP,
+        "defense cards and their stat bars clear the speed and exit controls"
+    );
+
+    let defense_right =
+        defenses.iter().map(|home| home.x + size * 0.5).fold(f32::NEG_INFINITY, f32::max);
+    let building_left = buildings
+        .iter()
+        .map(|home| home.x - size * COMBAT_BUILDING_SIZE_FACTOR * 0.5)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        defense_right + COMBAT_SHIELD_DEFENSE_GAP <= building_left,
+        "defense cards clear the bombing targets"
+    );
+
+    let (shield_entity, shield_home, shield_height) = app
+        .world_mut()
+        .query::<(Entity, &Sprite, &CombatUnitCmp, &CombatCardHome)>()
+        .iter(app.world())
+        .find_map(|(entity, sprite, card, home)| {
+            (card.unit == Unit::planetary_shield()).then_some((
+                entity,
+                home.0,
+                sprite.custom_size.unwrap().y,
+            ))
+        })
+        .unwrap();
+    let shield_icon_offset = app
+        .world_mut()
+        .run_system_once(
+            move |children: Query<&Children>, icons: Query<&Transform, With<PSCombatImageCmp>>| {
+                children
+                    .iter_descendants(shield_entity)
+                    .find_map(|entity| {
+                        icons.get(entity).ok().map(|transform| transform.translation)
+                    })
+                    .unwrap()
+            },
+        )
+        .unwrap();
+    let shield_lowest = (shield_home.y - shield_height * 0.5)
+        .min(shield_home.y + shield_icon_offset.y - size * 0.5);
+    let defense_top =
+        defenses.iter().map(|home| home.y + size * 0.5).fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        shield_lowest >= defense_top + COMBAT_SHIELD_DEFENSE_GAP,
+        "the complete planetary shield assembly clears every defense image"
+    );
 }
 
 #[test]
@@ -713,7 +878,7 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
 }
 
 #[test]
-fn crawler_salvage_run_and_totals_finish_before_the_combat_result() {
+fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let mut report = report(1, 0, true, 19);
     report.planet.army =
         Army::from([(Unit::crawler(), 4), (Unit::Defense(Defense::RocketLauncher), 5)]);
@@ -724,25 +889,41 @@ fn crawler_salvage_run_and_totals_finish_before_the_combat_result() {
 
     let mut app = playback_app(report, 0, CombatState::Salvage);
     app.add_plugins(bevy_tweening::TweeningPlugin);
-    spawn_unit(&mut app, Unit::crawler(), 2, Side::Defender, FireState::Fired);
+    let crawler = spawn_unit(&mut app, Unit::crawler(), 2, Side::Defender, FireState::Fired);
+    let crawler_home = app.world().get::<Transform>(crawler).unwrap().translation;
     app.world_mut().run_system_once(animate_combat).unwrap();
-    assert_eq!(app.world_mut().query::<&SalvageCrawlerCmp>().iter(app.world()).count(), 2);
-    assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 1);
-    assert_eq!(app.world_mut().query::<&SalvageSummaryCmp>().iter(app.world()).count(), 0);
+    assert!(app.world().get::<SalvageCrawlerCmp>(crawler).is_some());
+    assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
+    assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
+    assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 0);
     assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 
-    TweenAnim::step_all(app.world_mut(), Duration::from_millis(1_500));
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
     app.world_mut().run_system_once(animate_combat).unwrap();
-    let summary = app
+    let pickups = app
         .world_mut()
-        .query_filtered::<&Text, With<SalvageSummaryCmp>>()
-        .single(app.world())
-        .unwrap();
-    assert!(summary.0.contains("+2 Metal"));
+        .query::<(Entity, &SalvagePickupCmp)>()
+        .iter(app.world())
+        .map(|(entity, pickup)| (entity, pickup.resource, pickup.amount))
+        .collect::<Vec<_>>();
+    assert_eq!(pickups.len(), 1);
+    assert_eq!((pickups[0].1, pickups[0].2), (ResourceName::Metal, 2));
+    let metal_image = app.world().resource::<WorldAssets>().image("metal");
+    assert!(app
+        .world()
+        .get::<Children>(pickups[0].0)
+        .unwrap()
+        .iter()
+        .filter_map(|child| app.world().get::<Sprite>(child))
+        .any(|sprite| sprite.image == metal_image));
+    assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 1);
+    assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
+    assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|text| text.0 == "+2"));
     assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 
-    TweenAnim::step_all(app.world_mut(), Duration::from_millis(2_600));
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
     app.world_mut().run_system_once(animate_combat).unwrap();
+    assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert!(matches!(
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::EndCombat)

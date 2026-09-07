@@ -242,6 +242,7 @@ assert.equal((await db.query("select to_regprocedure('public.stellarion_trusted_
 for (const signature of [
   "stellarion_create_game(text,text,text,smallint,jsonb)",
   "stellarion_start_game(uuid,bigint,jsonb)",
+  "stellarion_set_player_color(uuid,smallint)",
   "stellarion_save_game(uuid,bigint,jsonb)",
   "stellarion_submit_turn(uuid,jsonb)",
   "stellarion_withdraw_turn(uuid,bigint,bigint)",
@@ -256,6 +257,8 @@ const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) 
   ["ABCDEF", "Guest", "b".repeat(64)]);
 const save = (actor, record, persisted) => rpc(actor,
   "select public.stellarion_save_game($1, $2, $3) as result", [id, record.revision, persisted]);
+const setColor = (actor, color) => rpc(actor,
+  "select public.stellarion_set_player_color($1, $2) as result", [id, color]);
 let lobby = joined.game;
 const missingColor = structuredClone(lobby.persisted);
 delete missingColor.state.players[0].color;
@@ -266,15 +269,19 @@ await assert.rejects(save(host, lobby, occupied), /STLR_INVALID_DATA:color_unava
 const otherPlayer = structuredClone(lobby.persisted);
 otherPlayer.state.players[1].color = 5;
 await assert.rejects(save(host, lobby, otherPlayer), /STLR_FORBIDDEN/);
-const recolored = structuredClone(lobby.persisted);
-[recolored.state.players[0].color, recolored.state.players[2].color] =
-  [recolored.state.players[2].color, recolored.state.players[0].color];
-lobby = await save(host, lobby, recolored);
+await assert.rejects(setColor(host, 6), /STLR_INVALID_DATA:player_color/);
+lobby = await setColor(host, 2);
 assert.equal(lobby.persisted.state.players[0].color, 2);
+const winningRevision = lobby.revision;
+const losingClaim = await setColor(guest, 2);
+assert.equal(losingClaim.revision, winningRevision);
+assert.equal(losingClaim.persisted.state.players[0].color, 2);
+assert.equal(losingClaim.persisted.state.players[1].color, 1);
 const forgedLobby = structuredClone(lobby.persisted);
 forgedLobby.state.players[0].resources.metal += 1;
 await assert.rejects(save(host, lobby, forgedLobby), /STLR_FORBIDDEN/);
-lobby = await save(host, lobby, fixtures.lobby);
+lobby = await setColor(host, 0);
+lobby = await save(host, lobby, lobby.persisted);
 const start = (actor, persisted = fixtures.active, revision = lobby.revision) => rpc(actor,
   "select public.stellarion_start_game($1, $2, $3) as result", [id, revision, persisted]);
 await assert.rejects(start(guest), /STLR_INVALID_STATUS/);

@@ -265,6 +265,20 @@ fn mission_route_cell(ui: &mut Ui, width: f32) -> (Ui, Response) {
     (child, response)
 }
 
+/// Consumes pointer clicks over an enemy route without presenting it as a control.
+///
+/// The mission panel sits above the pickable strategic map. A click-only interaction keeps the
+/// route artwork from passing clicks through to a planet behind the panel, while the default
+/// cursor communicates that the objective, arrows, and arrival time have no action of their own.
+fn block_enemy_route_clicks(ui: &mut Ui, response: Response, mission_id: MissionId) -> Response {
+    ui.interact(
+        response.rect,
+        response.id.with(("enemy mission route", mission_id)),
+        Sense::click(),
+    )
+    .on_hover_cursor(CursorIcon::Default)
+}
+
 /// Draws one active-mission planet link without letting overlay widgets shift its name.
 fn draw_mission_planet_link(
     ui: &mut Ui,
@@ -842,7 +856,7 @@ fn draw_new_mission(
                     .response
                     .on_hover_small(
                         "Command Bombers to bomb enemy buildings. Every round of combat, \
-                        every bomber has a 10% chance to decrease a target building's level by \
+                        every bomber has a 25% chance to decrease a target building's level by \
                         one. The Planetary Shield must first be destroyed before bombing can \
                         take place.",
                     )
@@ -1120,6 +1134,12 @@ fn draw_active_missions(
                                     }
                                 }
                             });
+
+                            let response = if mission.owner != player.id {
+                                block_enemy_route_clicks(ui, response, mission.id)
+                            } else {
+                                response
+                            };
 
                             if response.hovered() {
                                 // Browsing animated routes must never enqueue generic UI audio.
@@ -1489,7 +1509,10 @@ fn draw_mission_reports(
                                 }
                             ));
                         } else {
-                            let units = Unit::all_valid(destination.is_moon());
+                            let units = Unit::all_for_world(
+                                destination.is_moon(),
+                                destination.id == player.home_planet,
+                            );
                             for (i, army) in [units.get(1), units.get(2), units.first()]
                                 .into_iter()
                                 .flatten()

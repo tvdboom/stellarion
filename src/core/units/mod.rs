@@ -177,6 +177,22 @@ impl Unit {
         .collect()
     }
 
+    /// Returns the construction roster for one moon, home world, or colony.
+    pub fn buildings_for_world(is_moon: bool, is_home_planet: bool) -> Vec<Self> {
+        if is_moon {
+            return Self::lunar_buildings();
+        }
+
+        Self::buildings()
+            .into_iter()
+            .filter(|unit| unit.valid_on(false))
+            .filter(|unit| *unit != Self::Building(Building::Senate) || is_home_planet)
+            .filter(|unit| {
+                *unit != Self::Building(Building::ColonialAdministration) || !is_home_planet
+            })
+            .collect()
+    }
+
     /// Returns planet-only orbital structures in their shop display order.
     pub fn orbitals() -> Vec<Self> {
         vec![
@@ -215,6 +231,13 @@ impl Unit {
         } else {
             groups.extend([Self::orbitals(), Self::ships(), Self::defenses()]);
         }
+        groups
+    }
+
+    /// Returns display groups for a specific moon, home world, or colony.
+    pub fn all_for_world(is_moon: bool, is_home_planet: bool) -> Vec<Vec<Self>> {
+        let mut groups = Self::all_valid(is_moon);
+        groups[0] = Self::buildings_for_world(is_moon, is_home_planet);
         groups
     }
 
@@ -357,7 +380,6 @@ impl Unit {
                 self,
                 Unit::Building(
                     Building::LunarBase
-                        | Building::TidalGenerator
                         | Building::SolarSatellite
                         | Building::SensorPhalanx
                         | Building::CommandRelay

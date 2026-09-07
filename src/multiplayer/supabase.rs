@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
@@ -209,6 +210,31 @@ impl MultiplayerBackend for SupabaseBackend {
                     "stellarion_load_game",
                     &GameIdRpc {
                         game_id: &game_id.0,
+                    },
+                )
+                .await?;
+            validate_game_record(record, Some(game_id), Some(&session.user_id))
+        })
+    }
+
+    /// Claims a lobby color through the database's row-locked first-writer-wins RPC.
+    fn set_player_color<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        color: PlayerColor,
+    ) -> BackendFuture<'a, GameRecord> {
+        Box::pin(async move {
+            if !color.is_valid() {
+                return Err(BackendError::InvalidData("player_color".to_string()));
+            }
+            let record = self
+                .rpc(
+                    session,
+                    "stellarion_set_player_color",
+                    &PlayerColorRpc {
+                        game_id: &game_id.0,
+                        color: color.index(),
                     },
                 )
                 .await?;
@@ -490,6 +516,15 @@ struct RecoverPlayerRpc {
 struct GameIdRpc<'a> {
     #[serde(rename = "p_game_id")]
     game_id: &'a str,
+}
+
+#[derive(Serialize)]
+/// Lobby color claim serialized by the database under the game-row lock.
+struct PlayerColorRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_color")]
+    color: u8,
 }
 
 #[derive(Serialize)]

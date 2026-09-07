@@ -9,6 +9,7 @@ use super::systems::draw_map;
 use crate::core::assets::WorldAssets;
 use crate::core::constants::MISSION_Z;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
+use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -102,6 +103,7 @@ fn show_detections(
     assets: Res<WorldAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut messages: MessageWriter<MessageMsg>,
 ) {
     if (missions.is_changed() || detections.turn != settings.turn)
         && detections.observe(&missions, &map, &player, settings.turn)
@@ -120,6 +122,10 @@ fn show_detections(
             continue;
         };
         detections.announced.insert(id);
+        messages.write(
+            MessageMsg::warning("Enemy mission detected.")
+                .with_action(MessageAction::OpenEnemyMissions),
+        );
         spawn_detection(
             &mut commands,
             mission,

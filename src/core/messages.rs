@@ -33,6 +33,8 @@ pub enum MessageLevel {
 /// Optional navigation performed when the player clicks a notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageAction {
+    /// Opens the mission interface on the enemy-missions tab.
+    OpenEnemyMissions,
     /// Opens the mission interface on the supplied persisted report.
     OpenMissionReport(MissionId),
     /// Opens the mission interface on the reports tab without selecting a hidden report.
@@ -214,6 +216,9 @@ fn check_messages(
         messages.0.remove(index);
         if let Some(state) = state.as_mut() {
             match action {
+                MessageAction::OpenEnemyMissions => {
+                    open_enemy_missions(state);
+                },
                 MessageAction::OpenMissionReport(mission_id) => {
                     open_mission_reports(state, Some(mission_id));
                 },
@@ -230,6 +235,13 @@ fn check_messages(
             }
         }
     }
+}
+
+fn open_enemy_missions(state: &mut UiState) {
+    state.planet_selected = None;
+    state.mission = true;
+    state.mission_tab = MissionTab::EnemyMissions;
+    state.combat_report = None;
 }
 
 fn open_mission_reports(state: &mut UiState, mission_id: Option<MissionId>) {

@@ -6,6 +6,7 @@ use std::pin::Pin;
 use thiserror::Error;
 
 use crate::core::identity::{GameId, PlayerId};
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{PersistedGame, TurnSubmission};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, JoinGameRequest,
@@ -146,6 +147,15 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, GameRecord>;
 
+    /// Atomically claims an unoccupied empire color while the game is in its lobby.
+    /// If another member claimed the color first, the current canonical record is returned.
+    fn set_player_color<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        color: PlayerColor,
+    ) -> BackendFuture<'a, GameRecord>;
+
     /// Starts a lobby using its current members and an optimistic revision check.
     fn start_game<'a>(
         &'a self,
@@ -162,7 +172,7 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, ()>;
 
-    /// Acknowledges canonical state or changes only the caller's lobby color, with revision checks.
+    /// Acknowledges canonical state with a revision check.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,

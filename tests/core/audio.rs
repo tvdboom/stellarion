@@ -93,8 +93,11 @@ fn master_volume_preserves_the_mix_and_zero_is_silent() {
     for name in ["explosion", "short explosion", "death ray"] {
         assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
     }
-    for name in ["shield impact", "beam fire", "missile fire", "bomb release"] {
+    for name in ["beam fire", "bomb release"] {
         assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
+    }
+    for name in ["shield impact", "laser fire", "missile fire"] {
+        assert_eq!(PlayAudioMsg::new(name).volume, -14.0);
     }
     assert_eq!(PlayAudioMsg::new("beam fire").rate(0.8).playback_rate, 0.8);
     for name in ["horn", "repair", "victory", "draw", "defeat"] {
@@ -557,7 +560,17 @@ fn repeated_clicks_are_queued_even_after_the_previous_instance_is_gone() {
 #[test]
 fn combat_sound_bursts_are_capped_across_frames_and_release_finished_slots() {
     let mut app = audio_app();
-    let effects = ["explosion", "short explosion", "large explosion", "death ray", "repair"];
+    let effects = [
+        "explosion",
+        "short explosion",
+        "large explosion",
+        "death ray",
+        "repair",
+        "shield impact",
+        "laser fire",
+        "beam fire",
+        "missile fire",
+    ];
     for _ in 0..3 {
         for name in effects {
             for _ in 0..100 {

@@ -90,6 +90,8 @@ struct BasisTextureLoader {
 pub(crate) struct BasisTextureSettings {
     /// Discards baked RGB while preserving transparency and antialiased edges in every mip.
     pub alpha_mask: bool,
+    /// Removes baked hue while retaining the source artwork's highlights and shadows.
+    pub neutral_luminance: bool,
     /// Registers an egui-safe, premultiplied copy as the `ui` labeled asset.
     pub ui_variant: bool,
     /// Encodes RGB with alpha for egui's premultiplied blending.
@@ -177,9 +179,10 @@ fn transcode_basis_texture(
     // wgpu requires compressed texture descriptors to use whole block extents. Source UI
     // sprites intentionally have arbitrary pixel dimensions, so keeping their logical extent
     // requires an uncompressed upload rather than padding and subtly changing layout sizes.
-    // Silhouette icons and their UI artwork need editable channels, once on the asset-loading
-    // task; all other artwork retains the device's compressed format.
-    let target = if settings.alpha_mask || settings.premultiply_alpha {
+    // Tintable icons and their UI artwork need editable channels, once on the asset-loading task;
+    // all other artwork retains the device's compressed format.
+    let target = if settings.alpha_mask || settings.neutral_luminance || settings.premultiply_alpha
+    {
         TranscodeTarget::from_features(WgpuFeatures::empty())
     } else {
         target.for_dimensions(width, height)
@@ -193,6 +196,18 @@ fn transcode_basis_texture(
         if settings.alpha_mask {
             for pixel in level_data.as_chunks_mut::<4>().0 {
                 pixel[..3].fill(255);
+            }
+        } else if settings.neutral_luminance {
+            for pixel in level_data.as_chunks_mut::<4>().0 {
+                // Integer Rec. 709 luma weights keep the player tint's hue exact while retaining
+                // the source relief. The channels are sRGB bytes because the output texture is
+                // sampled as sRGB as well.
+                let luminance = (54 * u32::from(pixel[0])
+                    + 183 * u32::from(pixel[1])
+                    + 19 * u32::from(pixel[2])
+                    + 128)
+                    / 256;
+                pixel[..3].fill(luminance as u8);
             }
         }
         if settings.premultiply_alpha {
@@ -223,7 +238,11 @@ fn transcode_basis_texture(
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         },
-        sampler: if settings.linear_filtering || settings.alpha_mask || settings.premultiply_alpha {
+        sampler: if settings.linear_filtering
+            || settings.alpha_mask
+            || settings.neutral_luminance
+            || settings.premultiply_alpha
+        {
             ImageSampler::linear()
         } else {
             ImageSampler::Default

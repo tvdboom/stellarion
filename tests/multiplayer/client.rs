@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use super::*;
 use crate::core::simulation::resolve_turn;
 use crate::core::simulation::MatchStatus;
+use crate::multiplayer::authority::recolored_lobby_snapshot;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -1196,7 +1197,7 @@ fn pending_turn_commands_are_bounded() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() {
+fn lobby_color_requests_reach_the_backend_after_default_assignment() {
     let backend = Arc::new(InMemoryBackend::new());
     let host = block_on(backend.authenticate(None)).unwrap();
     let guest = block_on(backend.authenticate(None)).unwrap();
@@ -1234,7 +1235,6 @@ fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() 
         }
         panic!("setup tasks failed to settle");
     };
-    let host_color = PlayerColor::new(1).unwrap();
     settle(
         &mut app,
         MultiplayerRequest::CreateGame {
@@ -1243,10 +1243,13 @@ fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() 
                 player_count: 4,
                 ..default()
             },
-            player_color: host_color,
         },
     );
-    let created = app.world().resource::<MultiplayerSession>().active_game.clone().unwrap();
+    let mut created = app.world().resource::<MultiplayerSession>().active_game.clone().unwrap();
+    assert_eq!(created.persisted.state.player(1).unwrap().color(), PlayerColor::for_player(1));
+    let host_color = PlayerColor::new(4).unwrap();
+    settle(&mut app, MultiplayerRequest::SetPlayerColor(host_color));
+    created = app.world().resource::<MultiplayerSession>().active_game.clone().unwrap();
     assert_eq!(created.persisted.state.player(1).unwrap().color(), host_color);
     created.persisted.validate().unwrap();
     let stored = block_on(backend.load_game(&host, &created.id)).unwrap();
@@ -1257,17 +1260,18 @@ fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() 
         ..default()
     };
     app.world_mut().insert_resource(State::new(AppState::JoinGame));
-    let guest_color = PlayerColor::new(3).unwrap();
     settle(
         &mut app,
         MultiplayerRequest::JoinGame {
             display_name: "Guest".into(),
             code: created.code.0.clone(),
-            player_color: guest_color,
         },
     );
-    let joined = app.world().resource::<MultiplayerSession>();
-    let game = joined.active_game.as_ref().unwrap();
+    let game = app.world().resource::<MultiplayerSession>().active_game.as_ref().unwrap();
+    assert_eq!(game.persisted.state.player(2).unwrap().color(), PlayerColor::for_player(2));
+    let guest_color = PlayerColor::new(5).unwrap();
+    settle(&mut app, MultiplayerRequest::SetPlayerColor(guest_color));
+    let game = app.world().resource::<MultiplayerSession>().active_game.as_ref().unwrap();
     assert_eq!(game.persisted.state.player(2).unwrap().color(), guest_color);
     let stored = block_on(backend.load_game(&host, &game.id)).unwrap();
     assert_eq!(stored.persisted.state.player(2).unwrap().color(), guest_color);
@@ -1278,7 +1282,6 @@ fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() 
         MultiplayerRequest::JoinGame {
             display_name: "Guest".into(),
             code: created.code.0.clone(),
-            player_color: host_color,
         },
     );
     let reconnected = app.world().resource::<MultiplayerSession>();
@@ -1288,34 +1291,13 @@ fn setup_color_requests_reach_the_backend_and_preserve_membership_on_conflict() 
         guest_color
     );
 
-    let third = block_on(backend.authenticate(None)).unwrap();
-    *app.world_mut().resource_mut::<MultiplayerSession>() = MultiplayerSession {
-        auth: Some(third),
-        ..default()
-    };
-    settle(
-        &mut app,
-        MultiplayerRequest::JoinGame {
-            display_name: "Third".into(),
-            code: created.code.0,
-            player_color: host_color,
-        },
-    );
-    let session = app.world().resource::<MultiplayerSession>();
-    assert_eq!(session.membership.as_ref().unwrap().player_id, 3);
-    assert!(session.issued_recovery_code.is_some());
-    assert!(session.notice.as_ref().unwrap().contains("already selected"));
-    let game = session.active_game.as_ref().unwrap();
-    assert_eq!(game.persisted.state.player(1).unwrap().color(), host_color);
-    assert_ne!(game.persisted.state.player(3).unwrap().color(), host_color);
-    game.persisted.validate().unwrap();
-    let messages: Vec<_> = app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect();
-    assert!(messages.iter().any(|message| message.message.contains("Choose a color in the lobby")));
+    reconnected.active_game.as_ref().unwrap().persisted.validate().unwrap();
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn join_color_retries_a_stale_revision_without_overwriting_another_member() {
-    let backend = InMemoryBackend::new();
+fn simultaneous_color_claims_have_one_winner_and_restore_the_loser() {
+    let backend = Arc::new(InMemoryBackend::new());
     let host = block_on(backend.authenticate(None)).unwrap();
     let guest = block_on(backend.authenticate(None)).unwrap();
     let created = block_on(backend.create_game(
@@ -1328,7 +1310,7 @@ fn join_color_retries_a_stale_revision_without_overwriting_another_member() {
         },
     ))
     .unwrap();
-    let mut joined = block_on(backend.join_game(
+    let joined = block_on(backend.join_game(
         &guest,
         JoinGameRequest {
             code: created.game.code,
@@ -1337,11 +1319,34 @@ fn join_color_retries_a_stale_revision_without_overwriting_another_member() {
         },
     ))
     .unwrap();
-    let host_color = PlayerColor::new(4).unwrap();
-    let guest_color = PlayerColor::new(5).unwrap();
-    let changed = recolored_lobby_snapshot(&joined.game, 1, host_color).unwrap();
-    block_on(backend.save_game(&host, &joined.game.id, joined.game.revision, changed)).unwrap();
-    block_on(apply_join_color(&backend, &guest, &mut joined, guest_color)).unwrap();
-    assert_eq!(joined.game.persisted.state.player(1).unwrap().color(), host_color);
-    assert_eq!(joined.game.persisted.state.player(2).unwrap().color(), guest_color);
+    let game_id = joined.game.id.clone();
+    let initial_host = joined.game.persisted.state.player(1).unwrap().color();
+    let initial_guest = joined.game.persisted.state.player(2).unwrap().color();
+    let claimed = PlayerColor::new(5).unwrap();
+    let verifier = host.clone();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let claim = |session: AuthSession| {
+        let backend = backend.clone();
+        let game_id = game_id.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            block_on(backend.set_player_color(&session, &game_id, claimed)).unwrap()
+        })
+    };
+    let host_claim = claim(host);
+    let guest_claim = claim(guest);
+    barrier.wait();
+    host_claim.join().unwrap();
+    guest_claim.join().unwrap();
+
+    let final_game = block_on(backend.load_game(&verifier, &game_id)).unwrap();
+    let host_color = final_game.persisted.state.player(1).unwrap().color();
+    let guest_color = final_game.persisted.state.player(2).unwrap().color();
+    assert_eq!(usize::from(host_color == claimed) + usize::from(guest_color == claimed), 1);
+    if host_color == claimed {
+        assert_eq!(guest_color, initial_guest);
+    } else {
+        assert_eq!(host_color, initial_host);
+    }
 }

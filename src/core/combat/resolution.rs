@@ -27,7 +27,7 @@ pub const MAX_COMBAT_ROUNDS: usize = 100;
 pub const MAX_SHOTS_PER_UNIT_PER_ROUND: usize = 256;
 
 /// Chance that one surviving Bomber destroys a building level during its single raid.
-pub const BOMBING_HIT_CHANCE: f32 = 0.1;
+pub const BOMBING_HIT_CHANCE: f32 = 0.25;
 
 /// Per-building raid limit; the three buildings in either category allow nine levels in total.
 pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;

@@ -56,6 +56,7 @@ fn presentation_app() -> (App, Mission, Player) {
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<ColorMaterial>>()
         .init_resource::<Time>()
+        .add_message::<MessageMsg>()
         .add_systems(Startup, initialize_detections)
         .add_systems(Update, (show_detections, animate_detections).chain());
     app.world_mut()
@@ -85,6 +86,14 @@ fn newly_visible_enemy_mission_gets_a_radar_ping_at_its_map_position() {
     assert!(effects(&mut app).is_empty(), "turn-start presentation settles first");
     app.update();
 
+    let notifications =
+        app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].message, "Enemy mission detected.");
+    assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
+    assert_eq!(notifications[0].action, Some(MessageAction::OpenEnemyMissions));
+    assert!(!notifications[0].silent);
+
     let effect = effects(&mut app)[0];
     assert_eq!(
         app.world().get::<Transform>(effect).unwrap().translation.truncate(),
@@ -112,12 +121,14 @@ fn detections_do_not_replay_on_refresh_or_for_the_players_own_missions() {
     app.insert_resource(Missions(vec![mission.clone()]));
     app.update();
     app.update();
+    app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().for_each(drop);
     let original = effects(&mut app);
     assert_eq!(original.len(), 1);
 
     app.insert_resource(Missions(vec![mission.clone()]));
     app.update();
     assert_eq!(effects(&mut app), original);
+    assert_eq!(app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().count(), 0);
 
     app.world_mut().entity_mut(original[0]).despawn();
     let mut own = mission;
@@ -127,6 +138,7 @@ fn detections_do_not_replay_on_refresh_or_for_the_players_own_missions() {
     app.update();
     app.update();
     assert!(effects(&mut app).is_empty());
+    assert_eq!(app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().count(), 0);
 }
 
 #[test]

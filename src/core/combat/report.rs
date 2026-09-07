@@ -60,6 +60,39 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns whether this report contains an outcome worth replaying as combat animation.
+    ///
+    /// A lone Colony Ship evacuated before combat still creates its recorded return mission, but
+    /// never enters combat presentation because Colony Ships are intentionally not shown there.
+    pub fn has_combat_playback(&self) -> bool {
+        let Some(combat) = self.combat_report.as_ref() else {
+            return false;
+        };
+        if combat.rounds.is_empty() {
+            return false;
+        }
+        let colony_only_immediate_retreat =
+            combat.defender_retreat.as_ref().is_some_and(|retreat| {
+                retreat.after_round.is_none()
+                    && retreat.ships.amount(&Unit::colony_ship()) > 0
+                    && retreat
+                        .ships
+                        .iter()
+                        .all(|(unit, count)| *count == 0 || *unit == Unit::colony_ship())
+            });
+        if !colony_only_immediate_retreat {
+            return true;
+        }
+
+        combat.rounds.iter().any(|round| {
+            round.antiballistic_fired > 0
+                || round.destroy_probability > 0.0
+                || round.attacker.iter().chain(&round.defender).any(|unit| {
+                    !unit.shots.is_empty() || unit.repairs.iter().any(|amount| *amount > 0)
+                })
+        })
+    }
+
     /// Returns escaped defenders of this kind; these are survivors, not battlefield losses.
     pub fn escaped_defenders(&self, unit: &Unit) -> usize {
         self.combat_report

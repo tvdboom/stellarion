@@ -6,6 +6,13 @@ fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
         for level in [1, 5] {
             let context = egui::Context::default();
             context.set_global_style(NordDark.custom_style());
+            let images = ImageIds(HashMap::from([
+                ("no focus".into(), egui::TextureId::User(1)),
+                ("withdrawal 75".into(), egui::TextureId::User(2)),
+                ("withdrawal 50".into(), egui::TextureId::User(3)),
+                ("withdrawal 25".into(), egui::TextureId::User(4)),
+                ("withdrawal immediate".into(), egui::TextureId::User(5)),
+            ]));
             let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
             planet.army.insert(Unit::Building(Building::ColonialAdministration), level);
             let mut pending = PendingTurnCommands::default();
@@ -22,7 +29,7 @@ fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
                     egui::CentralPanel::default().show(context, |ui| {
                         bounds = ui
                             .scope(|ui| {
-                                shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending);
+                                shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
                             })
                             .response
                             .rect;
@@ -34,14 +41,87 @@ fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
                 bounds.right() <= width,
                 "withdrawal selector overflowed its {width}-wide panel: {bounds:?}"
             );
-            assert!(has_text(&output.shapes, "Fleet withdrawal:"));
-            assert!(has_text(&output.shapes, "Off"));
+            assert!(has_text(&output.shapes, "Fleet withdrawal"));
+            assert!(!["Off", "75%", "50%", "25%", "Immediate"]
+                .iter()
+                .any(|label| has_text(&output.shapes, label)));
+            for (texture, minimum_level) in [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4)] {
+                assert_eq!(
+                    image_rect(&output.shapes, egui::TextureId::User(texture)).is_some(),
+                    level >= minimum_level,
+                    "withdrawal image {texture} had the wrong level availability"
+                );
+            }
             if width >= 480.0 {
-                assert!(bounds.height() < 40.0);
+                assert!(
+                    bounds.height() < 85.0,
+                    "level {level} withdrawal buttons wrapped in a {width}-wide panel: {bounds:?}"
+                );
+                let baseline =
+                    image_rect(&output.shapes, egui::TextureId::User(1)).unwrap().center().y;
+                for texture in 2..=5 {
+                    if let Some(rect) = image_rect(&output.shapes, egui::TextureId::User(texture)) {
+                        assert!(
+                            (rect.center().y - baseline).abs() < 1.0,
+                            "withdrawal image {texture} was not aligned with the off image"
+                        );
+                    }
+                }
             }
             assert!(pending.commands.is_empty());
         }
     }
+}
+
+#[test]
+fn colonial_withdrawal_selector_uses_image_tiles_without_a_hover_tooltip() {
+    let context = egui::Context::default();
+    let mut style = NordDark.custom_style();
+    style.interaction.tooltip_delay = 0.0;
+    context.set_global_style(style);
+    let images = ImageIds(HashMap::from([
+        ("no focus".into(), egui::TextureId::User(1)),
+        ("withdrawal 75".into(), egui::TextureId::User(2)),
+        ("withdrawal 50".into(), egui::TextureId::User(3)),
+        ("withdrawal 25".into(), egui::TextureId::User(4)),
+        ("withdrawal immediate".into(), egui::TextureId::User(5)),
+    ]));
+    let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::Building(Building::ColonialAdministration), 5);
+    let mut pending = PendingTurnCommands::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 220.0));
+    let input = |events| egui::RawInput {
+        screen_rect: Some(viewport),
+        events,
+        ..default()
+    };
+
+    let mut target = egui::Rect::NOTHING;
+    let mut warmup = context.run_ui(input(Vec::new()), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            target = ui
+                .scope(|ui| shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images))
+                .response
+                .rect;
+        });
+    });
+    warmup.textures_delta.clear();
+
+    let mut output =
+        context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
+            });
+        });
+    output.textures_delta.clear();
+
+    assert!(!has_text(&output.shapes, "Surviving ships deploy home without a final enemy volley."));
+    assert!(!has_text(
+        &output.shapes,
+        "Ships take one final enemy volley without firing back, then deploy home."
+    ));
+    assert!(image_rect(&output.shapes, egui::TextureId::User(1)).is_some());
+    assert!(!has_text(&output.shapes, "Off"));
 }
 
 #[test]
@@ -56,8 +136,20 @@ fn shop_navigation_places_orbitals_between_buildings_and_fleet_and_skips_them_on
 }
 
 #[test]
+fn moon_shop_shows_fields_only_for_buildings() {
+    let moon = Planet::new(1, "Moon".into(), Vec2::ZERO, true, 1.0);
+
+    assert_eq!(
+        shop::shop_capacity_summary(Shop::Buildings, &moon),
+        Some(("Fields", moon.fields_consumed(), moon.max_fields()))
+    );
+    assert_eq!(shop::shop_capacity_summary(Shop::Fleet, &moon), None);
+}
+
+#[test]
 fn planet_unit_hover_panel_has_room_for_all_four_categories() {
-    assert_eq!(Unit::all_valid(false).len(), 4);
+    assert_eq!(Unit::all_for_world(false, true).len(), 4);
+    assert_eq!(Unit::all_for_world(false, false).len(), 4);
     const {
         assert!(PLANET_UNITS_PANEL_WIDTH >= 270.0);
         assert!(PLANET_UNITS_PANEL_WIDTH > MOON_UNITS_PANEL_WIDTH);
@@ -66,6 +158,61 @@ fn planet_unit_hover_panel_has_room_for_all_four_categories() {
 
 #[test]
 fn planet_buildings_follow_the_gameplay_order_in_the_shop_and_planet_hover() {
+    let common = vec![
+        Unit::Building(Building::MetalMine),
+        Unit::Building(Building::CrystalMine),
+        Unit::Building(Building::DeuteriumSynthesizer),
+        Unit::Building(Building::Reactor),
+        Unit::Building(Building::Terraformer),
+        Unit::Building(Building::Shipyard),
+        Unit::Building(Building::Factory),
+        Unit::Building(Building::MissileSilo),
+        Unit::Building(Building::PlanetaryShield),
+    ];
+    let mut home = common.clone();
+    home.push(Unit::Building(Building::Senate));
+    let mut colony = common;
+    colony.push(Unit::Building(Building::ColonialAdministration));
+
+    assert_eq!(Unit::buildings_for_world(false, true), home);
+    assert_eq!(Unit::buildings_for_world(false, false), colony);
+    assert_eq!(Unit::all_for_world(false, true)[0], home);
+    assert_eq!(Unit::all_for_world(false, false)[0], colony);
+    assert_eq!(Unit::buildings_for_world(false, true).len(), 10);
+    assert_eq!(Unit::buildings_for_world(false, false).len(), 10);
+    assert_eq!(
+        Unit::buildings_for_world(true, false),
+        vec![
+            Unit::Building(Building::LunarBase),
+            Unit::Building(Building::TidalGenerator),
+            Unit::Building(Building::Shipyard),
+            Unit::Building(Building::Laboratory),
+            Unit::Building(Building::OrbitalRadar),
+        ]
+    );
+}
+
+#[test]
+fn colonial_withdrawal_controls_require_a_completed_first_level() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
+    planet.buy.push(Unit::Building(Building::ColonialAdministration));
+    let mut pending = PendingTurnCommands::default();
+    let images = ImageIds::default();
+    let mut output = context.run_ui(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
+        });
+    });
+    output.textures_delta.clear();
+
+    assert!(!has_text(&output.shapes, "Fleet withdrawal:"));
+    assert!(pending.commands.is_empty());
+}
+
+#[test]
+fn complete_building_catalog_keeps_both_world_specific_government_buildings() {
     let expected = vec![
         Unit::Building(Building::MetalMine),
         Unit::Building(Building::CrystalMine),
@@ -79,10 +226,10 @@ fn planet_buildings_follow_the_gameplay_order_in_the_shop_and_planet_hover() {
         Unit::Building(Building::Senate),
         Unit::Building(Building::ColonialAdministration),
     ];
-    let shop =
+    let catalog =
         Unit::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect::<Vec<_>>();
 
-    assert_eq!(shop, expected);
+    assert_eq!(catalog, expected);
     assert_eq!(Unit::all_valid(false)[0], expected);
 }
 use crate::core::units::ships::Ship;
@@ -315,6 +462,70 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
                 assert!(viewport.contains_rect(status));
             }
         }
+    }
+}
+
+#[test]
+fn enemy_players_panel_matches_owned_worlds_width_and_left_inset() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::{GameMembership, GameRecord};
+
+    let model = GameModel::new([22; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let id = GameId::new("matching-hud-panels");
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: id.clone(),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 2,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        submitted_players: vec![],
+        members: vec![GameMembership {
+            game_id: id,
+            player_id: 2,
+            user_id: UserId::new("enemy"),
+            display_name: "Enemy".into(),
+            is_creator: false,
+            identity_version: 1,
+            connected: true,
+        }],
+    });
+
+    for viewport_size in [egui::vec2(1_280.0, 720.0), egui::vec2(1_920.0, 1_080.0)] {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport_size);
+        let mut state = UiState::default();
+        let mut settings = Settings::default();
+        let images = ImageIds::default();
+        let mut owned_panel = egui::Rect::NOTHING;
+        let mut enemy_panel = egui::Rect::NOTHING;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..default()
+            },
+            |context| {
+                owned_panel = draw_owned_worlds_widget(
+                    context,
+                    &model.map,
+                    &player,
+                    &mut state,
+                    &mut settings,
+                    &images,
+                );
+                enemy_panel =
+                    draw_enemy_players_widget(context, &session, &player, &model.map, &[]);
+            },
+        );
+        output.textures_delta.clear();
+
+        assert_eq!(enemy_panel.left(), owned_panel.left());
+        assert_eq!(enemy_panel.width(), owned_panel.width());
     }
 }
 
@@ -986,14 +1197,19 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
     moon.army.insert(Unit::Building(Building::Laboratory), 1);
     player.world_acquisition_order = vec![home_id, moon_id, planet_id];
 
-    let energy = energy_world_breakdown(&model.map, &player);
+    let energy = energy_world_breakdown(&model.map, &player, ResourceProductionTiming::Current);
     assert_eq!(
-        energy.lines().map(|line| line.split_once(':').unwrap().0).collect::<Vec<_>>(),
+        energy.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
         ["Home", "Darian", "Colony"]
     );
-    assert!(!energy.contains("(Moon)"));
+    assert!(energy.iter().all(|(name, _)| !name.contains("(Moon)")));
 
-    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal);
+    let metal = resource_world_breakdown(
+        &model.map,
+        &player,
+        ResourceName::Metal,
+        ResourceProductionTiming::Current,
+    );
     assert_eq!(
         metal.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
         ["Home", "Colony"]
@@ -1001,7 +1217,7 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
 }
 
 #[test]
-fn energy_tooltip_groups_production_and_efficiency_above_its_description() {
+fn energy_tooltip_groups_current_and_next_production_before_separated_efficiency() {
     let context = egui::Context::default();
     let texture = context.load_texture(
         "energy tooltip test",
@@ -1018,16 +1234,62 @@ fn energy_tooltip_groups_production_and_efficiency_above_its_description() {
     output.textures_delta.clear();
 
     let production = text_rect(&output.shapes, "Production: 3/3");
+    let next_production = text_rect(&output.shapes, "Production next turn: 3/3");
     let efficiency = text_rect(&output.shapes, "Efficiency: 100%");
-    assert!(efficiency.top() - production.bottom() <= 3.0);
+    assert!(next_production.top() >= production.bottom());
+    assert!(efficiency.top() - next_production.bottom() >= 6.0);
     assert!(has_text(&output.shapes, ENERGY_DESCRIPTION));
     assert!(text_rect(&output.shapes, ENERGY_DESCRIPTION).top() > efficiency.bottom());
+    assert_eq!(ENERGY_DESCRIPTION, "Energy powers and maintains buildings across your empire.");
     assert_eq!(
         EFFICIENCY_DESCRIPTION,
         "Metal, Crystal, and Deuterium are produced at this efficiency, and Planetary Shields \
         operate at this strength."
     );
     assert!(!EFFICIENCY_DESCRIPTION.chars().any(|character| character.is_ascii_digit()));
+}
+
+#[test]
+fn hovering_energy_production_lists_each_planets_matching_turn_balance() {
+    let mut planet = Planet::new(0, "Power Grid".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(0);
+    planet.army.insert(Unit::Building(Building::Reactor), 1);
+    planet.army.insert(Unit::Building(Building::MetalMine), 1);
+    planet.buy.push(Unit::Building(Building::Reactor));
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
+    };
+    let player = Player::new(0, 0);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
+
+    for (timing, production, balance) in [
+        (ResourceProductionTiming::Current, "Production: 3/1", "Power Grid: +2"),
+        (ResourceProductionTiming::NextTurn, "Production next turn: 6/1", "Power Grid: +5"),
+    ] {
+        let context = egui::Context::default();
+        let mut target = egui::Rect::NOTHING;
+        let input = |events| egui::RawInput {
+            screen_rect: Some(viewport),
+            events,
+            ..default()
+        };
+        let mut warmup = context.run_ui(input(Vec::new()), |ui| {
+            target = draw_energy_production_row(ui, &map, &player, timing).rect;
+        });
+        warmup.textures_delta.clear();
+        let mut output =
+            context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
+                draw_energy_production_row(ui, &map, &player, timing);
+            });
+        output.textures_delta.clear();
+
+        assert!(has_text(&output.shapes, production));
+        assert!(has_text(&output.shapes, balance));
+        assert!(!has_text(&output.shapes, "Production per planet"));
+        assert!(!has_text(&output.shapes, "Efficiency:"));
+    }
 }
 
 #[test]
@@ -1131,7 +1393,7 @@ fn resource_summaries_have_one_disjoint_hover_target_without_highlight_chrome() 
 }
 
 #[test]
-fn resource_tooltip_forecasts_queued_production_and_shows_energy_penalty() {
+fn resource_tooltip_shows_current_and_queued_production_with_energy_penalties() {
     let context = egui::Context::default();
     let mut style = NordDark.custom_style();
     style.interaction.tooltip_delay = 0.0;
@@ -1171,9 +1433,61 @@ fn resource_tooltip_forecasts_queued_production_and_shows_energy_penalty() {
     output.textures_delta.clear();
 
     assert!(has_text(&output.shapes, "Metal"));
+    assert!(has_text(&output.shapes, "Production: +9"));
     assert!(has_text(&output.shapes, "Production next turn: +16"));
+    assert_eq!(text_color(&output.shapes, "(-10%)"), Color32::RED);
     assert_eq!(text_color(&output.shapes, "(-20%)"), Color32::RED);
     assert_eq!(tooltip_image.size(), egui::vec2(130.0, 90.0));
+}
+
+#[test]
+fn hovering_each_production_row_expands_its_matching_planet_breakdown() {
+    let mut planet = Planet::new(0, "Focused".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(0);
+    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.army.insert(Unit::Building(Building::MetalMine), 1);
+    planet.army.insert(Unit::Building(Building::Reactor), 2);
+    planet.army.insert(Unit::Building(Building::Terraformer), 1);
+    planet.buy.push(Unit::Building(Building::Terraformer));
+    planet.terraformer_focus = Some(ResourceName::Metal);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
+    };
+    let player = Player::new(0, 0);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
+
+    for (timing, amount, modifier) in [
+        (ResourceProductionTiming::Current, 11, "+10%"),
+        (ResourceProductionTiming::NextTurn, 12, "+20%"),
+    ] {
+        let context = egui::Context::default();
+        let mut target = egui::Rect::NOTHING;
+        let input = |events| egui::RawInput {
+            screen_rect: Some(viewport),
+            events,
+            ..default()
+        };
+        let mut warmup = context.run_ui(input(Vec::new()), |ui| {
+            target =
+                draw_resource_production_row(ui, &map, &player, ResourceName::Metal, timing).rect;
+        });
+        warmup.textures_delta.clear();
+        let mut output =
+            context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
+                draw_resource_production_row(ui, &map, &player, ResourceName::Metal, timing);
+            });
+        output.textures_delta.clear();
+
+        assert!(has_text(&output.shapes, &format!("Focused: +{amount}")));
+        assert!(!has_text(&output.shapes, "Production per planet"));
+        assert!(!has_text(&output.shapes, "Production next turn per planet"));
+        assert!(!has_text(&output.shapes, "Efficiency:"));
+        assert!(!has_text(&output.shapes, "Terraformer"));
+        assert!(!has_text(&output.shapes, "(100%)"));
+        assert_eq!(text_color(&output.shapes, &format!("({modifier})")), HEALTH_COLOR.to_color32());
+    }
 }
 
 #[test]
@@ -1194,21 +1508,92 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
     };
     let player = Player::new(0, 0);
 
-    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal);
+    let current_metal = resource_world_breakdown(
+        &map,
+        &player,
+        ResourceName::Metal,
+        ResourceProductionTiming::Current,
+    );
+    assert_eq!(current_metal[0].amount, 11);
+    assert_eq!(current_metal[0].terraformer_modifier_percent, 10);
+
+    let metal = resource_world_breakdown(
+        &map,
+        &player,
+        ResourceName::Metal,
+        ResourceProductionTiming::NextTurn,
+    );
     assert_eq!(metal[0].amount, 12);
     assert_eq!(metal[0].terraformer_modifier_percent, 20);
-    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal);
+    let crystal = resource_world_breakdown(
+        &map,
+        &player,
+        ResourceName::Crystal,
+        ResourceProductionTiming::NextTurn,
+    );
     assert_eq!(crystal[0].amount, 8);
     assert_eq!(crystal[0].terraformer_modifier_percent, -20);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal);
+        draw_resource_world_breakdown(
+            ui,
+            &map,
+            &player,
+            ResourceName::Metal,
+            ResourceProductionTiming::NextTurn,
+        );
+        draw_resource_world_breakdown(
+            ui,
+            &map,
+            &player,
+            ResourceName::Crystal,
+            ResourceProductionTiming::NextTurn,
+        );
     });
     output.textures_delta.clear();
+    assert!(!has_text(&output.shapes, "Terraformer"));
     assert_eq!(text_color(&output.shapes, "(+20%)"), HEALTH_COLOR.to_color32());
     assert_eq!(text_color(&output.shapes, "(-20%)"), Color32::RED);
+}
+
+#[test]
+fn resource_breakdown_hides_terraformers_without_an_active_modifier() {
+    let mut planet = Planet::new(0, "Quiet World".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(0);
+    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.army.insert(Unit::Building(Building::MetalMine), 1);
+    planet.army.insert(Unit::Building(Building::Terraformer), 5);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
+    };
+    let player = Player::new(0, 0);
+
+    let breakdown = resource_world_breakdown(
+        &map,
+        &player,
+        ResourceName::Metal,
+        ResourceProductionTiming::Current,
+    );
+    assert_eq!(breakdown[0].terraformer_modifier_percent, 0);
+    assert_eq!(breakdown[0].amount, 4);
+
+    let context = egui::Context::default();
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_resource_world_breakdown(
+            ui,
+            &map,
+            &player,
+            ResourceName::Metal,
+            ResourceProductionTiming::Current,
+        );
+    });
+    output.textures_delta.clear();
+    assert!(has_text(&output.shapes, "Quiet World: +4"));
+    assert!(!has_text(&output.shapes, "Terraformer"));
+    assert!(!has_text(&output.shapes, "(0%)"));
 }
 
 #[test]
@@ -1404,6 +1789,52 @@ fn planet_detail_lines_start_after_the_panel_and_follow_from_top_to_bottom() {
         assert_eq!(slide.detail_progress(line), 1.0);
     }
     assert!(!slide.is_animating());
+}
+
+#[test]
+fn planet_panel_survives_pointer_transfer_and_stays_open_while_hovered() {
+    let target = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let panel_rect = egui::Rect::from_min_size(egui::pos2(700.0, 100.0), egui::vec2(500.0, 600.0));
+    let mut hold = PlanetPanelHoverHold::default();
+
+    assert_eq!(hold.update(Some(target), Some(egui::pos2(200.0, 300.0)), 0.0), Some(target));
+    hold.set_panel_rects([Some(panel_rect), None]);
+
+    assert_eq!(
+        hold.update(None, Some(egui::pos2(500.0, 300.0)), PLANET_PANEL_HOVER_HOLD_DURATION * 0.75,),
+        Some(target),
+    );
+    assert_eq!(
+        hold.update(None, Some(panel_rect.center()), PLANET_PANEL_HOVER_HOLD_DURATION,),
+        Some(target),
+    );
+    assert_eq!(
+        hold.update(None, Some(egui::pos2(500.0, 300.0)), PLANET_PANEL_HOVER_HOLD_DURATION + 0.01,),
+        None,
+    );
+}
+
+#[test]
+fn mission_planet_preview_does_not_latch_the_full_map_panel() {
+    let full = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let units_only = PlanetPanelSlideTarget {
+        id: 2,
+        mode: PlanetPanelMode::UnitsOnly,
+        right_side: false,
+    };
+    let mut hold = PlanetPanelHoverHold::default();
+
+    assert_eq!(hold.update(Some(full), None, 0.0), Some(full));
+    assert_eq!(hold.update(Some(units_only), None, 0.0), Some(units_only));
+    assert_eq!(hold.update(None, None, 0.0), None);
 }
 
 #[test]

@@ -48,7 +48,7 @@ const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
 
 fn mission_size(mission: &Mission, hovered: bool) -> f32 {
     let image_objective = mission.return_objective.unwrap_or(mission.objective);
-    if image_objective == Icon::Colonize || mission.uses_colony_ship_image() {
+    if image_objective == Icon::Colonize {
         return if hovered {
             COLONY_SHIP_MISSION_HOVER_SIZE
         } else {

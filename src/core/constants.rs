@@ -49,7 +49,7 @@ pub const ENEMY_COLOR: Color = Color::srgb_u8(255, 64, 32);
 /// Camera
 pub const MIN_ZOOM: f32 = 0.5;
 /// Largest orthographic zoom scale allowed by the strategic camera.
-pub const MAX_ZOOM: f32 = 1.4;
+pub const MAX_ZOOM: f32 = 1.6;
 /// Multiplicative step applied to wheel zoom.
 pub const ZOOM_FACTOR: f32 = 1.1;
 /// Default interpolation fraction for smooth presentation movement.
@@ -92,8 +92,8 @@ pub const REPAIR_TRUCK_HEALING_PER_ROUND: usize = 50;
 pub const SETUP_TIME: u64 = 2;
 /// Rendered combat-unit sprite size in pixels.
 pub const UNIT_SIZE: f32 = 120.;
-/// Rendered width of the planetary-shield combat dome in unit-card widths.
-pub const PS_WIDTH: f32 = 11.;
+/// Planetary-shield bar width spanning ten combat cards at the standard 1.2-card spacing.
+pub const PS_WIDTH: f32 = 11.8;
 /// Render layer of the combat backdrop.
 pub const COMBAT_BACKGROUND_Z: f32 = 10.;
 /// Render layer of combat unit sprites.

@@ -141,7 +141,7 @@ impl MissionArrivalImage {
     fn from_report(report: &MissionReport, player: &Player) -> Self {
         match report.mission.image(player) {
             "mission colonize" => Self::Colony,
-            "mission destroy" => Self::Destroy,
+            "mission destroy" | "mission destroy jump" => Self::Destroy,
             _ => Self::Fleet,
         }
     }
@@ -344,7 +344,11 @@ impl SiteOutcome {
     fn labels(self, planet: &Planet) -> Vec<&'static str> {
         let mut labels = Vec::with_capacity(4);
         if self.planet_destroyed {
-            labels.push("PLANET DESTROYED");
+            labels.push(if planet.is_moon() {
+                "MOON DESTROYED"
+            } else {
+                "PLANET DESTROYED"
+            });
         } else if let Some(territory) = self.territory {
             labels.push(territory.label(planet.is_moon()));
         } else if let Some(battle) = self.battle {

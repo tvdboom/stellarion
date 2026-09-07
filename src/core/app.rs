@@ -9,7 +9,8 @@ use crate::core::assets::WorldAssets;
 use crate::core::audio::*;
 use crate::core::basis_texture::BasisTexturePlugin;
 use crate::core::camera::{
-    move_camera, move_camera_keyboard, reset_camera, setup_camera, update_parallax,
+    clamp_camera_to_worlds, move_camera, move_camera_keyboard, reset_camera, setup_camera,
+    update_parallax,
 };
 use crate::core::combat::systems::{
     animate_combat, exit_combat, exit_combat_menu, restore_combat_camera, run_combat_animations,
@@ -26,9 +27,10 @@ use crate::core::map::detection::MissionDetectionPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
     animate_asteroid_belts, animate_map_ambience, animate_phalanx_drones, animate_range_markers,
-    animate_space_scenery, draw_map, hide_planet_details, position_home_crown, run_map_animations,
-    update_ambient_comets, update_end_turn, update_jump_gate_links, update_planet_defenses,
-    update_planet_info, update_voronoi, AmbientCometSpawner,
+    animate_space_scenery, draw_map, ensure_asteroid_belt, hide_planet_details,
+    position_home_crown, run_map_animations, update_ambient_comets, update_end_turn,
+    update_jump_gate_links, update_planet_defenses, update_planet_info, update_voronoi,
+    AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -129,7 +131,7 @@ impl Plugin for GamePlugin {
             .add_systems(Startup, setup_camera)
             .add_systems(
                 Update,
-                (move_camera, move_camera_keyboard, update_parallax)
+                (move_camera, move_camera_keyboard, clamp_camera_to_worlds, update_parallax)
                     .chain()
                     .in_set(InPlayingGameSet),
             )
@@ -232,7 +234,11 @@ impl Plugin for GamePlugin {
                     (
                         update_end_turn,
                         run_map_animations,
-                        animate_asteroid_belts,
+                        (
+                            ensure_asteroid_belt.after(refresh_gameplay_projection),
+                            animate_asteroid_belts,
+                        )
+                            .chain(),
                         animate_phalanx_drones,
                         animate_range_markers,
                         animate_map_ambience,

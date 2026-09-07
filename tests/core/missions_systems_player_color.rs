@@ -171,7 +171,11 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             let key = if mission.id == 4 {
                 "mission missile"
             } else if mission.id == 2 {
-                "mission destroy"
+                if owner.id == model.players[viewer].id {
+                    "mission destroy jump"
+                } else {
+                    "mission destroy"
+                }
             } else if mission.id == 3 {
                 "mission spy"
             } else if owner.id == model.players[viewer].id {

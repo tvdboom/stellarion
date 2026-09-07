@@ -942,6 +942,92 @@ begin
 end;
 $$;
 
+-- Lobby color selection has its own row-locked operation. A join receives the
+-- deterministic color attached to its free player slot. Later claims are
+-- serialized on the game row: if two members request the same free color, the
+-- first lock holder keeps it and the other receives the unchanged canonical
+-- record, restoring that player to the color they had before the request.
+create function public.stellarion_set_player_color(
+    p_game_id uuid,
+    p_color smallint
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+    v_game public.stellarion_games%rowtype;
+    v_player_id bigint;
+    v_old_color jsonb;
+    v_new_color jsonb;
+    v_players jsonb;
+begin
+    if auth.uid() is null then
+        raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
+    end if;
+    if p_color is null or p_color not between 0 and 5 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:player_color';
+    end if;
+    select * into v_game from public.stellarion_games where id = p_game_id for update;
+    if not found then
+        raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
+    end if;
+    select player_id into v_player_id
+      from public.stellarion_game_players
+      where game_id = p_game_id and user_id = auth.uid();
+    if not found then
+        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    if v_game.status <> 'lobby' then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_STATUS';
+    end if;
+
+    v_new_color := to_jsonb(p_color::integer);
+    select player -> 'color' into v_old_color
+      from jsonb_array_elements(v_game.state #> '{state,players}') player
+      where (player ->> 'id')::bigint = v_player_id;
+    if v_old_color is null then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:players';
+    end if;
+    if v_old_color = v_new_color then
+        return public.stellarion_game_record(p_game_id);
+    end if;
+
+    -- Only colors held by actual lobby members are unavailable. The complete
+    -- generated model also contains future slots, so swap with that unoccupied
+    -- slot to preserve the persisted all-player uniqueness invariant.
+    if exists (
+        select 1 from public.stellarion_game_players gp
+        join lateral jsonb_array_elements(v_game.state #> '{state,players}') player
+            on (player ->> 'id')::bigint = gp.player_id
+        where gp.game_id = p_game_id and gp.player_id <> v_player_id
+          and player -> 'color' = v_new_color
+    ) then
+        return public.stellarion_game_record(p_game_id);
+    end if;
+
+    select jsonb_agg(case
+        when (player ->> 'id')::bigint = v_player_id
+            then jsonb_set(player, '{color}', v_new_color)
+        when player -> 'color' = v_new_color
+            then jsonb_set(player, '{color}', v_old_color)
+        else player end order by ordinal)
+      into v_players
+      from jsonb_array_elements(v_game.state #> '{state,players}')
+           with ordinality as p(player, ordinal);
+
+    update public.stellarion_games
+       set state = jsonb_set(v_game.state, '{state,players}', v_players),
+           revision = revision + 1,
+           saved_at = clock_timestamp(),
+           updated_at = clock_timestamp()
+     where id = p_game_id;
+    perform public.stellarion_emit_event(p_game_id, 'state_changed', null, v_player_id);
+    return public.stellarion_game_record(p_game_id);
+end;
+$$;
+
 create function public.stellarion_save_game(
     p_game_id uuid,
     p_expected_revision bigint,
@@ -954,11 +1040,6 @@ set search_path = pg_catalog, public, auth
 as $$
 declare
     v_game public.stellarion_games%rowtype;
-    v_player_id bigint;
-    v_old_color jsonb;
-    v_new_color jsonb;
-    v_expected jsonb;
-    v_players jsonb;
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
@@ -984,45 +1065,10 @@ begin
         p_persisted, v_game.max_players, v_game.status, v_game.current_turn
     );
 
-    -- Saves acknowledge the stored snapshot. Only a member's lobby color may
-    -- change; active resources, orders, worlds, and other players are immutable
-    -- here. Turn progression has its own revision/completeness-checked RPC.
+    -- Normal saves only acknowledge the stored snapshot. Lobby colors have a
+    -- dedicated row-locked RPC; turn progression has its own checked RPC.
     if p_persisted is distinct from v_game.state then
-        if v_game.status <> 'lobby' then
-            raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
-        end if;
-        select player_id into v_player_id from public.stellarion_game_players
-          where game_id = p_game_id and user_id = auth.uid();
-        select player -> 'color' into v_old_color
-          from jsonb_array_elements(v_game.state #> '{state,players}') player
-          where (player ->> 'id')::bigint = v_player_id;
-        select player -> 'color' into v_new_color
-          from jsonb_array_elements(p_persisted #> '{state,players}') player
-          where (player ->> 'id')::bigint = v_player_id;
-        if v_new_color is null or v_new_color not in ('0', '1', '2', '3', '4', '5') then
-            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:player_color';
-        end if;
-        if exists (
-            select 1 from public.stellarion_game_players gp
-            join lateral jsonb_array_elements(v_game.state #> '{state,players}') player
-                on (player ->> 'id')::bigint = gp.player_id
-            where gp.game_id = p_game_id and gp.player_id <> v_player_id
-              and player -> 'color' = v_new_color
-        ) then
-            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:color_unavailable';
-        end if;
-        select jsonb_agg(case
-            when (player ->> 'id')::bigint = v_player_id
-                then jsonb_set(player, '{color}', v_new_color)
-            when player -> 'color' = v_new_color
-                then jsonb_set(player, '{color}', v_old_color)
-            else player end order by ordinal)
-          into v_players
-          from jsonb_array_elements(v_game.state #> '{state,players}') with ordinality as p(player, ordinal);
-        v_expected := jsonb_set(v_game.state, '{state,players}', v_players);
-        if p_persisted is distinct from v_expected then
-            raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
-        end if;
+        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
 
     update public.stellarion_games
@@ -1589,6 +1635,10 @@ grant execute on function public.stellarion_start_game(uuid, bigint, jsonb)
     to authenticated;
 revoke all on function public.stellarion_resume_game(uuid)
     from public, anon;
+revoke all on function public.stellarion_set_player_color(uuid, smallint)
+    from public, anon;
+grant execute on function public.stellarion_set_player_color(uuid, smallint)
+    to authenticated;
 revoke all on function public.stellarion_save_game(uuid, bigint, jsonb)
     from public, anon;
 grant execute on function public.stellarion_save_game(uuid, bigint, jsonb)

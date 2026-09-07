@@ -195,6 +195,7 @@ fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
         "solar satellite marker",
         "command relay marker",
         "sensor phalanx marker",
+        "planetary shield marker",
     ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(
@@ -242,9 +243,11 @@ fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
         "solar satellite marker",
         "command relay marker",
         "sensor phalanx marker",
+        "planetary shield marker",
         "mission",
         "mission colonize",
         "mission destroy",
+        "mission destroy jump",
         "mission jump",
         "mission missile",
         "mission spy",
@@ -280,11 +283,102 @@ fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
 }
 
 #[test]
+fn neutral_map_artwork_preserves_alpha_and_value_relief_without_baked_hue() {
+    for name in [
+        "dock",
+        "jump gate marker",
+        "solar satellite marker",
+        "command relay marker",
+        "sensor phalanx marker",
+        "planetary shield marker",
+        "mission",
+        "mission colonize",
+        "mission destroy",
+        "mission destroy jump",
+        "mission jump",
+        "mission missile",
+        "mission spy",
+    ] {
+        let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
+        let original = transcode_basis_texture(
+            &bytes,
+            TranscodeTarget::from_features(WgpuFeatures::empty()),
+            &default(),
+        )
+        .unwrap();
+        for features in [WgpuFeatures::empty(), WgpuFeatures::TEXTURE_COMPRESSION_BC] {
+            let image = transcode_basis_texture(
+                &bytes,
+                TranscodeTarget::from_features(features),
+                &BasisTextureSettings {
+                    neutral_luminance: true,
+                    ..default()
+                },
+            )
+            .unwrap();
+            assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
+            assert_eq!(image.texture_descriptor.size, original.texture_descriptor.size);
+            assert_eq!(
+                image.texture_descriptor.mip_level_count,
+                original.texture_descriptor.mip_level_count
+            );
+            let pixels = image.data.as_ref().unwrap();
+            let source = original.data.as_ref().unwrap();
+            assert_eq!(pixels.len(), source.len());
+            for (pixel, source_pixel) in
+                pixels.as_chunks::<4>().0.iter().zip(source.as_chunks::<4>().0)
+            {
+                assert_eq!(pixel[0], pixel[1], "{name}: red and green differ");
+                assert_eq!(pixel[1], pixel[2], "{name}: green and blue differ");
+                assert_eq!(pixel[3], source_pixel[3], "{name}: coverage changed");
+            }
+        }
+    }
+}
+
+#[test]
+fn neutral_infrastructure_markers_retain_visible_value_relief() {
+    use std::collections::HashSet;
+
+    for name in [
+        "dock",
+        "jump gate marker",
+        "solar satellite marker",
+        "command relay marker",
+        "sensor phalanx marker",
+        "planetary shield marker",
+    ] {
+        let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
+        let image = transcode_basis_texture(
+            &bytes,
+            TranscodeTarget::from_features(WgpuFeatures::empty()),
+            &BasisTextureSettings {
+                neutral_luminance: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        let opaque_values = image
+            .data
+            .as_ref()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] == 255)
+            .map(|pixel| pixel[0])
+            .collect::<HashSet<_>>();
+        assert!(opaque_values.len() > 32, "{name} lost its panels, highlights, and shadow relief");
+    }
+}
+
+#[test]
 fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
     for name in [
         "mission",
         "mission colonize",
         "mission destroy",
+        "mission destroy jump",
         "mission jump",
         "mission missile",
         "mission spy",
@@ -293,6 +387,7 @@ fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
         "solar satellite marker",
         "command relay marker",
         "sensor phalanx marker",
+        "planetary shield marker",
     ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         let original = transcode_basis_texture(

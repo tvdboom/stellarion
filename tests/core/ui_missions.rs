@@ -187,6 +187,46 @@ fn mission_route_is_centered_on_the_planet_artwork() {
 }
 
 #[test]
+fn enemy_mission_route_absorbs_clicks_with_the_default_cursor() {
+    let context = egui::Context::default();
+    let mut route_rect = egui::Rect::NOTHING;
+    let mut route_clicked = false;
+
+    for pressed in [None, Some(true), Some(false)] {
+        let events = pressed.map_or_else(Vec::new, |pressed| {
+            vec![
+                egui::Event::PointerMoved(route_rect.center()),
+                egui::Event::PointerButton {
+                    pos: route_rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        });
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |ui| {
+                let (_, response) = mission_route_cell(ui, 400.0);
+                route_rect = response.rect;
+                let response = block_enemy_route_clicks(ui, response, 17);
+                route_clicked |= response.clicked();
+            },
+        );
+        output.textures_delta.clear();
+
+        if pressed.is_some() {
+            assert_eq!(output.platform_output.cursor_icon, CursorIcon::Default);
+        }
+    }
+
+    assert!(route_clicked, "the route must consume the click instead of passing it to the map");
+}
+
+#[test]
 fn active_mission_rows_are_centered_with_equal_outer_space() {
     for available_width in [700.0, 850.0, 1_200.0] {
         let (route_width, leading_space) = mission_row_layout(available_width);

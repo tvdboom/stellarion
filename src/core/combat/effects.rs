@@ -29,6 +29,9 @@ const MAX_PARTICLES: usize = 1800;
 const COMBAT_READOUT_RASTER_SCALE: f32 = 0.05;
 const MISSILE_FLIGHT_TIME: f32 = 0.95;
 const MISSILE_CURVE_HEIGHT: f32 = 0.58;
+// The original impact recording is quieter than the new firing cues. Preserve its
+// character while keeping an actual hull strike audible beneath their tails.
+const HULL_IMPACT_VOLUME: f32 = -10.0;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,8 +164,12 @@ impl Weapon {
         }
     }
 
-    fn launch_cue(self) -> Option<PlayAudioMsg> {
+    fn launch_cue(self, source_unit: Option<Unit>) -> Option<PlayAudioMsg> {
         match self {
+            Self::Laser | Self::HeavyLaser | Self::TwinLaser => {
+                Some(PlayAudioMsg::new("laser fire"))
+            },
+            Self::Missile if source_unit == Some(Unit::Ship(Ship::Bomber)) => None,
             Self::Missile => Some(PlayAudioMsg::new("missile fire").rate(1.0)),
             Self::Bomb => Some(PlayAudioMsg::new("bomb release").rate(0.72)),
             Self::Plasma => Some(PlayAudioMsg::new("beam fire").rate(1.35)),
@@ -181,6 +188,7 @@ impl Weapon {
 pub struct PendingImpact {
     target: Entity,
     source: Option<Entity>,
+    source_unit: Option<Unit>,
     origin: Vec3,
     destination: Vec3,
     size: f32,
@@ -849,6 +857,7 @@ pub fn run_combat_animations(
             (transform.translation, target_dimensions.x)
         };
         let source = message.source.map(|s| s.0);
+        let source_unit = message.source.map(|s| s.1);
         let key = (target, source, message.repair, message.shot.missed);
         let count = counts.entry(key).or_insert(0usize);
 
@@ -895,6 +904,7 @@ pub fn run_combat_animations(
             .or_insert(PendingImpact {
                 target,
                 source,
+                source_unit,
                 origin,
                 destination,
                 size,
@@ -1031,7 +1041,7 @@ pub fn run_combat_animations(
         if !impact.launched {
             impact.launched = true;
             *visibility = Visibility::Inherited;
-            if let Some(cue) = impact.weapon.launch_cue() {
+            if let Some(cue) = impact.weapon.launch_cue(impact.source_unit) {
                 queue_combat_sound(&mut audio, &mut sound_cooldowns, cue);
             }
             if let Some(source) = impact.source {
@@ -1338,14 +1348,12 @@ pub fn run_combat_animations(
         }
     }
     if hull_hit_sound {
-        queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("short explosion"));
+        let mut hull_impact = PlayAudioMsg::new("short explosion");
+        hull_impact.volume = HULL_IMPACT_VOLUME;
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, hull_impact);
     }
     if shield_hit_sound {
-        queue_combat_sound(
-            &mut audio,
-            &mut sound_cooldowns,
-            PlayAudioMsg::new("shield impact").rate(1.35),
-        );
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("shield impact"));
     }
     if repair_sound {
         queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("repair"));

@@ -137,6 +137,10 @@ fn battle_outcomes_follow_the_local_side_while_territory_headlines_take_priority
     );
     assert_eq!(TerritoryOutcome::from_report(&captured, &defender), Some(TerritoryOutcome::Lost));
 
+    captured.mission.army = Army::from([(Unit::war_sun(), 1)]);
+    captured.mission.jump_gate = true;
+    assert_eq!(MissionArrivalImage::from_report(&captured, attacker).key(), "mission destroy");
+
     for (player, expected) in [(attacker, "PLANET CONQUERED"), (&defender, "PLANET LOST")] {
         let mut sites = BattleSites::default();
         let mut player = player.clone();
@@ -166,7 +170,7 @@ fn battle_outcomes_follow_the_local_side_while_territory_headlines_take_priority
 }
 
 #[test]
-fn planet_destruction_replaces_the_ordinary_battle_result_headline() {
+fn world_destruction_replaces_the_battle_result_and_names_the_world_kind() {
     let (app, planet) = presentation_app();
     let mut player = app.world().resource::<Player>().clone();
     let mut report = battle_report(11, &planet, Outcome::Victory);
@@ -183,6 +187,9 @@ fn planet_destruction_replaces_the_ordinary_battle_result_headline() {
     let mut sites = BattleSites::default();
     assert!(sites.observe(&player, app.world().resource::<Map>(), 2));
     assert_eq!(sites.outcomes[&planet.id].labels(&planet), vec!["PLANET DESTROYED"]);
+
+    let moon = app.world().resource::<Map>().moons()[0];
+    assert_eq!(sites.outcomes[&planet.id].labels(moon), vec!["MOON DESTROYED"]);
 }
 
 #[test]

@@ -20,31 +20,53 @@ pub(super) fn energy_shortage_warning(
         .then(|| MessageMsg::warning("Next turn: Energy shortage."))
 }
 
-/// Draws one compact Terraformer mode without adding explanatory hover text.
-fn terraformer_focus_button(
-    ui: &mut Ui,
-    images: &ImageIds,
-    focus: Option<ResourceName>,
-    selected: bool,
-) -> Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(72.0, 54.0), Sense::click());
+/// Returns the capacity summary relevant to the active shop category.
+pub(super) fn shop_capacity_summary(
+    shop: Shop,
+    planet: &Planet,
+) -> Option<(&'static str, usize, usize)> {
+    match (shop, planet.is_moon()) {
+        (Shop::Buildings, true) => Some(("Fields", planet.fields_consumed(), planet.max_fields())),
+        (Shop::Fleet, false) => {
+            Some(("Production", planet.fleet_production(), planet.max_fleet_production()))
+        },
+        (Shop::Defenses, false) => {
+            Some(("Production", planet.battery_production(), planet.max_battery_production()))
+        },
+        (Shop::Buildings | Shop::Orbitals | Shop::Fleet | Shop::Defenses, _) => None,
+    }
+}
+
+/// Draws one compact image tile used by building-specific controls.
+fn image_tile_button(ui: &mut Ui, image: egui::TextureId, selected: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(74.0, 50.0), Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
-    let fill = if selected {
-        Color32::from_rgb(72, 96, 210)
-    } else if response.hovered() {
-        Color32::from_rgba_unmultiplied(40, 55, 72, 245)
-    } else {
-        Color32::from_rgba_unmultiplied(19, 29, 40, 235)
-    };
     let border = if selected {
-        Color32::from_rgb(130, 213, 246)
+        Color32::from_rgb(116, 211, 245)
+    } else if response.hovered() {
+        Color32::from_rgba_unmultiplied(117, 158, 190, 190)
     } else {
-        Color32::from_rgba_unmultiplied(145, 181, 214, 100)
+        Color32::from_rgba_unmultiplied(100, 128, 151, 105)
     };
-    ui.painter().rect(
+
+    let tint = if selected {
+        Color32::WHITE
+    } else if response.hovered() {
+        Color32::from_rgb(210, 218, 225)
+    } else {
+        Color32::from_rgb(148, 158, 168)
+    };
+    ui.painter().image(
+        image,
+        // Focus art is 3:2, so this inset preserves its aspect ratio exactly.
+        rect.shrink(1.0),
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        tint,
+    );
+
+    ui.painter().rect_stroke(
         rect,
-        egui::CornerRadius::same(7),
-        fill,
+        egui::CornerRadius::same(6),
         Stroke::new(
             if selected {
                 2.0
@@ -55,29 +77,19 @@ fn terraformer_focus_button(
         ),
         StrokeKind::Inside,
     );
-
-    if let Some(resource) = focus {
-        ui.painter().image(
-            images.get(resource.to_lowername()),
-            rect.shrink2(egui::vec2(8.0, 6.0)),
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    } else {
-        let center = rect.center() + egui::vec2(0.0, 2.0);
-        let stroke = Stroke::new(
-            3.0,
-            if selected {
-                Color32::WHITE
-            } else {
-                border
-            },
-        );
-        ui.painter().circle_stroke(center, 12.0, stroke);
-        ui.painter()
-            .line_segment([center - egui::vec2(0.0, 15.0), center - egui::vec2(0.0, 1.0)], stroke);
-    }
     response
+}
+
+/// Draws one Terraformer or Laboratory resource tile.
+fn resource_tile_button(
+    ui: &mut Ui,
+    images: &ImageIds,
+    focus: Option<ResourceName>,
+    selected: bool,
+) -> Response {
+    let image = focus
+        .map_or_else(|| images.get("no focus"), |resource| images.get(resource.to_lowername()));
+    image_tile_button(ui, image, selected)
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
@@ -192,12 +204,12 @@ fn draw_unit_hover(
 
                 ui.separator();
 
-                ui.add_space(20.);
+                ui.add_space(12.);
+                ui.small("Convert resources");
+                ui.add_space(9.);
 
                 ui.horizontal(|ui| {
-                    let response = ui
-                        .add_image(images.get(from.to_lowername()), [65., 43.])
-                        .interact(Sense::click())
+                    let response = resource_tile_button(ui, images, Some(*from), false)
                         .on_hover_small_ext("Click to cycle over resources.");
 
                     if response.clicked() {
@@ -259,9 +271,7 @@ fn draw_unit_hover(
 
                     ui.label(gain.to_string());
 
-                    let response = ui
-                        .add_image(images.get(to.to_lowername()), [65., 43.])
-                        .interact(Sense::click())
+                    let response = resource_tile_button(ui, images, Some(*to), false)
                         .on_hover_small_ext("Click to cycle over resources.");
 
                     if response.clicked() {
@@ -276,6 +286,7 @@ fn draw_unit_hover(
                 ui.separator();
                 ui.add_space(12.);
                 ui.small("Resource focus");
+                ui.add_space(9.);
                 ui.horizontal(|ui| {
                     for focus in [
                         None,
@@ -284,7 +295,7 @@ fn draw_unit_hover(
                         Some(ResourceName::Deuterium),
                     ] {
                         let selected = planet.terraformer_focus == focus;
-                        let response = terraformer_focus_button(ui, images, focus, selected);
+                        let response = resource_tile_button(ui, images, focus, selected);
                         if !selected
                             && response.clicked()
                             && pending.push(TurnCommand::SetTerraformerFocus {
@@ -298,13 +309,13 @@ fn draw_unit_hover(
                     }
                 });
             } else if *unit == Unit::Building(Building::ColonialAdministration)
-                && (count > 0 || planet.buy.contains(unit))
+                && count > 0
                 && player.owns(planet)
                 && player.home_planet != planet.id
             {
                 ui.separator();
                 ui.add_space(12.);
-                draw_fleet_withdrawal(ui, planet, pending);
+                draw_fleet_withdrawal(ui, planet, pending, images);
             } else if *unit == Unit::Building(Building::CommandRelay)
                 && (count > 0 || planet.buy.contains(unit))
             {
@@ -365,73 +376,68 @@ fn draw_unit_hover(
     });
 }
 
-/// Keeps withdrawal controls usable even when the building cannot be purchased or hovers are off.
+/// Draws one withdrawal stance with the same tile treatment as Terraformer focus.
+fn fleet_withdrawal_button(
+    ui: &mut Ui,
+    images: &ImageIds,
+    withdrawal: FleetWithdrawal,
+    selected: bool,
+) -> Response {
+    let image = match withdrawal {
+        FleetWithdrawal::Off => "no focus",
+        FleetWithdrawal::Losses75 => "withdrawal 75",
+        FleetWithdrawal::Losses50 => "withdrawal 50",
+        FleetWithdrawal::Losses25 => "withdrawal 25",
+        FleetWithdrawal::Immediate => "withdrawal immediate",
+    };
+    let response = image_tile_button(ui, images.get(image), selected);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            selected,
+            withdrawal.label(),
+        )
+    });
+    response
+}
+
+/// Draws the withdrawal orders unlocked by a completed Colonial Administration.
 pub(super) fn draw_fleet_withdrawal(
     ui: &mut Ui,
     planet: &mut Planet,
     pending: &mut PendingTurnCommands,
+    images: &ImageIds,
 ) {
     let administration = Unit::Building(Building::ColonialAdministration);
-    let level =
-        planet.army.amount(&administration) + usize::from(planet.buy.contains(&administration));
+    let level = planet.army.amount(&administration);
+    if level == 0 {
+        return;
+    }
+
     ui.add_enabled_ui(pending.can_accept_commands(), |ui| {
-        ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
-        let selector = ui.horizontal_wrapped(|ui| {
-            let label_width = FleetWithdrawal::ALL
-                .iter()
-                .map(|withdrawal| {
-                    ui.painter()
-                        .layout_no_wrap(
-                            withdrawal.label().into(),
-                            TextStyle::Button.resolve(ui.style()),
-                            Color32::WHITE,
-                        )
-                        .size()
-                        .x
-                })
-                .fold(0.0, f32::max);
-            let selector_width = (label_width
-                + ui.spacing().icon_width
-                + ui.spacing().icon_spacing
-                + 2.0 * ui.spacing().button_padding.x)
-                .max(ui.spacing().combo_width)
-                .min(ui.available_width());
-            ui.small("Fleet withdrawal:");
-            if ui.available_size_before_wrap().x < selector_width {
-                ui.end_row();
+        ui.small("Fleet withdrawal");
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            for withdrawal in FleetWithdrawal::ALL {
+                if level < withdrawal.minimum_level() {
+                    continue;
+                }
+
+                let selected = planet.fleet_withdrawal == withdrawal;
+                let response = fleet_withdrawal_button(ui, images, withdrawal, selected);
+                if response.clicked()
+                    && !selected
+                    && pending.push(TurnCommand::SetFleetWithdrawal {
+                        planet_id: planet.id,
+                        withdrawal,
+                    })
+                {
+                    planet.fleet_withdrawal = withdrawal;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
             }
-            egui::ComboBox::from_id_salt(("fleet_withdrawal", planet.id))
-                .width(selector_width)
-                .selected_text(planet.fleet_withdrawal.label())
-                .show_ui(ui, |ui| {
-                    for withdrawal in FleetWithdrawal::ALL {
-                        let selected = planet.fleet_withdrawal == withdrawal;
-                        let response = ui.add_enabled(
-                            level >= withdrawal.minimum_level(),
-                            egui::Button::selectable(selected, withdrawal.label()),
-                        );
-                        let response = response.on_disabled_hover_text(format!(
-                            "Requires Colonial Administration level {}",
-                            withdrawal.minimum_level(),
-                        ));
-                        if response.clicked()
-                            && !selected
-                            && pending.push(TurnCommand::SetFleetWithdrawal {
-                                planet_id: planet.id,
-                                withdrawal,
-                            })
-                        {
-                            planet.fleet_withdrawal = withdrawal;
-                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-                        }
-                    }
-                });
-        });
-        selector.response.on_hover_text(if level >= 5 {
-            "Surviving ships deploy home without a final enemy volley."
-        } else {
-            "Ships take one final enemy volley without firing back, then deploy home."
         });
     });
 }
@@ -481,52 +487,18 @@ pub(super) fn draw_shop(
             state.shop = state.shop.next(planet.is_moon());
         }
 
-        let (current, max) = match state.shop {
-            Shop::Buildings => (planet.fields_consumed(), planet.max_fields()),
-            Shop::Orbitals => (0, 0),
-            Shop::Fleet => (planet.fleet_production(), planet.max_fleet_production()),
-            Shop::Defenses => (planet.battery_production(), planet.max_battery_production()),
-        };
-
-        if matches!(state.shop, Shop::Fleet | Shop::Defenses)
-            || (state.shop == Shop::Buildings && planet.is_moon())
-        {
+        if let Some((label, current, max)) = shop_capacity_summary(state.shop, planet) {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 ui.add_space(45.);
-                ui.small(format!(
-                    "{}: {}/{}",
-                    if planet.is_moon() {
-                        "Fields"
-                    } else {
-                        "Production"
-                    },
-                    current,
-                    max
-                ));
+                ui.small(format!("{label}: {current}/{max}"));
             });
-        } else if state.shop == Shop::Buildings
-            && player.owns(planet)
-            && player.home_planet != planet.id
-            && (planet.has(&Unit::Building(Building::ColonialAdministration))
-                || planet.buy.contains(&Unit::Building(Building::ColonialAdministration)))
-        {
-            ui.add_space(20.);
-            draw_fleet_withdrawal(ui, planet, pending);
         }
     });
 
     let units = match state.shop {
-        Shop::Buildings => Unit::buildings()
-            .into_iter()
-            .filter(|unit| unit.valid_on(planet.is_moon()))
-            .filter(|unit| {
-                *unit != Unit::Building(Building::ColonialAdministration)
-                    || planet.id != player.home_planet
-            })
-            .filter(|unit| {
-                *unit != Unit::Building(Building::Senate) || planet.id == player.home_planet
-            })
-            .collect::<Vec<_>>(),
+        Shop::Buildings => {
+            Unit::buildings_for_world(planet.is_moon(), planet.id == player.home_planet)
+        },
         Shop::Orbitals => Unit::orbitals(),
         Shop::Fleet => Unit::ships(),
         Shop::Defenses => {

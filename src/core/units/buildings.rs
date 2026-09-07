@@ -100,10 +100,10 @@ impl FleetWithdrawal {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",
-            Self::Losses75 => "75% losses",
-            Self::Losses50 => "50% losses",
-            Self::Losses25 => "25% losses",
-            Self::Immediate => "Immediately",
+            Self::Losses75 => "75%",
+            Self::Losses50 => "50%",
+            Self::Losses25 => "25%",
+            Self::Immediate => "Immediate",
         }
     }
 }
@@ -135,8 +135,7 @@ impl Description for Building {
             },
             Building::TidalGenerator => {
                 "The Tidal Generator converts gravitational stress between a moon and its parent \
-                planet into power for the empire-wide grid. The Tidal Generator doesn't take up \
-                lunar fields."
+                planet into power for the empire-wide grid. Each level takes up one lunar field."
             },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
@@ -176,7 +175,7 @@ impl Description for Building {
                 "The Reactor is a high-output energy facility that enhances the efficiency of \
                 every ship launched from the planet. It optimizes fuel consumption through \
                 advanced power regulation and heat-recovery systems. Each level reduces the \
-                deuterium required for fleet travel by 10%."
+                deuterium required for fleet travel by 10% and produces 3 energy."
             },
             Building::Terraformer => {
                 "The Terraformer specializes a planet's environment for one selected resource. \
@@ -191,8 +190,7 @@ impl Description for Building {
             Building::CommandRelay => {
                 "An active Command Relay feeds false telemetry to small enemy Spy missions. \
                 Each completed level makes groups of up to 5 additional Probes report an empty \
-                planet; larger groups gather intelligence normally. Toggle the Relay by hovering \
-                over it in the Orbitals shop."
+                planet. Larger groups gather intelligence normally."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
@@ -219,15 +217,13 @@ impl Description for Building {
                 The Orbital radar can only be build on a moon."
             },
             Building::Senate => {
-                "Each Senate level lets you own one extra planet."
+                "The Senate is the political heart of your empire, where delegates chart its \
+                course among the stars. Each Senate level lets you own one extra planet."
             },
             Building::ColonialAdministration => {
                 "Coordinates fleet withdrawal from colonies to your homeworld. Levels 1–4 unlock \
-                retreat after 75%, 50%, or 25% fleet losses, or immediately. Losses use ship \
-                production points. Withdrawing ships endure one final enemy round without \
-                firing back; level 5 removes that final round. Ground defenses stay and fight. \
-                Choose Fleet withdrawal below. Cannot be built on a homeworld or moon and uses \
-                no energy."
+                retreat with decreasing percentages of fleet losses. Withdrawing ships endure one \
+                final enemy round without firing back. Level 5 removes that final round."
             },
         }
     }
@@ -255,7 +251,7 @@ impl Price for Building {
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),
             Building::Senate => Resources::new(1000, 750, 500),
-            Building::ColonialAdministration => Resources::new(1000, 750, 500),
+            Building::ColonialAdministration => Resources::new(200, 100, 50),
         }
     }
 }

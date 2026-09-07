@@ -247,14 +247,20 @@ fn finishing_ship_fire_keeps_recorded_bombing_and_applies_building_losses_once()
 }
 
 #[test]
-fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_do_not_wrap() {
+fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
     let mut app = app(12);
     key(&mut app, KeyCode::ArrowRight, false);
     app.world_mut().run_system_once(control_combat_playback).unwrap();
     assert_eq!(app.world().resource::<UiState>().combat_round, 0);
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
     key(&mut app, KeyCode::ArrowLeft, true);
     app.world_mut().run_system_once(control_combat_playback).unwrap();
     assert_eq!(app.world().resource::<UiState>().combat_round, 0);
+    assert!(app.world().contains_resource::<CombatRoundJump>());
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::DisplayRound)
+    ));
     let last =
         app.world().resource::<Player>().reports[0].combat_report.as_ref().unwrap().rounds.len()
             - 1;

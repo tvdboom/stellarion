@@ -24,7 +24,7 @@ fn destruction_animation_hides_the_planet_swap_under_the_blast() {
 fn test_defenses(
     world: &mut World,
     planet: PlanetId,
-) -> (Entity, Entity, Entity, Entity, Entity, Entity, Handle<ColorMaterial>) {
+) -> (Entity, Entity, Entity, Entity, Entity, Entity) {
     let planet = world
         .query::<(Entity, &PlanetCmp)>()
         .iter(world)
@@ -42,8 +42,7 @@ fn test_defenses(
         children.iter().find(|&child| world.get::<CommandRelayCmp>(child).is_some()).unwrap();
     let phalanx =
         children.iter().find(|&child| world.get::<SensorPhalanxCmp>(child).is_some()).unwrap();
-    let material = world.get::<MeshMaterial2d<ColorMaterial>>(shield).unwrap().0.clone();
-    (shield, dock, gate, satellite, relay, phalanx, material)
+    (shield, dock, gate, satellite, relay, phalanx)
 }
 
 fn test_satellites(world: &mut World, planet: PlanetId) -> Vec<Entity> {
@@ -273,9 +272,11 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         let belts =
             world.query_filtered::<Entity, With<AsteroidBeltCmp>>().iter(world).collect::<Vec<_>>();
         assert_eq!(belts.len(), 1, "a map must spawn exactly one asteroid belt");
-        let belt_children = world.get::<Children>(belts[0]).unwrap();
-        assert_eq!(belt_children.iter().count(), expected_count);
-        assert!(belt_children.iter().all(|child| world.get::<AsteroidCmp>(child).is_some()));
+        assert!(world.get::<Children>(belts[0]).is_none());
+        let asteroid_entities =
+            world.query_filtered::<Entity, With<AsteroidCmp>>().iter(world).collect::<Vec<_>>();
+        assert_eq!(asteroid_entities.len(), expected_count);
+        assert!(asteroid_entities.iter().all(|entity| world.get::<ChildOf>(*entity).is_none()));
         let planets = world
             .resource::<Map>()
             .planets()
@@ -294,7 +295,7 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 assert!(transform.translation.z > VORONOI_Z);
                 assert_eq!(transform.translation.z, ASTEROID_BELT_DEPTH);
                 assert!((0.0..=38.0).contains(&sprite.custom_size.unwrap().x));
-                assert_eq!(sprite.color, Color::srgba(0.92, 0.88, 0.80, 0.96));
+                assert_eq!(sprite.color, Color::srgba(0.78, 0.76, 0.72, 0.82));
                 for (planet_position, planet_radius) in &planets {
                     let asteroid_radius = sprite.custom_size.unwrap().x * 0.5;
                     assert!(
@@ -344,6 +345,45 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         app.world().get::<Transform>(*entity).unwrap().rotation.angle_between(transform.rotation)
             > 0.08
     }));
+}
+
+#[test]
+fn multiplayer_projection_repairs_an_empty_asteroid_field_without_duplicates() {
+    let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default(), TransformPlugin))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .insert_resource(map)
+        .add_systems(Update, ensure_asteroid_belt);
+
+    app.update();
+    app.update();
+    let initial_count = {
+        let world = app.world_mut();
+        assert_eq!(world.query_filtered::<Entity, With<AsteroidBeltCmp>>().iter(world).count(), 1);
+        world.query_filtered::<Entity, With<AsteroidCmp>>().iter(world).count()
+    };
+    assert!(initial_count >= ASTEROID_BELT_MINIMUM_COUNT);
+
+    let asteroids = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<AsteroidCmp>>().iter(world).collect::<Vec<_>>()
+    };
+    for entity in asteroids {
+        app.world_mut().despawn(entity);
+    }
+    app.update();
+
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<Entity, With<AsteroidBeltCmp>>().iter(world).count(), 1);
+    assert_eq!(
+        world.query_filtered::<Entity, With<AsteroidCmp>>().iter(world).count(),
+        initial_count
+    );
 }
 
 #[test]
@@ -831,6 +871,10 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             assert_eq!(*app.world().get::<Visibility>(*entity).unwrap(), Visibility::Inherited);
         }
     }
+    assert_eq!(
+        app.world().get::<Sprite>(own.0).unwrap().custom_size,
+        Some(Vec2::splat(Planet::SIZE * 1.3))
+    );
     let gate_anchor = app.world().get::<Transform>(own.2).unwrap().translation;
     let gate_rotation = app.world().get::<Transform>(own.2).unwrap().rotation;
     assert!((gate_anchor.truncate().length() - Planet::SIZE * 0.9).abs() < 0.01);
@@ -908,7 +952,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             model.player_mut(2).unwrap().color = enemy_color;
         }
         app.update();
-        for ((shield, dock, gate, satellite, relay, phalanx, material), expected) in
+        for ((shield, dock, gate, satellite, relay, phalanx), expected) in
             [(&own, color), (&enemy, enemy_color)]
         {
             assert_eq!(*app.world().get::<Visibility>(*shield).unwrap(), Visibility::Inherited);
@@ -921,28 +965,26 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             }
             let mut alphas = Vec::new();
             // Step across loop boundaries at a frame interval that does not divide the period.
-            // Check the rendered material too: an opaque material ignores the animated alpha.
+            // Check the rendered sprite too: hue and alpha are presentation behavior.
             for _ in 0..354 {
                 app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(17));
                 app.update();
-                let actual = app.world().resource::<Assets<ColorMaterial>>().get(material).unwrap();
-                assert_eq!(actual.alpha_mode, bevy::sprite_render::AlphaMode2d::Blend);
+                let actual = app.world().get::<Sprite>(*shield).unwrap().color;
                 assert!(actual
-                    .color
                     .with_alpha(1.)
                     .to_srgba()
                     .to_vec4()
                     .abs_diff_eq(expected.color().to_srgba().to_vec4(), 1e-6));
-                alphas.push(actual.color.alpha());
+                alphas.push(actual.alpha());
             }
             for cycle in alphas.as_chunks::<177>().0 {
                 assert!(cycle.iter().any(|&alpha| alpha < 0.01), "shield fades fully out");
-                assert!(cycle.iter().any(|&alpha| alpha > 0.9), "shield becomes visible again");
+                assert!(cycle.iter().any(|&alpha| alpha > 0.8), "shield becomes visible again");
             }
             for pair in alphas.windows(2) {
                 let change = (pair[1] - pair[0]).abs();
                 assert!(change < 0.02, "shield must not pop between frames: {pair:?}");
-                if pair[0] < 0.001 || pair[0] > 0.949 {
+                if pair[0] < 0.001 || pair[0] > 0.849 {
                     assert!(change < 0.002, "shield must gently reverse its fade: {pair:?}");
                 }
             }
@@ -974,8 +1016,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     }
 
     // Once the local player captures it, all visible markers adopt the new controller immediately.
-    let alpha_before_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.6).unwrap().color.alpha();
+    let alpha_before_capture = app.world().get::<Sprite>(enemy.0).unwrap().color.alpha();
     let elapsed_before_capture =
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed();
     app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
@@ -999,8 +1040,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         elapsed_before_capture,
         "changing controller must not restart the fade"
     );
-    let alpha_after_capture =
-        app.world().resource::<Assets<ColorMaterial>>().get(&enemy.6).unwrap().color.alpha();
+    let alpha_after_capture = app.world().get::<Sprite>(enemy.0).unwrap().color.alpha();
     assert!((alpha_after_capture - alpha_before_capture).abs() < 1e-6);
     assert_eq!(
         app.world().get::<Transform>(own.2).unwrap().translation,

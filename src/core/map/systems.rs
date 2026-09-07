@@ -11,16 +11,16 @@ use bevy::color::{palettes::css::WHITE, Mix};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
-use bevy_tweening::lens::ColorMaterialColorLens;
-use bevy_tweening::{AnimTarget, EaseMethod, RepeatCount, Tween, TweenAnim, Tweenable};
+use bevy_tweening::lens::SpriteColorLens;
+use bevy_tweening::{EaseMethod, RepeatCount, Tween, TweenAnim, Tweenable};
 use itertools::Itertools;
 use rand::{rng, RngExt};
 use strum::IntoEnumIterator;
 use voronator::delaunator::Point;
 use voronator::VoronoiDiagram;
 
-use crate::core::assets::WorldAssets;
-use crate::core::camera::{MainCamera, ParallaxCmp};
+use crate::core::assets::{WorldAssets, ASTEROID_IMAGE_NAMES};
+use crate::core::camera::{drag_camera_position, MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
     MISSION_Z, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, SOLAR_STAR_SIZE,
@@ -286,9 +286,9 @@ impl PlanetaryShieldCmp {
             // loop never jumps or abruptly reverses when it wraps back to its start.
             EaseMethod::CustomFunction(|phase| 0.5 - 0.5 * (TAU * phase).cos()),
             Duration::from_secs(3),
-            ColorMaterialColorLens {
+            SpriteColorLens {
                 start: color.with_alpha(0.0),
-                end: color.with_alpha(0.95),
+                end: color.with_alpha(0.85),
             },
         )
         .with_repeat_count(RepeatCount::Infinite)
@@ -1187,56 +1187,66 @@ fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Imag
     };
     let center = map.solar_star_position();
     let placements = asteroid_belt_placements(map, layout);
-    commands
-        .spawn((
-            Name::new("Asteroid belt"),
-            AsteroidBeltCmp,
-            Transform::default(),
-            Visibility::Inherited,
+    commands.spawn((Name::new("Asteroid belt"), AsteroidBeltCmp, MapCmp));
+    // Keep renderable rocks as world roots so their visibility never depends on the non-rendering
+    // lifecycle marker. This also lets projection repair replace either side independently.
+    for (index, placement) in placements.into_iter().enumerate() {
+        let position = center + Vec2::from_angle(placement.phase) * placement.radius;
+        commands.spawn((
+            Sprite {
+                image: images[index % images.len()].clone(),
+                custom_size: Some(Vec2::splat(placement.diameter)),
+                // Keep the decorative belt visually behind interactive planets and overlays.
+                color: Color::srgba(0.78, 0.76, 0.72, 0.82),
+                ..default()
+            },
+            Transform {
+                // Keep the belt legible over territory shading while planets and all
+                // interactive overlays remain in front of it.
+                translation: position.extend(ASTEROID_BELT_DEPTH),
+                rotation: Quat::from_rotation_z(visual_noise(placement.seed.wrapping_add(3)) * TAU),
+                ..default()
+            },
+            Pickable::IGNORE,
+            AsteroidCmp {
+                center,
+                radius: placement.radius,
+                phase: placement.phase,
+                angular_speed: 0.0,
+                wobble_phase: visual_noise(placement.seed.wrapping_add(6)) * TAU,
+                wobble_speed: 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5,
+                wobble_amplitude: ASTEROID_MINIMUM_WOBBLE
+                    + visual_noise(placement.seed.wrapping_add(8)) * ASTEROID_WOBBLE_RANGE,
+                spin: (0.1 + visual_noise(placement.seed.wrapping_add(9)) * 0.22)
+                    * if visual_noise(placement.seed.wrapping_add(10)) < 0.5 {
+                        -1.0
+                    } else {
+                        1.0
+                    },
+                tumble_phase: visual_noise(placement.seed.wrapping_add(11)) * TAU,
+                tumble_speed: 0.55 + visual_noise(placement.seed.wrapping_add(12)) * 0.75,
+            },
             MapCmp,
-        ))
-        .with_children(|parent| {
-            for (index, placement) in placements.into_iter().enumerate() {
-                let position = center + Vec2::from_angle(placement.phase) * placement.radius;
-                parent.spawn((
-                    Sprite {
-                        image: images[index % images.len()].clone(),
-                        custom_size: Some(Vec2::splat(placement.diameter)),
-                        color: Color::srgba(0.92, 0.88, 0.80, 0.96),
-                        ..default()
-                    },
-                    Transform {
-                        // Keep the belt legible over territory shading while planets and all
-                        // interactive overlays remain in front of it.
-                        translation: position.extend(ASTEROID_BELT_DEPTH),
-                        rotation: Quat::from_rotation_z(
-                            visual_noise(placement.seed.wrapping_add(3)) * TAU,
-                        ),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                    AsteroidCmp {
-                        center,
-                        radius: placement.radius,
-                        phase: placement.phase,
-                        angular_speed: 0.0,
-                        wobble_phase: visual_noise(placement.seed.wrapping_add(6)) * TAU,
-                        wobble_speed: 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5,
-                        wobble_amplitude: ASTEROID_MINIMUM_WOBBLE
-                            + visual_noise(placement.seed.wrapping_add(8)) * ASTEROID_WOBBLE_RANGE,
-                        spin: (0.1 + visual_noise(placement.seed.wrapping_add(9)) * 0.22)
-                            * if visual_noise(placement.seed.wrapping_add(10)) < 0.5 {
-                                -1.0
-                            } else {
-                                1.0
-                            },
-                        tumble_phase: visual_noise(placement.seed.wrapping_add(11)) * TAU,
-                        tumble_speed: 0.55 + visual_noise(placement.seed.wrapping_add(12)) * 0.75,
-                    },
-                    MapCmp,
-                ));
-            }
-        });
+        ));
+    }
+}
+
+/// Repairs a missing decorative belt after an in-place multiplayer projection refresh.
+pub(crate) fn ensure_asteroid_belt(
+    mut commands: Commands,
+    map: Res<Map>,
+    assets: Res<WorldAssets>,
+    belts: Query<Entity, With<AsteroidBeltCmp>>,
+    asteroids: Query<Entity, With<AsteroidCmp>>,
+) {
+    if belts.iter().count() == 1 && !asteroids.is_empty() {
+        return;
+    }
+    for entity in belts.iter().chain(asteroids.iter()) {
+        commands.entity(entity).try_despawn();
+    }
+    let images = ASTEROID_IMAGE_NAMES.iter().map(|name| assets.image(name)).collect::<Vec<_>>();
+    spawn_asteroid_belt(&mut commands, &map, &images);
 }
 
 /// Only fixed coordinates contribute: conquest, destruction and economy cannot reroll scenery.
@@ -1490,6 +1500,7 @@ pub fn draw_map(
         .observe(
             |event: On<Pointer<Move>>,
              camera_q: Single<(&mut Transform, &Projection), With<MainCamera>>,
+             map: Res<Map>,
              mut state: ResMut<UiState>,
              mouse: Res<ButtonInput<MouseButton>>,
              window: Single<&CursorIcon, With<Window>>| {
@@ -1503,8 +1514,14 @@ pub fn draw_map(
                     };
 
                     if !event.delta.x.is_nan() && !event.delta.y.is_nan() {
-                        camera_t.translation.x -= event.delta.x * projection.scale;
-                        camera_t.translation.y += event.delta.y * projection.scale;
+                        let movement = Vec2::new(-event.delta.x, event.delta.y) * projection.scale;
+                        camera_t.translation = drag_camera_position(
+                            camera_t.translation.truncate(),
+                            movement,
+                            projection.area.size(),
+                            &map,
+                        )
+                        .extend(camera_t.translation.z);
                         state.to_selected = false;
                         state.focus_planet = None;
                     }
@@ -1518,14 +1535,6 @@ pub fn draw_map(
 
     spawn_ambient_stars(&mut commands);
     spawn_background_landmarks(&mut commands, &assets, &map);
-    let asteroid_images = [
-        assets.image("bennu"),
-        assets.image("eros"),
-        assets.image("gaspra"),
-        assets.image("mathilde"),
-    ];
-    spawn_asteroid_belt(&mut commands, &map, &asteroid_images);
-
     for planet in &map.planets {
         let planet_id = planet.id;
 
@@ -1839,21 +1848,17 @@ pub fn draw_map(
                         }
                     }
 
-                    // Draw planetary shield
-                    let material = materials.add(ColorMaterial {
-                        color: OWN_COLOR.with_alpha(0.0),
-                        // ColorMaterial::from an opaque color ignores the tween's alpha changes.
-                        alpha_mode: bevy::sprite_render::AlphaMode2d::Blend,
-                        ..default()
-                    });
+                    // Draw a detailed electromagnetic field around the planet. Neutral source
+                    // art preserves its filaments while the sprite tint supplies faction hue.
                     parent.spawn((
-                        Mesh2d(
-                            meshes.add(Annulus::new(planet.size() * 0.55, planet.size() * 0.57)),
-                        ),
-                        MeshMaterial2d(material.clone()),
+                        Sprite {
+                            image: assets.image("planetary shield marker"),
+                            color: OWN_COLOR.with_alpha(0.0),
+                            custom_size: Some(Vec2::splat(planet.size() * 1.3)),
+                            ..default()
+                        },
                         Transform::from_xyz(0., 0., 0.6),
                         TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR)),
-                        AnimTarget::asset(&material),
                         Visibility::Hidden,
                         PlanetaryShieldCmp::new(),
                     ));
@@ -2393,12 +2398,7 @@ fn map_planet_image(planet: &Planet, destruction_active: bool) -> String {
 pub fn update_planet_defenses(
     planet_q: Query<(Entity, &PlanetCmp)>,
     children_q: Query<&Children>,
-    mut ps_q: Query<(
-        &mut Visibility,
-        &mut TweenAnim,
-        &mut PlanetaryShieldCmp,
-        &MeshMaterial2d<ColorMaterial>,
-    )>,
+    mut ps_q: Query<(&mut Visibility, &mut TweenAnim, &mut PlanetaryShieldCmp, &mut Sprite)>,
     mut dock_q: Query<
         (&mut Visibility, &mut Sprite),
         (With<SpaceDockCmp>, Without<JumpGateCmp>, Without<PlanetaryShieldCmp>),
@@ -2445,7 +2445,6 @@ pub fn update_planet_defenses(
     player: Res<Player>,
     missions: Res<Missions>,
     session: Res<MultiplayerSession>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let jump_gate_network_active = jump_gate_network_available(&map, &player);
     let scale = match *camera {
@@ -2488,7 +2487,7 @@ pub fn update_planet_defenses(
             .unwrap_or(Color::srgb_u8(190, 198, 210));
 
         for child in children_q.iter_descendants(entity) {
-            if let Ok((mut visibility, mut tween, mut ps, material)) = ps_q.get_mut(child) {
+            if let Ok((mut visibility, mut tween, mut ps, mut sprite)) = ps_q.get_mut(child) {
                 *visibility = if has_ps {
                     Visibility::Inherited
                 } else {
@@ -2501,9 +2500,7 @@ pub fn update_planet_defenses(
                     match tween.set_tweenable(pulse) {
                         Ok(_) => {
                             ps.color = Some(color);
-                            if let Some(mut material) = materials.get_mut(&material.0) {
-                                material.color = color.with_alpha(material.color.alpha());
-                            }
+                            sprite.color = color.with_alpha(sprite.color.alpha());
                         },
                         Err(error) => warn!("Failed to update planetary shield color: {error}"),
                     }

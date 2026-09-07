@@ -41,6 +41,11 @@ fn bombing_shots(round: &RoundReport) -> impl Iterator<Item = &ShotReport> {
 }
 
 #[test]
+fn bombing_hit_chance_is_twenty_five_percent() {
+    assert_eq!(BOMBING_HIT_CHANCE, 0.25);
+}
+
+#[test]
 fn bombing_occurs_once_in_long_battles_and_only_survivors_participate() {
     for raid in [BombingRaid::Economic, BombingRaid::Industrial] {
         for shield in [0, 1, 3, 5] {

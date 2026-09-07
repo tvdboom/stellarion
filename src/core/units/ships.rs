@@ -100,7 +100,7 @@ impl Description for Ship {
                 Having Bombers in an offensive mission enables bombing raids, which destabilize \
                 the enemy's economy or industrial capabilities. Bombers target the Planetary \
                 Shield (if there is one) before any other unit when bombing. After the first \
-                round ending with the Shield down, each surviving Bomber gets one 10% chance \
+                round ending with the Shield down, each surviving Bomber gets one 25% chance \
                 to destroy a level of a random building in the selected category. This raid \
                 occurs once per battle and destroys at most 3 levels per building, 9 in total."
             },

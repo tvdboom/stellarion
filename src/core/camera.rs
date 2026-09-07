@@ -9,6 +9,13 @@ use crate::core::map::model::Map;
 use crate::core::map::systems::PlanetCmp;
 use crate::core::ui::systems::UiState;
 
+/// At a camera limit, the outermost world remains this far inside the matching screen edge.
+const GALAXY_EDGE_SCREEN_FRACTION: f32 = 0.2;
+/// Maximum elastic travel beyond a camera limit while the map is being dragged.
+const OVERSCROLL_SCREEN_FRACTION: f32 = 0.15;
+/// Exponential return speed after input releases the camera outside its limits.
+const BOUNDS_RETURN_RATE: f32 = 14.0;
+
 #[derive(Component)]
 /// Marker component for the unique strategic 2D camera.
 pub struct MainCamera;
@@ -38,17 +45,99 @@ impl ParallaxCmp {
     }
 }
 
-/// Clamps camera translation so the visible viewport remains inside the map.
-pub fn clamp_to_rect(pos: Vec2, view_size: Vec2, bounds: Rect) -> Vec2 {
-    let min_x = bounds.min.x + view_size.x * 0.5;
-    let min_y = bounds.min.y + view_size.y * 0.5;
-    let max_x = bounds.max.x - view_size.x * 0.5;
-    let max_y = bounds.max.y - view_size.y * 0.5;
+fn bounds_from_points(points: impl IntoIterator<Item = Vec2>) -> Option<Rect> {
+    let mut points = points.into_iter();
+    let first = points.next()?;
+    let (min, max) =
+        points.fold((first, first), |(min, max), point| (min.min(point), max.max(point)));
+    Some(Rect::from_corners(min, max))
+}
 
-    if min_x > max_x || min_y > max_y {
-        Vec2::new((bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5)
+/// Computes the legal camera-center range for a viewport and collection of world centers.
+///
+/// At either limit, the matching outermost world sits 20% inside the viewport. If the galaxy is
+/// already narrower than the resulting visible span on an axis, that axis stays centered instead.
+fn camera_center_bounds(points: impl IntoIterator<Item = Vec2>, view_size: Vec2) -> Option<Rect> {
+    let world_bounds = bounds_from_points(points)?;
+    let center_inset = view_size.abs() * (0.5 - GALAXY_EDGE_SCREEN_FRACTION);
+    let proposed_min = world_bounds.min + center_inset;
+    let proposed_max = world_bounds.max - center_inset;
+    let center = world_bounds.center();
+    let min = Vec2::new(
+        if proposed_min.x <= proposed_max.x {
+            proposed_min.x
+        } else {
+            center.x
+        },
+        if proposed_min.y <= proposed_max.y {
+            proposed_min.y
+        } else {
+            center.y
+        },
+    );
+    let max = Vec2::new(
+        if proposed_min.x <= proposed_max.x {
+            proposed_max.x
+        } else {
+            center.x
+        },
+        if proposed_min.y <= proposed_max.y {
+            proposed_max.y
+        } else {
+            center.y
+        },
+    );
+    Some(Rect::from_corners(min, max))
+}
+
+fn map_camera_bounds(map: &Map, view_size: Vec2) -> Option<Rect> {
+    camera_center_bounds(map.planets.iter().map(|planet| planet.position), view_size)
+}
+
+fn rubber_band_axis(value: f32, min: f32, max: f32, limit: f32) -> f32 {
+    let compress = |distance: f32| {
+        if limit > 0.0 {
+            limit * distance / (limit + distance)
+        } else {
+            0.0
+        }
+    };
+    if value < min {
+        min - compress(min - value)
+    } else if value > max {
+        max + compress(value - max)
     } else {
-        Vec2::new(pos.x.clamp(min_x, max_x), pos.y.clamp(min_y, max_y))
+        value
+    }
+}
+
+fn rubber_band_position(position: Vec2, bounds: Rect, view_size: Vec2) -> Vec2 {
+    let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
+    Vec2::new(
+        rubber_band_axis(position.x, bounds.min.x, bounds.max.x, limit.x),
+        rubber_band_axis(position.y, bounds.min.y, bounds.max.y, limit.y),
+    )
+}
+
+/// Applies a map-drag delta with progressively stronger resistance beyond the galaxy boundary.
+pub(crate) fn drag_camera_position(
+    position: Vec2,
+    movement: Vec2,
+    view_size: Vec2,
+    map: &Map,
+) -> Vec2 {
+    let proposed = position + movement;
+    map_camera_bounds(map, view_size)
+        .map_or(proposed, |bounds| rubber_band_position(proposed, bounds, view_size))
+}
+
+fn settle_position(position: Vec2, bounds: Rect, delta_seconds: f32) -> Vec2 {
+    let target = position.clamp(bounds.min, bounds.max);
+    if position.distance_squared(target) < 0.01 {
+        target
+    } else {
+        let fraction = 1.0 - (-BOUNDS_RETURN_RATE * delta_seconds.max(0.0)).exp();
+        position.lerp(target, fraction.clamp(0.0, 1.0))
     }
 }
 
@@ -112,7 +201,11 @@ pub fn move_camera(
     if state.to_selected {
         if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
-                let target = pos.translation.truncate();
+                let planet_position = pos.translation.truncate();
+                let target = map_camera_bounds(&map, projection.area.size())
+                    .map_or(planet_position, |bounds| {
+                        planet_position.clamp(bounds.min, bounds.max)
+                    });
                 position = position.lerp(target, LERP_FACTOR);
                 if state.planet_selected.is_none() && state.focus_planet == Some(planet_id) {
                     shortcut_target = Some(target);
@@ -121,27 +214,41 @@ pub fn move_camera(
         }
     }
 
-    // Compute the camera's current view size based on projection
-    let view_size = projection.area.max - projection.area.min;
-
-    // Clamp camera position within bounds
-    position = position.lerp(
-        clamp_to_rect(
-            position,
-            view_size,
-            Rect {
-                min: map.rect.min * 1.8,
-                max: map.rect.max * 1.8,
-            },
-        ),
-        LERP_FACTOR,
-    );
-
     camera_t.translation = position.extend(camera_t.translation.z);
     if shortcut_target.is_some_and(|target| position.distance(target) < 0.75) {
         state.to_selected = false;
         state.focus_planet = None;
     }
+}
+
+/// Applies the elastic camera boundary after every movement input for the frame.
+///
+/// Dragging may travel a short distance beyond the normal range. Releasing the mouse returns the
+/// camera smoothly until the outermost world is again at least 20% inside the viewport edge.
+pub fn clamp_camera_to_worlds(
+    mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
+    map: Res<Map>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
+) {
+    let Ok((mut camera_t, projection)) = camera_q.single_mut() else {
+        return;
+    };
+    let Projection::Orthographic(projection) = projection else {
+        return;
+    };
+    let view_size = projection.area.size();
+    let Some(bounds) = map_camera_bounds(&map, view_size) else {
+        return;
+    };
+    let position = camera_t.translation.truncate();
+    let bounded = if mouse.pressed(MouseButton::Left) {
+        let overscroll = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
+        position.clamp(bounds.min - overscroll, bounds.max + overscroll)
+    } else {
+        settle_position(position, bounds, time.delta_secs())
+    };
+    camera_t.translation = bounded.extend(camera_t.translation.z);
 }
 
 /// Moves the strategic camera from keyboard input using frame time.

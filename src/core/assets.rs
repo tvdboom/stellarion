@@ -15,6 +15,22 @@ use crate::core::map::planet::PlanetKind;
 use crate::core::map::scenery::CelestialKind;
 use crate::utils::NameFromEnum;
 
+/// NASA asteroid cutouts used by the decorative map belt.
+pub(crate) const ASTEROID_IMAGE_NAMES: &[&str] = &[
+    "ag5",
+    "annefrank",
+    "bennu",
+    "braille",
+    "dinkinesh",
+    "donaldjohanson",
+    "eros",
+    "gaspra",
+    "hq124",
+    "ida",
+    "mathilde",
+    "vesta",
+];
+
 /// Image handle plus atlas metadata used by animated sprite systems.
 #[derive(Clone)]
 pub struct TextureInfo {
@@ -45,11 +61,6 @@ enum HandleLoadStatus {
     Pending,
     Ready,
     Failed,
-}
-
-/// Returns whether map rendering should discard baked color and retain only source alpha.
-fn faction_map_uses_alpha_mask(name: &str) -> bool {
-    name == "sensor phalanx marker"
 }
 
 /// Deduplicated handles partitioned into a minimal menu group and a deferred gameplay group.
@@ -138,18 +149,16 @@ impl WorldAssets {
             "booster",
             "launch",
             "star ambience",
+            "shield impact",
+            "laser fire",
+            "missile fire",
         ] {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
-        // Combat variants reuse mastered source cues with per-request pitch treatment.
         // Aliases keep their cooldowns and simultaneous-instance limits independent.
-        for (name, source) in [
-            ("shield impact", "repair"),
-            ("beam fire", "death ray"),
-            ("missile fire", "launch"),
-            ("bomb release", "launch"),
-            ("probe retreat", "booster"),
-        ] {
+        for (name, source) in
+            [("beam fire", "death ray"), ("bomb release", "launch"), ("probe retreat", "booster")]
+        {
             load_audio_alias(server, &mut self.audio, &mut self.gameplay_handles, name, source);
         }
 
@@ -170,29 +179,30 @@ impl WorldAssets {
                 "recall hover",
             ],
         );
-        // Most faction-colored map artwork keeps neutral relief under the sprite tint. The
-        // Phalanx deliberately uses only its source alpha so all three drones remain one flat,
-        // exact player color like the other compact infrastructure silhouettes. UI variants keep
-        // the detailed source artwork and premultiply it for egui.
+        // Faction-colored map artwork removes baked hue before the sprite tint so highlights and
+        // shadows cannot skew one player's color toward a different tone. This also preserves the
+        // Phalanx's metal panels and highlights instead of flattening each drone to its silhouette.
+        // UI variants keep the detailed source artwork and premultiply it for egui.
         for name in [
             "dock",
             "jump gate marker",
             "solar satellite marker",
             "command relay marker",
             "sensor phalanx marker",
+            "planetary shield marker",
             "mission",
             "mission colonize",
             "mission destroy",
+            "mission destroy jump",
             "mission jump",
             "mission missile",
             "mission spy",
         ] {
             let path = format!("images/icons/{name}.basisu.ktx2");
-            let alpha_mask = faction_map_uses_alpha_mask(name);
             let handle: Handle<Image> = server
                 .load_builder()
-                .with_settings(move |settings: &mut BasisTextureSettings| {
-                    settings.alpha_mask = alpha_mask;
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.neutral_luminance = true;
                     settings.ui_variant = true;
                     settings.linear_filtering = true;
                 })
@@ -287,7 +297,7 @@ impl WorldAssets {
         ] {
             load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
         }
-        for name in ["bennu", "eros", "gaspra", "mathilde"] {
+        for name in ASTEROID_IMAGE_NAMES {
             load_linear_image(
                 server,
                 &mut self.images,
@@ -301,7 +311,19 @@ impl WorldAssets {
             &mut self.images,
             &mut self.gameplay_handles,
             "resources",
-            &["turn", "owned", "metal", "crystal", "deuterium", "energy"],
+            &[
+                "turn",
+                "owned",
+                "no focus",
+                "metal",
+                "crystal",
+                "deuterium",
+                "energy",
+                "withdrawal 75",
+                "withdrawal 50",
+                "withdrawal 25",
+                "withdrawal immediate",
+            ],
         );
         load_category(
             server,

@@ -150,21 +150,49 @@ fn weapon_families_use_distinct_launch_and_shield_impact_cues() {
         step(&mut app, 2.);
         let cues =
             app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
-        let mut expected =
-            Weapon::for_unit(kind).launch_cue().map_or_else(Vec::new, |cue| vec![cue.name]);
+        let mut expected = Weapon::for_unit(kind)
+            .launch_cue(Some(kind))
+            .map_or_else(Vec::new, |cue| vec![cue.name]);
         expected.push("shield impact");
         assert_eq!(
             cues.iter().map(|cue| cue.name).collect::<Vec<_>>(),
             expected,
             "fast-forward must not layer every shot"
         );
-        assert_eq!(
-            cues.iter().find(|cue| cue.name == "shield impact").unwrap().playback_rate,
-            1.35
-        );
+        assert_eq!(cues.iter().find(|cue| cue.name == "shield impact").unwrap().playback_rate, 1.0);
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().shield, 70);
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().hull, 100);
     }
+}
+
+#[test]
+fn laser_fire_preserves_the_original_hull_impact_cue() {
+    let mut app = app();
+    let shooter = Unit::Ship(Ship::LightFighter);
+    let target = Unit::Ship(Ship::Cruiser);
+    let source = unit(&mut app, shooter, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut app, target, Side::Defender, Vec3::ZERO, 100, 0);
+    fire(
+        &mut app,
+        source,
+        shooter,
+        target,
+        ShotReport {
+            hull_damage: 1,
+            ..default()
+        },
+        false,
+    );
+
+    step(&mut app, 0.0);
+    step(&mut app, 1.0);
+
+    let cues = app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(
+        cues.iter().map(|cue| cue.name).collect::<Vec<_>>(),
+        ["laser fire", "short explosion"]
+    );
+    assert_eq!(cues[1].volume, HULL_IMPACT_VOLUME);
 }
 
 #[test]
@@ -289,6 +317,7 @@ fn missiles_use_a_slower_shallower_flight() {
     let impact = PendingImpact {
         target: Entity::PLACEHOLDER,
         source: None,
+        source_unit: None,
         origin: Vec3::new(0., 200., 0.),
         destination: Vec3::ZERO,
         size: 100.,
@@ -336,9 +365,19 @@ fn bombing_uses_a_large_slow_missile_profile_and_still_targets_the_building() {
         Weapon::Bomb.projectile_size(100.0).length()
             > Weapon::Missile.projectile_size(100.0).length() * 1.4
     );
-    let cue = Weapon::Bomb.launch_cue().unwrap();
+    assert!(Weapon::for_unit(bomber).launch_cue(Some(bomber)).is_none());
+    let cue = Weapon::Bomb.launch_cue(Some(bomber)).unwrap();
     assert_eq!((cue.name, cue.playback_rate), ("bomb release", 0.72));
     assert!(impact.destination.truncate().abs().cmple(Vec2::splat(50.0)).all());
+
+    step(&mut app, 0.2);
+    let cues = app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    assert_eq!(cues, ["bomb release"]);
 }
 
 #[test]

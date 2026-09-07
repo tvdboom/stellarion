@@ -9,12 +9,13 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::core::identity::{GameId, PlayerId, UserId};
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
 use crate::multiplayer::authority::{
-    initial_snapshot, resolved_snapshot, same_snapshot, started_snapshot_for_members,
-    validate_incoming, validate_save,
+    initial_snapshot, recolored_lobby_snapshot, resolved_snapshot, same_snapshot,
+    started_snapshot_for_members, validate_incoming, validate_save,
 };
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, PLAYER_CONNECTION_TIMEOUT,
@@ -375,6 +376,46 @@ impl MultiplayerBackend for InMemoryBackend {
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
             authorize_member(stored, &user_id)?;
+            Ok(stored.record.clone())
+        })
+    }
+
+    /// Serializes color claims under the game lock and leaves a losing claimant unchanged.
+    fn set_player_color<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        color: PlayerColor,
+    ) -> BackendFuture<'a, GameRecord> {
+        Box::pin(async move {
+            if !color.is_valid() {
+                return Err(BackendError::InvalidData("player_color".to_string()));
+            }
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            if stored.record.status != MatchStatus::Lobby {
+                return Err(BackendError::InvalidGameStatus);
+            }
+            let current =
+                stored.record.persisted.state.player(player_id).map_err(invalid_game)?.color();
+            if current == color
+                || stored.record.members.iter().any(|member| {
+                    member.player_id != player_id
+                        && stored
+                            .record
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .is_ok_and(|player| player.color() == color)
+                })
+            {
+                return Ok(stored.record.clone());
+            }
+            let persisted = recolored_lobby_snapshot(&stored.record, player_id, color)?;
+            commit_state(stored, persisted);
+            push_event(stored, BackendEventKind::StateChanged, None, Some(player_id));
             Ok(stored.record.clone())
         })
     }

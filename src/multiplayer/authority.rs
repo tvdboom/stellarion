@@ -30,25 +30,17 @@ pub fn initial_snapshot(
     Ok(PersistedGame::new(model))
 }
 
-/// A save may acknowledge canonical state or change only the caller's lobby color.
+/// A normal save may only acknowledge the canonical state.
 pub fn validate_save(
     record: &GameRecord,
-    player_id: PlayerId,
+    _player_id: PlayerId,
     candidate: &PersistedGame,
 ) -> Result<(), BackendError> {
     candidate.validate().map_err(invalid)?;
     if same_snapshot(&record.persisted, candidate)? {
         return Ok(());
     }
-    if record.status != MatchStatus::Lobby {
-        return Err(BackendError::Forbidden);
-    }
-    let color = candidate.state.player(player_id).map_err(invalid)?.color();
-    let expected = recolored_lobby_snapshot(record, player_id, color)?;
-    if !same_snapshot(&expected, candidate)? {
-        return Err(BackendError::Forbidden);
-    }
-    Ok(())
+    Err(BackendError::Forbidden)
 }
 
 /// Validates an incoming immutable row against every row already accepted this turn.
