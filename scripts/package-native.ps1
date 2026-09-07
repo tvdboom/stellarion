@@ -11,26 +11,25 @@ $ErrorActionPreference = "Stop"
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRoot = [System.IO.Path]::GetFullPath((Join-Path $repository $OutputDirectory))
 
-if (-not (Test-Path -LiteralPath (Join-Path $repository "assets-runtime/.stellarion-assets") -PathType Leaf)) {
-    throw "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging."
-}
-
 if (-not $Target) {
     $Target = (rustc -vV | Select-String '^host: ' | ForEach-Object { $_.Line.Substring(6) }).Trim()
 }
 if (-not $Channel) {
     $Channel = if ($Target -match 'windows') { 'windows' } elseif ($Target -match 'apple-darwin') { 'mac' } else { 'linux' }
 }
+if ($Channel -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+    throw "Package channel must contain only letters, digits, hyphens, and underscores."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $repository "assets-runtime/.stellarion-assets") -PathType Leaf)) {
+    throw "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging."
+}
 $stage = Join-Path $outputRoot "stellarion-$Channel"
 $archive = Join-Path $outputRoot "stellarion-$Channel.zip"
 
 . (Join-Path $PSScriptRoot "common.ps1")
 
-$expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $repository "dist"))
-$expectedPrefix = $expectedRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-if ($outputRoot -ne $expectedRoot -and -not $outputRoot.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to clean output outside $expectedRoot"
-}
+Assert-PackagePath -Repository $repository -Path $stage
+Assert-PackagePath -Repository $repository -Path $archive
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 if (Test-Path -LiteralPath $stage) {
     Remove-Item -LiteralPath $stage -Recurse -Force
@@ -38,8 +37,8 @@ if (Test-Path -LiteralPath $stage) {
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
 Set-Location $repository
+Set-HeavyProcessLimits
 if (-not $SkipBuild) {
-    Set-HeavyProcessLimits
     Invoke-Checked { cargo build --release --target $Target --bin stellarion -j12 }
 }
 

@@ -89,8 +89,9 @@ defenses.
   each completed Command Relay level adds another sixth, with level five reaching every world.
   Unless `combat probes` is enabled, Probes leave after the first combat round. More returning
   Probes reveal better intelligence. Resource buildings are visible at the first intelligence
-  tier; the Shipyard, Factory, and Missile Silo use tier two; the Planetary Shield and Reactor use
-  tier three; Robotics uses tier four; and the Senate is only visible at tier five. Spy missions
+  tier; the Reactor and Terraformer use tier two; the Shipyard, Factory, and Missile Silo use
+  tier three; the Planetary Shield uses tier four; and the Senate and Colonial Administration
+  are only visible at tier five. Spy missions
   cannot be detected by a Sensor Phalanx and do not reveal their origin.
 - **Missile Strike:** Launch only Interplanetary Missiles against a planet, not a moon. They bypass
   ships and the Planetary Shield to hit defenses directly. Surviving missiles are consumed. A
@@ -107,8 +108,9 @@ defenses.
 You can build four types of units on an owned planet:
 
 - **Buildings:** Buildings are used for varied reasons. Core buildings like the mines, Shipyard,
-  Factory, Reactor, Robotics, and Senate are essential to expand your empire. Each Robotics level
-  adds two local production capacity to both the Shipyard and Factory, without unlocking units.
+  Factory, Reactor, Terraformer, Senate, and Colonial Administration support your empire.
+  The Terraformer specializes resource production. The Senate belongs on the homeworld;
+  Colonial Administration is exclusive to non-home planets and coordinates fleet withdrawal.
 - **Orbitals:** Solar Satellites, Sensor Phalanxes, Command Relays, Jump Gates, and Space Docks are
   constructed without Shipyard capacity. One level of each kind may be queued per turn, but
   different kinds may be queued together. Command Relays extend the range of Spy missions launched
@@ -131,8 +133,9 @@ lunar Tidal Generators supply 5 and Solar Satellite output depends on the solar 
 Infrastructure that operates continuously creates energy demand; most construction, storage,
 transport, and administrative buildings do not draw permanent power. Surplus energy is discarded
 and gives no bonus. A shortage scales resource income down with a 25% minimum and reduces Planetary
-Shield power with a gentler curve; a fully powered Shield supplies 300 strength per level. Robotics
-consumes 1 energy per level, while the Senate consumes 2.
+Shield power with a gentler curve; a fully powered Shield supplies 300 strength per level.
+The Terraformer consumes 1 energy per level and the Senate consumes 2. Colonial Administration
+consumes no energy.
 
 
 ### Fleet travel
@@ -146,6 +149,22 @@ a new journey back to its original planet.
 
 
 ### Combat
+
+Colonial Administration enables a **Fleet withdrawal** setting in the colony's Buildings shop.
+It defaults to Off. Level 1 unlocks withdrawal after 75% fleet losses; levels 2 and 3 add 50%
+and 25%; level 4 adds immediate withdrawal. Losses are destroyed ship production points relative
+to the starting fleet, checked after each round. Once withdrawal begins, the enemy fires one
+additional round while withdrawing ships cannot fire back. Stationary defenses keep fighting.
+Level 5 removes the final enemy volley, including a clean departure before any shots when set
+to Immediately. Only surviving ships leave; a final volley can destroy the entire withdrawing
+fleet. Noncombat Colony Ships accompany the evacuation.
+
+Escaped ships form an ordinary **Deploy** mission to the defender's homeworld, using normal
+fleet speed, acceleration, and visibility rules. The mission is dated to the preceding turn
+and receives one movement step before the post-battle map: a three-turn voyage has two turns
+remaining. A one-turn voyage docks that same turn. The homeworld must still belong to the
+defender; homeworlds and moons cannot use Colonial Administration. Retreat does not generate
+orbital wreckage, and escaped ships are recorded separately from combat casualties.
 
 In combat, there are two sides: the attacker and the defender. There is the possibility that 
 the attacker has launched his fleets against a planet with no defense or ships, in which case 

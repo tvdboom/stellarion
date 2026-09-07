@@ -1,46 +1,83 @@
 //! Shop panels for the game interface.
 
 use super::*;
+use crate::core::orders::conversion_output;
+use crate::core::units::buildings::FleetWithdrawal;
 
+/// Formats the resource output confirmed by a laboratory conversion.
 pub(super) fn conversion_success_message(gain: usize, resource: ResourceName) -> MessageMsg {
     MessageMsg::info(format!("Gained {} {}.", format_thousands(gain), resource.to_name()))
 }
 
+/// Warns only when a proposed unit changes a balanced grid into an energy shortage.
 pub(super) fn energy_shortage_warning(
     energy: EnergyGrid,
     unit: Unit,
     solar_band: Option<SolarBand>,
 ) -> Option<MessageMsg> {
     let after = energy.with_unit(unit, solar_band, 1);
-    (after.balance() < energy.balance() && energy.balance() >= 0 && after.balance() < 0).then(
-        || {
-            MessageMsg::warning(format!(
-                "This purchase leaves next turn's Energy at {}. Resource production and Planetary \
-            Shields will operate at {}% efficiency unless you generate more Energy.",
-                after.balance(),
-                after.efficiency_percent()
-            ))
-        },
-    )
+    (after.balance() < energy.balance() && energy.balance() >= 0 && after.balance() < 0)
+        .then(|| MessageMsg::warning("Next turn: Energy shortage."))
 }
 
-pub(super) fn shop_unit_description(unit: Unit, senate_level_limit: usize) -> String {
-    if unit == Unit::Building(Building::Senate) {
-        let suffix = if senate_level_limit == 1 {
-            ""
-        } else {
-            "s"
-        };
-        return format!(
-            "{} Each level adds +1 planet slot. This match permits {} Senate level{}, for up to +{} planet slot{}.",
-            unit.description(),
-            senate_level_limit,
-            suffix,
-            senate_level_limit,
-            suffix,
+/// Draws one compact Terraformer mode without adding explanatory hover text.
+fn terraformer_focus_button(
+    ui: &mut Ui,
+    images: &ImageIds,
+    focus: Option<ResourceName>,
+    selected: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(72.0, 54.0), Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let fill = if selected {
+        Color32::from_rgb(72, 96, 210)
+    } else if response.hovered() {
+        Color32::from_rgba_unmultiplied(40, 55, 72, 245)
+    } else {
+        Color32::from_rgba_unmultiplied(19, 29, 40, 235)
+    };
+    let border = if selected {
+        Color32::from_rgb(130, 213, 246)
+    } else {
+        Color32::from_rgba_unmultiplied(145, 181, 214, 100)
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(7),
+        fill,
+        Stroke::new(
+            if selected {
+                2.0
+            } else {
+                1.0
+            },
+            border,
+        ),
+        StrokeKind::Inside,
+    );
+
+    if let Some(resource) = focus {
+        ui.painter().image(
+            images.get(resource.to_lowername()),
+            rect.shrink2(egui::vec2(8.0, 6.0)),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
         );
+    } else {
+        let center = rect.center() + egui::vec2(0.0, 2.0);
+        let stroke = Stroke::new(
+            3.0,
+            if selected {
+                Color32::WHITE
+            } else {
+                border
+            },
+        );
+        ui.painter().circle_stroke(center, 12.0, stroke);
+        ui.painter()
+            .line_segment([center - egui::vec2(0.0, 15.0), center - egui::vec2(0.0, 1.0)], stroke);
     }
-    unit.description().to_string()
+    response
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
@@ -50,9 +87,8 @@ fn draw_unit_hover(
     count: usize,
     state: &mut UiState,
     player: &mut Player,
-    planet_id: PlanetId,
+    planet: &mut Planet,
     solar_band: Option<SolarBand>,
-    senate_level_limit: usize,
     pending: &mut PendingTurnCommands,
     message: &mut MessageWriter<MessageMsg>,
     msg: Option<String>,
@@ -94,7 +130,7 @@ fn draw_unit_hover(
                 ui.colored_label(Color32::RED, RichText::new(msg).small());
             }
 
-            ui.small(shop_unit_description(*unit, senate_level_limit));
+            ui.small(unit.description());
 
             ui.add_space(10.);
 
@@ -165,12 +201,10 @@ fn draw_unit_hover(
                         .on_hover_small_ext("Click to cycle over resources.");
 
                     if response.clicked() {
-                        *from = from.next(None);
+                        *from = from.next(Some(*to));
                     } else if response.secondary_clicked() {
-                        *from = from.prev(None);
+                        *from = from.prev(Some(*to));
                     }
-
-                    let gain = (state.lab_amount as f32 / (1. + 0.5 * (5 - count) as f32)) as usize;
 
                     ui.style_mut().drag_value_text_style = TextStyle::Body;
                     ui.spacing_mut().interact_size.x = 60.;
@@ -180,6 +214,7 @@ fn draw_unit_hover(
                             .speed(100)
                             .range(0..=player.resources.get(from)),
                     );
+                    let gain = conversion_output(state.lab_amount, count);
 
                     let (rect, mut response) =
                         ui.allocate_exact_size([32.; 2].into(), Sense::click());
@@ -204,8 +239,9 @@ fn draw_unit_hover(
 
                     if response.clicked()
                         && state.lab_amount > 0
+                        && state.lab_amount <= player.resources.get(from)
                         && pending.push(TurnCommand::ConvertResources {
-                            planet_id,
+                            planet_id: planet.id,
                             from: *from,
                             to: *to,
                             amount: state.lab_amount,
@@ -234,6 +270,68 @@ fn draw_unit_hover(
                         *to = to.prev(Some(*from));
                     }
                 });
+            } else if *unit == Unit::Building(Building::Terraformer)
+                && (count > 0 || planet.buy.contains(unit))
+            {
+                ui.separator();
+                ui.add_space(12.);
+                ui.small("Resource focus");
+                ui.horizontal(|ui| {
+                    for focus in [
+                        None,
+                        Some(ResourceName::Metal),
+                        Some(ResourceName::Crystal),
+                        Some(ResourceName::Deuterium),
+                    ] {
+                        let selected = planet.terraformer_focus == focus;
+                        let response = terraformer_focus_button(ui, images, focus, selected);
+                        if !selected
+                            && response.clicked()
+                            && pending.push(TurnCommand::SetTerraformerFocus {
+                                planet_id: planet.id,
+                                resource: focus,
+                            })
+                        {
+                            planet.terraformer_focus = focus;
+                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                        }
+                    }
+                });
+            } else if *unit == Unit::Building(Building::ColonialAdministration)
+                && (count > 0 || planet.buy.contains(unit))
+                && player.owns(planet)
+                && player.home_planet != planet.id
+            {
+                ui.separator();
+                ui.add_space(12.);
+                draw_fleet_withdrawal(ui, planet, pending);
+            } else if *unit == Unit::Building(Building::CommandRelay)
+                && (count > 0 || planet.buy.contains(unit))
+            {
+                ui.separator();
+                ui.add_space(12.);
+                let mut active = planet.command_relay_active;
+                let response = ui.horizontal(|ui| {
+                    ui.small(if active {
+                        "Relay active:"
+                    } else {
+                        "Relay inactive:"
+                    });
+                    ui.add(toggle(&mut active))
+                });
+                response.response.on_hover_small(
+                    "When active, the Relay makes undersized enemy Spy missions report an empty \
+                    planet. When inactive, Spy missions gather intelligence normally.",
+                );
+                if active != planet.command_relay_active
+                    && pending.push(TurnCommand::SetCommandRelay {
+                        planet_id: planet.id,
+                        active,
+                    })
+                {
+                    planet.command_relay_active = active;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
             }
 
             if !unit.rapid_fire().is_empty() {
@@ -263,6 +361,77 @@ fn draw_unit_hover(
                     }
                 });
             }
+        });
+    });
+}
+
+/// Keeps withdrawal controls usable even when the building cannot be purchased or hovers are off.
+pub(super) fn draw_fleet_withdrawal(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+) {
+    let administration = Unit::Building(Building::ColonialAdministration);
+    let level =
+        planet.army.amount(&administration) + usize::from(planet.buy.contains(&administration));
+    ui.add_enabled_ui(pending.can_accept_commands(), |ui| {
+        ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+        let selector = ui.horizontal_wrapped(|ui| {
+            let label_width = FleetWithdrawal::ALL
+                .iter()
+                .map(|withdrawal| {
+                    ui.painter()
+                        .layout_no_wrap(
+                            withdrawal.label().into(),
+                            TextStyle::Button.resolve(ui.style()),
+                            Color32::WHITE,
+                        )
+                        .size()
+                        .x
+                })
+                .fold(0.0, f32::max);
+            let selector_width = (label_width
+                + ui.spacing().icon_width
+                + ui.spacing().icon_spacing
+                + 2.0 * ui.spacing().button_padding.x)
+                .max(ui.spacing().combo_width)
+                .min(ui.available_width());
+            ui.small("Fleet withdrawal:");
+            if ui.available_size_before_wrap().x < selector_width {
+                ui.end_row();
+            }
+            egui::ComboBox::from_id_salt(("fleet_withdrawal", planet.id))
+                .width(selector_width)
+                .selected_text(planet.fleet_withdrawal.label())
+                .show_ui(ui, |ui| {
+                    for withdrawal in FleetWithdrawal::ALL {
+                        let selected = planet.fleet_withdrawal == withdrawal;
+                        let response = ui.add_enabled(
+                            level >= withdrawal.minimum_level(),
+                            egui::Button::selectable(selected, withdrawal.label()),
+                        );
+                        let response = response.on_disabled_hover_text(format!(
+                            "Requires Colonial Administration level {}",
+                            withdrawal.minimum_level(),
+                        ));
+                        if response.clicked()
+                            && !selected
+                            && pending.push(TurnCommand::SetFleetWithdrawal {
+                                planet_id: planet.id,
+                                withdrawal,
+                            })
+                        {
+                            planet.fleet_withdrawal = withdrawal;
+                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                        }
+                    }
+                });
+        });
+        selector.response.on_hover_text(if level >= 5 {
+            "Surviving ships deploy home without a final enemy volley."
+        } else {
+            "Ships take one final enemy volley without firing back, then deploy home."
         });
     });
 }
@@ -335,6 +504,14 @@ pub(super) fn draw_shop(
                     max
                 ));
             });
+        } else if state.shop == Shop::Buildings
+            && player.owns(planet)
+            && player.home_planet != planet.id
+            && (planet.has(&Unit::Building(Building::ColonialAdministration))
+                || planet.buy.contains(&Unit::Building(Building::ColonialAdministration)))
+        {
+            ui.add_space(20.);
+            draw_fleet_withdrawal(ui, planet, pending);
         }
     });
 
@@ -342,6 +519,13 @@ pub(super) fn draw_shop(
         Shop::Buildings => Unit::buildings()
             .into_iter()
             .filter(|unit| unit.valid_on(planet.is_moon()))
+            .filter(|unit| {
+                *unit != Unit::Building(Building::ColonialAdministration)
+                    || planet.id != player.home_planet
+            })
+            .filter(|unit| {
+                *unit != Unit::Building(Building::Senate) || planet.id == player.home_planet
+            })
             .collect::<Vec<_>>(),
         Shop::Orbitals => Unit::orbitals(),
         Shop::Fleet => Unit::ships(),
@@ -463,18 +647,8 @@ pub(super) fn draw_shop(
                         response
                             .on_hover_ui(|ui| {
                                 draw_unit_hover(
-                                    ui,
-                                    unit,
-                                    count,
-                                    state,
-                                    player,
-                                    planet.id,
-                                    solar_band,
-                                    senate_level_limit,
-                                    pending,
-                                    message,
-                                    None,
-                                    images,
+                                    ui, unit, count, state, player, planet, solar_band, pending,
+                                    message, None, images,
                                 );
                             })
                             .on_disabled_hover_ui(|ui| {
@@ -484,9 +658,8 @@ pub(super) fn draw_shop(
                                     count,
                                     state,
                                     player,
-                                    planet.id,
+                                    planet,
                                     solar_band,
-                                    senate_level_limit,
                                     pending,
                                     message,
                                     purchase.as_ref().err().map(ToString::to_string),

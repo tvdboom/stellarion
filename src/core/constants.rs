@@ -69,8 +69,10 @@ pub const TIDAL_GENERATOR_ENERGY_PER_LEVEL: usize = 5;
 pub const PS_SHIELD_PER_LEVEL: usize = 300;
 /// Defense-production capacity granted per factory level.
 pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
-/// Fleet- and defense-production capacity granted per Robotics level.
-pub const ROBOTICS_PRODUCTION_FACTOR: usize = 2;
+/// Focused-resource production bonus granted per Terraformer level.
+pub const TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL: usize = 10;
+/// Non-focused-resource production penalty applied per Terraformer level.
+pub const TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL: usize = 10;
 /// Missile capacity granted per silo level.
 pub const SILO_CAPACITY_FACTOR: usize = 10;
 /// Probe capacity granted per shipyard production level.

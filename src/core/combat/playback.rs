@@ -49,6 +49,28 @@ fn snapshot_card(
     let combat = report.combat_report.as_ref()?;
     let round = combat.rounds.get(index)?;
     let previous = index.checked_sub(1).and_then(|i| combat.rounds.get(i));
+    if side == Side::Defender && unit.is_ship() {
+        if let Some(retreat) =
+            combat.defender_retreat.as_ref().filter(|retreat| retreat.ships.amount(&unit) > 0)
+        {
+            let departure = retreat.after_round.unwrap_or(0);
+            if index > departure || (finished && index >= departure) {
+                return None;
+            }
+            if retreat.after_round.is_none() || unit == Unit::colony_ship() {
+                let count = report.planet.army.amount(&unit);
+                return Some(CombatUnitCmp {
+                    unit,
+                    side,
+                    hull: count * unit.hull().max(1),
+                    max_hull: count * unit.hull().max(1),
+                    shield: count * unit.shield(),
+                    max_shield: count * unit.shield(),
+                    fire: FireState::Idle,
+                });
+            }
+        }
+    }
     let (hull, max_hull, shield, max_shield) = if unit.is_building() {
         let boundary = if finished {
             Some(round)
@@ -269,6 +291,11 @@ pub fn control_combat_playback(world: &mut World) {
             (index - 1, false, CombatState::DisplayRound)
         }
     } else {
+        // Withdrawal has its own recorded departure boundary. Early-completion shortcuts could
+        // otherwise skip the flyaway or leave the last volley before every projectile arrives.
+        if combat.defender_retreat.is_some() {
+            return;
+        }
         // Empty, unguarded planets must still play bombing/destruction missions.
         let started_with_both = [&report.mission.army, &report.planet.army]
             .into_iter()

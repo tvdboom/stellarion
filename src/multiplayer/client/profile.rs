@@ -10,6 +10,7 @@ pub(super) struct ProfileWrites {
     retry_after: f32,
 }
 
+/// Coalesces changes into one off-frame write, retrying failed saves after five seconds.
 pub(super) fn flush_profile(
     runtime: Res<ClientRuntime>,
     mut writes: ResMut<ProfileWrites>,

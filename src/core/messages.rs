@@ -14,7 +14,10 @@ use crate::core::map::systems::select_planet;
 use crate::core::missions::MissionId;
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
-use crate::core::ui::systems::{MissionTab, UiState};
+use crate::core::ui::systems::{resource_bar_bottom, MissionTab, UiState};
+
+const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
+const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
 
 /// Severity used for notification color and sound selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,8 +248,14 @@ fn draw_notifications(
     playing: bool,
 ) -> Option<(usize, MessageAction)> {
     let mut clicked_message = None;
+    let notification_top = if playing {
+        DEFAULT_NOTIFICATION_TOP
+            .max(resource_bar_bottom(context.content_rect().size()) + RESOURCE_BAR_NOTIFICATION_GAP)
+    } else {
+        DEFAULT_NOTIFICATION_TOP
+    };
     egui::Area::new("stellarion_notifications".into())
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 70.0))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, notification_top))
         // Combat uses foreground input layers of its own. Keep actionable notifications
         // above them so a visible toast always owns pointer input inside its frame.
         .order(egui::Order::Tooltip)

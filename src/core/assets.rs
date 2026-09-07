@@ -47,6 +47,11 @@ enum HandleLoadStatus {
     Failed,
 }
 
+/// Returns whether map rendering should discard baked color and retain only source alpha.
+fn faction_map_uses_alpha_mask(name: &str) -> bool {
+    name == "sensor phalanx marker"
+}
+
 /// Deduplicated handles partitioned into a minimal menu group and a deferred gameplay group.
 #[derive(Resource)]
 pub struct WorldAssets {
@@ -165,8 +170,10 @@ impl WorldAssets {
                 "recall hover",
             ],
         );
-        // Faction-colored map artwork keeps neutral blue-silver relief under the sprite tint.
-        // The matching UI variants premultiply that same shaded artwork for egui.
+        // Most faction-colored map artwork keeps neutral relief under the sprite tint. The
+        // Phalanx deliberately uses only its source alpha so all three drones remain one flat,
+        // exact player color like the other compact infrastructure silhouettes. UI variants keep
+        // the detailed source artwork and premultiply it for egui.
         for name in [
             "dock",
             "jump gate marker",
@@ -181,9 +188,11 @@ impl WorldAssets {
             "mission spy",
         ] {
             let path = format!("images/icons/{name}.basisu.ktx2");
+            let alpha_mask = faction_map_uses_alpha_mask(name);
             let handle: Handle<Image> = server
                 .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
+                .with_settings(move |settings: &mut BasisTextureSettings| {
+                    settings.alpha_mask = alpha_mask;
                     settings.ui_variant = true;
                     settings.linear_filtering = true;
                 })
@@ -252,16 +261,32 @@ impl WorldAssets {
             server,
             &mut self.images,
             &mut self.gameplay_handles,
-            "planet robotics",
-            "images/planet-buildings/robotics.basisu.ktx2",
+            "planet terraformer",
+            "images/planet-buildings/terraformer.basisu.ktx2",
         );
         load_linear_image(
             server,
             &mut self.images,
             &mut self.gameplay_handles,
-            "gas planet robotics",
-            "images/planet-buildings/robotics gas.basisu.ktx2",
+            "gas planet terraformer",
+            "images/planet-buildings/terraformer gas.basisu.ktx2",
         );
+        load_linear_image(
+            server,
+            &mut self.images,
+            &mut self.gameplay_handles,
+            "colonial administration",
+            "images/buildings/robotics.basisu.ktx2",
+        );
+        for (name, path) in [
+            ("planet colonial administration", "images/planet-buildings/robotics.basisu.ktx2"),
+            (
+                "gas planet colonial administration",
+                "images/planet-buildings/robotics gas.basisu.ktx2",
+            ),
+        ] {
+            load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
+        }
         for name in ["bennu", "eros", "gaspra", "mathilde"] {
             load_linear_image(
                 server,
@@ -294,7 +319,7 @@ impl WorldAssets {
                 "missile silo",
                 "planetary shield",
                 "reactor",
-                "robotics",
+                "terraformer",
                 "laboratory",
                 "orbital radar",
                 "senate",

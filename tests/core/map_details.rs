@@ -41,8 +41,10 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
             moon_shipyard: &moon_shipyard,
             moon_tidal_generator: &moon_tidal_generator,
             moon_orbital_radar: &moon_orbital_radar,
-            planet_robotics: &planet_robotics,
-            gas_planet_robotics: &gas_planet_robotics,
+            planet_terraformer: &planet_robotics,
+            planet_administration: &planet_robotics,
+            gas_planet_terraformer: &gas_planet_robotics,
+            gas_planet_administration: &gas_planet_robotics,
             surface_lights: &image,
             shadow: &image,
         };
@@ -54,7 +56,8 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
                 mining: 3,
                 refinery: 3,
                 factory: 3,
-                robotics: 3,
+                terraformer: 3,
+                administration: 0,
                 shipyard: 3,
                 reactor: 3,
                 laboratory: 3,
@@ -184,8 +187,10 @@ fn gas_building_categories_appear_independently_and_do_not_duplicate() {
         moon_shipyard: &image,
         moon_tidal_generator: &image,
         moon_orbital_radar: &image,
-        planet_robotics: &image,
-        gas_planet_robotics: &image,
+        planet_terraformer: &image,
+        planet_administration: &image,
+        gas_planet_terraformer: &image,
+        gas_planet_administration: &image,
         surface_lights: &image,
         shadow: &image,
     };
@@ -249,8 +254,10 @@ fn planetary_senate_replaces_surface_sensor_artwork() {
         moon_shipyard: &image,
         moon_tidal_generator: &image,
         moon_orbital_radar: &image,
-        planet_robotics: &image,
-        gas_planet_robotics: &image,
+        planet_terraformer: &image,
+        planet_administration: &image,
+        gas_planet_terraformer: &image,
+        gas_planet_administration: &image,
         surface_lights: &image,
         shadow: &image,
     };
@@ -274,7 +281,7 @@ fn planetary_senate_replaces_surface_sensor_artwork() {
 }
 
 #[test]
-fn planetary_robotics_art_uses_only_an_available_one_of_four_slots() {
+fn planetary_terraformer_art_uses_only_an_available_one_of_four_slots() {
     use Building::*;
     let image = Handle::<Image>::default();
     let robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(4), default());
@@ -289,8 +296,10 @@ fn planetary_robotics_art_uses_only_an_available_one_of_four_slots() {
         moon_shipyard: &image,
         moon_tidal_generator: &image,
         moon_orbital_radar: &image,
-        planet_robotics: &robotics,
-        gas_planet_robotics: &gas_robotics,
+        planet_terraformer: &robotics,
+        planet_administration: &robotics,
+        gas_planet_terraformer: &gas_robotics,
+        gas_planet_administration: &gas_robotics,
         surface_lights: &image,
         shadow: &image,
     };
@@ -299,9 +308,9 @@ fn planetary_robotics_art_uses_only_an_available_one_of_four_slots() {
         let mut planet = model().map.planets[0].clone();
         planet.kind = kind;
         for (buildings, expected_robotics, expected_images) in [
-            (vec![Robotics], true, 1),
-            (vec![MetalMine, Shipyard, MissileSilo, Robotics], true, 4),
-            (vec![MetalMine, Shipyard, MissileSilo, Senate, Robotics], false, 4),
+            (vec![Terraformer], true, 1),
+            (vec![MetalMine, Shipyard, MissileSilo, Terraformer], true, 4),
+            (vec![MetalMine, Shipyard, MissileSilo, Senate, Terraformer], false, 4),
         ] {
             planet.surface_build_order = [None; 4];
             for &building in &buildings {
@@ -361,8 +370,10 @@ fn completed_planetary_building_keeps_its_surface_position() {
         moon_shipyard: &image,
         moon_tidal_generator: &image,
         moon_orbital_radar: &image,
-        planet_robotics: &robotics,
-        gas_planet_robotics: &gas_robotics,
+        planet_terraformer: &robotics,
+        planet_administration: &robotics,
+        gas_planet_terraformer: &gas_robotics,
+        gas_planet_administration: &gas_robotics,
         surface_lights: &image,
         shadow: &image,
     };
@@ -394,7 +405,7 @@ fn completed_planetary_building_keeps_its_surface_position() {
         planet.kind = kind;
         planet.army.clear();
         planet.surface_build_order = [None; 4];
-        planet.buy = vec![Unit::Building(Robotics)];
+        planet.buy = vec![Unit::Building(Terraformer)];
         planet.produce();
         let before = robotics_position(&planet);
 
@@ -403,7 +414,7 @@ fn completed_planetary_building_keeps_its_surface_position() {
         let after = robotics_position(&planet);
 
         assert_eq!(before, after, "{kind:?}");
-        assert_eq!(planet.surface_build_order, [Some(Robotics), Some(MetalMine), None, None]);
+        assert_eq!(planet.surface_build_order, [Some(Terraformer), Some(MetalMine), None, None]);
     }
 }
 
@@ -426,8 +437,10 @@ fn moon_artwork_uses_completed_lunar_buildings_with_a_three_image_limit() {
         moon_shipyard: &moon_shipyard,
         moon_tidal_generator: &moon_tidal_generator,
         moon_orbital_radar: &moon_orbital_radar,
-        planet_robotics: &image,
-        gas_planet_robotics: &image,
+        planet_terraformer: &image,
+        planet_administration: &image,
+        gas_planet_terraformer: &image,
+        gas_planet_administration: &image,
         surface_lights: &image,
         shadow: &image,
     };
@@ -570,6 +583,21 @@ fn debris_requires_actual_ship_losses_and_is_bounded() {
 }
 
 #[test]
+fn escaping_ships_do_not_become_public_battle_wreckage() {
+    let model = model();
+    let mut battle = report(1, 2, &model.map.planets[0], 0);
+    battle.planet.army.insert(Unit::probe(), 10);
+    battle.surviving_defender.insert(Unit::probe(), 2);
+    battle.combat_report.as_mut().unwrap().defender_retreat =
+        Some(crate::core::combat::report::DefenderRetreat {
+            after_round: Some(0),
+            home_planet: 1,
+            ships: Army::from([(Unit::probe(), 7)]),
+        });
+    assert_eq!(destroyed_units(&battle), 1);
+}
+
+#[test]
 fn development_requires_known_completed_buildings_and_disappears_on_destruction() {
     let model = model();
     let mut planet = model.map.planets[0].clone();
@@ -584,13 +612,13 @@ fn development_requires_known_completed_buildings_and_disappears_on_destruction(
     assert_eq!(development(&planet, Some(&planet.army)).shipyard, 2);
     assert_eq!(development(&planet, Some(&planet.army)).factory, 0);
     planet.army.insert(Unit::Building(Building::Factory), 1);
-    planet.army.insert(Unit::Building(Building::Robotics), 5);
+    planet.army.insert(Unit::Building(Building::Terraformer), 5);
     planet.army.insert(Unit::Building(Building::Reactor), 4);
     planet.army.insert(Unit::Building(Building::Laboratory), 5);
     planet.army.insert(Unit::Building(Building::Senate), 1);
     let visible = development(&planet, Some(&planet.army));
     assert_eq!(visible.factory, 1);
-    assert_eq!(visible.robotics, 3);
+    assert_eq!(visible.terraformer, 3);
     assert_eq!(visible.shipyard, 2);
     assert_eq!(visible.reactor, 2);
     assert_eq!(visible.laboratory, 3);
@@ -658,8 +686,10 @@ fn surface_lights_use_sparse_varied_clusters() {
         moon_shipyard: &image,
         moon_tidal_generator: &image,
         moon_orbital_radar: &image,
-        planet_robotics: &image,
-        gas_planet_robotics: &image,
+        planet_terraformer: &image,
+        planet_administration: &image,
+        gas_planet_terraformer: &image,
+        gas_planet_administration: &image,
         surface_lights: &image,
         shadow: &image,
     };
@@ -678,15 +708,14 @@ fn surface_lights_use_sparse_varied_clusters() {
     let lights = world
         .query::<(&SurfaceLight, &Sprite, Option<&SurfaceLightBackdrop>)>()
         .iter(&world)
-        .filter_map(|(light, sprite, backdrop)| {
-            backdrop.is_none().then(|| {
-                (
-                    light.position_seed,
-                    light.flicker_seed,
-                    sprite.rect.unwrap().min.x as u32,
-                    sprite.custom_size.unwrap(),
-                )
-            })
+        .filter(|(_, _, backdrop)| backdrop.is_none())
+        .map(|(light, sprite, _)| {
+            (
+                light.position_seed,
+                light.flicker_seed,
+                sprite.rect.unwrap().min.x as u32,
+                sprite.custom_size.unwrap(),
+            )
         })
         .collect::<Vec<_>>();
     assert!((18..=27).contains(&lights.len()));
@@ -1046,9 +1075,10 @@ fn render_development_and_wreckage() {
                     server.load("images/moon-buildings/tidal generator.basisu.ktx2");
                 let moon_orbital_radar =
                     server.load("images/moon-buildings/orbital radar.basisu.ktx2");
-                let planet_robotics = server.load("images/planet-buildings/robotics.basisu.ktx2");
+                let planet_robotics =
+                    server.load("images/planet-buildings/terraformer.basisu.ktx2");
                 let gas_planet_robotics =
-                    server.load("images/planet-buildings/robotics gas.basisu.ktx2");
+                    server.load("images/planet-buildings/terraformer gas.basisu.ktx2");
                 let art = DevelopmentArt {
                     base: development_image,
                     base_size: development_texture.size().as_vec2(),
@@ -1059,8 +1089,10 @@ fn render_development_and_wreckage() {
                     moon_shipyard: &moon_shipyard,
                     moon_tidal_generator: &moon_tidal_generator,
                     moon_orbital_radar: &moon_orbital_radar,
-                    planet_robotics: &planet_robotics,
-                    gas_planet_robotics: &gas_planet_robotics,
+                    planet_terraformer: &planet_robotics,
+                    planet_administration: &planet_robotics,
+                    gas_planet_terraformer: &gas_planet_robotics,
+                    gas_planet_administration: &gas_planet_robotics,
                     surface_lights: &surface_lights.0,
                     shadow: &shadow.0,
                 };
@@ -1097,6 +1129,7 @@ fn render_development_and_wreckage() {
                             &mut commands,
                             &planet,
                             Development {
+                                administration: 0,
                                 settlement: if row == 0 {
                                     1
                                 } else {
@@ -1121,7 +1154,7 @@ fn render_development_and_wreckage() {
                                 } else {
                                     3
                                 },
-                                robotics: if !planet.is_moon() && row == 1 {
+                                terraformer: if !planet.is_moon() && row == 1 {
                                     3
                                 } else {
                                     0

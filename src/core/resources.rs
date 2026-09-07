@@ -80,7 +80,7 @@ pub struct Resources {
 }
 
 impl Resources {
-    /// Creates a new value from the supplied state.
+    /// Creates a bundle with the given metal, crystal, and deuterium amounts.
     pub fn new(metal: usize, crystal: usize, deuterium: usize) -> Self {
         Self {
             metal,
@@ -89,7 +89,7 @@ impl Resources {
         }
     }
 
-    /// Returns state for the requested stable identifier.
+    /// Returns the amount stored for one resource kind.
     pub fn get(&self, resource: &ResourceName) -> usize {
         match resource {
             ResourceName::Metal => self.metal,
@@ -98,7 +98,7 @@ impl Resources {
         }
     }
 
-    /// Returns mutable state for the requested stable identifier.
+    /// Borrows the stored amount for one resource kind.
     pub fn get_mut(&mut self, resource: &ResourceName) -> &mut usize {
         match resource {
             ResourceName::Metal => &mut self.metal,
@@ -107,9 +107,17 @@ impl Resources {
         }
     }
 
-    /// Returns the component-wise minimum of two resource bundles.
+    /// Returns the smallest amount among the three resource kinds.
     pub fn min(&self) -> usize {
         self.metal.min(self.crystal).min(self.deuterium)
+    }
+
+    /// Applies a percentage, rounding each amount down and saturating only the final result.
+    /// Widening before multiplication preserves large balances even at 100% efficiency.
+    pub fn scaled_percent(self, percent: usize) -> Self {
+        self.safe_scalar(percent, |amount, percent| {
+            (amount as u128 * percent as u128 / 100).min(usize::MAX as u128) as usize
+        })
     }
 }
 
@@ -141,7 +149,7 @@ impl Sum for Resources {
 }
 impl Resources {
     #[inline]
-    /// Applies safe op without allowing arithmetic overflow.
+    /// Applies the supplied arithmetic operation to corresponding resource amounts.
     fn safe_op<F>(self, rhs: Resources, f: F) -> Self
     where
         F: Fn(usize, usize) -> usize,
@@ -154,7 +162,7 @@ impl Resources {
     }
 
     #[inline]
-    /// Applies safe scalar without allowing arithmetic overflow.
+    /// Applies the supplied arithmetic operation to every amount and one scalar.
     fn safe_scalar<F>(self, rhs: usize, f: F) -> Self
     where
         F: Fn(usize, usize) -> usize,

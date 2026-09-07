@@ -23,8 +23,8 @@ use crate::core::assets::WorldAssets;
 use crate::core::camera::{MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE,
-    VORONOI_Z,
+    MISSION_Z, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, SOLAR_STAR_SIZE,
+    TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
 use crate::core::map::details::{DevelopmentVisibility, DEVELOPMENT_MAX_SCALE};
@@ -36,7 +36,6 @@ use crate::core::map::utils::{
     cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens, TransformSpinLens,
 };
 use crate::core::missions::{Mission, MissionId, Missions};
-use crate::core::orders::spy_mission_range;
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
@@ -49,6 +48,13 @@ use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
 
 const MAP_ICON_IDLE_TINT: Color = Color::srgb(0.82, 0.82, 0.82);
+const PHALANX_DRONE_COUNT: usize = 3;
+const PHALANX_DRONE_CYCLE_SECONDS: f32 = 11.0;
+const RANGE_MARKER_CYCLE_SECONDS: f32 = 7.0;
+const SOLAR_SATELLITE_PHASE_STEPS: [usize; Building::MAX_LEVEL] = [0, 2, 4, 1, 3];
+const JUMP_GATE_LINK_SPACING: f32 = 26.0;
+const JUMP_GATE_LINK_SPEED: f32 = 38.0;
+const JUMP_GATE_LINK_STRANDS: usize = 2;
 
 #[derive(Component)]
 /// Bevy component mapping a rendered planet entity to a stable planet ID.
@@ -153,6 +159,10 @@ pub(crate) struct AmbientCometPartCmp {
 }
 
 #[derive(Component)]
+/// Marker for the map's single decorative asteroid belt.
+pub(crate) struct AsteroidBeltCmp;
+
+#[derive(Component)]
 /// One decorative, non-authoritative rock tumbling along a solar-band boundary.
 pub(crate) struct AsteroidCmp {
     center: Vec2,
@@ -193,7 +203,9 @@ const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
 const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
 const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
-const CELESTIAL_DEPTH: f32 = BACKGROUND_Z + 0.7;
+const CELESTIAL_DEPTH: f32 = VORONOI_Z + 0.15;
+const CELESTIAL_MAP_MARGIN: f32 = 32.0;
+const CELESTIAL_TINT: f32 = 0.92;
 
 impl PlanetCmp {
     /// Creates a new value from the supplied state.
@@ -289,19 +301,106 @@ pub struct SpaceDockCmp;
 
 #[derive(Component)]
 /// Animated, faction-tinted jump-gate marker orbiting a world.
-pub struct JumpGateCmp;
+pub struct JumpGateCmp {
+    planet: PlanetId,
+}
+
+/// Returns whether this world contributes one usable endpoint to the player's gate network.
+fn is_usable_owned_jump_gate(planet: &Planet, player: &Player) -> bool {
+    player.owns(planet)
+        && !planet.is_destroyed
+        && !planet.is_moon()
+        && planet.has(&Unit::Building(Building::JumpGate))
+}
+
+/// A higher gate level adds capacity, but only a second distinct gate activates the shortcut.
+fn jump_gate_network_available(map: &Map, player: &Player) -> bool {
+    map.planets.iter().filter(|planet| is_usable_owned_jump_gate(planet, player)).take(2).count()
+        >= 2
+}
+
+fn jump_gate_shortcut_destination(
+    map: &Map,
+    player: &Player,
+    origin: PlanetId,
+    preferred: PlanetId,
+) -> Option<PlanetId> {
+    let is_destination =
+        |planet: &&Planet| planet.id != origin && is_usable_owned_jump_gate(planet, player);
+    map.planets
+        .iter()
+        .find(|planet| planet.id == preferred && is_destination(planet))
+        .or_else(|| map.planets.iter().find(is_destination))
+        .map(|planet| planet.id)
+}
+
+/// Opens a safe, unsent Deploy draft between two owned gates with jump travel selected.
+fn open_jump_gate_mission(
+    state: &mut UiState,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    origin: PlanetId,
+) -> bool {
+    let Some(origin_planet) = map.planets.iter().find(|planet| planet.id == origin) else {
+        return false;
+    };
+    if !is_usable_owned_jump_gate(origin_planet, player) {
+        return false;
+    }
+    let Some(destination) =
+        jump_gate_shortcut_destination(map, player, origin, state.mission_info.destination)
+    else {
+        return false;
+    };
+
+    state.mission_info = Mission::new(
+        settings.turn,
+        player.id,
+        origin_planet,
+        map.get(destination),
+        Icon::Deploy,
+        Army::new(),
+        default(),
+        false,
+        true,
+        None,
+    );
+    state.mission = true;
+    state.mission_tab = MissionTab::NewMission;
+    state.planet_selected = None;
+    state.combat_report = None;
+    state.mission_report = None;
+    state.mission_hover = None;
+    state.mission_hover_from_ui = false;
+    state.jump_gate_hover = None;
+    state.jump_gate_history = true;
+    true
+}
 
 #[derive(Component)]
-/// Animated solar-satellite marker orbiting a world.
-pub struct SolarSatelliteCmp;
+/// One particle in the hover-only animated network between owned Jump Gates.
+pub(crate) struct JumpGateLinkCmp {
+    index: usize,
+}
+
+#[derive(Component, Debug)]
+/// One animated solar-satellite marker in a world's level-based orbital network.
+pub struct SolarSatelliteCmp {
+    level: usize,
+}
 
 #[derive(Component)]
 /// Stationary, faction-tinted command-relay range marker beside a world.
 pub struct CommandRelayCmp;
 
-#[derive(Component)]
-/// Stationary, faction-tinted Sensor Phalanx range marker beside a world.
-pub struct SensorPhalanxCmp;
+#[derive(Component, Debug)]
+/// One of three faction-tinted Sensor Phalanx drones in a pseudo-orbital formation.
+pub struct SensorPhalanxCmp {
+    index: usize,
+    anchor: Vec2,
+    phase: f32,
+}
 
 #[derive(Component, Debug)]
 /// Subtle local motion around a fixed range-marker anchor.
@@ -309,31 +408,203 @@ pub(crate) struct RangeMarkerMotionCmp {
     anchor: Vec2,
     elapsed: f32,
     phase: f32,
-    preview: MapRangePreview,
 }
 
 fn range_marker_pose(anchor: Vec2, elapsed: f32, phase: f32) -> (Vec2, f32) {
-    let wave = elapsed * 0.9 + phase;
-    let offset = Vec2::new((wave * 0.61).sin() * 1.1, wave.sin() * 2.4);
-    let tilt = (wave * 0.73).sin() * 0.05;
+    let wave = elapsed / RANGE_MARKER_CYCLE_SECONDS * TAU + phase;
+    // Integer harmonics make position, velocity, and tilt meet seamlessly when elapsed wraps.
+    let offset = Vec2::new((wave * 2.0).sin() * 1.1, wave.sin() * 2.4);
+    let tilt = (wave * 3.0).sin() * 0.05;
     (anchor + offset, tilt)
 }
 
-/// Gives fixed Phalanx and Relay markers a restrained idle drift, paused while hovered.
+/// Gives fixed Relay markers a restrained idle drift.
 pub(crate) fn animate_range_markers(
     time: Res<Time>,
-    state: Res<UiState>,
     mut markers: Query<(&mut Transform, &mut RangeMarkerMotionCmp, &Visibility)>,
 ) {
     for (mut transform, mut motion, visibility) in &mut markers {
-        if *visibility == Visibility::Hidden || state.range_preview == Some(motion.preview) {
+        if *visibility == Visibility::Hidden {
             continue;
         }
-        motion.elapsed = (motion.elapsed + time.delta_secs()).rem_euclid(TAU / 0.9);
+        motion.elapsed =
+            (motion.elapsed + time.delta_secs()).rem_euclid(RANGE_MARKER_CYCLE_SECONDS);
         let (position, tilt) = range_marker_pose(motion.anchor, motion.elapsed, motion.phase);
         transform.translation.x = position.x;
         transform.translation.y = position.y;
         transform.rotation = Quat::from_rotation_z(tilt);
+    }
+}
+
+fn phalanx_drone_pose(drone: &SensorPhalanxCmp, elapsed: f32) -> Transform {
+    let wave = elapsed / PHALANX_DRONE_CYCLE_SECONDS * TAU;
+    let phase = drone.phase + drone.index as f32 * TAU / PHALANX_DRONE_COUNT as f32;
+    // Different integer harmonics close into one seamless loop without ever reading as a flat
+    // circular orbit. Apparent depth also changes scale and draw order as the drones cross.
+    let x = (wave * 2.0 + phase).sin() * 8.5 + (wave * 5.0 - phase * 0.7).sin() * 2.2;
+    let y = (wave * 3.0 + phase * 1.3).sin() * 5.8 + (wave * 4.0 - phase * 0.5).cos() * 1.8;
+    let depth = 0.5 + 0.5 * (wave + phase).sin();
+    let tilt = (wave * 3.0 + phase).sin() * 0.10;
+    Transform {
+        translation: (drone.anchor + Vec2::new(x, y)).extend(0.72 + depth * 0.035),
+        rotation: Quat::from_rotation_z(tilt),
+        scale: Vec3::splat(0.76 + depth * 0.28),
+    }
+}
+
+/// Moves each visible Phalanx drone on its own looping pseudo-orbit around the formation.
+pub(crate) fn animate_phalanx_drones(
+    time: Res<Time>,
+    mut drones: Query<(&mut Transform, &SensorPhalanxCmp, &Visibility)>,
+) {
+    for (mut transform, drone, visibility) in &mut drones {
+        if *visibility != Visibility::Hidden {
+            *transform = phalanx_drone_pose(drone, time.elapsed_secs());
+        }
+    }
+}
+
+#[derive(Clone)]
+struct JumpGateLinkParticle {
+    transform: Transform,
+    color: Color,
+    size: Vec2,
+}
+
+fn jump_gate_link_particles(
+    from: Vec2,
+    to: Vec2,
+    color: Color,
+    elapsed: f32,
+    route_phase: f32,
+) -> Vec<JumpGateLinkParticle> {
+    let route = to - from;
+    let route_length = route.length();
+    if route_length <= 32.0 {
+        return Vec::new();
+    }
+    let direction = route / route_length;
+    let normal = Vec2::new(-direction.y, direction.x);
+    let clearance = 16.0;
+    let length = route_length - clearance * 2.0;
+    let start = from + direction * clearance;
+    let count = (length / JUMP_GATE_LINK_SPACING).ceil() as usize;
+    let travel = (elapsed * JUMP_GATE_LINK_SPEED).rem_euclid(JUMP_GATE_LINK_SPACING);
+    let point = |t: f32, strand: usize| {
+        let t = t.clamp(0.0, 1.0);
+        let envelope = (PI * t).sin();
+        let strand_phase = strand as f32 * PI;
+        let wave = t * TAU * 2.25 + elapsed * 3.1 + route_phase + strand_phase;
+        start
+            + direction * (t * length)
+            + normal * ((wave.sin() * 9.0 + (wave * 2.0 + route_phase).sin() * 1.8) * envelope)
+    };
+
+    (0..JUMP_GATE_LINK_STRANDS)
+        .flat_map(|strand| {
+            (0..count).filter_map(move |index| {
+                let distance = index as f32 * JUMP_GATE_LINK_SPACING + travel;
+                (distance < length).then(|| {
+                    let t = distance / length;
+                    let position = point(t, strand);
+                    let ahead = point((t + 0.01).min(1.0), strand);
+                    let tangent = (ahead - position).normalize_or(direction);
+                    let edge_fade = (t.min(1.0 - t) / 0.08).clamp(0.0, 1.0);
+                    let pulse = 0.62 + 0.38 * (elapsed * 5.0 + index as f32 * 0.8).sin().abs();
+                    let strand_color = if strand == 0 {
+                        color.mix(&Color::srgb(0.25, 0.92, 1.0), 0.55)
+                    } else {
+                        Color::WHITE.mix(&color, 0.72)
+                    };
+                    JumpGateLinkParticle {
+                        transform: Transform {
+                            translation: position.extend(MISSION_Z - 0.18),
+                            rotation: Quat::from_rotation_z(tangent.y.atan2(tangent.x)),
+                            ..default()
+                        },
+                        color: strand_color.with_alpha(edge_fade * pulse * 0.82),
+                        size: Vec2::new(13.0 + pulse * 5.0, 2.0 + pulse * 1.4),
+                    }
+                })
+            })
+        })
+        .collect()
+}
+
+/// Draws braided, flowing energy strands from a hovered owned gate to every other owned gate.
+pub(crate) fn update_jump_gate_links(
+    mut commands: Commands,
+    mut link_q: Query<
+        (Entity, &mut Transform, &mut Sprite, &JumpGateLinkCmp),
+        Without<JumpGateCmp>,
+    >,
+    gate_q: Query<(&Transform, &JumpGateCmp), Without<JumpGateLinkCmp>>,
+    state: Res<UiState>,
+    map: Res<Map>,
+    player: Res<Player>,
+    session: Res<MultiplayerSession>,
+    time: Res<Time>,
+) {
+    let mut gates = gate_q
+        .iter()
+        .filter_map(|(transform, gate)| {
+            let planet = map.get(gate.planet);
+            is_usable_owned_jump_gate(planet, &player)
+                .then_some((gate.planet, planet.position + transform.translation.truncate()))
+        })
+        .collect::<Vec<_>>();
+    gates.sort_by_key(|(planet, _)| *planet);
+
+    let particles = state
+        .jump_gate_hover
+        .and_then(|hovered| {
+            let from = gates.iter().find(|(planet, _)| *planet == hovered)?.1;
+            Some(
+                gates
+                    .iter()
+                    .filter(|(planet, _)| *planet != hovered)
+                    .flat_map(|(planet, to)| {
+                        jump_gate_link_particles(
+                            from,
+                            *to,
+                            session.player_color(player.id).color(),
+                            time.elapsed_secs(),
+                            visual_noise(hovered as u32 ^ (*planet as u32).rotate_left(13)) * TAU,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    let mut present = vec![false; particles.len()];
+
+    for (entity, mut transform, mut sprite, link) in &mut link_q {
+        let Some(particle) = particles.get(link.index) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        present[link.index] = true;
+        *transform = particle.transform;
+        sprite.color = particle.color;
+        sprite.custom_size = Some(particle.size);
+    }
+    for (index, particle) in particles.into_iter().enumerate() {
+        if present[index] {
+            continue;
+        }
+        commands.spawn((
+            Sprite {
+                color: particle.color,
+                custom_size: Some(particle.size),
+                ..default()
+            },
+            particle.transform,
+            Pickable::IGNORE,
+            JumpGateLinkCmp {
+                index,
+            },
+            MapCmp,
+        ));
     }
 }
 
@@ -667,6 +938,16 @@ struct AsteroidBeltPlacement {
 }
 
 const ASTEROID_PLANET_CLEARANCE: f32 = 12.0;
+const ASTEROID_BELT_RADIUS_SAMPLES: usize = 12;
+const ASTEROID_BELT_TARGET_SPACING: f32 = 34.0;
+const ASTEROID_BELT_MINIMUM_COUNT: usize = 96;
+const ASTEROID_BELT_MAXIMUM_COUNT: usize = 420;
+const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 32;
+const ASTEROID_BELT_VISIBLE_SUBDIVISIONS: usize = 8;
+const ASTEROID_BELT_DEPTH: f32 = VORONOI_Z + 0.2;
+const ASTEROID_MINIMUM_WOBBLE: f32 = 4.0;
+const ASTEROID_WOBBLE_RANGE: f32 = 6.0;
+const ASTEROID_MAXIMUM_WOBBLE: f32 = ASTEROID_MINIMUM_WOBBLE + ASTEROID_WOBBLE_RANGE;
 
 fn solar_band_gaps(map: &Map) -> Vec<AsteroidBeltGap> {
     let star = map.solar_star_position();
@@ -702,21 +983,7 @@ fn solar_band_gaps(map: &Map) -> Vec<AsteroidBeltGap> {
         .collect()
 }
 
-/// Selects either the inner/temperate or temperate/outer gap. The entire noisy belt remains clear
-/// of the planet silhouettes bounding those temperature zones.
-fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
-    let seed = map.scenery_seed().wrapping_add(0x7a21_6d4b);
-    let gaps = solar_band_gaps(map);
-    let clear_gaps =
-        gaps.iter().copied().filter(|gap| gap.inner_edge < gap.outer_edge).collect::<Vec<_>>();
-    let candidates = if clear_gaps.is_empty() {
-        &gaps
-    } else {
-        &clear_gaps
-    };
-    let selected = ((visual_noise(seed) * candidates.len() as f32) as usize)
-        .min(candidates.len().saturating_sub(1));
-    let gap = *candidates.get(selected)?;
+fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> AsteroidBeltLayout {
     let surface_width = gap.outer_edge - gap.inner_edge;
     let (safe_inner, safe_outer, maximum_asteroid_radius) = if surface_width > 0.0 {
         let maximum_asteroid_radius = 19.0_f32.min(surface_width * 0.2);
@@ -731,73 +998,184 @@ fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
         (gap.inner_center + center_width * 0.12, gap.outer_center - center_width * 0.12, 19.0)
     };
     let safe_width = safe_outer - safe_inner;
-    let radial_half_width = (safe_width * 0.22).min(35.0);
+    let radial_half_width = (safe_width * 0.32).min(50.0);
     let minimum_radius = safe_inner + radial_half_width;
     let maximum_radius = safe_outer - radial_half_width;
-    let radius =
-        minimum_radius + (maximum_radius - minimum_radius) * visual_noise(seed.wrapping_add(1));
-    Some(AsteroidBeltLayout {
+    AsteroidBeltLayout {
         between_bands: gap.between_bands,
-        radius,
+        radius: minimum_radius + (maximum_radius - minimum_radius) * radial_position,
         radial_half_width,
         maximum_asteroid_diameter: maximum_asteroid_radius * 2.0,
-    })
+    }
+}
+
+fn asteroid_is_visible_on_map(map: &Map, placement: &AsteroidBeltPlacement) -> bool {
+    let center = map.solar_star_position();
+    let position = center + Vec2::from_angle(placement.phase) * placement.radius;
+    let visibility_margin = placement.diameter * 0.5 + ASTEROID_MAXIMUM_WOBBLE;
+    let clear_of_star = placement.radius - visibility_margin > SOLAR_STAR_SIZE * 0.5;
+    let fully_on_map = position.x - visibility_margin >= map.rect.min.x
+        && position.x + visibility_margin <= map.rect.max.x
+        && position.y - visibility_margin >= map.rect.min.y
+        && position.y + visibility_margin <= map.rect.max.y;
+    clear_of_star && fully_on_map
+}
+
+fn visible_asteroid_count(map: &Map, placements: &[AsteroidBeltPlacement]) -> usize {
+    placements.iter().filter(|placement| asteroid_is_visible_on_map(map, placement)).count()
+}
+
+/// Selects a complete belt in either the inner/temperate or temperate/outer gap. Sampling each
+/// safe radial span keeps the layout seed-varied while preferring the arc with the most rocks
+/// inside the playable map instead of choosing a ring that is mostly beyond its corner.
+fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
+    let seed = map.scenery_seed().wrapping_add(0x7a21_6d4b);
+    let gaps = solar_band_gaps(map);
+    let clear_gaps =
+        gaps.iter().copied().filter(|gap| gap.inner_edge < gap.outer_edge).collect::<Vec<_>>();
+    let candidates = if clear_gaps.is_empty() {
+        gaps
+    } else {
+        clear_gaps
+    };
+    let radial_offset = visual_noise(seed.wrapping_add(1));
+    candidates
+        .into_iter()
+        .flat_map(|gap| {
+            (0..ASTEROID_BELT_RADIUS_SAMPLES).map(move |sample| {
+                let radial_position =
+                    (radial_offset + sample as f32 / ASTEROID_BELT_RADIUS_SAMPLES as f32).fract();
+                asteroid_belt_layout_in_gap(gap, radial_position)
+            })
+        })
+        .enumerate()
+        .max_by_key(|(candidate, layout)| {
+            let placements = asteroid_belt_base_placements(map, *layout);
+            let complete = placements.len() == asteroid_belt_asteroid_count(layout.radius);
+            (
+                visible_asteroid_count(map, &placements),
+                complete,
+                visual_noise(seed.wrapping_add(*candidate as u32 + 2)).to_bits(),
+            )
+        })
+        .map(|(_, layout)| layout)
 }
 
 fn asteroid_belt_asteroid_count(radius: f32) -> usize {
-    ((TAU * radius / 55.0).round() as usize).clamp(72, 160)
+    ((TAU * radius / ASTEROID_BELT_TARGET_SPACING).round() as usize)
+        .clamp(ASTEROID_BELT_MINIMUM_COUNT, ASTEROID_BELT_MAXIMUM_COUNT)
+}
+
+struct AsteroidBeltPlacementGenerator {
+    center: Vec2,
+    planets: Vec<(Vec2, f32)>,
+    layout: AsteroidBeltLayout,
+    count: usize,
+    belt_seed: u32,
+    starting_angle: f32,
+    search_increment: f32,
+}
+
+impl AsteroidBeltPlacementGenerator {
+    fn new(map: &Map, layout: AsteroidBeltLayout) -> Self {
+        let count = asteroid_belt_asteroid_count(layout.radius);
+        let belt_seed = map
+            .scenery_seed()
+            .wrapping_add(0x2c91_7a4d)
+            .wrapping_add((layout.between_bands as u32).wrapping_mul(0x51d7_34ab));
+        Self {
+            center: map.solar_star_position(),
+            planets: map
+                .planets()
+                .into_iter()
+                .map(|planet| (planet.position, planet.size() * 0.5))
+                .collect(),
+            layout,
+            count,
+            belt_seed,
+            starting_angle: visual_noise(belt_seed) * TAU,
+            search_increment: TAU / count as f32 * 0.25,
+        }
+    }
+
+    fn placement(&self, sequence: usize, angular_index: f32) -> Option<AsteroidBeltPlacement> {
+        let seed = self.belt_seed.wrapping_add((sequence as u32).wrapping_mul(31));
+        let base_phase = self.starting_angle
+            + angular_index / self.count as f32 * TAU
+            + (visual_noise(seed) - 0.5) * TAU / self.count as f32 * 0.7;
+        let radius = self.layout.radius
+            + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
+        let minimum_diameter = 18.0_f32.min(self.layout.maximum_asteroid_diameter);
+        let diameter = minimum_diameter
+            + visual_noise(seed.wrapping_add(2))
+                * (self.layout.maximum_asteroid_diameter - minimum_diameter);
+        let phase = (0..=self.count * 4).find_map(|search| {
+            let offset = match search {
+                0 => 0.0,
+                value if value % 2 == 1 => (value / 2 + 1) as f32,
+                value => -((value / 2) as f32),
+            };
+            let phase = base_phase + offset * self.search_increment;
+            let position = self.center + Vec2::from_angle(phase) * radius;
+            self.planets
+                .iter()
+                .all(|(planet_position, planet_radius)| {
+                    position.distance(*planet_position)
+                        > planet_radius
+                            + diameter * 0.5
+                            + ASTEROID_PLANET_CLEARANCE
+                            + ASTEROID_MAXIMUM_WOBBLE
+                })
+                .then_some(phase)
+        })?;
+        Some(AsteroidBeltPlacement {
+            seed,
+            phase,
+            radius,
+            diameter,
+        })
+    }
+
+    fn base_placements(&self) -> Vec<AsteroidBeltPlacement> {
+        (0..self.count).filter_map(|index| self.placement(index, index as f32)).collect()
+    }
+}
+
+fn asteroid_belt_base_placements(
+    map: &Map,
+    layout: AsteroidBeltLayout,
+) -> Vec<AsteroidBeltPlacement> {
+    AsteroidBeltPlacementGenerator::new(map, layout).base_placements()
 }
 
 fn asteroid_belt_placements(map: &Map, layout: AsteroidBeltLayout) -> Vec<AsteroidBeltPlacement> {
-    let center = map.solar_star_position();
-    let planets = map
-        .planets()
-        .into_iter()
-        .map(|planet| (planet.position, planet.size() * 0.5))
-        .collect::<Vec<_>>();
-    let count = asteroid_belt_asteroid_count(layout.radius);
-    let belt_seed = map
-        .scenery_seed()
-        .wrapping_add(0x2c91_7a4d)
-        .wrapping_add((layout.between_bands as u32).wrapping_mul(0x51d7_34ab));
-    let starting_angle = visual_noise(belt_seed) * TAU;
-    let search_increment = TAU / count as f32 * 0.25;
-    (0..count)
-        .filter_map(|index| {
-            let seed = belt_seed.wrapping_add((index as u32).wrapping_mul(31));
-            let base_phase = starting_angle
-                + index as f32 / count as f32 * TAU
-                + (visual_noise(seed) - 0.5) * 0.04;
-            let radius = layout.radius
-                + (visual_noise(seed.wrapping_add(1)) - 0.5) * layout.radial_half_width * 2.0;
-            let minimum_diameter = 18.0_f32.min(layout.maximum_asteroid_diameter);
-            let diameter = minimum_diameter
-                + visual_noise(seed.wrapping_add(2))
-                    * (layout.maximum_asteroid_diameter - minimum_diameter);
-            let phase = (0..=count * 4).find_map(|search| {
-                let offset = match search {
-                    0 => 0.0,
-                    value if value % 2 == 1 => (value / 2 + 1) as f32,
-                    value => -((value / 2) as f32),
-                };
-                let phase = base_phase + offset * search_increment;
-                let position = center + Vec2::from_angle(phase) * radius;
-                planets
-                    .iter()
-                    .all(|(planet_position, planet_radius)| {
-                        position.distance(*planet_position)
-                            > planet_radius + diameter * 0.5 + ASTEROID_PLANET_CLEARANCE
-                    })
-                    .then_some(phase)
-            })?;
-            Some(AsteroidBeltPlacement {
-                seed,
-                phase,
-                radius,
-                diameter,
-            })
-        })
-        .collect()
+    let generator = AsteroidBeltPlacementGenerator::new(map, layout);
+    let mut placements = generator.base_placements();
+    let mut visible = visible_asteroid_count(map, &placements);
+    if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
+        return placements;
+    }
+
+    // Keep portions beyond the playable map sparse, and only subdivide its on-map arc. This
+    // guarantees a readable belt without multiplying sprite cost across the whole orbit.
+    'supplements: for subdivision in 1..ASTEROID_BELT_VISIBLE_SUBDIVISIONS {
+        for index in 0..generator.count {
+            let sequence = generator.count + (subdivision - 1) * generator.count + index;
+            let angular_index =
+                index as f32 + subdivision as f32 / ASTEROID_BELT_VISIBLE_SUBDIVISIONS as f32;
+            let Some(placement) = generator.placement(sequence, angular_index) else {
+                continue;
+            };
+            if asteroid_is_visible_on_map(map, &placement) {
+                placements.push(placement);
+                visible += 1;
+                if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
+                    break 'supplements;
+                }
+            }
+        }
+    }
+    placements
 }
 
 fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Image>]) {
@@ -808,51 +1186,57 @@ fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Imag
         return;
     };
     let center = map.solar_star_position();
-    for (index, placement) in asteroid_belt_placements(map, layout).into_iter().enumerate() {
-        let position = center + Vec2::from_angle(placement.phase) * placement.radius;
-        commands.spawn((
-            Sprite {
-                image: images[index % images.len()].clone(),
-                custom_size: Some(Vec2::splat(placement.diameter)),
-                color: Color::srgba(0.68, 0.70, 0.74, 0.64),
-                ..default()
-            },
-            Transform {
-                translation: position.extend(BACKGROUND_Z + 0.60),
-                rotation: Quat::from_rotation_z(visual_noise(placement.seed.wrapping_add(3)) * TAU),
-                ..default()
-            },
-            Pickable::IGNORE,
-            AsteroidCmp {
-                center,
-                radius: placement.radius,
-                phase: placement.phase,
-                angular_speed: 0.0,
-                wobble_phase: visual_noise(placement.seed.wrapping_add(6)) * TAU,
-                wobble_speed: 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5,
-                wobble_amplitude: 4.0 + visual_noise(placement.seed.wrapping_add(8)) * 6.0,
-                spin: (0.1 + visual_noise(placement.seed.wrapping_add(9)) * 0.22)
-                    * if visual_noise(placement.seed.wrapping_add(10)) < 0.5 {
-                        -1.0
-                    } else {
-                        1.0
-                    },
-                tumble_phase: visual_noise(placement.seed.wrapping_add(11)) * TAU,
-                tumble_speed: 0.55 + visual_noise(placement.seed.wrapping_add(12)) * 0.75,
-            },
+    let placements = asteroid_belt_placements(map, layout);
+    commands
+        .spawn((
+            Name::new("Asteroid belt"),
+            AsteroidBeltCmp,
+            Transform::default(),
+            Visibility::Inherited,
             MapCmp,
-        ));
-    }
-}
-
-#[cfg(test)]
-fn scenery_corner_from_seed(seed: u32) -> Vec2 {
-    match seed & 3 {
-        0 => Vec2::new(-1.0, -1.0),
-        1 => Vec2::new(1.0, -1.0),
-        2 => Vec2::new(-1.0, 1.0),
-        _ => Vec2::ONE,
-    }
+        ))
+        .with_children(|parent| {
+            for (index, placement) in placements.into_iter().enumerate() {
+                let position = center + Vec2::from_angle(placement.phase) * placement.radius;
+                parent.spawn((
+                    Sprite {
+                        image: images[index % images.len()].clone(),
+                        custom_size: Some(Vec2::splat(placement.diameter)),
+                        color: Color::srgba(0.92, 0.88, 0.80, 0.96),
+                        ..default()
+                    },
+                    Transform {
+                        // Keep the belt legible over territory shading while planets and all
+                        // interactive overlays remain in front of it.
+                        translation: position.extend(ASTEROID_BELT_DEPTH),
+                        rotation: Quat::from_rotation_z(
+                            visual_noise(placement.seed.wrapping_add(3)) * TAU,
+                        ),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                    AsteroidCmp {
+                        center,
+                        radius: placement.radius,
+                        phase: placement.phase,
+                        angular_speed: 0.0,
+                        wobble_phase: visual_noise(placement.seed.wrapping_add(6)) * TAU,
+                        wobble_speed: 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5,
+                        wobble_amplitude: ASTEROID_MINIMUM_WOBBLE
+                            + visual_noise(placement.seed.wrapping_add(8)) * ASTEROID_WOBBLE_RANGE,
+                        spin: (0.1 + visual_noise(placement.seed.wrapping_add(9)) * 0.22)
+                            * if visual_noise(placement.seed.wrapping_add(10)) < 0.5 {
+                                -1.0
+                            } else {
+                                1.0
+                            },
+                        tumble_phase: visual_noise(placement.seed.wrapping_add(11)) * TAU,
+                        tumble_speed: 0.55 + visual_noise(placement.seed.wrapping_add(12)) * 0.75,
+                    },
+                    MapCmp,
+                ));
+            }
+        });
 }
 
 /// Only fixed coordinates contribute: conquest, destruction and economy cannot reroll scenery.
@@ -903,10 +1287,13 @@ fn celestial_position(map: &Map) -> Vec2 {
     } else {
         map.rect.max.x
     };
-    // Place the compact landmark beyond the playfield, opposite the large sun,
-    // leaving its full sprite clear of the central strategic area.
-    let x = edge_x + edge_direction.x * CELESTIAL_SIZE.x * 0.5;
-    let usable_half_height = (map.rect.half_size().y - CELESTIAL_SIZE.y * 0.55).max(0.0);
+    // Keep the complete landmark on the map opposite the large sun. Very small synthetic maps
+    // cannot contain the full sprite, so clamp their center to the inner tenth of the bounds.
+    let horizontal_inset =
+        (CELESTIAL_SIZE.x * 0.5 + CELESTIAL_MAP_MARGIN).min(map.rect.half_size().x * 0.9);
+    let x = edge_x - edge_direction.x * horizontal_inset;
+    let usable_half_height =
+        (map.rect.half_size().y - CELESTIAL_SIZE.y * 0.5 - CELESTIAL_MAP_MARGIN).max(0.0);
     let preferred_y = -sun_corner.y * usable_half_height * 0.48;
     if map.planets.is_empty() {
         return Vec2::new(x, map.rect.center().y + preferred_y);
@@ -966,48 +1353,50 @@ fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map
     let celestial_frames = (1..=kind.frame_count())
         .map(|index| assets.image(format!("{} {index}", kind.name())))
         .collect::<Vec<_>>();
-    let mut celestial_layer = commands.spawn((
-        Name::new(format!("Decorative {} map edge", kind.name())),
-        Transform::from_xyz(0.0, 0.0, CELESTIAL_DEPTH),
-        Visibility::Inherited,
-        Pickable::IGNORE,
-        MapCmp,
-    ));
-    if kind == CelestialKind::NeutronStar {
-        // A distant star barely shifts during camera pans and zooms, with no ambient drift.
-        celestial_layer.insert(ParallaxCmp::new(0.9, 1.0, 0.8, Vec2::ZERO));
-    }
-    celestial_layer.with_children(|parent| {
-        parent
-            .spawn((
-                Name::new(format!("Animated {}", kind.name())),
-                Transform::from_translation(celestial_anchor.extend(0.0)),
-                Visibility::Inherited,
-                Pickable::IGNORE,
-                CelestialCmp {
-                    kind,
-                    frames: celestial_frames,
-                },
-            ))
-            .with_children(|celestial| {
-                for slot in 0..2 {
-                    let (frame, alpha) = celestial_frame_state(kind, slot, 0.0);
-                    celestial.spawn((
-                        Sprite {
-                            image: assets.image(format!("{} {}", kind.name(), frame + 1)),
-                            color: Color::srgba(0.72, 0.72, 0.72, alpha),
-                            custom_size: Some(CELESTIAL_SIZE * kind.size_scale()),
-                            ..default()
-                        },
-                        Transform::from_xyz(0.0, 0.0, slot as f32 * 0.001),
-                        Pickable::IGNORE,
-                        CelestialFrameCmp {
-                            slot,
-                        },
-                    ));
-                }
-            });
-    });
+    commands
+        .spawn((
+            Name::new(format!("Decorative {} map edge", kind.name())),
+            Transform::from_xyz(0.0, 0.0, CELESTIAL_DEPTH),
+            Visibility::Inherited,
+            Pickable::IGNORE,
+            MapCmp,
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Name::new(format!("Animated {}", kind.name())),
+                    Transform::from_translation(celestial_anchor.extend(0.0)),
+                    Visibility::Inherited,
+                    Pickable::IGNORE,
+                    CelestialCmp {
+                        kind,
+                        frames: celestial_frames,
+                    },
+                ))
+                .with_children(|celestial| {
+                    for slot in 0..2 {
+                        let (frame, alpha) = celestial_frame_state(kind, slot, 0.0);
+                        celestial.spawn((
+                            Sprite {
+                                image: assets.image(format!("{} {}", kind.name(), frame + 1)),
+                                color: Color::srgba(
+                                    CELESTIAL_TINT,
+                                    CELESTIAL_TINT,
+                                    CELESTIAL_TINT,
+                                    alpha,
+                                ),
+                                custom_size: Some(CELESTIAL_SIZE * kind.size_scale()),
+                                ..default()
+                            },
+                            Transform::from_xyz(0.0, 0.0, slot as f32 * 0.001),
+                            Pickable::IGNORE,
+                            CelestialFrameCmp {
+                                slot,
+                            },
+                        ));
+                    }
+                });
+        });
 }
 
 fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
@@ -1469,8 +1858,8 @@ pub fn draw_map(
                         PlanetaryShieldCmp::new(),
                     ));
 
-                    // Draw space dock on random position around planet
-                    let r = planet.size() * 0.5;
+                    // Draw the space dock at a random point on its orbit.
+                    let dock_radius = planet.size() * 0.75;
                     let angle = rng().random_range(0.0..TAU);
 
                     parent.spawn((
@@ -1479,13 +1868,17 @@ pub fn draw_map(
                             custom_size: Some(Vec2::splat(planet.size() * 0.4)),
                             ..default()
                         },
-                        Transform::from_xyz(angle.cos() * r, angle.sin() * r, 0.7),
+                        Transform::from_xyz(
+                            angle.cos() * dock_radius,
+                            angle.sin() * dock_radius,
+                            0.7,
+                        ),
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::Linear,
                                 Duration::from_secs(12),
                                 TransformOrbitLens {
-                                    radius: planet.size() * 0.75,
+                                    radius: dock_radius,
                                     offset: angle,
                                 },
                             )
@@ -1496,145 +1889,187 @@ pub fn draw_map(
                         SpaceDockCmp,
                     ));
 
-                    // Keep the gate opposite the dock at one fixed location. Only the gate itself
-                    // spins, so it stays visually active without circling the planet.
-                    let gate_angle = angle + PI;
+                    // Keep the fixed gate in the right-hand half of the orbit, safely opposite the
+                    // two range markers on the left. Only the gate itself spins, so it stays
+                    // visually active without circling the planet.
+                    let gate_candidate = (angle + PI).rem_euclid(TAU);
+                    let gate_angle = if gate_candidate.cos() < 0.0 {
+                        PI - gate_candidate
+                    } else {
+                        gate_candidate
+                    };
                     let gate_radius = planet.size() * 0.9;
-                    parent.spawn((
-                        Sprite {
-                            image: assets.image("jump gate marker"),
-                            custom_size: Some(Vec2::splat(planet.size() * 0.36)),
-                            ..default()
-                        },
-                        Transform::from_xyz(
-                            gate_angle.cos() * gate_radius,
-                            gate_angle.sin() * gate_radius,
-                            0.72,
-                        ),
-                        TweenAnim::new(
-                            Tween::new(
-                                EaseFunction::Linear,
-                                Duration::from_secs(17),
-                                TransformSpinLens {
-                                    offset: gate_angle,
-                                    rotations: -2.0,
-                                },
-                            )
-                            .with_repeat_count(RepeatCount::Infinite),
-                        ),
-                        Pickable::IGNORE,
-                        Visibility::Hidden,
-                        JumpGateCmp,
-                    ));
+                    parent
+                        .spawn((
+                            Sprite {
+                                image: assets.image("jump gate marker"),
+                                custom_size: Some(Vec2::splat(planet.size() * 0.36)),
+                                ..default()
+                            },
+                            Transform::from_xyz(
+                                gate_angle.cos() * gate_radius,
+                                gate_angle.sin() * gate_radius,
+                                0.72,
+                            ),
+                            TweenAnim::new(
+                                Tween::new(
+                                    EaseFunction::Linear,
+                                    Duration::from_secs(17),
+                                    TransformSpinLens {
+                                        offset: gate_angle,
+                                        rotations: -2.0,
+                                    },
+                                )
+                                .with_repeat_count(RepeatCount::Infinite),
+                            ),
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            JumpGateCmp {
+                                planet: planet_id,
+                            },
+                        ))
+                        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                        .observe(cursor::<Out>(SystemCursorIcon::Default))
+                        .observe(move |mut event: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                            event.propagate(false);
+                            state.jump_gate_hover = Some(planet_id);
+                        })
+                        .observe(move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
+                            event.propagate(false);
+                            if state.jump_gate_hover == Some(planet_id) {
+                                state.jump_gate_hover = None;
+                            }
+                        })
+                        .observe(
+                            move |mut event: On<Pointer<Click>>,
+                                  mut state: ResMut<UiState>,
+                                  settings: Res<Settings>,
+                                  map: Res<Map>,
+                                  player: Res<Player>| {
+                                event.propagate(false);
+                                if event.button == PointerButton::Primary {
+                                    open_jump_gate_mission(
+                                        &mut state, &settings, &map, &player, planet_id,
+                                    );
+                                }
+                            },
+                        );
 
-                    // The solar satellite uses its own orbit, independently of the dock and gate.
-                    // Occasional crossings are intentional: it should read as a small object
-                    // flying around the world rather than as part of a rigid formation.
-                    let satellite_angle = angle + TAU / 3.0;
-                    let satellite_radius = planet.size() * 0.82;
-                    parent.spawn((
-                        Sprite {
-                            image: assets.image("solar satellite marker"),
-                            custom_size: Some(Vec2::splat(planet.size() * 0.3)),
-                            ..default()
-                        },
-                        Transform::from_xyz(
-                            satellite_angle.cos() * satellite_radius,
-                            satellite_angle.sin() * satellite_radius,
-                            0.71,
-                        ),
-                        TweenAnim::new(
-                            Tween::new(
-                                EaseFunction::Linear,
-                                Duration::from_secs(14),
-                                TransformOrbitLens {
-                                    radius: satellite_radius,
-                                    offset: satellite_angle,
-                                },
-                            )
-                            .with_repeat_count(RepeatCount::Infinite),
-                        ),
-                        Pickable::IGNORE,
-                        Visibility::Hidden,
-                        SolarSatelliteCmp,
-                    ));
+                    // Spawn one satellite for every possible building level. The visibility system
+                    // reveals the prefix matching the known current level. The phase order spreads
+                    // low-level prefixes out while forming an even pentagon at level five, and the
+                    // shared period prevents collisions without rotating the individual sprites.
+                    let satellite_radius = planet.size() * 0.68;
+                    for (index, step) in SOLAR_SATELLITE_PHASE_STEPS.into_iter().enumerate() {
+                        let satellite_angle =
+                            angle + TAU / 10.0 + TAU * step as f32 / Building::MAX_LEVEL as f32;
+                        parent.spawn((
+                            Sprite {
+                                image: assets.image("solar satellite marker"),
+                                custom_size: Some(Vec2::splat(planet.size() * 0.2)),
+                                ..default()
+                            },
+                            Transform::from_xyz(
+                                satellite_angle.cos() * satellite_radius,
+                                satellite_angle.sin() * satellite_radius,
+                                0.71 + index as f32 * 0.001,
+                            ),
+                            TweenAnim::new(
+                                Tween::new(
+                                    EaseFunction::Linear,
+                                    Duration::from_secs(14),
+                                    TransformOrbitLens {
+                                        radius: satellite_radius,
+                                        offset: satellite_angle,
+                                    },
+                                )
+                                .with_repeat_count(RepeatCount::Infinite),
+                            ),
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            SolarSatelliteCmp {
+                                level: index + 1,
+                            },
+                        ));
+                    }
 
                     // Range infrastructure stays in fixed map positions so it remains easy to
-                    // acquire at every zoom level. Hovering a marker owns the corresponding
-                    // coverage preview; the markers remain non-clickable and use the normal
-                    // cursor so they do not advertise planet actions.
+                    // acquire at every zoom level. Phalanx hover owns its coverage preview; the
+                    // Relay is decorative because Spy missions are galaxy-wide.
+                    // Three small Phalanx drones share the left-side station but follow independent
+                    // pseudo-orbits, keeping the gate clear and echoing the shop artwork.
                     let phalanx_angle = PI * 0.75;
                     let phalanx_radius = planet.size() * 0.83;
                     let phalanx_anchor =
                         Vec2::new(phalanx_angle.cos(), phalanx_angle.sin()) * phalanx_radius;
-                    parent
-                        .spawn((
-                            Sprite {
-                                image: assets.image("sensor phalanx marker"),
-                                custom_size: Some(Vec2::splat(planet.size() * 0.34)),
-                                ..default()
-                            },
-                            Transform::from_xyz(phalanx_anchor.x, phalanx_anchor.y, 0.73),
-                            Pickable::IGNORE,
-                            Visibility::Hidden,
-                            SensorPhalanxCmp,
-                            RangeMarkerMotionCmp {
-                                anchor: phalanx_anchor,
-                                elapsed: 0.0,
-                                phase: visual_noise(planet.id as u32 + 1_301) * TAU,
-                                preview: MapRangePreview::SensorPhalanx(planet_id),
-                            },
-                        ))
-                        .observe(cursor::<Over>(SystemCursorIcon::Default))
-                        .observe(move |mut event: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                            event.propagate(false);
-                            state.range_preview = Some(MapRangePreview::SensorPhalanx(planet_id));
-                        })
-                        .observe(move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                            event.propagate(false);
-                            if state.range_preview
-                                == Some(MapRangePreview::SensorPhalanx(planet_id))
-                            {
-                                state.range_preview = None;
-                            }
-                        })
-                        .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
+                    let phalanx_phase = visual_noise(planet.id as u32 + 6_701) * TAU;
+                    for index in 0..PHALANX_DRONE_COUNT {
+                        let drone = SensorPhalanxCmp {
+                            index,
+                            anchor: phalanx_anchor,
+                            phase: phalanx_phase,
+                        };
+                        let transform = phalanx_drone_pose(&drone, 0.0);
+                        parent
+                            .spawn((
+                                Sprite {
+                                    image: assets.image("sensor phalanx marker"),
+                                    custom_size: Some(Vec2::splat(planet.size() * 0.23)),
+                                    ..default()
+                                },
+                                transform,
+                                Pickable::IGNORE,
+                                Visibility::Hidden,
+                                drone,
+                            ))
+                            .observe(cursor::<Over>(SystemCursorIcon::Default))
+                            .observe(
+                                move |mut event: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                                    event.propagate(false);
+                                    state.range_preview =
+                                        Some(MapRangePreview::SensorPhalanx(planet_id));
+                                },
+                            )
+                            .observe(
+                                move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
+                                    event.propagate(false);
+                                    if state.range_preview
+                                        == Some(MapRangePreview::SensorPhalanx(planet_id))
+                                    {
+                                        state.range_preview = None;
+                                    }
+                                },
+                            )
+                            .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
+                    }
 
                     let relay_angle = PI * 1.25;
                     let relay_radius = planet.size() * 0.83;
                     let relay_anchor =
                         Vec2::new(relay_angle.cos(), relay_angle.sin()) * relay_radius;
-                    parent
-                        .spawn((
-                            Sprite {
-                                image: assets.image("command relay marker"),
-                                custom_size: Some(Vec2::splat(planet.size() * 0.3)),
-                                ..default()
-                            },
-                            Transform::from_xyz(relay_anchor.x, relay_anchor.y, 0.72),
-                            Pickable::IGNORE,
-                            Visibility::Hidden,
-                            CommandRelayCmp,
-                            RangeMarkerMotionCmp {
-                                anchor: relay_anchor,
-                                elapsed: 0.0,
-                                phase: visual_noise(planet.id as u32 + 2_609) * TAU,
-                                preview: MapRangePreview::CommandRelay(planet_id),
-                            },
-                        ))
-                        .observe(cursor::<Over>(SystemCursorIcon::Default))
-                        .observe(move |mut event: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                            event.propagate(false);
-                            state.range_preview = Some(MapRangePreview::CommandRelay(planet_id));
-                        })
-                        .observe(move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
-                            event.propagate(false);
-                            if state.range_preview == Some(MapRangePreview::CommandRelay(planet_id))
-                            {
-                                state.range_preview = None;
-                            }
-                        })
-                        .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
+                    let relay_phase = visual_noise(planet.id as u32 + 2_609) * TAU;
+                    let (relay_position, relay_tilt) =
+                        range_marker_pose(relay_anchor, 0.0, relay_phase);
+                    parent.spawn((
+                        Sprite {
+                            image: assets.image("command relay marker"),
+                            custom_size: Some(Vec2::splat(planet.size() * 0.34)),
+                            ..default()
+                        },
+                        Transform {
+                            translation: relay_position.extend(0.72),
+                            rotation: Quat::from_rotation_z(relay_tilt),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                        Visibility::Hidden,
+                        CommandRelayCmp,
+                        RangeMarkerMotionCmp {
+                            anchor: relay_anchor,
+                            elapsed: 0.0,
+                            phase: relay_phase,
+                        },
+                    ));
 
                     // Vertex alpha supplies the scanner's soft field, rim glow, and fading trails.
                     let scanner_material = materials.add(ColorMaterial {
@@ -1893,8 +2328,8 @@ pub fn update_planet_info(
                 scanner_q.get_mut(child)
             {
                 // Planet hover still previews a moon's Orbital Radar because moons have no
-                // dedicated marker. Planetary Phalanx and Relay coverage belongs exclusively to
-                // their stationary marker hover.
+                // dedicated marker. Planetary Phalanx coverage belongs exclusively to its
+                // stationary marker hover.
                 let radius = match state.range_preview {
                     Some(MapRangePreview::SensorPhalanx(id))
                         if id == planet.id
@@ -1906,17 +2341,6 @@ pub fn update_planet_info(
                             * Planet::SIZE
                             * planet.army.amount(&Unit::Building(Building::SensorPhalanx)) as f32
                             + planet.size() * 0.5
-                    },
-                    Some(MapRangePreview::CommandRelay(id))
-                        if id == planet.id
-                            && !planet.is_moon()
-                            && player.controls(planet)
-                            && planet.has(&Unit::Building(Building::CommandRelay)) =>
-                    {
-                        // Fleet routes use edge-to-edge AU distance, approximated by subtracting
-                        // 0.7 planet diameters. Add it back so the ring marks eligible target
-                        // centers exactly.
-                        (spy_mission_range(&map, planet) + 0.7) * Planet::SIZE
                     },
                     _ if hovered
                         && planet.is_moon()
@@ -1980,11 +2404,11 @@ pub fn update_planet_defenses(
         (With<SpaceDockCmp>, Without<JumpGateCmp>, Without<PlanetaryShieldCmp>),
     >,
     mut gate_q: Query<
-        (&mut Visibility, &mut Sprite),
+        (&mut Visibility, &mut Sprite, &mut Pickable),
         (With<JumpGateCmp>, Without<SpaceDockCmp>, Without<PlanetaryShieldCmp>),
     >,
     mut satellite_q: Query<
-        (&mut Visibility, &mut Sprite),
+        (&mut Visibility, &mut Sprite, &SolarSatelliteCmp),
         (
             With<SolarSatelliteCmp>,
             Without<SpaceDockCmp>,
@@ -2023,6 +2447,7 @@ pub fn update_planet_defenses(
     session: Res<MultiplayerSession>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    let jump_gate_network_active = jump_gate_network_available(&map, &player);
     let scale = match *camera {
         Projection::Orthographic(ref projection) => projection.scale,
         _ => f32::INFINITY,
@@ -2046,8 +2471,13 @@ pub fn update_planet_defenses(
             !planet.is_destroyed && army.is_some_and(|army| army.amount(&Unit::space_dock()) > 0);
         let has_gate = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::JumpGate)) > 0);
-        let has_satellite = !planet.is_destroyed
-            && army.is_some_and(|army| army.amount(&Unit::Building(Building::SolarSatellite)) > 0);
+        let satellite_level = if planet.is_destroyed {
+            0
+        } else {
+            army.map_or(0, |army| {
+                army.amount(&Unit::Building(Building::SolarSatellite)).min(Building::MAX_LEVEL)
+            })
+        };
         let has_relay = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::CommandRelay)) > 0);
         let has_phalanx = !planet.is_destroyed
@@ -2089,39 +2519,52 @@ pub fn update_planet_defenses(
                     sprite.color = color;
                 }
             }
-            if let Ok((mut visibility, mut sprite)) = gate_q.get_mut(child) {
+            if let Ok((mut visibility, mut sprite, mut pickable)) = gate_q.get_mut(child) {
                 *visibility = if has_gate {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
                 };
-                if has_gate {
-                    sprite.color = color;
-                }
-            }
-            if let Ok((mut visibility, mut sprite)) = satellite_q.get_mut(child) {
-                *visibility = if has_satellite && detail_alpha > 0.01 {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-                if has_satellite {
-                    sprite.color = color.with_alpha(detail_alpha);
-                }
-            }
-            if let Ok((mut visibility, mut sprite, mut pickable)) = relay_q.get_mut(child) {
-                *visibility = if has_relay {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-                *pickable = if has_relay && controls {
+                *pickable = if has_gate
+                    && jump_gate_network_active
+                    && is_usable_owned_jump_gate(planet, &player)
+                {
                     Pickable::default()
                 } else {
                     Pickable::IGNORE
                 };
-                if has_relay {
+                if has_gate {
                     sprite.color = color;
+                }
+            }
+            if let Ok((mut visibility, mut sprite, satellite)) = satellite_q.get_mut(child) {
+                let constructed = satellite.level <= satellite_level;
+                *visibility = if constructed && detail_alpha > 0.01 {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if constructed {
+                    sprite.color = color.with_alpha(detail_alpha);
+                }
+            }
+            if let Ok((mut visibility, mut sprite, mut pickable)) = relay_q.get_mut(child) {
+                *visibility = if has_relay && detail_alpha > 0.01 {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                *pickable = Pickable::IGNORE;
+                if has_relay {
+                    let active = !controls || planet.command_relay_active;
+                    sprite.color = color.with_alpha(
+                        detail_alpha
+                            * if active {
+                                1.0
+                            } else {
+                                0.32
+                            },
+                    );
                 }
             }
             if let Ok((mut visibility, mut sprite, mut pickable)) = phalanx_q.get_mut(child) {

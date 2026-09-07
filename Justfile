@@ -5,6 +5,7 @@ asset_jobs := env_var_or_default("STELLARION_ASSET_JOBS", "12")
 native_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-native.ps1" } else { "bash scripts/package-native.sh" }
 web_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-web.ps1" } else { "bash scripts/package-web.sh" }
 npm_command := if os() == "windows" { "npm.cmd" } else { "npm" }
+packaging_check_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File tests/scripts/packaging.ps1" } else { "bash tests/scripts/packaging.sh" }
 
 # List the available project commands.
 default:
@@ -63,7 +64,11 @@ assets-check:
     cargo run --features asset-pipeline --bin build-assets -j{{ jobs }} -- --check --jobs {{ asset_jobs }}
 
 # Run the same quality gates used by CI.
-ci: fmt-check lint test assets-check check-wasm verify-sql
+ci: fmt-check lint test assets-check check-wasm verify-sql packaging-check
+
+# Verify that package cleanup stays inside the repository output directory.
+packaging-check:
+    {{ packaging_check_command }}
 
 # Package the native game for the current host.
 package-native:

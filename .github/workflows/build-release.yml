@@ -44,6 +44,8 @@ jobs:
         run: cargo run --features asset-pipeline --bin build-assets -j12 -- --jobs 12
       - name: Run tests
         run: cargo test --all-targets --all-features -j12
+      - name: Verify package cleanup paths
+        run: bash tests/scripts/packaging.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -122,7 +124,9 @@ jobs:
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/package-native.ps1 -Target '${{ matrix.target }}' -Channel '${{ matrix.channel }}'
+        run: |
+          ./tests/scripts/packaging.ps1
+          ./scripts/package-native.ps1 -Target '${{ matrix.target }}' -Channel '${{ matrix.channel }}'
       - name: Package Linux
         if: runner.os == 'Linux'
         env:

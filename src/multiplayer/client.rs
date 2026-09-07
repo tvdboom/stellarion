@@ -16,7 +16,7 @@ use crate::core::identity::{GameCode, GameId};
 use crate::core::messages::MessageMsg;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
-    resolve_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnSubmission,
+    resolved_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnSubmission,
 };
 use crate::core::states::AppState;
 use crate::multiplayer::authority::{recolored_lobby_snapshot, started_snapshot_for_members};
@@ -1815,8 +1815,8 @@ fn drive_turn_draft(
     let (Some(backend), Some(auth), Some(record), Some(member)) = (
         runtime.backend.clone(),
         session.auth.clone(),
-        session.active_game.clone(),
-        session.membership.clone(),
+        session.active_game.as_ref(),
+        session.membership.as_ref(),
     ) else {
         return;
     };
@@ -1824,6 +1824,8 @@ fn drive_turn_draft(
         return;
     }
     let restoring = session.restore_draft_needed;
+    let game_id = record.id.clone();
+    let player_id = member.player_id;
     session.restore_draft_needed = false;
     let turn = pending.turn;
     if !restoring {
@@ -1835,9 +1837,9 @@ fn drive_turn_draft(
         } else {
             Operation::Withdraw
         };
-        let stored = match backend.load_turn_submissions(&auth, &record.id, turn).await {
+        let stored = match backend.load_turn_submissions(&auth, &game_id, turn).await {
             Ok(submissions) => {
-                submissions.into_iter().find(|s| s.submission.player_id == member.player_id)
+                submissions.into_iter().find(|s| s.submission.player_id == player_id)
             },
             Err(error) => return BackendOutput::Failed(operation, error),
         };
@@ -1845,7 +1847,7 @@ fn drive_turn_draft(
             return BackendOutput::DraftLoaded(turn, stored);
         }
         let generation = stored.as_ref().map_or(0, |s| s.submission.generation);
-        match backend.withdraw_turn(&auth, &record.id, turn, generation).await {
+        match backend.withdraw_turn(&auth, &game_id, turn, generation).await {
             Ok(draft) => BackendOutput::Withdrawn(draft),
             Err(error) => BackendOutput::Failed(Operation::Withdraw, error),
         }
@@ -1874,14 +1876,16 @@ fn poll_durable_events(
     {
         return;
     }
-    let (Some(backend), Some(auth), Some(record)) =
-        (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
-    else {
+    let (Some(backend), Some(auth), Some(game_id)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref().map(|r| r.id.clone()),
+    ) else {
         return;
     };
     let cursor = session.event_cursor;
     spawn_backend_task(&mut tasks, async move {
-        match backend.subscribe(&auth, &record.id, cursor).await {
+        match backend.subscribe(&auth, &game_id, cursor).await {
             Ok(batch) => BackendOutput::Events(batch),
             Err(error) => BackendOutput::Failed(Operation::Events, error),
         }
@@ -1905,15 +1909,17 @@ fn drive_presence(
     {
         return;
     }
-    let (Some(backend), Some(auth), Some(record)) =
-        (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
-    else {
+    let (Some(backend), Some(auth), Some(game_id)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref().map(|r| r.id.clone()),
+    ) else {
         return;
     };
     session.presence_needed = false;
     session.presence_elapsed = Duration::ZERO;
     spawn_backend_task(&mut tasks, async move {
-        match backend.set_connected(&auth, &record.id, true).await {
+        match backend.set_connected(&auth, &game_id, true).await {
             Ok(()) => BackendOutput::Presence,
             Err(error) => BackendOutput::Failed(Operation::Presence, error),
         }
@@ -1929,14 +1935,16 @@ fn drive_reload(
     if !session.reload_needed || !tasks.0.is_empty() {
         return;
     }
-    let (Some(backend), Some(auth), Some(record)) =
-        (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
-    else {
+    let (Some(backend), Some(auth), Some(game_id)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref().map(|r| r.id.clone()),
+    ) else {
         return;
     };
     session.reload_needed = false;
     spawn_backend_task(&mut tasks, async move {
-        match backend.load_game(&auth, &record.id).await {
+        match backend.load_game(&auth, &game_id).await {
             Ok(record) => BackendOutput::Record(Operation::Load, record),
             Err(error) => BackendOutput::Failed(Operation::Load, error),
         }
@@ -1983,14 +1991,16 @@ fn drive_resolution(
         if submissions.len() != required {
             return BackendOutput::ResolutionWaiting;
         }
-        let mut model = record.persisted.state.clone();
         let commands = submissions.into_iter().map(|stored| stored.submission).collect::<Vec<_>>();
-        if let Err(error) = resolve_turn(&mut model, &commands) {
-            return BackendOutput::Failed(
-                Operation::Resolve,
-                BackendError::InvalidData(error.to_string()),
-            );
-        }
+        let model = match resolved_turn(&record.persisted.state, &commands) {
+            Ok((model, _)) => model,
+            Err(error) => {
+                return BackendOutput::Failed(
+                    Operation::Resolve,
+                    BackendError::InvalidData(error.to_string()),
+                )
+            },
+        };
         match backend
             .publish_resolution(&auth, &record.id, record.revision, turn, PersistedGame::new(model))
             .await

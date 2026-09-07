@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::constants::{
-    FACTORY_PRODUCTION_FACTOR, JUMP_GATE_CAPACITY_PER_LEVEL, ROBOTICS_PRODUCTION_FACTOR,
+    FACTORY_PRODUCTION_FACTOR, JUMP_GATE_CAPACITY_PER_LEVEL, PROBES_PER_PRODUCTION_LEVEL,
     SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR, SPACE_DOCK_FLEET_PRODUCTION,
+    TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL, TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
 };
 use crate::core::identity::PlayerId;
-use crate::core::resources::Resources;
-use crate::core::units::buildings::Building;
+use crate::core::resources::{ResourceName, Resources};
+use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::defense::Defense;
 use crate::core::units::{Amount, Army, Unit};
 
@@ -237,6 +238,12 @@ pub struct Planet {
     pub resources: Resources,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: usize,
+    /// Resource currently favored by this planet's Terraformer, or `None` while switched off.
+    pub terraformer_focus: Option<ResourceName>,
+    /// Whether the stationed Command Relay is broadcasting deceptive telemetry.
+    pub command_relay_active: bool,
+    /// Standing fleet withdrawal order for this colony; disabled until explicitly selected.
+    pub fleet_withdrawal: FleetWithdrawal,
     /// Whether this planet has been permanently destroyed.
     pub is_destroyed: bool,
 
@@ -360,6 +367,9 @@ impl Planet {
             position,
             resources,
             jump_gate: 0,
+            terraformer_focus: None,
+            command_relay_active: true,
+            fleet_withdrawal: FleetWithdrawal::Off,
             is_destroyed: false,
             owned: None,
             controlled: None,
@@ -430,6 +440,7 @@ impl Planet {
 
     /// Removes invalid or zero-count unit entries from this planet.
     pub fn clean(&mut self) {
+        self.fleet_withdrawal = FleetWithdrawal::Off;
         self.owned = None;
         self.controlled = None;
         self.army.retain(|u, _| u.is_building());
@@ -455,6 +466,9 @@ impl Planet {
 
     /// Transfers control to another player.
     pub fn control(&mut self, player_id: PlayerId) {
+        if self.controlled != Some(player_id) {
+            self.fleet_withdrawal = FleetWithdrawal::Off;
+        }
         self.controlled = Some(player_id);
         if self.owned != Some(player_id) {
             self.owned = None;
@@ -463,6 +477,7 @@ impl Planet {
 
     /// Removes ownership and owner-only infrastructure from this planet.
     pub fn abandon(&mut self) {
+        self.fleet_withdrawal = FleetWithdrawal::Off;
         let former_owner = self.owned.take();
         self.army.retain(|u, _| !u.is_defense());
         self.controlled = if self.has_fleet() {
@@ -548,14 +563,15 @@ impl Planet {
             Building::Shipyard | Building::Factory => Some(Building::Shipyard),
             Building::MissileSilo => Some(Building::MissileSilo),
             Building::Senate => Some(Building::Senate),
-            Building::Robotics => Some(Building::Robotics),
+            Building::Terraformer => Some(Building::Terraformer),
+            Building::ColonialAdministration => Some(Building::ColonialAdministration),
             _ => None,
         }
     }
 
     /// Computes resource production for the current owned worlds.
     pub fn resource_production(&self) -> Resources {
-        Resources::new(
+        let mut production = Resources::new(
             self.resources
                 .metal
                 .saturating_mul(self.army.amount(&Unit::Building(Building::MetalMine))),
@@ -565,7 +581,30 @@ impl Planet {
             self.resources
                 .deuterium
                 .saturating_mul(self.army.amount(&Unit::Building(Building::DeuteriumSynthesizer))),
-        )
+        );
+        let terraformer =
+            self.army.amount(&Unit::Building(Building::Terraformer)).min(Building::MAX_LEVEL);
+        if terraformer == 0 {
+            return production;
+        }
+        let Some(focus) = self.terraformer_focus else {
+            return production;
+        };
+        for resource in [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium] {
+            let percent = if resource == focus {
+                100usize.saturating_add(
+                    TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL.saturating_mul(terraformer),
+                )
+            } else {
+                100usize.saturating_sub(
+                    TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL.saturating_mul(terraformer),
+                )
+            };
+            let amount = production.get(&resource);
+            *production.get_mut(&resource) =
+                ((amount as u128 * percent as u128) / 100).min(usize::MAX as u128) as usize;
+        }
+        production
     }
 
     /// Counts lunar/building field slots consumed by constructed units.
@@ -593,17 +632,9 @@ impl Planet {
     /// Returns the maximum fleet production allowed by current upgrades.
     pub fn max_fleet_production(&self) -> usize {
         let shipyard = self.army.amount(&Unit::Building(Building::Shipyard));
-        let robotics = self.army.amount(&Unit::Building(Building::Robotics));
-        SHIPYARD_PRODUCTION_FACTOR
-            .saturating_mul(shipyard)
-            .saturating_add(
-                SPACE_DOCK_FLEET_PRODUCTION.saturating_mul(self.army.amount(&Unit::space_dock())),
-            )
-            .saturating_add(if shipyard > 0 {
-                ROBOTICS_PRODUCTION_FACTOR.saturating_mul(robotics)
-            } else {
-                0
-            })
+        SHIPYARD_PRODUCTION_FACTOR.saturating_mul(shipyard).saturating_add(
+            SPACE_DOCK_FLEET_PRODUCTION.saturating_mul(self.army.amount(&Unit::space_dock())),
+        )
     }
 
     /// Returns current factory production available for defenses.
@@ -619,12 +650,7 @@ impl Planet {
     /// Returns the maximum battery production allowed by current upgrades.
     pub fn max_battery_production(&self) -> usize {
         let factory = self.army.amount(&Unit::Building(Building::Factory));
-        let robotics = self.army.amount(&Unit::Building(Building::Robotics));
-        FACTORY_PRODUCTION_FACTOR.saturating_mul(factory).saturating_add(if factory > 0 {
-            ROBOTICS_PRODUCTION_FACTOR.saturating_mul(robotics)
-        } else {
-            0
-        })
+        FACTORY_PRODUCTION_FACTOR.saturating_mul(factory)
     }
 
     /// Returns current silo capacity for offensive and defensive missiles.
@@ -653,6 +679,16 @@ impl Planet {
     pub fn max_jump_capacity(&self) -> usize {
         let gate = self.army.amount(&Unit::Building(Building::JumpGate));
         JUMP_GATE_CAPACITY_PER_LEVEL.saturating_mul(gate)
+    }
+
+    /// Returns whether this Relay spoofs an arriving Spy group as an empty planet.
+    pub fn command_relay_blocks(&self, arriving_probes: usize) -> bool {
+        let relay =
+            self.army.amount(&Unit::Building(Building::CommandRelay)).min(Building::MAX_LEVEL);
+        self.command_relay_active
+            && relay > 0
+            && arriving_probes > 0
+            && arriving_probes <= relay.saturating_mul(PROBES_PER_PRODUCTION_LEVEL)
     }
 
     /// Returns whether at least one copy of the requested unit is stationed here.
@@ -699,6 +735,9 @@ impl Planet {
         self.army = Army::new();
         self.buy = Vec::new();
         self.is_destroyed = true;
+        self.terraformer_focus = None;
+        self.command_relay_active = true;
+        self.fleet_withdrawal = FleetWithdrawal::Off;
         self.surface_build_order = [None; 4];
     }
 }

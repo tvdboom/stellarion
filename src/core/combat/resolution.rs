@@ -1,12 +1,17 @@
 //! Deterministic fleet-combat resolution independent of rendering and networking.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use bevy::prelude::*;
 use rand::prelude::IteratorRandom;
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
-use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
+use crate::core::combat::report::{
+    CombatReport, DefenderRetreat, MissionReport, RoundReport, Side,
+};
 use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
 use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
@@ -26,6 +31,11 @@ pub const BOMBING_HIT_CHANCE: f32 = 0.1;
 
 /// Per-building raid limit; the three buildings in either category allow nine levels in total.
 pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;
+
+/// Unit statistics are immutable; build the rapid-fire tables once instead of once per shot.
+static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> = LazyLock::new(|| {
+    Unit::all().into_iter().flatten().map(|unit| (unit, unit.rapid_fire())).collect()
+});
 
 #[derive(Component, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +124,19 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
     energy: EnergyGrid,
     rng: &mut R,
 ) -> MissionReport {
+    resolve_combat_with_retreat_with_rng(turn, mission, destination, energy, None, rng)
+}
+
+/// Resolves a battle with an optional, currently owned homeworld for colonial withdrawal.
+/// The simulation supplies this destination only for an eligible non-home defending world.
+pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
+    turn: usize,
+    mission: &Mission,
+    destination: &Planet,
+    energy: EnergyGrid,
+    retreat_home: Option<crate::core::map::planet::PlanetId>,
+    rng: &mut R,
+) -> MissionReport {
     if mission.objective == Icon::Deploy
         || (mission.objective == Icon::Colonize && destination.controlled == Some(mission.owner))
     {
@@ -136,6 +159,24 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
     }
 
     let mut combat_report = CombatReport::default();
+    let administration = destination
+        .army
+        .amount(&Unit::Building(crate::core::units::buildings::Building::ColonialAdministration));
+    let retreat_home = retreat_home.filter(|home| {
+        *home != destination.id
+            && !destination.is_moon()
+            && destination.controlled.is_some()
+            && matches!(mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+            && administration >= destination.fleet_withdrawal.minimum_level()
+    });
+    let threshold = retreat_home.and(destination.fleet_withdrawal.losses_percent());
+    let initial_fleet_strength = destination
+        .army
+        .iter()
+        .filter(|(unit, _)| unit.is_ship())
+        .map(|(unit, count)| unit.production() as u128 * *count as u128)
+        .sum::<u128>();
+    let mut support_colonies = destination.army.amount(&Unit::colony_ship());
 
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
@@ -175,10 +216,25 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
     let mut used_antiballistic = vec![];
     let mut planet_destroyed = false;
     let mut bombing_resolved = false;
-    while ((!attack_army.is_empty() && !defend_army.is_empty()) || round == 1)
-        && round <= MAX_COMBAT_ROUNDS
+    let mut withdrawal_ordered = threshold == Some(0) && initial_fleet_strength > 0;
+    let mut withdrawal_cover = withdrawal_ordered && administration < 5;
+    if withdrawal_ordered && administration >= 5 {
+        record_defender_retreat(
+            &mut combat_report,
+            &mut defend_army,
+            &mut support_colonies,
+            retreat_home,
+            None,
+        );
+    }
+    while ((!attack_army.is_empty() && !defend_army.is_empty()) || round == 1 || withdrawal_cover)
+        && (round <= MAX_COMBAT_ROUNDS || withdrawal_cover)
     {
-        if attack_army.is_empty() && defend_army.is_empty() {
+        if attack_army.is_empty()
+            && defend_army.is_empty()
+            && combat_report.defender_retreat.is_none()
+            && !withdrawal_cover
+        {
             // If there are no combat units, skip the battle
             break;
         }
@@ -195,12 +251,16 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
 
             // Reset all repairs, shots and defender's shields
             army.iter_mut().for_each(|u| {
-                u.repairs = vec![];
-                u.shots = vec![];
+                u.repairs.clear();
+                u.shots.clear();
             });
             enemy_army.iter_mut().for_each(|u| u.shield = u.unit.shield());
 
             'unit: for unit in army {
+                if withdrawal_cover && side == Side::Defender && unit.unit.is_ship() {
+                    // Ships committed to withdrawal cannot return fire during the final volley.
+                    continue;
+                }
                 // Intercept incoming missiles before resolving damage
                 if unit.unit == Unit::interplanetary_missile() {
                     for cu in enemy_army.iter_mut() {
@@ -358,6 +418,43 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
         attack_army.retain(|u| u.hull > 0);
         defend_army.retain(|u| u.hull > 0);
 
+        if withdrawal_cover {
+            record_defender_retreat(
+                &mut combat_report,
+                &mut defend_army,
+                &mut support_colonies,
+                retreat_home,
+                Some(round - 1),
+            );
+            withdrawal_cover = false;
+        } else if !withdrawal_ordered && !attack_army.is_empty() {
+            let remaining = defend_army
+                .iter()
+                .filter(|unit| unit.unit.is_ship())
+                .map(|unit| unit.unit.production() as u128)
+                .sum::<u128>()
+                + support_colonies as u128 * Unit::colony_ship().production() as u128;
+            if threshold.is_some_and(|percent| {
+                remaining > 0
+                    && initial_fleet_strength > 0
+                    && initial_fleet_strength.saturating_sub(remaining) * 100
+                        >= initial_fleet_strength * percent as u128
+            }) {
+                withdrawal_ordered = true;
+                if administration >= 5 {
+                    record_defender_retreat(
+                        &mut combat_report,
+                        &mut defend_army,
+                        &mut support_colonies,
+                        retreat_home,
+                        Some(round - 1),
+                    );
+                } else {
+                    withdrawal_cover = true;
+                }
+            }
+        }
+
         if round == 1 {
             // Send probes back if there are still remaining enemies or objective is spying
             let probes = attack_army.iter().filter(|u| u.unit == Unit::probe()).count();
@@ -374,19 +471,18 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
         if mission.objective == Icon::Destroy
             && !defend_army.iter().any(|u| u.unit.is_ship() || u.unit == Unit::space_dock())
         {
-            let war_suns =
-                attack_army.iter().filter(|u| u.unit == Unit::war_sun()).collect::<Vec<_>>();
+            let war_suns = attack_army.iter().filter(|u| u.unit == Unit::war_sun()).count();
             let destroy_probability =
                 (destination.destroy_probability() - 0.01 * round as f32).max(0.);
-            for _ in war_suns.iter() {
+            for _ in 0..war_suns {
                 if rng.random::<f32>() < destroy_probability {
-                    defend_army = vec![];
+                    defend_army.clear();
                     planet_destroyed = true;
                 }
             }
 
             round_report.destroy_probability =
-                1. - (1. - destroy_probability).powi(war_suns.len() as i32);
+                1. - (1. - destroy_probability).powi(war_suns as i32);
         }
 
         combat_report.rounds.push(round_report);
@@ -412,8 +508,7 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
     if !surviving_defense.is_empty() {
         // Defender support units survive a stalemate as well as a defensive victory.
         // Add non-combat ships and the remaining missiles to the defender
-        *surviving_defense.entry(Unit::colony_ship()).or_insert(0) =
-            destination.army.amount(&Unit::colony_ship());
+        *surviving_defense.entry(Unit::colony_ship()).or_insert(0) = support_colonies;
         *surviving_defense.entry(Unit::antiballistic_missile()).or_insert(0) =
             destination.army.amount(&Unit::antiballistic_missile()) - used_antiballistic.len();
         *surviving_defense.entry(Unit::interplanetary_missile()).or_insert(0) =
@@ -446,9 +541,45 @@ pub fn resolve_combat_with_energy_with_rng<R: Rng + ?Sized>(
             .iter()
             .flat_map(|r| r.attacker.iter().chain(r.defender.iter()))
             .any(|cu| !cu.shots.is_empty())
-            || mission.objective == Icon::Destroy)
-            .then_some(combat_report),
+            || mission.objective == Icon::Destroy
+            || combat_report.defender_retreat.is_some())
+        .then_some(combat_report),
         hidden: false,
+    }
+}
+
+/// Removes escaped ships from the garrison before conquest and planet-destruction checks.
+fn record_defender_retreat(
+    report: &mut CombatReport,
+    army: &mut Vec<CombatUnit>,
+    colonies: &mut usize,
+    home: Option<crate::core::map::planet::PlanetId>,
+    after_round: Option<usize>,
+) {
+    let Some(home_planet) = home else {
+        return;
+    };
+    let mut ships = Army::new();
+    army.retain(|unit| {
+        if unit.unit.is_ship() {
+            if unit.hull > 0 {
+                *ships.entry(unit.unit).or_default() += 1;
+            }
+            false
+        } else {
+            true
+        }
+    });
+    if *colonies > 0 {
+        *ships.entry(Unit::colony_ship()).or_default() += *colonies;
+        *colonies = 0;
+    }
+    if ships.has_army() {
+        report.defender_retreat = Some(DefenderRetreat {
+            after_round,
+            home_planet,
+            ships,
+        });
     }
 }
 
@@ -497,8 +628,15 @@ fn resolve_bombing_raid<R: Rng + ?Sized>(
 /// Returns whether a probabilistic rapid-fire chain ends after this shot.
 fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f32) -> bool {
     shots_fired >= MAX_SHOTS_PER_UNIT_PER_ROUND
-        || roll >= *attacker.rapid_fire().get(target).unwrap_or(&0) as f32 / 100.0
+        || roll
+            >= RAPID_FIRE.get(attacker).and_then(|table| table.get(target)).copied().unwrap_or(0)
+                as f32
+                / 100.0
 }
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_withdrawal.rs"]
+mod withdrawal_tests;
 
 #[cfg(test)]
 #[path = "../../../tests/core/combat_resolution.rs"]

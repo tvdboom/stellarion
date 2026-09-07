@@ -2,6 +2,7 @@ use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
 use std::collections::HashSet;
 
 use super::*;
+use crate::core::simulation::resolve_turn;
 use crate::core::simulation::MatchStatus;
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -44,7 +44,7 @@ fn mission_display_turns(mission: &Mission, map: &Map) -> usize {
     mission.turns_to_destination(map).max(1)
 }
 
-/// Paints the compact circular-arrow action used by resource conversion.
+/// Paints the compact turn-back action used to recall an active mission.
 fn draw_recall_button(ui: &mut Ui, images: &ImageIds, editable: bool) -> Response {
     let sense = if editable {
         Sense::click()
@@ -743,20 +743,6 @@ fn draw_new_mission(
                         Target distance is the length of the route from the origin world to the \
                         destination world.",
                 );
-                if state.mission_info.objective == Icon::Spy {
-                    let range = spy_mission_range(map, origin);
-                    let text = format!("📡 Spy reach: {range:.1} AU");
-                    let response = if distance <= range + f32::EPSILON {
-                        ui.small(text)
-                    } else {
-                        ui.colored_label(Color32::RED, RichText::new(text).small())
-                    };
-                    response.on_hover_small(
-                        "Spy missions launched from here can target worlds up to this distance \
-                        away. Each completed Command Relay level on the origin world extends \
-                        this reach.",
-                    );
-                }
                 ui.small(format!(
                     "🚀 Movement: {}",
                     if speed == 0. || speed == f32::MAX {

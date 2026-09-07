@@ -59,7 +59,13 @@ fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
         }
         let compact = notification_frame(&context, &messages, screen, vec![]);
         assert_eq!(compact.len(), 1);
-        assert!((compact[0].top() - 70.0).abs() < 1.0);
+        let expected_top =
+            DEFAULT_NOTIFICATION_TOP.max(resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP);
+        assert!((compact[0].top() - expected_top).abs() < 1.0);
+        assert!(
+            compact[0].top() >= resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP - 1.0,
+            "toast overlaps the resource panel: {compact:?}"
+        );
         assert!((compact[0].width() - rects[1].width()).abs() < 1.0);
         let area =
             context.memory(|m| m.area_rect(egui::Id::new("stellarion_notifications"))).unwrap();

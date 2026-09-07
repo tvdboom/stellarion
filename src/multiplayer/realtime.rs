@@ -11,6 +11,7 @@ use crate::platform::config::SupabaseConfig;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const MAX_FRAME_BYTES: usize = 256 * 1024;
+const MAX_EVENTS_PER_UPDATE: usize = 256;
 
 /// A transport hint produced by the Realtime socket.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,18 +77,24 @@ impl SupabaseRealtimeClient {
         session: Option<&AuthSession>,
         game_id: Option<&GameId>,
     ) -> Vec<RealtimeSignal> {
-        let desired = match (config, session, game_id) {
-            (Some(config), Some(session), Some(game_id)) => Some(RealtimeTarget {
+        // This runs every frame. Borrow unchanged credentials and allocate only on a switch.
+        let desired = config.zip(session).zip(game_id);
+        let unchanged = match (&self.target, desired) {
+            (Some(target), Some(((config, session), game_id))) => {
+                target.config == *config
+                    && target.access_token == session.access_token
+                    && target.game_id == *game_id
+            },
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            self.socket = None;
+            self.target = desired.map(|((config, session), game_id)| RealtimeTarget {
                 config: config.clone(),
                 access_token: session.access_token.clone(),
                 game_id: game_id.clone(),
-            }),
-            _ => None,
-        };
-
-        if desired != self.target {
-            self.socket = None;
-            self.target = desired;
+            });
             self.retry_remaining = Duration::ZERO;
             self.retry_attempt = 0;
             self.heartbeat_elapsed = Duration::ZERO;
@@ -109,15 +116,13 @@ impl SupabaseRealtimeClient {
             }
         }
 
-        let mut events = Vec::new();
-        if let Some(socket) = &self.socket {
-            while let Some(event) = socket.receiver.try_recv() {
-                events.push(event);
-            }
-        }
-
         let mut disconnect_reason = None;
-        for event in events {
+        // Limit work per frame; queued hints remain available on subsequent updates.
+        for _ in 0..MAX_EVENTS_PER_UPDATE {
+            let Some(event) = self.socket.as_ref().and_then(|socket| socket.receiver.try_recv())
+            else {
+                break;
+            };
             match event {
                 WsEvent::Opened => {
                     if let Err(error) = self.join_channel() {
@@ -130,7 +135,11 @@ impl SupabaseRealtimeClient {
                         &message,
                         self.socket.as_ref().and_then(|socket| socket.join_reference.as_deref()),
                     ) {
-                        MessageKind::Wakeup => signals.push(RealtimeSignal::Wakeup),
+                        MessageKind::Wakeup => {
+                            if !signals.contains(&RealtimeSignal::Wakeup) {
+                                signals.push(RealtimeSignal::Wakeup);
+                            }
+                        },
                         MessageKind::Joined => {
                             if let Some(socket) = &mut self.socket {
                                 socket.joined = true;
@@ -170,7 +179,7 @@ impl SupabaseRealtimeClient {
         }
 
         if self.socket.as_ref().is_some_and(|socket| socket.opened) {
-            self.heartbeat_elapsed += elapsed;
+            self.heartbeat_elapsed = self.heartbeat_elapsed.saturating_add(elapsed);
             if self.heartbeat_elapsed >= HEARTBEAT_INTERVAL {
                 self.heartbeat_elapsed = Duration::ZERO;
                 self.send_heartbeat();
@@ -297,6 +306,10 @@ enum MessageKind {
 
 /// Reduces untrusted wire JSON to transport hints; row contents are deliberately ignored.
 fn classify_message(message: &str, join_reference: Option<&str>) -> MessageKind {
+    // The WebSocket library's native size limit is ignored in browsers.
+    if message.len() > MAX_FRAME_BYTES {
+        return MessageKind::Failure("Realtime message exceeds the size limit".to_string());
+    }
     let Ok(envelope) = serde_json::from_str::<Value>(message) else {
         return MessageKind::Ignore;
     };
@@ -306,7 +319,10 @@ fn classify_message(message: &str, join_reference: Option<&str>) -> MessageKind 
         "phx_error" | "phx_close" => {
             MessageKind::Failure(format!("Realtime channel reported {event}"))
         },
-        "phx_reply" if envelope.get("ref").and_then(Value::as_str) == join_reference => {
+        "phx_reply"
+            if join_reference.is_some()
+                && envelope.get("ref").and_then(Value::as_str) == join_reference =>
+        {
             match envelope.pointer("/payload/status").and_then(Value::as_str) {
                 Some("ok") => MessageKind::Joined,
                 Some("error") => MessageKind::Failure(

@@ -9,7 +9,7 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     app.insert_resource(UiState {
         planet_hover: Some(1),
         mission_planet_hover: Some(3),
-        range_preview: Some(MapRangePreview::CommandRelay(1)),
+        range_preview: Some(MapRangePreview::SensorPhalanx(1)),
         planet_selected: Some(2),
         mission_hover: Some(5),
         mission_hover_from_ui: true,

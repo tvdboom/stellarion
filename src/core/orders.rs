@@ -41,15 +41,15 @@ pub enum OrderError {
     /// The Senate is restricted to the home world and its match-specific level cap.
     #[error("The Senate can only be built on the home planet up to this match's level limit.")]
     Senate,
+    /// Colonial Administration needs a colony rather than the player's homeworld.
+    #[error("Colonial Administration can only be built on a non-home planet.")]
+    ColonialAdministration,
     /// The fleet does not satisfy its mission objective.
     #[error("The selected fleet does not meet the mission objective's requirements.")]
     Objective,
     /// Dedicated espionage requires a meaningful probe group.
     #[error("A Spy mission requires at least 5 Probes.")]
     SpyProbes,
-    /// The target lies outside the origin world's command-relay coverage.
-    #[error("The target is outside this planet's Spy range. Upgrade its Command Relay.")]
-    SpyRange,
     /// The fleet contains units not available at the origin.
     #[error("The selected units are not available at the origin.")]
     Fleet,
@@ -59,6 +59,16 @@ pub enum OrderError {
     /// Gate ownership, objective, infrastructure, or capacity is invalid.
     #[error("Jump Gate requirements or capacity are not met.")]
     JumpGate,
+}
+
+/// Returns the laboratory output, rounded down, without losing precision on large balances.
+/// A missing laboratory produces nothing; levels above the cap use the level-five 1:1 rate.
+pub fn conversion_output(amount: usize, laboratory_level: usize) -> usize {
+    if laboratory_level == 0 {
+        return 0;
+    }
+    let divisor = 2 + Building::MAX_LEVEL.saturating_sub(laboratory_level);
+    (amount as u128 * 2 / divisor as u128) as usize
 }
 
 /// Returns the maximum legal purchase, including every already-queued unit.
@@ -83,6 +93,9 @@ pub fn purchase_limit(
     }
     let capacity = match unit {
         Unit::Building(building) => {
+            if building == Building::ColonialAdministration && planet.id == player.home_planet {
+                return Err(OrderError::ColonialAdministration);
+            }
             let maximum = if building == Building::Senate {
                 senate_level_limit
             } else {
@@ -149,7 +162,7 @@ pub fn purchase_limit(
 /// Checks the dispatched fleet and all world-dependent mission requirements.
 pub fn validate_mission(
     player: &Player,
-    map: &Map,
+    _map: &Map,
     origin: &Planet,
     destination: &Planet,
     mission: &Mission,
@@ -178,11 +191,6 @@ pub fn validate_mission(
     if mission.army.iter().any(|(unit, count)| *count > origin.army.amount(unit)) {
         return Err(OrderError::Fleet);
     }
-    if mission.objective == Icon::Spy
-        && route_distance(origin, destination) > spy_mission_range(map, origin) + f32::EPSILON
-    {
-        return Err(OrderError::SpyRange);
-    }
     if mission.bombing != BombingRaid::None
         && (destination.is_moon()
             || !mission.army.iter().any(|(unit, count)| {
@@ -202,26 +210,6 @@ pub fn validate_mission(
         return Err(OrderError::JumpGate);
     }
     Ok(())
-}
-
-/// Returns the maximum Spy-mission distance available from one origin, measured in AU.
-///
-/// The six coverage tiers are no Relay plus Relay levels one through five. Scaling against the
-/// farthest world keeps level five galaxy-wide on every generated map size.
-pub fn spy_mission_range(map: &Map, origin: &Planet) -> f32 {
-    let farthest = map
-        .planets
-        .iter()
-        .map(|destination| route_distance(origin, destination))
-        .fold(0.0_f32, f32::max);
-    let relay =
-        origin.army.amount(&Unit::Building(Building::CommandRelay)).min(Building::MAX_LEVEL);
-    farthest * (relay.saturating_add(1) as f32 / (Building::MAX_LEVEL + 1) as f32)
-}
-
-/// Measures the same edge-to-edge AU distance used by fleet travel.
-fn route_distance(origin: &Planet, destination: &Planet) -> f32 {
-    (origin.position.distance(destination.position) / Planet::SIZE - 0.7).max(0.0)
 }
 
 #[cfg(test)]

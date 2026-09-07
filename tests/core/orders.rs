@@ -1,7 +1,7 @@
 use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
-use crate::core::orders::{purchase_limit, spy_mission_range, validate_mission, OrderError};
+use crate::core::orders::{conversion_output, purchase_limit, validate_mission, OrderError};
 use crate::core::random::DeterministicRngState;
 use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand, TurnSubmission};
 use crate::core::units::buildings::Building;
@@ -48,12 +48,12 @@ fn planet_buildings_use_progressive_spy_intelligence_tiers() {
         (Building::MetalMine, 1),
         (Building::CrystalMine, 1),
         (Building::DeuteriumSynthesizer, 1),
-        (Building::Shipyard, 2),
-        (Building::Factory, 2),
-        (Building::MissileSilo, 2),
-        (Building::PlanetaryShield, 3),
-        (Building::Reactor, 3),
-        (Building::Robotics, 4),
+        (Building::Reactor, 2),
+        (Building::Terraformer, 2),
+        (Building::Shipyard, 3),
+        (Building::Factory, 3),
+        (Building::MissileSilo, 3),
+        (Building::PlanetaryShield, 4),
         (Building::Senate, 5),
     ] {
         assert_eq!(Unit::Building(building).production(), expected, "{building:?}");
@@ -94,6 +94,20 @@ fn game() -> GameModel {
     let mut game = GameModel::new([7; 32], GameRules::default()).unwrap();
     game.start().unwrap();
     game
+}
+
+#[test]
+fn laboratory_conversion_is_exact_and_bounded() {
+    for (level, expected) in [(0, 0), (1, 33), (2, 40), (3, 50), (4, 66), (5, 100)] {
+        assert_eq!(conversion_output(100, level), expected);
+    }
+    // f32 rounds this odd amount up, even at the lossless level-five exchange rate.
+    let amount = 16_777_219;
+    assert_eq!(conversion_output(amount, 5), amount);
+    assert_eq!(conversion_output(amount, 3), amount / 2);
+    assert_eq!(conversion_output(usize::MAX, 5), usize::MAX);
+    assert_eq!(conversion_output(usize::MAX, usize::MAX), usize::MAX);
+    assert_eq!(conversion_output(usize::MAX, 1), usize::MAX / 3);
 }
 
 fn submit(game: &mut GameModel, commands: Vec<TurnCommand>) -> Result<(), String> {
@@ -164,7 +178,7 @@ fn stationed_space_dock_adds_five_ship_production_slots() {
 }
 
 #[test]
-fn robotics_adds_local_shipyard_and_factory_capacity_without_unlocking_units() {
+fn terraformer_specializes_resources_without_changing_unit_capacity() {
     let mut game = game();
     let home = game.players[0].home_planet;
     game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
@@ -172,35 +186,66 @@ fn robotics_adds_local_shipyard_and_factory_capacity_without_unlocking_units() {
     let planet = game.map.get_mut(home);
     planet.army.insert(Unit::Building(Building::Shipyard), 1);
     planet.army.insert(Unit::Building(Building::Factory), 1);
-    planet.army.insert(Unit::Building(Building::Robotics), 3);
+    planet.army.insert(Unit::Building(Building::MetalMine), 1);
+    planet.army.insert(Unit::Building(Building::CrystalMine), 1);
+    planet.army.insert(Unit::Building(Building::DeuteriumSynthesizer), 1);
+    planet.army.insert(Unit::Building(Building::Terraformer), 3);
+    planet.resources = crate::core::resources::Resources::new(1_000, 1_000, 1_000);
+    planet.terraformer_focus = Some(crate::core::resources::ResourceName::Crystal);
 
-    assert_eq!(planet.max_fleet_production(), 11);
-    assert_eq!(planet.max_battery_production(), 11);
+    assert_eq!(
+        planet.resource_production(),
+        crate::core::resources::Resources::new(700, 1_300, 700)
+    );
+    assert_eq!(planet.max_fleet_production(), 5);
+    assert_eq!(planet.max_battery_production(), 5);
     assert_eq!(
         purchase_limit(player, planet, Unit::Ship(Ship::Cruiser), Building::MAX_LEVEL),
         Err(crate::core::orders::OrderError::Production),
-        "Robotics must add capacity without replacing Shipyard unlock levels"
+        "Terraforming must not replace Shipyard unlock levels"
     );
 
-    planet.army.remove(&Unit::Building(Building::Shipyard));
-    planet.army.remove(&Unit::Building(Building::Factory));
-    assert_eq!(planet.max_fleet_production(), 0);
-    assert_eq!(planet.max_battery_production(), 0);
+    planet.army.remove(&Unit::Building(Building::Terraformer));
+    planet.buy.push(Unit::Building(Building::Terraformer));
+    assert_eq!(
+        planet.resource_production(),
+        crate::core::resources::Resources::new(1_000, 1_000, 1_000),
+        "queued Terraformers are not operational"
+    );
 
-    planet.army.remove(&Unit::Building(Building::Robotics));
-    planet.army.insert(Unit::Building(Building::Shipyard), 1);
-    planet.army.insert(Unit::Building(Building::Factory), 1);
-    planet.buy.push(Unit::Building(Building::Robotics));
-    assert_eq!(planet.max_fleet_production(), 5, "queued Robotics is not operational");
-    assert_eq!(planet.max_battery_production(), 5, "queued Robotics is not operational");
+    planet.army.insert(Unit::Building(Building::Terraformer), 3);
+    planet.buy.clear();
+    planet.terraformer_focus = None;
+    assert_eq!(
+        planet.resource_production(),
+        crate::core::resources::Resources::new(1_000, 1_000, 1_000),
+        "a Terraformer with no focus is switched off"
+    );
 }
 
 #[test]
-fn robotics_fills_the_tenth_planet_building_shop_slot() {
+fn planet_building_roster_includes_both_home_and_colony_capstones() {
     let planet_buildings =
         Unit::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect::<Vec<_>>();
-    assert_eq!(planet_buildings.len(), 10);
-    assert!(planet_buildings.contains(&Unit::Building(Building::Robotics)));
+    assert_eq!(
+        planet_buildings,
+        [
+            Building::MetalMine,
+            Building::CrystalMine,
+            Building::DeuteriumSynthesizer,
+            Building::Reactor,
+            Building::Terraformer,
+            Building::Shipyard,
+            Building::Factory,
+            Building::MissileSilo,
+            Building::PlanetaryShield,
+            Building::Senate,
+            Building::ColonialAdministration,
+        ]
+        .into_iter()
+        .map(Unit::Building)
+        .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -257,7 +302,7 @@ fn command_relay_no_longer_changes_jump_gate_capacity() {
 }
 
 #[test]
-fn spy_missions_require_five_probes_and_command_relay_range() {
+fn spy_missions_require_five_probes_but_can_reach_any_world() {
     let mut game = game();
     let origin_id = game.players[0].home_planet;
     let destination_id = game.players[1].home_planet;
@@ -306,19 +351,15 @@ fn spy_missions_require_five_probes_and_command_relay_range() {
             game.map.get(destination_id),
             &spy(&game, 5),
         ),
-        Err(OrderError::SpyRange)
+        Ok(())
     );
 
-    let no_relay_range = spy_mission_range(&game.map, game.map.get(origin_id));
     game.map.get_mut(origin_id).buy.push(Unit::Building(Building::CommandRelay));
-    assert_eq!(spy_mission_range(&game.map, game.map.get(origin_id)), no_relay_range);
     game.map.get_mut(origin_id).buy.clear();
-
-    for level in 1..=Building::MAX_LEVEL {
-        game.map.get_mut(origin_id).army.insert(Unit::Building(Building::CommandRelay), level);
-        let range = spy_mission_range(&game.map, game.map.get(origin_id));
-        assert!((range - no_relay_range * (level + 1) as f32).abs() < 0.001);
-    }
+    game.map
+        .get_mut(origin_id)
+        .army
+        .insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);
     assert_eq!(
         validate_mission(
             &game.players[0],

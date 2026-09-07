@@ -3,8 +3,8 @@
 use crate::core::identity::PlayerId;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
-    resolve_turn, validate_submission_batch, GameModel, MatchStatus, PersistedGame, TurnSubmission,
-    PLAYER_COUNT_RANGE,
+    resolved_turn, validate_submission_batch, GameModel, MatchStatus, PersistedGame,
+    TurnSubmission, PLAYER_COUNT_RANGE,
 };
 use crate::multiplayer::backend::BackendError;
 use crate::multiplayer::model::GameRecord;
@@ -79,10 +79,8 @@ pub fn resolved_snapshot(
     record: &GameRecord,
     submissions: &[TurnSubmission],
 ) -> Result<PersistedGame, BackendError> {
-    let mut next = record.persisted.clone();
-    resolve_turn(&mut next.state, submissions).map_err(invalid)?;
-    next.validate().map_err(invalid)?;
-    Ok(next)
+    let (state, _) = resolved_turn(&record.persisted.state, submissions).map_err(invalid)?;
+    Ok(PersistedGame::new(state))
 }
 
 /// Compares serialized model data without relying on floating-point equality derives.

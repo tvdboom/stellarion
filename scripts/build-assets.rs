@@ -24,7 +24,6 @@ const MAX_JOBS: usize = 12;
 const UNUSED_IMAGES: &[&str] = &[
     "images/bg/cover.png",
     "images/buildings/small_shield.png",
-    "images/buildings/terraformer.png",
     "images/planets/planets.png",
     "images/scenery/combat.png",
     "images/scenery/incombat.png",

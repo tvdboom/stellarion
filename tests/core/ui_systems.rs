@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
+    for width in [280.0, 480.0] {
+        for level in [1, 5] {
+            let context = egui::Context::default();
+            context.set_global_style(NordDark.custom_style());
+            let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
+            planet.army.insert(Unit::Building(Building::ColonialAdministration), level);
+            let mut pending = PendingTurnCommands::default();
+            let mut bounds = egui::Rect::NOTHING;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 220.0),
+                    )),
+                    ..default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        bounds = ui
+                            .scope(|ui| {
+                                shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending);
+                            })
+                            .response
+                            .rect;
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            assert!(
+                bounds.right() <= width,
+                "withdrawal selector overflowed its {width}-wide panel: {bounds:?}"
+            );
+            assert!(has_text(&output.shapes, "Fleet withdrawal:"));
+            assert!(has_text(&output.shapes, "Off"));
+            if width >= 480.0 {
+                assert!(bounds.height() < 40.0);
+            }
+            assert!(pending.commands.is_empty());
+        }
+    }
+}
+
+#[test]
 fn shop_navigation_places_orbitals_between_buildings_and_fleet_and_skips_them_on_moons() {
     assert_eq!(Shop::Buildings.next(false), Shop::Orbitals);
     assert_eq!(Shop::Orbitals.next(false), Shop::Fleet);
@@ -14,23 +58,26 @@ fn shop_navigation_places_orbitals_between_buildings_and_fleet_and_skips_them_on
 #[test]
 fn planet_unit_hover_panel_has_room_for_all_four_categories() {
     assert_eq!(Unit::all_valid(false).len(), 4);
-    assert!(PLANET_UNITS_PANEL_WIDTH >= 270.0);
-    assert!(PLANET_UNITS_PANEL_WIDTH > MOON_UNITS_PANEL_WIDTH);
+    const {
+        assert!(PLANET_UNITS_PANEL_WIDTH >= 270.0);
+        assert!(PLANET_UNITS_PANEL_WIDTH > MOON_UNITS_PANEL_WIDTH);
+    }
 }
 
 #[test]
-fn reactor_follows_resource_buildings_in_the_shop_and_planet_hover() {
+fn planet_buildings_follow_the_gameplay_order_in_the_shop_and_planet_hover() {
     let expected = vec![
         Unit::Building(Building::MetalMine),
         Unit::Building(Building::CrystalMine),
         Unit::Building(Building::DeuteriumSynthesizer),
         Unit::Building(Building::Reactor),
+        Unit::Building(Building::Terraformer),
         Unit::Building(Building::Shipyard),
         Unit::Building(Building::Factory),
         Unit::Building(Building::MissileSilo),
         Unit::Building(Building::PlanetaryShield),
-        Unit::Building(Building::Robotics),
         Unit::Building(Building::Senate),
+        Unit::Building(Building::ColonialAdministration),
     ];
     let shop =
         Unit::buildings().into_iter().filter(|unit| unit.valid_on(false)).collect::<Vec<_>>();
@@ -47,14 +94,6 @@ fn laboratory_conversion_uses_a_sounding_information_toast_with_the_gained_resou
     assert_eq!(notification.message, "Gained 12.345 Metal.");
     assert_eq!(notification.level, crate::core::messages::MessageLevel::Info);
     assert!(!notification.silent);
-}
-
-#[test]
-fn senate_hover_states_the_exact_match_level_and_slot_cap() {
-    let description = shop::shop_unit_description(Unit::Building(Building::Senate), 3);
-
-    assert!(description.contains("Each level adds +1 planet slot."));
-    assert!(description.contains("up to +3 planet slots."));
 }
 
 #[test]
@@ -167,13 +206,14 @@ fn spy_reports_reveal_planet_buildings_one_intelligence_tier_at_a_time() {
         (Building::MetalMine, 1),
         (Building::CrystalMine, 1),
         (Building::DeuteriumSynthesizer, 1),
-        (Building::Shipyard, 2),
-        (Building::Factory, 2),
-        (Building::MissileSilo, 2),
-        (Building::PlanetaryShield, 3),
-        (Building::Reactor, 3),
-        (Building::Robotics, 4),
+        (Building::Reactor, 2),
+        (Building::Terraformer, 2),
+        (Building::Shipyard, 3),
+        (Building::Factory, 3),
+        (Building::MissileSilo, 3),
+        (Building::PlanetaryShield, 4),
         (Building::Senate, 5),
+        (Building::ColonialAdministration, 5),
     ];
     target.army = tiers.iter().map(|(building, _)| (Unit::Building(*building), 1)).collect();
 
@@ -597,6 +637,7 @@ fn owned_worlds_panel_grows_with_the_number_of_planets() {
         );
         let map = Map {
             rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets,
         };
         let player = Player::new(1, 0);
@@ -642,6 +683,7 @@ fn owned_worlds_panel_uses_the_compact_screen_edge_inset_below_the_resource_pane
     context.set_global_style(NordDark.custom_style());
     let map = Map {
         rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: Vec::new(),
     };
     let player = Player::new(1, 0);
@@ -693,6 +735,7 @@ fn strategic_hud_panels_scale_with_viewports() {
         ]));
         let map = Map {
             rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets: vec![planet],
         };
         let player = Player::new(1, 0);
@@ -787,6 +830,7 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     ]));
     let map = Map {
         rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: Vec::new(),
     };
     let player = Player::default();
@@ -812,6 +856,10 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     output.textures_delta.clear();
 
     assert_eq!(panel.top(), RESOURCE_BAR_TOP);
+    assert!(
+        (panel.bottom() - resource_bar_bottom(viewport.size())).abs() < 1.0,
+        "resource bar bottom calculation drifted from its rendered panel: {panel:?}"
+    );
     assert!(panel.left() >= RESOURCE_BAR_SIDE_INSET);
     assert!(panel.right() <= viewport.right() - RESOURCE_BAR_SIDE_INSET);
     assert!(
@@ -947,7 +995,7 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
 
     let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal);
     assert_eq!(
-        metal.lines().map(|line| line.split_once(':').unwrap().0).collect::<Vec<_>>(),
+        metal.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
         ["Home", "Colony"]
     );
 }
@@ -994,8 +1042,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
         None,
     )
     .unwrap();
-    assert!(warning.message.contains("next turn's Energy at -1"));
-    assert!(warning.message.contains("90% efficiency"));
+    assert_eq!(warning.message, "Next turn: Energy shortage.");
     assert_eq!(warning.level, crate::core::messages::MessageLevel::Warning);
 
     assert!(shop::energy_shortage_warning(
@@ -1084,32 +1131,30 @@ fn resource_summaries_have_one_disjoint_hover_target_without_highlight_chrome() 
 }
 
 #[test]
-fn resource_tooltip_restores_the_large_image_and_production_details() {
+fn resource_tooltip_forecasts_queued_production_and_shows_energy_penalty() {
     let context = egui::Context::default();
     let mut style = NordDark.custom_style();
     style.interaction.tooltip_delay = 0.0;
     style.interaction.show_tooltips_only_when_still = false;
     context.set_global_style(style);
-    let textures = ["turn", "owned", "metal", "crystal", "deuterium"].map(|name| {
-        context.load_texture(
-            format!("resource tooltip test {name}"),
-            egui::ColorImage::filled([1, 1], Color32::WHITE),
-            default(),
-        )
-    });
-    let metal_texture = textures[2].id();
-    let images = ImageIds(HashMap::from([
-        ("turn".to_string(), textures[0].id()),
-        ("owned".to_string(), textures[1].id()),
-        ("metal".to_string(), metal_texture),
-        ("crystal".to_string(), textures[3].id()),
-        ("deuterium".to_string(), textures[4].id()),
-    ]));
+    let texture = context.load_texture(
+        "resource tooltip test metal",
+        egui::ColorImage::filled([1, 1], Color32::WHITE),
+        default(),
+    );
+    let metal_texture = texture.id();
+    let images = ImageIds(HashMap::from([("metal".to_string(), metal_texture)]));
+    let mut planet = Planet::new(0, "Foundry".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(0);
+    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.army.insert(Unit::Building(Building::MetalMine), 1);
+    planet.buy.push(Unit::Building(Building::MetalMine));
     let map = Map {
         rect: Rect::default(),
-        planets: Vec::new(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
     };
-    let player = Player::default();
+    let player = Player::new(0, 0);
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
     let input = || egui::RawInput {
         screen_rect: Some(viewport),
@@ -1126,8 +1171,44 @@ fn resource_tooltip_restores_the_large_image_and_production_details() {
     output.textures_delta.clear();
 
     assert!(has_text(&output.shapes, "Metal"));
-    assert!(has_text(&output.shapes, "Production: +0"));
+    assert!(has_text(&output.shapes, "Production next turn: +16"));
+    assert_eq!(text_color(&output.shapes, "(-20%)"), Color32::RED);
     assert_eq!(tooltip_image.size(), egui::vec2(130.0, 90.0));
+}
+
+#[test]
+fn resource_breakdown_colors_each_planets_terraformer_modifier() {
+    let mut focused = Planet::new(0, "Focused".into(), Vec2::ZERO, false, 1.0);
+    focused.owned = Some(0);
+    focused.resources = crate::core::resources::Resources::new(10, 10, 0);
+    focused.army.insert(Unit::Building(Building::MetalMine), 1);
+    focused.army.insert(Unit::Building(Building::CrystalMine), 1);
+    focused.army.insert(Unit::Building(Building::Reactor), 2);
+    focused.army.insert(Unit::Building(Building::Terraformer), 1);
+    focused.buy.push(Unit::Building(Building::Terraformer));
+    focused.terraformer_focus = Some(ResourceName::Metal);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![focused],
+    };
+    let player = Player::new(0, 0);
+
+    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal);
+    assert_eq!(metal[0].amount, 12);
+    assert_eq!(metal[0].terraformer_modifier_percent, 20);
+    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal);
+    assert_eq!(crystal[0].amount, 8);
+    assert_eq!(crystal[0].terraformer_modifier_percent, -20);
+
+    let context = egui::Context::default();
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal);
+    });
+    output.textures_delta.clear();
+    assert_eq!(text_color(&output.shapes, "(+20%)"), HEALTH_COLOR.to_color32());
+    assert_eq!(text_color(&output.shapes, "(-20%)"), Color32::RED);
 }
 
 #[test]
@@ -1139,6 +1220,7 @@ fn controlled_world_shortcut_keeps_the_world_selected_as_a_mission_origin() {
     let images = ImageIds(HashMap::from([(planet.image(), egui::TextureId::User(1))]));
     let map = Map {
         rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(1, 0);

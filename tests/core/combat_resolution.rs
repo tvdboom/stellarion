@@ -17,6 +17,9 @@ fn zero_damage_stalemate_terminates() {
         position: Vec2::X,
         resources: Default::default(),
         jump_gate: 0,
+        terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
+        command_relay_active: true,
+        fleet_withdrawal: Default::default(),
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
@@ -104,6 +107,9 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         position: Vec2::X,
         resources: Default::default(),
         jump_gate: 0,
+        terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
+        command_relay_active: true,
+        fleet_withdrawal: Default::default(),
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
@@ -168,4 +174,11 @@ fn crawler_salvage_is_component_wise_capped_and_requires_a_defender_win() {
     draw.surviving_attacker.insert(Unit::Ship(crate::core::units::ships::Ship::Cruiser), 1);
     assert!(draw.is_stalemate());
     assert_eq!(draw.defender_salvage(), Resources::default());
+
+    let mut large = salvage_report(50);
+    large
+        .planet
+        .army
+        .insert(Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), usize::MAX);
+    assert_eq!(large.defender_salvage().metal, usize::MAX / 2);
 }

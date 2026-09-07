@@ -1,5 +1,6 @@
 //! Persisted fleet missions, movement calculations, visibility, and optional Bevy adapters.
 
+#[cfg(feature = "app")]
 use std::collections::BTreeSet;
 
 #[cfg(feature = "app")]
@@ -28,21 +29,27 @@ pub type MissionId = u64;
 /// Presentation-only mission IDs temporarily hidden by a map aftermath animation.
 #[derive(Resource, Default)]
 #[doc(hidden)]
+#[cfg(feature = "app")]
 pub struct SuppressedReturningSpies(BTreeSet<MissionId>);
 
+#[cfg(feature = "app")]
 impl SuppressedReturningSpies {
+    /// Returns whether an aftermath animation currently hides this returning spy.
     pub(crate) fn contains(&self, mission: MissionId) -> bool {
         self.0.contains(&mission)
     }
 
+    /// Hides the returning spy until its aftermath animation completes.
     pub(crate) fn suppress(&mut self, mission: MissionId) {
         self.0.insert(mission);
     }
 
+    /// Restores a spy's ordinary map presentation after its animation.
     pub(crate) fn release(&mut self, mission: MissionId) {
         self.0.remove(&mission);
     }
 
+    /// Drops presentation suppression when the active game or turn is replaced.
     pub(crate) fn clear(&mut self) {
         self.0.clear();
     }
@@ -417,7 +424,7 @@ impl Mission {
         self.turns_to_destination(map)
     }
 
-    /// Returns the deuterium consumed for the supplied movement distance.
+    /// Returns the fleet's remaining-route fuel cost after the origin reactor discount.
     pub fn fuel_consumption(&self, map: &Map) -> usize {
         if self.jump_gate {
             0
@@ -429,16 +436,16 @@ impl Mission {
             let fuel = self
                 .army
                 .iter()
-                .map(|(u, n)| (u.fuel_consumption() * n) as f32 * distance)
+                .map(|(u, n)| u.fuel_consumption().saturating_mul(*n) as f32 * distance)
                 .sum::<f32>();
 
             (fuel * (1. - REACTOR_FUEL_REDUCTION_FACTOR * reactor)).ceil() as usize
         }
     }
 
-    /// Returns the army's total production-value score.
+    /// Returns the total number of units, saturating if their counts exceed the platform limit.
     pub fn total(&self) -> usize {
-        self.army.values().sum()
+        self.army.values().copied().fold(0, usize::saturating_add)
     }
 
     /// Moves the mission toward its destination without overshooting it.
@@ -488,7 +495,7 @@ impl Mission {
 
     /// Returns jump-gate capacity consumed by this mission's fleet.
     pub fn jump_cost(&self) -> usize {
-        self.army.iter().map(|(u, c)| u.production() * c).sum()
+        self.army.total_production()
     }
 
     /// Merges compatible simultaneous arrivals into one deterministic mission.

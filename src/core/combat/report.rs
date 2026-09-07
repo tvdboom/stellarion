@@ -6,7 +6,7 @@ use strum_macros::EnumIter;
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
-use crate::core::map::planet::Planet;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::resources::Resources;
@@ -60,6 +60,14 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns escaped defenders of this kind; these are survivors, not battlefield losses.
+    pub fn escaped_defenders(&self, unit: &Unit) -> usize {
+        self.combat_report
+            .as_ref()
+            .and_then(|combat| combat.defender_retreat.as_ref())
+            .map_or(0, |retreat| retreat.ships.amount(unit))
+    }
+
     /// Returns resources recovered from destroyed ground defenses by surviving Crawlers.
     ///
     /// Salvage is paid only after a defender victory. Each survivor recovers one percent of
@@ -87,7 +95,7 @@ impl MissionReport {
             })
             .sum::<Resources>();
 
-        destroyed_cost * percent / 100_usize
+        destroyed_cost.scaled_percent(percent)
     }
 
     /// Returns the winning combat side when the report is decisive.
@@ -202,6 +210,22 @@ impl Side {
 pub struct CombatReport {
     /// Combat rounds in deterministic playback order.
     pub rounds: Vec<RoundReport>,
+    /// Ships that left this battle, separate from the defenders still holding the world.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub defender_retreat: Option<DefenderRetreat>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// A recorded withdrawal used both to launch a Deploy mission and to replay ships flying away.
+pub struct DefenderRetreat {
+    /// Zero-based round after which ships leave, or `None` for a level-five immediate retreat.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub after_round: Option<usize>,
+    /// The defender's homeworld at the time of departure.
+    pub home_planet: PlanetId,
+    /// All surviving ships evacuated from the battle, excluding stationary defenses.
+    pub ships: Army,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

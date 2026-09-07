@@ -6,6 +6,181 @@ use crate::core::units::Combat;
 use bevy::math::Vec2;
 
 #[test]
+fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
+    let mut model = started_model(2);
+    let home = model.players[0].home_planet;
+    let colony = model
+        .map
+        .planets
+        .iter()
+        .find(|world| !world.is_moon() && world.owned.is_none())
+        .unwrap()
+        .id;
+    model.map.get_mut(colony).colonize(1);
+    for level in 1..=5 {
+        model
+            .map
+            .get_mut(colony)
+            .army
+            .insert(Unit::Building(Building::ColonialAdministration), level);
+        for withdrawal in FleetWithdrawal::ALL {
+            let command = TurnCommand::SetFleetWithdrawal {
+                planet_id: colony,
+                withdrawal,
+            };
+            let projected = preview_commands(&model, 1, &[command]);
+            assert_eq!(projected.is_ok(), level >= withdrawal.minimum_level());
+            assert!(apply_fleet_withdrawal(&mut model, 2, colony, withdrawal).is_err());
+        }
+    }
+    assert!(apply_fleet_withdrawal(&mut model, 1, home, FleetWithdrawal::Off).is_err());
+    model.players[0].resources = Resources::new(50_000, 50_000, 50_000);
+    assert_eq!(
+        purchase_limit(
+            &model.players[0],
+            model.map.get(home),
+            Unit::Building(Building::ColonialAdministration),
+            3
+        ),
+        Err(crate::core::orders::OrderError::ColonialAdministration)
+    );
+    model.map.get_mut(colony).army.remove(&Unit::Building(Building::ColonialAdministration));
+    assert_eq!(
+        purchase_limit(
+            &model.players[0],
+            model.map.get(colony),
+            Unit::Building(Building::ColonialAdministration),
+            3
+        ),
+        Ok(1)
+    );
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(moon).controlled = Some(1);
+    assert!(purchase_limit(
+        &model.players[0],
+        model.map.get(moon),
+        Unit::Building(Building::ColonialAdministration),
+        3
+    )
+    .is_err());
+}
+
+fn withdrawing_colony_model(distance_au: f32) -> (GameModel, usize, usize, Army) {
+    let mut model = started_model(2);
+    let home = model.players[0].home_planet;
+    let enemy_home = model.players[1].home_planet;
+    let colony = model
+        .map
+        .planets
+        .iter()
+        .find(|world| !world.is_moon() && world.owned.is_none())
+        .unwrap()
+        .id;
+    let home_position = model.map.get(home).position;
+    let ships = Army::from([(Unit::Ship(Ship::LightFighter), 20), (Unit::colony_ship(), 1)]);
+    let planet = model.map.get_mut(colony);
+    planet.colonize(1);
+    planet.position = home_position + Vec2::X * Planet::SIZE * distance_au;
+    planet.army = ships.clone();
+    planet.army.insert(Unit::Building(Building::ColonialAdministration), 5);
+    planet.fleet_withdrawal = FleetWithdrawal::Immediate;
+    let mut attack = Mission::new_with_id(
+        7,
+        model.turn as usize,
+        2,
+        model.map.get(enemy_home),
+        model.map.get(colony),
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 2)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    attack.position = model.map.get(colony).position;
+    model.missions.push(attack);
+    (model, home, colony, ships)
+}
+
+#[test]
+fn colonial_withdrawal_creates_one_normal_deploy_and_survives_save_reload() {
+    let (mut model, home, colony, ships) = withdrawing_colony_model(7.);
+    let mut repeated = model.clone();
+    empty_turn(&mut model);
+    empty_turn(&mut repeated);
+    assert_eq!(serde_json::to_value(&model).unwrap(), serde_json::to_value(&repeated).unwrap());
+    assert_eq!(model.missions.len(), 1);
+    let flight = &model.missions[0];
+    assert_eq!(flight.owner, 1);
+    assert_eq!(flight.origin, colony);
+    assert_eq!(flight.destination, home);
+    assert_eq!(flight.objective, Icon::Deploy);
+    assert_eq!(flight.return_objective, None);
+    assert!(!flight.jump_gate);
+    assert_eq!(flight.travel_turns, 1);
+    assert_eq!(flight.send as u64, model.turn - 1);
+    assert_ne!(flight.position, model.map.get(colony).position);
+    assert_eq!(flight.army, ships);
+    let fresh_departure = Mission::new_with_id(
+        100,
+        model.turn as usize,
+        1,
+        model.map.get(colony),
+        model.map.get(home),
+        Icon::Deploy,
+        ships.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(fresh_departure.turns_to_destination(&model.map), 3);
+    assert_eq!(flight.turns_to_destination(&model.map), 2);
+    assert_eq!(flight.is_seen_by_phalanx(&model.map, &model.players[1]), None);
+    assert_eq!(flight.is_seen_by_radar(&model.map, &model.players[1]), None);
+    let mut scanned_map = model.map.clone();
+    let moon = scanned_map.moons()[0].id;
+    scanned_map.get_mut(moon).controlled = Some(2);
+    scanned_map.get_mut(moon).position = flight.position;
+    scanned_map.get_mut(moon).army.insert(Unit::Building(Building::OrbitalRadar), 5);
+    assert_eq!(flight.is_seen_by_radar(&scanned_map, &model.players[1]), Some(5));
+    assert_eq!(model.map.get(colony).army.amount(&Unit::Ship(Ship::LightFighter)), 0);
+    assert_eq!(model.map.get(colony).controlled, Some(2));
+    assert_eq!(model.map.get(colony).fleet_withdrawal, FleetWithdrawal::Off);
+    let report = model.players[0].reports.last().unwrap();
+    assert_eq!(report.escaped_defenders(&Unit::Ship(Ship::LightFighter)), 20);
+    let saved = PersistedGame::new(model).to_json().unwrap();
+    let mut model = PersistedGame::from_json(saved).unwrap().state;
+    for _ in 0..10 {
+        if model.missions.is_empty() {
+            break;
+        }
+        empty_turn(&mut model);
+    }
+    assert!(model.missions.is_empty());
+    assert_eq!(model.map.get(home).army.amount(&Unit::Ship(Ship::LightFighter)), 20);
+    assert_eq!(model.map.get(home).army.amount(&Unit::colony_ship()), 1);
+}
+
+#[test]
+fn one_turn_colonial_withdrawal_docks_at_home_in_the_battle_turn() {
+    let (mut model, home, colony, ships) = withdrawing_colony_model(2.);
+    empty_turn(&mut model);
+    assert!(model.missions.is_empty());
+    assert_eq!(
+        model.map.get(home).army.amount(&Unit::Ship(Ship::LightFighter)),
+        ships.amount(&Unit::Ship(Ship::LightFighter))
+    );
+    assert_eq!(model.map.get(home).army.amount(&Unit::colony_ship()), 1);
+    assert_eq!(model.map.get(colony).army.amount(&Unit::Ship(Ship::LightFighter)), 0);
+    assert!(model.players[0]
+        .reports
+        .iter()
+        .any(|report| report.escaped_defenders(&Unit::Ship(Ship::LightFighter)) == 20));
+    model.validate().unwrap();
+}
+
+#[test]
 fn world_acquisition_order_survives_reinforcement_colonization_and_resume() {
     let mut model = started_model(2);
     let home = model.players[0].home_planet;
@@ -218,6 +393,7 @@ fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
         for unit in Unit::all().into_iter().flatten() {
             let expected = if unit.valid_on(false) {
                 match unit {
+                    Unit::Building(Building::ColonialAdministration) => 0,
                     Unit::Building(Building::Senate) | Unit::Defense(Defense::SpaceDock) => 1,
                     Unit::Building(_) => Building::MAX_LEVEL,
                     Unit::Ship(_) | Unit::Defense(_) => model.map.get(home).army.amount(&unit) + 3,
@@ -794,6 +970,124 @@ fn resolved_spy_and_destroy_missions_preserve_their_images_on_the_return_trip() 
 }
 
 #[test]
+fn planet_configuration_commands_are_deterministic_and_require_completed_infrastructure() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let home = model.players[0].home_planet;
+    let enemy_home = model.players[1].home_planet;
+    let planet = model.map.get_mut(home);
+    planet.army.insert(Unit::Building(Building::Terraformer), 1);
+    planet.army.insert(Unit::Building(Building::CommandRelay), 1);
+
+    let preview = preview_commands(
+        &model,
+        player_id,
+        &[
+            TurnCommand::SetTerraformerFocus {
+                planet_id: home,
+                resource: Some(ResourceName::Deuterium),
+            },
+            TurnCommand::SetCommandRelay {
+                planet_id: home,
+                active: false,
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(preview.map.get(home).terraformer_focus, Some(ResourceName::Deuterium));
+    assert!(!preview.map.get(home).command_relay_active);
+
+    let switched_off = preview_commands(
+        &preview,
+        player_id,
+        &[TurnCommand::SetTerraformerFocus {
+            planet_id: home,
+            resource: None,
+        }],
+    )
+    .unwrap();
+    assert_eq!(switched_off.map.get(home).terraformer_focus, None);
+
+    for command in [
+        TurnCommand::SetTerraformerFocus {
+            planet_id: enemy_home,
+            resource: Some(ResourceName::Crystal),
+        },
+        TurnCommand::SetCommandRelay {
+            planet_id: enemy_home,
+            active: false,
+        },
+    ] {
+        assert!(matches!(
+            preview_commands(&model, player_id, &[command]),
+            Err(GameError::InvalidCommand { .. })
+        ));
+    }
+}
+
+#[test]
+fn command_relay_spoof_threshold_is_five_probes_per_level_and_can_be_disabled() {
+    let mut planet = Planet::new(0, "Relay".into(), Vec2::ZERO, false, 1.0);
+    for level in 1..=Building::MAX_LEVEL {
+        planet.army.insert(Unit::Building(Building::CommandRelay), level);
+        assert!(!planet.command_relay_blocks(0));
+        assert!(planet.command_relay_blocks(level * 5));
+        assert!(!planet.command_relay_blocks(level * 5 + 1));
+    }
+    planet.command_relay_active = false;
+    assert!(!planet.command_relay_blocks(5));
+}
+
+#[test]
+fn command_relay_spoofs_only_the_attacking_players_undersized_spy_report() {
+    for (probes, active, spoofed) in [(10, true, true), (11, true, false), (5, false, false)] {
+        let mut model = started_model(2);
+        let attacker = model.players[0].id;
+        let defender = model.players[1].id;
+        let origin = model.players[0].home_planet;
+        let destination = model.players[1].home_planet;
+        let target = model.map.get_mut(destination);
+        target.army = Army::from([(Unit::Building(Building::CommandRelay), 2)]);
+        target.command_relay_active = active;
+
+        let mut mission = Mission::new_with_id(
+            9_000 + probes as u64,
+            model.turn as usize,
+            attacker,
+            model.map.get(origin),
+            model.map.get(destination),
+            Icon::Spy,
+            Army::from([(Unit::probe(), probes)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = model.map.get(destination).position;
+        model.missions.push(mission);
+        empty_turn(&mut model);
+
+        let attacker_report = model
+            .player(attacker)
+            .unwrap()
+            .reports
+            .last()
+            .expect("attacker should receive the Spy report");
+        let defender_report = model
+            .player(defender)
+            .unwrap()
+            .reports
+            .last()
+            .expect("defender should retain the true report");
+        assert_eq!(attacker_report.planet.owned.is_none(), spoofed, "probes={probes}");
+        assert_eq!(attacker_report.planet.army.is_empty(), spoofed, "probes={probes}");
+        assert_eq!(attacker_report.surviving_defender.is_empty(), spoofed, "probes={probes}");
+        assert_eq!(defender_report.planet.owned, Some(defender));
+        assert_eq!(defender_report.planet.army.amount(&Unit::Building(Building::CommandRelay)), 2);
+    }
+}
+
+#[test]
 /// Rejects incomplete snapshots and broken cross-references without partially loading them.
 fn rejects_malformed_persisted_state() {
     let persisted = PersistedGame::new(started_model(2));
@@ -869,6 +1163,74 @@ fn rejects_malformed_persisted_state() {
         PersistedGame::from_json(incomplete_report),
         Err(GameError::MalformedState(_))
     ));
+}
+
+#[test]
+fn rejects_nonfinite_world_geometry_and_invalid_map_bounds() {
+    let model = started_model(2);
+    for position in [Vec2::new(f32::NAN, 0.0), Vec2::new(0.0, f32::INFINITY)] {
+        let mut invalid = model.clone();
+        invalid.map.planets[0].position = position;
+        assert!(matches!(invalid.validate(), Err(GameError::MalformedState(_))));
+    }
+    for (min, max) in [
+        (Vec2::ZERO, Vec2::ZERO),
+        (Vec2::ONE, Vec2::ZERO),
+        (Vec2::ZERO, Vec2::splat(f32::INFINITY)),
+        (Vec2::splat(-f32::MAX), Vec2::splat(f32::MAX)),
+    ] {
+        let mut invalid = model.clone();
+        invalid.map.rect.min = min;
+        invalid.map.rect.max = max;
+        assert!(matches!(invalid.validate(), Err(GameError::MalformedState(_))));
+    }
+    let mut wire = PersistedGame::new(model).to_json().unwrap();
+    wire["state"]["map"]["planets"][0]["position"] = serde_json::json!([1e100, 0.0]);
+    assert!(PersistedGame::from_json(wire).is_err());
+}
+
+#[test]
+fn missing_submission_errors_are_in_stable_player_order() {
+    let mut model = started_model(4);
+    for _ in 0..16 {
+        assert_eq!(resolve_turn(&mut model, &[]), Err(GameError::MissingSubmission(1)));
+    }
+}
+
+#[test]
+fn exhausted_turn_counter_fails_without_changing_state() {
+    let mut model = started_model(2);
+    model.turn = u64::MAX;
+    let before = serde_json::to_vec(&model).unwrap();
+    let submissions = vec![
+        TurnSubmission::new(1, model.turn, vec![]),
+        TurnSubmission::new(2, model.turn, vec![]),
+    ];
+    assert!(matches!(resolve_turn(&mut model, &submissions), Err(GameError::MalformedState(_))));
+    assert_eq!(serde_json::to_vec(&model).unwrap(), before);
+}
+
+#[test]
+fn laboratory_preview_uses_exact_large_balance_output() {
+    let mut model = started_model(2);
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(moon).controlled = Some(1);
+    model.map.get_mut(moon).army.insert(Unit::Building(Building::Laboratory), 5);
+    let amount = 16_777_219;
+    model.players[0].resources = Resources::new(amount, 0, 0);
+    let preview = preview_commands(
+        &model,
+        1,
+        &[TurnCommand::ConvertResources {
+            planet_id: moon,
+            from: ResourceName::Metal,
+            to: ResourceName::Crystal,
+            amount,
+        }],
+    )
+    .unwrap();
+    assert_eq!(preview.players[0].resources, Resources::new(0, amount, 0));
+    assert_eq!(model.players[0].resources, Resources::new(amount, 0, 0));
 }
 
 #[test]

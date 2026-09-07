@@ -62,7 +62,7 @@ fn planetary_surface_slots_follow_first_completion_and_never_repack() {
     use Building::*;
 
     let mut planet = Planet::new(1, "Planet".into(), Vec2::ZERO, false, 1.0);
-    planet.buy = vec![Unit::Building(Robotics)];
+    planet.buy = vec![Unit::Building(Terraformer)];
     planet.produce();
     planet.buy = vec![
         Unit::Building(MetalMine),
@@ -76,10 +76,10 @@ fn planetary_surface_slots_follow_first_completion_and_never_repack() {
     planet.produce();
     assert_eq!(
         planet.surface_build_order,
-        [Some(Robotics), Some(MetalMine), Some(Shipyard), Some(MissileSilo)]
+        [Some(Terraformer), Some(MetalMine), Some(Shipyard), Some(MissileSilo)]
     );
 
-    planet.army.remove(&Unit::Building(Robotics));
+    planet.army.remove(&Unit::Building(Terraformer));
     let encoded = serde_json::to_string(&planet).unwrap();
     let mut restored: Planet = serde_json::from_str(&encoded).unwrap();
     assert_eq!(restored.surface_build_order, planet.surface_build_order);
@@ -88,7 +88,7 @@ fn planetary_surface_slots_follow_first_completion_and_never_repack() {
     let previous_save: Planet = serde_json::from_str(&previous_field_name).unwrap();
     assert_eq!(previous_save.surface_build_order, planet.surface_build_order);
 
-    restored.buy = vec![Unit::Building(Robotics)];
+    restored.buy = vec![Unit::Building(Terraformer)];
     restored.produce();
     assert_eq!(restored.surface_build_order, planet.surface_build_order);
 }
@@ -119,7 +119,10 @@ fn supported_maps_keep_worlds_inside_bounds_and_clear_of_each_other() {
             let map = Map::new_with_rng(n_planets, p_moons, &mut rng);
             assert_eq!(map.planets().len(), n_planets);
             assert_eq!(map.moons().len(), n_planets * p_moons / 100);
-            let safe_bounds = Rect::from_corners(map.rect.min * 0.9, map.rect.max * 0.9);
+            let safe_bounds = Rect::from_corners(
+                map.rect.min + Vec2::splat(Planet::SIZE * 0.5),
+                map.rect.max - Vec2::splat(Planet::SIZE * 0.5),
+            );
             for (index, planet) in map.planets.iter().enumerate() {
                 assert_eq!(planet.id, index);
                 assert!(safe_bounds.contains(planet.position));
@@ -136,6 +139,38 @@ fn supported_maps_keep_worlds_inside_bounds_and_clear_of_each_other() {
             }
         }
     }
+}
+
+#[test]
+fn generated_worlds_fill_a_broad_quarter_arc_around_the_corner_star() {
+    let mut corners_seen = [false; 4];
+    for seed in 0..32 {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let map = Map::new_with_rng(20, 30, &mut rng);
+        corners_seen[match map.solar_corner {
+            SolarCorner::BottomLeft => 0,
+            SolarCorner::BottomRight => 1,
+            SolarCorner::TopLeft => 2,
+            SolarCorner::TopRight => 3,
+        }] = true;
+        let star = map.solar_star_position();
+        let inward = -map.solar_corner();
+        let mut minimum_angle = f32::INFINITY;
+        let mut maximum_angle = f32::NEG_INFINITY;
+        for world in &map.planets {
+            let local = (world.position - star) * inward;
+            let angle = local.y.atan2(local.x);
+            assert!(local.x > 0.0 && local.y > 0.0);
+            assert!((SOLAR_SECTOR_EDGE_ANGLE - 1e-5
+                ..=std::f32::consts::FRAC_PI_2 - SOLAR_SECTOR_EDGE_ANGLE + 1e-5)
+                .contains(&angle));
+            assert!(local.length() >= SOLAR_STAR_SIZE * 0.5 + Planet::SIZE * 1.25 - 1e-3);
+            minimum_angle = minimum_angle.min(angle);
+            maximum_angle = maximum_angle.max(angle);
+        }
+        assert!(maximum_angle - minimum_angle > SOLAR_SECTOR_ANGLE * 0.45);
+    }
+    assert_eq!(corners_seen, [true; 4]);
 }
 
 /// Shuffling lattice points changes IDs but leaves repeated rows and equal neighbor gaps.
@@ -216,7 +251,7 @@ fn lunar_temperatures_follow_their_distance_from_the_star() {
     let map = Map::new_with_rng(80, 100, &mut rng);
     let positions = map.planets.iter().map(|world| world.position).collect::<Vec<_>>();
     let moons = map.planets.iter().map(Planet::is_moon).collect::<Vec<_>>();
-    let bands = solar_bands(map.rect, &positions, &moons);
+    let bands = solar_bands(map.rect, &positions, &moons, map.solar_corner());
     let mut seen = [false; 3];
 
     for moon in map.moons() {
@@ -245,6 +280,30 @@ fn lunar_temperatures_follow_their_distance_from_the_star() {
     assert_eq!(seen, [true; 3]);
 }
 
+#[test]
+fn solar_band_queries_match_generation_including_equal_distance_ties() {
+    for seed in 0..8 {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut map = Map::new_with_rng(20, 30, &mut rng);
+        // Equal positions exercise generation's stable index tie-break.
+        map.planets[1].position = map.planets[0].position;
+        let positions = map.planets.iter().map(|world| world.position).collect::<Vec<_>>();
+        let moons = map.planets.iter().map(Planet::is_moon).collect::<Vec<_>>();
+        let expected = solar_bands(map.rect, &positions, &moons, map.solar_corner());
+        for world in &map.planets {
+            assert_eq!(
+                map.solar_band(world.id),
+                if world.is_moon() {
+                    None
+                } else {
+                    expected[world.id]
+                }
+            );
+        }
+        assert_eq!(map.solar_band(map.planets.len()), None);
+    }
+}
+
 /// Moons can occupy space that would be rejected for a pair of full-sized planets.
 #[test]
 fn moons_can_be_closer_to_planets_than_other_planets() {
@@ -262,7 +321,7 @@ fn crowded_custom_maps_expand_without_relaxing_clearance() {
     let initial_rect = Rect::new(-50.0, -50.0, 50.0, 50.0);
     let mut rect = initial_rect;
     let moons = (0..100).map(|index| index % 2 == 0).collect::<Vec<_>>();
-    let positions = generate_positions(&mut rect, &moons, &mut rng);
+    let positions = generate_positions(&mut rect, &moons, Vec2::new(-1.0, -1.0), &mut rng);
     assert_eq!(positions.len(), 100);
     assert!(rect.width() > initial_rect.width());
     assert!(rect.height() > initial_rect.height());
@@ -277,5 +336,5 @@ fn crowded_custom_maps_expand_without_relaxing_clearance() {
             assert!(position.distance(other_position) >= separation);
         }
     }
-    assert!(generate_positions(&mut rect, &[], &mut rng).is_empty());
+    assert!(generate_positions(&mut rect, &[], Vec2::new(-1.0, -1.0), &mut rng).is_empty());
 }

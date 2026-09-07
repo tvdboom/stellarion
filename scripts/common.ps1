@@ -1,4 +1,26 @@
 # Shared checked commands and resource limits for packaging and resolver builds.
+
+# Validate the exact destination before any package cleanup, including existing linked parents.
+function Assert-PackagePath {
+    param([string]$Repository, [string]$Path)
+    $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $Repository "dist"))
+    $expectedPrefix = $expectedRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    $candidate = [System.IO.Path]::GetFullPath($Path)
+    if ($candidate -ne $expectedRoot -and -not $candidate.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean output outside $expectedRoot"
+    }
+    $ancestor = $candidate
+    while ($ancestor -and $ancestor -ne $Repository) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                throw "Refusing to package through linked path $ancestor"
+            }
+        }
+        $ancestor = [System.IO.Path]::GetDirectoryName($ancestor)
+    }
+}
+
 function Invoke-Checked {
     param([scriptblock]$Command)
     & $Command

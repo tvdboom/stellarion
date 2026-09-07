@@ -26,8 +26,10 @@ fn launch_mission(draft_full: bool) -> App {
             ..default()
         },
     );
-    let mut pending = PendingTurnCommands::default();
-    pending.turn = 1;
+    let mut pending = PendingTurnCommands {
+        turn: 1,
+        ..default()
+    };
     if draft_full {
         pending.commands = vec![
             TurnCommand::BuyUnits {

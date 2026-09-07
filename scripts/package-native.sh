@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 target="${TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
 channel="${CHANNEL:-}"
 if [[ -z "$channel" ]]; then
@@ -11,21 +11,20 @@ if [[ -z "$channel" ]]; then
     *) channel="linux" ;;
   esac
 fi
-output_root="${OUTPUT_DIRECTORY:-$repository/dist}"
-stage="$output_root/stellarion-$channel"
-archive="$output_root/stellarion-$channel.zip"
+if [[ ! "$channel" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "Package channel must contain only letters, digits, hyphens, and underscores." >&2
+  exit 1
+fi
 
 if [[ ! -f "$repository/assets-runtime/.stellarion-assets" ]]; then
   echo "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging." >&2
   exit 1
 fi
 
-case "$output_root" in
-  "$repository"/dist|"$repository"/dist/*) ;;
-  *) echo "Refusing to clean output outside $repository/dist" >&2; exit 1 ;;
-esac
-
-mkdir -p "$output_root"
+source "$repository/scripts/common.sh"
+prepare_package_output
+stage="$output_root/stellarion-$channel"
+archive="$output_root/stellarion-$channel.zip"
 rm -rf -- "$stage"
 mkdir -p "$stage"
 

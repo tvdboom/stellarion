@@ -1,6 +1,16 @@
 use super::*;
 use crate::core::units::ships::Ship;
 
+#[test]
+fn large_fleet_totals_and_fuel_costs_do_not_overflow() {
+    let (_, mut mission) = journey(2.0, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
+    mission.army = Army::from([(Unit::Ship(Ship::LightFighter), usize::MAX), (Unit::probe(), 1)]);
+    assert_eq!(mission.total(), usize::MAX);
+    assert_eq!(mission.jump_cost(), usize::MAX);
+    let (map, mission) = journey(2.0, mission.army);
+    assert_eq!(mission.fuel_consumption(&map), usize::MAX);
+}
+
 fn journey(old_turns: f32, army: Army) -> (Map, Mission) {
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     let rating = army.keys().map(Combat::speed).fold(f32::INFINITY, f32::min);
@@ -27,6 +37,7 @@ fn journey(old_turns: f32, army: Army) -> (Map, Mission) {
     (
         Map {
             rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets: vec![origin, destination],
         },
         mission,

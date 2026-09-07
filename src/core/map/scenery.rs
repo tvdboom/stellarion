@@ -34,19 +34,17 @@ impl CelestialKind {
         }
     }
 
-    /// Keeps the compact neutron star subordinate to the strategic worlds.
+    /// Keeps every selected landmark large enough to recognize at the widest map zoom.
     pub(crate) fn size_scale(self) -> f32 {
-        match self {
-            Self::NeutronStar => 0.25,
-            Self::BlackHole | Self::Magnetar => 1.0,
-        }
+        let _ = self;
+        1.0
     }
 
     pub(crate) fn opacity(self) -> f32 {
         match self {
-            Self::BlackHole => 0.4,
-            Self::NeutronStar => 0.65,
-            Self::Magnetar => 0.5,
+            Self::BlackHole => 0.7,
+            Self::NeutronStar => 0.85,
+            Self::Magnetar => 0.75,
         }
     }
 }

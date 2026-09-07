@@ -86,7 +86,7 @@ fn playback_app(report: MissionReport, round: usize, phase: CombatState) -> App 
 }
 
 fn spawn_unit(app: &mut App, unit: Unit, count: usize, side: Side, fire: FireState) -> Entity {
-    let hull = if unit.is_building() {
+    let hull = if unit.is_building() || unit == Unit::colony_ship() {
         count
     } else {
         count * unit.hull()
@@ -112,6 +112,79 @@ fn spawn_unit(app: &mut App, unit: Unit, count: usize, side: Side, fire: FireSta
 }
 
 #[test]
+fn colonial_withdrawal_flies_only_surviving_ships_away_and_finishes_once() {
+    use crate::core::combat::resolution::resolve_combat_with_retreat_with_rng;
+    use crate::core::energy::EnergyGrid;
+    use crate::core::units::buildings::{Building, FleetWithdrawal};
+    for level in [4, 5] {
+        let mut source = report(1, 0, false, 17);
+        source.mission.bombing = BombingRaid::None;
+        source.mission.army = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
+        source.planet.army = Army::from([
+            (Unit::Building(Building::ColonialAdministration), level),
+            (Unit::Ship(Ship::Dreadnought), 2),
+            (Unit::colony_ship(), 1),
+            (Unit::Defense(Defense::GaussCannon), 3),
+        ]);
+        source.planet.fleet_withdrawal = FleetWithdrawal::Immediate;
+        let mut rng = DeterministicRngState::from_u64(17).next_rng();
+        let report = resolve_combat_with_retreat_with_rng(
+            1,
+            &source.mission,
+            &source.planet,
+            EnergyGrid {
+                supply: 1,
+                demand: 1,
+            },
+            Some(2),
+            &mut rng,
+        );
+        assert!(report.combat_report.as_ref().unwrap().defender_retreat.is_some());
+        let mut app = playback_app(report, 0, CombatState::Fire);
+        app.add_plugins(bevy_tweening::TweeningPlugin);
+        let ship = spawn_unit(
+            &mut app,
+            Unit::Ship(Ship::Dreadnought),
+            2,
+            Side::Defender,
+            FireState::Fired,
+        );
+        let transport =
+            spawn_unit(&mut app, Unit::colony_ship(), 1, Side::Defender, FireState::Fired);
+        let ground = spawn_unit(
+            &mut app,
+            Unit::Defense(Defense::GaussCannon),
+            3,
+            Side::Defender,
+            FireState::Fired,
+        );
+        app.world_mut().resource_mut::<Settings>().combat_paused = true;
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert!(app.world().get::<FleetRetreatCmp>(ship).is_none());
+        app.world_mut().resource_mut::<Settings>().combat_paused = false;
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert!(app.world().get::<FleetRetreatCmp>(ship).is_some());
+        assert!(app.world().get::<FleetRetreatCmp>(transport).is_some());
+        assert!(app.world().get::<FleetRetreatCmp>(ground).is_none());
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(600));
+        assert!(app.world().get::<Transform>(ship).unwrap().translation.y < 0.);
+        assert_eq!(app.world().get::<Transform>(ground).unwrap().translation, Vec3::ZERO);
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert!(app.world().get_entity(ship).is_ok());
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(650));
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert!(app.world().get_entity(ship).is_err());
+        assert!(app.world().get_entity(transport).is_err());
+        assert!(app.world().get_entity(ground).is_ok());
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        let playback =
+            app.world_mut().query::<&FleetRetreatPlayback>().single(app.world()).unwrap();
+        assert!(playback.complete);
+        assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
+    }
+}
+
+#[test]
 fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let mut report = report(1, 0, true, 7);
     report.mission.objective = Icon::MissileStrike;
@@ -126,6 +199,7 @@ fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::AntiBallistic);
@@ -199,6 +273,7 @@ fn planetary_shield_is_a_defense_covering_dome_with_a_compact_strength_readout()
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);

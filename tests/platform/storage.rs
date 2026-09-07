@@ -7,6 +7,7 @@ impl NativeStorage {
     fn at(root: std::path::PathBuf) -> Self {
         Self {
             root,
+            file_access: Mutex::new(()),
             _instance_lock: None,
             temporary_instance: false,
         }
@@ -93,5 +94,35 @@ fn concurrent_native_instances_use_isolated_profiles() {
     drop(secondary);
     assert!(!secondary_root.exists());
     drop(primary);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn concurrent_native_storage_calls_preserve_complete_values() {
+    let root = std::env::temp_dir().join(format!(
+        "stellarion-storage-threads-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    let storage = NativeStorage::at(root.clone());
+    let values = (0..4).map(|index| format!("writer-{index}:").repeat(1024)).collect::<Vec<_>>();
+    storage.store("profile", &values[0]).unwrap();
+    let start = std::sync::Barrier::new(values.len());
+    std::thread::scope(|scope| {
+        for value in &values {
+            let (storage, values, start) = (&storage, &values, &start);
+            scope.spawn(move || {
+                start.wait();
+                for _ in 0..20 {
+                    storage.store("profile", value).unwrap();
+                    let loaded = storage.load("profile").unwrap().unwrap();
+                    assert!(values.contains(&loaded), "a reader observed a partial write");
+                }
+            });
+        }
+    });
+    storage.remove("profile").unwrap();
+    assert_eq!(storage.load("profile").unwrap(), None);
     std::fs::remove_dir_all(root).unwrap();
 }

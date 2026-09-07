@@ -57,6 +57,7 @@ fn app_with_raid(bombers: usize, raid: BombingRaid) -> App {
         .init_resource::<MultiplayerSession>()
         .insert_resource(Map {
             rect: Rect::new(-100., -100., 100., 100.),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets: vec![origin, target],
         })
         .insert_resource(player)

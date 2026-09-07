@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-output_root="${OUTPUT_DIRECTORY:-$repository/dist}"
-stage="$output_root/stellarion-html"
-archive="$output_root/stellarion-html.zip"
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 wasm_bindgen_version="$(tr -d '[:space:]' < "$repository/scripts/wasm-bindgen-version.txt")"
 
 if [[ ! -f "$repository/assets-runtime/.stellarion-assets" ]]; then
@@ -12,12 +9,10 @@ if [[ ! -f "$repository/assets-runtime/.stellarion-assets" ]]; then
   exit 1
 fi
 
-case "$output_root" in
-  "$repository"/dist|"$repository"/dist/*) ;;
-  *) echo "Refusing to clean output outside $repository/dist" >&2; exit 1 ;;
-esac
-
-mkdir -p "$output_root"
+source "$repository/scripts/common.sh"
+prepare_package_output
+stage="$output_root/stellarion-html"
+archive="$output_root/stellarion-html.zip"
 rm -rf -- "$stage"
 mkdir -p "$stage"
 

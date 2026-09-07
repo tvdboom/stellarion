@@ -137,6 +137,16 @@ pub struct PSCombatImageCmp;
 pub struct ProbeRetreatCmp;
 
 #[derive(Component)]
+/// A surviving defending ship card flying out of the battle scene.
+pub struct FleetRetreatCmp;
+
+#[derive(Component)]
+/// Keeps the recorded fleet withdrawal from replaying during later combat phases.
+pub struct FleetRetreatPlayback {
+    complete: bool,
+}
+
+#[derive(Component)]
 /// Translucent field whose opacity tracks the shared planetary-shield strength.
 pub struct PlanetaryShieldDomeCmp;
 
@@ -429,6 +439,12 @@ pub fn setup_combat(
 
             let w = size * (0.3 + 0.2 * (1. - 1. / c.to_string().len() as f32));
             let h = size * 0.3;
+            // Colony Ships have no combat hull; their evacuation card tracks their count.
+            let hull = if *u == Unit::colony_ship() {
+                *c
+            } else {
+                c * u.hull()
+            };
 
             commands
                 .spawn((
@@ -445,8 +461,8 @@ pub fn setup_combat(
                         fire: FireState::Idle,
                         shield: c * u.shield(),
                         max_shield: c * u.shield(),
-                        hull: c * u.hull(),
-                        max_hull: c * u.hull(),
+                        hull,
+                        max_hull: hull,
                     },
                     children![(
                         Sprite {
@@ -616,7 +632,18 @@ pub fn setup_combat(
             .chain(vec![Unit::space_dock()])
             .filter_map(|u| {
                 let amount = report.planet.army.amount(&u);
-                (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
+                (amount > 0
+                    && (u != Unit::colony_ship()
+                        || report.combat_report.as_ref().is_some_and(|combat| {
+                            combat
+                                .defender_retreat
+                                .as_ref()
+                                .is_some_and(|retreat| retreat.ships.amount(&u) > 0)
+                                || combat.rounds.iter().any(|round| {
+                                    round.defender.iter().any(|record| record.unit == u)
+                                })
+                        })))
+                .then_some((u, amount))
             })
             .collect::<Vec<_>>()
     } else {
@@ -879,6 +906,50 @@ pub fn setup_combat(
         });
 }
 
+/// Flies only escaped defending ships offscreen; ground units keep their positions and state.
+fn start_fleet_retreat(
+    commands: &mut Commands,
+    units: &mut Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+    ships: &crate::core::units::Army,
+    center: Vec3,
+    height: f32,
+) {
+    for (entity, transform, unit) in units.iter_mut() {
+        if unit.side == Side::Defender && unit.hull > 0 && ships.amount(&unit.unit) > 0 {
+            commands.entity(entity).insert((
+                FleetRetreatCmp,
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticIn,
+                    Duration::from_millis(1200),
+                    TransformPositionLens {
+                        start: transform.translation,
+                        end: Vec3::new(
+                            transform.translation.x,
+                            center.y - height * 0.9,
+                            COMBAT_SHIP_Z,
+                        ),
+                    },
+                )),
+            ));
+        }
+    }
+    commands.spawn((
+        FleetRetreatPlayback {
+            complete: false,
+        },
+        CombatCmp,
+        Transform::default(),
+        TweenAnim::new(Tween::new(
+            EaseFunction::Linear,
+            Duration::from_millis(1200),
+            TransformScaleLens {
+                start: Vec3::ONE,
+                end: Vec3::ONE,
+            },
+        )),
+    ));
+}
+
 /// Advances the combat presentation state machine after each animation timer.
 pub fn animate_combat(
     mut commands: Commands,
@@ -891,6 +962,8 @@ pub fn animate_combat(
         Query<Entity, With<SalvageCrawlerCmp>>,
         Query<Entity, With<SalvageTimerCmp>>,
         Query<Entity, With<SalvageSummaryCmp>>,
+        Query<(Entity, &mut FleetRetreatPlayback)>,
+        Query<Entity, With<FleetRetreatCmp>>,
     ),
     mut state: ResMut<UiState>,
     player: Res<Player>,
@@ -904,8 +977,15 @@ pub fn animate_combat(
     pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
     settings: Res<Settings>,
 ) {
-    let (retreating_probe_q, death_ray_q, salvage_crawler_q, salvage_timer_q, salvage_summary_q) =
-        phase_entities;
+    let (
+        retreating_probe_q,
+        death_ray_q,
+        salvage_crawler_q,
+        salvage_timer_q,
+        salvage_summary_q,
+        mut fleet_retreat_q,
+        fleeing_ships_q,
+    ) = phase_entities;
     let (assets, window, round_jump) = presentation;
     if settings.combat_paused
         || (round_jump.is_some() && !matches!(*next_combat_state, NextState::Unchanged))
@@ -931,6 +1011,38 @@ pub fn animate_combat(
     };
 
     let size = UNIT_SIZE * projection.scale;
+
+    if let Some((timer, mut playback)) = fleet_retreat_q.iter_mut().next() {
+        if !playback.complete {
+            if anim_completed_msg.read().any(|message| message.anim_entity == timer) {
+                for ship in &fleeing_ships_q {
+                    commands.entity(ship).despawn();
+                }
+                commands.entity(timer).remove::<TweenAnim>();
+                playback.complete = true;
+            }
+            return;
+        }
+    }
+
+    // A level-five immediate withdrawal happens before either side fires its first shot.
+    if *combat_state.get() == CombatState::Fire
+        && state.combat_round == 0
+        && fleet_retreat_q.is_empty()
+    {
+        if let Some(retreat) =
+            combat.defender_retreat.as_ref().filter(|retreat| retreat.after_round.is_none())
+        {
+            start_fleet_retreat(
+                &mut commands,
+                &mut unit_q,
+                &retreat.ships,
+                pos,
+                projection.area.height(),
+            );
+            return;
+        }
+    }
 
     if matches!(
         combat_state.get(),
@@ -1041,6 +1153,24 @@ pub fn animate_combat(
             }
         }
 
+        // Depart after the recorded volley and repairs, before a War Sun can destroy the world.
+        if fleet_retreat_q.is_empty() {
+            if let Some(retreat) = combat
+                .defender_retreat
+                .as_ref()
+                .filter(|retreat| retreat.after_round == Some(state.combat_round))
+            {
+                start_fleet_retreat(
+                    &mut commands,
+                    &mut unit_q,
+                    &retreat.ships,
+                    pos,
+                    projection.area.height(),
+                );
+                return;
+            }
+        }
+
         // Death ray
         if report.mission.objective == Icon::Destroy
             && round.destroy_probability > 0.
@@ -1102,11 +1232,25 @@ pub fn animate_combat(
                 // Reset all stats
                 unit_q.iter_mut().for_each(|(_, _, mut cu)| {
                     if cu.unit != Unit::planetary_shield() {
-                        let count =
-                            round.units(&cu.side).iter().filter(|cu2| cu.unit == cu2.unit).count();
+                        let count = if cu.side == Side::Defender
+                            && cu.unit.is_ship()
+                            && (cu.unit == Unit::colony_ship()
+                                || combat
+                                    .defender_retreat
+                                    .as_ref()
+                                    .is_some_and(|retreat| retreat.after_round.is_none()))
+                        {
+                            report.planet.army.amount(&cu.unit)
+                        } else {
+                            round.units(&cu.side).iter().filter(|cu2| cu.unit == cu2.unit).count()
+                        };
 
                         cu.max_shield = count * cu.unit.shield();
-                        cu.max_hull = count * cu.unit.hull();
+                        cu.max_hull = if cu.unit == Unit::colony_ship() {
+                            count
+                        } else {
+                            count * cu.unit.hull()
+                        };
                         cu.shield = cu.max_shield;
                         cu.fire = FireState::Idle;
                     }
@@ -1457,7 +1601,7 @@ pub fn animate_combat(
 
 /// Updates combat stats from the current canonical ECS projection.
 pub fn update_combat_stats(
-    unit_q: Query<(Entity, &CombatUnitCmp)>,
+    unit_q: Query<(Entity, &CombatUnitCmp, Option<&FleetRetreatCmp>)>,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
     mut count_q: Query<&mut Text2d, (With<CountCmp>, Without<PlanetaryShieldStrengthCmp>)>,
     shield_display: (
@@ -1510,7 +1654,7 @@ pub fn update_combat_stats(
         };
     }
 
-    let Some((_report, _combat, round)) = state.in_combat.and_then(|report_id| {
+    let Some((report, combat, round)) = state.in_combat.and_then(|report_id| {
         let report = player.reports.iter().find(|report| report.id == report_id)?;
         let combat = report.combat_report.as_ref()?;
         let round = combat.rounds.get(state.combat_round)?;
@@ -1524,16 +1668,27 @@ pub fn update_combat_stats(
 
     let antiballistic_fired = unit_q
         .iter()
-        .any(|(_, cu)| cu.unit == Unit::antiballistic_missile() && cu.fire.has_fired());
+        .any(|(_, cu, _)| cu.unit == Unit::antiballistic_missile() && cu.fire.has_fired());
     let interplanetary_fired = unit_q
         .iter()
-        .any(|(_, cu)| cu.unit == Unit::interplanetary_missile() && cu.fire.has_fired());
+        .any(|(_, cu, _)| cu.unit == Unit::interplanetary_missile() && cu.fire.has_fired());
 
-    for (unit_e, cu) in &unit_q {
+    for (unit_e, cu, fleeing) in &unit_q {
         for child in children_q.iter_descendants(unit_e) {
             if let Ok(mut text) = count_q.get_mut(child) {
                 let count = if cu.unit.is_building() {
                     cu.hull
+                } else if cu.side == Side::Defender
+                    && cu.unit.is_ship()
+                    && (fleeing.is_some()
+                        || combat
+                            .defender_retreat
+                            .as_ref()
+                            .is_some_and(|retreat| retreat.after_round.is_none()))
+                {
+                    report.escaped_defenders(&cu.unit)
+                } else if cu.unit == Unit::colony_ship() {
+                    report.planet.army.amount(&cu.unit)
                 } else {
                     let mut count = round
                         .units(&cu.side)

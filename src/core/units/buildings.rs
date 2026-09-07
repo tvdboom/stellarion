@@ -33,8 +33,8 @@ pub enum Building {
     PlanetaryShield,
     /// The reactor building.
     Reactor,
-    /// The robotics building.
-    Robotics,
+    /// The planetary terraforming complex.
+    Terraformer,
     /// The orbital solar-satellite network.
     SolarSatellite,
     /// The orbital command-relay network.
@@ -49,6 +49,63 @@ pub enum Building {
     OrbitalRadar,
     /// The home-world senate building.
     Senate,
+    /// Colony-only administration coordinating fleet withdrawal to the homeworld.
+    ColonialAdministration,
+}
+
+/// Standing withdrawal order, measured as lost ship production points from battle start.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum FleetWithdrawal {
+    /// Defend the colony without an automatic withdrawal.
+    #[default]
+    Off,
+    /// Withdraw after losing three quarters of the fleet.
+    Losses75,
+    /// Withdraw after losing half of the fleet.
+    Losses50,
+    /// Withdraw after losing one quarter of the fleet.
+    Losses25,
+    /// Begin withdrawal before the first exchange of fire.
+    Immediate,
+}
+
+impl FleetWithdrawal {
+    /// Settings in display order, including the always-available off switch.
+    pub const ALL: [Self; 5] =
+        [Self::Off, Self::Losses75, Self::Losses50, Self::Losses25, Self::Immediate];
+
+    /// Minimum completed Administration level needed to select this order.
+    pub const fn minimum_level(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Losses75 => 1,
+            Self::Losses50 => 2,
+            Self::Losses25 => 3,
+            Self::Immediate => 4,
+        }
+    }
+
+    /// Percentage of initial fleet production points that must be destroyed.
+    pub const fn losses_percent(self) -> Option<usize> {
+        match self {
+            Self::Off => None,
+            Self::Losses75 => Some(75),
+            Self::Losses50 => Some(50),
+            Self::Losses25 => Some(25),
+            Self::Immediate => Some(0),
+        }
+    }
+
+    /// Compact label for the colony's withdrawal selector.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Losses75 => "75% losses",
+            Self::Losses50 => "50% losses",
+            Self::Losses25 => "25% losses",
+            Self::Immediate => "Immediately",
+        }
+    }
 }
 
 impl Building {
@@ -59,10 +116,10 @@ impl Building {
     pub fn production(&self) -> usize {
         match self {
             Building::MetalMine | Building::CrystalMine | Building::DeuteriumSynthesizer => 1,
-            Building::Shipyard | Building::Factory | Building::MissileSilo => 2,
-            Building::PlanetaryShield | Building::Reactor => 3,
-            Building::Robotics => 4,
-            Building::Senate => 5,
+            Building::Reactor | Building::Terraformer => 2,
+            Building::Shipyard | Building::Factory | Building::MissileSilo => 3,
+            Building::PlanetaryShield => 4,
+            Building::Senate | Building::ColonialAdministration => 5,
             _ => 1,
         }
     }
@@ -121,19 +178,21 @@ impl Description for Building {
                 advanced power regulation and heat-recovery systems. Each level reduces the \
                 deuterium required for fleet travel by 10%."
             },
-            Building::Robotics => {
-                "Robotics automates repetitive work in the Shipyard and Factory. Each completed \
-                level adds 2 production capacity to both facilities on this planet, but does not \
-                unlock units above their own building level."
+            Building::Terraformer => {
+                "The Terraformer specializes a planet's environment for one selected resource. \
+                Each completed level increases production of the focused resource by 10% and \
+                reduces production of each other resource by 10%. Selecting no focus switches \
+                the Terraformer off."
             },
             Building::SolarSatellite => {
                 "Solar Satellites collect stellar radiation in orbit and transmit power to the \
                 empire-wide grid. Solar Satellites can only be constructed around planets."
             },
             Building::CommandRelay => {
-                "The Command Relay extends the range of Spy missions launched from its planet. \
-                Without a Relay, Probes can reach one sixth of the galaxy from that origin. Each \
-                completed level adds another sixth, and level 5 can reach every world."
+                "An active Command Relay feeds false telemetry to small enemy Spy missions. \
+                Each completed level makes groups of up to 5 additional Probes report an empty \
+                planet; larger groups gather intelligence normally. Toggle the Relay by hovering \
+                over it in the Orbitals shop."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
@@ -160,9 +219,15 @@ impl Description for Building {
                 The Orbital radar can only be build on a moon."
             },
             Building::Senate => {
-                "The Senate coordinates an empire's colonial administration. Only one Senate may \
-                be constructed on the home planet. Larger, more restrictive galaxies permit up to \
-                three levels."
+                "Each Senate level lets you own one extra planet."
+            },
+            Building::ColonialAdministration => {
+                "Coordinates fleet withdrawal from colonies to your homeworld. Levels 1–4 unlock \
+                retreat after 75%, 50%, or 25% fleet losses, or immediately. Losses use ship \
+                production points. Withdrawing ships endure one final enemy round without \
+                firing back; level 5 removes that final round. Ground defenses stay and fight. \
+                Choose Fleet withdrawal below. Cannot be built on a homeworld or moon and uses \
+                no energy."
             },
         }
     }
@@ -182,7 +247,7 @@ impl Price for Building {
             Building::MissileSilo => Resources::new(200, 200, 200),
             Building::PlanetaryShield => Resources::new(200, 100, 200),
             Building::Reactor => Resources::new(200, 100, 0),
-            Building::Robotics => Resources::new(300, 250, 100),
+            Building::Terraformer => Resources::new(300, 250, 100),
             Building::SolarSatellite => Resources::new(100, 150, 0),
             Building::CommandRelay => Resources::new(300, 250, 250),
             Building::SensorPhalanx => Resources::new(250, 200, 150),
@@ -190,6 +255,7 @@ impl Price for Building {
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),
             Building::Senate => Resources::new(1000, 750, 500),
+            Building::ColonialAdministration => Resources::new(1000, 750, 500),
         }
     }
 }

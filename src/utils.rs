@@ -6,26 +6,28 @@ use std::time::Duration;
 use bevy::prelude::Color;
 use bevy_egui::egui;
 
-/// Scale a Duration by a factor
+/// Scales a duration, treating negative/NaN factors as zero and saturating overflow.
 pub fn scale_duration(duration: Duration, scale: f32) -> Duration {
-    let sec = (duration.as_secs() as f32 + duration.subsec_nanos() as f32 * 1e-9) * scale;
-    Duration::new(sec.trunc() as u64, (sec.fract() * 1e9) as u32)
+    if scale.is_nan() || scale <= 0.0 || duration.is_zero() {
+        return Duration::ZERO;
+    }
+    if scale == 1.0 {
+        return duration;
+    }
+    Duration::try_from_secs_f64(duration.as_secs_f64() * f64::from(scale)).unwrap_or(Duration::MAX)
 }
 
-/// Add dots to thousands
+/// Formats an integer with dots between groups of three decimal digits.
 pub fn format_thousands(n: usize) -> String {
-    let s = n.to_string();
-    let chars: Vec<char> = s.chars().rev().collect();
-    let mut result = Vec::new();
-
-    for (i, c) in chars.iter().enumerate() {
-        if i > 0 && i % 3 == 0 {
+    let digits = n.to_string();
+    let mut result = String::with_capacity(digits.len() + (digits.len() - 1) / 3);
+    for (index, digit) in digits.bytes().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             result.push('.');
         }
-        result.push(*c);
+        result.push(char::from(digit));
     }
-
-    result.iter().rev().collect()
+    result
 }
 
 /// Helper function to extract only the variant name (removes tuple/struct fields)
@@ -73,8 +75,10 @@ impl<T: Debug> NameFromEnum for T {
     fn to_title(&self) -> String {
         let mut name = self.to_lowername();
 
-        // Capitalize only the first letter
-        name.replace_range(0..1, &name[0..1].to_uppercase());
+        // Debug names may be empty or start with a multibyte Unicode letter.
+        if let Some(first) = name.chars().next() {
+            name.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
+        }
 
         name
     }
@@ -105,11 +109,11 @@ pub trait FmtNumb {
 }
 
 impl FmtNumb for usize {
-    /// Formats this value for user-facing or diagnostic output.
+    /// Abbreviates thousands as `k` and millions as `M`, keeping the numeric scale consistent.
     fn fmt(self) -> String {
         match self {
-            n if n > 1_000_000 => format!("{:.2}M", self as f32 / 1_000_000.),
-            n if n > 100_000 => format!("{:.0}k", self as f32 / 100_000.),
+            n if n >= 1_000_000 => format!("{:.2}M", self as f32 / 1_000_000.),
+            n if n >= 100_000 => format!("{:.0}k", self as f32 / 1_000.),
             n if n >= 1_000 => format!("{:.1}k", self as f32 / 1_000.),
             _ => self.to_string(),
         }
@@ -126,7 +130,7 @@ impl ToColor32 for Color {
     /// Converts this color into the equivalent egui color.
     fn to_color32(self) -> egui::Color32 {
         let c = self.to_srgba();
-        egui::Color32::from_rgba_premultiplied(
+        egui::Color32::from_rgba_unmultiplied(
             (c.red * 255.0) as u8,
             (c.green * 255.0) as u8,
             (c.blue * 255.0) as u8,
@@ -134,3 +138,7 @@ impl ToColor32 for Color {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/core/utils.rs"]
+mod tests;

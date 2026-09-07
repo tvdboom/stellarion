@@ -47,6 +47,7 @@ fn immediate_recall_faces_back_along_the_route_even_at_home() {
     let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
     let map = Map {
         rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
         planets: vec![origin.clone(), destination.clone()],
     };
     let mut mission = Mission::new_with_id(

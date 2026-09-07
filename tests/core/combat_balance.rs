@@ -144,6 +144,7 @@ impl Scenario {
         );
         let mut map = crate::core::map::model::Map {
             rect: bevy::math::Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets: vec![origin, destination],
         };
         map.planets[0].army.insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);

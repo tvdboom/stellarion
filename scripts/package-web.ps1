@@ -18,11 +18,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $repository "assets-runtime/.stellar
 . (Join-Path $PSScriptRoot "common.ps1")
 
 function Reset-Stage {
-    $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $repository "dist"))
-    $expectedPrefix = $expectedRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-    if ($outputRoot -ne $expectedRoot -and -not $outputRoot.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to clean output outside $expectedRoot"
-    }
+    Assert-PackagePath -Repository $repository -Path $stage
+    Assert-PackagePath -Repository $repository -Path $archive
     if (Test-Path -LiteralPath $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force
     }
@@ -30,11 +27,10 @@ function Reset-Stage {
 }
 
 Set-Location $repository
-New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 Reset-Stage
 
+Set-HeavyProcessLimits
 if (-not $SkipBuild) {
-    Set-HeavyProcessLimits
     Invoke-Checked { cargo build --profile wasm-release --target wasm32-unknown-unknown --bin stellarion -j12 }
 }
 

@@ -11,7 +11,7 @@ fn every_building_has_one_authoritative_per_level_energy_value() {
         Building::MetalMine,
         Building::CrystalMine,
         Building::DeuteriumSynthesizer,
-        Building::Robotics,
+        Building::Terraformer,
         Building::SensorPhalanx,
         Building::PlanetaryShield,
         Building::JumpGate,
@@ -25,12 +25,7 @@ fn every_building_has_one_authoritative_per_level_energy_value() {
                 supply: 5,
                 demand: 0,
             }
-        } else if building == Building::Reactor {
-            EnergyGrid {
-                supply: 3,
-                demand: 0,
-            }
-        } else if building == Building::SolarSatellite {
+        } else if matches!(building, Building::Reactor | Building::SolarSatellite) {
             EnergyGrid {
                 supply: 3,
                 demand: 0,
@@ -222,7 +217,7 @@ fn lunar_laboratory_and_orbital_radar_consume_one_energy_per_level() {
 }
 
 #[test]
-fn robotics_consumes_one_energy_per_level() {
+fn terraformer_consumes_one_energy_per_level() {
     let mut game = GameModel::new([44; 32], GameRules::default()).unwrap();
     let player = game.players[0].id;
     for planet in &mut game.map.planets {
@@ -233,7 +228,7 @@ fn robotics_consumes_one_energy_per_level() {
     let planet = game.map.planets.iter_mut().find(|planet| !planet.is_moon()).unwrap();
     planet.colonize(player);
     planet.army.clear();
-    planet.army.insert(Unit::Building(Building::Robotics), 4);
+    planet.army.insert(Unit::Building(Building::Terraformer), 4);
 
     assert_eq!(
         EnergyGrid::for_player(player, &game.map),
@@ -266,6 +261,8 @@ fn individual_world_grids_sum_to_the_player_total() {
 
 #[test]
 fn each_missing_energy_costs_ten_percent_and_resources_and_shields_share_efficiency() {
+    let resources = Resources::new(usize::MAX, usize::MAX / 2, 101);
+    assert_eq!(EnergyGrid::default().scale_resources(resources), resources);
     let three_energy_short = EnergyGrid {
         supply: 3,
         demand: 6,

@@ -25,10 +25,10 @@ use crate::core::map::details::MapDetailsPlugin;
 use crate::core::map::detection::MissionDetectionPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::{
-    animate_asteroid_belts, animate_map_ambience, animate_range_markers, animate_space_scenery,
-    draw_map, hide_planet_details, position_home_crown, run_map_animations, update_ambient_comets,
-    update_end_turn, update_planet_defenses, update_planet_info, update_voronoi,
-    AmbientCometSpawner,
+    animate_asteroid_belts, animate_map_ambience, animate_phalanx_drones, animate_range_markers,
+    animate_space_scenery, draw_map, hide_planet_details, position_home_crown, run_map_animations,
+    update_ambient_comets, update_end_turn, update_jump_gate_links, update_planet_defenses,
+    update_planet_info, update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -233,6 +233,7 @@ impl Plugin for GamePlugin {
                         update_end_turn,
                         run_map_animations,
                         animate_asteroid_belts,
+                        animate_phalanx_drones,
                         animate_range_markers,
                         animate_map_ambience,
                         animate_space_scenery,
@@ -243,6 +244,7 @@ impl Plugin for GamePlugin {
                         update_planet_info,
                         update_planet_defenses
                             .before(bevy_tweening::AnimationSystem::AnimationUpdate),
+                        update_jump_gate_links.after(update_planet_defenses),
                         update_ambient_comets,
                         send_mission,
                         recall_mission,

@@ -80,6 +80,7 @@ Run commands from the repository root. Use the stable Rust toolchain with
 | Check native targets/features | `just check` |
 | Check browser compilation | `just check-wasm` |
 | Verify disposable SQL reset and RPC contract | `just verify-sql` |
+| Verify package cleanup path boundaries | `just packaging-check` |
 | Format Rust | `just fmt` |
 | Check formatting | `just fmt-check` |
 | Clippy with warnings rejected | `just lint` |

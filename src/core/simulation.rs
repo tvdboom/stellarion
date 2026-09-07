@@ -8,18 +8,18 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::core::combat::resolution::{
-    resolve_combat_with_energy_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
+    resolve_combat_with_retreat_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
 };
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::missions::{BombingRaid, Mission};
-use crate::core::orders::{purchase_limit, validate_mission};
+use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
 use crate::core::resources::{ResourceName, Resources};
-use crate::core::units::buildings::Building;
+use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
 
@@ -261,6 +261,19 @@ impl GameModel {
                 "planet identifiers must be contiguous indices starting at zero".to_string(),
             ));
         }
+        let map_size = self.map.rect.size();
+        if !self.map.rect.min.is_finite()
+            || !self.map.rect.max.is_finite()
+            || !map_size.is_finite()
+            || map_size.x <= 0.0
+            || map_size.y <= 0.0
+            || self.map.planets.iter().any(|planet| !planet.position.is_finite())
+        {
+            return Err(GameError::MalformedState(
+                "map bounds and world positions must be finite with positive map dimensions"
+                    .to_string(),
+            ));
+        }
         let planet_ids = self.map.planets.iter().map(|planet| planet.id).collect::<HashSet<_>>();
 
         for player in &self.players {
@@ -319,7 +332,16 @@ impl GameModel {
                 .flatten()
                 .all(|id| player_ids.contains(&id));
                 let combat_is_bounded = report.combat_report.as_ref().is_none_or(|combat| {
-                    combat.rounds.len() <= MAX_COMBAT_ROUNDS
+                    combat.rounds.len() <= MAX_COMBAT_ROUNDS + 1
+                        && combat.defender_retreat.as_ref().is_none_or(|retreat| {
+                            planet_ids.contains(&retreat.home_planet)
+                                && retreat.home_planet != report.planet.id
+                                && retreat
+                                    .after_round
+                                    .is_none_or(|index| index < combat.rounds.len())
+                                && retreat.ships.has_army()
+                                && retreat.ships.keys().all(Unit::is_ship)
+                        })
                         && combat.rounds.iter().all(|round| {
                             round.destroy_probability.is_finite()
                                 && (0.0..=1.0).contains(&round.destroy_probability)
@@ -380,6 +402,8 @@ impl GameModel {
                 || !mission_ids.insert(mission.id)
                 || !mission.position.is_finite()
                 || !origin_references_known_players
+                || mission.send == 0
+                || !u64::try_from(mission.send).is_ok_and(|turn| turn <= self.turn)
                 || !u64::try_from(mission.travel_turns).is_ok_and(|age| age <= self.turn)
             {
                 return Err(GameError::MalformedState(format!(
@@ -455,6 +479,27 @@ pub enum TurnCommand {
         to: ResourceName,
         /// Amount consumed.
         amount: usize,
+    },
+    /// Selects the resource specialized by a completed planetary Terraformer.
+    SetTerraformerFocus {
+        /// Planet containing the Terraformer.
+        planet_id: PlanetId,
+        /// Resource receiving the specialization bonus, or `None` to switch the building off.
+        resource: Option<ResourceName>,
+    },
+    /// Enables or disables a completed planetary Command Relay.
+    SetCommandRelay {
+        /// Planet containing the Relay.
+        planet_id: PlanetId,
+        /// Whether the Relay should broadcast deceptive telemetry.
+        active: bool,
+    },
+    /// Sets the standing fleet withdrawal order on an administered colony.
+    SetFleetWithdrawal {
+        /// Owned non-home planet containing the Administration.
+        planet_id: PlanetId,
+        /// Loss threshold, immediate withdrawal, or off.
+        withdrawal: FleetWithdrawal,
     },
     /// Abandons a non-home owned planet.
     AbandonPlanet {
@@ -584,6 +629,17 @@ pub fn resolve_turn(
     state: &mut GameModel,
     submissions: &[TurnSubmission],
 ) -> Result<TurnResult, GameError> {
+    let (next, result) = resolved_turn(state, submissions)?;
+    *state = next;
+    Ok(result)
+}
+
+/// Resolves into one owned working copy so validation and publication can borrow the input.
+/// All callers share this path; failures leave the original snapshot untouched.
+pub(crate) fn resolved_turn(
+    state: &GameModel,
+    submissions: &[TurnSubmission],
+) -> Result<(GameModel, TurnResult), GameError> {
     if state.status != MatchStatus::Active {
         return Err(GameError::InvalidPhase {
             expected: MatchStatus::Active,
@@ -619,7 +675,7 @@ pub fn resolve_turn(
             return Err(GameError::DuplicateSubmission(submission.player_id));
         }
     }
-    if let Some(missing) = required.difference(&seen).next() {
+    if let Some(missing) = required.difference(&seen).min() {
         return Err(GameError::MissingSubmission(*missing));
     }
 
@@ -640,8 +696,7 @@ pub fn resolve_turn(
         finished: working.status == MatchStatus::Finished,
         winner,
     };
-    *state = working;
-    Ok(result)
+    Ok((working, result))
 }
 
 /// Validates a partial submission set by resolving it with empty orders for missing players.
@@ -657,7 +712,7 @@ pub fn validate_submission_batch(
             complete.push(TurnSubmission::new(player.id, state.turn, Vec::new()));
         }
     }
-    resolve_turn(&mut state.clone(), &complete).map(|_| ())
+    resolved_turn(state, &complete).map(|_| ())
 }
 
 /// Projects one player's orders without advancing the simultaneous turn.
@@ -742,6 +797,18 @@ fn apply_command(
             to,
             amount,
         } => apply_conversion(model, player_id, *planet_id, *from, *to, *amount),
+        TurnCommand::SetTerraformerFocus {
+            planet_id,
+            resource,
+        } => apply_terraformer_focus(model, player_id, *planet_id, *resource),
+        TurnCommand::SetCommandRelay {
+            planet_id,
+            active,
+        } => apply_command_relay(model, player_id, *planet_id, *active),
+        TurnCommand::SetFleetWithdrawal {
+            planet_id,
+            withdrawal,
+        } => apply_fleet_withdrawal(model, player_id, *planet_id, *withdrawal),
         TurnCommand::AbandonPlanet {
             planet_id,
         } => apply_abandon(model, player_id, *planet_id),
@@ -820,6 +887,11 @@ fn apply_practice_boost(
         // that unit cannot normally be constructed.
         for unit in Unit::all_valid(planet.is_moon()).into_iter().flatten() {
             if unit == Unit::Building(Building::Senate) && planet.id != home_planet {
+                continue;
+            }
+            if unit == Unit::Building(Building::ColonialAdministration)
+                && model.players.iter().any(|player| player.home_planet == planet.id)
+            {
                 continue;
             }
             if let Unit::Building(building) = unit {
@@ -910,10 +982,92 @@ fn apply_conversion(
     if player.resources.get(&from) < amount {
         return invalid(player_id, "not enough resources to convert");
     }
-    let divisor = 1.0 + 0.5 * (Building::MAX_LEVEL.saturating_sub(laboratory)) as f32;
-    let gain = (amount as f32 / divisor) as usize;
+    let gain = conversion_output(amount, laboratory);
     *player.resources.get_mut(&from) -= amount;
     *player.resources.get_mut(&to) = player.resources.get(&to).saturating_add(gain);
+    Ok(())
+}
+
+/// Applies a Terraformer specialization after validating its owner and infrastructure.
+fn apply_terraformer_focus(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    resource: Option<ResourceName>,
+) -> Result<(), GameError> {
+    model.player(player_id)?;
+    let planet = model
+        .map
+        .planets
+        .iter_mut()
+        .find(|planet| planet.id == planet_id)
+        .ok_or_else(|| invalid_error(player_id, "terraformer planet does not exist"))?;
+    if planet.is_destroyed
+        || planet.owned != Some(player_id)
+        || !(planet.has(&Unit::Building(Building::Terraformer))
+            || planet.buy.contains(&Unit::Building(Building::Terraformer)))
+    {
+        return invalid(player_id, "an owned planet with a Terraformer is required");
+    }
+    planet.terraformer_focus = resource;
+    Ok(())
+}
+
+/// Applies a Command Relay switch after validating its owner and infrastructure.
+fn apply_command_relay(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    active: bool,
+) -> Result<(), GameError> {
+    model.player(player_id)?;
+    let planet = model
+        .map
+        .planets
+        .iter_mut()
+        .find(|planet| planet.id == planet_id)
+        .ok_or_else(|| invalid_error(player_id, "command-relay planet does not exist"))?;
+    if planet.is_destroyed
+        || planet.owned != Some(player_id)
+        || !(planet.has(&Unit::Building(Building::CommandRelay))
+            || planet.buy.contains(&Unit::Building(Building::CommandRelay)))
+    {
+        return invalid(player_id, "an owned planet with a Command Relay is required");
+    }
+    planet.command_relay_active = active;
+    Ok(())
+}
+
+/// Validates the colony and its projected completed level before changing the standing order.
+fn apply_fleet_withdrawal(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    withdrawal: FleetWithdrawal,
+) -> Result<(), GameError> {
+    let player = model.player(player_id)?;
+    if player.spectator || player.home_planet == planet_id {
+        return invalid(player_id, "fleet withdrawal requires an owned non-home colony");
+    }
+    let planet = model
+        .map
+        .try_get_mut(planet_id)
+        .ok_or_else(|| invalid_error(player_id, "withdrawal planet does not exist"))?;
+    let administration = Unit::Building(Building::ColonialAdministration);
+    let level =
+        planet.army.amount(&administration) + usize::from(planet.buy.contains(&administration));
+    if planet.is_destroyed
+        || planet.is_moon()
+        || planet.owned != Some(player_id)
+        || level == 0
+        || level < withdrawal.minimum_level()
+    {
+        return invalid(
+            player_id,
+            "this withdrawal setting requires a higher Colonial Administration level",
+        );
+    }
+    planet.fleet_withdrawal = withdrawal;
     Ok(())
 }
 
@@ -1014,8 +1168,7 @@ fn apply_mission(
         .planets
         .iter()
         .find(|planet| planet.id == destination_id)
-        .ok_or_else(|| invalid_error(player_id, "mission destination does not exist"))?
-        .clone();
+        .ok_or_else(|| invalid_error(player_id, "mission destination does not exist"))?;
     let origin = &model.map.planets[origin_index];
     let turn = usize::try_from(model.turn)
         .map_err(|_| invalid_error(player_id, "turn cannot be represented on this platform"))?;
@@ -1024,15 +1177,15 @@ fn apply_mission(
         turn,
         player_id,
         origin,
-        &destination,
+        destination,
         objective,
-        army.clone(),
+        army,
         bombing,
         combat_probes,
         jump_gate,
         None,
     );
-    validate_mission(model.player(player_id)?, &model.map, origin, &destination, &mission)
+    validate_mission(model.player(player_id)?, &model.map, origin, destination, &mission)
         .map_err(|error| invalid_error(player_id, error.to_string()))?;
     let fuel = mission.fuel_consumption(&model.map);
     let player_index = model
@@ -1048,7 +1201,7 @@ fn apply_mission(
     if jump_gate {
         origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
     }
-    for (unit, count) in &army {
+    for (unit, count) in &mission.army {
         if let Some(available) = origin.army.get_mut(unit) {
             *available = available.saturating_sub(*count);
         }
@@ -1060,7 +1213,10 @@ fn apply_mission(
 
 /// Advances production, missions, combat, reports, and victory state by one turn.
 fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
-    model.turn = model.turn.saturating_add(1);
+    model.turn = model
+        .turn
+        .checked_add(1)
+        .ok_or_else(|| GameError::MalformedState("turn counter is exhausted".to_string()))?;
     let turn = usize::try_from(model.turn).map_err(|_| {
         GameError::MalformedState("turn exceeds this platform's limits".to_string())
     })?;
@@ -1086,6 +1242,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     player_order.shuffle(&mut rng);
     let planet_ids = model.map.planets.iter().map(|planet| planet.id).collect::<Vec<_>>();
     let mut new_missions = Vec::new();
+    let mut fleeing_missions = Vec::new();
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
 
     let mut colony_limits = model
@@ -1121,20 +1278,58 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
                 for mission in regroup_missions(&arrived) {
                     let new_origin = model.map.get(mission.check_origin(&model.map)).clone();
+                    let retreat_destination = model
+                        .map
+                        .get(mission.destination)
+                        .controlled
+                        .and_then(|owner| model.players.iter().find(|player| player.id == owner))
+                        .filter(|player| {
+                            !player.spectator && player.home_planet != mission.destination
+                        })
+                        .map(|player| (player.id, model.map.get(player.home_planet)))
+                        .filter(|(owner, home)| !home.is_destroyed && home.owned == Some(*owner))
+                        .map(|(owner, home)| (owner, home.clone()));
                     let destination = model.map.get_mut(mission.destination);
+                    let relay_spoofs_spy = mission.objective == Icon::Spy
+                        && destination.command_relay_blocks(mission.army.amount(&Unit::probe()));
                     let energy = destination
                         .controlled
                         .or(destination.owned)
                         .and_then(|owner| energy_grids.get(&owner))
                         .copied()
                         .unwrap_or_default();
-                    let mut report = resolve_combat_with_energy_with_rng(
+                    let mut report = resolve_combat_with_retreat_with_rng(
                         turn,
                         &mission,
                         destination,
                         energy,
+                        retreat_destination.as_ref().map(|(_, home)| home.id),
                         &mut rng,
                     );
+                    if let Some((owner, home)) = &retreat_destination {
+                        if let Some(retreat) = report
+                            .combat_report
+                            .as_ref()
+                            .and_then(|combat| combat.defender_retreat.as_ref())
+                        {
+                            fleeing_missions.push(Mission::new_with_id(
+                                next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
+                                turn - 1,
+                                *owner,
+                                destination,
+                                home,
+                                Icon::Deploy,
+                                retreat.ships.clone(),
+                                BombingRaid::None,
+                                false,
+                                false,
+                                Some(format!(
+                                    "- ({turn}) Fleet withdrew from {} to {}.",
+                                    destination.name, home.name
+                                )),
+                            ));
+                        }
+                    }
                     report.mission.logs.push_str(&format!(
                         "\n- ({turn}) Mission arrived in {}.",
                         destination.name
@@ -1333,7 +1528,11 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         if report.planet.controlled == Some(player.id)
                             || report.mission.owner == player.id
                         {
-                            player.push_report(report.clone());
+                            let mut player_report = report.clone();
+                            if relay_spoofs_spy && report.mission.owner == player.id {
+                                spoof_spy_report_as_empty(&mut player_report);
+                            }
+                            player.push_report(player_report);
                         }
                     }
                 }
@@ -1359,6 +1558,30 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
     for mission in &mut model.missions {
         mission.advance(&model.map);
+    }
+    // Withdrawal launches one turn before this battle's snapshot. Give it that completed
+    // movement step, so a pursuer launched after the battle starts a turn behind.
+    for mut mission in fleeing_missions {
+        let arrives = mission.turns_to_destination(&model.map) < 2;
+        mission.advance(&model.map);
+        let home = model.map.get_mut(mission.destination);
+        if arrives && !home.is_destroyed && home.controlled == Some(mission.owner) {
+            let report = resolve_combat_with_retreat_with_rng(
+                turn,
+                &mission,
+                home,
+                Default::default(),
+                None,
+                &mut rng,
+            );
+            home.dock(mission.army.clone());
+            if let Some(player) = model.players.iter_mut().find(|player| player.id == mission.owner)
+            {
+                player.push_report(report);
+            }
+        } else {
+            new_missions.push(mission);
+        }
     }
     if new_missions.len() > MAX_ACTIVE_MISSIONS.saturating_sub(model.missions.len()) {
         return Err(GameError::MalformedState(format!(
@@ -1395,6 +1618,22 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         }
     }
     Ok(())
+}
+
+/// Removes every observation a deceptive Relay could expose while preserving route metadata.
+fn spoof_spy_report_as_empty(report: &mut crate::core::combat::report::MissionReport) {
+    report.planet.owned = None;
+    report.planet.controlled = None;
+    report.planet.army.clear();
+    report.planet.buy.clear();
+    report.planet.surface_build_order = [None; 4];
+    report.planet.terraformer_focus = None;
+    report.planet.command_relay_active = true;
+    report.planet.fleet_withdrawal = FleetWithdrawal::Off;
+    report.surviving_defender.clear();
+    report.destination_owned = None;
+    report.destination_controlled = None;
+    report.combat_report = None;
 }
 
 /// Merges same-player missions by objective and original gameplay priority.

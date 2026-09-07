@@ -37,6 +37,9 @@ fn treats_realtime_as_a_wakeup_only() {
         r#"{"event":"postgres_changes","payload":{"data":{"record":{"persisted":"untrusted"}}}}"#;
     assert!(matches!(classify_message(change, Some("1")), MessageKind::Wakeup));
     assert!(matches!(classify_message("not-json", Some("1")), MessageKind::Ignore));
+    let oversized =
+        format!(r#"{{"event":"postgres_changes","payload":"{}"}}"#, "x".repeat(MAX_FRAME_BYTES));
+    assert!(matches!(classify_message(&oversized, Some("1")), MessageKind::Failure(_)));
 }
 
 #[test]
@@ -46,5 +49,21 @@ fn detects_rejected_join() {
     assert!(matches!(
         classify_message(reply, Some("1")),
         MessageKind::Failure(reason) if reason == "denied"
+    ));
+}
+
+#[test]
+fn join_replies_require_an_outstanding_matching_reference() {
+    for reply in [
+        r#"{"event":"phx_reply","payload":{"status":"ok"}}"#,
+        r#"{"event":"phx_reply","ref":null,"payload":{"status":"ok"}}"#,
+        r#"{"event":"phx_reply","ref":"1","payload":{"status":"ok"}}"#,
+    ] {
+        assert!(matches!(classify_message(reply, None), MessageKind::Ignore));
+        assert!(matches!(classify_message(reply, Some("2")), MessageKind::Ignore));
+    }
+    assert!(matches!(
+        classify_message(r#"{"event":"phx_reply","ref":"1","payload":{"status":"ok"}}"#, Some("1")),
+        MessageKind::Joined
     ));
 }

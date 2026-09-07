@@ -24,7 +24,7 @@ use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 
 const DEBRIS_TURNS: usize = 3;
-const PLANET_ROBOTICS_ART_ASPECT: f32 = 1137.0 / 1383.0;
+const PLANET_TERRAFORMER_ART_ASPECT: f32 = 1102.0 / 1427.0;
 pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 
 /// A coarse public trace, deliberately containing no army composition or intelligence.
@@ -44,12 +44,18 @@ fn destroyed_units(report: &MissionReport) -> usize {
         (&report.planet.army, &report.surviving_defender),
     ]
     .into_iter()
-    .flat_map(|(before, after)| {
+    .enumerate()
+    .flat_map(|(side, (before, after))| {
         // Consumed missiles, colony ships and demolished buildings aren't orbital wrecks.
-        before
-            .iter()
-            .filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship())
-            .map(move |(unit, count)| count.saturating_sub(after.amount(unit)))
+        before.iter().filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship()).map(
+            move |(unit, count)| {
+                count.saturating_sub(after.amount(unit)).saturating_sub(if side == 1 {
+                    report.escaped_defenders(unit)
+                } else {
+                    0
+                })
+            },
+        )
     })
     .fold(0usize, usize::saturating_add)
 }
@@ -120,7 +126,8 @@ struct Development {
     mining: usize,
     refinery: usize,
     factory: usize,
-    robotics: usize,
+    terraformer: usize,
+    administration: usize,
     shipyard: usize,
     reactor: usize,
     laboratory: usize,
@@ -162,7 +169,8 @@ fn development(planet: &Planet, army: Option<&Army>) -> Development {
         mining: tier(level(Building::MetalMine).max(level(Building::CrystalMine))),
         refinery: tier(level(Building::DeuteriumSynthesizer)),
         factory: tier(level(Building::Factory)),
-        robotics: tier(level(Building::Robotics)),
+        terraformer: tier(level(Building::Terraformer)),
+        administration: tier(level(Building::ColonialAdministration)),
         shipyard: tier(level(Building::Shipyard)),
         reactor: tier(level(Building::Reactor)),
         laboratory: tier(level(Building::Laboratory)),
@@ -379,8 +387,10 @@ struct DevelopmentArt<'a> {
     moon_shipyard: &'a Handle<Image>,
     moon_tidal_generator: &'a Handle<Image>,
     moon_orbital_radar: &'a Handle<Image>,
-    planet_robotics: &'a Handle<Image>,
-    gas_planet_robotics: &'a Handle<Image>,
+    planet_terraformer: &'a Handle<Image>,
+    gas_planet_terraformer: &'a Handle<Image>,
+    planet_administration: &'a Handle<Image>,
+    gas_planet_administration: &'a Handle<Image>,
     surface_lights: &'a Handle<Image>,
     shadow: &'a Handle<Image>,
 }
@@ -697,23 +707,26 @@ fn planet_structure_sprite(
     offset: Vec2,
     diameter: f32,
 ) {
-    if building != Some(Building::Robotics) {
+    if !matches!(building, Some(Building::Terraformer | Building::ColonialAdministration)) {
         structure_sprite(commands, planet, art, facilities, variant, offset, diameter);
         return;
     }
     let gas = planet.kind == PlanetKind::Gas;
-    let robotics_image = if gas {
-        art.gas_planet_robotics
-    } else {
-        art.planet_robotics
+    let terraformer_image = match (building, gas) {
+        (Some(Building::ColonialAdministration), true) => art.gas_planet_administration,
+        (Some(Building::ColonialAdministration), false) => art.planet_administration,
+        (_, true) => art.gas_planet_terraformer,
+        (_, false) => art.planet_terraformer,
     };
-    let robotics_size = Vec2::new(
+    let terraformer_size = Vec2::new(
         diameter,
         diameter
             * if gas {
                 1.0
+            } else if building == Some(Building::ColonialAdministration) {
+                1137.0 / 1383.0
             } else {
-                PLANET_ROBOTICS_ART_ASPECT
+                PLANET_TERRAFORMER_ART_ASPECT
             },
     );
     for (sprite, depth) in [
@@ -727,8 +740,8 @@ fn planet_structure_sprite(
         ),
         (
             Sprite {
-                image: robotics_image.clone(),
-                custom_size: Some(robotics_size),
+                image: terraformer_image.clone(),
+                custom_size: Some(terraformer_size),
                 ..default()
             },
             0.14,
@@ -788,7 +801,10 @@ fn planet_structure_spec(
                 1
             },
         ),
-        Building::Robotics => (development.robotics, Some(Building::Robotics), false, 0),
+        Building::Terraformer => (development.terraformer, Some(Building::Terraformer), false, 0),
+        Building::ColonialAdministration => {
+            (development.administration, Some(Building::ColonialAdministration), false, 0)
+        },
         _ => return None,
     };
     (spec.0 > 0).then_some(spec)
@@ -980,8 +996,10 @@ fn refresh_details(
     let moon_shipyard = assets.image("moon shipyard");
     let moon_tidal_generator = assets.image("moon tidal generator");
     let moon_orbital_radar = assets.image("moon orbital radar");
-    let planet_robotics = assets.image("planet robotics");
-    let gas_planet_robotics = assets.image("gas planet robotics");
+    let planet_terraformer = assets.image("planet terraformer");
+    let gas_planet_terraformer = assets.image("gas planet terraformer");
+    let planet_administration = assets.image("planet colonial administration");
+    let gas_planet_administration = assets.image("gas planet colonial administration");
     let art = DevelopmentArt {
         base: &development_image,
         base_size: development_size,
@@ -992,8 +1010,10 @@ fn refresh_details(
         moon_shipyard: &moon_shipyard,
         moon_tidal_generator: &moon_tidal_generator,
         moon_orbital_radar: &moon_orbital_radar,
-        planet_robotics: &planet_robotics,
-        gas_planet_robotics: &gas_planet_robotics,
+        planet_terraformer: &planet_terraformer,
+        gas_planet_terraformer: &gas_planet_terraformer,
+        planet_administration: &planet_administration,
+        gas_planet_administration: &gas_planet_administration,
         surface_lights: &surface_lights.0,
         shadow: &shadow.0,
     };

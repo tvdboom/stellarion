@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde::de::Error as _;
+use serde::de::{value::StrDeserializer, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::IntoEnumIterator;
 
@@ -16,6 +16,10 @@ use crate::utils::NameFromEnum;
 pub mod buildings;
 pub mod defense;
 pub mod ships;
+
+#[cfg(test)]
+#[path = "../../../tests/core/units.rs"]
+mod tests;
 
 /// Provides user-facing explanatory text for unit kinds.
 pub trait Description {
@@ -58,7 +62,7 @@ pub type Army = BTreeMap<Unit, usize>;
 pub trait Amount {
     /// Returns the stored count for the requested unit, or zero when absent.
     fn amount(&self, unit: &Unit) -> usize;
-    /// Returns whether this value has army.
+    /// Returns whether the army contains at least one unit with a nonzero count.
     fn has_army(&self) -> bool;
     /// Returns the summed production value of every unit in the army.
     fn total_production(&self) -> usize;
@@ -69,7 +73,7 @@ impl Amount for Army {
     fn amount(&self, unit: &Unit) -> usize {
         *self.get(unit).unwrap_or(&0)
     }
-    /// Returns whether this value has army.
+    /// Returns whether the army contains at least one unit with a nonzero count.
     fn has_army(&self) -> bool {
         self.iter().any(|(_, c)| *c > 0)
     }
@@ -100,7 +104,7 @@ impl Serialize for Unit {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&format!("{self:?}"))
+        serializer.collect_str(&format_args!("{self:?}"))
     }
 }
 
@@ -110,12 +114,33 @@ impl<'de> Deserialize<'de> for Unit {
     where
         D: Deserializer<'de>,
     {
-        let encoded = String::deserialize(deserializer)?;
-        Self::all()
-            .into_iter()
-            .flatten()
-            .find(|unit| format!("{unit:?}") == encoded)
-            .ok_or_else(|| D::Error::custom(format!("unknown unit identifier: {encoded}")))
+        deserializer.deserialize_str(UnitVisitor)
+    }
+}
+
+/// Decodes unit keys directly through their enum's Serde names, without building shop rosters.
+struct UnitVisitor;
+
+impl<'de> Visitor<'de> for UnitVisitor {
+    type Value = Unit;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a unit identifier such as Ship(LightFighter)")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, encoded: &str) -> Result<Unit, E> {
+        if let Some(body) = encoded.strip_suffix(')') {
+            if let Some(name) = body.strip_prefix("Building(") {
+                return Building::deserialize(StrDeserializer::<E>::new(name)).map(Unit::Building);
+            }
+            if let Some(name) = body.strip_prefix("Ship(") {
+                return Ship::deserialize(StrDeserializer::<E>::new(name)).map(Unit::Ship);
+            }
+            if let Some(name) = body.strip_prefix("Defense(") {
+                return Defense::deserialize(StrDeserializer::<E>::new(name)).map(Unit::Defense);
+            }
+        }
+        Err(E::custom(format!("unknown unit identifier: {encoded}")))
     }
 }
 
@@ -130,20 +155,26 @@ impl Unit {
 
     /// Returns every building unit kind.
     pub fn buildings() -> Vec<Self> {
-        let mut buildings = Building::iter()
-            .map(Unit::Building)
-            .filter(|unit| !unit.is_orbital())
-            .collect::<Vec<_>>();
-        let reactor = Self::Building(Building::Reactor);
-        if let Some(index) = buildings.iter().position(|unit| *unit == reactor) {
-            buildings.remove(index);
-        }
-        let after_resources = buildings
-            .iter()
-            .position(|unit| *unit == Self::Building(Building::DeuteriumSynthesizer))
-            .map_or(buildings.len(), |index| index + 1);
-        buildings.insert(after_resources, reactor);
-        buildings
+        [
+            Building::LunarBase,
+            Building::TidalGenerator,
+            Building::MetalMine,
+            Building::CrystalMine,
+            Building::DeuteriumSynthesizer,
+            Building::Reactor,
+            Building::Terraformer,
+            Building::Shipyard,
+            Building::Factory,
+            Building::MissileSilo,
+            Building::PlanetaryShield,
+            Building::Laboratory,
+            Building::OrbitalRadar,
+            Building::Senate,
+            Building::ColonialAdministration,
+        ]
+        .into_iter()
+        .map(Unit::Building)
+        .collect()
     }
 
     /// Returns planet-only orbital structures in their shop display order.

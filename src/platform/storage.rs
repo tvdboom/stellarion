@@ -116,6 +116,8 @@ impl ClientStorage for MemoryStorage {
 /// Native storage rooted in the operating system's per-user config directory.
 pub struct NativeStorage {
     root: std::path::PathBuf,
+    /// Serializes readers and writers across the temporary/backup replacement sequence.
+    file_access: Mutex<()>,
     /// Holding this handle keeps the primary installation profile exclusive to one process.
     _instance_lock: Option<std::fs::File>,
     temporary_instance: bool,
@@ -147,6 +149,7 @@ impl NativeStorage {
         match fs2::FileExt::try_lock_exclusive(&lock) {
             Ok(()) => Ok(Self {
                 root: primary_root,
+                file_access: Mutex::new(()),
                 _instance_lock: Some(lock),
                 temporary_instance: false,
             }),
@@ -163,6 +166,7 @@ impl NativeStorage {
                     .map_err(|error| StorageError::Platform(error.to_string()))?;
                 Ok(Self {
                     root,
+                    file_access: Mutex::new(()),
                     _instance_lock: None,
                     temporary_instance: true,
                 })
@@ -175,6 +179,13 @@ impl NativeStorage {
     fn path(&self, key: &str) -> Result<std::path::PathBuf, StorageError> {
         validate_key(key)?;
         Ok(self.root.join(format!("{key}.json")))
+    }
+
+    /// Prevents concurrent trait calls from sharing a temporary file or seeing a missing primary.
+    fn lock_files(&self) -> Result<std::sync::MutexGuard<'_, ()>, StorageError> {
+        self.file_access
+            .lock()
+            .map_err(|_| StorageError::Platform("native storage lock was poisoned".to_string()))
     }
 }
 
@@ -212,6 +223,7 @@ impl ClientStorage for NativeStorage {
     /// Reads one optional native configuration file.
     fn load(&self, key: &str) -> Result<Option<String>, StorageError> {
         let path = self.path(key)?;
+        let _guard = self.lock_files()?;
         if let Some(value) = read_optional_file(&path)? {
             return Ok(Some(value));
         }
@@ -223,6 +235,7 @@ impl ClientStorage for NativeStorage {
         use std::io::Write as _;
 
         let path = self.path(key)?;
+        let _guard = self.lock_files()?;
         std::fs::create_dir_all(&self.root)
             .map_err(|error| StorageError::Platform(error.to_string()))?;
         let temporary = path.with_extension("json.tmp");
@@ -256,6 +269,7 @@ impl ClientStorage for NativeStorage {
     /// Removes one native configuration file when present.
     fn remove(&self, key: &str) -> Result<(), StorageError> {
         let path = self.path(key)?;
+        let _guard = self.lock_files()?;
         remove_file_if_present(&path)?;
         remove_file_if_present(&path.with_extension("json.tmp"))?;
         remove_file_if_present(&path.with_extension("json.bak"))

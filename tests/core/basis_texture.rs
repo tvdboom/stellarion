@@ -162,6 +162,8 @@ fn world_structure_cutouts_have_smooth_mips_for_small_map_sprites() {
         "images/moon-buildings/orbital radar.basisu.ktx2",
         "images/planet-buildings/robotics.basisu.ktx2",
         "images/planet-buildings/robotics gas.basisu.ktx2",
+        "images/planet-buildings/terraformer.basisu.ktx2",
+        "images/planet-buildings/terraformer gas.basisu.ktx2",
     ] {
         let bytes = runtime_asset(path);
         let image = transcode_basis_texture(

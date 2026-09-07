@@ -41,3 +41,13 @@ fn runtime_categories_are_ktx2() {
         assert!(!path.starts_with("assets-runtime/"));
     }
 }
+
+#[test]
+fn only_the_sensor_phalanx_map_marker_discards_baked_color() {
+    assert!(faction_map_uses_alpha_mask("sensor phalanx marker"));
+    for detailed_marker in
+        ["dock", "jump gate marker", "solar satellite marker", "command relay marker", "mission"]
+    {
+        assert!(!faction_map_uses_alpha_mask(detailed_marker));
+    }
+}

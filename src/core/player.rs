@@ -201,13 +201,14 @@ impl Player {
 
     /// Counts non-moon planets currently owned by this player.
     pub fn planets_owned(&self, map: &Map, settings: &Settings) -> (usize, usize) {
-        let n_owned = map.planets().iter().filter(|p| p.owned == Some(self.id)).count();
+        let n_owned =
+            map.planets.iter().filter(|p| !p.is_moon() && p.owned == Some(self.id)).count();
         (n_owned, self.colony_limit(map, settings.p_colonizable))
     }
 
     /// Returns the configured ownership cap, including one slot per home-world Senate level.
     pub fn colony_limit(&self, map: &Map, colonizable_percent: usize) -> usize {
-        let total = map.planets().len();
+        let total = map.planets.iter().filter(|planet| !planet.is_moon()).count();
         let base = base_colony_limit(total, colonizable_percent);
         let senate_levels = map
             .try_get(self.home_planet)
@@ -224,8 +225,12 @@ impl Player {
             50 => 1,
             _ => 0,
         };
-        let map_limit = map.planets().len().saturating_add(SENATE_PLANETS_PER_LEVEL - 1)
-            / SENATE_PLANETS_PER_LEVEL;
+        let map_limit = map
+            .planets
+            .iter()
+            .filter(|planet| !planet.is_moon())
+            .count()
+            .div_ceil(SENATE_PLANETS_PER_LEVEL);
         setting_limit.min(map_limit).min(SENATE_MAX_LEVEL)
     }
 

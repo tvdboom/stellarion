@@ -34,7 +34,8 @@ impl EnergyGrid {
             | Building::Shipyard
             | Building::Factory
             | Building::MissileSilo
-            | Building::CommandRelay => Self::default(),
+            | Building::CommandRelay
+            | Building::ColonialAdministration => Self::default(),
             Building::TidalGenerator => Self {
                 supply: TIDAL_GENERATOR_ENERGY_PER_LEVEL,
                 demand: 0,
@@ -54,7 +55,7 @@ impl EnergyGrid {
             Building::MetalMine
             | Building::CrystalMine
             | Building::DeuteriumSynthesizer
-            | Building::Robotics
+            | Building::Terraformer
             | Building::SensorPhalanx
             | Building::PlanetaryShield
             | Building::JumpGate
@@ -145,8 +146,7 @@ impl EnergyGrid {
 
     /// Applies the grid ratio to normal resource income with a recovery floor.
     pub fn scale_resources(self, resources: Resources) -> Resources {
-        let numerator = self.efficiency_percent();
-        resources * numerator / 100usize
+        resources.scaled_percent(self.efficiency_percent())
     }
 
     /// Returns Planetary Shield strength scaled by the same efficiency as resource output.

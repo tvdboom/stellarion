@@ -23,6 +23,7 @@ use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
     BG2_COLOR, HEALTH_COLOR, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
     PROBES_PER_PRODUCTION_LEVEL, PS_SHIELD_PER_LEVEL, SHIELD_COLOR,
+    TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL, TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
 };
 use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
@@ -33,9 +34,9 @@ use crate::core::messages::MessageMsg;
 use crate::core::missions::{
     BombingRaid, Mission, MissionId, Missions, RecallMissionMsg, SendMissionMsg,
 };
-use crate::core::orders::{purchase_limit, spy_mission_range, validate_mission};
+use crate::core::orders::{purchase_limit, validate_mission};
 use crate::core::player::{PlanetInfo, Player};
-use crate::core::resources::ResourceName;
+use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::simulation::TurnCommand;
 use crate::core::states::GameState;
@@ -109,6 +110,8 @@ pub enum MissionTab {
 /// Local-only panel, selection, hover, and report navigation state.
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
+    /// Owned Jump Gate whose live network is currently being previewed.
+    pub(crate) jump_gate_hover: Option<PlanetId>,
     /// Infrastructure marker whose strategic-map range is currently being previewed.
     pub(crate) range_preview: Option<MapRangePreview>,
     /// Mission-panel world hover, which previews known units without map or planet details.
@@ -143,7 +146,6 @@ pub struct UiState {
 /// Hover-only range previews exposed by stationary strategic-map infrastructure markers.
 pub(crate) enum MapRangePreview {
     SensorPhalanx(PlanetId),
-    CommandRelay(PlanetId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -927,9 +929,15 @@ fn draw_army_grid(
             let (survived, total) = if side == Side::Attacker {
                 (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
             } else {
-                (report.surviving_defender.amount(unit), report.planet.army.amount(unit))
+                (
+                    report
+                        .surviving_defender
+                        .amount(unit)
+                        .saturating_add(report.escaped_defenders(unit)),
+                    report.planet.army.amount(unit),
+                )
             };
-            let lost = total - survived;
+            let lost = total.saturating_sub(survived);
 
             let text = if can_see {
                 if lost > 0 {
@@ -952,6 +960,17 @@ fn draw_army_grid(
                     .add_image(images.get(unit.to_lowername()), [65., 65.])
                     .on_hover_small_ext(unit.to_name())
                     .on_disabled_hover_small_ext(unit.to_name());
+
+                let escaped = if side == Side::Defender && can_see {
+                    report.escaped_defenders(unit)
+                } else {
+                    0
+                };
+                let response = if escaped > 0 {
+                    response.on_hover_text(format!("{escaped} withdrew to the homeworld."))
+                } else {
+                    response
+                };
 
                 ui.add_text_on_image(
                     text,
@@ -1216,6 +1235,15 @@ const RESOURCE_BAR_VERTICAL_MARGIN: f32 = 4.0;
 const RESOURCE_SUMMARY_HORIZONTAL_PADDING: f32 = 4.0;
 const RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET: f32 = 2.0;
 
+/// Returns the bottom edge reserved by the scaled top resource bar.
+pub(crate) fn resource_bar_bottom(viewport: egui::Vec2) -> f32 {
+    let scale = strategic_hud_scale(viewport);
+    RESOURCE_BAR_TOP * scale
+        + RESOURCE_BAR_ROW_HEIGHT * scale
+        + 2.0 * (RESOURCE_BAR_VERTICAL_MARGIN * scale).round()
+        + 2.0 * scale
+}
+
 fn resource_summary_style(compact: bool, scale: f32) -> (egui::Vec2, f32, f32, f32) {
     let (icon_size, spacing, label_size, value_size) = if compact {
         (egui::vec2(48.0, 31.0), 8.0, 9.0, 22.0)
@@ -1345,19 +1373,89 @@ fn energy_world_breakdown(map: &Map, player: &Player) -> String {
         .join("\n")
 }
 
-fn resource_world_breakdown(map: &Map, player: &Player, resource: ResourceName) -> String {
+#[derive(Debug, PartialEq, Eq)]
+struct ResourceWorldProduction {
+    name: String,
+    amount: usize,
+    terraformer_modifier_percent: i32,
+}
+
+fn projected_resource_production(planet: &Planet) -> Resources {
+    let mut projected = planet.clone();
+    projected.produce();
+    projected.resource_production()
+}
+
+fn next_turn_resource_production(map: &Map, player: &Player) -> Resources {
+    let raw = map
+        .planets
+        .iter()
+        .filter(|planet| player.owns(planet))
+        .map(projected_resource_production)
+        .sum();
+    EnergyGrid::for_player_next_turn(player.id, map).scale_resources(raw)
+}
+
+fn terraformer_modifier_percent(planet: &Planet, resource: ResourceName) -> i32 {
+    let level = planet.army.amount(&Unit::Building(Building::Terraformer)).min(Building::MAX_LEVEL);
+    if level == 0 || planet.terraformer_focus.is_none() {
+        return 0;
+    }
+
+    let (positive, percent_per_level) = if planet.terraformer_focus == Some(resource) {
+        (true, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL)
+    } else {
+        (false, TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL)
+    };
+    let percent = percent_per_level.saturating_mul(level).min(i32::MAX as usize) as i32;
+    if positive {
+        percent
+    } else {
+        -percent
+    }
+}
+
+fn resource_world_breakdown(
+    map: &Map,
+    player: &Player,
+    resource: ResourceName,
+) -> Vec<ResourceWorldProduction> {
+    let energy = EnergyGrid::for_player_next_turn(player.id, map);
     map.planets
         .iter()
         .filter(|planet| player.owns(planet))
         .sorted_by_key(|planet| world_shortcut_order(planet, player))
         .map(|planet| {
-            let production = player
-                .energy_grid(map)
-                .scale_resources(planet.resource_production())
-                .get(&resource);
-            format!("{}: {production}", planet.name)
+            let mut projected = planet.clone();
+            projected.produce();
+            ResourceWorldProduction {
+                name: planet.name.clone(),
+                amount: energy.scale_resources(projected.resource_production()).get(&resource),
+                terraformer_modifier_percent: terraformer_modifier_percent(&projected, resource),
+            }
         })
-        .join("\n")
+        .collect()
+}
+
+fn draw_resource_world_breakdown(ui: &mut Ui, map: &Map, player: &Player, resource: ResourceName) {
+    ui.spacing_mut().item_spacing.y = 2.0;
+    for world in resource_world_breakdown(map, player, resource) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.small(format!("{}: {}", world.name, world.amount));
+            if world.terraformer_modifier_percent != 0 {
+                let color = if world.terraformer_modifier_percent > 0 {
+                    HEALTH_COLOR.to_color32()
+                } else {
+                    Color32::RED
+                };
+                ui.colored_label(
+                    color,
+                    RichText::new(format!("({:+}%)", world.terraformer_modifier_percent)).small(),
+                );
+            }
+        });
+    }
 }
 
 const ENERGY_DESCRIPTION: &str = "Efficiency is the percentage of listed resource production and \
@@ -1457,6 +1555,9 @@ fn draw_resource_tooltip(
     player: &Player,
     images: &ImageIds,
 ) -> egui::Rect {
+    let energy = EnergyGrid::for_player_next_turn(player.id, map);
+    let production = next_turn_resource_production(map, player).get(&resource);
+    let energy_penalty = 100usize.saturating_sub(energy.efficiency_percent());
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
         ui.vertical(|ui| {
@@ -1465,14 +1566,19 @@ fn draw_resource_tooltip(
             ui.separator();
             ui.scope(|ui| {
                 ui.style_mut().interaction.selectable_labels = true;
-                ui.small(format!(
-                    "Production: +{}",
-                    player.resource_production(map).get(&resource)
-                ))
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.small(format!("Production next turn: +{production}"));
+                    if energy_penalty > 0 {
+                        ui.colored_label(
+                            Color32::RED,
+                            RichText::new(format!("(-{energy_penalty}%)")).small(),
+                        );
+                    }
+                })
+                .response
                 .on_hover_cursor(CursorIcon::Default)
-                .on_hover_text_at_pointer(
-                    RichText::new(resource_world_breakdown(map, player, resource)).small(),
-                );
+                .on_hover_ui(|ui| draw_resource_world_breakdown(ui, map, player, resource));
             });
             ui.add_space(3.0);
             ui.small(resource.description());
