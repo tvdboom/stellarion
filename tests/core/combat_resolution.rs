@@ -19,6 +19,7 @@ fn zero_damage_stalemate_terminates() {
         jump_gate: 0,
         terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
         command_relay_active: true,
+        shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
         is_destroyed: false,
         owned: Some(2),
@@ -85,6 +86,119 @@ fn missing_rapid_fire_probability_stops_shooting() {
 }
 
 #[test]
+fn overloaded_planetary_shield_enters_combat_with_its_level_scaled_bonus() {
+    let mut destination = Planet::new(1, "Shield world".into(), Vec2::X, false, 1.0);
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    destination.army.insert(Unit::planetary_shield(), 5);
+    destination.army.insert(Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 1);
+    destination.shield_overload = crate::core::map::planet::ShieldOverloadState::Overloaded;
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let mut mission = Mission::new_with_id(
+        8,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = destination.position;
+
+    let report = resolve_combat_with_energy_with_rng(
+        1,
+        &mission,
+        &destination,
+        EnergyGrid {
+            supply: 10,
+            demand: 10,
+        },
+        &mut rand_chacha::ChaCha8Rng::from_seed([10; 32]),
+    );
+    let first = &report.combat_report.unwrap().rounds[0];
+    let absorbed = first
+        .attacker
+        .iter()
+        .flat_map(|unit| &unit.shots)
+        .map(|shot| shot.planetary_shield_damage)
+        .sum::<usize>();
+
+    assert_eq!(first.planetary_shield + absorbed, 2_250);
+}
+
+#[test]
+fn ship_fire_never_reaches_ground_defenses_while_the_planetary_shield_remains() {
+    let mut destination = Planet::new(1, "Shield world".into(), Vec2::X, false, 1.0);
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    destination.army = Army::from([
+        (Unit::planetary_shield(), 5),
+        (Unit::crawler(), 8),
+        (Unit::repair_truck(), 8),
+        (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 12),
+        (Unit::Defense(crate::core::units::defense::Defense::GaussCannon), 12),
+        (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 12),
+    ]);
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let attackers =
+        Unit::ships().into_iter().filter(|unit| unit.damage() > 0).map(|unit| (unit, 6)).collect();
+    let mut mission = Mission::new_with_id(
+        9,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        attackers,
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = destination.position;
+
+    let report = resolve_combat_with_rng(
+        1,
+        &mission,
+        &destination,
+        &mut rand_chacha::ChaCha8Rng::from_seed([11; 32]),
+    );
+    let combat = report.combat_report.unwrap();
+    let mut shield = EnergyGrid::default().planetary_shield(5, false);
+    let mut saw_shield_hit = false;
+    let mut saw_defense_target = false;
+    for round in combat.rounds {
+        for shooter in round.attacker {
+            for shot in shooter.shots {
+                if shot.planetary_shield_damage > 0 {
+                    saw_shield_hit = true;
+                    assert!(shield > 0);
+                    shield = shield.saturating_sub(shot.planetary_shield_damage);
+                }
+                if shooter.unit.is_ship()
+                    && shot.unit.is_some_and(|unit| {
+                        unit.is_defense() && !unit.is_missile() && unit != Unit::space_dock()
+                    })
+                {
+                    saw_defense_target = true;
+                    assert_eq!(shield, 0, "a ship targeted a protected ground defense");
+                }
+            }
+        }
+        assert_eq!(shield, round.planetary_shield);
+    }
+    assert!(saw_shield_hit && saw_defense_target, "fixture must cross the shield boundary");
+}
+
+#[test]
 fn every_armed_ship_has_probe_strength_rapid_fire_against_crawlers() {
     for ship in Unit::ships().into_iter().filter(|unit| unit.damage() > 0) {
         assert_eq!(ship.rapid_fire().get(&Unit::crawler()), Some(&80), "{ship:?}");
@@ -109,6 +223,7 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         jump_gate: 0,
         terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
         command_relay_active: true,
+        shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
         is_destroyed: false,
         owned: Some(2),

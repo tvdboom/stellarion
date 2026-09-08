@@ -180,8 +180,10 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
-    let mut planetary_shield =
-        energy.planetary_shield(destination.army.amount(&Unit::planetary_shield()));
+    let mut planetary_shield = energy.planetary_shield(
+        destination.army.amount(&Unit::planetary_shield()),
+        destination.shield_overload.is_overloaded(),
+    );
 
     let mut attack_army = Vec::new();
     for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {

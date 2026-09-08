@@ -27,6 +27,19 @@ fn senate_has_a_capstone_building_price() {
 }
 
 #[test]
+fn orbital_railgun_is_a_five_level_premium_over_the_jump_gate() {
+    let jump_gate = Unit::Building(Building::JumpGate).price();
+    let railgun = Unit::Building(Building::OrbitalRailgun).price();
+
+    assert_eq!(railgun, crate::core::resources::Resources::new(750, 500, 750));
+    assert!(jump_gate < railgun);
+    assert_eq!(
+        railgun * Building::MAX_LEVEL,
+        crate::core::resources::Resources::new(3_750, 2_500, 3_750)
+    );
+}
+
+#[test]
 fn five_colonial_administration_levels_cost_less_than_one_space_dock() {
     let administration = Unit::Building(Building::ColonialAdministration).price();
     let full_investment = administration * Building::MAX_LEVEL;
@@ -320,6 +333,7 @@ fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
             Unit::Building(Building::SensorPhalanx),
             Unit::Building(Building::CommandRelay),
             Unit::Building(Building::JumpGate),
+            Unit::Building(Building::OrbitalRailgun),
             Unit::space_dock(),
         ]
     );
@@ -327,7 +341,7 @@ fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
         assert_eq!(purchase_limit(player, planet, orbital, Building::MAX_LEVEL).unwrap(), 1);
         planet.buy.push(orbital);
     }
-    assert_eq!(planet.buy.len(), 5);
+    assert_eq!(planet.buy.len(), 6);
     assert!(purchase_limit(
         player,
         planet,

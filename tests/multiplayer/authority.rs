@@ -19,7 +19,7 @@ fn started() -> (InMemoryBackend, AuthSession, AuthSession, GameRecord) {
         CreateGameRequest {
             code: GameCode::new("ABC123"),
             display_name: "host".into(),
-            recovery_hash: "a".repeat(64),
+            recovery_code: "0123-4567-89AB-CDEF".into(),
             persisted: candidate,
         },
     ))
@@ -30,7 +30,7 @@ fn started() -> (InMemoryBackend, AuthSession, AuthSession, GameRecord) {
         JoinGameRequest {
             code: created.game.code,
             display_name: "guest".into(),
-            recovery_hash: "b".repeat(64),
+            recovery_code: "FEDC-BA98-7654-3210".into(),
         },
     ))
     .unwrap();

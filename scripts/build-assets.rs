@@ -14,7 +14,7 @@ use std::thread;
 use sha2::{Digest, Sha256};
 
 const PIPELINE_VERSION: &str =
-    "stellarion-ktx2-v11-detailed-map-marker-mips-uastc-q2-rdo1.5-zstd18-sha256";
+    "stellarion-ktx2-v12-orbital-railgun-marker-mips-uastc-q2-rdo1.5-zstd18-sha256";
 const MANIFEST_NAME: &str = ".stellarion-assets";
 const MAX_JOBS: usize = 12;
 
@@ -370,6 +370,7 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
                 | "images/icons/lost.png"
                 | "images/icons/missile.png"
                 | "images/icons/dock.png"
+                | "images/icons/orbital railgun marker.png"
                 | "images/icons/jump gate marker.png"
                 | "images/icons/solar satellite marker.png"
                 | "images/icons/command relay marker.png"

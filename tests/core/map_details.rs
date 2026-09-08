@@ -639,6 +639,9 @@ fn clicking_uses_report_order_and_never_grants_missing_intelligence() {
     open_latest_battle(&player, planet.id, &mut state);
     assert_eq!(state.combat_report, Some(2)); // Random IDs are not chronology.
     assert_eq!(state.combat_report_round, 1);
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::MissionReports);
+    assert_eq!(state.mission_report, Some(2));
     player.id = 3;
     state = UiState::default();
     open_latest_battle(&player, planet.id, &mut state);
@@ -791,6 +794,31 @@ fn debris_motion_stays_near_its_anchor_and_pauses_with_detail_animation() {
         .query_filtered::<Entity, With<Debris>>()
         .iter(app.world())
         .collect::<Vec<_>>();
+    let phalanx_anchor = planet.position + Vec2::from_angle(TAU * 0.375) * planet.size() * 0.83;
+    let relay_anchor = planet.position + Vec2::from_angle(TAU * 0.625) * planet.size() * 0.83;
+    let phalanx_radius = Vec2::splat(planet.size() * 0.23).length() * 0.5;
+    let phalanx_drift = Vec2::new(10.7, 7.6).length();
+    let relay_radius = Vec2::splat(planet.size() * 0.34).length() * 0.5;
+    let relay_drift = Vec2::new(1.1, 2.4).length();
+    for &entity in &entities {
+        let debris = app.world().get::<Debris>(entity).unwrap();
+        let debris_radius =
+            app.world().get::<Sprite>(entity).unwrap().custom_size.unwrap().length() * 0.5;
+        let debris_drift = Vec2::splat(debris.amplitude).length();
+        let offset = debris.origin - planet.position;
+        assert!(offset.x < -planet.size() * 0.94, "debris must stay left of the planet");
+        assert!(offset.y.abs() < planet.size() * 0.16, "debris must use the open left corridor");
+        assert!(
+            debris.origin.distance(phalanx_anchor)
+                > debris_radius + debris_drift + phalanx_radius + phalanx_drift,
+            "debris must remain clear of the Sensor Phalanx throughout both idle animations"
+        );
+        assert!(
+            debris.origin.distance(relay_anchor)
+                > debris_radius + debris_drift + relay_radius + relay_drift,
+            "debris must remain clear of the Command Relay throughout both idle animations"
+        );
+    }
     app.update();
     let initial = *app.world().get::<Transform>(entities[0]).unwrap();
     for _ in 0..120 {
@@ -802,7 +830,7 @@ fn debris_motion_stays_near_its_anchor_and_pauses_with_detail_animation() {
             assert!(
                 transform.translation.truncate().distance(debris.origin) < planet.size() * 0.026
             );
-            assert_eq!(transform.translation.z, PLANET_Z + 0.15);
+            assert_eq!(transform.translation.z, PLANET_Z + DEBRIS_DEPTH);
             assert!(
                 transform.rotation.angle_between(Quat::from_rotation_z(debris.rotation)) < 0.101
             );

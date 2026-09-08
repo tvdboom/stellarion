@@ -1,15 +1,18 @@
 use super::*;
 
 #[test]
-fn camera_bounds_keep_outermost_worlds_twenty_percent_inside_the_viewport() {
+fn camera_bounds_let_outermost_worlds_reach_the_viewport_midpoint_at_every_zoom() {
     let worlds = [Vec2::new(-700.0, 400.0), Vec2::new(700.0, -400.0)];
-    let view_size = Vec2::new(1_000.0, 600.0);
-    let bounds = camera_center_bounds(worlds, view_size).expect("worlds should produce bounds");
+    let zoomed_in_view = Vec2::new(500.0, 300.0);
+    let zoomed_out_view = Vec2::new(1_600.0, 960.0);
+    let zoomed_in_bounds =
+        camera_center_bounds(worlds, zoomed_in_view).expect("worlds should produce bounds");
+    let zoomed_out_bounds =
+        camera_center_bounds(worlds, zoomed_out_view).expect("worlds should produce bounds");
 
-    assert_eq!(bounds.min, Vec2::new(-400.0, -220.0));
-    assert_eq!(bounds.max, Vec2::new(400.0, 220.0));
-    assert_eq!(700.0 - bounds.max.x, view_size.x * 0.3);
-    assert_eq!(400.0 - bounds.max.y, view_size.y * 0.3);
+    let world_bounds = Rect::from_corners(Vec2::new(-700.0, -400.0), Vec2::new(700.0, 400.0));
+    assert_eq!(zoomed_in_bounds, world_bounds);
+    assert_eq!(zoomed_out_bounds, world_bounds);
 }
 
 #[test]
@@ -22,8 +25,8 @@ fn empty_and_small_galaxies_produce_stable_camera_bounds() {
         Vec2::new(1_000.0, 600.0),
     )
     .expect("worlds should produce bounds");
-    assert_eq!(bounds.min, Vec2::ZERO);
-    assert_eq!(bounds.max, Vec2::ZERO);
+    assert_eq!(bounds.min, Vec2::new(-100.0, -50.0));
+    assert_eq!(bounds.max, Vec2::new(100.0, 50.0));
 }
 
 #[test]
@@ -35,7 +38,7 @@ fn map_drag_has_resistance_and_a_finite_overscroll_limit() {
     let far = rubber_band_position(Vec2::new(40_000.0, 0.0), bounds, view_size);
     assert!(near.x > bounds.max.x);
     assert!(near.x < 450.0);
-    assert_eq!(view_size.x * OVERSCROLL_SCREEN_FRACTION, 150.0);
+    assert_eq!(view_size.x * OVERSCROLL_SCREEN_FRACTION, 250.0);
     assert!(far.x < bounds.max.x + view_size.x * OVERSCROLL_SCREEN_FRACTION);
 }
 

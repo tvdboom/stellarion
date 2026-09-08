@@ -1,6 +1,7 @@
 //! Shop panels for the game interface.
 
 use super::*;
+use crate::core::map::planet::ShieldOverloadState;
 use crate::core::orders::conversion_output;
 use crate::core::units::buildings::FleetWithdrawal;
 
@@ -316,33 +317,16 @@ fn draw_unit_hover(
                 ui.separator();
                 ui.add_space(12.);
                 draw_fleet_withdrawal(ui, planet, pending, images);
+            } else if *unit == Unit::Building(Building::PlanetaryShield) && count > 0 {
+                ui.separator();
+                ui.add_space(12.);
+                draw_planetary_shield_overload(ui, planet, pending, count);
             } else if *unit == Unit::Building(Building::CommandRelay)
                 && (count > 0 || planet.buy.contains(unit))
             {
                 ui.separator();
                 ui.add_space(12.);
-                let mut active = planet.command_relay_active;
-                let response = ui.horizontal(|ui| {
-                    ui.small(if active {
-                        "Relay active:"
-                    } else {
-                        "Relay inactive:"
-                    });
-                    ui.add(toggle(&mut active))
-                });
-                response.response.on_hover_small(
-                    "When active, the Relay makes undersized enemy Spy missions report an empty \
-                    planet. When inactive, Spy missions gather intelligence normally.",
-                );
-                if active != planet.command_relay_active
-                    && pending.push(TurnCommand::SetCommandRelay {
-                        planet_id: planet.id,
-                        active,
-                    })
-                {
-                    planet.command_relay_active = active;
-                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-                }
+                draw_command_relay_toggle(ui, planet, pending);
             }
 
             if !unit.rapid_fire().is_empty() {
@@ -376,6 +360,93 @@ fn draw_unit_hover(
     });
 }
 
+/// Draws one toggle whose compact label and switch share the same action.
+fn labeled_toggle(ui: &mut Ui, label: &str, active: &mut bool) -> Response {
+    ui.horizontal(|ui| {
+        let label = ui
+            .add(egui::Label::new(RichText::new(label).small()).sense(Sense::click()))
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if label.clicked() {
+            *active = !*active;
+        }
+        ui.add(toggle(active));
+    })
+    .response
+}
+
+/// Draws the activation toggle exposed by a completed Command Relay's hover panel.
+pub(super) fn draw_command_relay_toggle(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+) {
+    let mut active = planet.command_relay_active;
+    labeled_toggle(
+        ui,
+        if active {
+            "Relay active:"
+        } else {
+            "Relay inactive:"
+        },
+        &mut active,
+    )
+    .on_hover_small(
+        "When active, the Relay diverts undersized enemy Spy missions before combat, returning \
+        their Probes safely with a false report of an empty planet. When inactive, Spy missions \
+        gather intelligence normally.",
+    );
+    if active != planet.command_relay_active
+        && pending.push(TurnCommand::SetCommandRelay {
+            planet_id: planet.id,
+            active,
+        })
+    {
+        planet.command_relay_active = active;
+        set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+    }
+}
+
+/// Draws the overload toggle exposed by a completed Planetary Shield's hover panel.
+pub(super) fn draw_planetary_shield_overload(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+    level: usize,
+) {
+    let cooling_down = planet.shield_overload == ShieldOverloadState::Cooldown;
+    ui.add_enabled_ui(pending.can_accept_commands() && !cooling_down, |ui| {
+        let mut active = planet.shield_overload.is_overloaded();
+        labeled_toggle(
+            ui,
+            match planet.shield_overload {
+                ShieldOverloadState::Ready => "Overload shield:",
+                ShieldOverloadState::Overloaded => "Shield overloaded:",
+                ShieldOverloadState::Cooldown => "Shield cooling down:",
+            },
+            &mut active,
+        )
+        .on_hover_small(format!(
+            "Overload for the next turn: +{}% shield strength and +{} Energy demand. After \
+                use, the shield must cool down for one turn.",
+            level.saturating_mul(crate::core::constants::PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL),
+            crate::core::constants::PS_OVERLOAD_ENERGY_COST,
+        ));
+        if active != planet.shield_overload.is_overloaded()
+            && pending.push(TurnCommand::SetPlanetaryShieldOverload {
+                planet_id: planet.id,
+                active,
+            })
+        {
+            planet.shield_overload = if active {
+                ShieldOverloadState::Overloaded
+            } else {
+                ShieldOverloadState::Ready
+            };
+            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+        }
+    });
+}
+
 /// Draws one withdrawal stance with the same tile treatment as Terraformer focus.
 fn fleet_withdrawal_button(
     ui: &mut Ui,
@@ -399,7 +470,13 @@ fn fleet_withdrawal_button(
             withdrawal.label(),
         )
     });
-    response
+    response.on_hover_small(match withdrawal {
+        FleetWithdrawal::Off => "Turn off withdrawal.",
+        FleetWithdrawal::Losses75 => "Withdraw after losing 75% of fleet strength.",
+        FleetWithdrawal::Losses50 => "Withdraw after losing 50% of fleet strength.",
+        FleetWithdrawal::Losses25 => "Withdraw after losing 25% of fleet strength.",
+        FleetWithdrawal::Immediate => "Immediate withdrawal.",
+    })
 }
 
 /// Draws the withdrawal orders unlocked by a completed Colonial Administration.

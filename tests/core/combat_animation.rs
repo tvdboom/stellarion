@@ -211,6 +211,151 @@ fn combat_setup_never_spawns_colony_ship_cards() {
 }
 
 #[test]
+fn volley_fire_selects_every_attacker_before_any_defender() {
+    let mut report = report(20, 0, true, 41);
+    let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+    let mut fighter = round
+        .attacker
+        .iter()
+        .find(|unit| unit.shots.iter().any(|shot| !shot.is_bombing()))
+        .unwrap()
+        .clone();
+    fighter.unit = Unit::Ship(Ship::LightFighter);
+    round.attacker.push(fighter);
+
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    let bomber =
+        spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 20, Side::Attacker, FireState::Idle);
+    let fighter =
+        spawn_unit(&mut app, Unit::Ship(Ship::LightFighter), 1, Side::Attacker, FireState::Idle);
+    let defender = spawn_unit(
+        &mut app,
+        Unit::Defense(Defense::GaussCannon),
+        12,
+        Side::Defender,
+        FireState::Idle,
+    );
+    let repair_truck =
+        spawn_unit(&mut app, Unit::repair_truck(), 1, Side::Defender, FireState::Idle);
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert_eq!(
+        app.world_mut()
+            .query::<&CombatUnitCmp>()
+            .iter(app.world())
+            .filter(|card| card.side == Side::Attacker && card.fire == FireState::Select)
+            .count(),
+        1,
+        "the default presentation still selects one unit kind at a time"
+    );
+    {
+        let world = app.world_mut();
+        let mut cards = world.query::<&mut CombatUnitCmp>();
+        for mut card in cards.iter_mut(world) {
+            card.fire = FireState::Idle;
+        }
+    }
+
+    app.world_mut().resource_mut::<Settings>().combat_volley_fire = true;
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<CombatUnitCmp>(bomber).unwrap().fire == FireState::Select);
+    assert!(app.world().get::<CombatUnitCmp>(fighter).unwrap().fire == FireState::Select);
+    assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Idle);
+    assert!(app.world().get::<CombatUnitCmp>(repair_truck).unwrap().fire == FireState::Idle);
+
+    app.world_mut().get_mut::<CombatUnitCmp>(bomber).unwrap().fire = FireState::Fired;
+    app.world_mut().get_mut::<CombatUnitCmp>(fighter).unwrap().fire = FireState::Fired;
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Select);
+    assert!(
+        app.world().get::<CombatUnitCmp>(repair_truck).unwrap().fire == FireState::Idle,
+        "healing support must not animate as part of the defender's weapon volley"
+    );
+}
+
+#[test]
+fn volley_fire_shoots_immediately_then_waits_after_impacts_before_return_fire() {
+    let report = report(20, 0, true, 41);
+    let expected_shots = report.combat_report.as_ref().unwrap().rounds[0]
+        .attacker
+        .iter()
+        .filter(|unit| unit.unit == Unit::Ship(Ship::Bomber))
+        .flat_map(|unit| &unit.shots)
+        .filter(|shot| !shot.is_bombing())
+        .count();
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.add_plugins(bevy_tweening::TweeningPlugin);
+    app.world_mut().resource_mut::<Settings>().combat_volley_fire = true;
+    let bomber =
+        spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 20, Side::Attacker, FireState::Select);
+    let defender = spawn_unit(
+        &mut app,
+        Unit::Defense(Defense::GaussCannon),
+        12,
+        Side::Defender,
+        FireState::Idle,
+    );
+    let original = Transform::from_xyz(25.0, 40.0, 3.0).with_scale(Vec3::splat(0.8));
+    app.world_mut().entity_mut(bomber).insert(original);
+    let mut shots = app.world().resource::<Messages<SpawnShotMsg>>().get_cursor();
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(bomber).unwrap().fire == FireState::Firing);
+    assert!(app.world().get::<TweenAnim>(bomber).is_none());
+    assert_eq!(*app.world().get::<Transform>(bomber).unwrap(), original);
+    assert_eq!(shots.read(app.world().resource::<Messages<SpawnShotMsg>>()).count(), 0);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(bomber).unwrap().fire == FireState::Deselect);
+    assert_eq!(
+        shots.read(app.world().resource::<Messages<SpawnShotMsg>>()).count(),
+        expected_shots
+    );
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(bomber).unwrap().fire == FireState::VolleyResolving);
+    assert!(app.world().get::<TweenAnim>(bomber).is_none());
+    assert_eq!(*app.world().get::<Transform>(bomber).unwrap(), original);
+    assert_eq!(shots.read(app.world().resource::<Messages<SpawnShotMsg>>()).count(), 0);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    let pause =
+        app.world_mut().query_filtered::<Entity, With<VolleyResolutionPause>>().single(app.world());
+    assert!(pause.is_ok());
+    let pause = pause.unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Idle);
+    assert_eq!(
+        app.world().get::<TweenAnim>(pause).unwrap().tweenable().cycle_duration(),
+        Duration::from_millis(VOLLEY_RESOLUTION_PAUSE_MS)
+    );
+
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(VOLLEY_RESOLUTION_PAUSE_MS));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(bomber).unwrap().fire == FireState::Fired);
+    assert!(app.world().get_entity(pause).is_err());
+    assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Idle);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Select);
+}
+
+#[test]
+fn repair_keeps_its_deliberate_highlight_when_volley_fire_is_enabled() {
+    let mut app = playback_app(report(1, 0, true, 41), 0, CombatState::Repair);
+    app.world_mut().resource_mut::<Settings>().combat_volley_fire = true;
+    let repair_truck =
+        spawn_unit(&mut app, Unit::repair_truck(), 1, Side::Defender, FireState::Select);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<CombatUnitCmp>(repair_truck).unwrap().fire == FireState::PreFire);
+    assert_eq!(
+        app.world().get::<TweenAnim>(repair_truck).unwrap().tweenable().cycle_duration(),
+        Duration::from_millis(500)
+    );
+}
+
+#[test]
 fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let mut report = report(1, 0, true, 7);
     report.mission.objective = Icon::MissileStrike;
@@ -305,6 +450,11 @@ fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
     app.insert_resource(map).init_resource::<MultiplayerSession>();
+    let camera =
+        app.world_mut().query_filtered::<Entity, With<MainCamera>>().single(app.world()).unwrap();
+    let mut projection = OrthographicProjection::default_2d();
+    projection.area = Rect::new(-800.0, -450.0, 800.0, 450.0);
+    app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
     app.world_mut().run_system_once(setup_combat).unwrap();
 
     let (shield_entity, dimensions, shield_home) = app
@@ -346,24 +496,29 @@ fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
             app.world()
                 .get::<PSCombatImageCmp>(entity)
                 .and_then(|_| app.world().get::<Transform>(entity))
-                .map(|transform| transform.translation.x)
+                .map(|transform| transform.translation)
         })
         .unwrap();
-    let (probe_home, dock_home) = app
+    let dock_home = app
         .world_mut()
         .query::<(&CombatUnitCmp, &CombatCardHome)>()
         .iter(app.world())
-        .fold((None, None), |(probe, dock), (card, home)| {
-            (
-                probe.or((card.unit == Unit::probe()).then_some(home.0)),
-                dock.or((card.unit == Unit::space_dock()).then_some(home.0)),
-            )
-        });
-    let probe_home = probe_home.unwrap();
-    let dock_home = dock_home.unwrap();
+        .find_map(|(card, home)| (card.unit == Unit::space_dock()).then_some(home.0))
+        .unwrap();
     assert!(
-        (shield_home.x + shield_icon_offset - probe_home.x).abs() < 0.01,
-        "the planetary shield icon sits directly beneath the probe"
+        (shield_home.x
+            - dimensions.x * 0.5
+            - (shield_home.x + shield_icon_offset.x + UNIT_SIZE * 0.5))
+            .abs()
+            < 0.01,
+        "the planetary shield bar begins exactly at the image's right edge"
+    );
+    assert!(
+        (shield_home.y + dimensions.y * 0.5
+            - (shield_home.y + shield_icon_offset.y + UNIT_SIZE * 0.5))
+            .abs()
+            < 0.01,
+        "the planetary shield bar top aligns exactly with the image's top edge"
     );
     assert!(
         (shield_home.x + dimensions.x * 0.5 - (dock_home.x + UNIT_SIZE * 0.5)).abs() < 0.01,
@@ -374,6 +529,7 @@ fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
 #[test]
 fn defense_cards_clear_combat_controls_and_bombing_targets() {
     let mut report = report(5, 3, true, 11);
+    report.planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
     for unit in Unit::defenses() {
         if !unit.is_missile() && unit != Unit::space_dock() {
             report.planet.army.insert(unit, 1);
@@ -420,8 +576,9 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         .fold(f32::INFINITY, f32::min);
     let controls_top = -540.0 + MAIN_BUTTON_BOTTOM + MAIN_BUTTON_HEIGHT;
     assert!(
-        defense_bottom >= controls_top + COMBAT_SHIELD_DEFENSE_GAP,
-        "defense cards and their stat bars clear the speed and exit controls"
+        defense_bottom >= controls_top - size * 0.05
+            && defense_bottom < controls_top + COMBAT_SHIELD_DEFENSE_GAP,
+        "the defense row moves slightly down without materially entering the controls"
     );
 
     let defense_right =
@@ -435,7 +592,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         "defense cards clear the bombing targets"
     );
 
-    let (shield_entity, shield_home, shield_height) = app
+    let (shield_entity, shield_home, shield_size) = app
         .world_mut()
         .query::<(Entity, &Sprite, &CombatUnitCmp, &CombatCardHome)>()
         .iter(app.world())
@@ -443,7 +600,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
             (card.unit == Unit::planetary_shield()).then_some((
                 entity,
                 home.0,
-                sprite.custom_size.unwrap().y,
+                sprite.custom_size.unwrap(),
             ))
         })
         .unwrap();
@@ -460,13 +617,86 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
             },
         )
         .unwrap();
-    let shield_lowest = (shield_home.y - shield_height * 0.5)
-        .min(shield_home.y + shield_icon_offset.y - size * 0.5);
+    let shield_bar_bottom = shield_home.y - shield_size.y * 0.5;
+    let shield_bar_top = shield_home.y + shield_size.y * 0.5;
+    let shield_icon_top = shield_home.y + shield_icon_offset.y + size * 0.5;
+    let shield_bar_left = shield_home.x - shield_size.x * 0.5;
+    let shield_icon_left = shield_home.x + shield_icon_offset.x - size * 0.5;
+    let shield_icon_right = shield_home.x + shield_icon_offset.x + size * 0.5;
+    let crawler_x =
+        homes.iter().find_map(|(unit, home)| (*unit == Unit::crawler()).then_some(home.x)).unwrap();
+    let repair_truck_x = homes
+        .iter()
+        .find_map(|(unit, home)| (*unit == Unit::repair_truck()).then_some(home.x))
+        .unwrap();
+    let shield_to_crawler_gap = crawler_x - size * 0.5 - shield_icon_right;
+    let crawler_to_repair_gap = repair_truck_x - size * 0.5 - (crawler_x + size * 0.5);
+    assert!(
+        (shield_to_crawler_gap - crawler_to_repair_gap).abs() < 0.01,
+        "the planetary shield-to-Crawler gap matches the Crawler-to-Repair Truck gap"
+    );
+    assert!(shield_icon_left > -960.0, "the planetary shield remains inside the viewport");
+    assert!(
+        (shield_bar_left - shield_icon_right).abs() < 0.01,
+        "the planetary shield bar begins exactly at the shield image's right edge"
+    );
     let defense_top =
         defenses.iter().map(|home| home.y + size * 0.5).fold(f32::NEG_INFINITY, f32::max);
     assert!(
-        shield_lowest >= defense_top + COMBAT_SHIELD_DEFENSE_GAP,
-        "the complete planetary shield assembly clears every defense image"
+        (shield_bar_bottom - defense_top - COMBAT_SHIELD_DEFENSE_GAP * 0.5).abs() < 0.01,
+        "the planetary shield health bar sits just above the defense row"
+    );
+    assert!(
+        (shield_icon_top - shield_bar_top).abs() < 0.01,
+        "the planetary shield image's top-right corner anchors the health bar"
+    );
+    let shield_fill = app
+        .world_mut()
+        .query_filtered::<&Sprite, (With<PlanetaryShieldFillCmp>, With<ShieldCmp>)>()
+        .single(app.world())
+        .unwrap();
+    assert_eq!(shield_fill.color, SHIELD_COLOR);
+    let full_fill_width = shield_fill.custom_size.unwrap().x;
+
+    app.world_mut().get_mut::<CombatUnitCmp>(shield_entity).unwrap().shield /= 2;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    let animated_fill_width = app
+        .world_mut()
+        .query_filtered::<&Sprite, (With<PlanetaryShieldFillCmp>, With<ShieldCmp>)>()
+        .single(app.world())
+        .unwrap()
+        .custom_size
+        .unwrap()
+        .x;
+    assert!(
+        animated_fill_width > full_fill_width * 0.5 && animated_fill_width < full_fill_width,
+        "the single shield fill rapidly interpolates instead of jumping to its new value"
+    );
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(400));
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    let settled_fill_width = app
+        .world_mut()
+        .query_filtered::<&Sprite, (With<PlanetaryShieldFillCmp>, With<ShieldCmp>)>()
+        .single(app.world())
+        .unwrap()
+        .custom_size
+        .unwrap()
+        .x;
+    assert!((settled_fill_width - full_fill_width * 0.5).abs() < 0.01);
+
+    let defender_ship = homes
+        .iter()
+        .find_map(|(unit, home)| (*unit == Unit::Ship(Ship::LightFighter)).then_some(*home))
+        .unwrap();
+    assert!(
+        defender_ship.y < -108.0,
+        "defending ships move slightly down from their former middle-row position"
+    );
+    assert!(
+        defender_ship.y - size * COMBAT_CARD_LOWER_EXTENT_FACTOR
+            >= shield_bar_top + COMBAT_SHIELD_DEFENSE_GAP,
+        "defending ships and their stat bars clear the planetary shield health bar"
     );
 }
 
@@ -486,6 +716,23 @@ fn single_round_battles_go_directly_to_fire_without_a_round_banner() {
         .iter(app.world())
         .next()
         .is_none());
+}
+
+#[test]
+fn round_banner_after_navigation_uses_the_normal_playback_duration() {
+    let report = report(12, 5, true, 2);
+    assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
+    let mut app = playback_app(report, 0, CombatState::DisplayRound);
+    app.insert_resource(CombatRoundJump);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    let tween = app
+        .world_mut()
+        .query_filtered::<&TweenAnim, With<DisplayTextCmp>>()
+        .single(app.world())
+        .unwrap();
+    assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1500));
 }
 
 #[test]
@@ -766,6 +1013,39 @@ fn paused_playback_does_not_start_a_new_volley() {
 }
 
 #[test]
+fn completion_received_while_paused_is_applied_after_resume() {
+    let mut app = playback_app(report(1, 0, true, 41), 0, CombatState::Fire);
+    app.add_plugins(bevy_tweening::TweeningPlugin).add_systems(Update, animate_combat);
+    let unit =
+        spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 1, Side::Attacker, FireState::PreFire);
+    app.world_mut().entity_mut(unit).insert((
+        CombatCmp,
+        TweenAnim::new(Tween::new(
+            EaseFunction::Linear,
+            Duration::from_millis(1),
+            TransformScaleLens {
+                start: Vec3::ONE,
+                end: Vec3::splat(1.3),
+            },
+        )),
+    ));
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+
+    // Reproduce the race: the tween finishes on the frame pause becomes visible. Its Bevy
+    // completion message expires while the state machine remains paused.
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(1));
+    assert!(app.world().get::<TweenAnim>(unit).is_none());
+    for _ in 0..4 {
+        app.update();
+    }
+    assert!(matches!(app.world().get::<CombatUnitCmp>(unit).unwrap().fire, FireState::PreFire));
+
+    app.world_mut().resource_mut::<Settings>().combat_paused = false;
+    app.update();
+    assert!(matches!(app.world().get::<CombatUnitCmp>(unit).unwrap().fire, FireState::Firing));
+}
+
+#[test]
 fn round_waits_for_travelling_damage_before_finishing() {
     let mut app = playback_app(report(30, 0, false, 4), 0, CombatState::Bomb);
     let bomber =
@@ -919,9 +1199,28 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 1);
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|text| text.0 == "+2"));
+    let amount_text = app
+        .world()
+        .get::<Children>(pickups[0].0)
+        .unwrap()
+        .iter()
+        .find(|child| app.world().get::<Text2d>(*child).is_some())
+        .unwrap();
+    assert_eq!(
+        app.world().get::<TweenAnim>(pickups[0].0).unwrap().tweenable().cycle_duration(),
+        Duration::from_millis(SALVAGE_PICKUP_TIME_MS)
+    );
+    assert_eq!(
+        app.world().get::<TweenAnim>(amount_text).unwrap().tweenable().cycle_duration(),
+        Duration::from_millis(SALVAGE_PICKUP_TIME_MS)
+    );
     assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 
-    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS));
+    assert_eq!(app.world().get::<Transform>(amount_text).unwrap().scale, Vec3::ONE);
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_DRIFT_TIME_MS));
+    assert_eq!(app.world().get::<Transform>(amount_text).unwrap().scale, Vec3::ONE);
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS));
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert!(matches!(

@@ -6,7 +6,7 @@ use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
 use bevy_tweening::lens::{TransformPositionLens, TransformScaleLens};
 use bevy_tweening::{
-    AnimCompletedEvent, PlaybackState, RepeatCount, RepeatStrategy, Tween, TweenAnim,
+    AnimCompletedEvent, Delay, PlaybackState, RepeatCount, RepeatStrategy, Tween, TweenAnim,
 };
 use strum::IntoEnumIterator;
 
@@ -21,14 +21,13 @@ use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
 use crate::core::combat::report::Side;
 use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
-    BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, HEALTH_COLOR, PS_SHIELD_PER_LEVEL, PS_WIDTH,
-    SETUP_TIME, SHIELD_COLOR, UNIT_SIZE,
+    BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, HEALTH_COLOR, PS_WIDTH, SETUP_TIME,
+    SHIELD_COLOR, UNIT_SIZE,
 };
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::utils::{
     spawn_main_button, UiTransformScaleLens, MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT,
-    MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
 };
 use crate::core::menu::systems::MenuBackground;
 use crate::core::menu::utils::{add_root_node, add_text};
@@ -46,19 +45,22 @@ use crate::utils::NameFromEnum;
 
 const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
-const COMBAT_SPEED_BUTTON_GAP: f32 = 20.0;
-const COMBAT_SPEED_WIDTH: f32 = 140.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
 const PLANETARY_SHIELD_HEIGHT_FACTOR: f32 = 0.3;
 const COMBAT_CARD_LOWER_EXTENT_FACTOR: f32 = 0.76;
+const COMBAT_DEFENDER_Y_OFFSET_FACTOR: f32 = -0.12;
 const COMBAT_BUILDING_SIZE_FACTOR: f32 = 0.65;
 const COMBAT_BUILDING_SPACING_FACTOR: f32 = 1.1;
 const COMBAT_BUILDING_CENTER_FACTOR: f32 = 8.25;
 const SALVAGE_HIGHLIGHT_TIME_MS: u64 = 500;
 const SALVAGE_RETURN_TIME_MS: u64 = 900;
-const SALVAGE_PICKUP_TIME_MS: u64 = 1_600;
+const SALVAGE_PICKUP_REVEAL_TIME_MS: u64 = 1_200;
+const SALVAGE_PICKUP_DRIFT_TIME_MS: u64 = 1_500;
+const SALVAGE_PICKUP_TIME_MS: u64 =
+    SALVAGE_PICKUP_REVEAL_TIME_MS * 2 + SALVAGE_PICKUP_DRIFT_TIME_MS;
 const FLEET_RETREAT_TIME_MS: u64 = 900;
+const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
 
 #[derive(Component)]
 /// Bevy component marking combat menu presentation entities.
@@ -69,12 +71,16 @@ pub struct CombatMenuCmp;
 pub struct CombatCmp;
 
 #[derive(Component)]
-/// Bevy component marking background image presentation entities.
-pub struct BackgroundImageCmp;
+/// Marks cards whose firing highlight must be reversed after firing.
+pub struct CombatFireHighlight;
 
 #[derive(Component)]
-/// Bevy component marking speed presentation entities.
-pub struct SpeedCmp;
+/// Holds volley playback after impacts so their explosions finish before return fire.
+pub struct VolleyResolutionPause;
+
+#[derive(Component)]
+/// Bevy component marking background image presentation entities.
+pub struct BackgroundImageCmp;
 
 #[derive(Component)]
 /// Marker for the pause overlay at the combat round-label position.
@@ -100,6 +106,8 @@ pub enum FireState {
     Deselect,
     /// The after fire value.
     AfterFire,
+    /// The volley has landed and is waiting for its outcome presentation to finish.
+    VolleyResolving,
     /// The fired value.
     Fired,
 }
@@ -109,7 +117,11 @@ impl FireState {
     pub fn has_fired(&self) -> bool {
         matches!(
             self,
-            FireState::Firing | FireState::Deselect | FireState::AfterFire | FireState::Fired
+            FireState::Firing
+                | FireState::Deselect
+                | FireState::AfterFire
+                | FireState::VolleyResolving
+                | FireState::Fired
         )
     }
 }
@@ -162,6 +174,12 @@ pub struct HullCmp;
 #[derive(Component)]
 /// Bevy component marking shield presentation entities.
 pub struct ShieldCmp;
+
+#[derive(Component)]
+/// Stores the un-depleted width of the planetary-shield fill.
+pub struct PlanetaryShieldFillCmp {
+    full_width: f32,
+}
 
 #[derive(Component)]
 /// Bevy component marking the neutral fill used when a combat unit has no shield stat.
@@ -332,14 +350,21 @@ fn spawn_salvage_pickups(
             TweenAnim::new(
                 Tween::new(
                     EaseFunction::QuadraticInOut,
-                    Duration::from_millis(SALVAGE_PICKUP_TIME_MS / 2),
+                    Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS),
                     TransformScaleLens {
                         start: Vec3::ZERO,
                         end: Vec3::ONE,
                     },
                 )
-                .with_repeat_count(RepeatCount::Finite(2))
-                .with_repeat_strategy(RepeatStrategy::MirroredRepeat),
+                .then(Delay::new(Duration::from_millis(SALVAGE_PICKUP_DRIFT_TIME_MS)))
+                .then(Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS),
+                    TransformScaleLens {
+                        start: Vec3::ONE,
+                        end: Vec3::ZERO,
+                    },
+                )),
             )
         };
 
@@ -736,16 +761,17 @@ pub fn setup_combat(
     // This works for both the Exit combat button and its adjacent speed readout.
     let control_top =
         pos.y - height * 0.5 + (MAIN_BUTTON_BOTTOM + MAIN_BUTTON_HEIGHT) * projection.scale;
+    let defender_y_offset = size * COMBAT_DEFENDER_Y_OFFSET_FACTOR;
     let defense_row_y = control_top
         + size * COMBAT_CARD_LOWER_EXTENT_FACTOR
-        + COMBAT_SHIELD_DEFENSE_GAP * projection.scale;
+        + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+        + defender_y_offset;
     let shield_height = size * PLANETARY_SHIELD_HEIGHT_FACTOR;
-    // The shield icon hangs one full card below the bar. Lift the complete assembly above the
-    // defense images, including when every defense slot is occupied.
+    // Keep the shield bar immediately above the defense images. Its icon is anchored at the
+    // bar's upper-left corner and hangs below it, clear of the first defense card.
     let shield_y = defense_row_y
-        + size * 1.5
-        + shield_height * 0.5
-        + COMBAT_SHIELD_DEFENSE_GAP * projection.scale;
+        + (size + shield_height) * 0.5
+        + COMBAT_SHIELD_DEFENSE_GAP * 0.5 * projection.scale;
 
     // Bombing targets occupy the lower-right combat field. Keep a wide defense row to their
     // left when the two rows' vertical footprints intersect.
@@ -765,19 +791,23 @@ pub fn setup_combat(
             pos.x + building_size * COMBAT_BUILDING_CENTER_FACTOR - building_half_width;
         pos.x.min(building_left - COMBAT_SHIELD_DEFENSE_GAP * projection.scale - defense_half_width)
     };
-
     let occupied_top = if draw_ps {
         shield_y + shield_height * 0.5
     } else {
         defense_row_y + size * 0.5
     };
     let ship_y = if defending_def.is_empty() && !draw_ps {
-        defender_edge_row_y
+        defender_edge_row_y + defender_y_offset
     } else {
-        occupied_top
+        let preferred_y =
+            pos.y - height * 0.1 + COMBAT_SHIELD_DEFENSE_GAP * projection.scale + defender_y_offset;
+        let minimum_clear_y = occupied_top
             + size * COMBAT_CARD_LOWER_EXTENT_FACTOR
-            + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+            + COMBAT_SHIELD_DEFENSE_GAP * projection.scale;
+        preferred_y.max(minimum_clear_y)
     };
+    let first_defense_x = (!defending_def.is_empty())
+        .then_some(defense_center_x - spacing * (defending_def.len() as f32 - 1.0) * 0.5);
 
     spawn_row(
         &mut commands,
@@ -789,10 +819,25 @@ pub fn setup_combat(
     );
     spawn_row(&mut commands, defending_ships, Side::Defender, pos.x, pos.y - height * 0.7, ship_y);
 
-    // The original full-width bar makes the shared shield state legible at a glance.
+    // Keep the bar's established right edge while reserving a separate slot for the shield image
+    // at the left. This prevents the image from covering the first defense card.
     if draw_ps {
-        let bar_width = size * PS_WIDTH;
+        let full_bar_width = size * PS_WIDTH;
         let w = size * 0.3;
+        let max_shield = report.initial_planetary_shield();
+        let original_bar_left = pos.x - full_bar_width * 0.5;
+        let original_icon_center_x = original_bar_left + size * 0.5;
+        let icon_center_x = first_defense_x
+            .map_or(original_icon_center_x, |x| (x - spacing).min(original_icon_center_x));
+        let icon_left = icon_center_x - size * 0.5;
+        // The bar's top-left corner and the image's top-right corner are one exact anchor.
+        let bar_left = icon_left + size;
+        let bar_right = pos.x + full_bar_width * 0.5;
+        let bar_width = (bar_right - bar_left).max(size);
+        let fill_width = bar_width * 0.997;
+        let shield_center_x = (bar_left + bar_right) * 0.5;
+        let shield_icon_x = icon_center_x - shield_center_x;
+        let shield_icon_y = (shield_height - size) * 0.5;
 
         commands.spawn((
             Sprite {
@@ -800,14 +845,14 @@ pub fn setup_combat(
                 custom_size: Some(Vec2::new(bar_width, shield_height)),
                 ..default()
             },
-            Transform::from_xyz(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
-            CombatCardHome(Vec3::new(pos.x, shield_y, COMBAT_SHIP_Z)),
+            Transform::from_xyz(shield_center_x, pos.y - height * 0.7, COMBAT_SHIP_Z),
+            CombatCardHome(Vec3::new(shield_center_x, shield_y, COMBAT_SHIP_Z)),
             CombatUnitCmp {
                 unit: Unit::planetary_shield(),
                 side: Side::Defender,
                 fire: FireState::Idle,
-                shield: ps * PS_SHIELD_PER_LEVEL,
-                max_shield: ps * PS_SHIELD_PER_LEVEL,
+                shield: max_shield,
+                max_shield,
                 hull: ps,
                 max_hull: ps,
             },
@@ -815,11 +860,14 @@ pub fn setup_combat(
                 (
                     Sprite {
                         color: SHIELD_COLOR,
-                        custom_size: Some(Vec2::new(bar_width * 0.997, shield_height * 0.9)),
+                        custom_size: Some(Vec2::new(fill_width, shield_height * 0.9)),
                         ..default()
                     },
                     Transform::from_xyz(0., 0., 0.1),
                     ShieldCmp,
+                    PlanetaryShieldFillCmp {
+                        full_width: fill_width,
+                    },
                 ),
                 (
                     Sprite {
@@ -827,11 +875,7 @@ pub fn setup_combat(
                         custom_size: Some(Vec2::splat(size)),
                         ..default()
                     },
-                    Transform::from_xyz(
-                        (-bar_width + size) * 0.5,
-                        (-shield_height - size) * 0.5,
-                        0.,
-                    ),
+                    Transform::from_xyz(shield_icon_x, shield_icon_y, 0.),
                     PSCombatImageCmp,
                     children![(
                         Sprite {
@@ -857,8 +901,8 @@ pub fn setup_combat(
                 EaseFunction::QuadraticInOut,
                 Duration::from_secs(SETUP_TIME),
                 TransformPositionLens {
-                    start: Vec3::new(pos.x, pos.y - height * 0.7, COMBAT_SHIP_Z),
-                    end: Vec3::new(pos.x, shield_y, COMBAT_SHIP_Z),
+                    start: Vec3::new(shield_center_x, pos.y - height * 0.7, COMBAT_SHIP_Z),
+                    end: Vec3::new(shield_center_x, shield_y, COMBAT_SHIP_Z),
                 },
             )),
             Pickable::IGNORE,
@@ -933,27 +977,6 @@ pub fn setup_combat(
             ));
         }
     }
-
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(MAIN_BUTTON_BOTTOM),
-                right: Val::Px(MAIN_BUTTON_RIGHT + MAIN_BUTTON_WIDTH + COMBAT_SPEED_BUTTON_GAP),
-                width: Val::Px(COMBAT_SPEED_WIDTH),
-                height: Val::Px(MAIN_BUTTON_HEIGHT),
-                justify_content: JustifyContent::FlexEnd,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            Pickable::IGNORE,
-            ZIndex(6),
-            CombatCmp,
-        ))
-        .with_child((
-            add_text(format!("{}x", settings.combat_speed), "medium", 10., &assets, &window),
-            SpeedCmp,
-        ));
 
     commands
         .spawn((
@@ -1057,6 +1080,9 @@ pub fn animate_combat(
         Query<Entity, With<SalvagePickupCmp>>,
         Query<(Entity, &mut FleetRetreatPlayback)>,
         Query<Entity, With<FleetRetreatCmp>>,
+        Query<(), With<CombatFireHighlight>>,
+        Query<Entity, With<VolleyResolutionPause>>,
+        Query<(), ()>,
     ),
     mut state: ResMut<UiState>,
     player: Res<Player>,
@@ -1064,7 +1090,7 @@ pub fn animate_combat(
     mut next_combat_state: ResMut<NextState<CombatState>>,
     mut spawn_shot_msg: MessageWriter<SpawnShotMsg>,
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
-    mut anim_completed_msg: MessageReader<AnimCompletedEvent>,
+    completion: (MessageReader<AnimCompletedEvent>, Local<Vec<Entity>>),
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     presentation: (Res<WorldAssets>, Single<&Window>, Option<Res<CombatRoundJump>>),
     pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
@@ -1078,13 +1104,22 @@ pub fn animate_combat(
         salvage_pickup_q,
         mut fleet_retreat_q,
         fleeing_ships_q,
+        highlighted_q,
+        volley_pause_q,
+        all_entities,
     ) = phase_entities;
     let (assets, window, round_jump) = presentation;
+    let (mut anim_completed_msg, mut deferred_completions) = completion;
+    deferred_completions.extend(anim_completed_msg.read().map(|message| message.anim_entity));
+    deferred_completions.retain(|entity| all_entities.contains(*entity));
     if settings.combat_paused
         || (round_jump.is_some() && !matches!(*next_combat_state, NextState::Unchanged))
     {
         return;
     }
+    // Completion messages expire after two frames. Keep any that arrive on the pause frame so
+    // resuming cannot strand the state machine behind an already-finished, removed tween.
+    let completed = std::mem::take(&mut *deferred_completions);
     let (camera_t, projection) = camera.into_inner();
 
     let pos = camera_t.translation;
@@ -1104,10 +1139,11 @@ pub fn animate_combat(
     };
 
     let size = UNIT_SIZE * projection.scale;
+    let volley_fire = settings.combat_volley_fire && *combat_state.get() == CombatState::Fire;
 
     if let Some((timer, mut playback)) = fleet_retreat_q.iter_mut().next() {
         if !playback.complete {
-            if anim_completed_msg.read().any(|message| message.anim_entity == timer) {
+            if completed.contains(&timer) {
                 for ship in &fleeing_ships_q {
                     commands.entity(ship).despawn();
                 }
@@ -1145,33 +1181,72 @@ pub fn animate_combat(
             | CombatState::Repair
             | CombatState::Bomb
             | CombatState::DeathRay
-    ) && unit_q.iter().all(|(_, _, cu)| matches!(cu.fire, FireState::Idle | FireState::Fired))
-    {
+    ) && unit_q.iter().all(|(_, _, cu)| {
+        matches!(cu.fire, FireState::Idle | FireState::VolleyResolving | FireState::Fired)
+    }) {
         // Keep consuming tween completion messages while projectiles travel, but never
         // advance a round or remove simultaneous return-fire cards before they arrive.
         if !pending_q.is_empty() {
             return;
         }
+
+        // A volley deliberately leaves a short, speed-aware beat after all projectiles have
+        // resolved. This keeps hit flashes and explosions readable before the other side fires.
+        if unit_q.iter().any(|(_, _, cu)| cu.fire == FireState::VolleyResolving) {
+            if let Some(pause) = volley_pause_q.iter().next() {
+                if completed.contains(&pause) {
+                    commands.entity(pause).despawn();
+                    for (_, _, mut cu) in &mut unit_q {
+                        if cu.fire == FireState::VolleyResolving {
+                            cu.fire = FireState::Fired;
+                        }
+                    }
+                }
+                return;
+            }
+            commands.spawn((
+                VolleyResolutionPause,
+                CombatCmp,
+                Transform::default(),
+                TweenAnim::new(Tween::new(
+                    EaseFunction::Linear,
+                    Duration::from_millis(VOLLEY_RESOLUTION_PAUSE_MS),
+                    TransformScaleLens {
+                        start: Vec3::ONE,
+                        end: Vec3::ONE,
+                    },
+                )),
+            ));
+            return;
+        }
+
         for side in Side::iter() {
             // Follow recorded weapon fire even after the last defender dies: shields
             // can still be hit, and simultaneous return fire can kill would-be Bombers.
+            let mut selected = false;
             for unit in &units {
                 if let Some((_, _, mut cu)) = unit_q.iter_mut().find(|(_, _, cu)| {
                     cu.fire == FireState::Idle
                         && cu.unit == *unit
                         && cu.side == side
-                        && (cu.unit.damage() > 0 || cu.unit == Unit::repair_truck())
-                        && (cu.unit == Unit::repair_truck()
-                            || round.units(&side).iter().any(|shooter| {
-                                shooter.unit == *unit
-                                    && shooter.shots.iter().any(|shot| !shot.is_bombing())
-                            }))
+                        && cu.unit.damage() > 0
+                        && round.units(&side).iter().any(|shooter| {
+                            shooter.unit == *unit
+                                && shooter.shots.iter().any(|shot| !shot.is_bombing())
+                        })
                         && (cu.unit != Unit::interplanetary_missile()
                             || round.missiles_shot() < round.n_missiles())
                 }) {
                     cu.fire = FireState::Select;
-                    return;
+                    selected = true;
+                    if !volley_fire {
+                        return;
+                    }
                 }
+            }
+            // Volley fire deliberately finishes one side before beginning the other.
+            if selected {
+                return;
             }
         }
 
@@ -1298,8 +1373,7 @@ pub fn animate_combat(
 
     match combat_state.get() {
         CombatState::Setup => {
-            if !anim_completed_msg.is_empty() {
-                anim_completed_msg.clear();
+            if !completed.is_empty() {
                 next_combat_state.set(
                     if let Some((_, _, mut cu)) = unit_q
                         .iter_mut()
@@ -1316,11 +1390,9 @@ pub fn animate_combat(
         CombatState::DisplayRound => {
             if let Some(round_q) = text_q {
                 let entity = round_q.into_inner();
-                for message in anim_completed_msg.read() {
-                    if entity == message.anim_entity {
-                        next_combat_state.set(CombatState::Fire);
-                        commands.entity(message.anim_entity).despawn();
-                    }
+                if completed.contains(&entity) {
+                    next_combat_state.set(CombatState::Fire);
+                    commands.entity(entity).despawn();
                 }
             } else {
                 commands.remove_resource::<CombatRoundJump>();
@@ -1370,11 +1442,7 @@ pub fn animate_combat(
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::QuadraticInOut,
-                                Duration::from_millis(if round_jump.is_some() {
-                                    250
-                                } else {
-                                    1500
-                                }),
+                                Duration::from_millis(1500),
                                 UiTransformScaleLens {
                                     start: Vec2::ZERO,
                                     end: Vec2::ONE,
@@ -1398,21 +1466,26 @@ pub fn animate_combat(
             for (unit_e, unit_t, mut cu) in &mut unit_q {
                 match cu.fire {
                     FireState::Select => {
-                        commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
-                            EaseFunction::QuadraticInOut,
-                            Duration::from_millis(500),
-                            TransformScaleLens {
-                                start: unit_t.scale,
-                                end: unit_t.scale * 1.3,
-                            },
-                        )));
-                        cu.fire = FireState::PreFire;
+                        if volley_fire {
+                            cu.fire = FireState::Firing;
+                        } else {
+                            commands.entity(unit_e).insert((
+                                TweenAnim::new(Tween::new(
+                                    EaseFunction::QuadraticInOut,
+                                    Duration::from_millis(500),
+                                    TransformScaleLens {
+                                        start: unit_t.scale,
+                                        end: unit_t.scale * 1.3,
+                                    },
+                                )),
+                                CombatFireHighlight,
+                            ));
+                            cu.fire = FireState::PreFire;
+                        }
                     },
                     FireState::PreFire => {
-                        for message in anim_completed_msg.read() {
-                            if unit_e == message.anim_entity {
-                                cu.fire = FireState::Firing;
-                            }
+                        if completed.contains(&unit_e) {
+                            cu.fire = FireState::Firing;
                         }
                     },
                     FireState::Firing if *combat_state.get() == CombatState::Repair => {
@@ -1440,16 +1513,14 @@ pub fn animate_combat(
                     },
                     FireState::Firing if *combat_state.get() == CombatState::DeathRay => {
                         if let Some(ray_e) = death_ray_q.iter().next() {
-                            for message in anim_completed_msg.read() {
-                                if ray_e == message.anim_entity {
-                                    commands.entity(ray_e).despawn();
-                                    cu.fire = FireState::Deselect;
-                                    if report.planet_destroyed
-                                        && state.combat_round == combat.rounds.len() - 1
-                                    {
-                                        bg_q.into_inner().image = assets.image("destroyed bg");
-                                        return;
-                                    }
+                            if completed.contains(&ray_e) {
+                                commands.entity(ray_e).despawn();
+                                cu.fire = FireState::Deselect;
+                                if report.planet_destroyed
+                                    && state.combat_round == combat.rounds.len() - 1
+                                {
+                                    bg_q.into_inner().image = assets.image("destroyed bg");
+                                    return;
                                 }
                             }
                         } else {
@@ -1502,22 +1573,25 @@ pub fn animate_combat(
                         cu.fire = FireState::Deselect;
                     },
                     FireState::Deselect => {
-                        commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
-                            EaseFunction::QuarticIn,
-                            Duration::from_millis(1500),
-                            TransformScaleLens {
-                                start: unit_t.scale,
-                                end: unit_t.scale / 1.3,
-                            },
-                        )));
-                        cu.fire = FireState::AfterFire;
-                    },
-                    FireState::AfterFire => {
-                        for message in anim_completed_msg.read() {
-                            if unit_e == message.anim_entity {
-                                cu.fire = FireState::Fired;
-                            }
+                        if highlighted_q.contains(unit_e) {
+                            commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
+                                EaseFunction::QuarticIn,
+                                Duration::from_millis(1500),
+                                TransformScaleLens {
+                                    start: unit_t.scale,
+                                    end: unit_t.scale / 1.3,
+                                },
+                            )));
+                            cu.fire = FireState::AfterFire;
+                        } else if volley_fire {
+                            cu.fire = FireState::VolleyResolving;
+                        } else {
+                            cu.fire = FireState::Fired;
                         }
+                    },
+                    FireState::AfterFire if completed.contains(&unit_e) => {
+                        commands.entity(unit_e).remove::<CombatFireHighlight>();
+                        cu.fire = FireState::Fired;
                     },
                     _ => (),
                 }
@@ -1531,7 +1605,7 @@ pub fn animate_combat(
             }
 
             if let Some(timer_e) = salvage_timer_q.iter().next() {
-                if anim_completed_msg.read().any(|message| message.anim_entity == timer_e) {
+                if completed.contains(&timer_e) {
                     for pickup_e in &salvage_pickup_q {
                         commands.entity(pickup_e).despawn();
                     }
@@ -1546,7 +1620,7 @@ pub fn animate_combat(
 
             if let Some((crawler_e, crawler)) = salvage_crawler_q.iter().next() {
                 if crawler.phase == SalvageCrawlerPhase::Highlighting
-                    && anim_completed_msg.read().any(|message| message.anim_entity == crawler_e)
+                    && completed.contains(&crawler_e)
                 {
                     let Ok((_, crawler_t, _)) = unit_q.get(crawler_e) else {
                         next_combat_state.set(CombatState::EndCombat);
@@ -1658,11 +1732,15 @@ pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp, Option<&FleetRetreatCmp>)>,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
     mut count_q: Query<&mut Text2d, With<CountCmp>>,
-    mut shield_q: Query<(&mut Transform, &mut Sprite), With<ShieldCmp>>,
+    mut shield_q: Query<
+        (&mut Transform, &mut Sprite, Option<&PlanetaryShieldFillCmp>),
+        (With<ShieldCmp>, Without<HullCmp>),
+    >,
     mut hull_q: Query<(&mut Transform, &mut Sprite), (With<HullCmp>, Without<ShieldCmp>)>,
-    mut speed_q: Single<&mut Text, With<SpeedCmp>>,
-    mut paused_q: Single<&mut Visibility, With<CombatPausedCmp>>,
-    mut display_q: Query<&mut Visibility, (With<DisplayTextCmp>, Without<CombatPausedCmp>)>,
+    mut visibility_q: ParamSet<(
+        Single<&mut Visibility, With<CombatPausedCmp>>,
+        Query<&mut Visibility, (With<DisplayTextCmp>, Without<CombatPausedCmp>)>,
+    )>,
     children_q: Query<&Children>,
     settings: Res<Settings>,
     state: Res<UiState>,
@@ -1674,10 +1752,11 @@ pub fn update_combat_stats(
     let Projection::Orthographic(projection) = camera_q.into_inner() else {
         return;
     };
+    let paused = settings.combat_paused && *combat_state.get() != CombatState::EndCombat;
 
-    // Update speed indicator
+    // Apply the speed chosen from the combat settings panel (or keyboard shortcuts).
     anim_q.iter_mut().for_each(|mut t| {
-        if settings.combat_paused {
+        if paused {
             t.playback_state = PlaybackState::Paused;
         } else {
             t.playback_state = PlaybackState::Playing;
@@ -1685,15 +1764,17 @@ pub fn update_combat_stats(
         }
     });
 
-    speed_q.as_mut().0 = format!("{}x", settings.combat_speed);
-    **paused_q = if settings.combat_paused {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    {
+        let mut paused_q = visibility_q.p0();
+        **paused_q = if paused {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
     // Pause replaces the round/result presentation while its animation is frozen.
-    for mut visibility in &mut display_q {
-        *visibility = if settings.combat_paused {
+    for mut visibility in &mut visibility_q.p1() {
+        *visibility = if paused {
             Visibility::Hidden
         } else {
             Visibility::Inherited
@@ -1711,7 +1792,6 @@ pub fn update_combat_stats(
 
     let size = UNIT_SIZE * projection.scale;
     let speed = (3. * time.delta_secs() * settings.speed()).clamp(0., 1.);
-
     let antiballistic_fired = unit_q
         .iter()
         .any(|(_, cu, _)| cu.unit == Unit::antiballistic_missile() && cu.fire.has_fired());
@@ -1770,13 +1850,9 @@ pub fn update_combat_stats(
                 text.0 = count.to_string();
             }
 
-            if let Ok((mut shield_t, mut shield_s)) = shield_q.get_mut(child) {
+            if let Ok((mut shield_t, mut shield_s, planetary_fill)) = shield_q.get_mut(child) {
                 if let Some(shield_size) = shield_s.custom_size.as_mut() {
-                    let full_size = if cu.unit == Unit::planetary_shield() {
-                        size * PS_WIDTH * 0.997
-                    } else {
-                        size * 0.96
-                    };
+                    let full_size = planetary_fill.map_or(size * 0.96, |fill| fill.full_width);
                     shield_size.x = shield_size
                         .x
                         .lerp(full_size * cu.shield as f32 / cu.max_shield.max(1) as f32, speed)

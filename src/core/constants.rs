@@ -67,6 +67,10 @@ pub const REACTOR_ENERGY_PER_LEVEL: usize = 3;
 pub const TIDAL_GENERATOR_ENERGY_PER_LEVEL: usize = 5;
 /// Fully powered Planetary Shield strength granted per building level.
 pub const PS_SHIELD_PER_LEVEL: usize = 300;
+/// Additional empire-wide Energy demand while one Planetary Shield is overloaded.
+pub const PS_OVERLOAD_ENERGY_COST: usize = 3;
+/// Shield-strength bonus granted per completed level while overloaded.
+pub const PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL: usize = 10;
 /// Defense-production capacity granted per factory level.
 pub const FACTORY_PRODUCTION_FACTOR: usize = 5;
 /// Focused-resource production bonus granted per Terraformer level.
@@ -85,6 +89,14 @@ pub const REACTOR_FUEL_REDUCTION_FACTOR: f32 = 0.1;
 pub const PHALANX_DISTANCE: f32 = 1.0;
 /// Orbital-radar range granted per building level, measured in AU (planet-size units).
 pub const RADAR_DISTANCE: f32 = 1.2;
+/// Orbital-railgun reach granted per completed level, measured in AU.
+pub const ORBITAL_RAILGUN_RANGE_PER_LEVEL: f32 = 2.0;
+/// Deuterium consumed by one synchronized Orbital Railgun strike.
+pub const ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST: usize = 1_000;
+/// Free empire-grid capacity required to fire an Orbital Railgun strike.
+pub const ORBITAL_RAILGUN_FIRE_ENERGY_COST: usize = 10;
+/// Empire-grid demand added by every completed Orbital Railgun level.
+pub const ORBITAL_RAILGUN_ENERGY_PER_LEVEL: usize = 4;
 /// Hull points repaired by one Repair Truck after each round.
 pub const REPAIR_TRUCK_HEALING_PER_ROUND: usize = 50;
 
@@ -107,7 +119,7 @@ pub const BACKGROUND_Z: f32 = 0.;
 pub const VORONOI_Z: f32 = 1.;
 /// Render layer of strategic planet sprites.
 pub const PLANET_Z: f32 = 2.;
-/// Travelling missions sit above planets and below their defense and icon overlays.
+/// Travelling missions sit above planets and orbital structures, below the map's icon overlays.
 pub const MISSION_Z: f32 = PLANET_Z + 0.4;
 /// Render layer of strategic map explosions.
 pub const EXPLOSION_Z: f32 = 4.;

@@ -14,8 +14,9 @@ use crate::multiplayer::backend::{BackendError, BackendFuture, MultiplayerBacken
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary,
     JoinGameRequest, MembershipResult, RecoverPlayerRequest, StoredTurnSubmission,
-    SubmissionDisposition,
+    SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
 };
+use crate::multiplayer::recovery::RecoveryCode;
 use crate::platform::config::SupabaseConfig;
 
 /// Browser-compatible Supabase client that ships only a public publishable key.
@@ -135,7 +136,7 @@ impl MultiplayerBackend for SupabaseBackend {
             let payload = CreateGameRpc {
                 code: request.code.0,
                 display_name: request.display_name,
-                recovery_hash: request.recovery_hash,
+                recovery_code: request.recovery_code,
                 max_players: request.persisted.state.rules.player_count,
                 persisted: request.persisted,
             };
@@ -158,7 +159,7 @@ impl MultiplayerBackend for SupabaseBackend {
                     &JoinGameRpc {
                         code: request.code.0,
                         display_name: request.display_name,
-                        recovery_hash: request.recovery_hash,
+                        recovery_code: request.recovery_code,
                     },
                 )
                 .await?;
@@ -166,7 +167,7 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Verifies and rotates a recovery hash inside one database transaction.
+    /// Verifies a stable recovery code inside one database transaction.
     fn recover_player<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -179,8 +180,7 @@ impl MultiplayerBackend for SupabaseBackend {
                     "stellarion_recover_player",
                     &RecoverPlayerRpc {
                         code: request.code.0,
-                        recovery_hash: request.recovery_hash,
-                        replacement_recovery_hash: request.replacement_recovery_hash,
+                        recovery_code: request.recovery_code,
                     },
                 )
                 .await?;
@@ -481,8 +481,8 @@ struct CreateGameRpc {
     code: String,
     #[serde(rename = "p_display_name")]
     display_name: String,
-    #[serde(rename = "p_recovery_hash")]
-    recovery_hash: String,
+    #[serde(rename = "p_recovery_code")]
+    recovery_code: String,
     #[serde(rename = "p_max_players")]
     max_players: u8,
     #[serde(rename = "p_persisted")]
@@ -496,8 +496,8 @@ struct JoinGameRpc {
     code: String,
     #[serde(rename = "p_display_name")]
     display_name: String,
-    #[serde(rename = "p_recovery_hash")]
-    recovery_hash: String,
+    #[serde(rename = "p_recovery_code")]
+    recovery_code: String,
 }
 
 #[derive(Serialize)]
@@ -505,10 +505,8 @@ struct JoinGameRpc {
 struct RecoverPlayerRpc {
     #[serde(rename = "p_code")]
     code: String,
-    #[serde(rename = "p_recovery_hash")]
-    recovery_hash: String,
-    #[serde(rename = "p_replacement_recovery_hash")]
-    replacement_recovery_hash: String,
+    #[serde(rename = "p_recovery_code")]
+    recovery_code: String,
 }
 
 #[derive(Serialize)]
@@ -725,7 +723,9 @@ fn validate_membership(
         return invalid_protocol("membership has an empty authenticated user identifier");
     }
     let name_length = member.display_name.trim().chars().count();
-    if !(1..=32).contains(&name_length) || member.display_name != member.display_name.trim() {
+    if !(1..=MAX_DISPLAY_NAME_CHARS).contains(&name_length)
+        || member.display_name != member.display_name.trim()
+    {
         return invalid_protocol("membership contains an invalid display name");
     }
     if member.identity_version == 0 {
@@ -739,6 +739,7 @@ fn validate_membership_result(
     result: MembershipResult,
     expected_user_id: &UserId,
 ) -> Result<MembershipResult, BackendError> {
+    validate_recovery_code(&result.recovery_code)?;
     let game = validate_game_record(result.game, None, Some(expected_user_id))?;
     if result.membership.user_id != *expected_user_id {
         return invalid_protocol("membership result belongs to a different authenticated user");
@@ -768,8 +769,9 @@ fn validate_summaries(summaries: Vec<GameSummary>) -> Result<Vec<GameSummary>, B
             return invalid_protocol("resume list contains an empty or duplicate game identifier");
         }
         validate_game_code(&summary.code)?;
+        validate_recovery_code(&summary.recovery_code)?;
         let name_length = summary.display_name.trim().chars().count();
-        if !(1..=32).contains(&name_length)
+        if !(1..=MAX_DISPLAY_NAME_CHARS).contains(&name_length)
             || summary.display_name != summary.display_name.trim()
             || !summary.player_color.is_valid()
         {
@@ -792,6 +794,16 @@ fn validate_summaries(summaries: Vec<GameSummary>) -> Result<Vec<GameSummary>, B
         }
     }
     Ok(summaries)
+}
+
+/// Validates the canonical recovery-code shape returned by the backend.
+fn validate_recovery_code(code: &str) -> Result<(), BackendError> {
+    let parsed = RecoveryCode::parse(code)
+        .map_err(|_| BackendError::Protocol("backend returned an invalid recovery code".into()))?;
+    if parsed.expose() != code {
+        return invalid_protocol("backend returned a non-canonical recovery code");
+    }
+    Ok(())
 }
 
 /// Validates one game code against the database's Crockford share-code constraint.

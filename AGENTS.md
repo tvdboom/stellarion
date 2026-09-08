@@ -23,7 +23,7 @@ actual code, `Cargo.toml`, and `Justfile` when the project changes.
   jobs. Keep Supabase-managed infrastructure (`auth`, `storage`, extension
   schemas, and the scheduler itself) operational.
 - Preserve the current retention rule: finished games are permanently deleted
-  after 48 hours, including their memberships, recovery hashes, submissions,
+  after 48 hours, including their memberships, recovery codes, submissions,
   and events. The database cleanup job runs every minute. Lobby and active
   games also expire 30 days after their last snapshot save, as do finished games
   if that deadline arrives first. Presence and reconnects do not extend retention.
@@ -168,15 +168,16 @@ against modified clients. No service-role key belongs in the client.
 - Keep Rust transport types, validation, Supabase RPC JSON, and the in-memory
   backend consistent when changing the persistence contract.
 - Preserve revision checks, idempotent submissions, authenticated membership
-  checks, recovery-secret rotation, and durable event replay. Realtime messages
+  checks, stable per-player/per-game recovery codes, and durable event replay. Realtime messages
   are wake-up hints; reload authoritative state through the backend.
 - Lobbies are temporary coordination records, never resumable games. When the
   host leaves an unstarted lobby, delete it and all related data, and return its
   guests to the menu. Only active and finished games belong in Resume Game or
   client recent-game history; leaving a started match must not delete it.
 - Keep secrets out of client code, logs, and source control. Only public
-  publishable configuration belongs in the browser build. Store recovery
-  hashes on the server and do not expose them through client reads.
+  publishable configuration belongs in the browser build. Store recovery codes
+  on the server and return only the authenticated caller's code through
+  membership and resume responses.
 - Maintain RLS, explicit grants/revokes, and fixed `search_path` values for
   privileged SQL functions. Database cleanup remains inaccessible to ordinary
   anonymous/authenticated clients.

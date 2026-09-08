@@ -18,6 +18,7 @@ use crate::core::ui::systems::{resource_bar_bottom, MissionTab, UiState};
 
 const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
+const MAX_NOTIFICATION_WIDTH: f32 = 440.0;
 
 /// Severity used for notification color and sound selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,8 @@ pub enum MessageAction {
     OpenMissionReports,
     /// Centers the strategic map on a still-owned colony and selects it.
     FocusColony(PlanetId),
+    /// Centers the strategic map on a public world without opening its information panel.
+    FocusPlanet(PlanetId),
 }
 
 /// Requests a transient notification.
@@ -126,7 +129,10 @@ impl Messages {
             action: message.action,
             remaining_seconds: message.display_duration.map_or_else(
                 || {
-                    if matches!(message.action, Some(MessageAction::FocusColony(_))) {
+                    if matches!(
+                        message.action,
+                        Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+                    ) {
                         10.0
                     } else {
                         MESSAGE_DURATION as f32
@@ -189,13 +195,23 @@ fn check_messages(
     let in_game = app_state.as_ref().is_some_and(|s| *s.get() == AppState::Game);
     let playing = in_game && game_state.as_ref().is_some_and(|s| *s.get() == GameState::Playing);
     messages.0.retain_mut(|message| {
-        if let Some(MessageAction::FocusColony(id)) = message.action {
-            if !in_game
-                || !map.as_ref().zip(player.as_ref()).is_some_and(|(map, player)| {
+        let actionable_planet_is_valid = match message.action {
+            Some(MessageAction::FocusColony(id)) => {
+                map.as_ref().zip(player.as_ref()).is_some_and(|(map, player)| {
                     map.try_get(id)
                         .is_some_and(|planet| player.owns(planet) && !planet.is_destroyed)
                 })
-            {
+            },
+            Some(MessageAction::FocusPlanet(id)) => map
+                .as_ref()
+                .is_some_and(|map| map.try_get(id).is_some_and(|planet| !planet.is_destroyed)),
+            _ => true,
+        };
+        if matches!(
+            message.action,
+            Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+        ) {
+            if !in_game || !actionable_planet_is_valid {
                 return false;
             }
             if !playing {
@@ -229,6 +245,13 @@ fn check_messages(
                     if playing {
                         if let (Some(map), Some(player)) = (&map, &player) {
                             focus_colony(planet_id, map, player, state);
+                        }
+                    }
+                },
+                MessageAction::FocusPlanet(planet_id) => {
+                    if playing {
+                        if let Some(map) = &map {
+                            focus_planet(planet_id, map, state);
                         }
                     }
                 },
@@ -275,11 +298,18 @@ fn draw_notifications(
         .layout(egui::Layout::top_down(egui::Align::Max))
         .show(context, |ui| {
             // Leave space for the outer anchor, frame margins, and border on narrow windows.
-            ui.set_max_width(360.0_f32.min((context.content_rect().width() - 50.0).max(0.0)));
+            ui.set_max_width(
+                MAX_NOTIFICATION_WIDTH.min((context.content_rect().width() - 50.0).max(0.0)),
+            );
             ui.spacing_mut().item_spacing.y = 6.0;
             // Each frame measures only its own label; the stack shares a right edge, not a width.
             for (index, message) in messages.0.iter().enumerate() {
-                if !playing && matches!(message.action, Some(MessageAction::FocusColony(_))) {
+                if !playing
+                    && matches!(
+                        message.action,
+                        Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+                    )
+                {
                     continue;
                 }
                 let (fill, accent) = match message.level {
@@ -331,6 +361,19 @@ fn focus_colony(planet_id: PlanetId, map: &Map, player: &Player, state: &mut UiS
     };
     select_planet(planet, state, player);
     state.to_selected = true;
+    true
+}
+
+/// Centers the camera on a public world without opening intelligence the player does not have.
+fn focus_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
+    let Some(planet) = map.try_get(planet_id).filter(|planet| !planet.is_destroyed) else {
+        return false;
+    };
+    state.planet_selected = None;
+    state.focus_planet = Some(planet.id);
+    state.to_selected = true;
+    state.mission = false;
+    state.combat_report = None;
     true
 }
 

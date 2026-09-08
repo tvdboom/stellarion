@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::core::map::planet::SolarBand;
+use crate::core::map::planet::{ShieldOverloadState, SolarBand};
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::Description;
 use strum::IntoEnumIterator;
@@ -34,6 +34,11 @@ fn every_building_has_one_authoritative_per_level_energy_value() {
             EnergyGrid {
                 supply: 0,
                 demand: 2,
+            }
+        } else if building == Building::OrbitalRailgun {
+            EnergyGrid {
+                supply: 0,
+                demand: 4,
             }
         } else if one_demand.contains(&building) {
             EnergyGrid {
@@ -133,7 +138,7 @@ fn fully_developed_planet_balance_follows_its_solar_band() {
             EnergyGrid::for_world(&game.map, game.map.get(planet_id)),
             EnergyGrid {
                 supply: expected_supply,
-                demand: 39,
+                demand: 59,
             },
             "{band:?}",
         );
@@ -272,7 +277,8 @@ fn each_missing_energy_costs_ten_percent_and_resources_and_shields_share_efficie
         three_energy_short.scale_resources(Resources::new(100, 80, 60)),
         Resources::new(70, 56, 42),
     );
-    assert_eq!(three_energy_short.planetary_shield(1), 210);
+    assert_eq!(three_energy_short.planetary_shield(1, false), 210);
+    assert_eq!(three_energy_short.planetary_shield(1, true), 231);
 
     let blackout = EnergyGrid {
         supply: 0,
@@ -280,7 +286,33 @@ fn each_missing_energy_costs_ten_percent_and_resources_and_shields_share_efficie
     };
     assert_eq!(blackout.efficiency_percent(), 30);
     assert_eq!(blackout.scale_resources(Resources::new(100, 80, 60)), Resources::new(30, 24, 18),);
-    assert_eq!(blackout.planetary_shield(1), 90);
+    assert_eq!(blackout.planetary_shield(1, false), 90);
+    assert_eq!(EnergyGrid::default().planetary_shield(5, true), 2_250);
+}
+
+#[test]
+fn orbital_railgun_consumes_four_energy_per_level() {
+    assert_eq!(
+        EnergyGrid::for_building(Building::OrbitalRailgun, None),
+        EnergyGrid {
+            supply: 0,
+            demand: 4,
+        }
+    );
+}
+
+#[test]
+fn shield_overload_adds_three_flat_demand_to_its_world() {
+    let mut game = GameModel::new([50; 32], GameRules::default()).unwrap();
+    let home = game.players[0].home_planet;
+    let before = EnergyGrid::for_world(&game.map, game.map.get(home));
+    let planet = game.map.get_mut(home);
+    planet.army.insert(Unit::planetary_shield(), 2);
+    planet.shield_overload = ShieldOverloadState::Overloaded;
+    let after = EnergyGrid::for_world(&game.map, game.map.get(home));
+
+    assert_eq!(after.supply, before.supply);
+    assert_eq!(after.demand, before.demand + 2 + 3);
 }
 
 #[test]

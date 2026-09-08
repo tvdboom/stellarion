@@ -60,6 +60,25 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns the exact shared shield strength at the start of recorded combat.
+    ///
+    /// The first snapshot stores the strength remaining after that round. Adding its recorded
+    /// absorbed damage recovers the energy-scaled, overload-adjusted starting value without
+    /// requiring playback to reconstruct the defender's turn-start energy grid.
+    pub fn initial_planetary_shield(&self) -> usize {
+        let Some(first) = self.combat_report.as_ref().and_then(|combat| combat.rounds.first())
+        else {
+            return 0;
+        };
+        first
+            .attacker
+            .iter()
+            .flat_map(|unit| &unit.shots)
+            .fold(first.planetary_shield, |shield, shot| {
+                shield.saturating_add(shot.planetary_shield_damage)
+            })
+    }
+
     /// Returns whether this report contains an outcome worth replaying as combat animation.
     ///
     /// A lone Colony Ship evacuated before combat still creates its recorded return mission, but

@@ -1,7 +1,7 @@
 <div align="center">
 
 # Stellarion
-### A deterministic multiplayer space strategy game for browser and desktop
+### A multiplayer space strategy game for browser and desktop
 
 <br><br>
 [![Play](https://gist.githubusercontent.com/cxmeel/0dbc95191f239b631c3874f4ccf114e2/raw/play.svg)](https://tvdboom.itch.io/stellarion)
@@ -28,7 +28,8 @@ home planet, you are eliminated.
 
 - **Elimination:** Be the last player who still owns their original home planet. Conquering or
   destroying an opponent's home planet eliminates that player. Mutual elimination is a draw.
-- **Territorial control:** Control at least `50% + 50% / n_players` of all non-moon planets.
+- **Territorial control:** Control at least `50% + 50% / n_players` of all surviving planets.
+  Destroyed planets lower the threshold.
 
 Victory is checked after all battles and ownership changes for the turn resolve, with no holding
 period or countdown. A player who loses their home planet that turn cannot win by territory.
@@ -85,21 +86,16 @@ defenses.
 - **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
   control, but not ownership. The previous owner loses both ownership and control. Surviving
   buildings remain.
-- **Spy:** Send at least five Probes. Their range begins at one sixth of the galaxy from the origin;
-  each completed Command Relay level adds another sixth, with level five reaching every world.
-  Unless `combat probes` is enabled, Probes leave after the first combat round. More returning
-  Probes reveal better intelligence. Resource buildings are visible at the first intelligence
-  tier; the Reactor and Terraformer use tier two; the Shipyard, Factory, and Missile Silo use
-  tier three; the Planetary Shield uses tier four; and the Senate and Colonial Administration
-  are only visible at tier five. Spy missions
-  cannot be detected by a Sensor Phalanx and do not reveal their origin.
-- **Missile Strike:** Launch only Interplanetary Missiles against a planet, not a moon. They bypass
-  ships and the Planetary Shield to hit defenses directly. Surviving missiles are consumed. A
-  strike that is not recalled still hits if the destination later becomes friendly, reveals no
-  enemy-unit intelligence, cannot be detected by a Sensor Phalanx, and does not reveal its origin.
+- **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
+  probes is required for a spy mission. The more Probes that return, the more intelligence is
+  revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin.
+- **Missile Strike:** Launch Interplanetary Missiles against a planet. They bypass ships and the
+  Planetary Shield to hit defenses directly. Surviving missiles are consumed. A strike always
+  hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
+  intelligence, cannot be detected by a Sensor Phalanx, and do not reveal their origin.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
-  enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet; the
-  chance falls in later rounds. The fleet returns whether destruction succeeds. A destroyed
+  enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet (the
+  chance falls in later rounds). The fleet returns whether destruction succeeds. A destroyed
   planet can never be colonized again.
 
 
@@ -107,45 +103,29 @@ defenses.
 
 You can build four types of units on an owned planet:
 
-- **Buildings:** Buildings are used for varied reasons. Core buildings like the mines, Shipyard,
-  Factory, Reactor, Terraformer, Senate, and Colonial Administration support your empire.
-  The Terraformer specializes resource production. The Senate belongs on the homeworld;
-  Colonial Administration is exclusive to non-home planets and coordinates fleet withdrawal.
-- **Orbitals:** Solar Satellites, Sensor Phalanxes, Command Relays, Jump Gates, and Space Docks are
-  constructed without Shipyard capacity. One level of each kind may be queued per turn, but
-  different kinds may be queued together. Command Relays extend the range of Spy missions launched
-  from their planet, while each Jump Gate level supplies its own 5 transport capacity. Orbitals
-  cannot be constructed around moons.
+- **Buildings:** Buildings are used for varied reasons. Core buildings like the mines enhance
+  resource production. The Shipyard and Factory allow you to build ships and defenses on a
+  planet. Other buildings like the Colonial Administration support your empire.
+- **Orbitals:** Orbitals are constructions in space that provide various strategic advantages,
+  such as extending sensor range, enabling faster travel, or supporting fleet operations. The
+  costly, publicly visible Orbital Railgun can fire once per turn at a planet within its
+  level-scaled range; Railguns aimed at one world combine their small, size-dependent destruction
+  chances into a synchronized strike.
 - **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
   them better or worse suited for certain strategies. Some ships are also stronger or weaker against
   other specific ship types, so try to build your fleet according to your enemy's composition.
 - **Defenses:** Defenses are stationary combat units. They have better price-to-stats ratios than
   ships, but are fixed to the planet. Be careful with stacking defenses! War Suns are capable of
-  destroying a planet with any defense army. Repair Trucks restore damaged defense turrets after
-  each round. Crawlers do not attack; after a defender victory, each survivor recovers 1% of the
-  resource cost of destroyed ground defenses, up to 50%. Ships have 80% Rapid Fire against them.
-  Missiles are also included with the defense units.
-
-### Energy
-
-Energy is per-turn capacity, not a stockpiled resource. Reactors supply 3 energy per level, while
-lunar Tidal Generators supply 5 and Solar Satellite output depends on the solar zone.
-Infrastructure that operates continuously creates energy demand; most construction, storage,
-transport, and administrative buildings do not draw permanent power. Surplus energy is discarded
-and gives no bonus. A shortage scales resource income down with a 25% minimum and reduces Planetary
-Shield power with a gentler curve; a fully powered Shield supplies 300 strength per level.
-The Terraformer consumes 1 energy per level and the Senate consumes 2. Colonial Administration
-consumes no energy.
+  destroying a planet with any defense army. Missiles are also included with the defense units.
 
 
 ### Fleet travel
 
 Ships and missiles accelerate throughout each journey. For movement rating `s`, distance covered
 after `t` turns is `s * t * (t + 2) / 3` AU. The first turn covers the same distance as before;
-each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating.
-Clicking a fleet on the map opens its active-mission panel. Any owned mission that is not already
-returning can be recalled for no additional cost; it reverses from its current position and begins
-a new journey back to its original planet.
+each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating. Any
+owned mission (except a Missile Strike) that is not already returning can be recalled for no
+additional cost.
 
 
 ### Combat

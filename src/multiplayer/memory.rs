@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use bevy::platform::time::Instant;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 
 use crate::core::identity::{GameId, PlayerId, UserId};
 use crate::core::player::PlayerColor;
@@ -23,9 +22,9 @@ use crate::multiplayer::backend::{
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
     GameRecord, GameSummary, JoinDisposition, JoinGameRequest, MembershipResult,
-    RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition,
+    RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
 };
-use crate::multiplayer::recovery::generate_user_token;
+use crate::multiplayer::recovery::{generate_user_token, RecoveryCode};
 
 /// How long completed games and their related records are retained.
 const FINISHED_GAME_RETENTION: Duration = Duration::from_secs(48 * 60 * 60);
@@ -67,11 +66,11 @@ struct MemoryState {
     now: Option<Instant>,
 }
 
-/// Canonical mock game plus hidden recovery hashes, submissions, and durable events.
+/// Canonical mock game plus recovery codes, submissions, and durable events.
 struct StoredGame {
     record: GameRecord,
     finished_at: Option<Instant>,
-    recovery_hashes: HashMap<PlayerId, String>,
+    recovery_codes: HashMap<PlayerId, String>,
     submissions: BTreeMap<(u64, PlayerId), StoredTurnSubmission>,
     events: Vec<BackendEvent>,
     connected_players: HashMap<PlayerId, Instant>,
@@ -158,7 +157,7 @@ impl MultiplayerBackend for InMemoryBackend {
         request: CreateGameRequest,
     ) -> BackendFuture<'a, MembershipResult> {
         Box::pin(async move {
-            validate_name_and_hash(&request.display_name, &request.recovery_hash)?;
+            validate_name_and_code(&request.display_name, &request.recovery_code)?;
             request.persisted.validate().map_err(invalid_game)?;
             if request.persisted.state.status != MatchStatus::Lobby {
                 return Err(BackendError::InvalidGameStatus);
@@ -196,7 +195,7 @@ impl MultiplayerBackend for InMemoryBackend {
             let mut stored = StoredGame {
                 record,
                 finished_at: None,
-                recovery_hashes: HashMap::from([(1, request.recovery_hash)]),
+                recovery_codes: HashMap::from([(1, request.recovery_code.clone())]),
                 submissions: BTreeMap::new(),
                 events: Vec::new(),
                 connected_players: HashMap::new(),
@@ -208,6 +207,7 @@ impl MultiplayerBackend for InMemoryBackend {
             Ok(MembershipResult {
                 game,
                 membership,
+                recovery_code: request.recovery_code,
                 disposition: JoinDisposition::Joined,
             })
         })
@@ -220,7 +220,7 @@ impl MultiplayerBackend for InMemoryBackend {
         request: JoinGameRequest,
     ) -> BackendFuture<'a, MembershipResult> {
         Box::pin(async move {
-            validate_name_and_hash(&request.display_name, &request.recovery_hash)?;
+            validate_name_and_code(&request.display_name, &request.recovery_code)?;
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let game_id =
@@ -229,9 +229,15 @@ impl MultiplayerBackend for InMemoryBackend {
             if let Some(existing) =
                 stored.record.members.iter().find(|member| member.user_id == user_id).cloned()
             {
+                let recovery_code = stored
+                    .recovery_codes
+                    .get(&existing.player_id)
+                    .cloned()
+                    .ok_or(BackendError::PlayerNoLongerInGame)?;
                 return Ok(MembershipResult {
                     game: stored.record.clone(),
                     membership: existing,
+                    recovery_code,
                     disposition: JoinDisposition::Reconnected,
                 });
             }
@@ -257,28 +263,25 @@ impl MultiplayerBackend for InMemoryBackend {
             };
             stored.record.members.push(membership.clone());
             stored.record.members.sort_by_key(|member| member.player_id);
-            stored.recovery_hashes.insert(player_id, request.recovery_hash);
+            stored.recovery_codes.insert(player_id, request.recovery_code.clone());
             push_event(stored, BackendEventKind::PlayerJoined, None, Some(player_id));
             Ok(MembershipResult {
                 game: stored.record.clone(),
                 membership,
+                recovery_code: request.recovery_code,
                 disposition: JoinDisposition::Joined,
             })
         })
     }
 
-    /// Verifies and rotates a recovery hash before replacing the associated user.
+    /// Verifies a stable recovery code before replacing the associated user.
     fn recover_player<'a>(
         &'a self,
         session: &'a AuthSession,
         request: RecoverPlayerRequest,
     ) -> BackendFuture<'a, MembershipResult> {
         Box::pin(async move {
-            validate_hash(&request.recovery_hash)?;
-            validate_hash(&request.replacement_recovery_hash)?;
-            if request.recovery_hash == request.replacement_recovery_hash {
-                return Err(BackendError::InvalidData("recovery_rotation".to_string()));
-            }
+            validate_recovery_code(&request.recovery_code)?;
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let game_id =
@@ -287,12 +290,11 @@ impl MultiplayerBackend for InMemoryBackend {
             if stored.record.members.iter().any(|member| member.user_id == user_id) {
                 return Err(BackendError::AlreadyMember);
             }
-            let supplied = request.recovery_hash.as_bytes();
             let player_id = stored
-                .recovery_hashes
+                .recovery_codes
                 .iter()
                 .find_map(|(player_id, expected)| {
-                    bool::from(expected.as_bytes().ct_eq(supplied)).then_some(*player_id)
+                    (expected == &request.recovery_code).then_some(*player_id)
                 })
                 .ok_or(BackendError::InvalidRecoveryCode)?;
             if stored
@@ -301,13 +303,6 @@ impl MultiplayerBackend for InMemoryBackend {
                 .is_some_and(|last_seen| last_seen.elapsed() < PLAYER_CONNECTION_TIMEOUT)
             {
                 return Err(BackendError::RecoveryCodeInUse);
-            }
-            if stored
-                .recovery_hashes
-                .values()
-                .any(|hash| hash == &request.replacement_recovery_hash)
-            {
-                return Err(BackendError::InvalidRecoveryCode);
             }
             let membership = stored
                 .record
@@ -319,12 +314,12 @@ impl MultiplayerBackend for InMemoryBackend {
             membership.identity_version = membership.identity_version.saturating_add(1);
             membership.connected = true;
             let membership = membership.clone();
-            stored.recovery_hashes.insert(player_id, request.replacement_recovery_hash);
             stored.connected_players.insert(player_id, Instant::now());
             push_event(stored, BackendEventKind::PlayerRecovered, None, Some(player_id));
             Ok(MembershipResult {
                 game: stored.record.clone(),
                 membership,
+                recovery_code: request.recovery_code,
                 disposition: JoinDisposition::Reconnected,
             })
         })
@@ -352,6 +347,7 @@ impl MultiplayerBackend for InMemoryBackend {
                         turn: stored.record.persisted.state.turn,
                         player_id: member.player_id,
                         display_name: member.display_name.clone(),
+                        recovery_code: stored.recovery_codes.get(&member.player_id)?.clone(),
                         player_color: player.color(),
                         player_count: stored.record.members.len(),
                         max_players: stored.record.max_players,
@@ -854,24 +850,25 @@ fn authorize_member<'a>(
         .ok_or(BackendError::Forbidden)
 }
 
-/// Validates lobby display names and recovery hashes.
-fn validate_name_and_hash(display_name: &str, recovery_hash: &str) -> Result<(), BackendError> {
+/// Validates lobby display names and recovery codes.
+fn validate_name_and_code(display_name: &str, recovery_code: &str) -> Result<(), BackendError> {
     let length = display_name.trim().chars().count();
-    if !(1..=32).contains(&length) {
-        return Err(BackendError::InvalidData(
-            "display name must contain 1..=32 characters".to_string(),
-        ));
+    if !(1..=MAX_DISPLAY_NAME_CHARS).contains(&length) {
+        return Err(BackendError::InvalidData(format!(
+            "display name must contain 1..={MAX_DISPLAY_NAME_CHARS} characters"
+        )));
     }
-    validate_hash(recovery_hash)
+    validate_recovery_code(recovery_code)
 }
 
-/// Ensures only complete SHA-256 hex hashes enter storage.
-fn validate_hash(hash: &str) -> Result<(), BackendError> {
-    if hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(())
-    } else {
-        Err(BackendError::InvalidData("recovery hash must be a SHA-256 hex value".to_string()))
+/// Ensures only canonical generated recovery codes enter storage.
+fn validate_recovery_code(code: &str) -> Result<(), BackendError> {
+    let canonical = RecoveryCode::parse(code)
+        .map_err(|_| BackendError::InvalidData("recovery code is malformed".to_string()))?;
+    if canonical.expose() != code {
+        return Err(BackendError::InvalidData("recovery code is not canonical".to_string()));
     }
+    Ok(())
 }
 
 /// Converts core validation failures into transport-neutral data errors.

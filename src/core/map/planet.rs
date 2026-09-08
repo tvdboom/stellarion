@@ -19,6 +19,35 @@ use crate::core::units::{Amount, Army, Unit};
 /// Stable index identifying a planet inside one persisted map.
 pub type PlanetId = usize;
 
+/// One-turn operating state of a Planetary Shield overload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldOverloadState {
+    /// The shield can be overloaded for the next turn.
+    #[default]
+    Ready,
+    /// The shield is drawing extra Energy and receives its strength bonus this turn.
+    Overloaded,
+    /// The shield cannot be overloaded during this turn after the previous turn's use.
+    Cooldown,
+}
+
+impl ShieldOverloadState {
+    /// Returns whether the overload is currently affecting Energy demand and combat strength.
+    pub fn is_overloaded(self) -> bool {
+        self == Self::Overloaded
+    }
+
+    /// Advances the one-use, one-cooldown-turn lifecycle after a turn resolves.
+    pub fn finish_turn(self) -> Self {
+        match self {
+            Self::Ready => Self::Ready,
+            Self::Overloaded => Self::Cooldown,
+            Self::Cooldown => Self::Ready,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// A world's relative irradiation zone around the map's primary star.
 pub enum SolarBand {
@@ -242,6 +271,8 @@ pub struct Planet {
     pub terraformer_focus: Option<ResourceName>,
     /// Whether the stationed Command Relay is broadcasting deceptive telemetry.
     pub command_relay_active: bool,
+    /// Current overload or cooldown state of this world's Planetary Shield.
+    pub shield_overload: ShieldOverloadState,
     /// Standing fleet withdrawal order for this colony; disabled until explicitly selected.
     pub fleet_withdrawal: FleetWithdrawal,
     /// Whether this planet has been permanently destroyed.
@@ -369,6 +400,7 @@ impl Planet {
             jump_gate: 0,
             terraformer_focus: None,
             command_relay_active: true,
+            shield_overload: ShieldOverloadState::Ready,
             fleet_withdrawal: FleetWithdrawal::Off,
             is_destroyed: false,
             owned: None,
@@ -440,6 +472,7 @@ impl Planet {
 
     /// Removes invalid or zero-count unit entries from this planet.
     pub fn clean(&mut self) {
+        self.shield_overload = ShieldOverloadState::Ready;
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.owned = None;
         self.controlled = None;
@@ -477,6 +510,7 @@ impl Planet {
 
     /// Removes ownership and owner-only infrastructure from this planet.
     pub fn abandon(&mut self) {
+        self.shield_overload = ShieldOverloadState::Ready;
         self.fleet_withdrawal = FleetWithdrawal::Off;
         let former_owner = self.owned.take();
         self.army.retain(|u, _| !u.is_defense());
@@ -681,8 +715,8 @@ impl Planet {
         JUMP_GATE_CAPACITY_PER_LEVEL.saturating_mul(gate)
     }
 
-    /// Returns whether this Relay spoofs an arriving Spy group as an empty planet.
-    pub fn command_relay_blocks(&self, arriving_probes: usize) -> bool {
+    /// Returns whether this Relay diverts an arriving Spy group before combat.
+    pub fn command_relay_diverts(&self, arriving_probes: usize) -> bool {
         let relay =
             self.army.amount(&Unit::Building(Building::CommandRelay)).min(Building::MAX_LEVEL);
         self.command_relay_active
@@ -737,6 +771,7 @@ impl Planet {
         self.is_destroyed = true;
         self.terraformer_focus = None;
         self.command_relay_active = true;
+        self.shield_overload = ShieldOverloadState::Ready;
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.surface_build_order = [None; 4];
     }

@@ -51,7 +51,11 @@ fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
             rects[1].width() < rects[0].width() * 0.6,
             "short toast inherited long toast width: {rects:?}"
         );
-        assert!(rects[1].height() < rects[0].height());
+        if size.x <= MAX_NOTIFICATION_WIDTH + 50.0 {
+            assert!(rects[1].height() < rects[0].height());
+        } else {
+            assert!(rects[1].height() <= rects[0].height());
+        }
 
         messages.0.pop_front();
         for _ in 0..3 {
@@ -328,6 +332,62 @@ fn return_toast_opens_the_reports_panel_without_selecting_a_hidden_report() {
     assert_eq!(state.mission_tab, MissionTab::MissionReports);
     assert_eq!(state.mission_report, Some(17), "the last visible report remains selected");
     assert_eq!(state.combat_report, None);
+}
+
+#[test]
+fn space_dock_notification_fits_on_one_line_at_normal_game_width() {
+    let context = egui::Context::default();
+    context.style_mut_of(egui::Theme::Dark, |style| {
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(18.0, egui::FontFamily::Proportional),
+        );
+    });
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+    let mut messages = Messages::default();
+    messages.push(&MessageMsg::info("A Space Dock has been built on planet Darian."));
+    for _ in 0..3 {
+        notification_frame(&context, &messages, screen, vec![]);
+    }
+    let dock = notification_frame(&context, &messages, screen, vec![])[0];
+
+    let mut short = Messages::default();
+    short.push(&MessageMsg::info("Turn 2 started."));
+    for _ in 0..3 {
+        notification_frame(&context, &short, screen, vec![]);
+    }
+    let single_line = notification_frame(&context, &short, screen, vec![])[0];
+
+    assert_eq!(dock.height(), single_line.height());
+    assert!(dock.width() > 360.0);
+    assert!(dock.width() <= MAX_NOTIFICATION_WIDTH);
+}
+
+#[test]
+fn public_planet_toast_centers_without_opening_hidden_information() {
+    let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = &model.players[0];
+    let planet = model.players[1].home_planet;
+    let mut state = UiState {
+        planet_selected: Some(player.home_planet),
+        mission: true,
+        combat_report: Some(3),
+        ..default()
+    };
+
+    assert!(focus_planet(planet, &model.map, &mut state));
+    assert_eq!(state.planet_selected, None);
+    assert_eq!(state.focus_planet, Some(planet));
+    assert!(state.to_selected);
+    assert!(!state.mission);
+    assert_eq!(state.combat_report, None);
+
+    state.to_selected = false;
+    assert!(!focus_planet(usize::MAX, &model.map, &mut state));
+    assert!(!state.to_selected);
+    model.map.get_mut(planet).is_destroyed = true;
+    assert!(!focus_planet(planet, &model.map, &mut state));
 }
 
 #[test]

@@ -89,24 +89,25 @@ fn mission_launch_confirmation_is_considerably_attenuated() {
 #[test]
 fn master_volume_preserves_the_mix_and_zero_is_silent() {
     let explosion = PlayAudioMsg::new("large explosion");
-    assert_eq!(explosion.volume, -18.0);
-    for name in ["explosion", "short explosion", "death ray"] {
-        assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
-    }
-    for name in ["beam fire", "bomb release"] {
-        assert_eq!(PlayAudioMsg::new(name).volume, explosion.volume);
-    }
+    assert_eq!(explosion.volume, -8.0);
+    assert_eq!(PlayAudioMsg::new("explosion").volume, -14.0);
+    assert_eq!(PlayAudioMsg::new("short explosion").volume, -18.0);
+    assert_eq!(PlayAudioMsg::new("death ray").volume, -12.0);
+    assert_eq!(PlayAudioMsg::new("beam fire").volume, -10.0);
+    assert_eq!(PlayAudioMsg::new("bomb release").volume, -18.0);
+    assert_eq!(PlayAudioMsg::new("missile miss").volume, -11.0);
     for name in ["shield impact", "laser fire", "missile fire"] {
         assert_eq!(PlayAudioMsg::new(name).volume, -14.0);
     }
     assert_eq!(PlayAudioMsg::new("beam fire").rate(0.8).playback_rate, 0.8);
+    assert_eq!(PlayAudioMsg::new("beam fire").gain(-6.0).volume, -6.0);
     for name in ["horn", "repair", "victory", "draw", "defeat"] {
         assert_eq!(PlayAudioMsg::new(name).volume, -12.0);
     }
     let music = PlayAudioMsg::new("music").background();
     for level in [1.0, 0.5, 0.25] {
         let mixed = output_volume(explosion.volume, level);
-        assert!((mixed - output_volume(music.volume, level) - 12.0).abs() < 0.001);
+        assert!((mixed - output_volume(music.volume, level) - 22.0).abs() < 0.001);
     }
     assert!((output_volume(0.0, 0.5) + 6.0206).abs() < 0.001);
     for level in [0.0, -1.0, f32::NAN, f32::INFINITY] {
@@ -260,7 +261,8 @@ fn volume_frame_in_state(
                 .show(context, |ui| {
                     let button = audio_mode_button(ui, settings.audio);
                     button_rect = button.rect;
-                    slider_rect = volume_popover(&button, settings).map(|response| response.rect);
+                    slider_rect =
+                        volume_popover(&button, settings, false).map(|response| response.rect);
                 });
         },
     );
@@ -420,7 +422,7 @@ fn combat_wheel_changes_volume_once_and_popup_fades_after_scrolling() {
                 scroll_volume(ui.ctx(), settings, in_combat);
                 opacity = scroll_volume_opacity(ui.ctx());
                 let button = audio_mode_button(ui, settings.audio);
-                popup = volume_popover(&button, settings).is_some();
+                popup = volume_popover(&button, settings, false).is_some();
             },
         );
         output.textures_delta.clear();
@@ -488,7 +490,7 @@ fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
                             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                             ..default()
                         },
-                        |ui| button = audio_controls(ui.ctx(), &mut settings).rect,
+                        |ui| button = audio_controls(ui.ctx(), &mut settings, false).rect,
                     );
                     output.textures_delta.clear();
                 }
@@ -498,6 +500,131 @@ fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
             }
         }
     }
+}
+
+#[test]
+fn combat_settings_hover_panel_stays_on_screen_and_defaults_to_sequential_fire() {
+    let context = egui::Context::default();
+    let mut settings = Settings::default();
+    let mut button = egui::Rect::NOTHING;
+    let mut panel = None;
+    let frame = |events: Vec<egui::Event>,
+                 settings: &mut Settings,
+                 button: &mut egui::Rect,
+                 panel: &mut Option<egui::Rect>| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 260.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                egui::Area::new(egui::Id::new("test combat settings"))
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-60.0, 20.0))
+                    .show(ui.ctx(), |ui| {
+                        let response = combat_settings_button(ui);
+                        *button = response.rect;
+                        *panel = combat_settings_popover(&response, settings, false);
+                    });
+            },
+        );
+        output.textures_delta.clear();
+    };
+
+    for _ in 0..3 {
+        frame(vec![], &mut settings, &mut button, &mut panel);
+    }
+    frame(vec![egui::Event::PointerMoved(button.center())], &mut settings, &mut button, &mut panel);
+    frame(vec![egui::Event::PointerMoved(button.center())], &mut settings, &mut button, &mut panel);
+
+    let panel = panel.expect("hovering the gear opens combat settings");
+    assert!(panel.left() >= 0.0 && panel.right() <= 360.0);
+    assert!(panel.top() >= 0.0 && panel.bottom() <= 260.0);
+    assert_eq!(combat_speed_step(settings.combat_speed), 0);
+    assert!(!settings.combat_volley_fire);
+}
+
+#[test]
+fn combat_and_volume_hover_panels_are_mutually_exclusive() {
+    let context = egui::Context::default();
+    let mut settings = Settings::default();
+    let mut combat_button = egui::Rect::NOTHING;
+    let mut volume_button = egui::Rect::NOTHING;
+    let mut combat_panel = None;
+    let mut volume_panel = None;
+    let frame = |events: Vec<egui::Event>,
+                 settings: &mut Settings,
+                 combat_button: &mut egui::Rect,
+                 volume_button: &mut egui::Rect,
+                 combat_panel: &mut Option<egui::Rect>,
+                 volume_panel: &mut Option<egui::Rect>| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 260.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                egui::Area::new(egui::Id::new("test adjacent combat controls"))
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| {
+                            let combat = combat_settings_button(ui);
+                            let volume = audio_mode_button(ui, settings.audio);
+                            *combat_button = combat.rect;
+                            *volume_button = volume.rect;
+                            let prefer_combat = combat.hovered();
+                            let prefer_volume = volume.hovered();
+                            *combat_panel =
+                                combat_settings_popover(&combat, settings, prefer_volume);
+                            *volume_panel = volume_popover(&volume, settings, prefer_combat)
+                                .map(|response| response.rect);
+                        });
+                    });
+            },
+        );
+        output.textures_delta.clear();
+    };
+
+    for _ in 0..3 {
+        frame(
+            vec![],
+            &mut settings,
+            &mut combat_button,
+            &mut volume_button,
+            &mut combat_panel,
+            &mut volume_panel,
+        );
+    }
+    for target in [volume_button.center(), volume_button.center(), combat_button.center()] {
+        frame(
+            vec![egui::Event::PointerMoved(target)],
+            &mut settings,
+            &mut combat_button,
+            &mut volume_button,
+            &mut combat_panel,
+            &mut volume_panel,
+        );
+    }
+    assert!(combat_panel.is_some());
+    assert!(volume_panel.is_none(), "entering the gear must close the volume panel");
+
+    frame(
+        vec![egui::Event::PointerMoved(volume_button.center())],
+        &mut settings,
+        &mut combat_button,
+        &mut volume_button,
+        &mut combat_panel,
+        &mut volume_panel,
+    );
+    assert!(combat_panel.is_none(), "entering volume must close combat settings");
+    assert!(volume_panel.is_some());
 }
 
 #[test]
@@ -570,6 +697,7 @@ fn combat_sound_bursts_are_capped_across_frames_and_release_finished_slots() {
         "laser fire",
         "beam fire",
         "missile fire",
+        "missile miss",
     ];
     for _ in 0..3 {
         for name in effects {

@@ -1,7 +1,4 @@
-//! High-entropy game and recovery code generation, normalization, and hashing.
-
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
+//! High-entropy game and recovery code generation and normalization.
 use thiserror::Error;
 
 use crate::core::identity::GameCode;
@@ -37,25 +34,6 @@ impl RecoveryCode {
     /// Returns the formatted code intended for explicit user display.
     pub fn expose(&self) -> &str {
         &self.0
-    }
-
-    /// Derives the one-way hash stored by the backend.
-    pub fn hash(&self) -> RecoveryHash {
-        let mut hasher = Sha256::new();
-        hasher.update(b"stellarion-player-recovery-v1");
-        hasher.update(normalize(&self.0).as_bytes());
-        RecoveryHash(hex::encode(hasher.finalize()))
-    }
-}
-
-/// Hex-encoded recovery hash safe to persist in Supabase.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecoveryHash(pub String);
-
-impl RecoveryHash {
-    /// Verifies another hash without leaking an early mismatch position.
-    pub fn constant_time_eq(&self, other: &Self) -> bool {
-        self.0.as_bytes().ct_eq(other.0.as_bytes()).into()
     }
 }
 

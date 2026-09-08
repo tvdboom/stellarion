@@ -250,6 +250,28 @@ fn in_game_settings_boxes_fit_and_back_remains_reachable() {
         ));
     }
 }
+
+#[test]
+fn in_game_menu_keeps_manual_save_without_a_lobby_shortcut() {
+    let (mut app, context) = menu_app();
+    let mut session = test_lobby();
+    let game = session.active_game.as_mut().unwrap();
+    game.status = MatchStatus::Active;
+    game.persisted.state.status = MatchStatus::Active;
+    app.insert_resource(session)
+        .insert_resource(State::new(GameState::GameMenu))
+        .init_resource::<NextState<GameState>>()
+        .add_systems(Update, draw_game_overlay);
+
+    let viewport = egui::vec2(800.0, 900.0);
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+    assert!(visible_menu_label(&shapes, "Save Game").is_some());
+    assert!(visible_menu_label(&shapes, "Game Lobby").is_none());
+}
+
 /// Runs the production menu areas, including their persistent egui layout state.
 fn menu_app() -> (App, egui::Context) {
     let mut app = App::new();
@@ -908,6 +930,23 @@ fn modal_gameplay_blocker_captures_the_whole_viewport() {
 }
 
 #[test]
+fn in_game_menu_shows_the_current_session_recovery_code() {
+    let context = egui::Context::default();
+    let mut session = test_lobby();
+    session.active_game.as_mut().unwrap().status = MatchStatus::Active;
+    session.issued_recovery_code = Some("0123-4567-89AB-CDEF".to_string());
+    let game = session.active_game.as_ref().unwrap();
+    let (shapes, _) = menu_frame(&context, vec![], |ui, _| {
+        game_access_code_cards(ui, game, session.issued_recovery_code.as_deref());
+    });
+
+    assert!(visible_menu_label(&shapes, "GAME CODE").is_some());
+    assert!(visible_menu_label(&shapes, "ABCDEF").is_some());
+    assert!(visible_menu_label(&shapes, "RECOVERY CODE").is_some());
+    assert!(visible_menu_label(&shapes, "0123-4567-89AB-CDEF").is_some());
+}
+
+#[test]
 fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
     for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(640.0, 480.0)] {
         let mut session = test_lobby();
@@ -1173,6 +1212,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
                 turn: 7,
                 player_id: 1,
                 display_name: "Nova".to_string(),
+                recovery_code: "0123-4567-89AB-CDEF".to_string(),
                 player_color: PlayerColor::new(4).unwrap(),
                 player_count: 2,
                 max_players: 2,
@@ -1214,7 +1254,7 @@ fn resume_overview_fits_available_height_and_keeps_status_dots_clear() {
 #[test]
 fn resume_metadata_stays_on_one_row_and_busy_cards_do_not_resume() {
     for width in [280.0, 640.0] {
-        for name in ["Nova".to_string(), "W".repeat(32)] {
+        for name in ["Nova".to_string(), "W".repeat(MAX_DISPLAY_NAME_CHARS)] {
             for enabled in [true, false] {
                 let context = egui::Context::default();
                 let game = GameSummary {
@@ -1226,6 +1266,7 @@ fn resume_metadata_stays_on_one_row_and_busy_cards_do_not_resume() {
                     turn: 6,
                     player_id: 2,
                     display_name: name.clone(),
+                    recovery_code: "0123-4567-89AB-CDEF".to_string(),
                     player_color: PlayerColor::new(4).unwrap(),
                     player_count: 2,
                     max_players: 2,
@@ -1433,14 +1474,14 @@ fn join_game_code_uses_the_labeled_help_card_above_the_actions() {
 
 #[test]
 fn joining_always_prompts_and_uses_the_edited_name() {
-    for (saved_name, draft, can_join) in [
-        (Some("Nova"), "Nova", true),
-        (Some("Nova"), "New Pilot", true),
-        (Some("Nova"), "", false),
-        (Some("Nova"), "   ", false),
-        (Some("Nova"), "This edited player name is too long", false),
-        (None, "First Pilot", true),
-        (Some("   "), "First Pilot", true),
+    for (saved_name, draft, expected_name, can_join) in [
+        (Some("Nova"), "Nova", "Nova", true),
+        (Some("Nova"), "New Pilot", "New Pilot", true),
+        (Some("Nova"), "", "", false),
+        (Some("Nova"), "   ", "   ", false),
+        (Some("Nova"), "This edited player name is too long", "This edited play", true),
+        (None, "First Pilot", "First Pilot", true),
+        (Some("   "), "First Pilot", "First Pilot", true),
     ] {
         let mut form = MultiplayerForm {
             display_name: draft.to_string(),
@@ -1458,7 +1499,7 @@ fn joining_always_prompts_and_uses_the_edited_name() {
         if can_join {
             assert!(matches!(requests.as_slice(),
                 [MultiplayerRequest::JoinGame { display_name, code, .. }]
-                    if display_name == draft && code == "ABCDEF"
+                    if display_name == expected_name && code == "ABCDEF"
             ));
         } else {
             assert!(requests.is_empty());
@@ -1581,6 +1622,14 @@ fn join_name_is_editable_and_navigation_stays_visible_on_small_windows() {
             vec![select_all.clone(), egui::Event::Text("Orion".to_string())],
         );
         assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "Orion");
+        menu_app_frame(
+            &mut app,
+            &context,
+            viewport,
+            state,
+            vec![select_all.clone(), egui::Event::Text("ABCDEFGHIJKLMNOPQRST".to_string())],
+        );
+        assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "ABCDEFGHIJKLMNOP");
         app.world_mut().resource_mut::<MultiplayerSession>().busy = true;
         menu_app_frame(
             &mut app,
@@ -1589,7 +1638,7 @@ fn join_name_is_editable_and_navigation_stays_visible_on_small_windows() {
             state,
             vec![select_all, egui::Event::Text("Blocked edit".to_string())],
         );
-        assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "Orion");
+        assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "ABCDEFGHIJKLMNOP");
         app.world_mut().resource_mut::<MultiplayerSession>().busy = false;
 
         menu_app_frame(
@@ -1623,7 +1672,7 @@ fn join_name_is_editable_and_navigation_stays_visible_on_small_windows() {
             app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
         assert!(matches!(requests.as_slice(),
             [MultiplayerRequest::JoinGame { display_name, code, .. }]
-                if display_name == "Orion" && code == "ABCDEF"
+                if display_name == "ABCDEFGHIJKLMNOP" && code == "ABCDEF"
         ));
     }
 }
@@ -1642,7 +1691,7 @@ fn recovery_help_is_only_shown_on_hover() {
     let (shapes, _) = menu_frame(&context, vec![], &mut draw);
     let help_visible = |shapes: &[egui::epaint::ClippedShape]| {
         shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Each player has a different private recovery code"))
+        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Each player has one private recovery code per game"))
     })
     };
     assert!(!help_visible(&shapes));

@@ -1,6 +1,7 @@
 //! Missions panels for the game interface.
 
 use super::*;
+use crate::core::identity::PlayerId;
 use crate::core::missions::MissionRouteStyle;
 
 const MISSION_PLANET_COLUMN_WIDTH: f32 = 120.0;
@@ -25,6 +26,13 @@ const MISSION_REPORT_HOVER_STROKE_WIDTH: f32 = 1.5;
 const MISSION_REPORT_IMAGE_SIZE: f32 = 48.0;
 const MISSION_REPORT_SELECTED_IMAGE_SIZE: f32 = 52.0;
 const MISSION_MISSILE_IMAGE_OFFSET_X: f32 = -4.0;
+const MISSION_REPORT_PLANET_INTEL_WIDTH: f32 = 138.0;
+const MISSION_REPORT_INTEL_COLUMN_GAP: f32 = 4.0;
+const MISSION_REPORT_INTEL_IMAGE_SIZE: f32 = (MISSION_REPORT_PLANET_INTEL_WIDTH
+    - MISSION_REPORT_INTEL_COLUMN_GAP * (MISSION_REPORT_INTEL_COLUMNS - 1) as f32)
+    / MISSION_REPORT_INTEL_COLUMNS as f32;
+const MISSION_REPORT_INTEL_COLUMNS: usize = 3;
+const MISSION_REPORT_INTEL_GROUP_GAP: f32 = 12.0;
 
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
 fn mission_row_layout(available_width: f32) -> (f32, f32) {
@@ -42,6 +50,11 @@ fn mission_row_layout(available_width: f32) -> (f32, f32) {
 /// Active missions always need at least the next turn to finish, including a recall at home.
 fn mission_display_turns(mission: &Mission, map: &Map) -> usize {
     mission.turns_to_destination(map).max(1)
+}
+
+/// Returns whether the local player should be offered the active-mission recall action.
+fn mission_recall_available(mission: &Mission, player_id: PlayerId) -> bool {
+    mission.owner == player_id && !mission.is_returning() && mission.objective.is_recallable()
 }
 
 /// Paints the compact turn-back action used to recall an active mission.
@@ -307,6 +320,82 @@ fn draw_mission_planet_link(
     let name_response = ui.interact(name_rect, ui.next_auto_id(), sense);
 
     (image_response, name_response)
+}
+
+/// Returns the prominent and compact unit groups shown in a planet mission report.
+fn mission_report_planet_intel(is_home_planet: bool) -> ([Unit; 2], Vec<Unit>, Vec<Unit>) {
+    let critical = [Unit::planetary_shield(), Unit::space_dock()];
+    let orbitals =
+        Unit::orbitals().into_iter().filter(|unit| *unit != Unit::space_dock()).collect();
+    let buildings = Unit::buildings_for_world(false, is_home_planet)
+        .into_iter()
+        .filter(|unit| *unit != Unit::planetary_shield())
+        .collect();
+
+    (critical, orbitals, buildings)
+}
+
+/// Draws one compact intelligence group inside the final two defender columns.
+fn draw_mission_report_intel_grid(
+    ui: &mut Ui,
+    name: &str,
+    units: &[Unit],
+    report: &MissionReport,
+    player: &Player,
+    images: &ImageIds,
+) {
+    egui::Grid::new(name)
+        .striped(false)
+        .num_columns(MISSION_REPORT_INTEL_COLUMNS)
+        .spacing([MISSION_REPORT_INTEL_COLUMN_GAP, 4.0])
+        .show(ui, |ui| {
+            for (index, unit) in units.iter().enumerate() {
+                draw_mission_report_unit(
+                    ui,
+                    unit,
+                    report,
+                    player,
+                    Side::Defender,
+                    (MISSION_REPORT_INTEL_IMAGE_SIZE, TextStyle::Small),
+                    images,
+                );
+
+                if (index + 1) % MISSION_REPORT_INTEL_COLUMNS == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+/// Keeps strategic defenses prominent while fitting all planet intelligence in two columns.
+fn draw_mission_report_planet_intel(
+    ui: &mut Ui,
+    report: &MissionReport,
+    player: &Player,
+    is_home_planet: bool,
+    images: &ImageIds,
+) {
+    let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
+
+    ui.vertical(|ui| {
+        ui.set_width(MISSION_REPORT_PLANET_INTEL_WIDTH);
+        ui.spacing_mut().item_spacing.y = 0.0;
+
+        draw_army_grid(ui, "defender_critical", &critical, report, player, images);
+
+        ui.add_space(MISSION_REPORT_INTEL_GROUP_GAP);
+        draw_mission_report_intel_grid(ui, "defender_orbitals", &orbitals, report, player, images);
+
+        ui.add_space(MISSION_REPORT_INTEL_GROUP_GAP);
+        draw_mission_report_intel_grid(
+            ui,
+            "defender_buildings",
+            &buildings,
+            report,
+            player,
+            images,
+        );
+    });
 }
 
 /// Overlays the mission log badge without advancing the surrounding grid cursor.
@@ -1119,7 +1208,7 @@ fn draw_active_missions(
                                     .strong(),
                                 );
 
-                                if mission.owner == player.id && !mission.is_returning() {
+                                if mission_recall_available(mission, player.id) {
                                     ui.add_space(10.0);
                                     let recall = draw_recall_button(ui, images, editable)
                                         .on_hover_small(if editable {
@@ -1508,25 +1597,45 @@ fn draw_mission_reports(
                                     "planet"
                                 }
                             ));
-                        } else {
-                            let units = Unit::all_for_world(
-                                destination.is_moon(),
-                                destination.id == player.home_planet,
-                            );
-                            for (i, army) in [units.get(1), units.get(2), units.first()]
-                                .into_iter()
-                                .flatten()
-                                .enumerate()
+                        } else if destination.is_moon() {
+                            for (index, army) in
+                                [Unit::ships(), Unit::buildings_for_world(true, false)]
+                                    .into_iter()
+                                    .enumerate()
                             {
                                 draw_army_grid(
                                     ui,
-                                    format!("defender_{i}").as_str(),
-                                    army,
+                                    format!("defender_moon_{index}").as_str(),
+                                    &army,
                                     report,
                                     player,
                                     images,
                                 );
                             }
+                        } else {
+                            draw_army_grid(
+                                ui,
+                                "defender_ships",
+                                &Unit::ships(),
+                                report,
+                                player,
+                                images,
+                            );
+                            draw_army_grid(
+                                ui,
+                                "defender_defenses",
+                                &Unit::defenses(),
+                                report,
+                                player,
+                                images,
+                            );
+                            draw_mission_report_planet_intel(
+                                ui,
+                                report,
+                                player,
+                                destination.id == player.home_planet,
+                                images,
+                            );
                         }
                     });
 

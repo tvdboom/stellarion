@@ -51,14 +51,25 @@ fn presentation_app() -> (App, Mission, Player) {
             turn: 2,
             ..default()
         })
+        .init_resource::<MultiplayerSession>()
         .init_resource::<DetectedMissions>()
         .init_resource::<WorldAssets>()
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<ColorMaterial>>()
         .init_resource::<Time>()
         .add_message::<MessageMsg>()
+        .add_message::<PublicStructureChangeMsg>()
         .add_systems(Startup, initialize_detections)
-        .add_systems(Update, (show_detections, animate_detections).chain());
+        .add_systems(
+            Update,
+            (
+                show_detections,
+                show_public_structure_changes,
+                animate_detections,
+                animate_public_structure_changes,
+            )
+                .chain(),
+        );
     app.world_mut()
         .run_system_once(
             |mut assets: ResMut<WorldAssets>,
@@ -74,6 +85,13 @@ fn presentation_app() -> (App, Mission, Player) {
 
 fn effects(app: &mut App) -> Vec<Entity> {
     app.world_mut().query_filtered::<Entity, With<DetectionEffect>>().iter(app.world()).collect()
+}
+
+fn structure_effects(app: &mut App) -> Vec<Entity> {
+    app.world_mut()
+        .query_filtered::<Entity, With<PublicStructureEffect>>()
+        .iter(app.world())
+        .collect()
 }
 
 #[test]
@@ -166,4 +184,161 @@ fn resumed_missions_are_baselined_and_detection_effects_pause_then_expire() {
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(6));
     app.update();
     assert!(effects(&mut app).is_empty());
+}
+
+#[test]
+fn public_structure_pulses_use_the_owners_color_follow_the_marker_and_expire() {
+    let (mut app, _, player) = presentation_app();
+    let planet_id = app
+        .world()
+        .resource::<Map>()
+        .planets
+        .iter()
+        .find(|planet| planet.controlled.is_some_and(|owner| owner != player.id))
+        .unwrap()
+        .id;
+    let owner = app.world().resource::<Map>().get(planet_id).controlled.unwrap();
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).army.insert(Unit::space_dock(), 1);
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(planet_id)
+        .army
+        .insert(Unit::Building(Building::OrbitalRailgun), 1);
+    let planet_entity = app
+        .world_mut()
+        .spawn(PlanetCmp {
+            id: planet_id,
+        })
+        .id();
+    let dock = app
+        .world_mut()
+        .spawn((
+            SpaceDockCmp,
+            Sprite::default(),
+            Transform::from_xyz(70.0, -30.0, 0.25),
+            Visibility::Inherited,
+            ChildOf(planet_entity),
+        ))
+        .id();
+    let railgun = app
+        .world_mut()
+        .spawn((
+            OrbitalRailgunCmp {
+                planet: planet_id,
+                anchor: Vec2::X,
+                base_rotation: 0.0,
+                phase: 0.0,
+            },
+            Sprite::default(),
+            Transform::from_xyz(45.0, 20.0, 0.22),
+            Visibility::Inherited,
+            Pickable::default(),
+            ChildOf(planet_entity),
+        ))
+        .id();
+
+    for structure in [PublicStructure::SpaceDock, PublicStructure::OrbitalRailgun] {
+        app.world_mut().write_message(PublicStructureChangeMsg {
+            planet: planet_id,
+            structure,
+            change: PublicStructureChange::Built,
+            owner,
+        });
+    }
+    app.update();
+
+    let effects = structure_effects(&mut app);
+    assert_eq!(effects.len(), 2);
+    for (structure, marker) in
+        [(PublicStructure::SpaceDock, dock), (PublicStructure::OrbitalRailgun, railgun)]
+    {
+        let effect = effects
+            .iter()
+            .copied()
+            .find(|effect| {
+                app.world().get::<PublicStructureEffect>(*effect).unwrap().structure == structure
+            })
+            .unwrap();
+        assert_eq!(app.world().get::<ChildOf>(effect).unwrap().parent(), marker);
+        let children = app.world().get::<Children>(effect).unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .filter(|child| app.world().get::<PublicStructurePulse>(*child).is_some())
+                .count(),
+            STRUCTURE_PULSE_COUNT
+        );
+        let pulse = children
+            .iter()
+            .find(|child| app.world().get::<PublicStructurePulse>(*child).is_some())
+            .unwrap();
+        let material = app.world().get::<MeshMaterial2d<ColorMaterial>>(pulse).unwrap();
+        assert_eq!(
+            app.world().resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
+            crate::core::player::PlayerColor::for_player(owner).color().with_alpha(0.0)
+        );
+    }
+    assert_ne!(owner, player.id, "the test must exercise another player's structures");
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(4));
+    app.update();
+    assert!(structure_effects(&mut app).is_empty());
+}
+
+#[test]
+fn destruction_pulses_hold_a_public_railgun_marker_until_the_effect_finishes() {
+    let (mut app, _, player) = presentation_app();
+    let planet_id = app
+        .world()
+        .resource::<Map>()
+        .planets
+        .iter()
+        .find(|planet| planet.owned.is_some_and(|owner| owner != player.id))
+        .unwrap()
+        .id;
+    let owner = app.world().resource::<Map>().get(planet_id).owned.unwrap();
+    let planet_entity = app
+        .world_mut()
+        .spawn(PlanetCmp {
+            id: planet_id,
+        })
+        .id();
+    let railgun = app
+        .world_mut()
+        .spawn((
+            OrbitalRailgunCmp {
+                planet: planet_id,
+                anchor: Vec2::X,
+                base_rotation: 0.0,
+                phase: 0.0,
+            },
+            Sprite::default(),
+            Transform::default(),
+            Visibility::Hidden,
+            Pickable::default(),
+            ChildOf(planet_entity),
+        ))
+        .id();
+
+    app.world_mut().write_message(PublicStructureChangeMsg {
+        planet: planet_id,
+        structure: PublicStructure::OrbitalRailgun,
+        change: PublicStructureChange::Destroyed,
+        owner,
+    });
+    app.update();
+
+    let effect = structure_effects(&mut app)[0];
+    assert_eq!(app.world().get::<PublicStructureEffect>(effect).unwrap().marker, railgun);
+    assert_eq!(*app.world().get::<Visibility>(railgun).unwrap(), Visibility::Inherited);
+    assert_eq!(*app.world().get::<Pickable>(railgun).unwrap(), Pickable::IGNORE);
+    assert_eq!(
+        app.world().get::<Sprite>(railgun).unwrap().color,
+        crate::core::player::PlayerColor::for_player(owner).color()
+    );
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(4));
+    app.update();
+    assert!(structure_effects(&mut app).is_empty());
+    assert_eq!(*app.world().get::<Visibility>(railgun).unwrap(), Visibility::Hidden);
 }

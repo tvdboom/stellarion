@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::core::identity::GameId;
+use crate::core::settings::CombatPreferences;
 use crate::multiplayer::model::AuthSession;
 
 #[cfg(target_arch = "wasm32")]
@@ -23,6 +24,9 @@ pub struct ClientProfile {
     pub recent_games: Vec<GameId>,
     /// Last lobby display name entered by this installation.
     pub display_name: String,
+    /// Combat presentation choices for this client-local authenticated player.
+    #[serde(default)]
+    pub combat_preferences: CombatPreferences,
 }
 
 impl ClientProfile {

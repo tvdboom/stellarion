@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::constants::MIN_SPY_PROBES;
+use crate::core::constants::{MIN_SPY_PROBES, ORBITAL_RAILGUN_FIRE_ENERGY_COST};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Combat;
@@ -667,7 +667,7 @@ fn mission_commands_ignore_zero_count_units() {
 }
 
 #[test]
-fn every_active_mission_type_can_be_recalled_from_its_current_position_for_free() {
+fn every_recallable_mission_type_can_be_recalled_from_its_current_position_for_free() {
     let model = started_model(2);
     let player_id = model.players[0].id;
     let original_origin = model.players[0].home_planet;
@@ -683,7 +683,6 @@ fn every_active_mission_type_can_be_recalled_from_its_current_position_for_free(
         (Icon::Colonize, Army::from([(Unit::colony_ship(), 1)])),
         (Icon::Attack, Army::from([(Unit::Ship(Ship::Bomber), 1)])),
         (Icon::Spy, Army::from([(Unit::probe(), MIN_SPY_PROBES)])),
-        (Icon::MissileStrike, Army::from([(Unit::interplanetary_missile(), 1)])),
         (Icon::Destroy, Army::from([(Unit::war_sun(), 1)])),
     ]
     .into_iter()
@@ -736,6 +735,37 @@ fn every_active_mission_type_can_be_recalled_from_its_current_position_for_free(
         assert!(recalled.is_returning());
         assert!(recalled.logs.contains("Mission recalled to planet"));
     }
+}
+
+#[test]
+fn missile_strikes_cannot_be_recalled_once_launched() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    model.missions.push(Mission::new_with_id(
+        70,
+        model.turn as usize,
+        player_id,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::MissileStrike,
+        Army::from([(Unit::interplanetary_missile(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    ));
+
+    assert!(matches!(
+        preview_commands(
+            &model,
+            player_id,
+            &[TurnCommand::RecallMission { mission_id: 70 }]
+        ),
+        Err(GameError::InvalidCommand { reason, .. })
+            if reason == "missile strikes cannot be recalled once launched"
+    ));
 }
 
 #[test]
@@ -1046,29 +1076,96 @@ fn planet_configuration_commands_are_deterministic_and_require_completed_infrast
 }
 
 #[test]
+fn planetary_shield_overload_applies_once_then_cools_down_for_one_turn() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let home = model.players[0].home_planet;
+    let enemy_home = model.players[1].home_planet;
+    model.map.get_mut(home).army.insert(Unit::planetary_shield(), 2);
+    let base_demand = model.players[0].energy_grid(&model.map).demand;
+    let overload = TurnCommand::SetPlanetaryShieldOverload {
+        planet_id: home,
+        active: true,
+    };
+
+    let preview = preview_commands(&model, player_id, std::slice::from_ref(&overload)).unwrap();
+    assert_eq!(preview.map.get(home).shield_overload, ShieldOverloadState::Overloaded);
+    assert_eq!(preview.players[0].energy_grid(&preview.map).demand, base_demand + 3);
+    let cancelled = preview_commands(
+        &preview,
+        player_id,
+        &[TurnCommand::SetPlanetaryShieldOverload {
+            planet_id: home,
+            active: false,
+        }],
+    )
+    .unwrap();
+    assert_eq!(cancelled.map.get(home).shield_overload, ShieldOverloadState::Ready);
+
+    assert!(preview_commands(
+        &model,
+        player_id,
+        &[TurnCommand::SetPlanetaryShieldOverload {
+            planet_id: enemy_home,
+            active: true,
+        }],
+    )
+    .is_err());
+
+    let submissions = model
+        .players
+        .iter()
+        .map(|player| {
+            TurnSubmission::new(
+                player.id,
+                model.turn,
+                if player.id == player_id {
+                    vec![overload.clone()]
+                } else {
+                    Vec::new()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    resolve_turn(&mut model, &submissions).unwrap();
+    assert_eq!(model.map.get(home).shield_overload, ShieldOverloadState::Cooldown);
+    assert!(preview_commands(&model, player_id, std::slice::from_ref(&overload)).is_err());
+
+    empty_turn(&mut model);
+    assert_eq!(model.map.get(home).shield_overload, ShieldOverloadState::Ready);
+    assert!(preview_commands(&model, player_id, &[overload]).is_ok());
+}
+
+#[test]
 fn command_relay_spoof_threshold_is_five_probes_per_level_and_can_be_disabled() {
     let mut planet = Planet::new(0, "Relay".into(), Vec2::ZERO, false, 1.0);
     for level in 1..=Building::MAX_LEVEL {
         planet.army.insert(Unit::Building(Building::CommandRelay), level);
-        assert!(!planet.command_relay_blocks(0));
-        assert!(planet.command_relay_blocks(level * 5));
-        assert!(!planet.command_relay_blocks(level * 5 + 1));
+        assert!(!planet.command_relay_diverts(0));
+        assert!(planet.command_relay_diverts(level * 5));
+        assert!(!planet.command_relay_diverts(level * 5 + 1));
     }
     planet.command_relay_active = false;
-    assert!(!planet.command_relay_blocks(5));
+    assert!(!planet.command_relay_diverts(5));
 }
 
 #[test]
-fn command_relay_spoofs_only_the_attacking_players_undersized_spy_report() {
-    for (probes, active, spoofed) in [(10, true, true), (11, true, false), (5, false, false)] {
+fn command_relay_diverts_undersized_spies_before_combat_and_returns_every_probe() {
+    for (probes, relay_level, active, diverted) in
+        [(5, 1, true, true), (10, 2, true, true), (11, 2, true, false), (5, 2, false, false)]
+    {
         let mut model = started_model(2);
         let attacker = model.players[0].id;
         let defender = model.players[1].id;
         let origin = model.players[0].home_planet;
         let destination = model.players[1].home_planet;
         let target = model.map.get_mut(destination);
-        target.army = Army::from([(Unit::Building(Building::CommandRelay), 2)]);
+        target.army = Army::from([
+            (Unit::Building(Building::CommandRelay), relay_level),
+            (Unit::Defense(Defense::RocketLauncher), 5),
+        ]);
         target.command_relay_active = active;
+        let defending_army = target.army.clone();
 
         let mut mission = Mission::new_with_id(
             9_000 + probes as u64,
@@ -1099,11 +1196,28 @@ fn command_relay_spoofs_only_the_attacking_players_undersized_spy_report() {
             .reports
             .last()
             .expect("defender should retain the true report");
-        assert_eq!(attacker_report.planet.owned.is_none(), spoofed, "probes={probes}");
-        assert_eq!(attacker_report.planet.army.is_empty(), spoofed, "probes={probes}");
-        assert_eq!(attacker_report.surviving_defender.is_empty(), spoofed, "probes={probes}");
+        assert_eq!(attacker_report.planet.owned.is_none(), diverted, "probes={probes}");
+        assert_eq!(attacker_report.planet.army.is_empty(), diverted, "probes={probes}");
+        assert_eq!(attacker_report.surviving_defender.is_empty(), diverted, "probes={probes}");
         assert_eq!(defender_report.planet.owned, Some(defender));
-        assert_eq!(defender_report.planet.army.amount(&Unit::Building(Building::CommandRelay)), 2);
+        assert_eq!(
+            defender_report.planet.army.amount(&Unit::Building(Building::CommandRelay)),
+            relay_level
+        );
+        if diverted {
+            assert_eq!(attacker_report.scout_probes, probes);
+            assert_eq!(attacker_report.surviving_attacker.amount(&Unit::probe()), probes);
+            assert!(attacker_report.combat_report.is_none());
+            assert_eq!(defender_report.scout_probes, probes);
+            assert_eq!(defender_report.surviving_attacker.amount(&Unit::probe()), probes);
+            assert!(defender_report.combat_report.is_none());
+            assert_eq!(model.map.get(destination).army, defending_army);
+            assert!(model.missions.iter().any(|mission| {
+                mission.owner == attacker
+                    && mission.return_objective == Some(Icon::Spy)
+                    && mission.army.amount(&Unit::probe()) == probes
+            }));
+        }
     }
 }
 
@@ -1307,7 +1421,7 @@ fn give_territory(model: &mut GameModel, owner: PlayerId, count: usize) {
         .map
         .planets
         .iter()
-        .filter(|planet| !planet.is_moon() && !homes.contains(&planet.id))
+        .filter(|planet| !planet.is_moon() && !planet.is_destroyed && !homes.contains(&planet.id))
         .map(|planet| planet.id)
         .take(count - 1)
         .collect::<Vec<_>>();
@@ -1328,19 +1442,56 @@ fn empty_turn(model: &mut GameModel) -> TurnResult {
 }
 
 #[test]
-fn territory_target_uses_starting_players_and_rounds_up() {
-    for (players, expected) in [(2, 15), (3, 20), (4, 25)] {
+fn territory_target_uses_surviving_planets_and_starting_players_and_rounds_up() {
+    for (players, expected, expected_after_destruction) in [(2, 15, 8), (3, 20, 10), (4, 25, 13)] {
         let mut model = started_model(players);
         assert_eq!(model.planets_to_win(), expected);
         model.players[0].spectator = true;
-        let id = model.players[0].home_planet;
-        model.map.get_mut(id).is_destroyed = true;
         assert_eq!(model.planets_to_win(), expected);
+
+        let homes = model.players.iter().map(|player| player.home_planet).collect::<HashSet<_>>();
+        let destroyed = model
+            .map
+            .planets
+            .iter()
+            .filter(|planet| !planet.is_moon() && !homes.contains(&planet.id))
+            .map(|planet| planet.id)
+            .take(usize::from(players) * 5)
+            .collect::<Vec<_>>();
+        assert_eq!(destroyed.len(), usize::from(players) * 5);
+        for id in destroyed {
+            model.map.get_mut(id).destroy();
+        }
+        assert_eq!(model.planets_to_win(), expected_after_destruction);
     }
     let mut model = started_model(4);
     model.map.planets =
         model.map.planets.into_iter().filter(|planet| !planet.is_moon()).take(30).collect();
     assert_eq!(model.planets_to_win(), 19);
+}
+
+#[test]
+fn destroying_half_the_planets_halves_the_territorial_threshold() {
+    let mut model = started_model(2);
+    let homes = model.players.iter().map(|player| player.home_planet).collect::<HashSet<_>>();
+    let destroyed = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && !homes.contains(&planet.id))
+        .map(|planet| planet.id)
+        .take(10)
+        .collect::<Vec<_>>();
+    assert_eq!(destroyed.len(), 10);
+    for id in destroyed {
+        model.map.get_mut(id).destroy();
+    }
+
+    assert_eq!(model.planets_to_win(), 8);
+    give_territory(&mut model, 2, 7);
+    assert_eq!(model.territorial_winner(), None);
+    give_territory(&mut model, 2, 8);
+    assert_eq!(model.territorial_winner(), Some(2));
 }
 
 #[test]
@@ -1524,6 +1675,196 @@ fn territorial_victory_waits_for_all_arriving_attacks() {
         assert_eq!(result.winner, take_home.then_some(1));
         assert_eq!(result.finished, take_home);
     }
+}
+
+#[test]
+fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
+    let mut model = started_model(2);
+    let origin = model.players[0].home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    model.players[0].resources = Resources::new(1_000, 1_000, 1_000);
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(target).position = origin_position + Vec2::X * Planet::SIZE * 3.0;
+    let fire = TurnCommand::FireOrbitalRailguns {
+        target,
+    };
+    assert!(preview_commands(&model, 1, std::slice::from_ref(&fire)).is_err());
+
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 2);
+    model.players[0].resources.deuterium = 999;
+    assert!(preview_commands(&model, 1, std::slice::from_ref(&fire)).is_err());
+    model.players[0].resources.deuterium = 1_000;
+    assert!(
+        model.players[0].energy_grid(&model.map).balance()
+            < ORBITAL_RAILGUN_FIRE_ENERGY_COST as i128,
+        "the test must exercise firing through an Energy shortage"
+    );
+    let preview = preview_commands(&model, 1, std::slice::from_ref(&fire)).unwrap();
+    assert_eq!(orbital_railgun_fire_cost(), Resources::new(0, 0, 1_000));
+    assert_eq!(ORBITAL_RAILGUN_FIRE_ENERGY_COST, 10);
+    assert_eq!(preview.players[0].resources, Resources::new(1_000, 1_000, 0));
+    assert!(preview_commands(&model, 1, &[fire.clone(), fire]).is_err());
+    assert!(preview_commands(
+        &model,
+        2,
+        &[TurnCommand::FireOrbitalRailguns {
+            target,
+        }]
+    )
+    .is_err());
+
+    let firing_income = model.players[0]
+        .energy_grid(&model.map)
+        .with_action_demand(ORBITAL_RAILGUN_FIRE_ENERGY_COST)
+        .scale_resources(model.players[0].raw_resource_production(&model.map));
+    let submissions = vec![
+        TurnSubmission::new(
+            1,
+            model.turn,
+            vec![TurnCommand::FireOrbitalRailguns {
+                target,
+            }],
+        ),
+        TurnSubmission::new(2, model.turn, Vec::new()),
+    ];
+    resolve_turn(&mut model, &submissions).unwrap();
+    assert_eq!(model.players[0].resources, Resources::new(1_000, 1_000, 0) + firing_income);
+}
+
+#[test]
+fn orbital_railguns_can_target_moons() {
+    let mut model = started_model(2);
+    let origin = model.players[0].home_planet;
+    let target = model.map.moons()[0].id;
+    let origin_position = model.map.get(origin).position;
+    let moon = model.map.get_mut(target);
+    moon.owned = None;
+    moon.controlled = None;
+    moon.position = origin_position + Vec2::X * Planet::SIZE;
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::Reactor), Building::MAX_LEVEL);
+    model
+        .map
+        .get_mut(origin)
+        .army
+        .insert(Unit::Building(Building::TidalGenerator), Building::MAX_LEVEL);
+    model.players[0].resources = Resources::new(1_000, 1_000, 1_000);
+
+    let preview = preview_commands(
+        &model,
+        1,
+        &[TurnCommand::FireOrbitalRailguns {
+            target,
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(preview.orbital_strikes[0].target, target);
+
+    let submissions = vec![
+        TurnSubmission::new(
+            1,
+            model.turn,
+            vec![TurnCommand::FireOrbitalRailguns {
+                target,
+            }],
+        ),
+        TurnSubmission::new(2, model.turn, Vec::new()),
+    ];
+    resolve_turn(&mut model, &submissions).unwrap();
+    assert_eq!(model.orbital_strikes[0].target, target);
+    let saved = PersistedGame::new(model).to_json().unwrap();
+    assert!(PersistedGame::from_json(saved).is_ok());
+}
+
+#[test]
+fn orbital_railguns_combine_by_target_and_persist_the_public_outcome() {
+    let mut model = started_model(2);
+    let worlds = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && planet.owned.is_none())
+        .map(|planet| planet.id)
+        .take(2)
+        .collect::<Vec<_>>();
+    let first = model.players[0].home_planet;
+    let second = worlds[0];
+    let target = worlds[1];
+    model.map.get_mut(second).colonize(1);
+    model.players[0].record_world_acquisition(second);
+    let target_position = model.map.get(target).position;
+    for (index, origin) in [first, second].into_iter().enumerate() {
+        let planet = model.map.get_mut(origin);
+        planet.position = target_position + Vec2::X * Planet::SIZE * (index as f32 + 1.0);
+        planet.army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    }
+    model.players[0].resources = Resources::new(5_000, 5_000, 5_000);
+    model.map.get_mut(first).army.insert(Unit::Building(Building::Reactor), Building::MAX_LEVEL);
+    model
+        .map
+        .get_mut(first)
+        .army
+        .insert(Unit::Building(Building::TidalGenerator), Building::MAX_LEVEL);
+    let preview = preview_commands(
+        &model,
+        1,
+        &[TurnCommand::FireOrbitalRailguns {
+            target,
+        }],
+    )
+    .unwrap();
+    assert_eq!(preview.orbital_strikes[0].origins, vec![first.min(second), first.max(second)]);
+    assert_eq!(preview.players[0].resources, Resources::new(5_000, 5_000, 4_000));
+    let submissions = vec![
+        TurnSubmission::new(
+            1,
+            model.turn,
+            vec![TurnCommand::FireOrbitalRailguns {
+                target,
+            }],
+        ),
+        TurnSubmission::new(2, model.turn, Vec::new()),
+    ];
+
+    resolve_turn(&mut model, &submissions).unwrap();
+    assert_eq!(model.orbital_strikes.len(), 1);
+    let strike = &model.orbital_strikes[0];
+    assert_eq!(strike.turn, model.turn);
+    assert_eq!(strike.origins, vec![first.min(second), first.max(second)]);
+    assert_eq!(strike.target, target);
+    assert_eq!(
+        strike.chance_basis_points,
+        orbital_railgun_destruction_basis_points(&model.map, &[first, second])
+    );
+    assert_eq!(model.map.get(target).is_destroyed, strike.destroyed);
+    let saved = PersistedGame::new(model).to_json().unwrap();
+    assert!(PersistedGame::from_json(saved).is_ok());
+}
+
+#[test]
+fn orbital_railgun_chance_is_five_percent_per_firing_level() {
+    let mut model = started_model(2);
+    let first = model.players[0].home_planet;
+    let second = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    model.map.get_mut(first).army.insert(Unit::Building(Building::OrbitalRailgun), 5);
+    model.map.get_mut(second).army.insert(Unit::Building(Building::OrbitalRailgun), 2);
+
+    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[first]), 2_500);
+    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[first, second]), 3_500);
 }
 
 proptest::proptest! {

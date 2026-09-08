@@ -185,13 +185,16 @@ impl Player {
 
     /// Computes resource production for the current owned worlds.
     pub fn resource_production(&self, map: &Map) -> Resources {
-        let raw = map
-            .planets
+        self.energy_grid(map).scale_resources(self.raw_resource_production(map))
+    }
+
+    /// Computes resource production before grid efficiency is applied.
+    pub(crate) fn raw_resource_production(&self, map: &Map) -> Resources {
+        map.planets
             .iter()
             .filter(|planet| planet.owned == Some(self.id))
             .map(Planet::resource_production)
-            .sum();
-        self.energy_grid(map).scale_resources(raw)
+            .sum()
     }
 
     /// Returns this player's non-stored energy supply and infrastructure demand.

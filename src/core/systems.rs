@@ -12,7 +12,7 @@ use crate::core::player::Player;
 use crate::core::settings::Settings;
 #[cfg(debug_assertions)]
 use crate::core::simulation::{preview_commands, TurnCommand};
-use crate::core::states::{AppState, GameState};
+use crate::core::states::{AppState, CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::multiplayer::client::MultiplayerRequest;
@@ -113,7 +113,14 @@ pub fn check_keys_menu(
                 match game_state.get() {
                     GameState::Playing => {
                         if let Some(state) = state.as_mut() {
-                            if state.planet_selected.is_some() || state.mission {
+                            if state.abandon_confirmation.is_some()
+                                || state.railgun_confirmation.is_some()
+                            {
+                                // Confirmation prompts consume Escape before their underlying
+                                // planet selection or the in-game menu can react to the same key.
+                                state.abandon_confirmation = None;
+                                state.railgun_confirmation = None;
+                            } else if state.planet_selected.is_some() || state.mission {
                                 state.planet_selected = None;
                                 state.mission = false;
                                 state.combat_report = None;
@@ -155,6 +162,7 @@ pub fn check_keys_menu(
 pub fn check_keys_combat(
     mut settings: ResMut<Settings>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    combat_state: Res<State<CombatState>>,
     mut round_shortcuts: Local<[bool; 2]>,
 ) {
     let jumping = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
@@ -174,7 +182,9 @@ pub fn check_keys_combat(
             round_shortcuts[index] = false;
         }
     }
-    if keyboard.just_pressed(KeyCode::Space) {
+    if *combat_state.get() == CombatState::EndCombat {
+        settings.combat_paused = false;
+    } else if keyboard.just_pressed(KeyCode::Space) {
         settings.combat_paused = !settings.combat_paused;
     }
 }

@@ -28,7 +28,7 @@ pub mod orders;
 pub mod player;
 pub mod random;
 pub mod resources;
-mod settings;
+pub(crate) mod settings;
 pub mod simulation;
 pub mod states;
 #[cfg(feature = "app")]

@@ -81,7 +81,7 @@ pub struct Resources {
 
 impl Resources {
     /// Creates a bundle with the given metal, crystal, and deuterium amounts.
-    pub fn new(metal: usize, crystal: usize, deuterium: usize) -> Self {
+    pub const fn new(metal: usize, crystal: usize, deuterium: usize) -> Self {
         Self {
             metal,
             crystal,

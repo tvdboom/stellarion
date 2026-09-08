@@ -19,18 +19,22 @@ use crate::core::combat::systems::{
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
+    PublicStructureChangeMsg,
 };
 use crate::core::map::battle::{BattleAftermathPlugin, BattleAftermathSet};
 use crate::core::map::colonization::ColonizationPlugin;
 use crate::core::map::details::MapDetailsPlugin;
-use crate::core::map::detection::MissionDetectionPlugin;
+use crate::core::map::detection::{
+    animate_public_structure_changes, show_public_structure_changes, MissionDetectionPlugin,
+};
 use crate::core::map::model::{Map, MapCmp};
+use crate::core::map::orbital_railgun::OrbitalRailgunAnimationPlugin;
 use crate::core::map::systems::{
-    animate_asteroid_belts, animate_map_ambience, animate_phalanx_drones, animate_range_markers,
-    animate_space_scenery, draw_map, ensure_asteroid_belt, hide_planet_details,
-    position_home_crown, run_map_animations, update_ambient_comets, update_end_turn,
-    update_jump_gate_links, update_planet_defenses, update_planet_info, update_voronoi,
-    AmbientCometSpawner,
+    animate_asteroid_belts, animate_map_ambience, animate_orbital_railguns, animate_phalanx_drones,
+    animate_range_markers, animate_space_scenery, draw_map, ensure_asteroid_belt,
+    hide_planet_details, position_home_crown, run_map_animations, update_ambient_comets,
+    update_end_turn, update_jump_gate_links, update_planet_defenses, update_planet_info,
+    update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -84,6 +88,7 @@ impl Plugin for GamePlugin {
             .add_message::<ChangeAudioMsg>()
             .add_message::<VolumeFeedbackMsg>()
             .add_message::<MessageMsg>()
+            .add_message::<PublicStructureChangeMsg>()
             .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
             .add_message::<RecallMissionMsg>()
@@ -98,6 +103,7 @@ impl Plugin for GamePlugin {
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
+            .add_plugins(OrbitalRailgunAnimationPlugin)
             .add_plugins(MissionDetectionPlugin)
             .add_plugins(MapDetailsPlugin)
             // Sets
@@ -243,13 +249,15 @@ impl Plugin for GamePlugin {
                         animate_range_markers,
                         animate_map_ambience,
                         animate_space_scenery,
-                        update_voronoi,
+                        update_voronoi.after(animate_public_structure_changes),
                     )
                         .in_set(InGameSet),
                     (
                         update_planet_info,
                         update_planet_defenses
+                            .after(show_public_structure_changes)
                             .before(bevy_tweening::AnimationSystem::AnimationUpdate),
+                        animate_orbital_railguns.after(update_planet_defenses),
                         update_jump_gate_links.after(update_planet_defenses),
                         update_ambient_comets,
                         send_mission,

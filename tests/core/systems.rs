@@ -4,6 +4,66 @@ use super::*;
 use crate::core::ui::systems::MapRangePreview;
 
 #[test]
+fn escape_closes_mission_and_combat_details_without_opening_the_menu() {
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::Escape);
+
+    let mut app = App::new();
+    app.insert_resource(State::new(AppState::Game))
+        .insert_resource(State::new(GameState::Playing))
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<NextState<GameState>>()
+        .insert_resource(keyboard)
+        .insert_resource(UiState {
+            mission: true,
+            mission_tab: MissionTab::MissionReports,
+            mission_report: Some(42),
+            combat_report: Some(7),
+            ..default()
+        })
+        .add_message::<StartTurnMsg>()
+        .add_message::<MultiplayerRequest>();
+
+    app.world_mut().run_system_once(check_keys_menu).unwrap();
+
+    let state = app.world().resource::<UiState>();
+    assert_eq!(state.combat_report, None);
+    assert!(!state.mission);
+    assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));
+}
+
+#[test]
+fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
+    for (abandon_confirmation, railgun_confirmation) in [(Some(2), None), (None, Some(3))] {
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::Escape);
+
+        let mut app = App::new();
+        app.insert_resource(State::new(AppState::Game))
+            .insert_resource(State::new(GameState::Playing))
+            .init_resource::<NextState<AppState>>()
+            .init_resource::<NextState<GameState>>()
+            .insert_resource(keyboard)
+            .insert_resource(UiState {
+                planet_selected: Some(1),
+                abandon_confirmation,
+                railgun_confirmation,
+                ..default()
+            })
+            .add_message::<StartTurnMsg>()
+            .add_message::<MultiplayerRequest>();
+
+        app.world_mut().run_system_once(check_keys_menu).unwrap();
+
+        let state = app.world().resource::<UiState>();
+        assert_eq!(state.abandon_confirmation, None);
+        assert_eq!(state.railgun_confirmation, None);
+        assert_eq!(state.planet_selected, Some(1));
+        assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));
+    }
+}
+
+#[test]
 fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     let mut app = App::new();
     app.insert_resource(UiState {

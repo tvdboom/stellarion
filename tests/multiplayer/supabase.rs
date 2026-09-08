@@ -236,6 +236,7 @@ fn validates_successful_transport_payloads() {
     let result = MembershipResult {
         membership: valid.members[0].clone(),
         game: valid,
+        recovery_code: "0123-4567-89AB-CDEF".into(),
         disposition: JoinDisposition::Joined,
     };
     assert!(validate_membership_result(
@@ -252,7 +253,7 @@ fn validates_resume_player_identity() {
         "id": "game-1", "code": "ABCDEF", "revision": 1, "saved_at": 1700000000,
         "status": "active",
         "turn": 6, "player_id": 2, "player_count": 2, "max_players": 2,
-        "display_name": "Nova", "player_color": 4
+        "display_name": "Nova", "recovery_code": "0123-4567-89AB-CDEF", "player_color": 4
     });
     let summary: GameSummary = serde_json::from_value(payload.clone()).unwrap();
     assert!(validate_summaries(vec![summary]).is_ok());
@@ -265,7 +266,7 @@ fn validates_resume_player_identity() {
     for (field, value) in [
         ("display_name", serde_json::json!("")),
         ("display_name", serde_json::json!(" Nova ")),
-        ("display_name", serde_json::json!("N".repeat(33))),
+        ("display_name", serde_json::json!("N".repeat(MAX_DISPLAY_NAME_CHARS + 1))),
         ("player_color", serde_json::json!(6)),
     ] {
         let mut invalid = payload.clone();
@@ -442,6 +443,7 @@ fn schema_contains_the_complete_secure_contract() {
     assert!(SCHEMA.contains("p_after_sequence is null or p_after_sequence < 0"));
     assert!(SCHEMA.contains("v_planet_total > 160"));
     assert!(SCHEMA.contains("jsonb_array_length(v_missions) > 4096"));
+    assert!(SCHEMA.contains("jsonb_array_length(v_orbital_strikes) > 160"));
     assert!(SCHEMA.contains("pg_column_size(p_persisted) > 67108864"));
     assert!(SCHEMA.contains("jsonb_array_length(entry -> 'reports') > 512"));
     assert!(SCHEMA.contains("jsonb_array_length(p_submission -> 'commands') > 1024"));

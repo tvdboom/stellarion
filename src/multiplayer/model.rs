@@ -6,6 +6,9 @@ use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{MatchStatus, PersistedGame, TurnSubmission};
 
+/// Maximum number of Unicode characters allowed in a player's displayed name.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 16;
+
 /// Restorable anonymous-auth session returned by Supabase or the mock backend.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +111,8 @@ pub struct GameSummary {
     pub player_id: PlayerId,
     /// Calling user's saved name in this game.
     pub display_name: String,
+    /// Calling user's stable recovery code for this game.
+    pub recovery_code: String,
     /// Calling user's selected empire color.
     pub player_color: PlayerColor,
     /// Current lobby membership count.
@@ -124,8 +129,8 @@ pub struct CreateGameRequest {
     pub code: GameCode,
     /// Creator name shown in the lobby.
     pub display_name: String,
-    /// Hash of the creator's high-entropy recovery secret.
-    pub recovery_hash: String,
+    /// Creator's stable recovery code for this game.
+    pub recovery_code: String,
     /// Initial deterministic lobby state.
     pub persisted: PersistedGame,
 }
@@ -138,8 +143,8 @@ pub struct JoinGameRequest {
     pub code: GameCode,
     /// Name shown in the lobby.
     pub display_name: String,
-    /// Hash of the joining player's recovery secret.
-    pub recovery_hash: String,
+    /// Joining player's stable recovery code for this game.
+    pub recovery_code: String,
 }
 
 /// Data required to replace a lost authenticated identity.
@@ -148,10 +153,8 @@ pub struct JoinGameRequest {
 pub struct RecoverPlayerRequest {
     /// Human-friendly code locating the game.
     pub code: GameCode,
-    /// Hash derived from the recovery code entered by the player.
-    pub recovery_hash: String,
-    /// Newly generated hash that invalidates the used recovery code.
-    pub replacement_recovery_hash: String,
+    /// Stable recovery code belonging to the player slot.
+    pub recovery_code: String,
 }
 
 /// Whether joining created a membership or reused the caller's existing mapping.
@@ -172,6 +175,8 @@ pub struct MembershipResult {
     pub game: GameRecord,
     /// Calling user's mapping inside the game.
     pub membership: GameMembership,
+    /// Calling user's stable recovery code for this game.
+    pub recovery_code: String,
     /// How the mapping was obtained.
     pub disposition: JoinDisposition,
 }

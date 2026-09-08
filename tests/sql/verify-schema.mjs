@@ -121,8 +121,8 @@ await db.exec(`
     case when i = 3 then now() - interval '47 hours' else now() - interval '48 hours' end
   from generate_series(1, 4) i;
   insert into public.stellarion_game_players
-    (game_id, player_id, user_id, display_name, recovery_hash, is_creator)
-  select id, 1, created_by, 'Tester', repeat('a', 64), true from public.stellarion_games;
+    (game_id, player_id, user_id, display_name, recovery_code, is_creator)
+  select id, 1, created_by, 'Tester', '0123-4567-89AB-CDEF', true from public.stellarion_games;
   insert into public.stellarion_turn_submissions (game_id, turn, player_id, submission, digest)
   select game_id, 7, player_id, '{}'::jsonb, repeat('b', 64) from public.stellarion_game_players;
   insert into public.stellarion_game_events (game_id, sequence, kind)
@@ -176,8 +176,8 @@ await db.exec(`
     now(), case when i >= 7 then now() - interval '1 day' else null end
   from generate_series(1, 9) i;
   insert into public.stellarion_game_players
-    (game_id, player_id, user_id, display_name, recovery_hash, is_creator)
-  select id, 1, created_by, 'Tester', repeat('a', 64), true from public.stellarion_games;
+    (game_id, player_id, user_id, display_name, recovery_code, is_creator)
+  select id, 1, created_by, 'Tester', '0123-4567-89AB-CDEF', true from public.stellarion_games;
   insert into public.stellarion_turn_submissions (game_id, turn, player_id, submission, digest)
   select game_id, 7, player_id, '{}'::jsonb, repeat('b', 64) from public.stellarion_game_players;
   insert into public.stellarion_game_events (game_id, sequence, kind)
@@ -203,6 +203,8 @@ await db.exec("delete from public.stellarion_games");
 const host = "00000000-0000-0000-0000-000000000001";
 const guest = "00000000-0000-0000-0000-000000000002";
 const outsider = "00000000-0000-0000-0000-000000000003";
+const hostRecovery = "0123-4567-89AB-CDEF";
+const guestRecovery = "FEDC-BA98-7654-3210";
 await db.query("insert into auth.users values ($1), ($2)", [guest, outsider]);
 const rpc = async (actor, sql, params = [], role = "authenticated") => {
   await db.query("select set_config('request.jwt.claim.sub', $1, false)", [actor ?? ""]);
@@ -215,28 +217,38 @@ const rpc = async (actor, sql, params = [], role = "authenticated") => {
 };
 const create = (actor, code = "ABCDEF", role = "authenticated", persisted = fixtures.lobby) => rpc(actor,
   "select public.stellarion_create_game($1, $2, $3, $4, $5) as result",
-  [code, "Host", "a".repeat(64), 4, persisted], role);
+  [code, "Host", hostRecovery, 4, persisted], role);
 await assert.rejects(create(null, "ABCDEF", "anon"), /permission denied/);
 await assert.rejects(create(null), /STLR_UNAUTHENTICATED/);
 const incompleteLobby = structuredClone(fixtures.lobby);
 delete incompleteLobby.state.rules.practice_mode;
 await assert.rejects(create(host, "ABCDEG", "authenticated", incompleteLobby), /STLR_INVALID_DATA:rules/);
+const missingOrbitalStrikes = structuredClone(fixtures.lobby);
+delete missingOrbitalStrikes.state.orbital_strikes;
+await assert.rejects(create(host, "ABCDEN", "authenticated", missingOrbitalStrikes), /STLR_INVALID_DATA:persisted object/);
+const malformedOrbitalStrikes = structuredClone(fixtures.lobby);
+malformedOrbitalStrikes.state.orbital_strikes = {};
+await assert.rejects(create(host, "ABCDEP", "authenticated", malformedOrbitalStrikes), /STLR_INVALID_DATA:orbital_strikes/);
 const unsupportedColonization = structuredClone(fixtures.lobby);
 unsupportedColonization.state.rules.colonizable_percent = 100;
 await assert.rejects(create(host, "ABCDEJ", "authenticated", unsupportedColonization), /STLR_INVALID_DATA:rules/);
 const snapshotWithRemovedField = structuredClone(fixtures.lobby);
 snapshotWithRemovedField.removed_field = true;
 await assert.rejects(create(host, "ABCDEH", "authenticated", snapshotWithRemovedField), /STLR_INVALID_DATA:persisted object/);
+await assert.rejects(rpc(host,
+  "select public.stellarion_create_game($1, $2, $3, $4, $5) as result",
+  ["ABCDEK", "ABCDEFGHIJKLMNOPQ", hostRecovery, 4, fixtures.lobby]),
+  /STLR_INVALID_DATA:display_name/);
 const created = await create(host);
 const id = created.game.id;
 assert.equal(created.membership.player_id, 1);
 assert.equal(created.game.status, "lobby");
 assert(Number.isSafeInteger(created.game.saved_at) && created.game.saved_at > 0);
-assert(!JSON.stringify(created).includes("recovery_hash"));
+assert.equal(created.recovery_code, hostRecovery);
 await assert.rejects(create(host), /STLR_CODE_COLLISION/);
 assert.deepEqual(await rpc(host, "select public.stellarion_list_games() as result"), []);
 await assert.rejects(rpc(host, "select state as result from public.stellarion_games"), /permission denied/);
-await assert.rejects(rpc(host, "select recovery_hash as result from public.stellarion_game_players"), /permission denied/);
+await assert.rejects(rpc(host, "select recovery_code as result from public.stellarion_game_players"), /permission denied/);
 await assert.rejects(rpc(outsider, "select public.stellarion_load_game($1) as result", [id]), /STLR_FORBIDDEN/);
 assert.equal((await db.query("select to_regprocedure('public.stellarion_trusted_write(uuid,text,text,bigint,integer)') as obj")).rows[0].obj, null);
 for (const signature of [
@@ -254,7 +266,8 @@ for (const signature of [
   }
 }
 const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
-  ["ABCDEF", "Guest", "b".repeat(64)]);
+  ["ABCDEF", "Guest", guestRecovery]);
+assert.equal(joined.recovery_code, guestRecovery);
 const save = (actor, record, persisted) => rpc(actor,
   "select public.stellarion_save_game($1, $2, $3) as result", [id, record.revision, persisted]);
 const setColor = (actor, color) => rpc(actor,
@@ -356,7 +369,7 @@ assert(events.events.some(e => e.kind === "turn_resolved"));
 assert(events.events.some(e => e.kind === "turn_withdrawn"));
 const temporary = await create(host, "XYZABC");
 await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
-  ["XYZABC", "Guest", "c".repeat(64)]);
+  ["XYZABC", "Guest", "CDEF-0123-4567-89AB"]);
 await rpc(host, "select public.stellarion_set_connected($1, false) as result", [temporary.game.id]);
 await assert.rejects(rpc(guest, "select public.stellarion_load_game($1) as result", [temporary.game.id]), /STLR_GAME_NOT_FOUND/);
 await rpc(host, "select public.stellarion_set_connected($1, false) as result", [id]);
@@ -399,6 +412,22 @@ for (const [departed, observer] of [[host, guest], [guest, host]]) {
   const reconnected = await rpc(observer, "select public.stellarion_load_game($1) as result", [id]);
   assert(reconnected.members.every(member => member.connected));
 }
+await rpc(guest, "select public.stellarion_set_connected($1, false) as result", [id]);
+const recovered = await rpc(
+  outsider,
+  "select public.stellarion_recover_player($1, $2) as result",
+  ["ABCDEF", guestRecovery],
+);
+assert.equal(recovered.membership.user_id, outsider);
+assert.equal(recovered.recovery_code, guestRecovery);
+await rpc(outsider, "select public.stellarion_set_connected($1, false) as result", [id]);
+const recoveredAgain = await rpc(
+  guest,
+  "select public.stellarion_recover_player($1, $2) as result",
+  ["ABCDEF", guestRecovery],
+);
+assert.equal(recoveredAgain.membership.user_id, guest);
+assert.equal(recoveredAgain.recovery_code, guestRecovery);
 console.log("Host and guest presence expires after 15 seconds; read-only refreshes, resume guards, reconnects, and saved games remain consistent.");
-console.log("Direct authenticated SQL RPCs: create/join/start/save/ready/continue/resolve, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
+console.log("Direct authenticated SQL RPCs: create/join/recovery/start/save/ready/continue/resolve, stable recovery codes, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
 await db.close();

@@ -93,6 +93,7 @@ fn small_ui_icons_have_smooth_mips() {
         "lost",
         "missile",
         "won",
+        "orbital railgun marker",
     ] {
         let bytes = runtime_asset(&format!("images/icons/{name}.basisu.ktx2"));
         for features in [WgpuFeatures::empty(), WgpuFeatures::TEXTURE_COMPRESSION_BC] {
@@ -191,6 +192,7 @@ fn world_structure_cutouts_have_smooth_mips_for_small_map_sprites() {
 fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
     for name in [
         "dock",
+        "orbital railgun marker",
         "jump gate marker",
         "solar satellite marker",
         "command relay marker",
@@ -239,6 +241,7 @@ fn player_color_masks_preserve_alpha_in_every_mip_on_native_and_browser() {
 fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
     for name in [
         "dock",
+        "orbital railgun marker",
         "jump gate marker",
         "solar satellite marker",
         "command relay marker",
@@ -286,6 +289,7 @@ fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
 fn neutral_map_artwork_preserves_alpha_and_value_relief_without_baked_hue() {
     for name in [
         "dock",
+        "orbital railgun marker",
         "jump gate marker",
         "solar satellite marker",
         "command relay marker",
@@ -342,6 +346,7 @@ fn neutral_infrastructure_markers_retain_visible_value_relief() {
 
     for name in [
         "dock",
+        "orbital railgun marker",
         "jump gate marker",
         "solar satellite marker",
         "command relay marker",
@@ -383,6 +388,7 @@ fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
         "mission missile",
         "mission spy",
         "dock",
+        "orbital railgun marker",
         "jump gate marker",
         "solar satellite marker",
         "command relay marker",

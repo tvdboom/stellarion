@@ -43,6 +43,8 @@ pub enum Building {
     SensorPhalanx,
     /// The jump gate building.
     JumpGate,
+    /// The colossal orbital railgun used for synchronized planetary strikes.
+    OrbitalRailgun,
     /// The laboratory building.
     Laboratory,
     /// The orbital radar building.
@@ -185,12 +187,13 @@ impl Description for Building {
             },
             Building::SolarSatellite => {
                 "Solar Satellites collect stellar radiation in orbit and transmit power to the \
-                empire-wide grid. Solar Satellites can only be constructed around planets."
+                empire-wide grid."
             },
             Building::CommandRelay => {
-                "An active Command Relay feeds false telemetry to small enemy Spy missions. \
-                Each completed level makes groups of up to 5 additional Probes report an empty \
-                planet. Larger groups gather intelligence normally."
+                "An active Command Relay diverts undersized enemy Spy missions before combat and \
+                feeds their Probes false telemetry. It safely returns groups of up to 5 Probes \
+                per completed level with a report of an empty planet. Larger groups gather \
+                intelligence normally."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
@@ -203,6 +206,14 @@ impl Description for Building {
                 (at any distance in space). Thus, having only a single gate is useless. Jumps \
                 always take 1 turn and costs no fuel, independent of the fleet's composition. \
                 Upgrading the Jump Gate increases the number of ships it can transport per turn."
+            },
+            Building::OrbitalRailgun => {
+                "The Orbital Railgun is a colossal superweapon. Once per turn, each Railgun can \
+                join a strike against an enemy world within range. Railguns always aim at the \
+                same target. Every firing level adds a 5% destruction chance. A synchronized \
+                strike costs 1,000 Deuterium and requires 10 free Energy. Each level extends the \
+                firing range by 2 AU. The Orbital Railgun is always visible by all players in the \
+                galaxy."
             },
             Building::Laboratory => {
                 "The Laboratory allows to convert resources of one type to another. The higher \
@@ -221,9 +232,10 @@ impl Description for Building {
                 course among the stars. Each Senate level lets you own one extra planet."
             },
             Building::ColonialAdministration => {
-                "Coordinates fleet withdrawal from colonies to your homeworld. Levels 1–4 unlock \
-                retreat with decreasing percentages of fleet losses. Withdrawing ships endure one \
-                final enemy round without firing back. Level 5 removes that final round."
+                "When attacked. enables the option to coordinate a strategic withdrawal to your \
+                homeworld. Levels 1–4 unlock retreat at decreasing percentages of fleet losses. \
+                Withdrawing ships endure one final enemy round without firing back. Level 5 \
+                removes that final round."
             },
         }
     }
@@ -248,6 +260,7 @@ impl Price for Building {
             Building::CommandRelay => Resources::new(300, 250, 250),
             Building::SensorPhalanx => Resources::new(250, 200, 150),
             Building::JumpGate => Resources::new(500, 300, 500),
+            Building::OrbitalRailgun => Resources::new(750, 500, 750),
             Building::Laboratory => Resources::new(200, 200, 400),
             Building::OrbitalRadar => Resources::new(400, 300, 300),
             Building::Senate => Resources::new(1000, 750, 500),

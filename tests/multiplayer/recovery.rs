@@ -8,7 +8,7 @@ fn recovery_codes_are_strong_and_parseable() {
     assert_eq!(code.expose().split('-').collect::<Vec<_>>().len(), 4);
     assert!(code.expose().split('-').all(|block| block.len() == 4));
     let reparsed = RecoveryCode::parse(code.expose().to_ascii_lowercase()).unwrap();
-    assert!(code.hash().constant_time_eq(&reparsed.hash()));
+    assert_eq!(code.expose(), reparsed.expose());
 }
 
 #[test]

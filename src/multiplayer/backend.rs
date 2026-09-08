@@ -47,8 +47,8 @@ pub enum BackendError {
     /// The operation requires a lobby or active match in a different state.
     #[error("game is not in the required state")]
     InvalidGameStatus,
-    /// The supplied recovery code is invalid or has already been rotated.
-    #[error("recovery code is invalid or has already been used")]
+    /// The supplied recovery code is invalid.
+    #[error("recovery code is invalid")]
     InvalidRecoveryCode,
     /// A valid recovery code belongs to a player whose connection is still live.
     #[error("this recovery code is already in use by a connected player")]
@@ -128,8 +128,9 @@ pub trait MultiplayerBackend: Send + Sync {
         request: JoinGameRequest,
     ) -> BackendFuture<'a, MembershipResult>;
 
-    /// Replaces an offline identity after secret verification and rotation, claiming presence
-    /// atomically so another recovery cannot displace the newly connected player.
+    /// Replaces an offline identity after recovery-code verification, claiming presence
+    /// atomically so another recovery cannot displace the newly connected player. The stable
+    /// per-player code is not changed by recovery.
     fn recover_player<'a>(
         &'a self,
         session: &'a AuthSession,

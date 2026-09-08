@@ -20,6 +20,35 @@ fn destruction_animation_hides_the_planet_swap_under_the_blast() {
     assert_eq!(map_planet_image(&planet, true), "planet0");
 }
 
+#[test]
+fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed() {
+    let mut model = GameModel::new([62; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let origin = player.home_planet;
+    let target = model.players[1].home_planet;
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(target).position = origin_position + Vec2::X * Planet::SIZE;
+    let moon_world = model.map.get_mut(moon);
+    moon_world.owned = None;
+    moon_world.controlled = None;
+    moon_world.position = origin_position + Vec2::Y * Planet::SIZE;
+    let mut pending = PendingTurnCommands {
+        turn: model.turn,
+        ..default()
+    };
+
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, false));
+    assert!(railgun_action_available(&model.map, &player, Some(&pending), target, true));
+    assert!(railgun_action_available(&model.map, &player, Some(&pending), moon, true));
+    assert!(pending.push(TurnCommand::FireOrbitalRailguns {
+        target: moon,
+    }));
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, true));
+}
+
 /// Finds the defenses spawned by the real map setup without a window or GPU.
 fn test_defenses(
     world: &mut World,
@@ -60,6 +89,21 @@ fn test_satellites(world: &mut World, planet: PlanetId) -> Vec<Entity> {
         .collect::<Vec<_>>();
     satellites.sort_by_key(|entity| world.get::<SolarSatelliteCmp>(*entity).unwrap().level);
     satellites
+}
+
+fn test_railgun(world: &mut World, planet: PlanetId) -> Entity {
+    let planet = world
+        .query::<(Entity, &PlanetCmp)>()
+        .iter(world)
+        .find(|(_, cmp)| cmp.id == planet)
+        .unwrap()
+        .0;
+    world
+        .get::<Children>(planet)
+        .unwrap()
+        .iter()
+        .find(|&child| world.get::<OrbitalRailgunCmp>(child).is_some())
+        .unwrap()
 }
 
 fn test_phalanxes(world: &mut World, planet: PlanetId) -> Vec<Entity> {
@@ -716,7 +760,7 @@ fn comet_system_spawns_thin_half_screen_streaks_and_cleans_them_up() {
 }
 
 #[test]
-fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
+fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     let mut model = GameModel::new(
         [17; 32],
         GameRules {
@@ -732,6 +776,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     let army = Army::from([
         (Unit::planetary_shield(), 1),
         (Unit::space_dock(), 1),
+        (Unit::Building(Building::OrbitalRailgun), 1),
         (Unit::Building(Building::SolarSatellite), Building::MAX_LEVEL),
         (Unit::Building(Building::CommandRelay), 1),
         (Unit::Building(Building::SensorPhalanx), 1),
@@ -795,15 +840,24 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             Update,
             (
                 update_planet_defenses.before(bevy_tweening::AnimationSystem::AnimationUpdate),
+                animate_orbital_railguns.after(update_planet_defenses),
                 animate_phalanx_drones,
             ),
         );
+    let normal_shield_image = app.world_mut().resource_mut::<Assets<Image>>().add(Image::default());
+    {
+        let mut assets = app.world_mut().resource_mut::<WorldAssets>();
+        assets.images.insert("planetary shield marker".into(), normal_shield_image.clone());
+    }
     app.world_mut().spawn((Camera2d, MainCamera));
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(220));
     app.update();
     let own = test_defenses(app.world_mut(), own_home);
     let enemy = test_defenses(app.world_mut(), enemy_home);
     let unknown = test_defenses(app.world_mut(), unknown_home);
+    let own_railgun = test_railgun(app.world_mut(), own_home);
+    let enemy_railgun = test_railgun(app.world_mut(), enemy_home);
+    let unknown_railgun = test_railgun(app.world_mut(), unknown_home);
     let own_satellites = test_satellites(app.world_mut(), own_home);
     let enemy_satellites = test_satellites(app.world_mut(), enemy_home);
     let unknown_satellites = test_satellites(app.world_mut(), unknown_home);
@@ -830,6 +884,32 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             (1..=Building::MAX_LEVEL).collect::<Vec<_>>()
         );
     }
+    let shield_depth = app.world().get::<Transform>(own.0).unwrap().translation.z;
+    let dock_depth = app.world().get::<Transform>(own.1).unwrap().translation.z;
+    let railgun_depth = app.world().get::<Transform>(own_railgun).unwrap().translation.z;
+    let gate_depth = app.world().get::<Transform>(own.2).unwrap().translation.z;
+    let relay_depth = app.world().get::<Transform>(own.4).unwrap().translation.z;
+    let phalanx_depths = own_phalanxes
+        .iter()
+        .map(|entity| app.world().get::<Transform>(*entity).unwrap().translation.z)
+        .collect::<Vec<_>>();
+    let satellite_depths = own_satellites
+        .iter()
+        .map(|entity| app.world().get::<Transform>(*entity).unwrap().translation.z)
+        .collect::<Vec<_>>();
+    assert!(
+        MISSION_Z - 0.1 > PLANET_Z + dock_depth,
+        "missions and their exhaust render above the orbital stack"
+    );
+    assert!(dock_depth > gate_depth);
+    assert!(dock_depth > railgun_depth && railgun_depth > phalanx_depths[0]);
+    assert!(dock_depth > relay_depth);
+    assert!(phalanx_depths.iter().all(|&depth| dock_depth > depth));
+    assert!(satellite_depths.iter().all(|&depth| gate_depth > depth && relay_depth > depth));
+    assert!(phalanx_depths
+        .iter()
+        .all(|&phalanx| satellite_depths.iter().all(|&satellite| phalanx > satellite)));
+    assert!(satellite_depths.iter().all(|&depth| depth > shield_depth));
     for level in 0..=Building::MAX_LEVEL {
         app.world_mut()
             .resource_mut::<Map>()
@@ -875,6 +955,95 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         app.world().get::<Sprite>(own.0).unwrap().custom_size,
         Some(Vec2::splat(Planet::SIZE * 1.3))
     );
+    assert_eq!(
+        app.world().get::<TweenAnim>(own.0).unwrap().tweenable().cycle_duration(),
+        Duration::from_secs(3)
+    );
+    assert_eq!(app.world().get::<TweenAnim>(own.0).unwrap().speed, 1.0);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().image, normal_shield_image);
+    assert_eq!(app.world().get::<Transform>(own.0).unwrap().rotation, Quat::IDENTITY);
+    let alpha_before_overload = app.world().get::<Sprite>(own.0).unwrap().color.alpha();
+    app.world_mut().resource_mut::<Map>().get_mut(own_home).shield_overload =
+        crate::core::map::planet::ShieldOverloadState::Overloaded;
+    app.world_mut().resource_mut::<Map>().get_mut(enemy_home).shield_overload =
+        crate::core::map::planet::ShieldOverloadState::Overloaded;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
+    app.update();
+    assert!(app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().overloaded);
+    assert!(alpha_before_overload < PLANETARY_SHIELD_MAX_ALPHA);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().color.alpha(), PLANETARY_SHIELD_MAX_ALPHA);
+    assert_eq!(app.world().get::<TweenAnim>(own.0).unwrap().speed, 0.0);
+    assert_eq!(app.world().get::<Transform>(own.0).unwrap().rotation, Quat::IDENTITY);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(325));
+    app.update();
+    let shield = app.world().get::<PlanetaryShieldCmp>(own.0).unwrap();
+    assert!((shield.spin_factor - 0.5).abs() < 0.001);
+    assert_eq!(
+        app.world().get::<Sprite>(own.0).unwrap().color.alpha(),
+        PLANETARY_SHIELD_MAX_ALPHA,
+        "an overloaded shield must remain steadily visible"
+    );
+    let rotation_while_accelerating = app.world().get::<Transform>(own.0).unwrap().rotation;
+    assert_ne!(rotation_while_accelerating, Quat::IDENTITY);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(325));
+    app.update();
+    let shield = app.world().get::<PlanetaryShieldCmp>(own.0).unwrap();
+    assert_eq!(shield.spin_factor, 1.0);
+    assert_ne!(app.world().get::<Transform>(own.0).unwrap().rotation, rotation_while_accelerating);
+    assert_eq!(
+        app.world().get::<TweenAnim>(own.0).unwrap().tweenable().cycle_duration(),
+        Duration::from_secs(3)
+    );
+    assert_eq!(app.world().get::<TweenAnim>(own.0).unwrap().speed, 0.0);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().color.alpha(), PLANETARY_SHIELD_MAX_ALPHA);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().image, normal_shield_image);
+    assert!(
+        !app.world().get::<PlanetaryShieldCmp>(enemy.0).unwrap().overloaded,
+        "enemy overload intent must not leak through the map"
+    );
+    assert_eq!(app.world().get::<Sprite>(enemy.0).unwrap().image, normal_shield_image);
+    assert_eq!(app.world().get::<Transform>(enemy.0).unwrap().rotation, Quat::IDENTITY);
+
+    let rotation_before_stop = app.world().get::<Transform>(own.0).unwrap().rotation;
+    app.world_mut().resource_mut::<Map>().get_mut(own_home).shield_overload =
+        crate::core::map::planet::ShieldOverloadState::Ready;
+    app.world_mut().resource_mut::<Map>().get_mut(enemy_home).shield_overload =
+        crate::core::map::planet::ShieldOverloadState::Ready;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
+    app.update();
+    assert!(!app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().overloaded);
+    assert_eq!(app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().spin_factor, 1.0);
+    assert_eq!(app.world().get::<TweenAnim>(own.0).unwrap().speed, 1.0);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().color.alpha(), PLANETARY_SHIELD_MAX_ALPHA);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(325));
+    app.update();
+    let shield = app.world().get::<PlanetaryShieldCmp>(own.0).unwrap();
+    assert!((shield.spin_factor - 0.5).abs() < 0.001);
+    assert!(app.world().get::<Sprite>(own.0).unwrap().color.alpha() < PLANETARY_SHIELD_MAX_ALPHA);
+    let rotation_after_slowing = app.world().get::<Transform>(own.0).unwrap().rotation;
+    let slowing_rotation = rotation_before_stop.angle_between(rotation_after_slowing);
+    assert!(slowing_rotation > 0.0);
+    assert!(
+        slowing_rotation < TAU * 0.325 / PLANETARY_SHIELD_OVERLOAD_ROTATION_SECONDS,
+        "the ring decelerates instead of stopping abruptly"
+    );
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(325));
+    app.update();
+    let stopped_rotation = app.world().get::<Transform>(own.0).unwrap().rotation;
+    assert_eq!(app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().spin_factor, 0.0);
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert_eq!(app.world().get::<Transform>(own.0).unwrap().rotation, stopped_rotation);
+    assert_eq!(
+        app.world().get::<TweenAnim>(own.0).unwrap().tweenable().cycle_duration(),
+        Duration::from_secs(3)
+    );
+    assert_eq!(app.world().get::<TweenAnim>(own.0).unwrap().speed, 1.0);
+    assert_eq!(app.world().get::<Sprite>(own.0).unwrap().image, normal_shield_image);
     let gate_anchor = app.world().get::<Transform>(own.2).unwrap().translation;
     let gate_rotation = app.world().get::<Transform>(own.2).unwrap().rotation;
     assert!((gate_anchor.truncate().length() - Planet::SIZE * 0.9).abs() < 0.01);
@@ -921,6 +1090,8 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         );
     }
     let phalanx_transform = *app.world().get::<Transform>(own.5).unwrap();
+    let railgun_transform = *app.world().get::<Transform>(own_railgun).unwrap();
+    assert!(app.world().get::<Children>(own_railgun).is_none());
     let satellite_position = app.world().get::<Transform>(own.3).unwrap().translation;
     let satellite_rotation = app.world().get::<Transform>(own.3).unwrap().rotation;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(250));
@@ -934,6 +1105,12 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             > 0.01,
         "the Phalanx drones should move around one another"
     );
+    let moved_railgun = app.world().get::<Transform>(own_railgun).unwrap();
+    assert!(
+        moved_railgun.translation.distance(railgun_transform.translation) > 0.01,
+        "the Railgun should drift while holding station"
+    );
+    assert_eq!(moved_railgun.scale, Vec3::ONE, "the Railgun should not pulse in size");
     let satellite_transform = app.world().get::<Transform>(own.3).unwrap();
     assert!(satellite_transform.translation.distance(satellite_position) > 0.01);
     assert_eq!(
@@ -941,7 +1118,8 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         "satellites should orbit without spinning around themselves"
     );
 
-    // An unseen capture must not leak the new controller through the defense color.
+    // An unseen control change remains private for ordinary infrastructure, while public
+    // strategic orbitals continue to identify the planet's owner.
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).controlled = Some(3);
     for (index, color) in PLAYER_COLOR_PALETTE.into_iter().enumerate() {
         let enemy_color = PLAYER_COLOR_PALETTE[(index + 2) % PLAYER_COLOR_PALETTE.len()];
@@ -952,11 +1130,11 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
             model.player_mut(2).unwrap().color = enemy_color;
         }
         app.update();
-        for ((shield, dock, gate, satellite, relay, phalanx), expected) in
+        for ((shield, _, gate, satellite, relay, phalanx), expected) in
             [(&own, color), (&enemy, enemy_color)]
         {
             assert_eq!(*app.world().get::<Visibility>(*shield).unwrap(), Visibility::Inherited);
-            for orbital in [dock, gate, satellite, relay, phalanx] {
+            for orbital in [gate, satellite, relay, phalanx] {
                 assert_eq!(
                     *app.world().get::<Visibility>(*orbital).unwrap(),
                     Visibility::Inherited
@@ -989,6 +1167,19 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
                 }
             }
         }
+        let public_owner_color =
+            app.world().resource::<MultiplayerSession>().player_color(2).color();
+        for (dock, expected) in [(&own.1, color.color()), (&enemy.1, public_owner_color)] {
+            assert_eq!(*app.world().get::<Visibility>(*dock).unwrap(), Visibility::Inherited);
+            assert_eq!(app.world().get::<Sprite>(*dock).unwrap().color, expected);
+        }
+        for (railgun, expected) in
+            [(&own_railgun, color.color()), (&enemy_railgun, public_owner_color)]
+        {
+            assert_eq!(*app.world().get::<Visibility>(*railgun).unwrap(), Visibility::Inherited);
+            assert_eq!(app.world().get::<Sprite>(*railgun).unwrap().color, expected);
+            assert_eq!(*app.world().get::<Pickable>(*railgun).unwrap(), Pickable::default());
+        }
         for (satellites, expected) in [(&own_satellites, color), (&enemy_satellites, enemy_color)] {
             for satellite in satellites {
                 assert_eq!(
@@ -1004,7 +1195,21 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
                 assert_eq!(app.world().get::<Sprite>(*drone).unwrap().color, expected.color());
             }
         }
-        for entity in [unknown.0, unknown.1, unknown.2, unknown.3, unknown.4, unknown.5] {
+        assert_eq!(
+            *app.world().get::<Visibility>(unknown.1).unwrap(),
+            Visibility::Inherited,
+            "a Space Dock remains visible on a planet with no scan intelligence"
+        );
+        let unknown_owner_color =
+            app.world().resource::<MultiplayerSession>().player_color(3).color();
+        assert_eq!(app.world().get::<Sprite>(unknown.1).unwrap().color, unknown_owner_color);
+        assert_eq!(
+            *app.world().get::<Visibility>(unknown_railgun).unwrap(),
+            Visibility::Inherited,
+            "an Orbital Railgun remains visible on a planet with no scan intelligence"
+        );
+        assert_eq!(app.world().get::<Sprite>(unknown_railgun).unwrap().color, unknown_owner_color);
+        for entity in [unknown.0, unknown.2, unknown.3, unknown.4, unknown.5] {
             assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
         }
         for satellite in &unknown_satellites {
@@ -1015,7 +1220,7 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         }
     }
 
-    // Once the local player captures it, all visible markers adopt the new controller immediately.
+    // Private infrastructure follows control, but public strategic markers retain the owner.
     let alpha_before_capture = app.world().get::<Sprite>(enemy.0).unwrap().color.alpha();
     let elapsed_before_capture =
         app.world().get::<TweenAnim>(enemy.0).unwrap().tweenable().elapsed();
@@ -1023,7 +1228,9 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).controlled = Some(1);
     app.update();
     let own_color = app.world().get::<Sprite>(own.1).unwrap().color;
-    assert_eq!(app.world().get::<Sprite>(enemy.1).unwrap().color, own_color);
+    let enemy_owner_color = app.world().resource::<MultiplayerSession>().player_color(2).color();
+    assert_eq!(app.world().get::<Sprite>(enemy.1).unwrap().color, enemy_owner_color);
+    assert_eq!(app.world().get::<Sprite>(enemy_railgun).unwrap().color, enemy_owner_color);
     assert_eq!(app.world().get::<Sprite>(enemy.2).unwrap().color, own_color);
     assert_eq!(app.world().get::<Sprite>(enemy.3).unwrap().color, own_color);
     assert_eq!(app.world().get::<Sprite>(enemy.4).unwrap().color, own_color);
@@ -1069,6 +1276,9 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
         assert_eq!(*app.world().get::<Visibility>(world.4).unwrap(), Visibility::Hidden);
         assert_eq!(*app.world().get::<Visibility>(world.5).unwrap(), Visibility::Inherited);
     }
+    for railgun in [own_railgun, enemy_railgun] {
+        assert_eq!(*app.world().get::<Visibility>(railgun).unwrap(), Visibility::Inherited);
+    }
     for satellite in own_satellites.iter().chain(&enemy_satellites) {
         assert_eq!(*app.world().get::<Visibility>(*satellite).unwrap(), Visibility::Hidden);
     }
@@ -1078,6 +1288,8 @@ fn defense_colors_follow_known_controllers_and_keep_their_hue_while_pulsing() {
     for entity in [enemy.0, enemy.1, enemy.2, enemy.3, enemy.4, enemy.5] {
         assert_eq!(*app.world().get::<Visibility>(entity).unwrap(), Visibility::Hidden);
     }
+    assert_eq!(*app.world().get::<Visibility>(enemy_railgun).unwrap(), Visibility::Hidden);
+    assert_eq!(*app.world().get::<Pickable>(enemy_railgun).unwrap(), Pickable::IGNORE);
     for satellite in &enemy_satellites {
         assert_eq!(*app.world().get::<Visibility>(*satellite).unwrap(), Visibility::Hidden);
     }
@@ -1380,6 +1592,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     model.players[0].color = PlayerColor::new(4).unwrap();
     let player = model.players[0].clone();
     let scanner_color = player.color().color();
+    let enemy_scanner_color = model.players[1].color().color();
     let home = player.home_planet;
     let enemy = model.players[1].home_planet;
     let moons = model.map.moons().iter().map(|moon| moon.id).collect::<Vec<_>>();
@@ -1389,10 +1602,23 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     model.map.get_mut(enemy_moon).controlled = Some(model.players[1].id);
     for id in [home, enemy] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::SensorPhalanx), 2);
+        model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRailgun), 2);
     }
     for id in [moon, enemy_moon] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRadar), 3);
     }
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        submitted_players: Vec::new(),
+        id: GameId::new("railgun-range-color-test"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 1_700_000_000,
+        max_players: 2,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: vec![],
+    });
     let mut app = App::new();
     app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
         .init_asset::<Image>()
@@ -1406,6 +1632,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         .init_resource::<UiState>()
         .init_resource::<Settings>()
         .init_resource::<Missions>()
+        .insert_resource(session)
         .insert_resource(model.map)
         .insert_resource(player)
         .add_systems(Startup, draw_map)
@@ -1415,9 +1642,11 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     for (hover, preview, selected, expected) in [
         (Some(home), None, None, None),
         (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
+        (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
         (Some(moon), None, Some(home), Some((moon, 395.0))),
         (None, None, Some(moon), None),
         (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),
+        (None, Some(MapRangePreview::OrbitalRailgun(enemy)), None, Some((enemy, 400.0))),
         (Some(enemy_moon), None, None, None),
     ] {
         app.insert_resource(UiState {
@@ -1445,9 +1674,14 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
                 continue;
             }
             visible += 1;
+            let expected_color = if preview == Some(MapRangePreview::OrbitalRailgun(enemy)) {
+                enemy_scanner_color
+            } else {
+                scanner_color
+            };
             assert_eq!(
                 world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-                scanner_color
+                expected_color
             );
             let positions = world
                 .resource::<Assets<Mesh>>()
@@ -1485,9 +1719,17 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         .get_mut(home)
         .army
         .remove(&Unit::Building(Building::SensorPhalanx));
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(home)
+        .army
+        .remove(&Unit::Building(Building::OrbitalRailgun));
     app.world_mut().resource_mut::<Map>().get_mut(moon).is_destroyed = true;
-    for (hover, preview) in [(None, Some(MapRangePreview::SensorPhalanx(home))), (Some(moon), None)]
-    {
+    for (hover, preview) in [
+        (None, Some(MapRangePreview::SensorPhalanx(home))),
+        (None, Some(MapRangePreview::OrbitalRailgun(home))),
+        (Some(moon), None),
+    ] {
         {
             let mut state = app.world_mut().resource_mut::<UiState>();
             state.planet_hover = hover;
@@ -1537,6 +1779,7 @@ fn home_map_label_follows_the_same_hover_and_info_rules_as_other_planets() {
             .init_resource::<Assets<ColorMaterial>>()
             .init_resource::<Time>()
             .init_resource::<UiState>()
+            .init_resource::<MultiplayerSession>()
             .insert_resource(Settings {
                 show_info: false,
                 ..default()
@@ -1602,6 +1845,7 @@ fn empty_orbitals_shortcut_only_appears_while_inspecting_an_owned_planet() {
         .init_resource::<UiState>()
         .init_resource::<Settings>()
         .init_resource::<Missions>()
+        .init_resource::<MultiplayerSession>()
         .insert_resource(model.map)
         .insert_resource(player)
         .add_systems(Startup, draw_map)
@@ -1748,6 +1992,8 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
             assert_eq!(expected_color, OWN_COLOR, "local games default to blue");
         }
         let home = player.home_planet;
+        let public_enemy = (player_count == 2).then(|| model.players[1].home_planet);
+        let public_enemy_color = public_enemy.map(|_| model.players[1].color().color());
         let planet_count = model.map.planets.len();
         let mut session = MultiplayerSession::default();
         session.local_practice = player_count == 1;
@@ -1795,6 +2041,7 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         )>();
         assert_eq!(cells.iter(world).count(), planet_count);
         let mut home_entity = None;
+        let mut public_enemy_entity = None;
         for (entity, cell, visibility, transform, mesh, material) in cells.iter(world) {
             assert!(transform.translation().z > BACKGROUND_Z);
             assert!(transform.translation().z < PLANET_Z);
@@ -1815,6 +2062,9 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
                     expected_color.with_alpha(0.01)
                 );
             } else {
+                if Some(cell.0) == public_enemy {
+                    public_enemy_entity = Some(entity);
+                }
                 assert_eq!(*visibility, Visibility::Hidden, "unknown territory stays hidden");
             }
         }
@@ -1839,6 +2089,40 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
             }
         }
         assert!(home_edges >= 3);
+
+        if let Some(enemy) = public_enemy {
+            let enemy_entity = public_enemy_entity.unwrap();
+            let enemy_material =
+                app.world().get::<MeshMaterial2d<ColorMaterial>>(enemy_entity).unwrap().0.clone();
+            app.world_mut().resource_mut::<Map>().get_mut(enemy).army.insert(Unit::space_dock(), 1);
+            app.update();
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(TERRITORY_TRANSITION_SECONDS));
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(enemy_entity).unwrap(),
+                Visibility::Inherited
+            );
+            assert_eq!(
+                app.world().resource::<Assets<ColorMaterial>>().get(&enemy_material).unwrap().color,
+                public_enemy_color.unwrap().with_alpha(0.01),
+                "a public Space Dock reveals the owner's Voronoi cell"
+            );
+
+            app.world_mut().resource_mut::<Map>().get_mut(enemy).army.remove(&Unit::space_dock());
+            app.update();
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(TERRITORY_TRANSITION_SECONDS));
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(enemy_entity).unwrap(),
+                Visibility::Hidden,
+                "the cell disappears again when its only public ownership source is gone"
+            );
+            app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
+        }
 
         app.world_mut().resource_mut::<Settings>().show_cells = false;
         app.update();

@@ -1,19 +1,25 @@
 //! Deterministic gameplay state and simultaneous-turn resolution without Bevy systems.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use rand::seq::SliceRandom;
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::core::combat::report::MissionReport;
 use crate::core::combat::resolution::{
     resolve_combat_with_retreat_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
 };
+use crate::core::constants::{
+    ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST, ORBITAL_RAILGUN_FIRE_ENERGY_COST,
+    ORBITAL_RAILGUN_RANGE_PER_LEVEL,
+};
+use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::planet::{Planet, PlanetId, ShieldOverloadState};
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
@@ -108,6 +114,22 @@ pub enum MatchStatus {
     Finished,
 }
 
+/// Public outcome of every Orbital Railgun shot combined against one world.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrbitalStrike {
+    /// Turn on which the synchronized strike became visible.
+    pub turn: u64,
+    /// Stable origin worlds whose Railguns contributed one shot each.
+    pub origins: Vec<PlanetId>,
+    /// World struck by the unified beam, including moons.
+    pub target: PlanetId,
+    /// Combined deterministic destruction chance in hundredths of one percent.
+    pub chance_basis_points: u16,
+    /// Whether the combined roll permanently destroyed the target.
+    pub destroyed: bool,
+}
+
 /// Complete deterministic gameplay snapshot persisted in Supabase.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +140,8 @@ pub struct GameModel {
     pub map: Map,
     /// All in-flight missions, including missions hidden from some players.
     pub missions: Vec<Mission>,
+    /// Public Orbital Railgun outcomes from the most recently resolved turn.
+    pub orbital_strikes: Vec<OrbitalStrike>,
     /// Current turn awaiting submissions, starting at one.
     pub turn: u64,
     /// Persisted deterministic random stream cursor.
@@ -129,9 +153,14 @@ pub struct GameModel {
 }
 
 impl GameModel {
-    /// Fixed territorial target, based on all non-moon worlds and starting player slots.
+    /// Territorial target, based on surviving non-moon worlds and starting player slots.
     pub fn planets_to_win(&self) -> usize {
-        let planets = self.map.planets.iter().filter(|planet| !planet.is_moon()).count();
+        let planets = self
+            .map
+            .planets
+            .iter()
+            .filter(|planet| !planet.is_moon() && !planet.is_destroyed)
+            .count();
         let players = u128::from(self.rules.player_count.max(1));
         ((planets as u128 * (players + 1)).div_ceil(2 * players)) as usize
     }
@@ -194,6 +223,7 @@ impl GameModel {
             players,
             map,
             missions: Vec::new(),
+            orbital_strikes: Vec::new(),
             turn: 1,
             rng: rng_state,
             rules,
@@ -381,6 +411,23 @@ impl GameModel {
                 }
             }
         }
+        for strike in &self.orbital_strikes {
+            let mut origins = HashSet::with_capacity(strike.origins.len());
+            if strike.turn != self.turn
+                || strike.origins.is_empty()
+                || strike.chance_basis_points > 10_000
+                || !planet_ids.contains(&strike.target)
+                || strike
+                    .origins
+                    .iter()
+                    .any(|origin| !planet_ids.contains(origin) || !origins.insert(*origin))
+                || (strike.destroyed && !self.map.get(strike.target).is_destroyed)
+            {
+                return Err(GameError::MalformedState(
+                    "orbital strike history contains an invalid reference or outcome".to_string(),
+                ));
+            }
+        }
         if self.missions.len() > MAX_ACTIVE_MISSIONS {
             return Err(GameError::MalformedState(format!(
                 "active mission count exceeds {MAX_ACTIVE_MISSIONS} entries"
@@ -494,12 +541,24 @@ pub enum TurnCommand {
         /// Whether the Relay should broadcast deceptive telemetry.
         active: bool,
     },
+    /// Enables or cancels a one-turn Planetary Shield overload before resolution.
+    SetPlanetaryShieldOverload {
+        /// Planet containing the completed shield.
+        planet_id: PlanetId,
+        /// Whether the shield should be overloaded for the next turn.
+        active: bool,
+    },
     /// Sets the standing fleet withdrawal order on an administered colony.
     SetFleetWithdrawal {
         /// Owned non-home planet containing the Administration.
         planet_id: PlanetId,
         /// Loss threshold, immediate withdrawal, or off.
         withdrawal: FleetWithdrawal,
+    },
+    /// Fires every owned Orbital Railgun that can reach one target during this simultaneous turn.
+    FireOrbitalRailguns {
+        /// Non-allied planet reached by at least one owned Railgun.
+        target: PlanetId,
     },
     /// Abandons a non-home owned planet.
     AbandonPlanet {
@@ -680,6 +739,7 @@ pub(crate) fn resolved_turn(
     }
 
     let mut working = state.clone();
+    working.orbital_strikes.clear();
     let mut ordered = submissions.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|submission| submission.player_id);
     for submission in ordered {
@@ -723,6 +783,7 @@ pub fn preview_commands(
     commands: &[TurnCommand],
 ) -> Result<GameModel, GameError> {
     let mut preview = state.clone();
+    preview.orbital_strikes.clear();
     for command in commands {
         apply_command(&mut preview, player_id, command)?;
     }
@@ -805,10 +866,17 @@ fn apply_command(
             planet_id,
             active,
         } => apply_command_relay(model, player_id, *planet_id, *active),
+        TurnCommand::SetPlanetaryShieldOverload {
+            planet_id,
+            active,
+        } => apply_planetary_shield_overload(model, player_id, *planet_id, *active),
         TurnCommand::SetFleetWithdrawal {
             planet_id,
             withdrawal,
         } => apply_fleet_withdrawal(model, player_id, *planet_id, *withdrawal),
+        TurnCommand::FireOrbitalRailguns {
+            target,
+        } => apply_orbital_railgun_fire(model, player_id, *target),
         TurnCommand::AbandonPlanet {
             planet_id,
         } => apply_abandon(model, player_id, *planet_id),
@@ -861,6 +929,9 @@ fn apply_recall(
     }
     if mission.is_returning() {
         return invalid(player_id, "mission is already returning");
+    }
+    if !mission.objective.is_recallable() {
+        return invalid(player_id, "missile strikes cannot be recalled once launched");
     }
 
     mission.recall(map, turn);
@@ -1038,6 +1109,163 @@ fn apply_command_relay(
     Ok(())
 }
 
+/// Arms or cancels a shield overload while enforcing its mandatory cooldown turn.
+fn apply_planetary_shield_overload(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    active: bool,
+) -> Result<(), GameError> {
+    model.player(player_id)?;
+    let planet = model
+        .map
+        .planets
+        .iter_mut()
+        .find(|planet| planet.id == planet_id)
+        .ok_or_else(|| invalid_error(player_id, "planetary-shield planet does not exist"))?;
+    if planet.is_destroyed
+        || planet.owned != Some(player_id)
+        || !planet.has(&Unit::planetary_shield())
+    {
+        return invalid(player_id, "an owned planet with a completed Planetary Shield is required");
+    }
+    planet.shield_overload = match (planet.shield_overload, active) {
+        (ShieldOverloadState::Ready, true) => ShieldOverloadState::Overloaded,
+        (ShieldOverloadState::Overloaded, false) => ShieldOverloadState::Ready,
+        (ShieldOverloadState::Cooldown, _) => {
+            return invalid(player_id, "the Planetary Shield is cooling down this turn");
+        },
+        _ => return invalid(player_id, "the Planetary Shield overload is already set"),
+    };
+    Ok(())
+}
+
+/// Returns whether one completed Railgun level can reach a valid non-allied world.
+pub fn orbital_railgun_can_target(
+    origin: &Planet,
+    target: &Planet,
+    player_id: PlayerId,
+    level: usize,
+) -> bool {
+    level > 0
+        && origin.id != target.id
+        && !origin.is_destroyed
+        && !target.is_destroyed
+        && !origin.is_moon()
+        && origin.owned == Some(player_id)
+        && target.owned != Some(player_id)
+        && target.controlled != Some(player_id)
+        && origin.position.distance(target.position)
+            <= ORBITAL_RAILGUN_RANGE_PER_LEVEL
+                * level.min(Building::MAX_LEVEL) as f32
+                * Planet::SIZE
+}
+
+/// Returns every owned Railgun world whose completed level can reach the target.
+pub fn orbital_railgun_origins(map: &Map, player_id: PlayerId, target: PlanetId) -> Vec<PlanetId> {
+    let Some(target) = map.try_get(target) else {
+        return Vec::new();
+    };
+    map.planets
+        .iter()
+        .filter_map(|origin| {
+            let level = origin
+                .army
+                .amount(&Unit::Building(Building::OrbitalRailgun))
+                .min(Building::MAX_LEVEL);
+            orbital_railgun_can_target(origin, target, player_id, level).then_some(origin.id)
+        })
+        .collect()
+}
+
+/// Returns the resource cost for one synchronized Railgun strike.
+pub fn orbital_railgun_fire_cost() -> Resources {
+    Resources::new(0, 0, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST)
+}
+
+/// Returns the combined destruction chance: five percent per completed firing level.
+pub fn orbital_railgun_destruction_basis_points(map: &Map, origins: &[PlanetId]) -> u16 {
+    let firing_levels = origins.iter().fold(0usize, |total, origin| {
+        total.saturating_add(
+            map.try_get(*origin)
+                .map(|planet| {
+                    planet
+                        .army
+                        .amount(&Unit::Building(Building::OrbitalRailgun))
+                        .min(Building::MAX_LEVEL)
+                })
+                .unwrap_or_default(),
+        )
+    });
+    u16::try_from(firing_levels.saturating_mul(500).min(10_000)).unwrap_or(10_000)
+}
+
+/// Validates and pays for every in-range owned Railgun, then records one synchronized event.
+fn apply_orbital_railgun_fire(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    target: PlanetId,
+) -> Result<(), GameError> {
+    if model.map.try_get(target).is_none() {
+        return invalid(player_id, "orbital-railgun target does not exist");
+    }
+    let origins = orbital_railgun_origins(&model.map, player_id, target);
+    if origins.is_empty() {
+        return invalid(player_id, "no owned Orbital Railgun can reach this target");
+    }
+    let already_fired = model
+        .orbital_strikes
+        .iter()
+        .flat_map(|strike| &strike.origins)
+        .any(|fired| model.map.get(*fired).owned == Some(player_id));
+    if already_fired {
+        return invalid(player_id, "Orbital Railguns can fire only once per turn");
+    }
+    let cost = orbital_railgun_fire_cost();
+    let player = model.player_mut(player_id)?;
+    if player.resources.deuterium < cost.deuterium {
+        return invalid(player_id, "not enough deuterium to fire the Orbital Railguns");
+    }
+    player.resources -= cost;
+    model.orbital_strikes.push(OrbitalStrike {
+        turn: model.turn.saturating_add(1),
+        origins,
+        target,
+        chance_basis_points: 0,
+        destroyed: false,
+    });
+    Ok(())
+}
+
+/// Rolls every target group from the same pre-impact snapshot, then applies destruction together.
+fn resolve_orbital_railgun_strikes<R: Rng + ?Sized>(model: &mut GameModel, rng: &mut R) {
+    let mut groups = BTreeMap::<PlanetId, Vec<PlanetId>>::new();
+    for shot in std::mem::take(&mut model.orbital_strikes) {
+        groups.entry(shot.target).or_default().extend(shot.origins);
+    }
+
+    let mut outcomes = Vec::with_capacity(groups.len());
+    for (target, mut origins) in groups {
+        origins.sort_unstable();
+        origins.dedup();
+        let chance_basis_points = orbital_railgun_destruction_basis_points(&model.map, &origins);
+        let destroyed = rng.random_range(0_u16..10_000) < chance_basis_points;
+        outcomes.push(OrbitalStrike {
+            turn: model.turn,
+            origins,
+            target,
+            chance_basis_points,
+            destroyed,
+        });
+    }
+    for outcome in &outcomes {
+        if outcome.destroyed {
+            model.map.get_mut(outcome.target).destroy();
+        }
+    }
+    model.orbital_strikes = outcomes;
+}
+
 /// Validates the colony and its projected completed level before changing the standing order.
 fn apply_fleet_withdrawal(
     model: &mut GameModel,
@@ -1211,6 +1439,19 @@ fn apply_mission(
     Ok(())
 }
 
+fn resolution_energy_grid(
+    player: &Player,
+    map: &Map,
+    railgun_firing_players: &HashSet<PlayerId>,
+) -> EnergyGrid {
+    let grid = player.energy_grid(map);
+    if railgun_firing_players.contains(&player.id) {
+        grid.with_action_demand(ORBITAL_RAILGUN_FIRE_ENERGY_COST)
+    } else {
+        grid
+    }
+}
+
 /// Advances production, missions, combat, reports, and victory state by one turn.
 fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     model.turn = model
@@ -1222,12 +1463,26 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     })?;
     let mut rng = model.rng.next_rng();
 
+    // Firing can deepen an energy shortage. Capture the owners before simultaneous impacts can
+    // destroy an origin, then apply the one-turn demand to production and combat power below.
+    let railgun_firing_players = model
+        .orbital_strikes
+        .iter()
+        .filter_map(|strike| strike.origins.first())
+        .filter_map(|origin| model.map.try_get(*origin).and_then(|planet| planet.owned))
+        .collect::<HashSet<_>>();
+
+    // Resolve every paid shot from the same pre-impact state. A railgun destroyed by another
+    // simultaneous strike therefore still contributes the shot committed during planning.
+    resolve_orbital_railgun_strikes(model, &mut rng);
+
     for planet in &mut model.map.planets {
         planet.produce();
         planet.jump_gate = 0;
     }
     for player in &mut model.players {
-        player.resources += player.resource_production(&model.map);
+        let energy = resolution_energy_grid(player, &model.map, &railgun_firing_players);
+        player.resources += energy.scale_resources(player.raw_resource_production(&model.map));
     }
 
     // Lock grids before any missions resolve. Conquest and destruction affect the next turn,
@@ -1235,7 +1490,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let energy_grids = model
         .players
         .iter()
-        .map(|player| (player.id, player.energy_grid(&model.map)))
+        .map(|player| {
+            (player.id, resolution_energy_grid(player, &model.map, &railgun_firing_players))
+        })
         .collect::<std::collections::HashMap<_, _>>();
 
     let mut player_order = model.players.iter().map(|player| player.id).collect::<Vec<_>>();
@@ -1290,22 +1547,26 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         .filter(|(owner, home)| !home.is_destroyed && home.owned == Some(*owner))
                         .map(|(owner, home)| (owner, home.clone()));
                     let destination = model.map.get_mut(mission.destination);
-                    let relay_spoofs_spy = mission.objective == Icon::Spy
-                        && destination.command_relay_blocks(mission.army.amount(&Unit::probe()));
+                    let relay_diverts_spy = mission.objective == Icon::Spy
+                        && destination.command_relay_diverts(mission.army.amount(&Unit::probe()));
                     let energy = destination
                         .controlled
                         .or(destination.owned)
                         .and_then(|owner| energy_grids.get(&owner))
                         .copied()
                         .unwrap_or_default();
-                    let mut report = resolve_combat_with_retreat_with_rng(
-                        turn,
-                        &mission,
-                        destination,
-                        energy,
-                        retreat_destination.as_ref().map(|(_, home)| home.id),
-                        &mut rng,
-                    );
+                    let mut report = if relay_diverts_spy {
+                        resolve_command_relay_diversion(turn, &mission, destination, &mut rng)
+                    } else {
+                        resolve_combat_with_retreat_with_rng(
+                            turn,
+                            &mission,
+                            destination,
+                            energy,
+                            retreat_destination.as_ref().map(|(_, home)| home.id),
+                            &mut rng,
+                        )
+                    };
                     if let Some((owner, home)) = &retreat_destination {
                         if let Some(retreat) = report
                             .combat_report
@@ -1529,7 +1790,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             || report.mission.owner == player.id
                         {
                             let mut player_report = report.clone();
-                            if relay_spoofs_spy && report.mission.owner == player.id {
+                            if relay_diverts_spy && report.mission.owner == player.id {
                                 spoof_spy_report_as_empty(&mut player_report);
                             }
                             player.push_report(player_report);
@@ -1590,6 +1851,17 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     }
     model.missions.extend(new_missions);
 
+    // An overload applies to every battle at the world during this resolution. Only after all
+    // missions have resolved does it enter cooldown; that cooldown itself lasts through the next
+    // complete planning and resolution turn.
+    for planet in &mut model.map.planets {
+        planet.shield_overload = if planet.has(&Unit::planetary_shield()) {
+            planet.shield_overload.finish_turn()
+        } else {
+            ShieldOverloadState::Ready
+        };
+    }
+
     let mut playing = Vec::new();
     for player in &mut model.players {
         player.spectator = !player.owns(model.map.get(player.home_planet));
@@ -1620,8 +1892,32 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     Ok(())
 }
 
+/// Resolves a Relay diversion without exposing the probes to the defending garrison.
+fn resolve_command_relay_diversion<R: Rng + ?Sized>(
+    turn: usize,
+    mission: &Mission,
+    destination: &Planet,
+    rng: &mut R,
+) -> MissionReport {
+    MissionReport {
+        id: rng.random(),
+        turn,
+        mission: mission.clone(),
+        planet: destination.clone(),
+        scout_probes: mission.army.amount(&Unit::probe()),
+        surviving_attacker: mission.army.clone(),
+        surviving_defender: destination.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: destination.owned,
+        destination_controlled: destination.controlled,
+        combat_report: None,
+        hidden: false,
+    }
+}
+
 /// Removes every observation a deceptive Relay could expose while preserving route metadata.
-fn spoof_spy_report_as_empty(report: &mut crate::core::combat::report::MissionReport) {
+fn spoof_spy_report_as_empty(report: &mut MissionReport) {
     report.planet.owned = None;
     report.planet.controlled = None;
     report.planet.army.clear();
@@ -1629,6 +1925,7 @@ fn spoof_spy_report_as_empty(report: &mut crate::core::combat::report::MissionRe
     report.planet.surface_build_order = [None; 4];
     report.planet.terraformer_focus = None;
     report.planet.command_relay_active = true;
+    report.planet.shield_overload = ShieldOverloadState::Ready;
     report.planet.fleet_withdrawal = FleetWithdrawal::Off;
     report.surviving_defender.clear();
     report.destination_owned = None;

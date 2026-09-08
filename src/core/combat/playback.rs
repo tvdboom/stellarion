@@ -11,7 +11,6 @@ use super::systems::{
 };
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
-use crate::core::constants::PS_SHIELD_PER_LEVEL;
 use crate::core::map::icon::Icon;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -35,6 +34,24 @@ fn conclusion_phase(report: &MissionReport) -> CombatState {
         CombatState::EndCombat
     } else {
         CombatState::Salvage
+    }
+}
+
+/// Returns the first recorded action for a round restored by backward navigation.
+fn replay_phase(report: &MissionReport, index: usize) -> CombatState {
+    if index == 0 && report.mission.objective == Icon::MissileStrike {
+        if report
+            .combat_report
+            .as_ref()
+            .and_then(|combat| combat.rounds.first())
+            .is_some_and(|round| round.antiballistic_fired > 0)
+        {
+            CombatState::AntiBallistic
+        } else {
+            CombatState::Fire
+        }
+    } else {
+        CombatState::DisplayRound
     }
 }
 
@@ -85,7 +102,10 @@ fn snapshot_card(
             |snapshot| snapshot.buildings.amount(&unit),
         );
         let shield = if unit == Unit::planetary_shield() {
-            boundary.map_or(count * PS_SHIELD_PER_LEVEL, |snapshot| snapshot.planetary_shield)
+            boundary.map_or_else(
+                || report.initial_planetary_shield(),
+                |snapshot| snapshot.planetary_shield,
+            )
         } else {
             0
         };
@@ -97,7 +117,7 @@ fn snapshot_card(
             count,
             shield,
             if unit == Unit::planetary_shield() {
-                report.planet.army.amount(&unit) * PS_SHIELD_PER_LEVEL
+                report.initial_planetary_shield()
             } else {
                 0
             },
@@ -127,7 +147,7 @@ fn snapshot_card(
         };
         (hull, count * unit.hull(), shield, count * unit.shield())
     };
-    (hull > 0).then_some(CombatUnitCmp {
+    (hull > 0 || unit.is_missile()).then_some(CombatUnitCmp {
         unit,
         side,
         hull,
@@ -187,10 +207,12 @@ fn seek(
             })
         });
         if let Some(mut card) = card {
-            if card.side == Side::Attacker
-                && ((ending_phase == CombatState::DeathRay && card.unit == Unit::war_sun())
-                    || (ending_phase == CombatState::Bomb
-                        && card.unit == Unit::Ship(crate::core::units::ships::Ship::Bomber)))
+            if (ending_phase == CombatState::AntiBallistic
+                && card.unit == Unit::antiballistic_missile())
+                || (card.side == Side::Attacker
+                    && ((ending_phase == CombatState::DeathRay && card.unit == Unit::war_sun())
+                        || (ending_phase == CombatState::Bomb
+                            && card.unit == Unit::Ship(crate::core::units::ships::Ship::Bomber))))
             {
                 card.fire = FireState::Select;
             }
@@ -209,7 +231,7 @@ fn seek(
                 card.hull = card.hull.saturating_add(losses);
                 card.max_hull = card.hull;
             }
-            if card.hull == 0 {
+            if card.hull == 0 && !card.unit.is_missile() {
                 world.despawn(entity);
                 continue;
             }
@@ -291,7 +313,8 @@ pub fn control_combat_playback(world: &mut World) {
                 },
             )
         } else {
-            (index.saturating_sub(1), false, CombatState::DisplayRound)
+            let destination = index.saturating_sub(1);
+            (destination, false, replay_phase(report, destination))
         }
     } else {
         // Withdrawal has its own recorded departure boundary. Early-completion shortcuts could

@@ -1,6 +1,7 @@
 //! Derived per-turn energy supply, demand, and deterministic brownout scaling.
 
 use crate::core::constants::{
+    ORBITAL_RAILGUN_ENERGY_PER_LEVEL, PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL, PS_OVERLOAD_ENERGY_COST,
     PS_SHIELD_PER_LEVEL, REACTOR_ENERGY_PER_LEVEL, TIDAL_GENERATOR_ENERGY_PER_LEVEL,
 };
 use crate::core::identity::PlayerId;
@@ -8,7 +9,7 @@ use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, SolarBand};
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
-use crate::core::units::Unit;
+use crate::core::units::{Amount, Unit};
 
 /// Minimum resource output retained during a complete grid collapse.
 const MIN_RESOURCE_EFFICIENCY_PERCENT: usize = 30;
@@ -63,6 +64,10 @@ impl EnergyGrid {
             | Building::OrbitalRadar => Self {
                 supply: 0,
                 demand: 1,
+            },
+            Building::OrbitalRailgun => Self {
+                supply: 0,
+                demand: ORBITAL_RAILGUN_ENERGY_PER_LEVEL,
             },
         }
     }
@@ -119,7 +124,16 @@ impl EnergyGrid {
             grid.demand = grid.demand.saturating_add(per_level.demand.saturating_mul(*levels));
             grid
         });
-        grid
+        if planet.shield_overload.is_overloaded()
+            && planet.army.amount(&Unit::planetary_shield()) > 0
+        {
+            Self {
+                demand: grid.demand.saturating_add(PS_OVERLOAD_ENERGY_COST),
+                ..grid
+            }
+        } else {
+            grid
+        }
     }
 
     /// Returns signed surplus or shortage. Surplus is never stored.
@@ -144,15 +158,32 @@ impl EnergyGrid {
         }
     }
 
+    /// Returns this grid with a one-turn action cost added to demand.
+    pub fn with_action_demand(self, demand: usize) -> Self {
+        Self {
+            demand: self.demand.saturating_add(demand),
+            ..self
+        }
+    }
+
     /// Applies the grid ratio to normal resource income with a recovery floor.
     pub fn scale_resources(self, resources: Resources) -> Resources {
         resources.scaled_percent(self.efficiency_percent())
     }
 
     /// Returns Planetary Shield strength scaled by the same efficiency as resource output.
-    pub fn planetary_shield(self, levels: usize) -> usize {
+    pub fn planetary_shield(self, levels: usize, overloaded: bool) -> usize {
         let base = levels.saturating_mul(PS_SHIELD_PER_LEVEL);
-        ((base as u128).saturating_mul(self.efficiency_percent() as u128) / 100) as usize
+        let powered =
+            ((base as u128).saturating_mul(self.efficiency_percent() as u128) / 100) as usize;
+        if overloaded {
+            let percent =
+                100usize.saturating_add(levels.saturating_mul(PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL));
+            ((powered as u128).saturating_mul(percent as u128) / 100).min(usize::MAX as u128)
+                as usize
+        } else {
+            powered
+        }
     }
 }
 

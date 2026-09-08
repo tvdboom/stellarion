@@ -16,7 +16,7 @@ use crate::core::states::{AppState, AudioState, GameState};
 use crate::multiplayer::client::{
     ConnectionIndicator, ConnectionStatus, MultiplayerForm, MultiplayerRequest, MultiplayerSession,
 };
-use crate::multiplayer::model::{GameRecord, GameSummary};
+use crate::multiplayer::model::{GameRecord, GameSummary, MAX_DISPLAY_NAME_CHARS};
 use crate::utils::ToColor32;
 use crate::TITLE;
 
@@ -1092,7 +1092,7 @@ fn lobby_guidance(session: &MultiplayerSession) -> String {
     let host = game.members.iter().find(|member| member.is_creator);
     let host_name = host.map_or("the host", |member| member.display_name.as_str());
     if host.is_some_and(|member| member.connected) {
-        format!("Waiting for {host_name} to resume. You'll enter automatically when the host resumes. If they're in-game, ask them to open Game Lobby from the pause menu.")
+        format!("Waiting for {host_name} to resume. You'll enter automatically when the host resumes. If they're in-game, ask them to return to the main menu and open this game from Resume Game.")
     } else {
         format!("Waiting for {host_name} to reconnect. The host must open this game from Resume Game. You'll enter automatically when the host resumes.")
     }
@@ -1180,6 +1180,7 @@ fn join_game_code_field(ui: &mut egui::Ui, value: &mut String) -> egui::Response
         false,
         "Enter game code",
         "Enter the game code shared by the host to join their lobby.",
+        None,
     )
 }
 
@@ -1192,11 +1193,11 @@ fn recovery_code_field(
     hint: &str,
 ) -> egui::Response {
     let tooltip = if private {
-        "Each player has a different private recovery code. Enter your own latest code, not another player's. After recovery, save the new code that replaces it. A connected player cannot be recovered in another window."
+        "Each player has one private recovery code per game. Enter your own code, not another player's. Recovery does not change the code. A connected player cannot be recovered in another window."
     } else {
         "Enter the shared code of the game you want to recover. Find it in your saved codes or ask another player in that game."
     };
-    editable_form_card(ui, label, value, private, hint, tooltip)
+    editable_form_card(ui, label, value, private, hint, tooltip, None)
 }
 
 /// Matches form cards to the combined width of the two navigation buttons.
@@ -1232,20 +1233,22 @@ fn editable_form_card(
     private: bool,
     hint: &str,
     tooltip: &str,
+    char_limit: Option<usize>,
 ) -> egui::Response {
     form_option_card(ui, label, tooltip, |ui| {
-        ui.add_sized(
-            egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT),
-            egui::TextEdit::singleline(value)
-                .id_salt(label)
-                .horizontal_align(egui::Align::Center)
-                .vertical_align(egui::Align::Center)
-                .interactive(ui.is_enabled())
-                .font(egui::FontId::proportional(18.0))
-                .password(private)
-                .hint_text(egui::RichText::new(hint).size(18.0))
-                .margin(egui::vec2(12.0, 6.0)),
-        );
+        let mut editor = egui::TextEdit::singleline(value)
+            .id_salt(label)
+            .horizontal_align(egui::Align::Center)
+            .vertical_align(egui::Align::Center)
+            .interactive(ui.is_enabled())
+            .font(egui::FontId::proportional(18.0))
+            .password(private)
+            .hint_text(egui::RichText::new(hint).size(18.0))
+            .margin(egui::vec2(12.0, 6.0));
+        if let Some(limit) = char_limit {
+            editor = editor.char_limit(limit);
+        }
+        ui.add_sized(egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT), editor);
     })
 }
 
@@ -1864,10 +1867,6 @@ pub fn draw_game_overlay(
                                     requests.write(MultiplayerRequest::SaveGame);
                                 });
                             }
-                            main_menu_button(ui, "Game Lobby", || {
-                                requests.write(MultiplayerRequest::ResumeGame(game.id.clone()));
-                                next_game_state.set(GameState::Playing);
-                            });
                         }
                     }
                     main_menu_button(ui, "Settings", || next_game_state.set(GameState::Settings));
@@ -1964,8 +1963,16 @@ fn game_access_codes(context: &egui::Context, session: &MultiplayerSession) {
         .show(context, |ui| {
             apply_menu_style(ui);
             ui.set_width(panel_width);
-            lobby_code_card(ui, "Game code", game.code.as_str(), true);
+            game_access_code_cards(ui, game, session.issued_recovery_code.as_deref());
         });
+}
+
+/// Draws the codes available to the current client session in the in-game menu.
+fn game_access_code_cards(ui: &mut egui::Ui, game: &GameRecord, recovery_code: Option<&str>) {
+    lobby_code_card(ui, "Game code", game.code.as_str(), true);
+    if let Some(code) = recovery_code {
+        lobby_code_card(ui, "Recovery code", code, false);
+    }
 }
 
 /// Stops terminal-state audio when the user exits its overlay.
@@ -2176,6 +2183,9 @@ fn apply_menu_style(ui: &mut egui::Ui) {
 
 /// Draws the same player-name field when creating or joining a game.
 fn player_name_field(ui: &mut egui::Ui, display_name: &mut String) {
+    if display_name.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        *display_name = display_name.chars().take(MAX_DISPLAY_NAME_CHARS).collect();
+    }
     editable_form_card(
         ui,
         "Player name",
@@ -2183,6 +2193,7 @@ fn player_name_field(ui: &mut egui::Ui, display_name: &mut String) {
         false,
         "Enter player name",
         "Choose the name other players will see in this game.",
+        Some(MAX_DISPLAY_NAME_CHARS),
     );
 }
 
@@ -2401,7 +2412,7 @@ fn back_button(ui: &mut egui::Ui, next_state: &mut NextState<AppState>, target: 
 
 /// Validates the backend's documented display-name boundary before enabling a request.
 fn valid_name(value: &str) -> bool {
-    (1..=32).contains(&value.trim().chars().count())
+    (1..=MAX_DISPLAY_NAME_CHARS).contains(&value.trim().chars().count())
 }
 
 /// Validates the fixed-width share-code form before a backend round trip.

@@ -10,9 +10,9 @@ use crate::core::map::systems::PlanetCmp;
 use crate::core::ui::systems::UiState;
 
 /// At a camera limit, the outermost world remains this far inside the matching screen edge.
-const GALAXY_EDGE_SCREEN_FRACTION: f32 = 0.2;
+const GALAXY_EDGE_SCREEN_FRACTION: f32 = 0.5;
 /// Maximum elastic travel beyond a camera limit while the map is being dragged.
-const OVERSCROLL_SCREEN_FRACTION: f32 = 0.15;
+const OVERSCROLL_SCREEN_FRACTION: f32 = 0.25;
 /// Exponential return speed after input releases the camera outside its limits.
 const BOUNDS_RETURN_RATE: f32 = 14.0;
 
@@ -55,8 +55,10 @@ fn bounds_from_points(points: impl IntoIterator<Item = Vec2>) -> Option<Rect> {
 
 /// Computes the legal camera-center range for a viewport and collection of world centers.
 ///
-/// At either limit, the matching outermost world sits 20% inside the viewport. If the galaxy is
-/// already narrower than the resulting visible span on an axis, that axis stays centered instead.
+/// At either limit, the matching outermost world can reach the viewport midpoint. The calculation
+/// uses the projection's world-space viewport size so the same screen-space limit applies at every
+/// zoom level. If a smaller edge fraction is configured and the galaxy is already narrower than
+/// the resulting visible span on an axis, that axis stays centered instead.
 fn camera_center_bounds(points: impl IntoIterator<Item = Vec2>, view_size: Vec2) -> Option<Rect> {
     let world_bounds = bounds_from_points(points)?;
     let center_inset = view_size.abs() * (0.5 - GALAXY_EDGE_SCREEN_FRACTION);
@@ -224,7 +226,7 @@ pub fn move_camera(
 /// Applies the elastic camera boundary after every movement input for the frame.
 ///
 /// Dragging may travel a short distance beyond the normal range. Releasing the mouse returns the
-/// camera smoothly until the outermost world is again at least 20% inside the viewport edge.
+/// camera smoothly until the outermost world is no farther than the viewport midpoint.
 pub fn clamp_camera_to_worlds(
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
     map: Res<Map>,

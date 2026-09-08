@@ -200,6 +200,7 @@ impl Unit {
             Self::Building(Building::SensorPhalanx),
             Self::Building(Building::CommandRelay),
             Self::Building(Building::JumpGate),
+            Self::Building(Building::OrbitalRailgun),
             Self::space_dock(),
         ]
     }
@@ -359,6 +360,7 @@ impl Unit {
                     | Building::SensorPhalanx
                     | Building::CommandRelay
                     | Building::JumpGate
+                    | Building::OrbitalRailgun
             )
         ) || *self == Self::space_dock()
     }
@@ -384,6 +386,7 @@ impl Unit {
                         | Building::SensorPhalanx
                         | Building::CommandRelay
                         | Building::JumpGate
+                        | Building::OrbitalRailgun
                 )
             )
     }

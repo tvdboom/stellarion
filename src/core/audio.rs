@@ -161,8 +161,14 @@ impl PlayAudioMsg {
         Self {
             name,
             volume: match name {
-                "explosion" | "short explosion" | "large explosion" | "death ray" | "beam fire"
-                | "bomb release" | "probe retreat" => -18.0,
+                // Destruction must carry more weight than a routine weapon launch. The large
+                // recording has a long low-frequency tail, so lift it above smaller impacts.
+                "large explosion" => -8.0,
+                "explosion" => -14.0,
+                "death ray" => -12.0,
+                "beam fire" => -10.0,
+                "short explosion" | "bomb release" | "probe retreat" => -18.0,
+                "missile miss" => -11.0,
                 "shield impact" | "laser fire" | "missile fire" => -14.0,
                 "horn" | "repair" | "victory" | "draw" | "defeat" => -12.0,
                 _ => 0.0,
@@ -176,6 +182,12 @@ impl PlayAudioMsg {
     /// Adjusts this one cue without changing the shared audio channel's playback rate.
     pub fn rate(mut self, playback_rate: f64) -> Self {
         self.playback_rate = playback_rate;
+        self
+    }
+
+    /// Adjusts this cue's gain in decibels while preserving its source asset balance.
+    pub fn gain(mut self, volume: f32) -> Self {
+        self.volume = volume;
         self
     }
 
@@ -355,7 +367,11 @@ pub fn volume_slider(ui: &mut egui::Ui, settings: &mut Settings) -> egui::Respon
     .inner
 }
 
-fn volume_popover(button: &egui::Response, settings: &mut Settings) -> Option<egui::Response> {
+fn volume_popover(
+    button: &egui::Response,
+    settings: &mut Settings,
+    suppressed: bool,
+) -> Option<egui::Response> {
     let id = button.id.with("volume");
     let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     let popup = egui::Popup::from_response(button)
@@ -373,9 +389,11 @@ fn volume_popover(button: &egui::Response, settings: &mut Settings) -> Option<eg
     let dragging =
         button.ctx.data(|data| data.get_temp::<bool>(id.with("dragging")).unwrap_or(false))
             && button.ctx.input(|input| input.pointer.primary_down());
-    let hover_open = button.hovered() || (was_open && (hovering || dragging));
+    let hover_open = !suppressed && (button.hovered() || (was_open && (hovering || dragging)));
     let scroll_opacity = scroll_volume_opacity(&button.ctx);
-    let opacity = if hover_open {
+    let opacity = if suppressed {
+        0.0
+    } else if hover_open {
         1.0
     } else {
         scroll_opacity
@@ -473,15 +491,143 @@ fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn audio_controls(context: &egui::Context, settings: &mut Settings) -> egui::Response {
+/// Draws a compact gear using the same circular treatment as the adjacent audio control.
+fn combat_settings_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+    let painter = ui.painter();
+    let center = rect.center();
+    let white = egui::Color32::from_rgb(232, 242, 250);
+    let cyan = egui::Color32::from_rgb(101, 202, 231);
+    let highlighted = response.hovered() || response.has_focus();
+    painter.circle(
+        center,
+        15.0,
+        if highlighted {
+            egui::Color32::from_rgb(27, 49, 66)
+        } else {
+            egui::Color32::from_rgb(14, 28, 42)
+        },
+        egui::Stroke::new(
+            1.5,
+            if highlighted {
+                white
+            } else {
+                cyan
+            },
+        ),
+    );
+    let stroke = egui::Stroke::new(1.8, white);
+    painter.circle(center, 4.0, egui::Color32::TRANSPARENT, stroke);
+    painter.circle(center, 8.0, egui::Color32::TRANSPARENT, egui::Stroke::new(1.3, white));
+    for index in 0..8 {
+        let angle = index as f32 * std::f32::consts::TAU / 8.0;
+        let direction = egui::vec2(angle.cos(), angle.sin());
+        painter.line_segment([center + direction * 8.0, center + direction * 11.0], stroke);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Combat settings")
+    });
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn combat_speed_step(speed: f32) -> i32 {
+    speed.max(0.25).log2().round().clamp(-2.0, 6.0) as i32
+}
+
+/// Opens the two presentation preferences while either the gear or panel remains hovered.
+fn combat_settings_popover(
+    button: &egui::Response,
+    settings: &mut Settings,
+    suppressed: bool,
+) -> Option<egui::Rect> {
+    let id = button.id.with("combat settings");
+    let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    let popup = egui::Popup::from_response(button)
+        .id(id)
+        .gap(0.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(260.0_f32.min((button.ctx.content_rect().width() - 40.0).max(120.0)));
+    let hovering = popup.get_popup_rect().is_some_and(|rect| {
+        button
+            .ctx
+            .pointer_hover_pos()
+            .is_some_and(|pos| rect.union(button.rect).expand(4.0).contains(pos))
+    });
+    let dragging =
+        button.ctx.data(|data| data.get_temp::<bool>(id.with("dragging")).unwrap_or(false))
+            && button.ctx.input(|input| input.pointer.primary_down());
+    let mut open = !suppressed && (button.hovered() || (was_open && (hovering || dragging)));
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 245))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 133, 162)))
+        .corner_radius(6.0)
+        .inner_margin(10);
+    let response = popup.frame(frame).open_bool(&mut open).show(|ui| {
+        ui.label(egui::RichText::new("Combat settings").size(18.0).strong());
+        ui.add_space(6.0);
+
+        let mut speed_step = combat_speed_step(settings.combat_speed);
+        ui.label(
+            egui::RichText::new(format!("Playback speed  {}×", 2.0_f32.powi(speed_step)))
+                .size(16.0),
+        );
+        let speed = ui
+            .add(egui::Slider::new(&mut speed_step, -2..=6).show_value(false).trailing_fill(true));
+        if speed.changed() {
+            settings.combat_speed = 2.0_f32.powi(speed_step);
+            set_ui_sound(ui.ctx(), None);
+        }
+
+        ui.add_space(8.0);
+        let volley_changed = ui
+            .horizontal(|ui| {
+                let label = ui
+                    .add(
+                        egui::Label::new(egui::RichText::new("Volley fire").size(16.0))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if label.clicked() {
+                    settings.combat_volley_fire = !settings.combat_volley_fire;
+                }
+                let toggle =
+                    ui.add(crate::core::ui::utils::toggle(&mut settings.combat_volley_fire));
+                label.clicked() || toggle.changed()
+            })
+            .inner;
+        if volley_changed {
+            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+        }
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("dragging"), speed.dragged()));
+    });
+    button.ctx.data_mut(|data| data.insert_temp(id, open));
+    response.map(|response| response.response.rect)
+}
+
+fn audio_controls(
+    context: &egui::Context,
+    settings: &mut Settings,
+    in_combat: bool,
+) -> egui::Response {
     // One inset for both axes, independent of the window aspect ratio and UI button padding.
     egui::Area::new(egui::Id::new("audio controls"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0))
         .order(egui::Order::Foreground)
         .show(context, |ui| {
-            let button = audio_mode_button(ui, settings.audio);
-            volume_popover(&button, settings);
-            button
+            ui.horizontal(|ui| {
+                let settings_button = in_combat.then(|| combat_settings_button(ui));
+                let audio_button = audio_mode_button(ui, settings.audio);
+                let prefer_settings =
+                    settings_button.as_ref().is_some_and(|button| button.hovered());
+                let prefer_volume = audio_button.hovered();
+
+                if let Some(settings_button) = &settings_button {
+                    let _ = combat_settings_popover(settings_button, settings, prefer_volume);
+                }
+                volume_popover(&audio_button, settings, prefer_settings);
+                audio_button
+            })
+            .inner
         })
         .inner
 }
@@ -499,16 +645,13 @@ pub fn draw_audio_controls(
         return;
     };
     let previous_audio = settings.audio;
-    scroll_volume(
-        context,
-        &mut settings,
-        *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat,
-    );
+    let in_combat = *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat;
+    scroll_volume(context, &mut settings, in_combat);
     if !volume_feedback.is_empty() {
         volume_feedback.clear();
         show_volume_feedback(context);
     }
-    if audio_controls(context, &mut settings).clicked() {
+    if audio_controls(context, &mut settings, in_combat).clicked() {
         change_audio.write(ChangeAudioMsg(None));
         set_ui_sound(context, Some(SoundEffect::Button));
     } else if settings.audio != previous_audio {
@@ -785,6 +928,7 @@ pub fn play_audio(
                 | "laser fire"
                 | "beam fire"
                 | "missile fire"
+                | "missile miss"
                 | "bomb release"
         ) && playing_audio
             .0

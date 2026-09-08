@@ -10,6 +10,20 @@ pub(super) struct ProfileWrites {
     retry_after: f32,
 }
 
+/// Mirrors combat presentation changes into the current authenticated player's local profile.
+pub(super) fn sync_combat_preferences(
+    settings: Option<Res<crate::core::settings::Settings>>,
+    mut runtime: ResMut<ClientRuntime>,
+) {
+    let Some(settings) = settings else {
+        return;
+    };
+    let preferences = settings.combat_preferences();
+    if runtime.profile.combat_preferences != preferences {
+        runtime.profile.combat_preferences = preferences;
+    }
+}
+
 /// Coalesces changes into one off-frame write, retrying failed saves after five seconds.
 pub(super) fn flush_profile(
     runtime: Res<ClientRuntime>,

@@ -1,7 +1,10 @@
 use super::*;
 use crate::core::camera::MainCamera;
 use crate::core::combat::effects::PendingImpact;
-use crate::core::combat::resolution::resolve_combat_with_rng;
+use crate::core::combat::resolution::{
+    resolve_combat_with_energy_with_rng, resolve_combat_with_rng,
+};
+use crate::core::energy::EnergyGrid;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
@@ -98,6 +101,46 @@ fn key(app: &mut App, key: KeyCode, shift: bool) {
         keys.press(KeyCode::ShiftLeft);
     }
     keys.press(key);
+}
+
+#[test]
+fn playback_uses_the_recorded_energy_scaled_planetary_shield_strength() {
+    let mut rng = DeterministicRngState::from_u64(29).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    origin.colonize(1);
+    let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
+    target.colonize(2);
+    target.army =
+        Army::from([(Unit::planetary_shield(), 5), (Unit::Defense(Defense::GaussCannon), 12)]);
+    let mission = Mission::new_with_id(
+        29,
+        1,
+        1,
+        &origin,
+        &target,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::WarSun), 2)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let report = resolve_combat_with_energy_with_rng(
+        1,
+        &mission,
+        &target,
+        EnergyGrid {
+            supply: 0,
+            demand: 10,
+        },
+        &mut rng,
+    );
+
+    // Five levels normally display 1,500 strength. This defender's 30%-efficient grid gave the
+    // resolver 450, and playback must not invent the other 1,050 as an indestructible remainder.
+    assert_eq!(report.initial_planetary_shield(), 450);
+    let card = snapshot_card(&report, 0, false, Unit::planetary_shield(), Side::Defender).unwrap();
+    assert_eq!((card.shield, card.max_shield), (450, 450));
 }
 
 #[test]
@@ -275,6 +318,54 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
 }
 
 #[test]
+fn rewinding_a_fully_intercepted_missile_strike_replays_the_interceptors() {
+    let mut rng = DeterministicRngState::from_u64(17).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    origin.colonize(1);
+    let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
+    target.colonize(2);
+    target.army =
+        Army::from([(Unit::antiballistic_missile(), 16), (Unit::Defense(Defense::GaussCannon), 1)]);
+    let mission = Mission::new_with_id(
+        11,
+        1,
+        1,
+        &origin,
+        &target,
+        Icon::MissileStrike,
+        Army::from([(Unit::interplanetary_missile(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let report = resolve_combat_with_rng(1, &mission, &target, &mut rng);
+    let round = &report.combat_report.as_ref().unwrap().rounds[0];
+    assert_eq!(round.missiles_shot(), round.n_missiles());
+
+    let mut app = app(1);
+    app.world_mut().resource_mut::<Player>().reports = vec![report.clone()];
+    app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
+    app.insert_resource(State::new(CombatState::EndCombat));
+    app.insert_resource(NextState::<CombatState>::Unchanged);
+    key(&mut app, KeyCode::ArrowLeft, true);
+
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::AntiBallistic)
+    ));
+    let cards = app
+        .world_mut()
+        .query::<&CombatUnitCmp>()
+        .iter(app.world())
+        .map(|card| (card.unit, card.fire == FireState::Select))
+        .collect::<Vec<_>>();
+    assert!(cards.contains(&(Unit::antiballistic_missile(), true)), "rewound cards: {cards:?}");
+}
+
+#[test]
 fn destroyed_planet_backdrop_switches_only_under_an_opaque_flash() {
     for destroys in [false, true] {
         let mut app = app(150);
@@ -338,6 +429,7 @@ fn round_jump_key_release_does_not_also_change_playback_speed() {
     let mut app = App::new();
     app.init_resource::<Settings>()
         .init_resource::<ButtonInput<KeyCode>>()
+        .insert_resource(State::new(CombatState::Fire))
         .add_systems(Update, crate::core::systems::check_keys_combat);
     let speed = app.world().resource::<Settings>().combat_speed;
     key(&mut app, KeyCode::ArrowRight, true);
@@ -360,4 +452,19 @@ fn round_jump_key_release_does_not_also_change_playback_speed() {
     }
     app.update();
     assert_eq!(app.world().resource::<Settings>().combat_speed, speed * 2.);
+}
+
+#[test]
+fn final_result_cannot_be_paused() {
+    let mut app = App::new();
+    app.init_resource::<Settings>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .insert_resource(State::new(CombatState::EndCombat))
+        .add_systems(Update, crate::core::systems::check_keys_combat);
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+    key(&mut app, KeyCode::Space, false);
+
+    app.update();
+
+    assert!(!app.world().resource::<Settings>().combat_paused);
 }

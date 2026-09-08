@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::color::{palettes::css::WHITE, Mix};
+use bevy::ecs::system::SystemParam;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon};
@@ -23,13 +24,16 @@ use crate::core::assets::{WorldAssets, ASTEROID_IMAGE_NAMES};
 use crate::core::camera::{drag_camera_position, MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    MISSION_Z, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z, RADAR_DISTANCE, SOLAR_STAR_SIZE,
-    TITLE_TEXT_SIZE, VORONOI_Z,
+    MISSION_Z, ORBITAL_RAILGUN_RANGE_PER_LEVEL, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
+    RADAR_DISTANCE, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
+use crate::core::loading::{PublicStructure, PublicStructureChange};
 use crate::core::map::details::{DevelopmentVisibility, DEVELOPMENT_MAX_SCALE};
+use crate::core::map::detection::PublicStructureEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
+use crate::core::map::orbital_railgun::OrbitalStrikeEffect;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::scenery::CelestialKind;
 use crate::core::map::utils::{
@@ -39,12 +43,13 @@ use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
+use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
 use crate::core::ui::systems::{MapRangePreview, MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
-use crate::multiplayer::client::MultiplayerSession;
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
 use crate::utils::NameFromEnum;
 
 const MAP_ICON_IDLE_TINT: Color = Color::srgb(0.82, 0.82, 0.82);
@@ -55,6 +60,21 @@ const SOLAR_SATELLITE_PHASE_STEPS: [usize; Building::MAX_LEVEL] = [0, 2, 4, 1, 3
 const JUMP_GATE_LINK_SPACING: f32 = 26.0;
 const JUMP_GATE_LINK_SPEED: f32 = 38.0;
 const JUMP_GATE_LINK_STRANDS: usize = 2;
+// These are local to the planet entity, whose own transform contributes PLANET_Z. Keep the whole
+// stack below MISSION_Z, including the mission exhaust at MISSION_Z - 0.1.
+const PLANETARY_SHIELD_DEPTH: f32 = 0.05;
+const SOLAR_SATELLITE_DEPTH: f32 = 0.10;
+const SOLAR_SATELLITE_DEPTH_STEP: f32 = 0.001;
+const JUMP_GATE_DEPTH: f32 = 0.15;
+const COMMAND_RELAY_DEPTH: f32 = 0.16;
+const SENSOR_PHALANX_DEPTH: f32 = 0.17;
+const SENSOR_PHALANX_DEPTH_RANGE: f32 = 0.035;
+const ORBITAL_RAILGUN_DEPTH: f32 = 0.22;
+const SPACE_DOCK_DEPTH: f32 = 0.25;
+const PLANETARY_SHIELD_MAX_ALPHA: f32 = 0.85;
+const PLANETARY_SHIELD_PULSE_PEAK: Duration = Duration::from_millis(1_500);
+const PLANETARY_SHIELD_OVERLOAD_ROTATION_SECONDS: f32 = 8.0;
+const PLANETARY_SHIELD_OVERLOAD_SPIN_RAMP_SECONDS: f32 = 0.65;
 
 #[derive(Component)]
 /// Bevy component mapping a rendered planet entity to a stable planet ID.
@@ -68,6 +88,17 @@ pub struct PlanetCmp {
 pub(crate) struct PlanetAmbienceCmp {
     phase: f32,
     minimum_brightness: f32,
+}
+
+#[derive(SystemParam)]
+/// Shared canonical resources used while projecting planet information onto the map.
+pub struct PlanetInfoResources<'w, 's> {
+    map: Res<'w, Map>,
+    player: Res<'w, Player>,
+    session: Res<'w, MultiplayerSession>,
+    pending: Option<Res<'w, PendingTurnCommands>>,
+    missions: Res<'w, Missions>,
+    structure_effects: Query<'w, 's, &'static PublicStructureEffect>,
 }
 
 #[derive(Component)]
@@ -267,10 +298,12 @@ pub(crate) fn position_home_crown(
 /// Bevy component marking planet resources presentation entities.
 pub struct PlanetResourcesCmp;
 
-/// Tracks the displayed owner's color so a shield's pulse updates after control changes.
+/// Tracks the displayed owner's color and smooth overload rotation state.
 #[derive(Component, Default)]
 pub struct PlanetaryShieldCmp {
     color: Option<Color>,
+    overloaded: bool,
+    spin_factor: f32,
 }
 
 impl PlanetaryShieldCmp {
@@ -288,16 +321,33 @@ impl PlanetaryShieldCmp {
             Duration::from_secs(3),
             SpriteColorLens {
                 start: color.with_alpha(0.0),
-                end: color.with_alpha(0.85),
+                end: color.with_alpha(PLANETARY_SHIELD_MAX_ALPHA),
             },
         )
         .with_repeat_count(RepeatCount::Infinite)
     }
 }
 
+fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
+    if current < target {
+        (current + max_delta).min(target)
+    } else {
+        (current - max_delta).max(target)
+    }
+}
+
 #[derive(Component)]
 /// Bevy component marking space dock presentation entities.
 pub struct SpaceDockCmp;
+
+#[derive(Component)]
+/// Public, faction-tinted Orbital Railgun presentation entity.
+pub struct OrbitalRailgunCmp {
+    pub(crate) planet: PlanetId,
+    pub(crate) anchor: Vec2,
+    pub(crate) base_rotation: f32,
+    pub(crate) phase: f32,
+}
 
 #[derive(Component)]
 /// Animated, faction-tinted jump-gate marker orbiting a world.
@@ -436,6 +486,23 @@ pub(crate) fn animate_range_markers(
     }
 }
 
+/// Gives the public Railgun the same restrained free-floating drift as other fixed markers.
+pub(crate) fn animate_orbital_railguns(
+    time: Res<Time>,
+    mut railguns: Query<(&OrbitalRailgunCmp, &mut Transform, &Visibility)>,
+) {
+    let elapsed = time.elapsed_secs();
+    for (railgun, mut transform, visibility) in &mut railguns {
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+        let (position, tilt) = range_marker_pose(railgun.anchor, elapsed, railgun.phase);
+        transform.translation = position.extend(ORBITAL_RAILGUN_DEPTH);
+        transform.rotation = Quat::from_rotation_z(railgun.base_rotation + tilt);
+        transform.scale = Vec3::ONE;
+    }
+}
+
 fn phalanx_drone_pose(drone: &SensorPhalanxCmp, elapsed: f32) -> Transform {
     let wave = elapsed / PHALANX_DRONE_CYCLE_SECONDS * TAU;
     let phase = drone.phase + drone.index as f32 * TAU / PHALANX_DRONE_COUNT as f32;
@@ -446,7 +513,8 @@ fn phalanx_drone_pose(drone: &SensorPhalanxCmp, elapsed: f32) -> Transform {
     let depth = 0.5 + 0.5 * (wave + phase).sin();
     let tilt = (wave * 3.0 + phase).sin() * 0.10;
     Transform {
-        translation: (drone.anchor + Vec2::new(x, y)).extend(0.72 + depth * 0.035),
+        translation: (drone.anchor + Vec2::new(x, y))
+            .extend(SENSOR_PHALANX_DEPTH + depth * SENSOR_PHALANX_DEPTH_RANGE),
         rotation: Quat::from_rotation_z(tilt),
         scale: Vec3::splat(0.76 + depth * 0.28),
     }
@@ -1732,6 +1800,10 @@ pub fn draw_map(
                                             state.mission = true;
                                             state.planet_selected = None;
                                             state.mission_tab = MissionTab::EnemyMissions;
+                                        } else if icon == Icon::RailgunStrike {
+                                            state.mission = false;
+                                            state.planet_selected = None;
+                                            state.railgun_confirmation = Some(planet_id);
                                         } else if icon.is_mission() {
                                             state.mission = true;
                                             state.planet_selected = None;
@@ -1857,7 +1929,7 @@ pub fn draw_map(
                             custom_size: Some(Vec2::splat(planet.size() * 1.3)),
                             ..default()
                         },
-                        Transform::from_xyz(0., 0., 0.6),
+                        Transform::from_xyz(0., 0., PLANETARY_SHIELD_DEPTH),
                         TweenAnim::new(PlanetaryShieldCmp::tween(OWN_COLOR)),
                         Visibility::Hidden,
                         PlanetaryShieldCmp::new(),
@@ -1876,7 +1948,7 @@ pub fn draw_map(
                         Transform::from_xyz(
                             angle.cos() * dock_radius,
                             angle.sin() * dock_radius,
-                            0.7,
+                            SPACE_DOCK_DEPTH,
                         ),
                         TweenAnim::new(
                             Tween::new(
@@ -1893,6 +1965,50 @@ pub fn draw_map(
                         Visibility::Hidden,
                         SpaceDockCmp,
                     ));
+
+                    // The endgame Railgun stays beyond the ordinary orbital stack. Its barrel
+                    // points inward while idle; strike playback draws the synchronized beams.
+                    let railgun_angle = (angle + PI * 0.5).rem_euclid(TAU);
+                    let railgun_radius = planet.size() * 1.02;
+                    let railgun_anchor =
+                        Vec2::new(railgun_angle.cos(), railgun_angle.sin()) * railgun_radius;
+                    let railgun_rotation = railgun_angle - PI * 0.5;
+                    let railgun_phase = visual_noise(planet.id as u32 + 9_271) * TAU;
+                    parent
+                        .spawn((
+                            Sprite {
+                                image: assets.image("orbital railgun marker"),
+                                custom_size: Some(Vec2::splat(planet.size() * 0.48)),
+                                ..default()
+                            },
+                            Transform {
+                                translation: railgun_anchor.extend(ORBITAL_RAILGUN_DEPTH),
+                                rotation: Quat::from_rotation_z(railgun_rotation),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            OrbitalRailgunCmp {
+                                planet: planet.id,
+                                anchor: railgun_anchor,
+                                base_rotation: railgun_rotation,
+                                phase: railgun_phase,
+                            },
+                        ))
+                        .observe(cursor::<Over>(SystemCursorIcon::Default))
+                        .observe(move |mut event: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                            event.propagate(false);
+                            state.range_preview = Some(MapRangePreview::OrbitalRailgun(planet_id));
+                        })
+                        .observe(move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
+                            event.propagate(false);
+                            if state.range_preview
+                                == Some(MapRangePreview::OrbitalRailgun(planet_id))
+                            {
+                                state.range_preview = None;
+                            }
+                        })
+                        .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
 
                     // Keep the fixed gate in the right-hand half of the orbit, safely opposite the
                     // two range markers on the left. Only the gate itself spins, so it stays
@@ -1914,7 +2030,7 @@ pub fn draw_map(
                             Transform::from_xyz(
                                 gate_angle.cos() * gate_radius,
                                 gate_angle.sin() * gate_radius,
-                                0.72,
+                                JUMP_GATE_DEPTH,
                             ),
                             TweenAnim::new(
                                 Tween::new(
@@ -1977,7 +2093,7 @@ pub fn draw_map(
                             Transform::from_xyz(
                                 satellite_angle.cos() * satellite_radius,
                                 satellite_angle.sin() * satellite_radius,
-                                0.71 + index as f32 * 0.001,
+                                SOLAR_SATELLITE_DEPTH + index as f32 * SOLAR_SATELLITE_DEPTH_STEP,
                             ),
                             TweenAnim::new(
                                 Tween::new(
@@ -2062,7 +2178,7 @@ pub fn draw_map(
                             ..default()
                         },
                         Transform {
-                            translation: relay_position.extend(0.72),
+                            translation: relay_position.extend(COMMAND_RELAY_DEPTH),
                             rotation: Quat::from_rotation_z(relay_tilt),
                             ..default()
                         },
@@ -2166,6 +2282,29 @@ pub fn hide_planet_details(
     }
 }
 
+fn railgun_action_available(
+    map: &Map,
+    player: &Player,
+    pending: Option<&PendingTurnCommands>,
+    target: PlanetId,
+    hovered: bool,
+) -> bool {
+    let (can_accept, already_committed) = pending.map_or((true, false), |pending| {
+        (
+            pending.can_accept_commands(),
+            pending
+                .commands
+                .iter()
+                .chain(&pending.queued_commands)
+                .any(|command| matches!(command, TurnCommand::FireOrbitalRailguns { .. })),
+        )
+    });
+    hovered
+        && can_accept
+        && !already_committed
+        && !orbital_railgun_origins(map, player.id, target).is_empty()
+}
+
 /// Updates planet info from the current canonical ECS projection.
 pub fn update_planet_info(
     mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
@@ -2208,11 +2347,12 @@ pub fn update_planet_info(
             Without<PlanetaryShieldCmp>,
         ),
     >,
-    active_destructions: Query<&ExplosionCmp>,
+    active_destructions: Query<
+        (Option<&ExplosionCmp>, Option<&OrbitalStrikeEffect>),
+        Or<(With<ExplosionCmp>, With<OrbitalStrikeEffect>)>,
+    >,
     children_q: Query<&Children>,
-    map: Res<Map>,
-    player: Res<Player>,
-    missions: Res<Missions>,
+    world: PlanetInfoResources,
     state: Res<UiState>,
     settings: Res<Settings>,
     assets: Res<WorldAssets>,
@@ -2220,13 +2360,17 @@ pub fn update_planet_info(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+    let map: &Map = &world.map;
+    let player: &Player = &world.player;
+    let (n_owned, n_max_owned) = player.planets_owned(map, &settings);
 
     for (planet_e, mut planet_s, planet_c) in &mut planet_q {
         let planet = map.get(planet_c.id);
 
-        let destruction_active =
-            active_destructions.iter().any(|effect| effect.planet == planet.id);
+        let destruction_active = active_destructions.iter().any(|(mission, railgun)| {
+            mission.is_some_and(|effect| effect.planet == planet.id)
+                || railgun.is_some_and(|effect| effect.destroyed && effect.target == planet.id)
+        });
         planet_s.image = assets.image(map_planet_image(planet, destruction_active));
 
         let hovered = state.planet_hover == Some(planet.id);
@@ -2236,11 +2380,18 @@ pub fn update_planet_info(
         for child in children_q.iter_descendants(planet_e) {
             if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
                 let visible = match icon {
-                    Icon::Attacked => missions.iter().any(|m| {
+                    Icon::Attacked => world.missions.iter().any(|m| {
                         player.owns(planet)
                             && m.objective != Icon::Deploy
                             && m.destination == planet.id
                     }),
+                    Icon::RailgunStrike => railgun_action_available(
+                        map,
+                        player,
+                        world.pending.as_deref(),
+                        planet.id,
+                        hovered,
+                    ),
                     Icon::Buildings => {
                         (player.owns(planet) || (player.controls(planet) && planet.is_moon()))
                             && (hovered || icon.condition(planet) || settings.show_info)
@@ -2269,7 +2420,7 @@ pub fn update_planet_info(
                     _ => {
                         // Existing missions stay visible; hover or the info toggle also shows
                         // available objectives from worlds under the player's control.
-                        let has_mission = missions.iter().any(|m| {
+                        let has_mission = world.missions.iter().any(|m| {
                             m.owner == player.id
                                 && m.objective == *icon
                                 && m.destination == planet.id
@@ -2336,6 +2487,18 @@ pub fn update_planet_info(
                 // dedicated marker. Planetary Phalanx coverage belongs exclusively to its
                 // stationary marker hover.
                 let radius = match state.range_preview {
+                    Some(MapRangePreview::OrbitalRailgun(id))
+                        if id == planet.id
+                            && !planet.is_moon()
+                            && planet.has(&Unit::Building(Building::OrbitalRailgun)) =>
+                    {
+                        ORBITAL_RAILGUN_RANGE_PER_LEVEL
+                            * Planet::SIZE
+                            * planet
+                                .army
+                                .amount(&Unit::Building(Building::OrbitalRailgun))
+                                .min(Building::MAX_LEVEL) as f32
+                    },
                     Some(MapRangePreview::SensorPhalanx(id))
                         if id == planet.id
                             && !planet.is_moon()
@@ -2362,7 +2525,13 @@ pub fn update_planet_info(
 
                 if radius > 0. && !planet.is_destroyed {
                     if let Some(mut material) = materials.get_mut(&material.0) {
-                        material.color = player.color().color();
+                        material.color = match state.range_preview {
+                            Some(MapRangePreview::OrbitalRailgun(id)) if id == planet.id => planet
+                                .owned
+                                .map(|owner| world.session.player_color(owner).color())
+                                .unwrap_or(Color::srgb_u8(190, 198, 210)),
+                            _ => player.color().color(),
+                        };
                     }
                     *visibility = Visibility::Inherited;
                     scanner.update(
@@ -2394,14 +2563,32 @@ fn map_planet_image(planet: &Planet, destruction_active: bool) -> String {
     }
 }
 
-/// Colors visible defenses from the same controller knowledge as territorial borders.
+/// Colors visible defenses from private control intelligence and public ownership signals.
 pub fn update_planet_defenses(
     planet_q: Query<(Entity, &PlanetCmp)>,
     children_q: Query<&Children>,
-    mut ps_q: Query<(&mut Visibility, &mut TweenAnim, &mut PlanetaryShieldCmp, &mut Sprite)>,
+    mut ps_q: Query<(
+        &mut Visibility,
+        &mut TweenAnim,
+        &mut PlanetaryShieldCmp,
+        &mut Sprite,
+        &mut Transform,
+    )>,
     mut dock_q: Query<
         (&mut Visibility, &mut Sprite),
         (With<SpaceDockCmp>, Without<JumpGateCmp>, Without<PlanetaryShieldCmp>),
+    >,
+    mut railgun_q: Query<
+        (&mut Visibility, &mut Sprite, &mut Pickable),
+        (
+            With<OrbitalRailgunCmp>,
+            Without<SpaceDockCmp>,
+            Without<JumpGateCmp>,
+            Without<SolarSatelliteCmp>,
+            Without<CommandRelayCmp>,
+            Without<SensorPhalanxCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
     >,
     mut gate_q: Query<
         (&mut Visibility, &mut Sprite, &mut Pickable),
@@ -2441,12 +2628,12 @@ pub fn update_planet_defenses(
     camera: Single<&Projection, With<MainCamera>>,
     time: Res<Time>,
     mut development_visibility: Local<DevelopmentVisibility>,
-    map: Res<Map>,
-    player: Res<Player>,
-    missions: Res<Missions>,
-    session: Res<MultiplayerSession>,
+    world: PlanetInfoResources,
 ) {
-    let jump_gate_network_active = jump_gate_network_available(&map, &player);
+    let map = &world.map;
+    let player = &world.player;
+    let session = &world.session;
+    let jump_gate_network_active = jump_gate_network_available(map, player);
     let scale = match *camera {
         Projection::Orthographic(ref projection) => projection.scale,
         _ => f32::INFINITY,
@@ -2457,8 +2644,11 @@ pub fn update_planet_defenses(
     for (entity, planet_c) in &planet_q {
         let planet = map.get(planet_c.id);
         let controls = player.controls(planet);
+        // Overload intent is private to its controller. A steady, rotating field makes the
+        // armed state conspicuous without leaking it through stale enemy intelligence.
+        let overloaded = controls && planet.shield_overload.is_overloaded();
         // Read intelligence once per planet. A hidden capture must not change its displayed color.
-        let info = (!controls).then(|| player.last_info(planet, &missions.0)).flatten();
+        let info = (!controls).then(|| player.last_info(planet, &world.missions.0)).flatten();
         let (army, controller) = if controls {
             (Some(&planet.army), planet.controlled)
         } else {
@@ -2466,8 +2656,27 @@ pub fn update_planet_defenses(
         };
         let has_ps = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::planetary_shield()) > 0);
-        let has_dock =
-            !planet.is_destroyed && army.is_some_and(|army| army.amount(&Unit::space_dock()) > 0);
+        // Strategic orbitals reveal their owner, never a possibly different controller. A
+        // destruction effect temporarily preserves that public fact until its rings finish.
+        let destroyed_owner = |structure| {
+            world.structure_effects.iter().find_map(|effect| {
+                (effect.planet == planet.id
+                    && effect.structure == structure
+                    && effect.change == PublicStructureChange::Destroyed)
+                    .then_some(effect.owner)
+            })
+        };
+        let dock_owner = (!planet.is_destroyed && planet.army.amount(&Unit::space_dock()) > 0)
+            .then_some(planet.owned)
+            .flatten()
+            .or_else(|| destroyed_owner(PublicStructure::SpaceDock));
+        let railgun_owner = (!planet.is_destroyed
+            && planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0)
+            .then_some(planet.owned)
+            .flatten()
+            .or_else(|| destroyed_owner(PublicStructure::OrbitalRailgun));
+        let has_dock = dock_owner.is_some();
+        let has_railgun = railgun_owner.is_some();
         let has_gate = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::JumpGate)) > 0);
         let satellite_level = if planet.is_destroyed {
@@ -2485,14 +2694,37 @@ pub fn update_planet_defenses(
         let color = controller
             .map(|id| session.player_color(id).color())
             .unwrap_or(Color::srgb_u8(190, 198, 210));
+        let dock_color = dock_owner
+            .map(|id| session.player_color(id).color())
+            .unwrap_or(Color::srgb_u8(190, 198, 210));
+        let railgun_color = railgun_owner
+            .map(|id| session.player_color(id).color())
+            .unwrap_or(Color::srgb_u8(190, 198, 210));
 
         for child in children_q.iter_descendants(entity) {
-            if let Ok((mut visibility, mut tween, mut ps, mut sprite)) = ps_q.get_mut(child) {
+            if let Ok((mut visibility, mut tween, mut ps, mut sprite, mut transform)) =
+                ps_q.get_mut(child)
+            {
                 *visibility = if has_ps {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
                 };
+                let was_overloaded = ps.overloaded;
+                ps.overloaded = has_ps && overloaded;
+                ps.spin_factor = approach(
+                    ps.spin_factor,
+                    if ps.overloaded {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    time.delta_secs() / PLANETARY_SHIELD_OVERLOAD_SPIN_RAMP_SECONDS,
+                );
+                transform.rotate_z(
+                    TAU * ps.spin_factor * time.delta_secs()
+                        / PLANETARY_SHIELD_OVERLOAD_ROTATION_SECONDS,
+                );
                 if has_ps && ps.color != Some(color) {
                     let mut pulse = PlanetaryShieldCmp::tween(color);
                     // Recolor the field without restarting its pulse midway through a fade.
@@ -2505,6 +2737,23 @@ pub fn update_planet_defenses(
                         Err(error) => warn!("Failed to update planetary shield color: {error}"),
                     }
                 }
+                if ps.overloaded && !was_overloaded {
+                    let mut steady_field = PlanetaryShieldCmp::tween(color);
+                    steady_field.set_elapsed(PLANETARY_SHIELD_PULSE_PEAK);
+                    match tween.set_tweenable(steady_field) {
+                        Ok(_) => {
+                            sprite.color = color.with_alpha(PLANETARY_SHIELD_MAX_ALPHA);
+                        },
+                        Err(error) => {
+                            warn!("Failed to steady overloaded planetary shield: {error}")
+                        },
+                    }
+                }
+                tween.speed = if ps.overloaded {
+                    0.0
+                } else {
+                    1.0
+                };
             }
             if let Ok((mut visibility, mut sprite)) = dock_q.get_mut(child) {
                 *visibility = if has_dock {
@@ -2513,7 +2762,22 @@ pub fn update_planet_defenses(
                     Visibility::Hidden
                 };
                 if has_dock {
-                    sprite.color = color;
+                    sprite.color = dock_color;
+                }
+            }
+            if let Ok((mut visibility, mut sprite, mut pickable)) = railgun_q.get_mut(child) {
+                *visibility = if has_railgun {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                *pickable = if has_railgun {
+                    Pickable::default()
+                } else {
+                    Pickable::IGNORE
+                };
+                if has_railgun {
+                    sprite.color = railgun_color;
                 }
             }
             if let Ok((mut visibility, mut sprite, mut pickable)) = gate_q.get_mut(child) {
@@ -2524,7 +2788,7 @@ pub fn update_planet_defenses(
                 };
                 *pickable = if has_gate
                     && jump_gate_network_active
-                    && is_usable_owned_jump_gate(planet, &player)
+                    && is_usable_owned_jump_gate(planet, player)
                 {
                     Pickable::default()
                 } else {
@@ -2661,7 +2925,7 @@ fn update_territory_visual(
 }
 
 /// Updates Voronoi ownership cells with smooth capture, loss, and recolor transitions.
-pub fn update_voronoi(
+pub(crate) fn update_voronoi(
     mut cell_q: Query<(
         &mut Visibility,
         &MeshMaterial2d<ColorMaterial>,
@@ -2684,17 +2948,32 @@ pub fn update_voronoi(
     session: Res<MultiplayerSession>,
     time: Option<Res<Time>>,
     game_state: Option<Res<State<GameState>>>,
+    structure_effects: Query<&PublicStructureEffect>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    let fading_public_owners = structure_effects
+        .iter()
+        .filter(|effect| effect.change == PublicStructureChange::Destroyed)
+        .map(|effect| (effect.planet, effect.owner))
+        .collect::<HashMap<_, _>>();
     let known_controllers = map
         .planets
         .iter()
         .filter_map(|planet| {
-            let controller = if player.controls(planet) {
-                planet.controlled
-            } else {
-                player.last_info(planet, &missions.0).and_then(|info| info.controlled)
-            };
+            let public_owner = (!planet.is_destroyed
+                && planet.owned.is_some()
+                && (planet.army.amount(&Unit::space_dock()) > 0
+                    || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0))
+                .then_some(planet.owned)
+                .flatten()
+                .or_else(|| fading_public_owners.get(&planet.id).copied());
+            let controller = public_owner.or_else(|| {
+                if player.controls(planet) {
+                    planet.controlled
+                } else {
+                    player.last_info(planet, &missions.0).and_then(|info| info.controlled)
+                }
+            });
             controller.map(|controller| (planet.id, controller))
         })
         .collect::<HashMap<PlanetId, PlayerId>>();
@@ -2706,7 +2985,8 @@ pub fn update_voronoi(
     for (mut cell_v, cell_m, cell, mut transition) in &mut cell_q {
         let planet = map.get(cell.0);
         let controller = known_controllers.get(&planet.id).copied();
-        let visible = !planet.is_destroyed && controller.is_some();
+        let visible = controller.is_some()
+            && (!planet.is_destroyed || fading_public_owners.contains_key(&planet.id));
         let base_color = controller.map(|id| session.player_color(id).color());
         if let Some(mut material) = materials.get_mut(&cell_m.0) {
             update_territory_visual(
@@ -2734,7 +3014,7 @@ pub fn update_voronoi(
     for (mut edge_v, edge_m, edge, mut transition) in &mut edge_q {
         let controller = known_controllers.get(&edge.planet).copied();
         let visible = controller.is_some_and(|controller| {
-            !map.get(edge.planet).is_destroyed
+            (!map.get(edge.planet).is_destroyed || fading_public_owners.contains_key(&edge.planet))
                 && *counts_by_owner.get(&(edge.key, controller)).unwrap_or(&2) <= 1
         });
         let base_color = controller.map(|id| session.player_color(id).color());

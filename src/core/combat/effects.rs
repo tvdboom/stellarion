@@ -32,6 +32,8 @@ const MISSILE_CURVE_HEIGHT: f32 = 0.58;
 // The original impact recording is quieter than the new firing cues. Preserve its
 // character while keeping an actual hull strike audible beneath their tails.
 const HULL_IMPACT_VOLUME: f32 = -10.0;
+const WRECK_LIFETIME: f32 = 0.62;
+const REPAIR_READOUT_PROGRESS: f32 = 0.45;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,7 +110,7 @@ impl Weapon {
             Self::Plasma | Self::Ion => 0.42,
             Self::Lance => 0.5,
             Self::Solar | Self::Siege => 0.62,
-            Self::Repair => 1.3,
+            Self::Repair => 1.6,
         }
     }
 
@@ -164,19 +166,23 @@ impl Weapon {
         }
     }
 
-    fn launch_cue(self, source_unit: Option<Unit>) -> Option<PlayAudioMsg> {
+    fn launch_cue(self) -> Option<PlayAudioMsg> {
         match self {
-            Self::Laser | Self::HeavyLaser | Self::TwinLaser => {
-                Some(PlayAudioMsg::new("laser fire"))
-            },
-            Self::Missile if source_unit == Some(Unit::Ship(Ship::Bomber)) => None,
-            Self::Missile => Some(PlayAudioMsg::new("missile fire").rate(1.0)),
-            Self::Bomb => Some(PlayAudioMsg::new("bomb release").rate(0.72)),
-            Self::Plasma => Some(PlayAudioMsg::new("beam fire").rate(1.35)),
-            Self::Ion => Some(PlayAudioMsg::new("beam fire").rate(1.6)),
-            Self::Lance => Some(PlayAudioMsg::new("beam fire").rate(1.1)),
-            Self::Solar => Some(PlayAudioMsg::new("beam fire").rate(0.78)),
-            Self::Siege => Some(PlayAudioMsg::new("beam fire").rate(0.92)),
+            // Gain and pitch climb with weapon mass. Small fighters remain the reference;
+            // heavier weapons stay at least as forceful even when their source recording is
+            // softer or pitch-shifting stretches its transient.
+            Self::Laser | Self::TwinLaser => Some(PlayAudioMsg::new("laser fire")),
+            Self::HeavyLaser => Some(PlayAudioMsg::new("laser fire").rate(0.94).gain(-12.0)),
+            Self::Repeater => Some(PlayAudioMsg::new("laser fire").rate(0.86).gain(-9.0)),
+            Self::Railgun => Some(PlayAudioMsg::new("laser fire").rate(0.82).gain(-9.0)),
+            Self::Missile => Some(PlayAudioMsg::new("missile fire").gain(-11.0)),
+            Self::Bomb => Some(PlayAudioMsg::new("missile fire").rate(0.72).gain(-9.0)),
+            Self::Broadside => Some(PlayAudioMsg::new("missile fire").rate(0.84).gain(-8.0)),
+            Self::Plasma => Some(PlayAudioMsg::new("beam fire").rate(1.35).gain(-10.0)),
+            Self::Ion => Some(PlayAudioMsg::new("beam fire").rate(1.6).gain(-10.0)),
+            Self::Lance => Some(PlayAudioMsg::new("beam fire").rate(1.1).gain(-8.0)),
+            Self::Solar => Some(PlayAudioMsg::new("beam fire").rate(0.76).gain(-5.0)),
+            Self::Siege => Some(PlayAudioMsg::new("beam fire").rate(0.86).gain(-6.0)),
             _ => None,
         }
     }
@@ -188,7 +194,6 @@ impl Weapon {
 pub struct PendingImpact {
     target: Entity,
     source: Option<Entity>,
-    source_unit: Option<Unit>,
     origin: Vec3,
     destination: Vec3,
     size: f32,
@@ -202,6 +207,7 @@ pub struct PendingImpact {
     delay: f32,
     lane: f32,
     launched: bool,
+    readout_shown: bool,
     trail_clock: f32,
 }
 
@@ -244,7 +250,9 @@ pub struct Wreck {
     size: f32,
     elapsed: f32,
     stage: usize,
+    unit: Unit,
     heavy: bool,
+    audible: bool,
 }
 
 impl Wreck {
@@ -254,7 +262,9 @@ impl Wreck {
             size,
             elapsed: 0.,
             stage: 0,
+            unit,
             heavy: matches!(unit, Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun)),
+            audible: true,
         }
     }
 }
@@ -857,7 +867,6 @@ pub fn run_combat_animations(
             (transform.translation, target_dimensions.x)
         };
         let source = message.source.map(|s| s.0);
-        let source_unit = message.source.map(|s| s.1);
         let key = (target, source, message.repair, message.shot.missed);
         let count = counts.entry(key).or_insert(0usize);
 
@@ -904,7 +913,6 @@ pub fn run_combat_animations(
             .or_insert(PendingImpact {
                 target,
                 source,
-                source_unit,
                 origin,
                 destination,
                 size,
@@ -915,13 +923,17 @@ pub fn run_combat_animations(
                 planetary: 0,
                 levels: 0,
                 elapsed: 0.,
-                delay: 0.08 + lane as f32 * 0.12 + weapon.charge(),
+                // Every target of one firing card belongs to the same visible volley. Lanes
+                // spread projectiles spatially without making rapid-fire chains or later target
+                // classes look like a second firing action.
+                delay: 0.08 + weapon.charge(),
                 lane: if weapon.salvo_limit() == 1 {
                     0.
                 } else {
                     lane as f32 - 1.
                 },
                 launched: false,
+                readout_shown: false,
                 trail_clock: 0.,
             });
         impact.hull = impact.hull.saturating_add(message.shot.hull_damage);
@@ -929,8 +941,7 @@ pub fn run_combat_animations(
         impact.planetary = impact.planetary.saturating_add(message.shot.planetary_shield_damage);
         impact.levels = impact.levels.saturating_add(usize::from(message.shot.killed));
     }
-    for (index, (_, mut impact)) in grouped.into_iter().enumerate() {
-        impact.delay += (index % 5) as f32 * 0.025;
+    for (_, impact) in grouped {
         let color = impact.weapon.color();
         let massive = matches!(impact.weapon, Weapon::Solar | Weapon::Siege);
         if impact.weapon.charge() > 0. {
@@ -1031,6 +1042,7 @@ pub fn run_combat_animations(
     }
 
     let mut hull_hit_sound = false;
+    let mut building_destroyed_sound = false;
     let mut shield_hit_sound = false;
     let mut repair_sound = false;
     for (entity, mut impact, mut sprite, mut transform, mut visibility) in &mut pending {
@@ -1041,7 +1053,7 @@ pub fn run_combat_animations(
         if !impact.launched {
             impact.launched = true;
             *visibility = Visibility::Inherited;
-            if let Some(cue) = impact.weapon.launch_cue(impact.source_unit) {
+            if let Some(cue) = impact.weapon.launch_cue() {
                 queue_combat_sound(&mut audio, &mut sound_cooldowns, cue);
             }
             if let Some(source) = impact.source {
@@ -1166,6 +1178,29 @@ pub fn run_combat_animations(
                 | Weapon::Repair => {},
             }
         }
+        if impact.weapon == Weapon::Repair && !impact.readout_shown && p >= REPAIR_READOUT_PROGRESS
+        {
+            impact.readout_shown = true;
+            let origin = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5)
+                + Vec3::Y * impact.size * 0.7;
+            painter.commands.spawn((
+                Text2d::new(format!("+{} HULL", impact.hull)),
+                TextFont {
+                    font_size: (impact.size * 0.15).into(),
+                    ..default()
+                },
+                TextColor(MINT),
+                Transform::from_translation(origin),
+                CombatReadout {
+                    age: 0.,
+                    origin,
+                    size: impact.size,
+                    color: MINT,
+                },
+                CombatCmp,
+                Pickable::IGNORE,
+            ));
+        }
         if p < 1. {
             continue;
         }
@@ -1201,31 +1236,15 @@ pub fn run_combat_animations(
         if impact.weapon == Weapon::Repair {
             cu.hull = cu.hull.saturating_add(impact.hull).min(cu.max_hull);
             painter.ring(target_t.translation, impact.size * 0.85, MINT.with_alpha(0.6), 0.5);
-            let origin = Vec3::new(
-                target_t.translation.x,
-                target_t.translation.y + impact.size * 0.7,
-                COMBAT_EXPLOSION_Z + 0.5,
-            );
-            painter.commands.spawn((
-                Text2d::new(format!("+{} HULL", impact.hull)),
-                TextFont {
-                    font_size: (impact.size * 0.15).into(),
-                    ..default()
-                },
-                TextColor(MINT),
-                Transform::from_translation(origin),
-                CombatReadout {
-                    age: 0.,
-                    origin,
-                    size: impact.size,
-                    color: MINT,
-                },
-                CombatCmp,
-                Pickable::IGNORE,
-            ));
             continue;
         }
         if impact.missed {
+            // A bright, quick fly-by distinguishes a clean miss from both launch and impact.
+            queue_combat_sound(
+                &mut audio,
+                &mut sound_cooldowns,
+                PlayAudioMsg::new("missile miss").rate(1.45),
+            );
             if impact.weapon == Weapon::Bomb {
                 painter.ring(impact.destination, impact.size * 0.55, GOLD.with_alpha(0.42), 0.45);
                 painter.sparks(impact.destination, impact.size * 0.35, GOLD, 5, false);
@@ -1289,23 +1308,32 @@ pub fn run_combat_animations(
             cu.shield = cu.shield.saturating_sub(impact.shield);
             cu.hull = cu.hull.saturating_sub(impact.hull);
         }
+        let hull_was_hit = impact.hull > 0 || impact.levels > 0;
         if old_shield > cu.shield {
-            shield_hit_sound = true;
+            // A penetrating hit reads as a hull impact; do not layer the shield cue over it.
+            shield_hit_sound |= !hull_was_hit;
             painter.ring(impact.destination, impact.size * 1.15, ICE.with_alpha(0.8), 0.4);
             if cu.shield == 0 {
                 painter.ring(impact.destination, impact.size * 1.8, ICE, 0.65);
                 painter.sparks(impact.destination, impact.size, ICE, 16, true);
                 if cu.unit == Unit::planetary_shield() {
+                    // The shield entity is centered on its long health bar, while the impact
+                    // destination follows the image child. Keep the entire destruction sequence
+                    // on the visible shield installation rather than exploding empty bar space.
                     painter.commands.entity(impact.target).insert(Wreck::new(
-                        target_t.translation,
+                        impact.destination,
                         impact.size,
                         cu.unit,
                     ));
                 }
             }
         }
-        if impact.hull > 0 || impact.levels > 0 {
-            hull_hit_sound = true;
+        if hull_was_hit {
+            if impact.weapon == Weapon::Bomb && impact.levels > 0 {
+                building_destroyed_sound = true;
+            } else {
+                hull_hit_sound = true;
+            }
             painter.blast(impact.destination, impact.size * 0.65, 0.42);
             painter.glow(impact.destination, impact.size * 0.62, GOLD, 0.24);
             painter.glow(impact.destination, impact.size * 0.28, Color::WHITE, 0.1);
@@ -1352,6 +1380,9 @@ pub fn run_combat_animations(
         hull_impact.volume = HULL_IMPACT_VOLUME;
         queue_combat_sound(&mut audio, &mut sound_cooldowns, hull_impact);
     }
+    if building_destroyed_sound {
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("large explosion"));
+    }
     if shield_hit_sound {
         queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("shield impact"));
     }
@@ -1382,7 +1413,11 @@ pub fn run_combat_animations(
         let damage = 1. - cu.hull as f32 / cu.max_hull.max(1) as f32;
         let tint = 1. - damage * 0.25;
         let base = motion.base_color.to_srgba();
-        sprite.color = if motion.flash > 0. {
+        // The planetary shield's feedback belongs on its image and its blue depletion layers.
+        // Never tint the long bar for misses, hits, or the destruction sequence.
+        sprite.color = if cu.unit == Unit::planetary_shield() {
+            motion.base_color
+        } else if motion.flash > 0. {
             Color::srgb(1.5, 1.25, 1.1)
         } else {
             let shimmer = (motion.miss_flash / 0.4 * std::f32::consts::PI).sin() * 0.4;
@@ -1416,34 +1451,44 @@ pub fn run_combat_animations(
             1.
         };
         if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(entity) {
-            if wreck.stage == 0 {
+            if wreck.stage == 0 && wreck.unit != Unit::planetary_shield() {
                 motion.flash = 0.2;
             }
         }
         let stages = [0., 0.13, 0.27, 0.43];
         while wreck.stage < stages.len() && wreck.elapsed >= stages[wreck.stage] * heavy {
             let i = wreck.stage;
+            let planetary_shield = wreck.unit == Unit::planetary_shield();
             let origin = wreck.origin
                 + Vec3::new((i as f32 * 2.4).cos(), (i as f32 * 2.4).sin(), 0.) * wreck.size * 0.2;
             if i < 3 {
                 painter.blast(origin, wreck.size * 0.65, 0.42);
                 painter.glow(origin, wreck.size * 0.75, GOLD, 0.24);
                 painter.sparks(origin, wreck.size * 0.7, GOLD, 6, false);
+                if wreck.audible && planetary_shield && matches!(i, 0 | 2) {
+                    audio.write(PlayAudioMsg::new("large explosion").rate(if i == 0 {
+                        1.05
+                    } else {
+                        0.9
+                    }));
+                }
             } else {
                 painter.blast(wreck.origin, wreck.size * 1.6 * heavy, 0.95);
                 painter.glow(wreck.origin, wreck.size * 1.8 * heavy, GOLD, 0.55);
                 painter.glow(wreck.origin, wreck.size * 0.95 * heavy, Color::WHITE, 0.16);
                 painter.ring(wreck.origin, wreck.size * 2.4 * heavy, GOLD.with_alpha(0.65), 0.85);
                 painter.sparks(wreck.origin, wreck.size * heavy, GOLD, 18, true);
-                audio.write(PlayAudioMsg::new(if wreck.heavy {
-                    "large explosion"
-                } else {
-                    "explosion"
-                }));
+                if wreck.audible {
+                    audio.write(PlayAudioMsg::new(if wreck.heavy || planetary_shield {
+                        "large explosion"
+                    } else {
+                        "explosion"
+                    }));
+                }
             }
             wreck.stage += 1;
         }
-        if wreck.elapsed > 0.62 * heavy {
+        if wreck.elapsed > WRECK_LIFETIME * heavy {
             painter.commands.entity(entity).despawn();
         }
     }

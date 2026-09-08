@@ -4,6 +4,7 @@ use super::*;
 use crate::core::combat::report::Side;
 use crate::core::combat::resolution::ShotReport;
 use crate::core::combat::systems::FireState;
+use crate::core::units::Combat;
 
 fn app() -> App {
     let mut app = App::new();
@@ -150,9 +151,8 @@ fn weapon_families_use_distinct_launch_and_shield_impact_cues() {
         step(&mut app, 2.);
         let cues =
             app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
-        let mut expected = Weapon::for_unit(kind)
-            .launch_cue(Some(kind))
-            .map_or_else(Vec::new, |cue| vec![cue.name]);
+        let mut expected =
+            Weapon::for_unit(kind).launch_cue().map_or_else(Vec::new, |cue| vec![cue.name]);
         expected.push("shield impact");
         assert_eq!(
             cues.iter().map(|cue| cue.name).collect::<Vec<_>>(),
@@ -162,6 +162,276 @@ fn weapon_families_use_distinct_launch_and_shield_impact_cues() {
         assert_eq!(cues.iter().find(|cue| cue.name == "shield impact").unwrap().playback_rate, 1.0);
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().shield, 70);
         assert_eq!(app.world().get::<CombatUnitCmp>(target).unwrap().hull, 100);
+    }
+}
+
+#[test]
+fn every_damaging_unit_uses_one_of_the_three_weapon_cues() {
+    for kind in Unit::all().into_iter().flatten().filter(|unit| unit.damage() > 0) {
+        let cue = Weapon::for_unit(kind)
+            .launch_cue()
+            .unwrap_or_else(|| panic!("{kind:?} has no firing sound"));
+        assert!(
+            matches!(cue.name, "laser fire" | "missile fire" | "beam fire"),
+            "{kind:?} uses unexpected firing cue {}",
+            cue.name
+        );
+    }
+}
+
+#[test]
+fn firing_mix_scales_from_fighters_to_heavy_weapons() {
+    let light = Weapon::for_unit(Unit::Ship(Ship::LightFighter)).launch_cue().unwrap();
+    let heavy = Weapon::for_unit(Unit::Ship(Ship::HeavyFighter)).launch_cue().unwrap();
+    let destroyer = Weapon::for_unit(Unit::Ship(Ship::Destroyer)).launch_cue().unwrap();
+    let war_sun = Weapon::for_unit(Unit::Ship(Ship::WarSun)).launch_cue().unwrap();
+    let space_dock = Weapon::for_unit(Unit::space_dock()).launch_cue().unwrap();
+
+    assert_eq!((light.name, light.volume, light.playback_rate), ("laser fire", -14.0, 1.0));
+    assert_eq!((heavy.name, heavy.volume, heavy.playback_rate), ("laser fire", -14.0, 1.0));
+    assert_eq!(
+        (destroyer.name, destroyer.volume, destroyer.playback_rate),
+        ("laser fire", -9.0, 0.86)
+    );
+    assert_eq!((war_sun.name, war_sun.volume, war_sun.playback_rate), ("beam fire", -5.0, 0.76));
+    assert_eq!(
+        (space_dock.name, space_dock.volume, space_dock.playback_rate),
+        ("beam fire", -6.0, 0.86)
+    );
+    assert!(destroyer.volume > light.volume);
+    assert!(war_sun.volume > destroyer.volume);
+    assert!(space_dock.volume > destroyer.volume);
+}
+
+#[test]
+fn impact_audio_distinguishes_shield_hull_and_destroyed_buildings() {
+    let shooter = Unit::Ship(Ship::LightFighter);
+
+    let mut shield_app = app();
+    let source = unit(&mut shield_app, shooter, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut shield_app, Unit::Ship(Ship::Cruiser), Side::Defender, Vec3::ZERO, 100, 100);
+    fire(
+        &mut shield_app,
+        source,
+        shooter,
+        Unit::Ship(Ship::Cruiser),
+        ShotReport {
+            shield_damage: 30,
+            ..default()
+        },
+        false,
+    );
+    step(&mut shield_app, 0.0);
+    step(&mut shield_app, 1.0);
+    let shield_cues = shield_app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    assert_eq!(shield_cues, ["laser fire", "shield impact"]);
+
+    let mut planetary_app = app();
+    let source = unit(&mut planetary_app, shooter, Side::Attacker, Vec3::Y * 200., 100, 0);
+    let planetary =
+        unit(&mut planetary_app, Unit::planetary_shield(), Side::Defender, Vec3::ZERO, 5, 100);
+    let shield_bar_color = Color::srgb_u8(7, 28, 49);
+    planetary_app.world_mut().get_mut::<Sprite>(planetary).unwrap().color = shield_bar_color;
+    let shield_image_position = Vec3::new(-140.0, -35.0, 11.0);
+    planetary_app.world_mut().spawn((
+        PSCombatImageCmp,
+        Sprite {
+            custom_size: Some(Vec2::splat(100.0)),
+            ..default()
+        },
+        GlobalTransform::from_translation(shield_image_position),
+    ));
+    fire(
+        &mut planetary_app,
+        source,
+        shooter,
+        Unit::planetary_shield(),
+        ShotReport {
+            planetary_shield_damage: 100,
+            ..default()
+        },
+        false,
+    );
+    step(&mut planetary_app, 0.0);
+    let impact_destination = planetary_app
+        .world_mut()
+        .query::<&PendingImpact>()
+        .single(planetary_app.world())
+        .unwrap()
+        .destination;
+    assert!(
+        impact_destination.truncate().distance(shield_image_position.truncate()) <= 50.0,
+        "planetary-shield fire must terminate on its image"
+    );
+    step(&mut planetary_app, 1.0);
+    assert!(
+        planetary_app.world().get::<Wreck>(planetary).unwrap().origin == impact_destination,
+        "planetary-shield destruction must remain centered on the image impact"
+    );
+    let mut planetary_cues = planetary_app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    step(&mut planetary_app, 0.05);
+    step(&mut planetary_app, 0.01);
+    assert_eq!(
+        planetary_app.world().get::<Sprite>(planetary).unwrap().color,
+        shield_bar_color,
+        "planetary-shield destruction must never flash the health bar white"
+    );
+    planetary_cues.extend(
+        planetary_app
+            .world_mut()
+            .resource_mut::<Messages<PlayAudioMsg>>()
+            .drain()
+            .map(|cue| cue.name),
+    );
+    step(&mut planetary_app, 1.0);
+    planetary_cues.extend(
+        planetary_app
+            .world_mut()
+            .resource_mut::<Messages<PlayAudioMsg>>()
+            .drain()
+            .map(|cue| cue.name),
+    );
+    assert_eq!(
+        planetary_cues,
+        ["laser fire", "shield impact", "large explosion", "large explosion", "large explosion",]
+    );
+
+    let mut hull_app = app();
+    let source = unit(&mut hull_app, shooter, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut hull_app, Unit::Ship(Ship::Cruiser), Side::Defender, Vec3::ZERO, 100, 20);
+    fire(
+        &mut hull_app,
+        source,
+        shooter,
+        Unit::Ship(Ship::Cruiser),
+        ShotReport {
+            shield_damage: 20,
+            hull_damage: 10,
+            ..default()
+        },
+        false,
+    );
+    step(&mut hull_app, 0.0);
+    step(&mut hull_app, 1.0);
+    let hull_cues = hull_app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    assert_eq!(hull_cues, ["laser fire", "short explosion"]);
+
+    let mut bombing_app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let building = Unit::resource_buildings()[0];
+    let source = unit(&mut bombing_app, bomber, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut bombing_app, building, Side::Defender, Vec3::ZERO, 5, 0);
+    fire(
+        &mut bombing_app,
+        source,
+        bomber,
+        building,
+        ShotReport {
+            killed: true,
+            ..default()
+        },
+        false,
+    );
+    step(&mut bombing_app, 0.0);
+    step(&mut bombing_app, 2.0);
+    let bombing_cues = bombing_app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    assert_eq!(bombing_cues, ["missile fire", "large explosion"]);
+}
+
+#[test]
+fn one_firing_card_launches_at_ships_shields_and_defenses_together() {
+    for shooter in [Unit::Ship(Ship::WarSun), Unit::Ship(Ship::Destroyer)] {
+        let mut app = app();
+        let ship_kind = Unit::Ship(Ship::Cruiser);
+        let defense_kind = Unit::Defense(Defense::GaussCannon);
+        let source = unit(&mut app, shooter, Side::Attacker, Vec3::Y * 200., 100, 0);
+        let ship = unit(&mut app, ship_kind, Side::Defender, Vec3::new(-150., 0., 0.), 100, 0);
+        let shield = unit(&mut app, Unit::planetary_shield(), Side::Defender, Vec3::ZERO, 5, 100);
+        let defense = unit(&mut app, defense_kind, Side::Defender, Vec3::X * 150., 100, 0);
+        for (target, shot) in [
+            (
+                ship_kind,
+                ShotReport {
+                    hull_damage: 10,
+                    ..default()
+                },
+            ),
+            (
+                Unit::planetary_shield(),
+                ShotReport {
+                    planetary_shield_damage: 100,
+                    ..default()
+                },
+            ),
+            (
+                defense_kind,
+                ShotReport {
+                    hull_damage: 10,
+                    ..default()
+                },
+            ),
+            (
+                defense_kind,
+                ShotReport {
+                    hull_damage: 5,
+                    rapid_fire: true,
+                    ..default()
+                },
+            ),
+        ] {
+            fire(&mut app, source, shooter, target, shot, false);
+        }
+        step(&mut app, 0.0);
+
+        let impacts = app
+            .world_mut()
+            .query::<&PendingImpact>()
+            .iter(app.world())
+            .map(|impact| (impact.target, impact.delay, impact.launched))
+            .collect::<Vec<_>>();
+        let expected_impacts = if shooter == Unit::Ship(Ship::Destroyer) {
+            4
+        } else {
+            3
+        };
+        assert_eq!(impacts.len(), expected_impacts, "{shooter:?}");
+        assert!(impacts.iter().any(|impact| impact.0 == ship), "{shooter:?}");
+        assert!(impacts.iter().any(|impact| impact.0 == shield), "{shooter:?}");
+        assert_eq!(
+            impacts.iter().filter(|impact| impact.0 == defense).count(),
+            expected_impacts - 2,
+            "{shooter:?}",
+        );
+        assert!(impacts.iter().all(|impact| impact.1 == impacts[0].1), "{shooter:?}");
+
+        step(&mut app, impacts[0].1 + 0.01);
+        assert!(
+            app.world_mut()
+                .query::<&PendingImpact>()
+                .iter(app.world())
+                .all(|impact| impact.launched),
+            "{shooter:?}",
+        );
     }
 }
 
@@ -313,11 +583,11 @@ fn interceptors_finish_inside_the_incoming_missile_image() {
 fn missiles_use_a_slower_shallower_flight() {
     assert_eq!(Weapon::Missile.flight(), MISSILE_FLIGHT_TIME);
     const { assert!(MISSILE_FLIGHT_TIME >= 0.9) };
+    assert!(Weapon::Repair.flight() > 1.5);
 
     let impact = PendingImpact {
         target: Entity::PLACEHOLDER,
         source: None,
-        source_unit: None,
         origin: Vec3::new(0., 200., 0.),
         destination: Vec3::ZERO,
         size: 100.,
@@ -331,6 +601,7 @@ fn missiles_use_a_slower_shallower_flight() {
         delay: 0.,
         lane: 1.,
         launched: false,
+        readout_shown: false,
         trail_clock: 0.,
     };
     let midpoint = impact.position(0.5);
@@ -365,9 +636,9 @@ fn bombing_uses_a_large_slow_missile_profile_and_still_targets_the_building() {
         Weapon::Bomb.projectile_size(100.0).length()
             > Weapon::Missile.projectile_size(100.0).length() * 1.4
     );
-    assert!(Weapon::for_unit(bomber).launch_cue(Some(bomber)).is_none());
-    let cue = Weapon::Bomb.launch_cue(Some(bomber)).unwrap();
-    assert_eq!((cue.name, cue.playback_rate), ("bomb release", 0.72));
+    assert_eq!(Weapon::for_unit(bomber).launch_cue().unwrap().name, "missile fire");
+    let cue = Weapon::Bomb.launch_cue().unwrap();
+    assert_eq!((cue.name, cue.playback_rate), ("missile fire", 0.72));
     assert!(impact.destination.truncate().abs().cmple(Vec2::splat(50.0)).all());
 
     step(&mut app, 0.2);
@@ -377,7 +648,69 @@ fn bombing_uses_a_large_slow_missile_profile_and_still_targets_the_building() {
         .drain()
         .map(|cue| cue.name)
         .collect::<Vec<_>>();
-    assert_eq!(cues, ["bomb release"]);
+    assert_eq!(cues, ["missile fire"]);
+}
+
+#[test]
+fn missed_missiles_add_a_flyby_cue_when_they_pass_the_target() {
+    let mut app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let target = Unit::Ship(Ship::Cruiser);
+    let source = unit(&mut app, bomber, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut app, target, Side::Defender, Vec3::ZERO, 100, 0);
+    fire(
+        &mut app,
+        source,
+        bomber,
+        target,
+        ShotReport {
+            missed: true,
+            ..default()
+        },
+        false,
+    );
+
+    step(&mut app, 0.0);
+    step(&mut app, 2.0);
+
+    let cues = app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| (cue.name, cue.volume, cue.playback_rate))
+        .collect::<Vec<_>>();
+    assert_eq!(cues, [("missile fire", -11.0, 1.0), ("missile miss", -11.0, 1.45)]);
+}
+
+#[test]
+fn missed_lasers_also_add_a_flyby_cue_when_they_pass_the_target() {
+    let mut app = app();
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let target = Unit::Ship(Ship::Cruiser);
+    let source = unit(&mut app, fighter, Side::Attacker, Vec3::Y * 200., 100, 0);
+    unit(&mut app, target, Side::Defender, Vec3::ZERO, 100, 0);
+    fire(
+        &mut app,
+        source,
+        fighter,
+        target,
+        ShotReport {
+            missed: true,
+            ..default()
+        },
+        false,
+    );
+
+    step(&mut app, 0.0);
+    step(&mut app, 2.0);
+
+    let cues = app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| (cue.name, cue.volume, cue.playback_rate))
+        .collect::<Vec<_>>();
+    assert_eq!(cues, [("laser fire", -14.0, 1.0), ("missile miss", -11.0, 1.45)]);
 }
 
 #[test]
@@ -462,7 +795,10 @@ fn misses_show_feedback_without_moving_cards_and_repair_drones_deliver_once() {
         );
     }
     step(&mut app, 0.);
-    step(&mut app, 2.);
+    step(&mut app, 0.09 + Weapon::Repair.flight() * REPAIR_READOUT_PROGRESS);
+    assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 30);
+    assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|text| text.0 == "+50 HULL"));
+    step(&mut app, Weapon::Repair.flight());
     assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 80);
     step(&mut app, 2.);
     assert_eq!(app.world().get::<CombatUnitCmp>(defender).unwrap().hull, 80);

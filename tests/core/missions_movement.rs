@@ -11,6 +11,20 @@ fn large_fleet_totals_and_fuel_costs_do_not_overflow() {
     assert_eq!(mission.fuel_consumption(&map), usize::MAX);
 }
 
+#[test]
+fn reactor_reduces_fuel_only_for_missions_launched_from_its_planet() {
+    let (mut map, mission) = journey(10.0, Army::from([(Unit::Ship(Ship::ColonyShip), 1)]));
+    let reactor = Unit::Building(Building::Reactor);
+    let fuel_without_reactor = mission.fuel_consumption(&map);
+
+    map.planets[1].army.insert(reactor, 1);
+    assert_eq!(mission.fuel_consumption(&map), fuel_without_reactor);
+
+    map.planets[1].army.remove(&reactor);
+    map.planets[0].army.insert(reactor, 1);
+    assert!(mission.fuel_consumption(&map) < fuel_without_reactor);
+}
+
 fn journey(old_turns: f32, army: Army) -> (Map, Mission) {
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     let rating = army.keys().map(Combat::speed).fold(f32::INFINITY, f32::min);

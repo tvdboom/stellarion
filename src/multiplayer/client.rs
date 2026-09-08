@@ -153,7 +153,7 @@ pub struct MultiplayerSession {
     pub active_game: Option<GameRecord>,
     /// Stable slot for the current identity in the selected game.
     pub membership: Option<GameMembership>,
-    /// Newly issued plaintext recovery code, retained only on this client for display.
+    /// Selected player's stable recovery code, returned by membership and resume operations.
     pub issued_recovery_code: Option<String>,
     /// Last durable notification sequence applied for the selected game.
     pub event_cursor: u64,
@@ -255,7 +255,7 @@ pub enum MultiplayerRequest {
         /// User-entered human-friendly code.
         code: String,
     },
-    /// Opens a linked game or replaces a lost identity using a one-time recovery code.
+    /// Opens a linked game or replaces a lost identity using its stable recovery code.
     RecoverPlayer {
         /// Human-friendly game code.
         code: String,
@@ -274,8 +274,6 @@ pub enum MultiplayerRequest {
     SetPlayerColor(PlayerColor),
     /// Saves the latest canonical snapshot from any member and reports the result to the player.
     SaveGame,
-    /// Saves the latest canonical snapshot without showing foreground feedback.
-    AutosaveGame,
     /// Marks the local player ready to finish this turn.
     SubmitTurn,
     /// Returns to the main menu, deleting an unstarted lobby when its host leaves.
@@ -333,7 +331,6 @@ enum Operation {
     Start,
     Color,
     Save,
-    Autosave,
     Submit,
     Withdraw,
     RestoreDraft,
@@ -357,7 +354,6 @@ enum BackendOutput {
     Membership {
         operation: Operation,
         result: MembershipResult,
-        recovery_code: RecoveryCode,
         color_notice: Option<String>,
     },
     #[cfg(debug_assertions)]
@@ -367,6 +363,7 @@ enum BackendOutput {
         result: MembershipResult,
     },
     Games(Vec<GameSummary>),
+    ResumeLoaded(GameRecord, String),
     Record(Operation, GameRecord),
     Resumed,
     Submitted(u64),
@@ -425,6 +422,7 @@ impl Plugin for MultiplayerClientPlugin {
                     process_requests,
                     poll_backend_tasks,
                     drive_turn_draft,
+                    profile::sync_combat_preferences,
                     profile::flush_profile,
                     drive_reauthentication,
                     drive_auth_refresh,
@@ -447,9 +445,14 @@ fn clear_join_error(mut session: ResMut<MultiplayerSession>) {
 }
 
 /// Creates platform storage and starts anonymous authentication asynchronously.
-fn initialize_client(mut commands: Commands, mut tasks: ResMut<BackendTasks>) {
+fn initialize_client(
+    mut commands: Commands,
+    mut tasks: ResMut<BackendTasks>,
+    mut settings: ResMut<crate::core::settings::Settings>,
+) {
     let storage = platform_storage();
     let profile = load_profile(storage.as_ref()).unwrap_or_default();
+    settings.apply_combat_preferences(profile.combat_preferences);
     let stored_session = profile.session.clone();
     commands.insert_resource(ClientRuntime {
         backend: None,
@@ -538,7 +541,7 @@ async fn create_local_practice(
                 code: generate_game_code()
                     .map_err(|error| BackendError::Protocol(error.to_string()))?,
                 display_name: "Practice Player".to_string(),
-                recovery_hash: recovery.hash().0,
+                recovery_code: recovery.expose().to_string(),
                 persisted: PersistedGame::new(model),
             },
         )
@@ -749,7 +752,7 @@ fn process_requests(
                                 CreateGameRequest {
                                     code,
                                     display_name: display_name.clone(),
-                                    recovery_hash: recovery.hash().0,
+                                    recovery_code: recovery.expose().to_string(),
                                     persisted: PersistedGame::new(model.clone()),
                                 },
                             )
@@ -759,7 +762,6 @@ fn process_requests(
                                 return BackendOutput::Membership {
                                     operation: Operation::Create,
                                     result,
-                                    recovery_code: recovery,
                                     color_notice: None,
                                 }
                             },
@@ -785,14 +787,13 @@ fn process_requests(
                 let request = JoinGameRequest {
                     code: GameCode::new(code),
                     display_name: display_name.trim().to_string(),
-                    recovery_hash: recovery.hash().0,
+                    recovery_code: recovery.expose().to_string(),
                 };
                 spawn_backend_task(&mut tasks, async move {
                     match backend.join_game(&auth, request).await {
                         Ok(result) => BackendOutput::Membership {
                             operation: Operation::Join,
                             result,
-                            recovery_code: recovery,
                             color_notice: None,
                         },
                         Err(error) => BackendOutput::Failed(Operation::Join, error),
@@ -804,9 +805,17 @@ fn process_requests(
                 recovery_code,
             } => {
                 let code = GameCode::new(code);
-                // Existing membership needs no recovery credential or secret rotation.
-                if let Some(game_id) = linked_game_id(&session.games, &code) {
-                    spawn_backend_task(&mut tasks, load_game_for_resume(backend, auth, game_id));
+                // Existing membership needs no recovery credential.
+                if let Some(summary) = linked_game(&session.games, &code) {
+                    spawn_backend_task(
+                        &mut tasks,
+                        load_game_for_resume(
+                            backend,
+                            auth,
+                            summary.id.clone(),
+                            summary.recovery_code.clone(),
+                        ),
+                    );
                     continue;
                 }
                 let supplied = match RecoveryCode::parse(recovery_code) {
@@ -816,26 +825,29 @@ fn process_requests(
                         continue;
                     },
                 };
-                let replacement = match RecoveryCode::generate() {
-                    Ok(code) => code,
-                    Err(error) => {
-                        request_error(&mut session, &error.to_string());
-                        continue;
-                    },
-                };
                 let request = RecoverPlayerRequest {
                     code,
-                    recovery_hash: supplied.hash().0,
-                    replacement_recovery_hash: replacement.hash().0,
+                    recovery_code: supplied.expose().to_string(),
                 };
                 spawn_backend_task(
                     &mut tasks,
-                    recover_or_resume_linked_game(backend, auth, request, replacement),
+                    recover_or_resume_linked_game(backend, auth, request),
                 );
             },
             MultiplayerRequest::ResumeGame(game_id) => {
-                let game_id = game_id.clone();
-                spawn_backend_task(&mut tasks, load_game_for_resume(backend, auth, game_id));
+                let Some(summary) = session.games.iter().find(|game| &game.id == game_id) else {
+                    request_error(&mut session, "This game is no longer available.");
+                    continue;
+                };
+                spawn_backend_task(
+                    &mut tasks,
+                    load_game_for_resume(
+                        backend,
+                        auth,
+                        summary.id.clone(),
+                        summary.recovery_code.clone(),
+                    ),
+                );
             },
             MultiplayerRequest::ResumeActiveGame => {
                 let Some(record) = session.active_game.clone() else {
@@ -894,18 +906,11 @@ fn process_requests(
                     }
                 });
             },
-            MultiplayerRequest::SaveGame | MultiplayerRequest::AutosaveGame => {
-                let operation = if matches!(request, MultiplayerRequest::SaveGame) {
-                    Operation::Save
-                } else {
-                    Operation::Autosave
-                };
+            MultiplayerRequest::SaveGame => {
                 let Some(record) = session.active_game.clone() else {
                     let error = "No game is selected.";
                     request_error(&mut session, error);
-                    if matches!(operation, Operation::Save) {
-                        messages.write(MessageMsg::error(error));
-                    }
+                    messages.write(MessageMsg::error(error));
                     continue;
                 };
                 spawn_backend_task(&mut tasks, async move {
@@ -913,8 +918,8 @@ fn process_requests(
                         .save_game(&auth, &record.id, record.revision, record.persisted.clone())
                         .await
                     {
-                        Ok(record) => BackendOutput::Record(operation, record),
-                        Err(error) => BackendOutput::Failed(operation, error),
+                        Ok(record) => BackendOutput::Record(Operation::Save, record),
+                        Err(error) => BackendOutput::Failed(Operation::Save, error),
                     }
                 });
             },
@@ -974,7 +979,7 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
             "No saved game matches this game code. Check the game code and try again.".to_string()
         },
         (Operation::Recover, BackendError::InvalidRecoveryCode) => {
-            "This recovery code is invalid or has already been used. Each player needs their own private recovery code. Check both codes and use your latest recovery code.".to_string()
+            "This recovery code is invalid. Each player needs their own private recovery code. Check both codes and try again.".to_string()
         },
         (Operation::Recover, BackendError::RecoveryCodeInUse) => {
             "This recovery code is already in use. Use your own private recovery code. To move this player here, leave the other window first; after an unexpected close, wait a minute.".to_string()
@@ -1171,29 +1176,23 @@ fn apply_output(
         BackendOutput::Membership {
             operation,
             result,
-            recovery_code,
             color_notice,
         } => {
-            let reconnected_without_rotation = matches!(operation, Operation::Join)
-                && matches!(result.disposition, JoinDisposition::Reconnected);
+            let reconnected = matches!(result.disposition, JoinDisposition::Reconnected);
             form.display_name.clone_from(&result.membership.display_name);
             form.saved_display_name = Some(result.membership.display_name.clone());
             runtime.profile.display_name.clone_from(&result.membership.display_name);
             form.game_code = result.game.code.0.clone();
-            session.issued_recovery_code = if reconnected_without_rotation {
-                None
-            } else {
-                Some(recovery_code.expose().to_string())
-            };
+            session.issued_recovery_code = Some(result.recovery_code.clone());
             session.reconnect_lobby = result.game.status == MatchStatus::Active
                 && !matches!(operation, Operation::Create);
             install_membership(result, runtime, session, pending, next_state, gameplay_visible);
             session.notice = Some(color_notice.unwrap_or_else(|| match operation {
                 Operation::Recover => {
                     form.recovery_code.clear();
-                    "Game recovered. Save your new recovery code; it replaces the code you just used.".to_string()
+                    "Game recovered. Your recovery code remains unchanged.".to_string()
                 },
-                Operation::Join if reconnected_without_rotation => {
+                Operation::Join if reconnected => {
                     "Reconnected to the existing player on this device.".to_string()
                 },
                 Operation::Join => "Joined game successfully.".to_string(),
@@ -1223,6 +1222,14 @@ fn apply_output(
                 games.into_iter().filter(|game| game.status != MatchStatus::Lobby).collect();
             session.connection = ConnectionStatus::Connected;
         },
+        BackendOutput::ResumeLoaded(record, recovery_code) => {
+            session.issued_recovery_code = Some(recovery_code);
+            session.reconnect_lobby = record.status == MatchStatus::Active;
+            install_record(record, runtime, session, pending, next_state, gameplay_visible);
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
+            session.resolving = false;
+        },
         BackendOutput::Left(game_id) => {
             if let Some(record) = session.active_game.as_ref().filter(|record| record.id == game_id)
             {
@@ -1247,9 +1254,7 @@ fn apply_output(
             session.connection = ConnectionStatus::Connected;
             session.notice = match operation {
                 Operation::Color => None,
-                Operation::Save | Operation::Autosave => {
-                    Some("Game saved successfully.".to_string())
-                },
+                Operation::Save => Some("Game saved successfully.".to_string()),
                 Operation::Resolve => {
                     Some("All submissions resolved; the next turn is ready.".to_string())
                 },
@@ -1423,7 +1428,6 @@ fn apply_output(
                             | Operation::Start
                             | Operation::Resume
                             | Operation::Save
-                            | Operation::Autosave
                             | Operation::Submit
                             | Operation::Withdraw
                             | Operation::RestoreDraft
@@ -1715,6 +1719,9 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
     let Some(membership) = &session.membership else {
         return;
     };
+    let Some(recovery_code) = &session.issued_recovery_code else {
+        return;
+    };
     let Ok(player) = record.persisted.state.player(membership.player_id) else {
         return;
     };
@@ -1727,6 +1734,7 @@ fn sync_game_summary(session: &mut MultiplayerSession, record: &GameRecord) {
         turn: record.persisted.state.turn,
         player_id: membership.player_id,
         display_name: membership.display_name.clone(),
+        recovery_code: recovery_code.clone(),
         player_color: player.color(),
         player_count: record.members.len(),
         max_players: record.max_players,
@@ -1989,9 +1997,9 @@ fn spawn_list(runtime: &ClientRuntime, session: &MultiplayerSession, tasks: &mut
     });
 }
 
-/// Resolves a normalized game code to the same backend identifier used by Resume Game.
-fn linked_game_id(games: &[GameSummary], code: &GameCode) -> Option<GameId> {
-    games.iter().find(|game| &game.code == code).map(|game| game.id.clone())
+/// Resolves a normalized game code to the same backend entry used by Resume Game.
+fn linked_game<'a>(games: &'a [GameSummary], code: &GameCode) -> Option<&'a GameSummary> {
+    games.iter().find(|game| &game.code == code)
 }
 
 /// Loads one already-linked game through the shared Resume Game result path.
@@ -1999,9 +2007,10 @@ async fn load_game_for_resume(
     backend: Arc<dyn MultiplayerBackend>,
     auth: AuthSession,
     game_id: GameId,
+    recovery_code: String,
 ) -> BackendOutput {
     match backend.load_game(&auth, &game_id).await {
-        Ok(record) => BackendOutput::Record(Operation::ResumeLoad, record),
+        Ok(record) => BackendOutput::ResumeLoaded(record, recovery_code),
         Err(error) => BackendOutput::Failed(Operation::ResumeLoad, error),
     }
 }
@@ -2011,14 +2020,12 @@ async fn recover_or_resume_linked_game(
     backend: Arc<dyn MultiplayerBackend>,
     auth: AuthSession,
     request: RecoverPlayerRequest,
-    replacement: RecoveryCode,
 ) -> BackendOutput {
     let code = request.code.clone();
     match backend.recover_player(&auth, request).await {
         Ok(result) => BackendOutput::Membership {
             operation: Operation::Recover,
             result,
-            recovery_code: replacement,
             color_notice: None,
         },
         Err(BackendError::AlreadyMember) => {
@@ -2026,11 +2033,12 @@ async fn recover_or_resume_linked_game(
                 Ok(games) => games,
                 Err(error) => return BackendOutput::Failed(Operation::Recover, error),
             };
-            let Some(game_id) = linked_game_id(&games, &code) else {
+            let Some(summary) = linked_game(&games, &code) else {
                 // Lobbies and expired matches are intentionally absent from Resume Game.
                 return BackendOutput::Failed(Operation::Recover, BackendError::GameNotFound);
             };
-            load_game_for_resume(backend, auth, game_id).await
+            load_game_for_resume(backend, auth, summary.id.clone(), summary.recovery_code.clone())
+                .await
         },
         Err(error) => BackendOutput::Failed(Operation::Recover, error),
     }

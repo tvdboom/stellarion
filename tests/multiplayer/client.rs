@@ -1,4 +1,5 @@
 use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
+use bevy::ecs::system::RunSystemOnce;
 use std::collections::HashSet;
 
 use super::*;
@@ -17,7 +18,7 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
         CreateGameRequest {
             code: GameCode::new("ABCDEF"),
             display_name: "Host".into(),
-            recovery_hash: "a".repeat(64),
+            recovery_code: "0123-4567-89AB-CDEF".into(),
             persisted: PersistedGame::new(GameModel::new([7; 32], GameRules::default()).unwrap()),
         },
     ))
@@ -27,7 +28,7 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
         JoinGameRequest {
             code: created.game.code,
             display_name: "Guest".into(),
-            recovery_hash: "b".repeat(64),
+            recovery_code: "FEDC-BA98-7654-3210".into(),
         },
     ))
     .unwrap();
@@ -187,7 +188,7 @@ fn color_update_success_does_not_create_a_toast() {
 }
 
 #[test]
-fn manual_save_reports_success_and_failure_but_autosave_stays_quiet() {
+fn manual_save_reports_success_and_failure() {
     let success = operation_notification(&BackendOutput::Record(
         Operation::Save,
         record("game-a", 2, 1, MatchStatus::Active),
@@ -201,12 +202,6 @@ fn manual_save_reports_success_and_failure_but_autosave_stays_quiet() {
         operation_notification(&BackendOutput::Failed(Operation::Save, error.clone())).unwrap();
     assert_eq!(failure.message, user_facing_backend_error(Operation::Save, &error));
     assert_eq!(failure.level, crate::core::messages::MessageLevel::Error);
-
-    assert!(operation_notification(&BackendOutput::Record(
-        Operation::Autosave,
-        record("game-a", 2, 1, MatchStatus::Active),
-    ))
-    .is_none());
 }
 
 #[test]
@@ -277,7 +272,7 @@ fn host_and_guest_disconnects_refresh_before_due_event_polls() {
             CreateGameRequest {
                 code: GameCode::new("ABCDEF"),
                 display_name: "Host".into(),
-                recovery_hash: "a".repeat(64),
+                recovery_code: "0123-4567-89AB-CDEF".into(),
                 persisted: record("presence", 0, 1, MatchStatus::Lobby).persisted,
             },
         ))
@@ -287,7 +282,7 @@ fn host_and_guest_disconnects_refresh_before_due_event_polls() {
             JoinGameRequest {
                 code: created.game.code,
                 display_name: "Guest".into(),
-                recovery_hash: "b".repeat(64),
+                recovery_code: "FEDC-BA98-7654-3210".into(),
             },
         ))
         .unwrap();
@@ -556,7 +551,7 @@ fn already_linked_recovery_opens_the_saved_game() {
         CreateGameRequest {
             code: GameCode::new("ABCDEF"),
             display_name: "Host".to_string(),
-            recovery_hash: host_code.hash().0,
+            recovery_code: host_code.expose().to_string(),
             persisted: PersistedGame::new(GameModel::new([3; 32], GameRules::default()).unwrap()),
         },
     ))
@@ -566,7 +561,7 @@ fn already_linked_recovery_opens_the_saved_game() {
         JoinGameRequest {
             code: created.game.code.clone(),
             display_name: "Player".to_string(),
-            recovery_hash: player_code.hash().0,
+            recovery_code: player_code.expose().to_string(),
         },
     ))
     .unwrap();
@@ -575,25 +570,25 @@ fn already_linked_recovery_opens_the_saved_game() {
         block_on(backend.start_game(&host, &joined.game.id, joined.game.revision, snapshot))
             .unwrap();
     let listed = block_on(backend.list_games(&host)).unwrap();
-    assert_eq!(linked_game_id(&listed, &GameCode::new(" abcdef ")), Some(saved.id.clone()));
-    let replacement = RecoveryCode::generate().unwrap();
+    assert_eq!(
+        linked_game(&listed, &GameCode::new(" abcdef ")).map(|game| &game.id),
+        Some(&saved.id)
+    );
 
     let output = block_on(recover_or_resume_linked_game(
         backend,
         host,
         RecoverPlayerRequest {
             code: saved.code.clone(),
-            recovery_hash: host_code.hash().0,
-            replacement_recovery_hash: replacement.hash().0,
+            recovery_code: host_code.expose().to_string(),
         },
-        replacement,
     ));
 
     match output {
-        BackendOutput::Record(operation, record) => {
-            assert!(matches!(operation, Operation::ResumeLoad));
+        BackendOutput::ResumeLoaded(record, recovery_code) => {
             assert_eq!(record.id, saved.id);
             assert_eq!(record.revision, saved.revision);
+            assert_eq!(recovery_code, host_code.expose());
         },
         _ => panic!("an already-linked recovery must use the Resume Game result path"),
     }
@@ -612,7 +607,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
         CreateGameRequest {
             code: GameCode::new("ABCDEF"),
             display_name: "Host".to_string(),
-            recovery_hash: host_code.hash().0,
+            recovery_code: host_code.expose().to_string(),
             persisted: PersistedGame::new(GameModel::new([3; 32], GameRules::default()).unwrap()),
         },
     ))
@@ -622,7 +617,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
         JoinGameRequest {
             code: created.game.code.clone(),
             display_name: "Player".to_string(),
-            recovery_hash: player_code.hash().0,
+            recovery_code: player_code.expose().to_string(),
         },
     ))
     .unwrap();
@@ -634,13 +629,11 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
     for (original, code) in [(created.membership, host_code), (joined.membership, player_code)] {
         let auth = block_on(backend.authenticate(None)).unwrap();
         assert!(block_on(backend.list_games(&auth)).unwrap().is_empty());
-        let replacement = RecoveryCode::generate().unwrap();
         let result = block_on(backend.recover_player(
             &auth,
             RecoverPlayerRequest {
                 code: saved.code.clone(),
-                recovery_hash: code.hash().0,
-                replacement_recovery_hash: replacement.hash().0,
+                recovery_code: code.expose().to_string(),
             },
         ))
         .unwrap();
@@ -652,6 +645,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
         );
         assert_eq!(result.membership.player_id, original.player_id);
         assert_eq!(result.membership.is_creator, original.is_creator);
+        assert_eq!(result.recovery_code, code.expose());
         let mut runtime = ClientRuntime {
             backend: None,
             realtime_config: None,
@@ -669,12 +663,11 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
         };
         let mut pending = PendingTurnCommands::default();
         let mut next = NextState::default();
-        let replacement_text = replacement.expose().to_string();
+        let recovery_text = code.expose().to_string();
         apply_output(
             BackendOutput::Membership {
                 operation: Operation::Recover,
                 result,
-                recovery_code: replacement,
                 color_notice: None,
             },
             &mut runtime,
@@ -687,7 +680,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
         assert!(matches!(next, NextState::Pending(AppState::Lobby)));
         assert!(session.reconnect_lobby);
         assert_eq!(session.games[0].id, saved.id);
-        assert_eq!(session.issued_recovery_code.as_deref(), Some(replacement_text.as_str()));
+        assert_eq!(session.issued_recovery_code.as_deref(), Some(recovery_text.as_str()));
         assert!(form.recovery_code.is_empty());
         block_on(backend.set_connected(&auth, &saved.id, true)).unwrap();
         recovered_sessions.push((runtime, session));
@@ -727,7 +720,7 @@ fn created_player_name_is_available_for_later_joins() {
         CreateGameRequest {
             code: GameCode::new("ABCDEF"),
             display_name: "  Nova  ".to_string(),
-            recovery_hash: recovery_code.hash().0,
+            recovery_code: recovery_code.expose().to_string(),
             persisted: PersistedGame::new(GameModel::new([3; 32], GameRules::default()).unwrap()),
         },
     ))
@@ -748,7 +741,6 @@ fn created_player_name_is_available_for_later_joins() {
         BackendOutput::Membership {
             operation: Operation::Create,
             result,
-            recovery_code,
             color_notice: None,
         },
         &mut runtime,
@@ -785,6 +777,29 @@ fn created_player_name_is_available_for_later_joins() {
 }
 
 #[test]
+fn combat_preferences_are_copied_into_the_local_player_profile() {
+    let mut app = App::new();
+    app.insert_resource(crate::core::settings::Settings {
+        combat_speed: 8.0,
+        combat_volley_fire: true,
+        ..default()
+    })
+    .insert_resource(ClientRuntime {
+        backend: None,
+        realtime_config: None,
+        storage: Arc::new(MemoryStorage::default()),
+        profile: ClientProfile::default(),
+        practice_return: None,
+    });
+
+    app.world_mut().run_system_once(profile::sync_combat_preferences).unwrap();
+
+    let profile = &app.world().resource::<ClientRuntime>().profile;
+    assert_eq!(profile.combat_preferences.speed, 8.0);
+    assert!(profile.combat_preferences.volley_fire);
+}
+
+#[test]
 /// Live lobbies are excluded; starting the match makes it resumable immediately.
 fn selected_lobby_is_not_saved_until_started() {
     let lobby = record("game-a", 0, 1, MatchStatus::Lobby);
@@ -798,6 +813,7 @@ fn selected_lobby_is_not_saved_until_started() {
             identity_version: 1,
             connected: false,
         }),
+        issued_recovery_code: Some("0123-4567-89AB-CDEF".to_string()),
         ..MultiplayerSession::default()
     };
 
@@ -810,6 +826,7 @@ fn selected_lobby_is_not_saved_until_started() {
     assert_eq!(session.games[0].status, MatchStatus::Active);
     assert_eq!(session.games[0].player_id, 1);
     assert_eq!(session.games[0].display_name, "Host");
+    assert_eq!(session.games[0].recovery_code, "0123-4567-89AB-CDEF");
     assert_eq!(session.games[0].player_color, PlayerColor::new(4).unwrap());
     sync_game_summary(&mut session, &lobby);
     assert!(session.games.is_empty());
@@ -1006,7 +1023,6 @@ fn rejected_recovery_keeps_the_player_on_the_form_with_an_actionable_error() {
         assert!(matches!(next, NextState::Unchanged));
         assert!(!session.has_active_game());
         assert!(!session.busy);
-        assert!(session.menu_error.as_ref().unwrap().contains("already"));
         assert!(session.menu_error.as_ref().unwrap().contains("own private recovery code"));
         assert_eq!(form.game_code, "ABCDEF");
         assert_eq!(form.recovery_code, "0123-4567-89AB-CDEF");
@@ -1038,7 +1054,7 @@ fn leaving_while_busy_discards_pending_loads_and_never_waits_for_authentication(
             CreateGameRequest {
                 code: GameCode::new("ABCDEF"),
                 display_name: "Host".into(),
-                recovery_hash: RecoveryCode::generate().unwrap().hash().0,
+                recovery_code: RecoveryCode::generate().unwrap().expose().to_string(),
                 persisted: record("leave-game", 0, 1, MatchStatus::Lobby).persisted,
             },
         ))
@@ -1267,6 +1283,8 @@ fn lobby_color_requests_reach_the_backend_after_default_assignment() {
             code: created.code.0.clone(),
         },
     );
+    let guest_recovery_code =
+        app.world().resource::<MultiplayerSession>().issued_recovery_code.clone().unwrap();
     let game = app.world().resource::<MultiplayerSession>().active_game.as_ref().unwrap();
     assert_eq!(game.persisted.state.player(2).unwrap().color(), PlayerColor::for_player(2));
     let guest_color = PlayerColor::new(5).unwrap();
@@ -1276,7 +1294,7 @@ fn lobby_color_requests_reach_the_backend_after_default_assignment() {
     let stored = block_on(backend.load_game(&host, &game.id)).unwrap();
     assert_eq!(stored.persisted.state.player(2).unwrap().color(), guest_color);
 
-    // A reconnect keeps the original color and does not issue an unusable recovery code.
+    // A reconnect keeps both the original color and stable recovery code.
     settle(
         &mut app,
         MultiplayerRequest::JoinGame {
@@ -1285,7 +1303,7 @@ fn lobby_color_requests_reach_the_backend_after_default_assignment() {
         },
     );
     let reconnected = app.world().resource::<MultiplayerSession>();
-    assert!(reconnected.issued_recovery_code.is_none());
+    assert_eq!(reconnected.issued_recovery_code.as_deref(), Some(guest_recovery_code.as_str()));
     assert_eq!(
         reconnected.active_game.as_ref().unwrap().persisted.state.player(2).unwrap().color(),
         guest_color
@@ -1305,7 +1323,7 @@ fn simultaneous_color_claims_have_one_winner_and_restore_the_loser() {
         CreateGameRequest {
             code: GameCode::new("ABCDEF"),
             display_name: "Host".into(),
-            recovery_hash: "a".repeat(64),
+            recovery_code: "0123-4567-89AB-CDEF".into(),
             persisted: PersistedGame::new(GameModel::new([7; 32], GameRules::default()).unwrap()),
         },
     ))
@@ -1315,7 +1333,7 @@ fn simultaneous_color_claims_have_one_winner_and_restore_the_loser() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Guest".into(),
-            recovery_hash: "b".repeat(64),
+            recovery_code: "FEDC-BA98-7654-3210".into(),
         },
     ))
     .unwrap();

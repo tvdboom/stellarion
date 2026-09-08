@@ -1,6 +1,151 @@
 use super::*;
 
 #[test]
+fn combat_details_hide_the_underlying_mission_panel_until_closed() {
+    let mut state = UiState {
+        mission: true,
+        mission_tab: MissionTab::MissionReports,
+        mission_report: Some(42),
+        combat_report: Some(7),
+        ..default()
+    };
+
+    assert!(!mission_panel_visible(&state));
+    assert!(state.mission, "the report remains available behind the details view");
+
+    state.combat_report = None;
+    assert!(mission_panel_visible(&state));
+}
+
+fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 180.0));
+    let mut frame = |events| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| draw(ui));
+            },
+        );
+        output.textures_delta.clear();
+        output
+    };
+
+    frame(Vec::new());
+    let output = frame(Vec::new());
+    let position = text_rect(&output.shapes, text).center();
+    frame(vec![
+        egui::Event::PointerMoved(position),
+        egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: default(),
+        },
+    ]);
+    frame(vec![egui::Event::PointerButton {
+        pos: position,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: default(),
+    }]);
+}
+
+#[test]
+fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
+    let mut planet = Planet::new(1, "Climate world".into(), Vec2::ZERO, false, 1.0);
+
+    for (kind, band, climate, energy) in [
+        (PlanetKind::Dry, SolarBand::Inner, "High temperatures", 3),
+        (PlanetKind::Water, SolarBand::Temperate, "Moderate temperatures", 2),
+        (PlanetKind::Ice, SolarBand::Outer, "Frigid temperatures", 1),
+    ] {
+        planet.kind = kind;
+        let tooltip = planet_temperature_tooltip(&planet, Some(band));
+        assert!(tooltip.starts_with(climate), "{tooltip}");
+        assert!(!tooltip.contains('\n'));
+        assert!(
+            tooltip.ends_with(&format!("Solar Satellites produce {energy} Energy per level here."))
+        );
+    }
+
+    planet.kind = PlanetKind::Gray;
+    planet.temperature = (-240, -80);
+    let tooltip = planet_temperature_tooltip(&planet, None);
+    assert!(tooltip.starts_with("Frigid temperatures"));
+    assert!(!tooltip.contains("Solar Satellites"));
+    assert_eq!(tooltip, "Frigid temperatures persist because this moon has almost no atmosphere.");
+}
+
+#[test]
+fn planetary_shield_label_toggles_overload_but_not_cooldown() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut planet = Planet::new(1, "Shield world".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::planetary_shield(), 5);
+    let mut pending = PendingTurnCommands::default();
+
+    let mut output = context.run_ui(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
+        });
+    });
+    output.textures_delta.clear();
+    assert!(has_text(&output.shapes, "Overload shield:"));
+
+    click_text(&context, "Overload shield:", |ui| {
+        shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
+    });
+    assert!(planet.shield_overload.is_overloaded());
+    assert!(matches!(
+        pending.commands.as_slice(),
+        [TurnCommand::SetPlanetaryShieldOverload {
+            planet_id: 1,
+            active: true,
+        }]
+    ));
+
+    planet.shield_overload = crate::core::map::planet::ShieldOverloadState::Cooldown;
+    pending.commands.clear();
+    let mut output = context.run_ui(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
+        });
+    });
+    output.textures_delta.clear();
+    assert!(has_text(&output.shapes, "Shield cooling down:"));
+    click_text(&context, "Shield cooling down:", |ui| {
+        shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
+    });
+    assert_eq!(planet.shield_overload, crate::core::map::planet::ShieldOverloadState::Cooldown);
+    assert!(pending.commands.is_empty());
+}
+
+#[test]
+fn command_relay_label_toggles_the_relay_without_changing_its_text() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut planet = Planet::new(1, "Relay world".into(), Vec2::ZERO, false, 1.0);
+    let mut pending = PendingTurnCommands::default();
+
+    click_text(&context, "Relay active:", |ui| {
+        shop::draw_command_relay_toggle(ui, &mut planet, &mut pending);
+    });
+
+    assert!(!planet.command_relay_active);
+    assert!(matches!(
+        pending.commands.as_slice(),
+        [TurnCommand::SetCommandRelay {
+            planet_id: 1,
+            active: false,
+        }]
+    ));
+}
+
+#[test]
 fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
     for width in [280.0, 480.0] {
         for level in [1, 5] {
@@ -74,54 +219,60 @@ fn colonial_withdrawal_selector_fits_small_panels_at_every_level() {
 }
 
 #[test]
-fn colonial_withdrawal_selector_uses_image_tiles_without_a_hover_tooltip() {
-    let context = egui::Context::default();
-    let mut style = NordDark.custom_style();
-    style.interaction.tooltip_delay = 0.0;
-    context.set_global_style(style);
-    let images = ImageIds(HashMap::from([
-        ("no focus".into(), egui::TextureId::User(1)),
-        ("withdrawal 75".into(), egui::TextureId::User(2)),
-        ("withdrawal 50".into(), egui::TextureId::User(3)),
-        ("withdrawal 25".into(), egui::TextureId::User(4)),
-        ("withdrawal immediate".into(), egui::TextureId::User(5)),
-    ]));
-    let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
-    planet.army.insert(Unit::Building(Building::ColonialAdministration), 5);
-    let mut pending = PendingTurnCommands::default();
+fn colonial_withdrawal_image_tiles_explain_each_stance_on_hover() {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 220.0));
-    let input = |events| egui::RawInput {
-        screen_rect: Some(viewport),
-        events,
-        ..default()
-    };
+    for (texture, tooltip) in [
+        (1, "Turn off withdrawal."),
+        (2, "Withdraw after losing 75% of fleet strength."),
+        (3, "Withdraw after losing 50% of fleet strength."),
+        (4, "Withdraw after losing 25% of fleet strength."),
+        (5, "Immediate withdrawal."),
+    ] {
+        let context = egui::Context::default();
+        let mut style = NordDark.custom_style();
+        style.interaction.tooltip_delay = 0.0;
+        style.interaction.show_tooltips_only_when_still = false;
+        context.set_global_style(style);
+        let images = ImageIds(HashMap::from([
+            ("no focus".into(), egui::TextureId::User(1)),
+            ("withdrawal 75".into(), egui::TextureId::User(2)),
+            ("withdrawal 50".into(), egui::TextureId::User(3)),
+            ("withdrawal 25".into(), egui::TextureId::User(4)),
+            ("withdrawal immediate".into(), egui::TextureId::User(5)),
+        ]));
+        let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
+        planet.army.insert(Unit::Building(Building::ColonialAdministration), 5);
+        let mut pending = PendingTurnCommands::default();
+        let input = |events| egui::RawInput {
+            screen_rect: Some(viewport),
+            events,
+            ..default()
+        };
 
-    let mut target = egui::Rect::NOTHING;
-    let mut warmup = context.run_ui(input(Vec::new()), |context| {
-        egui::CentralPanel::default().show(context, |ui| {
-            target = ui
-                .scope(|ui| shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images))
-                .response
-                .rect;
-        });
-    });
-    warmup.textures_delta.clear();
-
-    let mut output =
-        context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |context| {
+        let mut warmup = context.run_ui(input(Vec::new()), |context| {
             egui::CentralPanel::default().show(context, |ui| {
                 shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
             });
         });
-    output.textures_delta.clear();
+        warmup.textures_delta.clear();
+        let target = image_rect(&warmup.shapes, egui::TextureId::User(texture)).unwrap();
 
-    assert!(!has_text(&output.shapes, "Surviving ships deploy home without a final enemy volley."));
-    assert!(!has_text(
-        &output.shapes,
-        "Ships take one final enemy volley without firing back, then deploy home."
-    ));
-    assert!(image_rect(&output.shapes, egui::TextureId::User(1)).is_some());
-    assert!(!has_text(&output.shapes, "Off"));
+        let mut hover_start =
+            context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
+                });
+            });
+        hover_start.textures_delta.clear();
+        let mut output = context.run_ui(input(Vec::new()), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                shop::draw_fleet_withdrawal(ui, &mut planet, &mut pending, &images);
+            });
+        });
+        output.textures_delta.clear();
+
+        assert!(has_text(&output.shapes, tooltip), "missing tooltip for texture {texture}");
+    }
 }
 
 #[test]
@@ -272,6 +423,135 @@ fn combat_selection_uses_prebattle_planet_artwork() {
 }
 
 #[test]
+fn combat_details_put_the_space_dock_above_the_planetary_shield() {
+    let mut planet = Planet::new(0, "Darian".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::space_dock(), 1);
+    planet.army.insert(Unit::planetary_shield(), 5);
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            destination: planet.id,
+            objective: Icon::Attack,
+            ..default()
+        },
+        planet,
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: Army::new(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: None,
+        destination_controlled: None,
+        combat_report: None,
+        hidden: false,
+    };
+    let round = RoundReport {
+        defender: vec![CombatUnit {
+            id: 7,
+            unit: Unit::space_dock(),
+            hull: Unit::space_dock().hull(),
+            shield: Unit::space_dock().shield(),
+            repairs: vec![],
+            shots: vec![],
+        }],
+        buildings: Army::from([(Unit::planetary_shield(), 5)]),
+        ..default()
+    };
+
+    assert_eq!(
+        combat_defender_structure_column(&report, &round),
+        vec![Unit::space_dock(), Unit::planetary_shield()]
+    );
+}
+
+#[test]
+fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() {
+    let context = egui::Context::default();
+    let mut planet = Planet::new(1, "Salvage".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(2);
+    planet.controlled = Some(2);
+    planet.army = Army::from([
+        (Unit::crawler(), 15),
+        (Unit::Defense(Defense::RocketLauncher), 10),
+        (Unit::Defense(Defense::PlasmaTurret), 2),
+    ]);
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            owner: 1,
+            destination: planet.id,
+            objective: Icon::Attack,
+            ..default()
+        },
+        planet,
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: Army::from([
+            (Unit::crawler(), 5),
+            (Unit::Defense(Defense::RocketLauncher), 4),
+            (Unit::Defense(Defense::PlasmaTurret), 1),
+        ]),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: Some(2),
+        destination_controlled: Some(2),
+        combat_report: Some(Default::default()),
+        hidden: false,
+    };
+    let images = ImageIds(HashMap::from([
+        ("metal".to_string(), egui::TextureId::User(1)),
+        ("crystal".to_string(), egui::TextureId::User(2)),
+        ("deuterium".to_string(), egui::TextureId::User(3)),
+    ]));
+    assert_eq!(
+        CRAWLER_SALVAGE_RESOURCE_ORDER,
+        [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium]
+    );
+    assert_eq!(CRAWLER_SALVAGE_ICON_SIZE, [48.0, 30.0]);
+    const { assert!(CRAWLER_SALVAGE_RESOURCE_GAP > CRAWLER_SALVAGE_ICON_VALUE_GAP) };
+
+    let input = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 100.0))),
+        ..default()
+    };
+    let mut body_font_size = 0.0;
+    let mut defender_output = context.run_ui(input(), |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 50.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                body_font_size = TextStyle::Body.resolve(ui.style()).size;
+                assert!(draw_crawler_salvage(ui, &report, &Player::new(2, 0), &images).is_some());
+            },
+        );
+    });
+    defender_output.textures_delta.clear();
+    assert!(has_text(&defender_output.shapes, "Recovered:"));
+    assert_eq!(text_font_size(&defender_output.shapes, "Recovered:"), body_font_size);
+    for (resource, amount) in
+        [(ResourceName::Metal, "29"), (ResourceName::Crystal, "6"), (ResourceName::Deuterium, "5")]
+    {
+        assert!(has_text(&defender_output.shapes, amount));
+        assert_eq!(text_font_size(&defender_output.shapes, amount), body_font_size);
+        assert!(!has_text(&defender_output.shapes, &resource.to_lowername()));
+    }
+    let label_center_y = text_rect(&defender_output.shapes, "Recovered:").center().y;
+    let amount_center_y = text_rect(&defender_output.shapes, "29").center().y;
+    assert!(
+        (label_center_y - amount_center_y).abs() <= 1.0,
+        "the recovery label and resource amounts should be vertically centered together: \
+         label={label_center_y}, amount={amount_center_y}"
+    );
+    let mut attacker_output = context.run_ui(input(), |ui| {
+        assert!(draw_crawler_salvage(ui, &report, &Player::new(1, 0), &images).is_none());
+    });
+    attacker_output.textures_delta.clear();
+    assert!(!has_text(&attacker_output.shapes, "Recovered:"));
+}
+
+#[test]
 fn world_shortcuts_follow_acquisition_order_with_home_first() {
     let model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
@@ -338,6 +618,59 @@ fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
     model.map.get_mut(enemy_home).controlled = Some(2);
     model.map.get_mut(enemy_home).is_destroyed = true;
     assert_eq!(known_planet_counts(&model.map, &player, &[visible]).get(&2), None);
+}
+
+#[test]
+fn public_strategic_structures_reveal_and_extend_known_enemy_owner_counts() {
+    let mut model = crate::core::simulation::GameModel::new([13; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let enemy_id = model.players[1].id;
+    let enemy_home = model.players[1].home_planet;
+    let hidden = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.controlled.is_none())
+        .unwrap()
+        .id;
+    model.map.get_mut(hidden).owned = Some(enemy_id);
+    model.map.get_mut(hidden).controlled = Some(player.id);
+
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&enemy_id), None);
+    model.map.get_mut(hidden).army.insert(Unit::space_dock(), 1);
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&enemy_id), Some(&1));
+    assert_eq!(
+        known_planet_counts(&model.map, &player, &[]).get(&player.id),
+        Some(&1),
+        "the public marker reveals the owner, not a different current controller"
+    );
+
+    model.map.get_mut(hidden).army.remove(&Unit::space_dock());
+    model.map.get_mut(hidden).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    assert_eq!(
+        known_planet_counts(&model.map, &player, &[]).get(&enemy_id),
+        Some(&1),
+        "an Orbital Railgun publishes the same ownership intelligence"
+    );
+
+    let known_enemy_mission = Mission::new_with_id(
+        1,
+        1,
+        enemy_id,
+        model.map.get(enemy_home),
+        model.map.get(player.home_planet),
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(
+        known_planet_counts(&model.map, &player, &[known_enemy_mission]).get(&enemy_id),
+        Some(&2),
+        "a public strategic structure must add to intelligence the player already had"
+    );
 }
 
 #[test]
@@ -1107,7 +1440,10 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     let metal_to_crystal =
         image_rect(&output.shapes, images.get("crystal")).expect("missing crystal image").left()
             - text_rect(&output.shapes, "1500").right();
-    assert!(planets_to_metal > metal_to_crystal + 15.0);
+    assert!(
+        (planets_to_metal - metal_to_crystal).abs() < 1.0,
+        "resource blocks used unequal gaps: planets→metal={planets_to_metal}, metal→crystal={metal_to_crystal}"
+    );
     assert_eq!(text_font_size(&output.shapes, "1500"), 28.0);
     assert!(text_rect(&output.shapes, "1500").height() > 28.0);
     assert!(
@@ -1169,6 +1505,34 @@ fn energy_summary_shows_signed_balance_and_colors_only_shortages_red() {
 }
 
 #[test]
+fn queued_construction_immediately_changes_the_top_bar_energy_balance() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let images = ImageIds(HashMap::from([
+        ("turn".to_string(), egui::TextureId::User(1)),
+        ("owned".to_string(), egui::TextureId::User(2)),
+        ("metal".to_string(), egui::TextureId::User(3)),
+        ("crystal".to_string(), egui::TextureId::User(4)),
+        ("deuterium".to_string(), egui::TextureId::User(5)),
+        ("energy".to_string(), egui::TextureId::User(6)),
+    ]));
+    let mut model = crate::core::simulation::GameModel::new([47; 32], Default::default()).unwrap();
+    let home_planet = model.players[0].home_planet;
+    model.map.get_mut(home_planet).buy.push(Unit::Building(Building::MetalMine));
+    let player = &model.players[0];
+
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_resources(ui, &Settings::default(), &model.map, player, &images, false, 1.0);
+    });
+    output.textures_delta.clear();
+
+    assert_eq!(player.energy_grid(&model.map).balance(), 0);
+    assert_eq!(EnergyGrid::for_player_next_turn(player.id, &model.map).balance(), -1);
+    assert!(has_text(&output.shapes, "-1"));
+    assert_eq!(text_color(&output.shapes, "-1"), Color32::RED);
+}
+
+#[test]
 fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_names() {
     let mut model = crate::core::simulation::GameModel::new([46; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
@@ -1197,19 +1561,14 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
     moon.army.insert(Unit::Building(Building::Laboratory), 1);
     player.world_acquisition_order = vec![home_id, moon_id, planet_id];
 
-    let energy = energy_world_breakdown(&model.map, &player, ResourceProductionTiming::Current);
+    let energy = energy_world_breakdown(&model.map, &player);
     assert_eq!(
         energy.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
         ["Home", "Darian", "Colony"]
     );
     assert!(energy.iter().all(|(name, _)| !name.contains("(Moon)")));
 
-    let metal = resource_world_breakdown(
-        &model.map,
-        &player,
-        ResourceName::Metal,
-        ResourceProductionTiming::Current,
-    );
+    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal);
     assert_eq!(
         metal.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
         ["Home", "Colony"]
@@ -1217,15 +1576,18 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
 }
 
 #[test]
-fn energy_tooltip_groups_current_and_next_production_before_separated_efficiency() {
+fn energy_tooltip_shows_only_the_next_turn_net_balance() {
     let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
     let texture = context.load_texture(
         "energy tooltip test",
         egui::ColorImage::filled([1, 1], Color32::WHITE),
         default(),
     );
     let images = ImageIds(HashMap::from([("energy".to_string(), texture.id())]));
-    let model = crate::core::simulation::GameModel::new([48; 32], Default::default()).unwrap();
+    let mut model = crate::core::simulation::GameModel::new([48; 32], Default::default()).unwrap();
+    let home_planet = model.players[0].home_planet;
+    model.map.get_mut(home_planet).buy.push(Unit::Building(Building::MetalMine));
     let player = &model.players[0];
 
     let mut output = context.run_ui(Default::default(), |ui| {
@@ -1233,63 +1595,59 @@ fn energy_tooltip_groups_current_and_next_production_before_separated_efficiency
     });
     output.textures_delta.clear();
 
-    let production = text_rect(&output.shapes, "Production: 3/3");
-    let next_production = text_rect(&output.shapes, "Production next turn: 3/3");
-    let efficiency = text_rect(&output.shapes, "Efficiency: 100%");
-    assert!(next_production.top() >= production.bottom());
-    assert!(efficiency.top() - next_production.bottom() >= 6.0);
+    let production = text_rect(&output.shapes, "Production: -1");
+    let description = text_rect(&output.shapes, ENERGY_DESCRIPTION);
+    assert!(!has_text(&output.shapes, "Production: 3/4"));
+    assert!(!has_text(&output.shapes, "Efficiency:"));
+    assert!(!has_text(&output.shapes, "Production next turn"));
     assert!(has_text(&output.shapes, ENERGY_DESCRIPTION));
-    assert!(text_rect(&output.shapes, ENERGY_DESCRIPTION).top() > efficiency.bottom());
+    assert!(description.top() > production.bottom());
     assert_eq!(ENERGY_DESCRIPTION, "Energy powers and maintains buildings across your empire.");
-    assert_eq!(
-        EFFICIENCY_DESCRIPTION,
-        "Metal, Crystal, and Deuterium are produced at this efficiency, and Planetary Shields \
-        operate at this strength."
-    );
-    assert!(!EFFICIENCY_DESCRIPTION.chars().any(|character| character.is_ascii_digit()));
 }
 
 #[test]
-fn hovering_energy_production_lists_each_planets_matching_turn_balance() {
+fn hovering_energy_production_lists_each_planets_next_turn_balance() {
     let mut planet = Planet::new(0, "Power Grid".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
     planet.army.insert(Unit::Building(Building::Reactor), 1);
     planet.army.insert(Unit::Building(Building::MetalMine), 1);
     planet.buy.push(Unit::Building(Building::Reactor));
+    let mut unpowered = Planet::new(1, "Unpowered".into(), Vec2::ZERO, false, 1.0);
+    unpowered.owned = Some(0);
+    unpowered.army.insert(Unit::Building(Building::MetalMine), 3);
     let map = Map {
         rect: Rect::default(),
         solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
-        planets: vec![planet],
+        planets: vec![planet, unpowered],
     };
     let player = Player::new(0, 0);
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
 
-    for (timing, production, balance) in [
-        (ResourceProductionTiming::Current, "Production: 3/1", "Power Grid: +2"),
-        (ResourceProductionTiming::NextTurn, "Production next turn: 6/1", "Power Grid: +5"),
-    ] {
-        let context = egui::Context::default();
-        let mut target = egui::Rect::NOTHING;
-        let input = |events| egui::RawInput {
-            screen_rect: Some(viewport),
-            events,
-            ..default()
-        };
-        let mut warmup = context.run_ui(input(Vec::new()), |ui| {
-            target = draw_energy_production_row(ui, &map, &player, timing).rect;
+    let context = egui::Context::default();
+    let mut target = egui::Rect::NOTHING;
+    let input = |events| egui::RawInput {
+        screen_rect: Some(viewport),
+        events,
+        ..default()
+    };
+    let mut warmup = context.run_ui(input(Vec::new()), |ui| {
+        target = draw_energy_production_row(ui, &map, &player).rect;
+    });
+    warmup.textures_delta.clear();
+    let mut output =
+        context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
+            draw_energy_production_row(ui, &map, &player);
         });
-        warmup.textures_delta.clear();
-        let mut output =
-            context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
-                draw_energy_production_row(ui, &map, &player, timing);
-            });
-        output.textures_delta.clear();
+    output.textures_delta.clear();
 
-        assert!(has_text(&output.shapes, production));
-        assert!(has_text(&output.shapes, balance));
-        assert!(!has_text(&output.shapes, "Production per planet"));
-        assert!(!has_text(&output.shapes, "Efficiency:"));
-    }
+    assert!(has_text(&output.shapes, "Production: +2"));
+    assert!(!has_text(&output.shapes, "Production: 6/4"));
+    assert!(!has_text(&output.shapes, "Production next turn"));
+    assert!(has_text(&output.shapes, "Power Grid: +5"));
+    assert_eq!(text_color(&output.shapes, "Power Grid: +5"), Color32::WHITE);
+    assert_eq!(text_color(&output.shapes, "Unpowered: -3"), Color32::WHITE);
+    assert!(!has_text(&output.shapes, "Production per planet"));
+    assert!(!has_text(&output.shapes, "Efficiency:"));
 }
 
 #[test]
@@ -1393,7 +1751,7 @@ fn resource_summaries_have_one_disjoint_hover_target_without_highlight_chrome() 
 }
 
 #[test]
-fn resource_tooltip_shows_current_and_queued_production_with_energy_penalties() {
+fn resource_tooltip_shows_queued_production_as_production() {
     let context = egui::Context::default();
     let mut style = NordDark.custom_style();
     style.interaction.tooltip_delay = 0.0;
@@ -1433,15 +1791,15 @@ fn resource_tooltip_shows_current_and_queued_production_with_energy_penalties() 
     output.textures_delta.clear();
 
     assert!(has_text(&output.shapes, "Metal"));
-    assert!(has_text(&output.shapes, "Production: +9"));
-    assert!(has_text(&output.shapes, "Production next turn: +16"));
-    assert_eq!(text_color(&output.shapes, "(-10%)"), Color32::RED);
+    assert!(has_text(&output.shapes, "Production: +16"));
+    assert!(!has_text(&output.shapes, "Production next turn"));
+    assert!(!has_text(&output.shapes, "Production: +9"));
     assert_eq!(text_color(&output.shapes, "(-20%)"), Color32::RED);
     assert_eq!(tooltip_image.size(), egui::vec2(130.0, 90.0));
 }
 
 #[test]
-fn hovering_each_production_row_expands_its_matching_planet_breakdown() {
+fn hovering_production_expands_the_next_turn_planet_breakdown() {
     let mut planet = Planet::new(0, "Focused".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
     planet.resources = crate::core::resources::Resources::new(10, 0, 0);
@@ -1458,36 +1816,30 @@ fn hovering_each_production_row_expands_its_matching_planet_breakdown() {
     let player = Player::new(0, 0);
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
 
-    for (timing, amount, modifier) in [
-        (ResourceProductionTiming::Current, 11, "+10%"),
-        (ResourceProductionTiming::NextTurn, 12, "+20%"),
-    ] {
-        let context = egui::Context::default();
-        let mut target = egui::Rect::NOTHING;
-        let input = |events| egui::RawInput {
-            screen_rect: Some(viewport),
-            events,
-            ..default()
-        };
-        let mut warmup = context.run_ui(input(Vec::new()), |ui| {
-            target =
-                draw_resource_production_row(ui, &map, &player, ResourceName::Metal, timing).rect;
+    let context = egui::Context::default();
+    let mut target = egui::Rect::NOTHING;
+    let input = |events| egui::RawInput {
+        screen_rect: Some(viewport),
+        events,
+        ..default()
+    };
+    let mut warmup = context.run_ui(input(Vec::new()), |ui| {
+        target = draw_resource_production_row(ui, &map, &player, ResourceName::Metal).rect;
+    });
+    warmup.textures_delta.clear();
+    let mut output =
+        context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
+            draw_resource_production_row(ui, &map, &player, ResourceName::Metal);
         });
-        warmup.textures_delta.clear();
-        let mut output =
-            context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
-                draw_resource_production_row(ui, &map, &player, ResourceName::Metal, timing);
-            });
-        output.textures_delta.clear();
+    output.textures_delta.clear();
 
-        assert!(has_text(&output.shapes, &format!("Focused: +{amount}")));
-        assert!(!has_text(&output.shapes, "Production per planet"));
-        assert!(!has_text(&output.shapes, "Production next turn per planet"));
-        assert!(!has_text(&output.shapes, "Efficiency:"));
-        assert!(!has_text(&output.shapes, "Terraformer"));
-        assert!(!has_text(&output.shapes, "(100%)"));
-        assert_eq!(text_color(&output.shapes, &format!("({modifier})")), HEALTH_COLOR.to_color32());
-    }
+    assert!(has_text(&output.shapes, "Focused: +12"));
+    assert!(!has_text(&output.shapes, "Production per planet"));
+    assert!(!has_text(&output.shapes, "Production next turn per planet"));
+    assert!(!has_text(&output.shapes, "Efficiency:"));
+    assert!(!has_text(&output.shapes, "Terraformer"));
+    assert!(!has_text(&output.shapes, "(100%)"));
+    assert_eq!(text_color(&output.shapes, "(+20%)"), HEALTH_COLOR.to_color32());
 }
 
 #[test]
@@ -1508,48 +1860,17 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
     };
     let player = Player::new(0, 0);
 
-    let current_metal = resource_world_breakdown(
-        &map,
-        &player,
-        ResourceName::Metal,
-        ResourceProductionTiming::Current,
-    );
-    assert_eq!(current_metal[0].amount, 11);
-    assert_eq!(current_metal[0].terraformer_modifier_percent, 10);
-
-    let metal = resource_world_breakdown(
-        &map,
-        &player,
-        ResourceName::Metal,
-        ResourceProductionTiming::NextTurn,
-    );
+    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal);
     assert_eq!(metal[0].amount, 12);
     assert_eq!(metal[0].terraformer_modifier_percent, 20);
-    let crystal = resource_world_breakdown(
-        &map,
-        &player,
-        ResourceName::Crystal,
-        ResourceProductionTiming::NextTurn,
-    );
+    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal);
     assert_eq!(crystal[0].amount, 8);
     assert_eq!(crystal[0].terraformer_modifier_percent, -20);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(
-            ui,
-            &map,
-            &player,
-            ResourceName::Metal,
-            ResourceProductionTiming::NextTurn,
-        );
-        draw_resource_world_breakdown(
-            ui,
-            &map,
-            &player,
-            ResourceName::Crystal,
-            ResourceProductionTiming::NextTurn,
-        );
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal);
     });
     output.textures_delta.clear();
     assert!(!has_text(&output.shapes, "Terraformer"));
@@ -1571,24 +1892,13 @@ fn resource_breakdown_hides_terraformers_without_an_active_modifier() {
     };
     let player = Player::new(0, 0);
 
-    let breakdown = resource_world_breakdown(
-        &map,
-        &player,
-        ResourceName::Metal,
-        ResourceProductionTiming::Current,
-    );
+    let breakdown = resource_world_breakdown(&map, &player, ResourceName::Metal);
     assert_eq!(breakdown[0].terraformer_modifier_percent, 0);
     assert_eq!(breakdown[0].amount, 4);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(
-            ui,
-            &map,
-            &player,
-            ResourceName::Metal,
-            ResourceProductionTiming::Current,
-        );
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
     });
     output.textures_delta.clear();
     assert!(has_text(&output.shapes, "Quiet World: +4"));
@@ -1749,16 +2059,52 @@ fn planet_panel_slide_restarts_for_each_world_and_eases_from_its_map_edge() {
     };
     let mut slide = PlanetPanelSlide::default();
 
-    assert_eq!(slide.progress(left_target, 0.0), 0.0);
-    let halfway = slide.progress(left_target, PLANET_PANEL_SLIDE_DURATION * 0.5);
+    assert_eq!(slide.update(Some(left_target), 0.0), Some((left_target, 0.0)));
+    let (_, halfway) = slide.update(Some(left_target), PLANET_PANEL_SLIDE_DURATION * 0.5).unwrap();
     assert_eq!(halfway, 0.5);
     assert_eq!(planet_panel_slide_offset(halfway, false, 600.0), -75.0);
     assert_eq!(planet_panel_slide_offset(halfway, true, 600.0), 75.0);
-    assert_eq!(slide.progress(left_target, PLANET_PANEL_SLIDE_DURATION), 1.0);
+    assert_eq!(
+        slide.update(Some(left_target), PLANET_PANEL_SLIDE_DURATION),
+        Some((left_target, 1.0))
+    );
 
-    assert_eq!(slide.progress(right_target, PLANET_PANEL_SLIDE_DURATION), 0.0);
+    assert_eq!(
+        slide.update(Some(right_target), PLANET_PANEL_SLIDE_DURATION),
+        Some((right_target, 0.0))
+    );
     slide.hide();
-    assert_eq!(slide.progress(right_target, PLANET_PANEL_SLIDE_DURATION), 0.0);
+    assert_eq!(
+        slide.update(Some(right_target), PLANET_PANEL_SLIDE_DURATION),
+        Some((right_target, 0.0))
+    );
+}
+
+#[test]
+fn planet_panel_rewinds_its_entrance_when_hidden() {
+    let target = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: false,
+    };
+    let mut slide = PlanetPanelSlide::default();
+
+    slide.update(Some(target), 0.0);
+    slide.update(Some(target), PLANET_PANEL_TOTAL_DURATION);
+    assert!(!slide.is_animating());
+
+    let (_, progress) = slide.update(None, PLANET_PANEL_SLIDE_DURATION * 0.5).unwrap();
+    assert_eq!(progress, 1.0);
+    assert!(slide.detail_progress(PLANET_DETAIL_LINE_COUNT - 1) < 1.0);
+    assert!(slide.is_animating());
+
+    let (_, progress) =
+        slide.update(None, PLANET_PANEL_TOTAL_DURATION - PLANET_PANEL_SLIDE_DURATION).unwrap();
+    assert!((progress - 0.5).abs() < f32::EPSILON);
+    assert!((planet_panel_slide_offset(progress, false, 600.0) + 75.0).abs() < 0.001);
+
+    assert_eq!(slide.update(None, PLANET_PANEL_SLIDE_DURATION * 0.5), None);
+    assert!(!slide.is_animating());
 }
 
 #[test]
@@ -1770,21 +2116,21 @@ fn planet_detail_lines_start_after_the_panel_and_follow_from_top_to_bottom() {
     };
     let mut slide = PlanetPanelSlide::default();
 
-    slide.progress(target, 0.0);
-    slide.progress(target, PLANET_PANEL_SLIDE_DURATION);
+    slide.update(Some(target), 0.0);
+    slide.update(Some(target), PLANET_PANEL_SLIDE_DURATION);
     assert_eq!(slide.detail_progress(0), 0.0);
     assert_eq!(slide.detail_progress(1), 0.0);
 
-    slide.progress(target, PLANET_DETAIL_LINE_STAGGER * 0.5);
+    slide.update(Some(target), PLANET_DETAIL_LINE_STAGGER * 0.5);
     assert!(slide.detail_progress(0) > 0.0);
     assert_eq!(slide.detail_progress(1), 0.0);
 
-    slide.progress(target, PLANET_DETAIL_LINE_STAGGER);
+    slide.update(Some(target), PLANET_DETAIL_LINE_STAGGER);
     assert!(slide.detail_progress(0) > slide.detail_progress(1));
     assert!(slide.detail_progress(1) > 0.0);
     assert_eq!(slide.detail_progress(2), 0.0);
 
-    slide.progress(target, PLANET_PANEL_TOTAL_DURATION);
+    slide.update(Some(target), PLANET_PANEL_TOTAL_DURATION);
     for line in 0..PLANET_DETAIL_LINE_COUNT {
         assert_eq!(slide.detail_progress(line), 1.0);
     }
@@ -1930,4 +2276,77 @@ fn abandon_confirmation_is_centered_and_reuses_the_planet_panel_texture() {
             "removed modal text `{removed}` was still shown"
         );
     }
+}
+
+#[test]
+fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let panel_texture = egui::TextureId::User(9);
+    let deuterium_texture = context.load_texture(
+        "railgun confirmation deuterium",
+        egui::ColorImage::filled([1, 1], Color32::WHITE),
+        default(),
+    );
+    let energy_texture = context.load_texture(
+        "railgun confirmation energy",
+        egui::ColorImage::filled([1, 1], Color32::WHITE),
+        default(),
+    );
+    let images = ImageIds(HashMap::from([
+        ("panel".to_string(), panel_texture),
+        ("deuterium".to_string(), deuterium_texture.id()),
+        ("energy".to_string(), energy_texture.id()),
+    ]));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 430.0));
+    let input = || egui::RawInput {
+        screen_rect: Some(viewport),
+        ..default()
+    };
+
+    context.begin_pass(input());
+    assert_eq!(
+        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 10, 2_500, true),
+        None
+    );
+    let mut warmup = context.end_pass();
+    warmup.textures_delta.clear();
+
+    context.begin_pass(input());
+    assert_eq!(
+        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 10, 2_500, true),
+        None
+    );
+    let mut output = context.end_pass();
+    output.textures_delta.clear();
+
+    let panel = image_rect(&output.shapes, panel_texture).expect("missing modal panel image");
+    let deuterium =
+        image_rect(&output.shapes, deuterium_texture.id()).expect("missing deuterium icon");
+    let energy = image_rect(&output.shapes, energy_texture.id()).expect("missing energy icon");
+    let deuterium_amount = text_rect(&output.shapes, "1.000");
+    let energy_amount = text_rect(&output.shapes, "10");
+    let cost_row = deuterium.union(deuterium_amount).union(energy).union(energy_amount);
+
+    assert!((cost_row.center().x - panel.center().x).abs() < 1.0);
+    assert_eq!(text_color(&output.shapes, "1.000"), Color32::WHITE);
+    assert_eq!(text_color(&output.shapes, "10"), Color32::WHITE);
+    assert_eq!(text_font_size(&output.shapes, "1.000"), 20.0);
+    assert_eq!(text_font_size(&output.shapes, "10"), 20.0);
+    assert!(!has_text(&output.shapes, "Cost"));
+
+    for text in [
+        "Are you sure you want to shoot planet Ulmar?",
+        "1.000",
+        "10",
+        "Orbital Railguns firing: 1",
+        "Destruction chance: 25%",
+        "Yes",
+        "No",
+    ] {
+        let label = text_rect(&output.shapes, text);
+        assert!(panel.contains_rect(label), "modal text `{text}` was outside {panel:?}: {label:?}");
+    }
+    assert!(panel.contains_rect(deuterium));
+    assert!(panel.contains_rect(energy));
 }

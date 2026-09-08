@@ -114,7 +114,7 @@ create table public.stellarion_game_players (
     player_id bigint not null,
     user_id uuid not null references auth.users(id) on delete restrict,
     display_name text not null,
-    recovery_hash text not null,
+    recovery_code text not null,
     is_creator boolean not null default false,
     identity_version bigint not null default 1,
     connected boolean not null default false,
@@ -122,13 +122,16 @@ create table public.stellarion_game_players (
     last_seen_at timestamptz not null default clock_timestamp(),
     primary key (game_id, player_id),
     constraint stellarion_game_players_user unique (game_id, user_id),
-    constraint stellarion_game_players_recovery unique (game_id, recovery_hash),
+    constraint stellarion_game_players_recovery unique (game_id, recovery_code),
     constraint stellarion_game_players_slot check (player_id between 1 and 4),
+    -- Player names are canonicalized by the RPCs and capped to match the client text field.
     constraint stellarion_game_players_name check (
-        char_length(btrim(display_name)) between 1 and 32
+        char_length(btrim(display_name)) between 1 and 16
         and display_name = btrim(display_name)
     ),
-    constraint stellarion_game_players_recovery_hash check (recovery_hash ~ '^[0-9a-f]{64}$'),
+    constraint stellarion_game_players_recovery_code check (
+        recovery_code ~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){3}$'
+    ),
     constraint stellarion_game_players_identity_version check (identity_version >= 1)
 );
 
@@ -267,6 +270,7 @@ declare
     v_moons_percent integer;
     v_planets jsonb;
     v_missions jsonb;
+    v_orbital_strikes jsonb;
     v_planet_total integer;
     v_unique_planets integer;
     v_min_planet_id bigint;
@@ -279,9 +283,9 @@ begin
        or not (p_persisted ?& array['state'])
        or p_persisted - array['state'] <> '{}'::jsonb
        or not ((p_persisted -> 'state') ?&
-           array['players', 'map', 'missions', 'turn', 'rng', 'rules', 'status'])
+           array['players', 'map', 'missions', 'orbital_strikes', 'turn', 'rng', 'rules', 'status'])
        or (p_persisted -> 'state') -
-           array['players', 'map', 'missions', 'turn', 'rng', 'rules', 'status'] <> '{}'::jsonb then
+           array['players', 'map', 'missions', 'orbital_strikes', 'turn', 'rng', 'rules', 'status'] <> '{}'::jsonb then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:persisted object';
     end if;
 
@@ -294,6 +298,7 @@ begin
     v_moons_percent := (p_persisted #>> '{state,rules,moons_percent}')::integer;
     v_planets := p_persisted #> '{state,map,planets}';
     v_missions := p_persisted #> '{state,missions}';
+    v_orbital_strikes := p_persisted #> '{state,orbital_strikes}';
 
     if p_max_players is null
        or p_max_players not between 2 and 4
@@ -333,6 +338,12 @@ begin
     end if;
     if jsonb_array_length(v_missions) > 4096 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:missions';
+    end if;
+    if jsonb_typeof(v_orbital_strikes) is distinct from 'array' then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:orbital_strikes';
+    end if;
+    if jsonb_array_length(v_orbital_strikes) > 160 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:orbital_strikes';
     end if;
 
     if exists (
@@ -550,7 +561,7 @@ $$;
 create function public.stellarion_create_game(
     p_code text,
     p_display_name text,
-    p_recovery_hash text,
+    p_recovery_code text,
     p_max_players smallint,
     p_persisted jsonb
 )
@@ -564,7 +575,7 @@ declare
     v_game_id uuid;
     v_code text := upper(btrim(p_code));
     v_name text := btrim(p_display_name);
-    v_hash text := lower(p_recovery_hash);
+    v_recovery_code text := upper(btrim(p_recovery_code));
 begin
     if v_user_id is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
@@ -572,11 +583,12 @@ begin
     if v_code is null or v_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$' then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:game_code';
     end if;
-    if v_name is null or char_length(v_name) not between 1 and 32 then
+    if v_name is null or char_length(v_name) not between 1 and 16 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:display_name';
     end if;
-    if v_hash is null or v_hash !~ '^[0-9a-f]{64}$' then
-        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:recovery_hash';
+    if v_recovery_code is null
+       or v_recovery_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){3}$' then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:recovery_code';
     end if;
 
     perform public.stellarion_validate_persisted(
@@ -606,9 +618,9 @@ begin
     end;
 
     insert into public.stellarion_game_players (
-        game_id, player_id, user_id, display_name, recovery_hash, is_creator
+        game_id, player_id, user_id, display_name, recovery_code, is_creator
     ) values (
-        v_game_id, 1, v_user_id, v_name, v_hash, true
+        v_game_id, 1, v_user_id, v_name, v_recovery_code, true
     );
 
     perform public.stellarion_emit_event(v_game_id, 'player_joined', null, 1);
@@ -616,6 +628,7 @@ begin
     return jsonb_build_object(
         'game', public.stellarion_game_record(v_game_id),
         'membership', public.stellarion_membership_record(v_game_id, v_user_id),
+        'recovery_code', v_recovery_code,
         'disposition', 'joined'
     );
 end;
@@ -624,7 +637,7 @@ $$;
 create function public.stellarion_join_game(
     p_code text,
     p_display_name text,
-    p_recovery_hash text
+    p_recovery_code text
 )
 returns jsonb
 language plpgsql
@@ -638,14 +651,15 @@ declare
     v_player_id bigint;
     v_code text := upper(btrim(p_code));
     v_name text := btrim(p_display_name);
-    v_hash text := lower(p_recovery_hash);
+    v_recovery_code text := upper(btrim(p_recovery_code));
 begin
     if v_user_id is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
     end if;
     if v_code is null or v_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$'
-       or v_name is null or char_length(v_name) not between 1 and 32
-       or v_hash is null or v_hash !~ '^[0-9a-f]{64}$' then
+       or v_name is null or char_length(v_name) not between 1 and 16
+       or v_recovery_code is null
+       or v_recovery_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){3}$' then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:join_fields';
     end if;
 
@@ -664,6 +678,7 @@ begin
         return jsonb_build_object(
             'game', public.stellarion_game_record(v_game.id),
             'membership', public.stellarion_membership_record(v_game.id, v_user_id),
+            'recovery_code', v_existing.recovery_code,
             'disposition', 'reconnected'
         );
     end if;
@@ -691,14 +706,14 @@ begin
 
     begin
         insert into public.stellarion_game_players (
-            game_id, player_id, user_id, display_name, recovery_hash
+            game_id, player_id, user_id, display_name, recovery_code
         ) values (
-            v_game.id, v_player_id, v_user_id, v_name, v_hash
+            v_game.id, v_player_id, v_user_id, v_name, v_recovery_code
         );
     exception
         when unique_violation then
             -- The game row lock serializes slot claims. A remaining violation
-            -- means the caller reused a recovery hash or identity unexpectedly.
+            -- means the caller reused a recovery code or identity unexpectedly.
             raise exception using errcode = 'P0001', message = 'STLR_ALREADY_MEMBER';
     end;
 
@@ -706,20 +721,21 @@ begin
     return jsonb_build_object(
         'game', public.stellarion_game_record(v_game.id),
         'membership', public.stellarion_membership_record(v_game.id, v_user_id),
+        'recovery_code', v_recovery_code,
         'disposition', 'joined'
     );
 end;
 $$;
 
--- Every player has a separate private code. A live player cannot be displaced by
--- recovery, even using their latest code. Clients renew presence every 3 seconds;
+-- Every player has one stable private code for the lifetime of this game. Recovery
+-- rebinds the player slot without changing that code. A live player cannot be
+-- displaced by recovery. Clients renew presence every 3 seconds;
 -- after an unexpected close, recovery is available after 15 seconds without a
 -- heartbeat. Leaving the game releases it immediately. The game/member locks also
 -- serialize competing claims, and recovery claims presence before returning.
 create function public.stellarion_recover_player(
     p_code text,
-    p_recovery_hash text,
-    p_replacement_recovery_hash text
+    p_recovery_code text
 )
 returns jsonb
 language plpgsql
@@ -731,19 +747,15 @@ declare
     v_game_id uuid;
     v_player public.stellarion_game_players%rowtype;
     v_code text := upper(btrim(p_code));
-    v_hash text := lower(p_recovery_hash);
-    v_replacement text := lower(p_replacement_recovery_hash);
+    v_recovery_code text := upper(btrim(p_recovery_code));
 begin
     if v_user_id is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
     end if;
     if v_code is null or v_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$'
-       or v_hash is null or v_hash !~ '^[0-9a-f]{64}$'
-       or v_replacement is null or v_replacement !~ '^[0-9a-f]{64}$' then
-        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:recovery_hash';
-    end if;
-    if v_hash = v_replacement then
-        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:recovery_rotation';
+       or v_recovery_code is null
+       or v_recovery_code !~ '^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){3}$' then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:recovery_code';
     end if;
 
     select id into v_game_id
@@ -762,7 +774,7 @@ begin
 
     select * into v_player
       from public.stellarion_game_players
-      where game_id = v_game_id and recovery_hash = v_hash
+      where game_id = v_game_id and recovery_code = v_recovery_code
       for update;
     if not found then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_RECOVERY';
@@ -774,7 +786,6 @@ begin
     begin
         update public.stellarion_game_players
            set user_id = v_user_id,
-               recovery_hash = v_replacement,
                identity_version = identity_version + 1,
                connected = true,
                last_seen_at = clock_timestamp()
@@ -788,6 +799,7 @@ begin
     return jsonb_build_object(
         'game', public.stellarion_game_record(v_game_id),
         'membership', public.stellarion_membership_record(v_game_id, v_user_id),
+        'recovery_code', v_recovery_code,
         'disposition', 'reconnected'
     );
 end;
@@ -819,6 +831,7 @@ as $$
                         'turn', g.current_turn,
                         'player_id', mine.player_id,
                         'display_name', mine.display_name,
+                        'recovery_code', mine.recovery_code,
                         'player_color', (
                             select (player ->> 'color')::integer
                             from jsonb_array_elements(g.state -> 'state' -> 'players') as player
@@ -1568,7 +1581,7 @@ begin
     end if;
 
     if not p_connected and v_game.status = 'lobby' and v_player.is_creator then
-        -- Cascades erase every membership/recovery hash, submission, and event.
+        -- Cascades erase every membership/recovery code, submission, and event.
         -- No tombstone is retained: guest event polls report GAME_NOT_FOUND and
         -- return those clients to the menu, even if a Realtime hint was missed.
         delete from public.stellarion_games where id = p_game_id;
@@ -1593,8 +1606,8 @@ begin
 end;
 $$;
 
--- Tables are RPC-only except for the Realtime event stream. In particular,
--- recovery hashes are never selectable through the public client roles.
+-- Tables are RPC-only except for the Realtime event stream. Recovery codes are
+-- returned only by caller-specific membership and resume RPC responses.
 revoke all on table public.stellarion_games from anon, authenticated;
 revoke all on table public.stellarion_game_players from anon, authenticated;
 revoke all on table public.stellarion_turn_submissions from anon, authenticated;
@@ -1623,7 +1636,7 @@ grant execute on function public.stellarion_create_game(text, text, text, smalli
     to authenticated;
 revoke all on function public.stellarion_join_game(text, text, text)
     from public, anon;
-revoke all on function public.stellarion_recover_player(text, text, text)
+revoke all on function public.stellarion_recover_player(text, text)
     from public, anon;
 revoke all on function public.stellarion_list_games()
     from public, anon;
@@ -1664,7 +1677,7 @@ revoke all on function public.stellarion_set_connected(uuid, boolean)
 
 grant execute on function public.stellarion_join_game(text, text, text)
     to authenticated;
-grant execute on function public.stellarion_recover_player(text, text, text)
+grant execute on function public.stellarion_recover_player(text, text)
     to authenticated;
 grant execute on function public.stellarion_list_games()
     to authenticated;
@@ -1705,7 +1718,7 @@ $$;
 -- Delete expired games even when no client opens the resume overview.
 -- Run every minute: any game expires 30 days after its last save; finished
 -- games also expire 48 hours after completion, whichever deadline comes first.
--- Foreign keys also delete their players, recovery hashes, turns, and events.
+-- Foreign keys also delete their players, recovery codes, turns, and events.
 create function public.stellarion_delete_expired_games()
 returns bigint
 language sql

@@ -21,6 +21,10 @@ fn profile_round_trips_in_memory() {
     let mut profile = ClientProfile {
         session: Some(AuthSession::new(UserId::new("user"), "access", "refresh")),
         display_name: "Nova".to_string(),
+        combat_preferences: crate::core::settings::CombatPreferences {
+            speed: 4.0,
+            volley_fire: true,
+        },
         ..ClientProfile::default()
     };
     profile.remember_game(GameId::new("game-1"));
@@ -29,7 +33,20 @@ fn profile_round_trips_in_memory() {
     let loaded = load_profile(&storage).unwrap();
     assert_eq!(loaded.display_name, "Nova");
     assert_eq!(loaded.recent_games, vec![GameId::new("game-1")]);
+    assert_eq!(loaded.combat_preferences.speed, 4.0);
+    assert!(loaded.combat_preferences.volley_fire);
     assert_eq!(loaded.session.unwrap().user_id, UserId::new("user"));
+}
+
+#[test]
+fn older_profiles_receive_default_combat_preferences() {
+    let storage = MemoryStorage::default();
+    storage
+        .store("client-profile", r#"{"session":null,"recent_games":[],"display_name":"Nova"}"#)
+        .unwrap();
+
+    let profile = load_profile(&storage).unwrap();
+    assert_eq!(profile.combat_preferences, crate::core::settings::CombatPreferences::default());
 }
 
 #[test]

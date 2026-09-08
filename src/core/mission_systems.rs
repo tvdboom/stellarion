@@ -543,6 +543,10 @@ pub fn recall_mission(
             ));
             continue;
         }
+        if !mission.objective.is_recallable() {
+            message.write(MessageMsg::error("Missile strikes cannot be recalled once launched."));
+            continue;
+        }
         if !pending.push(TurnCommand::RecallMission {
             mission_id: *mission_id,
         }) {

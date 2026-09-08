@@ -10,6 +10,8 @@ pub(crate) mod details;
 pub(crate) mod detection;
 pub mod icon;
 pub mod model;
+#[cfg(feature = "app")]
+pub(crate) mod orbital_railgun;
 pub mod planet;
 #[cfg(feature = "app")]
 mod scanner;

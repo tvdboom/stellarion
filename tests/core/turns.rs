@@ -10,7 +10,9 @@ use crate::core::units::Army;
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts() {
-    use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
+    use crate::core::loading::{
+        refresh_gameplay_projection, refresh_turn_draft, PublicStructureChangeMsg,
+    };
     use crate::core::simulation::{MatchStatus, TurnCommand};
     use crate::core::systems::debug_cheat_keys;
     use crate::multiplayer::client::tests::{local_practice_app, settle_local_practice};
@@ -29,6 +31,7 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
         .init_resource::<NextState<GameState>>()
         .add_message::<StartTurnMsg>()
         .add_message::<MessageMsg>()
+        .add_message::<PublicStructureChangeMsg>()
         .add_message::<PlayAudioMsg>()
         .add_systems(First, start_turn.run_if(resource_exists::<Map>))
         .add_systems(Update, (refresh_gameplay_projection, refresh_turn_draft).chain())

@@ -26,6 +26,8 @@ pub enum Icon {
     MissileStrike,
     /// The destroy value.
     Destroy,
+    /// Commits every in-range owned Orbital Railgun against this world.
+    RailgunStrike,
     /// The attacked value.
     Attacked,
     /// The buildings value.
@@ -65,6 +67,11 @@ impl Icon {
                 | Icon::MissileStrike
                 | Icon::Destroy
         )
+    }
+
+    /// Returns whether an active mission with this objective may be recalled after launch.
+    pub fn is_recallable(self) -> bool {
+        matches!(self, Icon::Deploy | Icon::Colonize | Icon::Attack | Icon::Spy | Icon::Destroy)
     }
 
     /// Returns whether this value hidden.
@@ -123,7 +130,7 @@ impl Icon {
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
-            Icon::Attacked => false,
+            Icon::RailgunStrike | Icon::Attacked => false,
         }
     }
 
@@ -144,9 +151,12 @@ impl Icon {
                 only(Unit::is_ship)
                     && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
-            Self::Attacked | Self::Buildings | Self::Orbitals | Self::Fleet | Self::Defenses => {
-                false
-            },
+            Self::RailgunStrike
+            | Self::Attacked
+            | Self::Buildings
+            | Self::Orbitals
+            | Self::Fleet
+            | Self::Defenses => false,
         }
     }
 
@@ -164,6 +174,9 @@ impl Icon {
             },
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
+            Icon::RailgunStrike => {
+                "At least one owned Orbital Railgun must have this world in range."
+            },
             _ => "This icon is not a mission objective.",
         }
     }
@@ -197,10 +210,11 @@ impl Description for Icon {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
                 not be accompanied by any other ships. Interplanetary Missiles ignore any ships \
                 and the Planetary Shield at the target planet, directly hitting any defenses. \
-                At the end of combat, all surviving missiles are destroyed. Unless recalled, a \
-                missile strike hits the destination planet even if it has been colonized by the \
-                player. Missile Strikes don't report any intelligence about the enemy units. They \
-                cannot be detected by the Sensor Phalanx and don't reveal the planet of origin."
+                Once launched, a missile strike cannot be recalled and hits the destination planet \
+                even if it has been colonized by the player. At the end of combat, all surviving \
+                missiles are destroyed. Missile Strikes don't report any intelligence about the \
+                enemy units. They cannot be detected by the Sensor Phalanx and don't reveal the \
+                planet of origin."
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
@@ -209,6 +223,12 @@ impl Description for Icon {
                 round afterwards (long battles reduce the destruction chance to zero). Regardless \
                 of the result, the fleet returns after combat. A destroyed planet can't be \
                 colonized again."
+            },
+            Icon::RailgunStrike => {
+                "Commit every owned Orbital Railgun that can reach this world. All participating \
+                Railguns charge separately, converge their fire, and strike together at the start \
+                of the next turn. Each participating Railgun adds to the resource cost and the \
+                combined destruction chance."
             },
             Icon::Deploy => "Send a fleet to another planet you control.",
             _ => "This icon selects a local map or shop category.",

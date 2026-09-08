@@ -181,7 +181,6 @@ pub fn start_turn(
     player: Res<Player>,
     mut play_audio: MessageWriter<PlayAudioMsg>,
     mut messages: MessageWriter<MessageMsg>,
-    mut multiplayer: MessageWriter<MultiplayerRequest>,
     mut next_game_state: ResMut<NextState<GameState>>,
     assets: Res<WorldAssets>,
 ) {
@@ -224,9 +223,6 @@ pub fn start_turn(
             continue;
         }
 
-        if settings.autosave {
-            multiplayer.write(MultiplayerRequest::AutosaveGame);
-        }
         messages.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
 
         for report in returned_reports {

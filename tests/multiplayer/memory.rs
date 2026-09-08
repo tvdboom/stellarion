@@ -32,7 +32,7 @@ fn create(
         CreateGameRequest {
             code: generate_game_code().unwrap(),
             display_name: "Creator".to_string(),
-            recovery_hash: recovery.hash().0,
+            recovery_code: recovery.expose().to_string(),
             persisted: PersistedGame::new(model),
         },
     ))
@@ -53,7 +53,7 @@ fn supports_all_lobby_sizes_and_duplicate_joining() {
                 JoinGameRequest {
                     code: created.game.code.clone(),
                     display_name: format!("Player {slot}"),
-                    recovery_hash: recovery.hash().0,
+                    recovery_code: recovery.expose().to_string(),
                 },
             ))
             .unwrap();
@@ -63,11 +63,12 @@ fn supports_all_lobby_sizes_and_duplicate_joining() {
                 JoinGameRequest {
                     code: created.game.code.clone(),
                     display_name: "Ignored".to_string(),
-                    recovery_hash: recovery.hash().0,
+                    recovery_code: RecoveryCode::generate().unwrap().expose().to_string(),
                 },
             ))
             .unwrap();
             assert_eq!(duplicate.disposition, JoinDisposition::Reconnected);
+            assert_eq!(duplicate.recovery_code, recovery.expose());
         }
         let (extra, extra_recovery) = identity(&backend);
         assert!(matches!(
@@ -76,12 +77,22 @@ fn supports_all_lobby_sizes_and_duplicate_joining() {
                 JoinGameRequest {
                     code: created.game.code,
                     display_name: "Extra".to_string(),
-                    recovery_hash: extra_recovery.hash().0,
+                    recovery_code: extra_recovery.expose().to_string(),
                 },
             )),
             Err(BackendError::GameFull)
         ));
     }
+}
+
+#[test]
+fn display_names_accept_the_new_boundary_and_reject_longer_values() {
+    let recovery = RecoveryCode::generate().unwrap();
+    assert!(validate_name_and_code(&"N".repeat(MAX_DISPLAY_NAME_CHARS), recovery.expose()).is_ok());
+    assert!(matches!(
+        validate_name_and_code(&"N".repeat(MAX_DISPLAY_NAME_CHARS + 1), recovery.expose()),
+        Err(BackendError::InvalidData(_))
+    ));
 }
 
 #[test]
@@ -95,7 +106,7 @@ fn simultaneous_color_claims_have_one_winner_and_restore_the_loser() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Guest".into(),
-            recovery_hash: guest_recovery.hash().0,
+            recovery_code: guest_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -151,7 +162,7 @@ fn starts_with_current_lobby_members_instead_of_waiting_for_capacity() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -186,7 +197,7 @@ fn resumed_game_waits_for_every_connected_player() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -277,7 +288,7 @@ fn reconnect_uses_authenticated_mapping() {
 fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
     let backend = InMemoryBackend::new();
     let (host, recovery) = identity(&backend);
-    let (restored, replacement) = identity(&backend);
+    let (restored, _) = identity(&backend);
     let mut expected = Vec::new();
     for (name, color) in
         [("Nova", PlayerColor::new(4).unwrap()), ("Orion", PlayerColor::for_player(1))]
@@ -289,7 +300,7 @@ fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
             CreateGameRequest {
                 code: generate_game_code().unwrap(),
                 display_name: name.to_string(),
-                recovery_hash: recovery.hash().0,
+                recovery_code: recovery.expose().to_string(),
                 persisted: PersistedGame::new(model),
             },
         ))
@@ -299,13 +310,13 @@ fn resume_identity_is_specific_to_each_game_and_survives_recovery() {
         let listed = block_on(backend.list_games(&host)).unwrap();
         let summary = listed.iter().find(|summary| summary.id == created.game.id).unwrap();
         assert_eq!(summary.display_name, name);
+        assert_eq!(summary.recovery_code, recovery.expose());
         assert_eq!(summary.player_color, expected.last().unwrap().2);
         block_on(backend.recover_player(
             &restored,
             RecoverPlayerRequest {
                 code: created.game.code,
-                recovery_hash: recovery.hash().0,
-                replacement_recovery_hash: replacement.hash().0,
+                recovery_code: recovery.expose().to_string(),
             },
         ))
         .unwrap();
@@ -368,7 +379,7 @@ fn expired_games_are_deleted_with_their_memberships_and_codes() {
                 JoinGameRequest {
                     code: game.code.clone(),
                     display_name: "Creator".to_string(),
-                    recovery_hash: recovery.hash().0,
+                    recovery_code: recovery.expose().to_string(),
                 }
             )),
             Err(BackendError::GameNotFound)
@@ -378,8 +389,7 @@ fn expired_games_are_deleted_with_their_memberships_and_codes() {
                 &stranger,
                 RecoverPlayerRequest {
                     code: game.code,
-                    recovery_hash: recovery.hash().0,
-                    replacement_recovery_hash: RecoveryCode::generate().unwrap().hash().0,
+                    recovery_code: recovery.expose().to_string(),
                 }
             )),
             Err(BackendError::GameNotFound)
@@ -461,39 +471,40 @@ fn only_snapshot_saves_extend_save_retention() {
 }
 
 #[test]
-/// Recovery replaces the user, rotates the secret, and invalidates old access.
-fn recovers_from_another_identity_and_rotates_code() {
+/// Recovery replaces the user while preserving the stable per-game code.
+fn recovers_from_another_identity_and_preserves_code() {
     let backend = InMemoryBackend::new();
     let (old_session, recovery) = identity(&backend);
     let created = create(&backend, &old_session, &recovery, 2);
-    let (new_session, replacement) = identity(&backend);
+    let game = start_with_guest(&backend, &old_session, &created.game);
+    let (new_session, _) = identity(&backend);
     let recovered = block_on(backend.recover_player(
         &new_session,
         RecoverPlayerRequest {
-            code: created.game.code.clone(),
-            recovery_hash: recovery.hash().0.clone(),
-            replacement_recovery_hash: replacement.hash().0,
+            code: game.code.clone(),
+            recovery_code: recovery.expose().to_string(),
         },
     ))
     .unwrap();
     assert_eq!(recovered.membership.user_id, new_session.user_id);
     assert_eq!(recovered.membership.identity_version, 2);
+    assert_eq!(recovered.recovery_code, recovery.expose());
     assert!(matches!(
-        block_on(backend.load_game(&old_session, &created.game.id)),
+        block_on(backend.load_game(&old_session, &game.id)),
         Err(BackendError::Forbidden)
     ));
-    let (third_session, third_replacement) = identity(&backend);
-    assert!(matches!(
-        block_on(backend.recover_player(
-            &third_session,
-            RecoverPlayerRequest {
-                code: created.game.code,
-                recovery_hash: recovery.hash().0,
-                replacement_recovery_hash: third_replacement.hash().0,
-            },
-        )),
-        Err(BackendError::InvalidRecoveryCode)
-    ));
+    block_on(backend.set_connected(&new_session, &game.id, false)).unwrap();
+    let (third_session, _) = identity(&backend);
+    let recovered_again = block_on(backend.recover_player(
+        &third_session,
+        RecoverPlayerRequest {
+            code: game.code,
+            recovery_code: recovery.expose().to_string(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(recovered_again.membership.identity_version, 3);
+    assert_eq!(recovered_again.recovery_code, recovery.expose());
 }
 
 #[test]
@@ -504,11 +515,10 @@ fn recovery_protects_live_players_and_releases_abandoned_or_departed_players() {
     let game = start_with_guest(&backend, &host, &lobby);
     block_on(backend.set_connected(&host, &game.id, true)).unwrap();
     let before = block_on(backend.load_game(&host, &game.id)).unwrap();
-    let (second, replacement) = identity(&backend);
+    let (second, _) = identity(&backend);
     let request = RecoverPlayerRequest {
         code: game.code.clone(),
-        recovery_hash: original.hash().0,
-        replacement_recovery_hash: replacement.hash().0,
+        recovery_code: original.expose().to_string(),
     };
     assert_eq!(
         block_on(backend.recover_player(&second, request.clone())).err(),
@@ -518,7 +528,7 @@ fn recovery_protects_live_players_and_releases_abandoned_or_departed_players() {
         serde_json::to_value(block_on(backend.load_game(&host, &game.id)).unwrap()).unwrap(),
         serde_json::to_value(before).unwrap()
     );
-    assert_eq!(backend.lock().unwrap().games[&game.id].recovery_hashes[&1], original.hash().0);
+    assert_eq!(backend.lock().unwrap().games[&game.id].recovery_codes[&1], original.expose());
 
     // Heartbeats extend the guard without generating another connected event.
     backend
@@ -549,24 +559,16 @@ fn recovery_protects_live_players_and_releases_abandoned_or_departed_players() {
     assert_eq!(recovered.membership.player_id, 1);
     assert!(recovered.membership.is_creator);
 
-    let (third, next_code) = identity(&backend);
+    let (third, _) = identity(&backend);
     assert_eq!(
-        block_on(backend.recover_player(&third, request)).err(),
-        Some(BackendError::InvalidRecoveryCode)
-    );
-    let next_request = RecoverPlayerRequest {
-        code: game.code.clone(),
-        recovery_hash: replacement.hash().0,
-        replacement_recovery_hash: next_code.hash().0,
-    };
-    // No separate presence call is needed to protect a just-recovered slot.
-    assert_eq!(
-        block_on(backend.recover_player(&third, next_request.clone())).err(),
+        block_on(backend.recover_player(&third, request.clone())).err(),
         Some(BackendError::RecoveryCodeInUse)
     );
+    // No separate presence call is needed to protect a just-recovered slot.
     assert!(block_on(backend.load_game(&second, &game.id)).is_ok());
     block_on(backend.set_connected(&second, &game.id, false)).unwrap();
-    assert!(block_on(backend.recover_player(&third, next_request)).is_ok());
+    let recovered_again = block_on(backend.recover_player(&third, request)).unwrap();
+    assert_eq!(recovered_again.recovery_code, original.expose());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -579,12 +581,11 @@ fn simultaneous_recovery_claims_accept_one_player_without_displacing_them() {
     let handles = (0..2)
         .map(|_| {
             let backend = backend.clone();
-            let (auth, replacement) = identity(&backend);
+            let (auth, _) = identity(&backend);
             let barrier = barrier.clone();
             let request = RecoverPlayerRequest {
                 code: game.code.clone(),
-                recovery_hash: code.hash().0,
-                replacement_recovery_hash: replacement.hash().0,
+                recovery_code: code.expose().to_string(),
             };
             std::thread::spawn(move || {
                 barrier.wait();
@@ -598,7 +599,7 @@ fn simultaneous_recovery_claims_accept_one_player_without_displacing_them() {
     assert_eq!(
         results
             .iter()
-            .filter(|(_, result)| matches!(result, Err(BackendError::InvalidRecoveryCode)))
+            .filter(|(_, result)| matches!(result, Err(BackendError::RecoveryCodeInUse)))
             .count(),
         1
     );
@@ -610,20 +611,19 @@ fn simultaneous_recovery_claims_accept_one_player_without_displacing_them() {
 }
 
 #[test]
-/// Recovery distinguishes unknown games, malformed hashes, existing members, and bad secrets.
+/// Recovery distinguishes unknown games, malformed codes, existing members, and bad secrets.
 fn reports_typed_recovery_failures() {
     let backend = InMemoryBackend::new();
     let (creator, recovery) = identity(&backend);
     let created = create(&backend, &creator, &recovery, 2);
-    let (stranger, replacement) = identity(&backend);
+    let (stranger, _) = identity(&backend);
 
     assert!(matches!(
         block_on(backend.recover_player(
             &stranger,
             RecoverPlayerRequest {
                 code: GameCode::new("ABCDEF"),
-                recovery_hash: recovery.hash().0.clone(),
-                replacement_recovery_hash: replacement.hash().0.clone(),
+                recovery_code: recovery.expose().to_string(),
             },
         )),
         Err(BackendError::GameNotFound)
@@ -633,8 +633,7 @@ fn reports_typed_recovery_failures() {
             &stranger,
             RecoverPlayerRequest {
                 code: created.game.code.clone(),
-                recovery_hash: "not-a-sha256-hash".to_string(),
-                replacement_recovery_hash: replacement.hash().0.clone(),
+                recovery_code: "not-a-recovery-code".to_string(),
             },
         )),
         Err(BackendError::InvalidData(_))
@@ -644,8 +643,7 @@ fn reports_typed_recovery_failures() {
             &creator,
             RecoverPlayerRequest {
                 code: created.game.code.clone(),
-                recovery_hash: recovery.hash().0.clone(),
-                replacement_recovery_hash: replacement.hash().0.clone(),
+                recovery_code: recovery.expose().to_string(),
             },
         )),
         Err(BackendError::AlreadyMember)
@@ -656,8 +654,7 @@ fn reports_typed_recovery_failures() {
             &stranger,
             RecoverPlayerRequest {
                 code: created.game.code,
-                recovery_hash: unrelated.hash().0,
-                replacement_recovery_hash: replacement.hash().0,
+                recovery_code: unrelated.expose().to_string(),
             },
         )),
         Err(BackendError::InvalidRecoveryCode)
@@ -676,7 +673,7 @@ fn saves_by_multiple_players_use_optimistic_revisions() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -742,7 +739,7 @@ fn start_with_guest(
         JoinGameRequest {
             code: lobby.code.clone(),
             display_name: "Guest".to_string(),
-            recovery_hash: recovery.hash().0,
+            recovery_code: recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -766,7 +763,7 @@ fn host_departure_erases_empty_and_occupied_lobbies() {
                 JoinGameRequest {
                     code: lobby.code.clone(),
                     display_name: format!("Guest {index}"),
-                    recovery_hash: recovery.hash().0,
+                    recovery_code: recovery.expose().to_string(),
                 },
             ))
             .unwrap();
@@ -802,8 +799,7 @@ fn host_departure_erases_empty_and_occupied_lobbies() {
                     &stranger,
                     RecoverPlayerRequest {
                         code: lobby.code.clone(),
-                        recovery_hash: recovery.hash().0,
-                        replacement_recovery_hash: replacement.hash().0,
+                        recovery_code: recovery.expose().to_string(),
                     }
                 )),
                 Err(BackendError::GameNotFound)
@@ -815,7 +811,7 @@ fn host_departure_erases_empty_and_occupied_lobbies() {
                 JoinGameRequest {
                     code: lobby.code.clone(),
                     display_name: "Guest".to_string(),
-                    recovery_hash: replacement.hash().0,
+                    recovery_code: replacement.expose().to_string(),
                 }
             )),
             Err(BackendError::GameNotFound)
@@ -826,7 +822,7 @@ fn host_departure_erases_empty_and_occupied_lobbies() {
             CreateGameRequest {
                 code: lobby.code,
                 display_name: "Host".to_string(),
-                recovery_hash: replacement.hash().0,
+                recovery_code: replacement.expose().to_string(),
                 persisted: lobby.persisted,
             }
         ))
@@ -916,7 +912,7 @@ fn coordinates_idempotent_submission_and_single_resolution() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -984,7 +980,7 @@ fn simultaneous_submissions_and_resolvers_are_serialized() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();
@@ -1064,7 +1060,7 @@ fn spectator_cannot_submit_turn() {
         JoinGameRequest {
             code: created.game.code,
             display_name: "Joiner".to_string(),
-            recovery_hash: joiner_recovery.hash().0,
+            recovery_code: joiner_recovery.expose().to_string(),
         },
     ))
     .unwrap();

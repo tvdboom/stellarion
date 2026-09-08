@@ -1,6 +1,110 @@
 use super::*;
 
 #[test]
+fn planet_report_layout_contains_every_unit_exactly_once() {
+    for is_home_planet in [false, true] {
+        let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
+
+        assert_eq!(critical, [Unit::planetary_shield(), Unit::space_dock()]);
+        assert_eq!(orbitals.len(), 5);
+        assert!(!orbitals.contains(&Unit::space_dock()));
+        assert_eq!(buildings.len(), 9);
+        assert!(!buildings.contains(&Unit::planetary_shield()));
+
+        let presented = Unit::ships()
+            .into_iter()
+            .chain(Unit::defenses())
+            .chain(critical)
+            .chain(orbitals)
+            .chain(buildings)
+            .collect::<Vec<_>>();
+        let expected =
+            Unit::all_for_world(false, is_home_planet).into_iter().flatten().collect::<Vec<_>>();
+        let unique = presented.iter().copied().collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(presented.len(), expected.len());
+        assert_eq!(unique.len(), presented.len());
+        assert_eq!(unique, expected.into_iter().collect());
+    }
+}
+
+#[test]
+fn planet_report_compact_intel_fits_the_existing_column() {
+    let context = egui::Context::default();
+    let (critical, orbitals, buildings) = mission_report_planet_intel(false);
+    let units = critical.into_iter().chain(orbitals).chain(buildings).collect::<Vec<_>>();
+    let images = ImageIds(
+        units
+            .iter()
+            .map(|unit| (unit.to_lowername().to_string(), egui::TextureId::User(1)))
+            .collect(),
+    );
+    let mut planet = Planet::new(1, "Intel".into(), Vec2::ZERO, false, 1.0);
+    planet.controlled = Some(7);
+    planet.army = units.iter().copied().map(|unit| (unit, 1)).collect();
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            owner: 8,
+            destination: planet.id,
+            ..default()
+        },
+        planet: planet.clone(),
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: planet.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: None,
+        destination_controlled: planet.controlled,
+        combat_report: None,
+        hidden: false,
+    };
+    let mut rect = egui::Rect::NOTHING;
+
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(200.0, 500.0),
+            )),
+            ..default()
+        },
+        |ui| {
+            rect = ui
+                .scope(|ui| {
+                    draw_mission_report_planet_intel(
+                        ui,
+                        &report,
+                        &Player::new(7, 0),
+                        false,
+                        &images,
+                    );
+                })
+                .response
+                .rect;
+        },
+    );
+    output.textures_delta.clear();
+
+    assert!(
+        (rect.width() - MISSION_REPORT_PLANET_INTEL_WIDTH).abs() <= 0.05,
+        "compact intel was {} px wide",
+        rect.width()
+    );
+    assert!(rect.height() <= 357.0, "compact intel was {} px tall", rect.height());
+}
+
+#[test]
+fn planet_report_compact_columns_align_with_space_dock() {
+    let compact_width = MISSION_REPORT_INTEL_IMAGE_SIZE * MISSION_REPORT_INTEL_COLUMNS as f32
+        + MISSION_REPORT_INTEL_COLUMN_GAP * (MISSION_REPORT_INTEL_COLUMNS - 1) as f32;
+
+    assert_eq!(compact_width, MISSION_REPORT_PLANET_INTEL_WIDTH);
+}
+
+#[test]
 fn active_mission_destination_stays_in_the_third_grid_column() {
     for width in [700.0, 850.0, 1_200.0] {
         let context = egui::Context::default();
@@ -265,6 +369,22 @@ fn active_mission_eta_never_displays_plus_zero() {
 
     assert_eq!(mission.turns_to_destination(&map), 0);
     assert_eq!(mission_display_turns(&mission, &map), 1);
+}
+
+#[test]
+fn missile_strikes_do_not_offer_the_recall_action() {
+    let owned_attack = Mission {
+        owner: 7,
+        objective: Icon::Attack,
+        ..default()
+    };
+    let missile_strike = Mission {
+        objective: Icon::MissileStrike,
+        ..owned_attack.clone()
+    };
+
+    assert!(mission_recall_available(&owned_attack, 7));
+    assert!(!mission_recall_available(&missile_strike, 7));
 }
 
 #[test]

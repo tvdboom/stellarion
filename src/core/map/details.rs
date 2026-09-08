@@ -24,6 +24,10 @@ use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 
 const DEBRIS_TURNS: usize = 3;
+const DEBRIS_CENTER_ANGLE: f32 = TAU * 0.5;
+const DEBRIS_ANGLE_STEP: f32 = 0.03;
+const DEBRIS_ANGLE_JITTER: f32 = 0.02;
+const DEBRIS_DEPTH: f32 = 0.26;
 const PLANET_TERRAFORMER_ART_ASPECT: f32 = 1102.0 / 1427.0;
 pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 
@@ -445,18 +449,16 @@ fn open_latest_battle(player: &Player, planet: PlanetId, state: &mut UiState) {
     };
     state.planet_hover = None;
     state.mission_hover = None;
+    state.planet_selected = None;
+    state.mission = true;
+    state.mission_tab = MissionTab::MissionReports;
+    state.mission_report = Some(report.mission.id);
+    state.combat_report = None;
     if report.can_see(&Side::Attacker, player.id) && report.can_see(&Side::Defender, player.id) {
-        state.mission = false;
         state.combat_report = Some(report.id);
         state.combat_report_round = 1;
         state.combat_report_total = true;
         state.combat_report_hover = None;
-    } else {
-        // A lost fleet can leave public wreckage without granting enemy-unit intelligence.
-        state.combat_report = None;
-        state.mission = true;
-        state.mission_tab = MissionTab::MissionReports;
-        state.mission_report = Some(report.mission.id);
     }
 }
 
@@ -468,11 +470,17 @@ fn spawn_debris(
     image_size: Vec2,
 ) {
     let planet_id = planet.id;
-    for index in 0..debris_count(site.losses) {
+    let count = debris_count(site.losses);
+    for index in 0..count {
         let seed = site.seed.wrapping_add(index as u32 * 19);
-        // The lower-left arc avoids the name above and the existing right-side status icons.
-        let angle = 3.45 + index as f32 * 0.29 + noise(seed) * 0.15;
-        let radius = planet.size() * (0.78 + noise(seed.wrapping_add(1)) * 0.15);
+        // Keep wreckage in the open corridor directly left of the planet, beyond the ordinary
+        // orbital ring and between the fixed upper- and lower-left range infrastructure. Its
+        // depth also keeps a passing orbital from briefly drawing over the wreckage.
+        let centered_index = index as f32 - count.saturating_sub(1) as f32 * 0.5;
+        let angle = DEBRIS_CENTER_ANGLE
+            + centered_index * DEBRIS_ANGLE_STEP
+            + (noise(seed) - 0.5) * DEBRIS_ANGLE_JITTER;
+        let radius = planet.size() * (1.02 + noise(seed.wrapping_add(1)) * 0.08);
         let variant = (noise(seed.wrapping_add(2)) * 3.99) as usize;
         let cell = image_size * 0.5;
         let min = Vec2::new((variant % 2) as f32, (variant / 2) as f32) * cell;
@@ -488,7 +496,7 @@ fn spawn_debris(
                     ..default()
                 },
                 Transform {
-                    translation: origin.extend(PLANET_Z + 0.15),
+                    translation: origin.extend(PLANET_Z + DEBRIS_DEPTH),
                     rotation: Quat::from_rotation_z(rotation),
                     ..default()
                 },

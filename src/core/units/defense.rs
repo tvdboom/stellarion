@@ -110,15 +110,11 @@ impl Description for Defense {
                 against enemy attacks. The bomber is the only ship with Rapid Fire against it."
             },
             Defense::SpaceDock => {
-                "The Space Dock is a colossal orbital-support facility that hovers close to a \
-                planet's surface. The moment construction finishes, its immense silhouette \
-                appears orbiting the planet on every player's map—even without scan \
-                intelligence—and its color reveals the owner. Its orbital assembly lines add 5 \
-                fleet-production capacity to the planet, while the Shipyard still determines \
-                which ships can be built. It is the most powerful defense and the only unit with \
-                Rapid Fire against the War Sun. Although it can't move, a Space Dock counts as a \
-                ship during combat (preventing War Suns from firing their Death Rays). Only one \
-                can be built per planet."
+                "The Space Dock is a colossal orbital-support facility. The Space Dock is always \
+                visible by all players in the galaxy. It partakes in combat and, additionally, it\
+                adds 5 fleet-production capacity to the planet. It is the most powerful defense \
+                and the only unit with Rapid Fire against the War Sun. Only one can be built per \
+                planet."
             }
             Defense::AntiballisticMissile => {
                 "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \

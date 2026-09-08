@@ -125,3 +125,27 @@ fn accepted_recall_updates_the_visible_route_and_turn_draft_once() {
         0
     );
 }
+
+#[test]
+fn missile_recall_is_rejected_without_changing_the_visible_mission_or_turn_draft() {
+    let mut app = launch_mission(false);
+    let mission_id = app.world().resource::<Missions>().0[0].id;
+    app.world_mut().resource_mut::<Missions>().0[0].objective = Icon::MissileStrike;
+    app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().for_each(drop);
+
+    app.world_mut().write_message(RecallMissionMsg::new(mission_id));
+    app.update();
+
+    let mission = &app.world().resource::<Missions>().0[0];
+    assert_eq!(mission.objective, Icon::MissileStrike);
+    assert!(!mission.is_returning());
+    assert_eq!(app.world().resource::<PendingTurnCommands>().commands.len(), 1);
+    assert_eq!(
+        app.world_mut().resource_mut::<Messages<MissionRecallAnimationMsg>>().drain().count(),
+        0
+    );
+    let notices =
+        app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1);
+    assert!(!notices[0].silent);
+}

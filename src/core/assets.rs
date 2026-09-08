@@ -156,9 +156,14 @@ impl WorldAssets {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
         // Aliases keep their cooldowns and simultaneous-instance limits independent.
-        for (name, source) in
-            [("beam fire", "death ray"), ("bomb release", "launch"), ("probe retreat", "booster")]
-        {
+        for (name, source) in [
+            ("beam fire", "death ray"),
+            ("bomb release", "launch"),
+            ("probe retreat", "booster"),
+            // A short, pitched-up booster pass reads as a missile crossing the target and
+            // continuing into the distance without adding another sourced audio asset.
+            ("missile miss", "booster"),
+        ] {
             load_audio_alias(server, &mut self.audio, &mut self.gameplay_handles, name, source);
         }
 
@@ -185,6 +190,7 @@ impl WorldAssets {
         // UI variants keep the detailed source artwork and premultiply it for egui.
         for name in [
             "dock",
+            "orbital railgun marker",
             "jump gate marker",
             "solar satellite marker",
             "command relay marker",
@@ -352,7 +358,14 @@ impl WorldAssets {
             &mut self.images,
             &mut self.gameplay_handles,
             "orbitals",
-            &["solar satellite", "sensor phalanx", "command relay", "jump gate", "space dock"],
+            &[
+                "solar satellite",
+                "sensor phalanx",
+                "command relay",
+                "jump gate",
+                "space dock",
+                "orbital railgun",
+            ],
         );
         load_category(
             server,
@@ -414,6 +427,7 @@ impl WorldAssets {
                 "missile strike cover",
                 "destroy",
                 "destroy cover",
+                "railgun strike",
             ],
         );
         load_category(
