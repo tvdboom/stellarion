@@ -61,3 +61,18 @@ fn parallax_depth_combines_camera_motion_zoom_and_ambient_drift() {
     assert_eq!(position, Vec2::new(66.0, -23.0));
     assert!((scale - 0.75).abs() < f32::EPSILON);
 }
+
+#[test]
+fn camera_focus_zoom_reaches_the_widest_allowed_scale() {
+    let mut scale = MIN_ZOOM;
+    let mut complete = false;
+    for _ in 0..256 {
+        (scale, complete) = advance_focus_zoom(scale, MAX_ZOOM);
+        if complete {
+            break;
+        }
+    }
+
+    assert!(complete);
+    assert_eq!(scale, MAX_ZOOM);
+}

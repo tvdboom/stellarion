@@ -192,6 +192,7 @@ impl WorldAssets {
             "dock",
             "orbital railgun marker",
             "jump gate marker",
+            "recycler marker",
             "solar satellite marker",
             "command relay marker",
             "sensor phalanx marker",
@@ -360,6 +361,7 @@ impl WorldAssets {
             "orbitals",
             &[
                 "solar satellite",
+                "recycler",
                 "sensor phalanx",
                 "command relay",
                 "jump gate",
@@ -435,7 +437,16 @@ impl WorldAssets {
             &mut self.images,
             &mut self.gameplay_handles,
             "combat",
-            &["hull", "shield", "damage", "production", "speed", "fuel consumption", "rapid fire"],
+            &[
+                "hull",
+                "shield",
+                "damage",
+                "production",
+                "intelligence",
+                "speed",
+                "fuel consumption",
+                "rapid fire",
+            ],
         );
         load_category(
             server,

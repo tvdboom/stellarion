@@ -168,7 +168,7 @@ impl Icon {
                 reached or destination is a moon."
             },
             Icon::Attack => "No combat ships on the origin planet.",
-            Icon::Spy => "At least 5 Probes are required on the origin planet.",
+            Icon::Spy => "A minimum of 5 Probes are required for a Spy mission.",
             Icon::MissileStrike => {
                 "No Interplanetary Missiles on the origin planet or destination is a moon."
             },
@@ -200,11 +200,10 @@ impl Description for Icon {
                 target planet remain."
             },
             Icon::Spy => {
-                "Send at least 5 Probes to gather intelligence on an enemy planet. Spy range is \
-                limited by the Command Relay on the origin planet. Probes leave combat after the \
-                first round and report on enemy units; more returning Probes reveal better \
-                intelligence. Spy missions aren't detected by the Sensor Phalanx and don't reveal \
-                the planet of origin."
+                "Send at least 5 Probes to gather intelligence on an enemy planet. Probes leave \
+                combat after the first round and report on enemy units. Every 5 returning probes \
+                reveals one more level of intelligence. Spy missions aren't detected by the \
+                Sensor Phalanx and don't reveal the planet of origin."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \

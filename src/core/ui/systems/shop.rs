@@ -93,6 +93,36 @@ fn resource_tile_button(
     image_tile_button(ui, image, selected)
 }
 
+/// Draws the large explanation shared by compact unit-stat rows.
+pub(super) fn draw_stat_hover(ui: &mut Ui, stat: &CombatStats, images: &ImageIds) {
+    ui.set_width(500.);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.add_image(images.get(stat.to_lowername()), [130., 90.]);
+        });
+        ui.vertical(|ui| {
+            ui.label(stat.to_name());
+            ui.separator();
+            ui.small(stat.description());
+        });
+    });
+}
+
+/// Draws the building-and-orbital Spy intelligence requirement.
+pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
+    let stat = CombatStats::Intelligence;
+    ui.separator();
+    ui.add_space(12.);
+    let response = ui.horizontal(|ui| {
+        ui.set_width(180.);
+        ui.style_mut().interaction.selectable_labels = true;
+        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
+        ui.label(unit.get_stat(&stat)).on_hover_cursor(CursorIcon::Default);
+    });
+    ui.add_space(12.);
+    response.response.on_hover_ui(|ui| draw_stat_hover(ui, &stat, images))
+}
+
 /// Draws the unit hover interface and emits any resulting local actions.
 fn draw_unit_hover(
     ui: &mut Ui,
@@ -153,23 +183,9 @@ fn draw_unit_hover(
                 ui.separator();
             }
 
-            let stat_hover = |ui: &mut Ui, stat: &CombatStats| {
-                ui.set_width(500.);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.add_image(images.get(stat.to_lowername()), [130., 90.]);
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(stat.to_name());
-                        ui.separator();
-                        ui.small(stat.description());
-                    });
-                });
-            };
-
             if !unit.is_building() {
                 for (i, row) in CombatStats::iter()
-                    .filter(|c| *c != CombatStats::RapidFire)
+                    .filter(|c| !matches!(c, CombatStats::RapidFire | CombatStats::Intelligence))
                     .collect::<Vec<CombatStats>>()
                     .chunks(3)
                     .enumerate()
@@ -189,14 +205,20 @@ fn draw_unit_hover(
                                             .on_hover_cursor(CursorIcon::Default);
                                     })
                                     .response
-                                    .on_hover_ui(|ui| stat_hover(ui, stat));
+                                    .on_hover_ui(|ui| draw_stat_hover(ui, stat, images));
                                 }
                             });
                     }
 
                     ui.spacing_mut().item_spacing.y = 10.;
                 }
-            } else if *unit == Unit::Building(Building::Laboratory) && count > 0 {
+            }
+
+            if unit.is_building() || unit.is_orbital() {
+                let _ = draw_intelligence_stat(ui, unit, images);
+            }
+
+            if *unit == Unit::Building(Building::Laboratory) && count > 0 {
                 let (from, to) = &mut state.lab;
 
                 if from == to {
@@ -332,7 +354,7 @@ fn draw_unit_hover(
             if !unit.rapid_fire().is_empty() {
                 ui.separator();
                 ui.small(CombatStats::RapidFire.to_name())
-                    .on_hover_ui(|ui| stat_hover(ui, &CombatStats::RapidFire));
+                    .on_hover_ui(|ui| draw_stat_hover(ui, &CombatStats::RapidFire, images));
 
                 egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(ui, |ui| {
                     let mut counter = 0;

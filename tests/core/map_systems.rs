@@ -392,6 +392,327 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
 }
 
 #[test]
+fn local_practice_map_draw_spawns_one_visible_asteroid_belt_immediately() {
+    let rules = GameRules {
+        player_count: 1,
+        practice_mode: true,
+        ..default()
+    };
+    let mut model = GameModel::new([29; 32], rules).unwrap();
+    model.start().unwrap();
+    let map = model.map.clone();
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<WorldAssets>()
+        .insert_resource(map.clone())
+        .insert_resource(model.players[0].clone())
+        .add_systems(Startup, draw_map);
+    app.world_mut().spawn((Camera2d, MainCamera));
+
+    app.update();
+
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<Entity, With<AsteroidBeltCmp>>().iter(world).count(), 1);
+    let visible = world
+        .query_filtered::<(&Transform, &Sprite), With<AsteroidCmp>>()
+        .iter(world)
+        .filter(|(transform, sprite)| {
+            let margin = sprite.custom_size.unwrap().x * 0.5 + ASTEROID_MAXIMUM_WOBBLE;
+            let position = transform.translation.truncate();
+            position.x - margin >= map.rect.min.x
+                && position.x + margin <= map.rect.max.x
+                && position.y - margin >= map.rect.min.y
+                && position.y + margin <= map.rect.max.y
+        })
+        .count();
+    assert!(visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT);
+}
+
+#[test]
+fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
+    let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let target_groups = crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map);
+    let (&planet_id, asteroid_targets) = target_groups
+        .iter()
+        .find(|(_, targets)| targets.len() >= 4)
+        .expect("map should have a world near at least four asteroids");
+    assert_ne!(asteroid_targets[0], asteroid_targets[1]);
+    let first_asteroid = asteroid_targets[0];
+    let asteroid_targets = asteroid_targets.clone();
+    let idle_planet_id = model
+        .map
+        .planets()
+        .into_iter()
+        .find(|planet| !planet.is_moon() && !target_groups.contains_key(&planet.id))
+        .map(|planet| planet.id)
+        .expect("map should also have a planet beyond Recycler range");
+    let owner = model.players[0].id;
+    let planet = model.map.get_mut(planet_id);
+    planet.owned = Some(owner);
+    planet.controlled = Some(owner);
+    planet.army.insert(Unit::Building(Building::Recycler), 2);
+    let idle_planet = model.map.get_mut(idle_planet_id);
+    idle_planet.owned = Some(owner);
+    idle_planet.controlled = Some(owner);
+    idle_planet.army.insert(Unit::Building(Building::Recycler), 2);
+
+    let player = model.players[0].clone();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        submitted_players: Vec::new(),
+        id: GameId::new("recycler-animation"),
+        code: GameCode::new("RECYCLE"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 2,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: vec![],
+    });
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<Time>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Missions>()
+        .insert_resource(Settings {
+            turn: model.turn as usize,
+            ..default()
+        })
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(session)
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, animate_recyclers);
+    let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+    app.update();
+
+    let (recyclers, scans, idle_recyclers, idle_scans) = {
+        let world = app.world_mut();
+        let mut recyclers = world
+            .query::<(Entity, &RecyclerCmp)>()
+            .iter(world)
+            .filter(|(_, marker)| marker.planet == planet_id)
+            .map(|(entity, marker)| (entity, marker.level, marker.phase))
+            .collect::<Vec<_>>();
+        recyclers.sort_by_key(|(_, level, _)| *level);
+        let idle_recyclers = world
+            .query::<(Entity, &RecyclerCmp)>()
+            .iter(world)
+            .filter(|(_, marker)| marker.planet == idle_planet_id)
+            .map(|(entity, _)| entity)
+            .collect::<Vec<_>>();
+        let scans = world
+            .query::<(Entity, &RecyclerScanCmp)>()
+            .iter(world)
+            .filter(|(_, marker)| marker.planet == planet_id)
+            .map(|(entity, marker)| (entity, marker.recycler_level))
+            .collect::<Vec<_>>();
+        let idle_scans = world
+            .query::<(Entity, &RecyclerScanCmp)>()
+            .iter(world)
+            .filter(|(_, marker)| marker.planet == idle_planet_id)
+            .map(|(entity, _)| entity)
+            .collect::<Vec<_>>();
+        (recyclers, scans, idle_recyclers, idle_scans)
+    };
+    assert_eq!(recyclers.len(), Building::MAX_LEVEL);
+    assert_eq!(
+        recyclers.iter().map(|(_, level, _)| *level).collect::<Vec<_>>(),
+        (1..=Building::MAX_LEVEL).collect::<Vec<_>>()
+    );
+    assert!(recyclers.windows(2).all(|pair| pair[0].2 != pair[1].2));
+    assert_eq!(scans.len(), Building::MAX_LEVEL * 3);
+    assert_eq!(idle_recyclers.len(), Building::MAX_LEVEL);
+    assert_eq!(idle_scans.len(), Building::MAX_LEVEL * 3);
+    for (entity, _, _) in &recyclers {
+        let transform = app.world().get::<Transform>(*entity).unwrap();
+        let pickable = app.world().get::<Pickable>(*entity).unwrap();
+        assert!(transform.translation.z > DEBRIS_DEPTH);
+        assert_eq!(*pickable, Pickable::IGNORE);
+    }
+    assert_eq!(
+        recyclers
+            .iter()
+            .filter(|(entity, _, _)| {
+                app.world().get::<Visibility>(*entity) == Some(&Visibility::Inherited)
+            })
+            .count(),
+        2
+    );
+    assert!(idle_recyclers
+        .iter()
+        .all(|recycler| app.world().get::<Visibility>(*recycler) == Some(&Visibility::Hidden)));
+    assert!(idle_scans
+        .iter()
+        .all(|scan| app.world().get::<Visibility>(*scan) == Some(&Visibility::Hidden)));
+
+    // Put the first two workers into their collection beat together: even then they visibly split
+    // between two separate nearby rocks instead of stacking on one target.
+    for (entity, _, _) in recyclers.iter().take(2) {
+        app.world_mut().get_mut::<RecyclerCmp>(*entity).unwrap().phase = 0.4;
+    }
+    app.update();
+    let first_scan = scans.iter().find(|(_, level)| *level == 1).unwrap().0;
+    let second_scan = scans.iter().find(|(_, level)| *level == 2).unwrap().0;
+    let first_target = app.world().get::<Transform>(first_scan).unwrap().translation.truncate();
+    let second_target = app.world().get::<Transform>(second_scan).unwrap().translation.truncate();
+    assert!(first_target.distance(second_target) > 1.0);
+
+    let recycler = recyclers[0].0;
+    let home = {
+        let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
+        let planet = app.world().resource::<Map>().get(planet_id);
+        recycler_home(first_asteroid, marker, planet).extend(RECYCLER_DEPTH)
+    };
+    let planet = app.world().resource::<Map>().get(planet_id);
+    let destination_direction = (first_asteroid - planet.position).normalize();
+    assert!(home.truncate().normalize().dot(destination_direction) > 0.85);
+    let recycler_radius = Vec2::new(planet.size() * 0.30, planet.size() * 0.214).length() * 0.5;
+    assert!(
+        home.truncate().length() - recycler_radius > planet.size() * 0.5,
+        "a docked Recycler must touch the destination-facing edge without overlapping the planet"
+    );
+    assert!(home.truncate().length() < planet.size() * 0.75);
+    let rotating_targets = {
+        let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
+        (0..4)
+            .map(|trip| {
+                recycler_animation_target(
+                    RecyclerSource::AsteroidField {
+                        target: first_asteroid,
+                    },
+                    Some(&asteroid_targets),
+                    marker,
+                    planet,
+                    trip,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(rotating_targets
+        .iter()
+        .enumerate()
+        .all(|(index, target)| rotating_targets[..index].iter().all(|other| other != target)));
+    for (entity, _, _) in &recyclers {
+        let marker = app.world().get::<RecyclerCmp>(*entity).unwrap();
+        let worker_home = recycler_home(first_asteroid, marker, planet);
+        for trip in 0..4 {
+            let target = recycler_animation_target(
+                RecyclerSource::AsteroidField {
+                    target: first_asteroid,
+                },
+                Some(&asteroid_targets),
+                marker,
+                planet,
+                trip,
+            ) - planet.position;
+            for step in 0..=100 {
+                let position = recycler_route_position(worker_home, target, step as f32 / 100.0);
+                assert!(
+                    position.length() - recycler_radius > planet.size() * 0.5,
+                    "every Recycler route must remain outside the visible planet"
+                );
+            }
+        }
+    }
+    let level_one_scans = scans
+        .iter()
+        .filter(|(_, level)| *level == 1)
+        .map(|(entity, _)| *entity)
+        .collect::<Vec<_>>();
+    app.world_mut().get_mut::<RecyclerCmp>(recycler).unwrap().phase = 0.0;
+    app.update();
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    let outbound = app.world().get::<Transform>(recycler).unwrap().translation;
+    assert!(outbound.distance(home) > Planet::SIZE * 0.1);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert!(level_one_scans
+        .iter()
+        .all(|scan| app.world().get::<Visibility>(*scan) == Some(&Visibility::Inherited)));
+    assert!(level_one_scans.iter().all(|scan| app
+        .world()
+        .get::<Transform>(*scan)
+        .unwrap()
+        .scale
+        .x
+        > 5.0));
+    let recycler_color = app.world().get::<Sprite>(recycler).unwrap().color.to_srgba();
+    for scan in &level_one_scans {
+        let handle = app.world().get::<MeshMaterial2d<ColorMaterial>>(*scan).unwrap();
+        let scan_color = app
+            .world()
+            .resource::<Assets<ColorMaterial>>()
+            .get(&handle.0)
+            .unwrap()
+            .color
+            .to_srgba();
+        assert!((scan_color.red - recycler_color.red).abs() < 1e-6);
+        assert!((scan_color.green - recycler_color.green).abs() < 1e-6);
+        assert!((scan_color.blue - recycler_color.blue).abs() < 1e-6);
+    }
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(4));
+    app.update();
+    let returned = app.world().get::<Transform>(recycler).unwrap().translation;
+    assert!(returned.distance(home) < Planet::SIZE * 0.04);
+    assert!(level_one_scans
+        .iter()
+        .all(|scan| app.world().get::<Visibility>(*scan) == Some(&Visibility::Hidden)));
+
+    for level in 0..=Building::MAX_LEVEL {
+        app.world_mut()
+            .resource_mut::<Map>()
+            .get_mut(planet_id)
+            .army
+            .insert(Unit::Building(Building::Recycler), level);
+        app.update();
+        let visible = recyclers
+            .iter()
+            .filter(|(entity, _, _)| {
+                app.world().get::<Visibility>(*entity) == Some(&Visibility::Inherited)
+            })
+            .count();
+        assert_eq!(visible, level, "one Recycler worker should appear per completed level");
+    }
+
+    if let Projection::Orthographic(projection) =
+        &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
+    {
+        projection.scale = DEVELOPMENT_MAX_SCALE + 0.01;
+    }
+    app.update();
+    assert!(recyclers
+        .iter()
+        .all(|(entity, _, _)| app.world().get::<Visibility>(*entity) == Some(&Visibility::Hidden)));
+    assert!(scans
+        .iter()
+        .all(|(entity, _)| app.world().get::<Visibility>(*entity) == Some(&Visibility::Hidden)));
+
+    let before_wrap = Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, 0.9999));
+    let after_wrap = Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, 0.0001));
+    assert!(before_wrap.angle_between(after_wrap) < 0.01);
+    assert!((recycler_progress(0.8599) - recycler_progress(0.8601)).abs() < 0.001);
+    assert!((recycler_progress(0.9999) - recycler_progress(0.0001)).abs() < 0.001);
+}
+
+#[test]
 fn multiplayer_projection_repairs_an_empty_asteroid_field_without_duplicates() {
     let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
     let mut app = App::new();
@@ -1091,6 +1412,28 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     }
     let phalanx_transform = *app.world().get::<Transform>(own.5).unwrap();
     let railgun_transform = *app.world().get::<Transform>(own_railgun).unwrap();
+    let railgun = app.world().get::<OrbitalRailgunCmp>(own_railgun).unwrap();
+    assert!((railgun.anchor.length() - Planet::SIZE * ORBITAL_RAILGUN_RADIUS).abs() < 0.01);
+    assert!(railgun.anchor.x.abs() < 0.01 && railgun.anchor.y > 0.0);
+    let railgun_inner_edge =
+        railgun.anchor.length() - Planet::SIZE * 0.48 * 0.5 - Vec2::new(1.1, 2.4).length();
+    assert!(
+        railgun_inner_edge > Planet::SIZE * 0.5,
+        "the closer Railgun station must remain outside the planet throughout its idle drift"
+    );
+    for step in 0..=240 {
+        let elapsed = RANGE_MARKER_CYCLE_SECONDS * step as f32 / 240.0;
+        let railgun_position = range_marker_pose(railgun.anchor, elapsed, railgun.phase).0;
+        for drone in &own_phalanxes {
+            let drone = app.world().get::<SensorPhalanxCmp>(*drone).unwrap();
+            let drone_pose = phalanx_drone_pose(drone, elapsed);
+            let clearance = Planet::SIZE * (0.48 * 0.5 + 0.23 * 0.5 * 1.04);
+            assert!(
+                railgun_position.distance(drone_pose.translation.truncate()) > clearance,
+                "the Railgun station must stay clear of every Phalanx drone over a full cycle"
+            );
+        }
+    }
     assert!(app.world().get::<Children>(own_railgun).is_none());
     let satellite_position = app.world().get::<Transform>(own.3).unwrap().translation;
     let satellite_rotation = app.world().get::<Transform>(own.3).unwrap().rotation;

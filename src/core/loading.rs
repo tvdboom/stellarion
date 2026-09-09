@@ -218,13 +218,10 @@ fn orbital_strike_notifications(
             } else {
                 "planet"
             };
-            let notification =
-                MessageMsg::warning(format!("Railgun shot fired on {world} {}.", target.name));
-            Some(if target.is_destroyed {
-                notification
-            } else {
-                notification.with_action(MessageAction::FocusPlanet(target.id))
-            })
+            Some(
+                MessageMsg::warning(format!("Railgun shot fired on {world} {}.", target.name))
+                    .with_action(MessageAction::FocusRailgunTarget(target.id)),
+            )
         })
         .collect()
 }

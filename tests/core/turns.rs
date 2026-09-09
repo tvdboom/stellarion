@@ -4,8 +4,11 @@ use super::*;
 use crate::core::combat::report::CombatReport;
 use crate::core::messages::MessageLevel;
 use crate::core::missions::BombingRaid;
-use crate::core::simulation::{GameModel, GameRules};
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
 use crate::core::units::Army;
+use crate::multiplayer::client::MultiplayerSession;
+use crate::multiplayer::model::{GameMembership, GameRecord};
+use bevy::ecs::system::RunSystemOnce;
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
@@ -196,6 +199,81 @@ fn returning_probes_create_a_reports_panel_toast() {
 }
 
 #[test]
+fn known_enemy_one_planet_from_victory_creates_a_warning() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+
+    let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let local_player = model.players[0].clone();
+    let enemy_id = model.players[1].id;
+    let homes = model.players.iter().map(|player| player.home_planet).collect::<BTreeSet<_>>();
+    let destroyed = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && !homes.contains(&planet.id))
+        .map(|planet| planet.id)
+        .take(10)
+        .collect::<Vec<_>>();
+    for planet_id in destroyed {
+        model.map.get_mut(planet_id).destroy();
+    }
+    assert_eq!(model.planets_to_win(), 8);
+
+    let visible_enemy_planets = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| {
+            !planet.is_moon() && !planet.is_destroyed && planet.id != local_player.home_planet
+        })
+        .map(|planet| planet.id)
+        .take(7)
+        .collect::<Vec<_>>();
+    for planet_id in visible_enemy_planets {
+        let planet = model.map.get_mut(planet_id);
+        planet.owned = Some(enemy_id);
+        planet.controlled = Some(enemy_id);
+        planet.army.insert(Unit::space_dock(), 1);
+    }
+
+    let game_id = GameId::new("territorial-threat");
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: game_id.clone(),
+        code: GameCode::new("THREAT"),
+        revision: 1,
+        saved_at: 0,
+        max_players: 2,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        members: vec![GameMembership {
+            game_id,
+            player_id: enemy_id,
+            user_id: UserId::new("enemy"),
+            display_name: "Rival".into(),
+            is_creator: false,
+            identity_version: 1,
+            connected: true,
+        }],
+        submitted_players: vec![],
+    });
+
+    let warnings = territorial_threat_notifications(&session, &model.map, &local_player);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].level, MessageLevel::Warning);
+    assert_eq!(warnings[0].message, "Rival controls 7 of 8 planets needed for victory.");
+
+    for planet in &mut model.map.planets {
+        planet.army.remove(&Unit::space_dock());
+    }
+    assert!(
+        territorial_threat_notifications(&session, &model.map, &local_player).is_empty(),
+        "hidden control must not leak through the warning"
+    );
+}
+
+#[test]
 fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report() {
     let mut model = GameModel::new([19; 32], GameRules::default()).unwrap();
     model.start().unwrap();
@@ -355,4 +433,30 @@ fn planet_destruction_animation_only_starts_once_for_its_reported_turn() {
     assert!(!should_start_planet_destruction(&destroyed, &reports, 3, &mut animating));
     assert!(should_start_planet_destruction(&destroyed, &reports, 4, &mut animating));
     assert!(!should_start_planet_destruction(&destroyed, &reports, 4, &mut animating));
+}
+
+#[test]
+fn terminal_overlay_waits_until_planet_destruction_finishes() {
+    let mut presentation = EndGamePresentation::default();
+    presentation.request();
+    let mut app = App::new();
+    app.insert_resource(presentation).init_resource::<NextState<GameState>>();
+    let explosion = app
+        .world_mut()
+        .spawn(ExplosionCmp {
+            timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+            last_index: 12,
+            planet: 0,
+        })
+        .id();
+
+    app.world_mut().run_system_once(finish_end_game_presentation).unwrap();
+    assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));
+
+    app.world_mut().despawn(explosion);
+    app.world_mut().run_system_once(finish_end_game_presentation).unwrap();
+    assert!(matches!(
+        *app.world().resource::<NextState<GameState>>(),
+        NextState::Pending(GameState::EndGame)
+    ));
 }

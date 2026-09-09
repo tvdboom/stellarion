@@ -35,6 +35,7 @@ impl EnergyGrid {
             | Building::Shipyard
             | Building::Factory
             | Building::MissileSilo
+            | Building::Recycler
             | Building::CommandRelay
             | Building::ColonialAdministration => Self::default(),
             Building::TidalGenerator => Self {

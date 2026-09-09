@@ -111,9 +111,9 @@ impl Description for Defense {
             },
             Defense::SpaceDock => {
                 "The Space Dock is a colossal orbital-support facility. The Space Dock is always \
-                visible by all players in the galaxy. It partakes in combat and, additionally, it\
-                adds 5 fleet-production capacity to the planet. It is the most powerful defense \
-                and the only unit with Rapid Fire against the War Sun. Only one can be built per \
+                visible by all players in the galaxy. It partakes in combat and, additionally, it \
+                adds 5 fleet-production capacity to the planet. It is the most powerful combat unit \
+                and the only one with Rapid Fire against the War Sun. Only one can be built per \
                 planet."
             }
             Defense::AntiballisticMissile => {
@@ -122,16 +122,16 @@ impl Description for Defense {
                 destroying one incoming Interplanetary Missile. Antiballistic Missiles are launched \
                 automatically whenever an approaching enemy missile is detected. Otherwise, they \
                 do not take part in any combat. Antiballistic Missiles are much cheaper than \
-                Interplanetary Missiles."
+                Interplanetary Missiles. They share production capacity with the defense units."
             },
             Defense::InterplanetaryMissile => {
                 "Interplanetary Missiles are designed to destroy enemy defenses. They ignore enemy \
-                ships and the Planetary Shield. All the enemy's Antiballistic Missiles are launched \
-                and resolved before defenses are hit. Interplanetary Missiles have a very good \
-                price-to-stat ratio and don't consume fuel. They don't have Hull points, meaning \
-                the combat is always resolved in one round, but their Damage is capable of \
-                destroying every defense unit in one round and their Rapid Fire capabilities \
-                ensures the total inflicted destruction can be huge."
+                ships and the Planetary Shield. Enemy Antiballistic Missiles are launched before \
+                defenses are hit. Interplanetary Missiles have a very good price-to-stat ratio and \
+                don't consume fuel. They don't have Hull points, meaning the combat is always \
+                resolved in one round, but their Damage is capable of destroying every defense \
+                unit in one round and their Rapid Fire capabilities ensures the total inflicted \
+                destruction can be huge. They share production capacity with the defense units."
             },
         }
     }

@@ -4,6 +4,7 @@ use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
+use std::collections::BTreeSet;
 
 fn model() -> GameModel {
     let mut model = GameModel::new([7; 32], GameRules::default()).unwrap();
@@ -555,7 +556,7 @@ fn public_debris_deduplicates_participant_reports_and_expires_by_turn() {
     let mut recent = report(2, 7, planet, 12);
     recent.hidden = true; // Public aftermath does not depend on report visibility.
     let sites = debris_sites([&old, &old, &recent].into_iter(), 7);
-    assert_eq!(sites[&planet.id].losses, 16);
+    assert_eq!(sites[&planet.id].losses, 12);
     assert_eq!(sites[&planet.id].latest_turn, 7);
     assert_eq!(debris_sites([&old, &recent].into_iter(), 8)[&planet.id].losses, 12);
     assert!(debris_sites([&old, &recent].into_iter(), 10).is_empty());
@@ -575,9 +576,16 @@ fn debris_requires_actual_ship_losses_and_is_bounded() {
     battle.surviving_attacker.insert(Unit::probe(), 4);
     battle.scout_probes = 4;
     assert_eq!(destroyed_units(&battle), 2);
-    assert_eq!(debris_count(1), 1);
-    assert!(debris_count(64) > debris_count(1));
-    assert_eq!(debris_count(usize::MAX), 5);
+    let small = debris_visuals(DebrisSize::Small);
+    let medium = debris_visuals(DebrisSize::Medium);
+    let large = debris_visuals(DebrisSize::Large);
+    assert!(small.pieces < medium.pieces && medium.pieces < large.pieces);
+    assert!(small.angle_step < medium.angle_step && medium.angle_step < large.angle_step);
+    assert!(medium.angle_step * (medium.pieces - 1) as f32 > 0.17);
+    assert!(large.angle_step * (large.pieces - 1) as f32 > 0.43);
+    assert!(small.min_radius < medium.min_radius && medium.min_radius < large.min_radius);
+    assert!(small.min_diameter < medium.min_diameter);
+    assert!(medium.min_diameter < large.min_diameter);
     battle.combat_report = None;
     assert_eq!(destroyed_units(&battle), 0);
 }
@@ -807,7 +815,7 @@ fn debris_motion_stays_near_its_anchor_and_pauses_with_detail_animation() {
         let debris_drift = Vec2::splat(debris.amplitude).length();
         let offset = debris.origin - planet.position;
         assert!(offset.x < -planet.size() * 0.94, "debris must stay left of the planet");
-        assert!(offset.y.abs() < planet.size() * 0.16, "debris must use the open left corridor");
+        assert!(offset.y.abs() < planet.size() * 0.31, "debris must use the open left corridor");
         assert!(
             debris.origin.distance(phalanx_anchor)
                 > debris_radius + debris_drift + phalanx_radius + phalanx_drift,
@@ -864,16 +872,33 @@ fn zoom_and_age_disable_invisible_hit_targets() {
             Detail {
                 planet: 1,
                 opacity: 0.9,
-                debris_turn: Some(2),
+                debris_turn: Some((2, 3)),
             },
             Sprite::default(),
             Visibility::Hidden,
             Pickable::IGNORE,
         ))
         .id();
+    let hit_target = app
+        .world_mut()
+        .spawn((
+            DebrisHitTarget {
+                planet: 1,
+                site: DebrisSite {
+                    losses: 16,
+                    latest_turn: 2,
+                    seed: 73,
+                },
+            },
+            Visibility::Hidden,
+            Pickable::IGNORE,
+        ))
+        .id();
     app.update();
     assert_eq!(*app.world().get::<Visibility>(detail).unwrap(), Visibility::Inherited);
-    assert!(app.world().get::<Pickable>(detail).unwrap().is_hoverable);
+    assert!(!app.world().get::<Pickable>(detail).unwrap().is_hoverable);
+    assert_eq!(*app.world().get::<Visibility>(hit_target).unwrap(), Visibility::Inherited);
+    assert!(app.world().get::<Pickable>(hit_target).unwrap().is_hoverable);
     if let Projection::Orthographic(projection) =
         &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
     {
@@ -882,9 +907,46 @@ fn zoom_and_age_disable_invisible_hit_targets() {
     app.update();
     assert_eq!(*app.world().get::<Visibility>(detail).unwrap(), Visibility::Hidden);
     assert!(!app.world().get::<Pickable>(detail).unwrap().is_hoverable);
+    assert_eq!(*app.world().get::<Visibility>(hit_target).unwrap(), Visibility::Hidden);
+    assert!(!app.world().get::<Pickable>(hit_target).unwrap().is_hoverable);
     app.world_mut().resource_mut::<Settings>().turn = 5;
     app.update();
     assert_eq!(app.world().get::<Sprite>(detail).unwrap().color.alpha(), 0.0);
+}
+
+#[test]
+fn debris_art_is_not_the_hover_target() {
+    let planet = model().map.planets[0].clone();
+    let mut app = App::new();
+    spawn_debris(
+        &mut app.world_mut().commands(),
+        &planet,
+        &DebrisSite {
+            losses: 16,
+            latest_turn: 2,
+            seed: 73,
+        },
+        Handle::default(),
+        Vec2::splat(512.0),
+    );
+    app.world_mut().flush();
+
+    let debris = app
+        .world_mut()
+        .query_filtered::<(&Sprite, &Pickable), With<Debris>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    assert_eq!(debris.len(), debris_visuals(DebrisSize::Large).pieces);
+    assert!(debris.iter().all(|(_, pickable)| !pickable.is_hoverable));
+
+    let targets = app
+        .world_mut()
+        .query_filtered::<(&Sprite, &Pickable), With<DebrisHitTarget>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].0.color.alpha(), 0.0);
+    assert!(!targets[0].1.is_hoverable);
 }
 
 #[test]
@@ -985,16 +1047,26 @@ fn projection_reuses_entities_and_removes_expired_debris() {
             .iter(app.world())
             .collect::<Vec<_>>()
     };
+    let debris_targets = |app: &mut App| {
+        app.world_mut()
+            .query_filtered::<Entity, With<DebrisHitTarget>>()
+            .iter(app.world())
+            .collect::<Vec<_>>()
+    };
     let original = debris(&mut app);
-    assert_eq!(original.len(), 3);
+    assert_eq!(original.len(), debris_visuals(DebrisSize::Large).pieces);
+    let original_target = debris_targets(&mut app);
+    assert_eq!(original_target.len(), 1);
     app.update();
     assert_eq!(debris(&mut app), original);
+    assert_eq!(debris_targets(&mut app), original_target);
     app.world_mut().resource_mut::<Settings>().show_cells = false;
     app.update();
     assert_eq!(debris(&mut app), original);
     app.world_mut().resource_mut::<Settings>().turn = 5;
     app.update();
     assert!(debris(&mut app).is_empty());
+    assert!(debris_targets(&mut app).is_empty());
     assert_eq!(app.world().resource::<Player>().reports.len(), 1);
 }
 

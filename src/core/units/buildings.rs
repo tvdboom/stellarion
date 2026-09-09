@@ -37,6 +37,8 @@ pub enum Building {
     Terraformer,
     /// The orbital solar-satellite network.
     SolarSatellite,
+    /// Small orbital craft that recover resources from nearby wreckage and asteroid fields.
+    Recycler,
     /// The orbital command-relay network.
     CommandRelay,
     /// The sensor phalanx building.
@@ -114,7 +116,7 @@ impl Building {
     /// Highest construction level supported for upgradeable buildings.
     pub const MAX_LEVEL: usize = 5;
 
-    /// Returns the production-equivalent tier used when Probes reveal this building.
+    /// Returns the production-equivalent tier used by shared unit calculations.
     pub fn production(&self) -> usize {
         match self {
             Building::MetalMine | Building::CrystalMine | Building::DeuteriumSynthesizer => 1,
@@ -123,6 +125,21 @@ impl Building {
             Building::PlanetaryShield => 4,
             Building::Senate | Building::ColonialAdministration => 5,
             _ => 1,
+        }
+    }
+
+    /// Returns the Spy intelligence level needed to reveal this building.
+    ///
+    /// `None` marks public infrastructure that is visible without a Spy report.
+    pub fn intelligence_level(&self) -> Option<usize> {
+        match self {
+            Building::SolarSatellite => Some(1),
+            Building::Recycler => Some(2),
+            Building::SensorPhalanx => Some(2),
+            Building::CommandRelay => Some(3),
+            Building::JumpGate => Some(4),
+            Building::OrbitalRailgun => None,
+            _ => Some(self.production()),
         }
     }
 }
@@ -188,6 +205,10 @@ impl Description for Building {
             Building::SolarSatellite => {
                 "Solar Satellites collect stellar radiation in orbit and transmit power to the \
                 empire-wide grid."
+            },
+            Building::Recycler => {
+                "Recyclers dispatch small salvage craft from their planet. Each Recycler recovers \
+                a variable haul every turn from a nearby battle debris or asteroid field."
             },
             Building::CommandRelay => {
                 "An active Command Relay diverts undersized enemy Spy missions before combat and \
@@ -257,6 +278,7 @@ impl Price for Building {
             Building::Reactor => Resources::new(200, 100, 0),
             Building::Terraformer => Resources::new(300, 250, 100),
             Building::SolarSatellite => Resources::new(100, 150, 0),
+            Building::Recycler => Resources::new(250, 200, 100),
             Building::CommandRelay => Resources::new(300, 250, 250),
             Building::SensorPhalanx => Resources::new(250, 200, 150),
             Building::JumpGate => Resources::new(500, 300, 500),

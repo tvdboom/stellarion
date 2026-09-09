@@ -22,8 +22,8 @@ use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
     BG2_COLOR, HEALTH_COLOR, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    ORBITAL_RAILGUN_FIRE_ENERGY_COST, PROBES_PER_PRODUCTION_LEVEL, SHIELD_COLOR,
-    TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL, TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
+    SHIELD_COLOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
+    TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
 };
 use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
@@ -39,8 +39,8 @@ use crate::core::player::{PlanetInfo, Player};
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::simulation::{
-    orbital_railgun_destruction_basis_points, orbital_railgun_fire_cost, orbital_railgun_origins,
-    TurnCommand,
+    orbital_railgun_destruction_basis_points, orbital_railgun_fire_cost,
+    orbital_railgun_fire_energy_cost, orbital_railgun_origins, TurnCommand,
 };
 use crate::core::states::GameState;
 use crate::core::ui::aesthetics::Aesthetics;
@@ -124,6 +124,8 @@ pub struct UiState {
     pub(crate) abandon_confirmation: Option<PlanetId>,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
+    /// Optional orthographic scale approached while moving to a camera-only world focus.
+    pub(crate) focus_zoom: Option<f32>,
     pub to_selected: bool,
     pub shop: Shop,
     pub lab: (ResourceName, ResourceName),
@@ -622,149 +624,162 @@ fn draw_railgun_confirmation(
             );
 
             let mut action = None;
-            ui.scope_builder(
-                UiBuilder::new().max_rect(rect.shrink2(egui::vec2(34.0, 24.0))),
-                |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        ui.add_space(16.0);
-                        ui.label(
-                            RichText::new(format!(
-                                "Are you sure you want to shoot planet {target_name}?"
-                            ))
-                            .size(21.0)
-                            .strong()
-                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            const VERTICAL_INSET: f32 = 40.0;
+            const HEADING_TO_COST_GAP: f32 = 24.0;
+            const COST_TO_DETAILS_GAP: f32 = 24.0;
+            const DETAIL_LINE_GAP: f32 = 8.0;
+            const BUTTON_HEIGHT: f32 = 40.0;
+            const BUTTON_BOTTOM_INSET: f32 = 32.0;
+            let content_rect = rect.shrink2(egui::vec2(34.0, VERTICAL_INSET));
+            ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(
+                        RichText::new(format!(
+                            "Are you sure you want to shoot planet {target_name}?"
+                        ))
+                        .size(21.0)
+                        .strong()
+                        .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                    );
+                    ui.add_space(HEADING_TO_COST_GAP);
+                    let deuterium_amount = RichText::new(format_thousands(deuterium_cost))
+                        .size(20.0)
+                        .strong()
+                        .color(Color32::WHITE);
+                    let energy_amount = RichText::new(format_thousands(energy_cost))
+                        .size(20.0)
+                        .strong()
+                        .color(Color32::WHITE);
+                    let text_width = |text: RichText| {
+                        egui::WidgetText::from(text)
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Extend),
+                                f32::INFINITY,
+                                TextStyle::Body,
+                            )
+                            .size()
+                            .x
+                    };
+                    let row_width = 50.0
+                        + 8.0
+                        + text_width(deuterium_amount.clone())
+                        + 28.0
+                        + 50.0
+                        + 8.0
+                        + text_width(energy_amount.clone());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                        let (deuterium_icon, _) =
+                            ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
+                        ui.painter().image(
+                            images.get("deuterium"),
+                            deuterium_icon,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
                         );
-                        ui.add_space(16.0);
-                        let deuterium_amount = RichText::new(format_thousands(deuterium_cost))
-                            .size(20.0)
-                            .strong()
-                            .color(Color32::WHITE);
-                        let energy_amount = RichText::new(format_thousands(energy_cost))
-                            .size(20.0)
-                            .strong()
-                            .color(Color32::WHITE);
-                        let text_width = |text: RichText| {
-                            egui::WidgetText::from(text)
-                                .into_galley(
-                                    ui,
-                                    Some(egui::TextWrapMode::Extend),
-                                    f32::INFINITY,
-                                    TextStyle::Body,
-                                )
-                                .size()
-                                .x
-                        };
-                        let row_width = 50.0
-                            + 8.0
-                            + text_width(deuterium_amount.clone())
-                            + 28.0
-                            + 50.0
-                            + 8.0
-                            + text_width(energy_amount.clone());
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                            let (deuterium_icon, _) =
-                                ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
-                            ui.painter().image(
-                                images.get("deuterium"),
-                                deuterium_icon,
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                            ui.add_space(8.0);
-                            ui.label(deuterium_amount);
-                            ui.add_space(28.0);
-                            let (energy_icon, _) =
-                                ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
-                            ui.painter().image(
-                                images.get("energy"),
-                                energy_icon,
-                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                            ui.add_space(8.0);
-                            ui.label(energy_amount);
-                        });
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(format!("Orbital Railguns firing: {railgun_count}"))
-                                .size(18.0)
-                                .strong(),
+                        ui.add_space(8.0);
+                        ui.label(deuterium_amount);
+                        ui.add_space(28.0);
+                        let (energy_icon, _) =
+                            ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
+                        ui.painter().image(
+                            images.get("energy"),
+                            energy_icon,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            Color32::WHITE,
                         );
-                        ui.label(
-                            RichText::new(format!(
-                                "Destruction chance: {}%",
-                                chance_basis_points / 100,
-                            ))
+                        ui.add_space(8.0);
+                        ui.label(energy_amount);
+                    });
+                    ui.add_space(COST_TO_DETAILS_GAP);
+                    ui.label(
+                        RichText::new(format!("Orbital Railguns firing: {railgun_count}"))
                             .size(18.0)
                             .strong(),
-                        );
-                        ui.add_space(16.0);
-                        ui.scope(|ui| {
-                            let widgets = &mut ui.style_mut().visuals.widgets;
-                            for (visuals, fill, stroke) in [
-                                (
-                                    &mut widgets.inactive,
-                                    ABANDON_CONFIRMATION_BUTTON_FILL,
-                                    Color32::from_rgb(74, 99, 122),
-                                ),
-                                (
-                                    &mut widgets.hovered,
-                                    Color32::from_rgb(31, 47, 61),
-                                    Color32::from_rgb(123, 158, 188),
-                                ),
-                                (
-                                    &mut widgets.active,
-                                    Color32::from_rgb(39, 94, 123),
-                                    Color32::from_rgb(139, 183, 216),
-                                ),
-                            ] {
-                                visuals.bg_fill = fill;
-                                visuals.weak_bg_fill = fill;
-                                visuals.bg_stroke = Stroke::new(1.0, stroke);
-                                visuals.corner_radius = egui::CornerRadius::same(6);
-                                visuals.expansion = 0.0;
-                            }
+                    );
+                    ui.add_space(DETAIL_LINE_GAP);
+                    ui.label(
+                        RichText::new(format!(
+                            "Destruction chance: {}%",
+                            chance_basis_points / 100,
+                        ))
+                        .size(18.0)
+                        .strong(),
+                    );
+                });
 
-                            ui.horizontal(|ui| {
-                                const BUTTON_WIDTH: f32 = 96.0;
-                                const BUTTON_GAP: f32 = 12.0;
-                                let row_width = BUTTON_WIDTH * 2.0 + BUTTON_GAP;
-                                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                                let button = |label| {
-                                    egui::Button::new(
-                                        RichText::new(label)
-                                            .size(17.0)
-                                            .strong()
-                                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                                    )
-                                };
-                                if ui
-                                    .add_enabled_ui(has_deuterium, |ui| {
-                                        ui.add_sized([BUTTON_WIDTH, 36.0], button("Yes"))
-                                    })
-                                    .inner
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    action = Some(ConfirmationAction::Confirm);
-                                }
-                                if ui
-                                    .add_sized([BUTTON_WIDTH, 36.0], button("No"))
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    action = Some(ConfirmationAction::Cancel);
-                                }
-                            });
-                        });
+                let button_row_height = BUTTON_HEIGHT.max(ui.spacing().interact_size.y);
+                let button_row_rect = egui::Rect::from_min_max(
+                    egui::pos2(
+                        content_rect.left(),
+                        rect.bottom() - BUTTON_BOTTOM_INSET - button_row_height,
+                    ),
+                    egui::pos2(content_rect.right(), rect.bottom() - BUTTON_BOTTOM_INSET),
+                );
+                ui.scope_builder(UiBuilder::new().max_rect(button_row_rect), |ui| {
+                    ui.spacing_mut().interact_size.y = BUTTON_HEIGHT;
+                    let widgets = &mut ui.style_mut().visuals.widgets;
+                    for (visuals, fill, stroke) in [
+                        (
+                            &mut widgets.inactive,
+                            ABANDON_CONFIRMATION_BUTTON_FILL,
+                            Color32::from_rgb(74, 99, 122),
+                        ),
+                        (
+                            &mut widgets.hovered,
+                            Color32::from_rgb(31, 47, 61),
+                            Color32::from_rgb(123, 158, 188),
+                        ),
+                        (
+                            &mut widgets.active,
+                            Color32::from_rgb(39, 94, 123),
+                            Color32::from_rgb(139, 183, 216),
+                        ),
+                    ] {
+                        visuals.bg_fill = fill;
+                        visuals.weak_bg_fill = fill;
+                        visuals.bg_stroke = Stroke::new(1.0, stroke);
+                        visuals.corner_radius = egui::CornerRadius::same(6);
+                        visuals.expansion = 0.0;
+                    }
+
+                    ui.horizontal(|ui| {
+                        const BUTTON_WIDTH: f32 = 96.0;
+                        const BUTTON_GAP: f32 = 12.0;
+                        let row_width = BUTTON_WIDTH * 2.0 + BUTTON_GAP;
+                        ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                        ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                        let button = |label| {
+                            egui::Button::new(
+                                RichText::new(label)
+                                    .size(17.0)
+                                    .strong()
+                                    .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                            )
+                        };
+                        if ui
+                            .add_enabled_ui(has_deuterium, |ui| {
+                                ui.add_sized([BUTTON_WIDTH, BUTTON_HEIGHT], button("Yes"))
+                            })
+                            .inner
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            action = Some(ConfirmationAction::Confirm);
+                        }
+                        if ui
+                            .add_sized([BUTTON_WIDTH, BUTTON_HEIGHT], button("No"))
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            action = Some(ConfirmationAction::Cancel);
+                        }
                     });
-                },
-            );
+                });
+            });
             action
         });
 
@@ -1012,7 +1027,11 @@ fn draw_owned_worlds_widget(
 }
 
 /// Counts only controller intelligence already visible through the map and mission reports.
-fn known_planet_counts(map: &Map, player: &Player, missions: &[Mission]) -> HashMap<u64, usize> {
+pub(crate) fn known_planet_counts(
+    map: &Map,
+    player: &Player,
+    missions: &[Mission],
+) -> HashMap<u64, usize> {
     let mut counts = HashMap::new();
     for planet in map.planets.iter().filter(|planet| !planet.is_moon() && !planet.is_destroyed) {
         let controller = if planet.owned.is_some()
@@ -1226,7 +1245,7 @@ fn draw_mission_report_unit(
         }
     } else if report.mission.owner == player.id
         && side == Side::Defender
-        && report.scout_probes > (unit.production() - 1) * PROBES_PER_PRODUCTION_LEVEL
+        && unit.revealed_by_probes(report.scout_probes)
     {
         // Even if attacker lost combat, he can see enemy starting units with scouts.
         total.to_string()
@@ -1306,6 +1325,10 @@ const CRAWLER_SALVAGE_LABEL_VERTICAL_OFFSET: f32 = 6.0;
 const COMBAT_DETAILS_FOOTER_BOTTOM_GAP: f32 = 20.0;
 const CRAWLER_SALVAGE_RESOURCE_ORDER: [ResourceName; 3] =
     [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium];
+
+fn combat_report_shows_salvage(total: bool, round: usize, round_count: usize) -> bool {
+    total || round == round_count
+}
 
 /// Draws the final resources recovered by the defending Crawlers when that outcome is visible.
 fn draw_crawler_salvage(
@@ -1743,6 +1766,28 @@ fn energy_balance_color(energy: EnergyGrid) -> Color32 {
     }
 }
 
+fn projected_energy(map: &Map, player: &Player, action_demand: usize) -> EnergyGrid {
+    EnergyGrid::for_player_next_turn(player.id, map).with_action_demand(action_demand)
+}
+
+fn pending_railgun_energy_demand(
+    map: &Map,
+    player_id: crate::core::identity::PlayerId,
+    pending: &PendingTurnCommands,
+) -> usize {
+    pending
+        .commands
+        .iter()
+        .chain(&pending.queued_commands)
+        .find_map(|command| match command {
+            TurnCommand::FireOrbitalRailguns {
+                target,
+            } => Some(orbital_railgun_origins(map, player_id, *target).len()),
+            _ => None,
+        })
+        .map_or(0, orbital_railgun_fire_energy_cost)
+}
+
 fn energy_world_breakdown(map: &Map, player: &Player) -> Vec<(String, EnergyGrid)> {
     map.planets
         .iter()
@@ -1770,14 +1815,14 @@ fn next_turn_planet(planet: &Planet) -> Planet {
     projected
 }
 
-fn resource_production(map: &Map, player: &Player) -> Resources {
+fn resource_production(map: &Map, player: &Player, action_demand: usize) -> Resources {
     let raw = map
         .planets
         .iter()
         .filter(|planet| player.owns(planet))
         .map(|planet| next_turn_planet(planet).resource_production())
         .sum();
-    EnergyGrid::for_player_next_turn(player.id, map).scale_resources(raw)
+    projected_energy(map, player, action_demand).scale_resources(raw)
 }
 
 fn terraformer_modifier_percent(planet: &Planet, resource: ResourceName) -> i32 {
@@ -1803,8 +1848,9 @@ fn resource_world_breakdown(
     map: &Map,
     player: &Player,
     resource: ResourceName,
+    action_demand: usize,
 ) -> Vec<ResourceWorldProduction> {
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
+    let energy = projected_energy(map, player, action_demand);
     let mut accumulated_raw = 0usize;
     let mut accumulated_scaled = 0usize;
     map.planets
@@ -1829,9 +1875,15 @@ fn resource_world_breakdown(
         .collect()
 }
 
-fn draw_resource_world_breakdown(ui: &mut Ui, map: &Map, player: &Player, resource: ResourceName) {
+fn draw_resource_world_breakdown(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    resource: ResourceName,
+    action_demand: usize,
+) {
     ui.spacing_mut().item_spacing.y = 2.0;
-    for world in resource_world_breakdown(map, player, resource) {
+    for world in resource_world_breakdown(map, player, resource, action_demand) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.small(format!("{}: +{}", world.name, world.amount));
@@ -1855,9 +1907,10 @@ fn draw_resource_production_row(
     map: &Map,
     player: &Player,
     resource: ResourceName,
+    action_demand: usize,
 ) -> Response {
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
-    let production = resource_production(map, player).get(&resource);
+    let energy = projected_energy(map, player, action_demand);
+    let production = resource_production(map, player, action_demand).get(&resource);
     let response = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -1877,7 +1930,7 @@ fn draw_resource_production_row(
     if response.hovered() {
         ui.add_space(2.0);
         ui.indent("Production", |ui| {
-            draw_resource_world_breakdown(ui, map, player, resource);
+            draw_resource_world_breakdown(ui, map, player, resource, action_demand);
         });
         ui.add_space(2.0);
     }
@@ -1896,8 +1949,13 @@ fn draw_energy_world_breakdown(ui: &mut Ui, map: &Map, player: &Player) {
     }
 }
 
-fn draw_energy_production_row(ui: &mut Ui, map: &Map, player: &Player) -> Response {
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
+fn draw_energy_production_row(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    action_demand: usize,
+) -> Response {
+    let energy = projected_energy(map, player, action_demand);
     let response = ui
         .small(format!("Production: {}", energy_balance_text(energy)))
         .on_hover_cursor(CursorIcon::Default);
@@ -1905,13 +1963,25 @@ fn draw_energy_production_row(ui: &mut Ui, map: &Map, player: &Player) -> Respon
         ui.add_space(2.0);
         ui.indent("Production", |ui| {
             draw_energy_world_breakdown(ui, map, player);
+            if action_demand > 0 {
+                ui.colored_label(
+                    Color32::WHITE,
+                    RichText::new(format!("Railgun fire: -{action_demand}")).small(),
+                );
+            }
         });
         ui.add_space(2.0);
     }
     response
 }
 
-fn draw_energy_tooltip(ui: &mut Ui, map: &Map, player: &Player, images: &ImageIds) -> egui::Rect {
+fn draw_energy_tooltip(
+    ui: &mut Ui,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+    action_demand: usize,
+) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get("energy"), [130.0, 90.0]).rect;
         ui.vertical(|ui| {
@@ -1923,7 +1993,7 @@ fn draw_energy_tooltip(ui: &mut Ui, map: &Map, player: &Player, images: &ImageId
                 ui.style_mut().interaction.selectable_labels = true;
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    draw_energy_production_row(ui, map, player);
+                    draw_energy_production_row(ui, map, player, action_demand);
                 });
                 ui.style_mut().interaction.selectable_labels = labels_selectable;
                 ui.add_space(3.0);
@@ -1956,6 +2026,7 @@ fn resource_bar_content_width(
     player: &Player,
     compact: bool,
     scale: f32,
+    action_demand: usize,
 ) -> f32 {
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
     let mut width = resource_summary_width(ui, "TURN", &settings.turn.to_string(), compact, scale)
@@ -1975,7 +2046,7 @@ fn resource_bar_content_width(
             scale,
         );
     }
-    let energy = EnergyGrid::for_player_next_turn(player.id, map);
+    let energy = projected_energy(map, player, action_demand);
     width += resource_summary_width(ui, "ENERGY", &energy_balance_text(energy), compact, scale);
 
     width + resource_bar_gap(compact, scale) * 5.0
@@ -1987,6 +2058,7 @@ fn draw_resource_tooltip(
     map: &Map,
     player: &Player,
     images: &ImageIds,
+    action_demand: usize,
 ) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
@@ -1997,7 +2069,7 @@ fn draw_resource_tooltip(
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.style_mut().interaction.selectable_labels = true;
-                draw_resource_production_row(ui, map, player, resource);
+                draw_resource_production_row(ui, map, player, resource, action_demand);
             });
             ui.add_space(3.0);
             ui.small(resource.description());
@@ -2016,6 +2088,7 @@ fn draw_resources(
     images: &ImageIds,
     compact: bool,
     scale: f32,
+    action_demand: usize,
 ) {
     let gap = resource_bar_gap(compact, scale);
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
@@ -2087,7 +2160,7 @@ fn draw_resources(
 
             if settings.show_hover {
                 response.on_hover_ui(|ui| {
-                    draw_resource_tooltip(ui, resource, map, player, images);
+                    draw_resource_tooltip(ui, resource, map, player, images, action_demand);
                 });
             }
 
@@ -2097,7 +2170,7 @@ fn draw_resources(
         }
 
         draw_resource_gap(ui, gap, scale);
-        let energy = EnergyGrid::for_player_next_turn(player.id, map);
+        let energy = projected_energy(map, player, action_demand);
         let response = draw_resource_summary_with_value_color(
             ui,
             images.get("energy"),
@@ -2109,7 +2182,7 @@ fn draw_resources(
         );
         if settings.show_hover {
             response.on_hover_ui(|ui| {
-                draw_energy_tooltip(ui, map, player, images);
+                draw_energy_tooltip(ui, map, player, images, action_demand);
             });
         }
     });
@@ -2122,6 +2195,7 @@ fn draw_resources_widget(
     map: &Map,
     player: &Player,
     images: &ImageIds,
+    action_demand: usize,
 ) -> egui::Rect {
     let scale = strategic_hud_scale(context.content_rect().size());
     egui::Area::new("stellarion_resources".into())
@@ -2141,9 +2215,16 @@ fn draw_resources_widget(
                     - 2.0 * RESOURCE_BAR_SIDE_INSET * scale
                     - frame_width)
                     .max(1.0);
-                let compact =
-                    resource_bar_content_width(ui, settings, map, player, false, scale) > max_width;
-                draw_resources(ui, settings, map, player, images, compact, scale);
+                let compact = resource_bar_content_width(
+                    ui,
+                    settings,
+                    map,
+                    player,
+                    false,
+                    scale,
+                    action_demand,
+                ) > max_width;
+                draw_resources(ui, settings, map, player, images, compact, scale, action_demand);
             });
         })
         .response
@@ -3049,7 +3130,13 @@ fn draw_combat_report(
             |ui| {
                 // Match the defender grid's first unit rather than the divider itself.
                 ui.add_space(60. + attacker_w);
-                draw_crawler_salvage(ui, report, player, images);
+                if combat_report_shows_salvage(
+                    state.combat_report_total,
+                    state.combat_report_round,
+                    combat.rounds.len(),
+                ) {
+                    draw_crawler_salvage(ui, report, player, images);
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(40.);
@@ -3357,7 +3444,10 @@ pub fn draw_ui(
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
     mut pending: ResMut<PendingTurnCommands>,
-    session: Res<MultiplayerSession>,
+    (session, end_game_presentation): (
+        Res<MultiplayerSession>,
+        Res<crate::core::turns::EndGamePresentation>,
+    ),
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -3368,6 +3458,11 @@ pub fn draw_ui(
         Local<PlanetPanelHoverHold>,
     ),
 ) {
+    if end_game_presentation.is_pending() {
+        planet_panel_slide.hide();
+        planet_panel_hover_hold.clear();
+        return;
+    }
     if game_state.get().is_modal_menu() {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
@@ -3375,12 +3470,20 @@ pub fn draw_ui(
     }
 
     let (width, height) = (window.width(), window.height());
+    let railgun_energy_demand = pending_railgun_energy_demand(&map, player.id, &pending);
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
             draw_enemy_players_widget(context, &session, &player, &map, &missions.0);
             draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
-            draw_resources_widget(context, &settings, &map, &player, &images);
+            draw_resources_widget(
+                context,
+                &settings,
+                &map,
+                &player,
+                &images,
+                railgun_energy_demand,
+            );
         }
     }
 
@@ -3662,7 +3765,7 @@ pub fn draw_ui(
             // Hide shop if hovering another planet
             if state.planet_hover.is_none_or(|planet_id| planet_id == id) {
                 let solar_band = map.solar_band(id);
-                let next_turn_energy = EnergyGrid::for_player_next_turn(player.id, &map);
+                let next_turn_energy = projected_energy(&map, &player, railgun_energy_demand);
                 let senate_level_limit = Player::senate_level_limit(&map, settings.p_colonizable);
                 let planet = map.get_mut(id);
 
@@ -3756,7 +3859,8 @@ pub fn draw_ui(
             state.railgun_confirmation = None;
         } else {
             let target_name = map.get(target).name.clone();
-            let cost = orbital_railgun_fire_cost();
+            let cost = orbital_railgun_fire_cost(origins.len());
+            let energy_cost = orbital_railgun_fire_energy_cost(origins.len());
             let has_deuterium = player.resources.deuterium >= cost.deuterium;
             let chance = orbital_railgun_destruction_basis_points(&map, &origins);
             if let Ok(context) = contexts.ctx_mut() {
@@ -3766,7 +3870,7 @@ pub fn draw_ui(
                     &target_name,
                     origins.len(),
                     cost.deuterium,
-                    ORBITAL_RAILGUN_FIRE_ENERGY_COST,
+                    energy_cost,
                     chance,
                     has_deuterium,
                 ) {

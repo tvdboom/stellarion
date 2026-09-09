@@ -391,6 +391,34 @@ fn public_planet_toast_centers_without_opening_hidden_information() {
 }
 
 #[test]
+fn railgun_toast_focuses_and_fully_zooms_out_even_when_the_target_was_destroyed() {
+    let mut model = GameModel::new([10; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| planet.is_moon())
+        .map(|planet| planet.id)
+        .expect("the generated map should contain a moon");
+    model.map.get_mut(target).is_destroyed = true;
+    let mut state = UiState {
+        planet_selected: Some(model.players[0].home_planet),
+        mission: true,
+        combat_report: Some(3),
+        ..default()
+    };
+
+    assert!(focus_railgun_target(target, &model.map, &mut state));
+    assert_eq!(state.planet_selected, None);
+    assert_eq!(state.focus_planet, Some(target));
+    assert_eq!(state.focus_zoom, Some(MAX_ZOOM));
+    assert!(state.to_selected);
+    assert!(!state.mission);
+    assert_eq!(state.combat_report, None);
+}
+
+#[test]
 fn enemy_detection_toast_opens_the_enemy_missions_panel() {
     let mut state = UiState {
         planet_selected: Some(4),

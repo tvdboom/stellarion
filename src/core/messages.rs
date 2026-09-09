@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::core::audio::PlayAudioMsg;
-use crate::core::constants::MESSAGE_DURATION;
+use crate::core::constants::{MAX_ZOOM, MESSAGE_DURATION};
 use crate::core::map::model::Map;
 use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::select_planet;
@@ -44,6 +44,8 @@ pub enum MessageAction {
     FocusColony(PlanetId),
     /// Centers the strategic map on a public world without opening its information panel.
     FocusPlanet(PlanetId),
+    /// Centers the strategic map on a Railgun target and zooms out as far as possible.
+    FocusRailgunTarget(PlanetId),
 }
 
 /// Requests a transient notification.
@@ -131,7 +133,11 @@ impl Messages {
                 || {
                     if matches!(
                         message.action,
-                        Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+                        Some(
+                            MessageAction::FocusColony(_)
+                                | MessageAction::FocusPlanet(_)
+                                | MessageAction::FocusRailgunTarget(_)
+                        )
                     ) {
                         10.0
                     } else {
@@ -205,11 +211,18 @@ fn check_messages(
             Some(MessageAction::FocusPlanet(id)) => map
                 .as_ref()
                 .is_some_and(|map| map.try_get(id).is_some_and(|planet| !planet.is_destroyed)),
+            Some(MessageAction::FocusRailgunTarget(id)) => {
+                map.as_ref().is_some_and(|map| map.try_get(id).is_some())
+            },
             _ => true,
         };
         if matches!(
             message.action,
-            Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+            Some(
+                MessageAction::FocusColony(_)
+                    | MessageAction::FocusPlanet(_)
+                    | MessageAction::FocusRailgunTarget(_)
+            )
         ) {
             if !in_game || !actionable_planet_is_valid {
                 return false;
@@ -252,6 +265,13 @@ fn check_messages(
                     if playing {
                         if let Some(map) = &map {
                             focus_planet(planet_id, map, state);
+                        }
+                    }
+                },
+                MessageAction::FocusRailgunTarget(planet_id) => {
+                    if playing {
+                        if let Some(map) = &map {
+                            focus_railgun_target(planet_id, map, state);
                         }
                     }
                 },
@@ -307,7 +327,11 @@ fn draw_notifications(
                 if !playing
                     && matches!(
                         message.action,
-                        Some(MessageAction::FocusColony(_) | MessageAction::FocusPlanet(_))
+                        Some(
+                            MessageAction::FocusColony(_)
+                                | MessageAction::FocusPlanet(_)
+                                | MessageAction::FocusRailgunTarget(_)
+                        )
                     )
                 {
                     continue;
@@ -371,6 +395,21 @@ fn focus_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
     };
     state.planet_selected = None;
     state.focus_planet = Some(planet.id);
+    state.focus_zoom = None;
+    state.to_selected = true;
+    state.mission = false;
+    state.combat_report = None;
+    true
+}
+
+/// Centers and fully zooms out on a Railgun target, including a destroyed world.
+fn focus_railgun_target(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
+    let Some(planet) = map.try_get(planet_id) else {
+        return false;
+    };
+    state.planet_selected = None;
+    state.focus_planet = Some(planet.id);
+    state.focus_zoom = Some(MAX_ZOOM);
     state.to_selected = true;
     state.mission = false;
     state.combat_report = None;

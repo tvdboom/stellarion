@@ -91,10 +91,10 @@ pub const PHALANX_DISTANCE: f32 = 1.0;
 pub const RADAR_DISTANCE: f32 = 1.2;
 /// Orbital-railgun reach granted per completed level, measured in AU.
 pub const ORBITAL_RAILGUN_RANGE_PER_LEVEL: f32 = 2.0;
-/// Deuterium consumed by one synchronized Orbital Railgun strike.
+/// Deuterium consumed by each Orbital Railgun participating in a synchronized strike.
 pub const ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST: usize = 1_000;
-/// Free empire-grid capacity required to fire an Orbital Railgun strike.
-pub const ORBITAL_RAILGUN_FIRE_ENERGY_COST: usize = 10;
+/// One-turn empire-grid demand added by each Orbital Railgun that fires.
+pub const ORBITAL_RAILGUN_FIRE_ENERGY_COST: usize = 5;
 /// Empire-grid demand added by every completed Orbital Railgun level.
 pub const ORBITAL_RAILGUN_ENERGY_PER_LEVEL: usize = 4;
 /// Hull points repaired by one Repair Truck after each round.

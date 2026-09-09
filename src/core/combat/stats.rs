@@ -15,6 +15,8 @@ pub enum CombatStats {
     Damage,
     /// The production value.
     Production,
+    /// The Spy intelligence requirement.
+    Intelligence,
     /// The speed value.
     Speed,
     /// The fuel consumption value.
@@ -29,9 +31,13 @@ impl Description for CombatStats {
         match self {
             CombatStats::Production => {
                 "\
-                Production cost of the unit. The production cost also determines the minimum level \
-                of the building required to build it, as well as the minimum level a Sensor \
-                Phalanx must have to see it, and the jump cost it has through a Jump Gate."
+                Production cost of the unit. The production cost determines the minimum level \
+                of the building required to build it, the minimum level a Sensor Phalanx must have \
+                to see it, the jump cost it has through a Jump Gate, and the minimum intelligence \
+                level an enemy Spy mission needs to see it."
+            },
+            CombatStats::Intelligence => {
+                "The minimum intelligence level required for an enemy Spy mission to see structure."
             },
             CombatStats::Hull => "The amount of damage a unit can take before being destroyed.",
             CombatStats::Shield => {

@@ -330,6 +330,7 @@ fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
         Unit::orbitals(),
         vec![
             Unit::Building(Building::SolarSatellite),
+            Unit::Building(Building::Recycler),
             Unit::Building(Building::SensorPhalanx),
             Unit::Building(Building::CommandRelay),
             Unit::Building(Building::JumpGate),
@@ -341,7 +342,7 @@ fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
         assert_eq!(purchase_limit(player, planet, orbital, Building::MAX_LEVEL).unwrap(), 1);
         planet.buy.push(orbital);
     }
-    assert_eq!(planet.buy.len(), 6);
+    assert_eq!(planet.buy.len(), 7);
     assert!(purchase_limit(
         player,
         planet,

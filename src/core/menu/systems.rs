@@ -13,6 +13,7 @@ use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
 use crate::core::settings::Settings;
 use crate::core::simulation::{GameRules, MatchStatus, MAX_MULTIPLAYER_PLAYERS};
 use crate::core::states::{AppState, AudioState, GameState};
+use crate::core::turns::EndGamePresentation;
 use crate::multiplayer::client::{
     ConnectionIndicator, ConnectionStatus, MultiplayerForm, MultiplayerRequest, MultiplayerSession,
 };
@@ -32,6 +33,40 @@ const FORM_TITLE_GAP: f32 = 28.0;
 const FORM_ACTION_GAP: f32 = 24.0;
 const MAIN_MENU_ACTION_COUNT: usize =
     4 + cfg!(debug_assertions) as usize + cfg!(not(target_arch = "wasm32")) as usize;
+const END_GAME_OVERLAY_FADE_SECONDS: f32 = 0.65;
+
+/// Opacity timer reset whenever the terminal result overlay opens.
+#[derive(Resource)]
+pub(crate) struct EndGameOverlayFade(Timer);
+
+impl Default for EndGameOverlayFade {
+    fn default() -> Self {
+        let mut timer = Timer::from_seconds(END_GAME_OVERLAY_FADE_SECONDS, TimerMode::Once);
+        let duration = timer.duration();
+        timer.set_elapsed(duration);
+        Self(timer)
+    }
+}
+
+/// Starts the terminal overlay fully transparent.
+pub(crate) fn begin_end_game_overlay(mut fade: ResMut<EndGameOverlayFade>) {
+    fade.0.reset();
+}
+
+fn end_game_overlay_alpha(elapsed: f32) -> f32 {
+    let progress = (elapsed / END_GAME_OVERLAY_FADE_SECONDS).clamp(0.0, 1.0);
+    progress * progress * (3.0 - 2.0 * progress)
+}
+
+fn local_end_game_heading(session: &MultiplayerSession) -> &'static str {
+    let local_player = session.membership.as_ref().map(|member| member.player_id);
+    let winner = session.active_game.as_ref().and_then(|game| game.persisted.state.winner());
+    if winner.is_some() && winner == local_player {
+        "You won"
+    } else {
+        "You lost"
+    }
+}
 
 /// Spawns the lightweight menu background; gameplay assets are not requested here.
 pub fn setup_menu(mut commands: Commands, assets: Res<WorldAssets>) {
@@ -1822,6 +1857,9 @@ fn settings_choice_rows(
 pub fn draw_game_overlay(
     mut contexts: EguiContexts,
     game_state: Res<State<GameState>>,
+    end_game_presentation: Option<Res<EndGamePresentation>>,
+    time: Option<Res<Time>>,
+    end_game_fade: Option<ResMut<EndGameOverlayFade>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     mut next_app_state: ResMut<NextState<AppState>>,
     mut settings: ResMut<Settings>,
@@ -1829,12 +1867,18 @@ pub fn draw_game_overlay(
     mut requests: MessageWriter<MultiplayerRequest>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
 ) {
-    if matches!(*game_state.get(), GameState::Playing | GameState::Combat) {
+    if *game_state.get() == GameState::Combat {
         return;
     }
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
+    if *game_state.get() == GameState::Playing {
+        if end_game_presentation.as_deref().is_some_and(EndGamePresentation::is_pending) {
+            block_gameplay_pointer(context);
+        }
+        return;
+    }
     if game_state.get().is_modal_menu() {
         block_gameplay_pointer(context);
     }
@@ -1847,6 +1891,17 @@ pub fn draw_game_overlay(
         .order(egui::Order::Foreground)
         .show(context, |ui| {
             apply_menu_style(ui);
+            if *game_state.get() == GameState::EndGame {
+                if let (Some(time), Some(mut end_game_fade)) = (time.as_deref(), end_game_fade) {
+                    end_game_fade.0.tick(time.delta());
+                    ui.set_opacity(end_game_overlay_alpha(end_game_fade.0.elapsed_secs()));
+                    if !end_game_fade.0.is_finished() {
+                        context.request_repaint();
+                    }
+                } else {
+                    ui.set_opacity(1.0);
+                }
+            }
             ui.set_width(content_width);
             ui.vertical_centered(|ui| match game_state.get() {
                 GameState::GameMenu => {
@@ -1881,39 +1936,7 @@ pub fn draw_game_overlay(
                     main_menu_button(ui, "Back", || next_game_state.set(GameState::GameMenu));
                 },
                 GameState::EndGame => {
-                    ui.heading(egui::RichText::new("Game finished").size(36.0));
-                    if let Some(game) = &session.active_game {
-                        if let Some(winner) = game.persisted.state.winner() {
-                            let name = session.player_name(winner).unwrap_or("Unknown player");
-                            let reason =
-                                if game.persisted.state.territorial_winner() == Some(winner) {
-                                    "territorial control"
-                                } else {
-                                    "elimination"
-                                };
-                            let font_id = egui::TextStyle::Body.resolve(ui.style());
-                            let mut announcement = egui::text::LayoutJob::default();
-                            announcement.append(
-                                name,
-                                0.0,
-                                egui::TextFormat {
-                                    font_id: font_id.clone(),
-                                    color: session.player_color(winner).color().to_color32(),
-                                    ..default()
-                                },
-                            );
-                            announcement.append(
-                                &format!(" wins by {reason}."),
-                                0.0,
-                                egui::TextFormat {
-                                    font_id,
-                                    color: ui.visuals().text_color(),
-                                    ..default()
-                                },
-                            );
-                            ui.label(announcement);
-                        }
-                    }
+                    ui.heading(egui::RichText::new(local_end_game_heading(&session)).size(36.0));
                     ui.add_space(28.0);
                     main_menu_button(ui, "Spectate", || next_game_state.set(GameState::Playing));
                     main_menu_button(ui, "Return to Main Menu", || {

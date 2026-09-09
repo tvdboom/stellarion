@@ -86,6 +86,34 @@ fn missing_rapid_fire_probability_stops_shooting() {
 }
 
 #[test]
+fn antiballistic_missiles_fire_one_at_a_time_and_stop_after_each_interception() {
+    let mut defenders = (1..=4)
+        .map(|id| CombatUnit {
+            id,
+            unit: Unit::antiballistic_missile(),
+            hull: Unit::antiballistic_missile().hull(),
+            shield: Unit::antiballistic_missile().shield(),
+            repairs: Vec::new(),
+            shots: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut used = Vec::new();
+    let mut rolls = [0.75, 0.25, 0.75, 0.25].into_iter();
+
+    assert!(intercept_incoming_missile(&mut defenders, &mut used, || rolls.next().unwrap()));
+    assert_eq!(used, [1, 2]);
+    assert_eq!(defenders.iter().map(|unit| unit.shots.len()).collect::<Vec<_>>(), [1, 1, 0, 0]);
+
+    assert!(intercept_incoming_missile(&mut defenders, &mut used, || rolls.next().unwrap()));
+    assert_eq!(used, [1, 2, 3, 4]);
+    assert_eq!(defenders.iter().map(|unit| unit.shots.len()).collect::<Vec<_>>(), [1, 1, 1, 1]);
+
+    assert!(!intercept_incoming_missile(&mut defenders, &mut used, || {
+        panic!("no roll should be made after every interceptor has been used")
+    }));
+}
+
+#[test]
 fn overloaded_planetary_shield_enters_combat_with_its_level_scaled_bonus() {
     let mut destination = Planet::new(1, "Shield world".into(), Vec2::X, false, 1.0);
     destination.owned = Some(2);

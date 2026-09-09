@@ -552,6 +552,15 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
 }
 
 #[test]
+fn crawler_salvage_is_shown_only_for_totals_or_the_last_round() {
+    assert!(combat_report_shows_salvage(true, 1, 6));
+    assert!(combat_report_shows_salvage(false, 6, 6));
+    for round in 1..6 {
+        assert!(!combat_report_shows_salvage(false, round, 6));
+    }
+}
+
+#[test]
 fn world_shortcuts_follow_acquisition_order_with_home_first() {
     let model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
@@ -674,7 +683,7 @@ fn public_strategic_structures_reveal_and_extend_known_enemy_owner_counts() {
 }
 
 #[test]
-fn spy_reports_reveal_planet_buildings_one_intelligence_tier_at_a_time() {
+fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     origin.owned = Some(1);
     origin.controlled = Some(1);
@@ -694,8 +703,16 @@ fn spy_reports_reveal_planet_buildings_one_intelligence_tier_at_a_time() {
         (Building::PlanetaryShield, 4),
         (Building::Senate, 5),
         (Building::ColonialAdministration, 5),
+        (Building::SolarSatellite, 1),
+        (Building::SensorPhalanx, 2),
+        (Building::CommandRelay, 3),
+        (Building::JumpGate, 4),
     ];
-    target.army = tiers.iter().map(|(building, _)| (Unit::Building(*building), 1)).collect();
+    target.army = tiers
+        .iter()
+        .map(|(building, _)| (Unit::Building(*building), 1))
+        .chain([(Unit::Building(Building::OrbitalRailgun), 1), (Unit::space_dock(), 1)])
+        .collect();
 
     for (returning_probes, visible_tier) in [(5, 1), (6, 2), (11, 3), (16, 4), (21, 5)] {
         let mission = Mission::new_with_id(
@@ -736,7 +753,67 @@ fn spy_reports_reveal_planet_buildings_one_intelligence_tier_at_a_time() {
                 "{building:?} visibility with {returning_probes} returning Probes"
             );
         }
+        for public in [Unit::Building(Building::OrbitalRailgun), Unit::space_dock()] {
+            assert_eq!(
+                known.army.amount(&public),
+                1,
+                "{public:?} should remain public with {returning_probes} returning Probes"
+            );
+        }
     }
+}
+
+#[test]
+fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 220.0));
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let intelligence = egui::TextureId::User(1);
+    let images = ImageIds(HashMap::from([("intelligence".into(), intelligence)]));
+    let unit = Unit::Building(Building::SensorPhalanx);
+    let input = egui::RawInput {
+        screen_rect: Some(viewport),
+        ..default()
+    };
+
+    let mut target = egui::Rect::NOTHING;
+    let mut output = context.run_ui(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            target = shop::draw_intelligence_stat(ui, &unit, &images).rect;
+            shop::draw_stat_hover(ui, &CombatStats::Intelligence, &images);
+        });
+    });
+    output.textures_delta.clear();
+    assert!(has_text(&output.shapes, "2"));
+    assert_eq!(images.get("intelligence"), intelligence);
+    assert!(target.width() >= 180.0 && target.height() >= 45.0);
+    assert!(has_text(&output.shapes, "Intelligence"));
+    assert!(has_text(
+        &output.shapes,
+        "The minimum intelligence level required for an enemy Spy mission to see this structure."
+    ));
+    assert_eq!(
+        Unit::Building(Building::OrbitalRailgun).get_stat(&CombatStats::Intelligence),
+        "---"
+    );
+    assert_eq!(Unit::space_dock().get_stat(&CombatStats::Intelligence), "---");
+}
+
+#[test]
+fn intelligence_stat_leaves_space_before_the_next_separator() {
+    let context = egui::Context::default();
+    let images = ImageIds(HashMap::from([("intelligence".into(), egui::TextureId::User(1))]));
+    let unit = Unit::Building(Building::SensorPhalanx);
+    let mut stat = egui::Rect::NOTHING;
+    let mut separator = egui::Rect::NOTHING;
+
+    let mut output = context.run_ui(Default::default(), |ui| {
+        stat = shop::draw_intelligence_stat(ui, &unit, &images).rect;
+        separator = ui.separator().rect;
+    });
+    output.textures_delta.clear();
+
+    assert!(separator.top() - stat.bottom() >= 12.0);
 }
 
 #[test]
@@ -1292,7 +1369,7 @@ fn strategic_hud_panels_scale_with_viewports() {
 
         let mut warmup = context.run_ui(input(), |context| {
             draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
-            draw_resources_widget(context, &settings, &map, &player, &images);
+            draw_resources_widget(context, &settings, &map, &player, &images, 0);
         });
         warmup.textures_delta.clear();
 
@@ -1307,7 +1384,7 @@ fn strategic_hud_panels_scale_with_viewports() {
                 &mut settings,
                 &images,
             );
-            resources = draw_resources_widget(context, &settings, &map, &player, &images);
+            resources = draw_resources_widget(context, &settings, &map, &player, &images, 0);
         });
         output.textures_delta.clear();
 
@@ -1389,13 +1466,13 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     };
 
     let mut warmup = context.run_ui(input(), |context| {
-        draw_resources_widget(context, &settings, &map, &player, &images);
+        draw_resources_widget(context, &settings, &map, &player, &images, 0);
     });
     warmup.textures_delta.clear();
 
     let mut panel = egui::Rect::NOTHING;
     let mut output = context.run_ui(input(), |context| {
-        panel = draw_resources_widget(context, &settings, &map, &player, &images);
+        panel = draw_resources_widget(context, &settings, &map, &player, &images, 0);
     });
     output.textures_delta.clear();
 
@@ -1522,7 +1599,7 @@ fn queued_construction_immediately_changes_the_top_bar_energy_balance() {
     let player = &model.players[0];
 
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resources(ui, &Settings::default(), &model.map, player, &images, false, 1.0);
+        draw_resources(ui, &Settings::default(), &model.map, player, &images, false, 1.0, 0);
     });
     output.textures_delta.clear();
 
@@ -1530,6 +1607,68 @@ fn queued_construction_immediately_changes_the_top_bar_energy_balance() {
     assert_eq!(EnergyGrid::for_player_next_turn(player.id, &model.map).balance(), -1);
     assert!(has_text(&output.shapes, "-1"));
     assert_eq!(text_color(&output.shapes, "-1"), Color32::RED);
+}
+
+#[test]
+fn committed_railguns_immediately_reduce_top_bar_energy_until_the_draft_resets() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let images = ImageIds(HashMap::from([
+        ("turn".to_string(), egui::TextureId::User(1)),
+        ("owned".to_string(), egui::TextureId::User(2)),
+        ("metal".to_string(), egui::TextureId::User(3)),
+        ("crystal".to_string(), egui::TextureId::User(4)),
+        ("deuterium".to_string(), egui::TextureId::User(5)),
+        ("energy".to_string(), egui::TextureId::User(6)),
+    ]));
+    let mut model = crate::core::simulation::GameModel::new([49; 32], Default::default()).unwrap();
+    let player_id = model.players[0].id;
+    let first = model.players[0].home_planet;
+    let worlds = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && planet.owned.is_none())
+        .map(|planet| planet.id)
+        .take(2)
+        .collect::<Vec<_>>();
+    let second = worlds[0];
+    let target = worlds[1];
+    model.map.get_mut(second).colonize(player_id);
+    let target_position = model.map.get(target).position;
+    for (index, origin) in [first, second].into_iter().enumerate() {
+        let planet = model.map.get_mut(origin);
+        planet.position = target_position + Vec2::X * Planet::SIZE * (index as f32 + 1.0);
+        planet.army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    }
+
+    let mut pending = PendingTurnCommands::default();
+    pending.reset(model.turn);
+    assert!(pending.push(TurnCommand::FireOrbitalRailguns {
+        target
+    }));
+    let action_demand = pending_railgun_energy_demand(&model.map, player_id, &pending);
+    assert_eq!(action_demand, 10);
+    let expected =
+        energy_balance_text(projected_energy(&model.map, &model.players[0], action_demand));
+
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_resources(
+            ui,
+            &Settings::default(),
+            &model.map,
+            &model.players[0],
+            &images,
+            false,
+            1.0,
+            action_demand,
+        );
+    });
+    output.textures_delta.clear();
+    assert!(has_text(&output.shapes, &expected));
+
+    pending.reset(model.turn.saturating_add(1));
+    assert_eq!(pending_railgun_energy_demand(&model.map, player_id, &pending), 0);
 }
 
 #[test]
@@ -1568,7 +1707,7 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
     );
     assert!(energy.iter().all(|(name, _)| !name.contains("(Moon)")));
 
-    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal);
+    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal, 0);
     assert_eq!(
         metal.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
         ["Home", "Colony"]
@@ -1591,7 +1730,7 @@ fn energy_tooltip_shows_only_the_next_turn_net_balance() {
     let player = &model.players[0];
 
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_energy_tooltip(ui, &model.map, player, &images);
+        draw_energy_tooltip(ui, &model.map, player, &images, 0);
     });
     output.textures_delta.clear();
 
@@ -1606,7 +1745,7 @@ fn energy_tooltip_shows_only_the_next_turn_net_balance() {
 }
 
 #[test]
-fn hovering_energy_production_lists_each_planets_next_turn_balance() {
+fn hovering_energy_production_lists_planets_before_railgun_fire() {
     let mut planet = Planet::new(0, "Power Grid".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
     planet.army.insert(Unit::Building(Building::Reactor), 1);
@@ -1631,21 +1770,25 @@ fn hovering_energy_production_lists_each_planets_next_turn_balance() {
         ..default()
     };
     let mut warmup = context.run_ui(input(Vec::new()), |ui| {
-        target = draw_energy_production_row(ui, &map, &player).rect;
+        target = draw_energy_production_row(ui, &map, &player, 15).rect;
     });
     warmup.textures_delta.clear();
     let mut output =
         context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
-            draw_energy_production_row(ui, &map, &player);
+            draw_energy_production_row(ui, &map, &player, 15);
         });
     output.textures_delta.clear();
 
-    assert!(has_text(&output.shapes, "Production: +2"));
+    assert!(has_text(&output.shapes, "Production: -13"));
     assert!(!has_text(&output.shapes, "Production: 6/4"));
     assert!(!has_text(&output.shapes, "Production next turn"));
     assert!(has_text(&output.shapes, "Power Grid: +5"));
     assert_eq!(text_color(&output.shapes, "Power Grid: +5"), Color32::WHITE);
     assert_eq!(text_color(&output.shapes, "Unpowered: -3"), Color32::WHITE);
+    let last_planet = text_rect(&output.shapes, "Unpowered: -3");
+    let railgun_fire = text_rect(&output.shapes, "Railgun fire: -15");
+    assert!(railgun_fire.top() > last_planet.bottom());
+    assert!(!has_text(&output.shapes, "Committed Railgun fire"));
     assert!(!has_text(&output.shapes, "Production per planet"));
     assert!(!has_text(&output.shapes, "Efficiency:"));
 }
@@ -1782,11 +1925,11 @@ fn resource_tooltip_shows_queued_production_as_production() {
     };
     let mut tooltip_image = egui::Rect::NOTHING;
     let mut warmup = context.run_ui(input(), |ui| {
-        tooltip_image = draw_resource_tooltip(ui, ResourceName::Metal, &map, &player, &images);
+        tooltip_image = draw_resource_tooltip(ui, ResourceName::Metal, &map, &player, &images, 0);
     });
     warmup.textures_delta.clear();
     let mut output = context.run_ui(input(), |ui| {
-        tooltip_image = draw_resource_tooltip(ui, ResourceName::Metal, &map, &player, &images);
+        tooltip_image = draw_resource_tooltip(ui, ResourceName::Metal, &map, &player, &images, 0);
     });
     output.textures_delta.clear();
 
@@ -1824,12 +1967,12 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
         ..default()
     };
     let mut warmup = context.run_ui(input(Vec::new()), |ui| {
-        target = draw_resource_production_row(ui, &map, &player, ResourceName::Metal).rect;
+        target = draw_resource_production_row(ui, &map, &player, ResourceName::Metal, 0).rect;
     });
     warmup.textures_delta.clear();
     let mut output =
         context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
-            draw_resource_production_row(ui, &map, &player, ResourceName::Metal);
+            draw_resource_production_row(ui, &map, &player, ResourceName::Metal, 0);
         });
     output.textures_delta.clear();
 
@@ -1860,17 +2003,17 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
     };
     let player = Player::new(0, 0);
 
-    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal);
+    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal, 0);
     assert_eq!(metal[0].amount, 12);
     assert_eq!(metal[0].terraformer_modifier_percent, 20);
-    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal);
+    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal, 0);
     assert_eq!(crystal[0].amount, 8);
     assert_eq!(crystal[0].terraformer_modifier_percent, -20);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal, 0);
     });
     output.textures_delta.clear();
     assert!(!has_text(&output.shapes, "Terraformer"));
@@ -1892,13 +2035,13 @@ fn resource_breakdown_hides_terraformers_without_an_active_modifier() {
     };
     let player = Player::new(0, 0);
 
-    let breakdown = resource_world_breakdown(&map, &player, ResourceName::Metal);
+    let breakdown = resource_world_breakdown(&map, &player, ResourceName::Metal, 0);
     assert_eq!(breakdown[0].terraformer_modifier_percent, 0);
     assert_eq!(breakdown[0].amount, 4);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0);
     });
     output.textures_delta.clear();
     assert!(has_text(&output.shapes, "Quiet World: +4"));
@@ -2306,7 +2449,7 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
 
     context.begin_pass(input());
     assert_eq!(
-        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 10, 2_500, true),
+        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 5, 2_500, true),
         None
     );
     let mut warmup = context.end_pass();
@@ -2314,7 +2457,7 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
 
     context.begin_pass(input());
     assert_eq!(
-        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 10, 2_500, true),
+        draw_railgun_confirmation(&context, &images, "Ulmar", 1, 1_000, 5, 2_500, true),
         None
     );
     let mut output = context.end_pass();
@@ -2325,20 +2468,26 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
         image_rect(&output.shapes, deuterium_texture.id()).expect("missing deuterium icon");
     let energy = image_rect(&output.shapes, energy_texture.id()).expect("missing energy icon");
     let deuterium_amount = text_rect(&output.shapes, "1.000");
-    let energy_amount = text_rect(&output.shapes, "10");
+    let energy_amount = text_rect(&output.shapes, "5");
     let cost_row = deuterium.union(deuterium_amount).union(energy).union(energy_amount);
+    let heading = text_rect(&output.shapes, "Are you sure you want to shoot planet Ulmar?");
+    let railgun_details = text_rect(&output.shapes, "Orbital Railguns firing: 1");
+    let chance_details = text_rect(&output.shapes, "Destruction chance: 25%");
 
     assert!((cost_row.center().x - panel.center().x).abs() < 1.0);
+    assert!(cost_row.top() - heading.bottom() >= 20.0);
+    assert!(railgun_details.top() - cost_row.bottom() >= 23.0);
+    assert!(chance_details.top() - railgun_details.bottom() >= 7.0);
     assert_eq!(text_color(&output.shapes, "1.000"), Color32::WHITE);
-    assert_eq!(text_color(&output.shapes, "10"), Color32::WHITE);
+    assert_eq!(text_color(&output.shapes, "5"), Color32::WHITE);
     assert_eq!(text_font_size(&output.shapes, "1.000"), 20.0);
-    assert_eq!(text_font_size(&output.shapes, "10"), 20.0);
+    assert_eq!(text_font_size(&output.shapes, "5"), 20.0);
     assert!(!has_text(&output.shapes, "Cost"));
 
     for text in [
         "Are you sure you want to shoot planet Ulmar?",
         "1.000",
-        "10",
+        "5",
         "Orbital Railguns firing: 1",
         "Destruction chance: 25%",
         "Yes",
@@ -2349,4 +2498,20 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
     }
     assert!(panel.contains_rect(deuterium));
     assert!(panel.contains_rect(energy));
+
+    let mut painted_rects = Vec::new();
+    for shape in &output.shapes {
+        collect_rects(&shape.shape, &mut painted_rects);
+    }
+    let buttons = painted_rects
+        .iter()
+        .filter(|button| {
+            (button.width() - 96.0).abs() < 1.0 && (button.height() - 40.0).abs() < 1.0
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(buttons.len(), 2, "expected two styled confirmation buttons");
+    let button_row = buttons[0].union(*buttons[1]);
+    assert!((button_row.center().x - panel.center().x).abs() < 1.0);
+    let bottom_inset = panel.bottom() - button_row.bottom();
+    assert!((bottom_inset - 32.0).abs() < 1.0, "button bottom inset was {bottom_inset}",);
 }

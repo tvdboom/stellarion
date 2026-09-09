@@ -31,14 +31,15 @@ use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::orbital_railgun::OrbitalRailgunAnimationPlugin;
 use crate::core::map::systems::{
     animate_asteroid_belts, animate_map_ambience, animate_orbital_railguns, animate_phalanx_drones,
-    animate_range_markers, animate_space_scenery, draw_map, ensure_asteroid_belt,
-    hide_planet_details, position_home_crown, run_map_animations, update_ambient_comets,
-    update_end_turn, update_jump_gate_links, update_planet_defenses, update_planet_info,
-    update_voronoi, AmbientCometSpawner,
+    animate_range_markers, animate_recyclers, animate_space_scenery, draw_map,
+    ensure_asteroid_belt, hide_planet_details, position_home_crown, run_map_animations,
+    update_ambient_comets, update_end_turn, update_jump_gate_links, update_planet_defenses,
+    update_planet_info, update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
-    draw_game_overlay, draw_menu, exit_end_game, fit_menu_background, setup_menu,
+    begin_end_game_overlay, draw_game_overlay, draw_menu, exit_end_game, fit_menu_background,
+    setup_menu, EndGameOverlayFade,
 };
 use crate::core::messages::MessageMsg;
 use crate::core::mission_systems::animate_mission_recalls;
@@ -55,6 +56,10 @@ use crate::core::systems::{
     resume_gameplay_interactions, suspend_gameplay_interactions,
 };
 use crate::core::turns::{check_turn_ended, start_turn, StartTurnMsg};
+use crate::core::turns::{
+    clear_end_game_presentation, end_game_presentation_inactive, finish_end_game_presentation,
+    EndGamePresentation,
+};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
@@ -100,6 +105,8 @@ impl Plugin for GamePlugin {
             .init_resource::<PlayingAudio>()
             .init_resource::<WorldAssets>()
             .init_resource::<AmbientCometSpawner>()
+            .init_resource::<EndGamePresentation>()
+            .init_resource::<EndGameOverlayFade>()
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
@@ -139,6 +146,7 @@ impl Plugin for GamePlugin {
                 Update,
                 (move_camera, move_camera_keyboard, clamp_camera_to_worlds, update_parallax)
                     .chain()
+                    .run_if(end_game_presentation_inactive)
                     .in_set(InPlayingGameSet),
             )
             // Audio
@@ -217,7 +225,7 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
-                    check_keys_menu,
+                    check_keys_menu.run_if(end_game_presentation_inactive),
                     check_preference_keys.run_if(in_state(AppState::Settings).or_else(
                         in_state(AppState::Game).and_then(not(in_state(GameState::EndGame))),
                     )),
@@ -247,6 +255,7 @@ impl Plugin for GamePlugin {
                             .chain(),
                         animate_phalanx_drones,
                         animate_range_markers,
+                        animate_recyclers.after(update_planet_defenses),
                         animate_map_ambience,
                         animate_space_scenery,
                         update_voronoi.after(animate_public_structure_changes),
@@ -272,7 +281,10 @@ impl Plugin for GamePlugin {
                         .in_set(InPlayingGameSet),
                 ),
             )
-            .add_systems(PostUpdate, check_turn_ended.in_set(InGameSet))
+            .add_systems(
+                PostUpdate,
+                check_turn_ended.run_if(end_game_presentation_inactive).in_set(InGameSet),
+            )
             .add_systems(
                 PostUpdate,
                 position_home_crown
@@ -303,9 +315,23 @@ impl Plugin for GamePlugin {
                 OnExit(GameState::Combat),
                 (despawn::<CombatCmp>, restore_combat_camera, exit_combat),
             )
+            .add_systems(
+                Last,
+                finish_end_game_presentation.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            .add_systems(
+                OnEnter(GameState::EndGame),
+                (clear_end_game_presentation, begin_end_game_overlay).chain(),
+            )
             .add_systems(OnExit(GameState::EndGame), exit_end_game);
 
         #[cfg(debug_assertions)]
-        app.add_systems(Update, debug_cheat_keys.in_set(InPlayingGameSet).before(check_keys));
+        app.add_systems(
+            Update,
+            debug_cheat_keys
+                .run_if(end_game_presentation_inactive)
+                .in_set(InPlayingGameSet)
+                .before(check_keys),
+        );
     }
 }

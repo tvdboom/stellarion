@@ -197,6 +197,7 @@ impl Unit {
     pub fn orbitals() -> Vec<Self> {
         vec![
             Self::Building(Building::SolarSatellite),
+            Self::Building(Building::Recycler),
             Self::Building(Building::SensorPhalanx),
             Self::Building(Building::CommandRelay),
             Self::Building(Building::JumpGate),
@@ -357,6 +358,7 @@ impl Unit {
             self,
             Unit::Building(
                 Building::SolarSatellite
+                    | Building::Recycler
                     | Building::SensorPhalanx
                     | Building::CommandRelay
                     | Building::JumpGate
@@ -383,6 +385,7 @@ impl Unit {
                 Unit::Building(
                     Building::LunarBase
                         | Building::SolarSatellite
+                        | Building::Recycler
                         | Building::SensorPhalanx
                         | Building::CommandRelay
                         | Building::JumpGate
@@ -415,8 +418,37 @@ impl Unit {
         }
     }
 
+    /// Returns the minimum Spy intelligence level needed to reveal this unit.
+    ///
+    /// Buildings have dedicated intelligence requirements. Ships and defenses use their
+    /// production level. `None` marks the Space Dock and Orbital Railgun as public structures.
+    pub fn intelligence_level(&self) -> Option<usize> {
+        match self {
+            Unit::Building(building) => building.intelligence_level(),
+            Unit::Defense(Defense::SpaceDock) => None,
+            Unit::Ship(ship) => Some(ship.production()),
+            Unit::Defense(defense) => Some(defense.production()),
+        }
+    }
+
+    /// Returns whether the supplied number of returning Probes reveals this unit.
+    pub fn revealed_by_probes(&self, returning_probes: usize) -> bool {
+        self.intelligence_level().is_none_or(|level| {
+            returning_probes
+                > level
+                    .saturating_sub(1)
+                    .saturating_mul(crate::core::constants::PROBES_PER_PRODUCTION_LEVEL)
+        })
+    }
+
     /// Returns the selected combat statistic as a displayable numeric value.
     pub fn get_stat(&self, stat: &CombatStats) -> String {
+        if *stat == CombatStats::Intelligence {
+            return self
+                .intelligence_level()
+                .map_or_else(|| "---".to_string(), |level| level.to_string());
+        }
+
         let n = match stat {
             CombatStats::Hull => self.hull() as f32,
             CombatStats::Shield => self.shield() as f32,
@@ -425,6 +457,7 @@ impl Unit {
             CombatStats::Speed => self.speed(),
             CombatStats::FuelConsumption => self.fuel_consumption() as f32,
             CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
+            CombatStats::Intelligence => unreachable!("handled above"),
         };
 
         if n == 0. {

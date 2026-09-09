@@ -6,7 +6,7 @@ fn planet_report_layout_contains_every_unit_exactly_once() {
         let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
 
         assert_eq!(critical, [Unit::planetary_shield(), Unit::space_dock()]);
-        assert_eq!(orbitals.len(), 5);
+        assert_eq!(orbitals.len(), 6);
         assert!(!orbitals.contains(&Unit::space_dock()));
         assert_eq!(buildings.len(), 9);
         assert!(!buildings.contains(&Unit::planetary_shield()));

@@ -6,22 +6,74 @@ use bevy::prelude::*;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
+use crate::core::camera::MainCamera;
 use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::EXPLOSION_Z;
+use crate::core::map::battle::BattleEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
+use crate::core::map::orbital_railgun::OrbitalStrikeEffect;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
+use crate::core::menu::utils::add_root_node;
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::GameState;
-use crate::core::ui::systems::{MissionTab, UiState};
+use crate::core::systems::GameplayInputBlocker;
+use crate::core::ui::systems::{known_planet_counts, MissionTab, UiState};
 use crate::core::units::Unit;
-use crate::multiplayer::client::{MultiplayerRequest, PendingTurnCommands, SubmissionState};
+use crate::multiplayer::client::{
+    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, SubmissionState,
+};
 
 const PLANET_DESTRUCTION_EXPLOSION_SCALE: f32 = 1.75;
+
+/// Holds the terminal overlay until every visible turn-resolution effect has completed.
+#[derive(Resource, Default)]
+pub(crate) struct EndGamePresentation {
+    pending: bool,
+}
+
+impl EndGamePresentation {
+    /// Locks gameplay until the current turn's visible terminal effects finish.
+    pub(crate) fn request(&mut self) {
+        self.pending = true;
+    }
+
+    /// Returns whether gameplay is locked while the terminal turn is being presented.
+    pub(crate) const fn is_pending(&self) -> bool {
+        self.pending
+    }
+}
+
+/// Allows interaction systems to run only outside terminal turn presentation.
+pub(crate) fn end_game_presentation_inactive(presentation: Res<EndGamePresentation>) -> bool {
+    !presentation.pending
+}
+
+/// Opens the terminal overlay once Railgun, combat-aftermath, and destruction effects are gone.
+pub(crate) fn finish_end_game_presentation(
+    presentation: Res<EndGamePresentation>,
+    orbital_strikes: Query<(), With<OrbitalStrikeEffect>>,
+    battle_aftermath: Query<(), With<BattleEffect>>,
+    planet_destructions: Query<(), With<ExplosionCmp>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
+) {
+    if presentation.pending
+        && orbital_strikes.is_empty()
+        && battle_aftermath.is_empty()
+        && planet_destructions.is_empty()
+    {
+        next_game_state.set(GameState::EndGame);
+    }
+}
+
+/// Clears the presentation lock after the terminal state transition has taken effect.
+pub(crate) fn clear_end_game_presentation(mut presentation: ResMut<EndGamePresentation>) {
+    presentation.pending = false;
+}
 
 /// Requests presentation work after a new canonical turn is installed.
 #[derive(Message)]
@@ -169,20 +221,53 @@ fn should_start_planet_destruction(
         && animating_planets.insert(planet.id)
 }
 
+/// Warns only about enemy territorial progress already visible to the local player.
+fn territorial_threat_notifications(
+    session: &MultiplayerSession,
+    map: &Map,
+    player: &Player,
+) -> Vec<MessageMsg> {
+    let Some(game) = &session.active_game else {
+        return Vec::new();
+    };
+    let target = game.persisted.state.planets_to_win();
+    let Some(threat_count) = target.checked_sub(1) else {
+        return Vec::new();
+    };
+    let visible_missions = filter_missions(&game.persisted.state.missions, map, player);
+    let known_counts = known_planet_counts(map, player, &visible_missions);
+
+    game.members
+        .iter()
+        .filter(|member| member.player_id != player.id)
+        .filter(|member| known_counts.get(&member.player_id) == Some(&threat_count))
+        .map(|member| {
+            MessageMsg::warning(format!(
+                "{} controls {threat_count} of {target} planets needed for victory.",
+                member.display_name
+            ))
+        })
+        .collect()
+}
+
 /// Resets local presentation, announces reports, and spawns destruction effects for a new turn.
 pub fn start_turn(
     mut commands: Commands,
     mut start_turn_messages: MessageReader<StartTurnMsg>,
-    planet_query: Query<(&Transform, &PlanetCmp)>,
+    planet_query: Query<(&Transform, &PlanetCmp), Without<MainCamera>>,
     active_destructions: Query<&ExplosionCmp>,
+    gameplay_blockers: Query<(), With<GameplayInputBlocker>>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
+    mut end_game_presentation: Option<ResMut<EndGamePresentation>>,
     map: Res<Map>,
     player: Res<Player>,
+    session: Option<Res<MultiplayerSession>>,
     mut play_audio: MessageWriter<PlayAudioMsg>,
     mut messages: MessageWriter<MessageMsg>,
     mut next_game_state: ResMut<NextState<GameState>>,
     assets: Res<WorldAssets>,
+    mut camera: Query<&mut Transform, With<MainCamera>>,
 ) {
     let mut animating_planets =
         active_destructions.iter().map(|effect| effect.planet).collect::<BTreeSet<_>>();
@@ -218,12 +303,35 @@ pub fn start_turn(
             next_game_state.set(GameState::CombatMenu);
             continue;
         }
-        if !request.skip_end_game && player.spectator {
-            next_game_state.set(GameState::EndGame);
-            continue;
-        }
+        let defer_end_game = if !request.skip_end_game && player.spectator {
+            if let Some(presentation) = end_game_presentation.as_deref_mut() {
+                presentation.request();
+                if gameplay_blockers.is_empty() {
+                    commands.spawn((
+                        add_root_node(true),
+                        GameplayInputBlocker,
+                        crate::core::map::model::MapCmp,
+                    ));
+                }
+                true
+            } else {
+                next_game_state.set(GameState::EndGame);
+                false
+            }
+        } else {
+            false
+        };
 
         messages.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
+        // Initial game loading also emits StartTurnMsg, but it is not a newly resolved turn.
+        // Delaying this warning until combat playback finishes keeps it with the actual turn start.
+        if !request.skip_end_game {
+            if let Some(session) = session.as_deref() {
+                for notification in territorial_threat_notifications(session, &map, &player) {
+                    messages.write(notification);
+                }
+            }
+        }
 
         for report in returned_reports {
             let origin = map.get(report.mission.origin);
@@ -245,6 +353,15 @@ pub fn start_turn(
             else {
                 continue;
             };
+            if defer_end_game
+                && (planet.id == player.home_planet
+                    || map.try_get(player.home_planet).is_none_or(|home| !home.is_destroyed))
+            {
+                if let Ok(mut camera) = camera.single_mut() {
+                    camera.translation.x = transform.translation.x;
+                    camera.translation.y = transform.translation.y;
+                }
+            }
             let texture = assets.texture("explosion");
             commands.spawn((
                 Sprite {

@@ -24,6 +24,7 @@ use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
+use crate::core::recycling::recycler_production;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::{Amount, Army, Price, Unit};
@@ -1178,9 +1179,14 @@ pub fn orbital_railgun_origins(map: &Map, player_id: PlayerId, target: PlanetId)
         .collect()
 }
 
-/// Returns the resource cost for one synchronized Railgun strike.
-pub fn orbital_railgun_fire_cost() -> Resources {
-    Resources::new(0, 0, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST)
+/// Returns the resource cost for every Railgun participating in one synchronized strike.
+pub fn orbital_railgun_fire_cost(firing_railguns: usize) -> Resources {
+    Resources::new(0, 0, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST.saturating_mul(firing_railguns))
+}
+
+/// Returns the temporary grid demand for every Railgun participating in one strike.
+pub fn orbital_railgun_fire_energy_cost(firing_railguns: usize) -> usize {
+    ORBITAL_RAILGUN_FIRE_ENERGY_COST.saturating_mul(firing_railguns)
 }
 
 /// Returns the combined destruction chance: five percent per completed firing level.
@@ -1221,7 +1227,7 @@ fn apply_orbital_railgun_fire(
     if already_fired {
         return invalid(player_id, "Orbital Railguns can fire only once per turn");
     }
-    let cost = orbital_railgun_fire_cost();
+    let cost = orbital_railgun_fire_cost(origins.len());
     let player = model.player_mut(player_id)?;
     if player.resources.deuterium < cost.deuterium {
         return invalid(player_id, "not enough deuterium to fire the Orbital Railguns");
@@ -1442,18 +1448,17 @@ fn apply_mission(
 fn resolution_energy_grid(
     player: &Player,
     map: &Map,
-    railgun_firing_players: &HashSet<PlayerId>,
+    railgun_energy_demand: &BTreeMap<PlayerId, usize>,
 ) -> EnergyGrid {
     let grid = player.energy_grid(map);
-    if railgun_firing_players.contains(&player.id) {
-        grid.with_action_demand(ORBITAL_RAILGUN_FIRE_ENERGY_COST)
-    } else {
-        grid
-    }
+    grid.with_action_demand(railgun_energy_demand.get(&player.id).copied().unwrap_or_default())
 }
 
 /// Advances production, missions, combat, reports, and victory state by one turn.
 fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
+    let recycling_turn = usize::try_from(model.turn).map_err(|_| {
+        GameError::MalformedState("turn exceeds this platform's limits".to_string())
+    })?;
     model.turn = model
         .turn
         .checked_add(1)
@@ -1465,12 +1470,24 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
     // Firing can deepen an energy shortage. Capture the owners before simultaneous impacts can
     // destroy an origin, then apply the one-turn demand to production and combat power below.
-    let railgun_firing_players = model
-        .orbital_strikes
-        .iter()
-        .filter_map(|strike| strike.origins.first())
-        .filter_map(|origin| model.map.try_get(*origin).and_then(|planet| planet.owned))
-        .collect::<HashSet<_>>();
+    let railgun_energy_demand = model.orbital_strikes.iter().fold(
+        BTreeMap::<PlayerId, usize>::new(),
+        |mut demand, strike| {
+            if let Some(player_id) = strike
+                .origins
+                .first()
+                .and_then(|origin| model.map.try_get(*origin))
+                .and_then(|planet| planet.owned)
+            {
+                let strike_demand = orbital_railgun_fire_energy_cost(strike.origins.len());
+                demand
+                    .entry(player_id)
+                    .and_modify(|total| *total = total.saturating_add(strike_demand))
+                    .or_insert(strike_demand);
+            }
+            demand
+        },
+    );
 
     // Resolve every paid shot from the same pre-impact state. A railgun destroyed by another
     // simultaneous strike therefore still contributes the shot committed during planning.
@@ -1480,9 +1497,27 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         planet.produce();
         planet.jump_gate = 0;
     }
+    let recycler_output = model
+        .players
+        .iter()
+        .map(|player| {
+            (
+                player.id,
+                recycler_production(
+                    &model.map,
+                    &model.players,
+                    player.id,
+                    recycling_turn,
+                    &mut rng,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for player in &mut model.players {
-        let energy = resolution_energy_grid(player, &model.map, &railgun_firing_players);
-        player.resources += energy.scale_resources(player.raw_resource_production(&model.map));
+        let energy = resolution_energy_grid(player, &model.map, &railgun_energy_demand);
+        let raw = player.raw_resource_production(&model.map)
+            + recycler_output.get(&player.id).copied().unwrap_or_default();
+        player.resources += energy.scale_resources(raw);
     }
 
     // Lock grids before any missions resolve. Conquest and destruction affect the next turn,
@@ -1491,7 +1526,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         .players
         .iter()
         .map(|player| {
-            (player.id, resolution_energy_grid(player, &model.map, &railgun_firing_players))
+            (player.id, resolution_energy_grid(player, &model.map, &railgun_energy_demand))
         })
         .collect::<std::collections::HashMap<_, _>>();
 
@@ -1502,19 +1537,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let mut fleeing_missions = Vec::new();
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
 
-    let mut colony_limits = model
-        .players
-        .iter()
-        .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
-        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-    for mission in &mut model.missions {
-        check_mission(
-            mission,
-            &model.map,
-            turn,
-            colony_limits.get(&mission.owner).copied().unwrap_or(0),
-        );
-    }
+    check_missions(model, turn)?;
 
     for player_id in player_order {
         for planet_id in &planet_ids {
@@ -1799,19 +1822,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                 }
 
                 let arrived_ids = arrived.iter().map(|mission| mission.id).collect::<HashSet<_>>();
-                colony_limits = model
-                    .players
-                    .iter()
-                    .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
-                    .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-                for mission in &mut model.missions {
-                    check_mission(
-                        mission,
-                        &model.map,
-                        turn,
-                        colony_limits.get(&mission.owner).copied().unwrap_or(0),
-                    );
-                }
+                check_missions(model, turn)?;
                 model.missions.retain(|mission| !arrived_ids.contains(&mission.id));
             }
         }
@@ -1851,6 +1862,11 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     }
     model.missions.extend(new_missions);
 
+    // Return and withdrawal missions are staged outside `model.missions` while arrivals resolve.
+    // Recheck the complete collection after the last possible destruction so none of those late
+    // fleets spends a saved turn travelling toward a world that no longer exists.
+    check_missions(model, turn)?;
+
     // An overload applies to every battle at the world during this resolution. Only after all
     // missions have resolved does it enter cooldown; that cooldown itself lasts through the next
     // complete planning and resolution turn.
@@ -1888,6 +1904,24 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         for player in &mut model.players {
             player.spectator = true;
         }
+    }
+    Ok(())
+}
+
+/// Reconciles every active mission with the latest ownership and destruction state of the map.
+fn check_missions(model: &mut GameModel, turn: usize) -> Result<(), GameError> {
+    let colony_limits = model
+        .players
+        .iter()
+        .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+    for mission in &mut model.missions {
+        check_mission(
+            mission,
+            &model.map,
+            turn,
+            colony_limits.get(&mission.owner).copied().unwrap_or(0),
+        );
     }
     Ok(())
 }
@@ -1999,9 +2033,22 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, max_owned: usize
         };
     }
     if destination.is_destroyed {
-        mission.destination = mission.check_origin(map);
+        let return_destination = mission.check_origin(map);
+
+        // This starts a new leg from the world that invalidated the old route. Keeping the
+        // original departure world as `origin` can make a normal return encode the same planet
+        // as both endpoints, which is not a valid persisted mission.
+        mission.origin = destination.id;
+        mission.origin_owned = destination.owned;
+        mission.origin_controlled = destination.controlled;
+        mission.origin_army.clone_from(&destination.army);
+        mission.destination = return_destination;
+        mission.send = turn;
         mission.travel_turns = 0;
         mission.objective = Icon::Deploy;
+        mission.bombing = BombingRaid::None;
+        mission.combat_probes = false;
+        mission.jump_gate = false;
         mission.logs.push_str(&format!(
             "\n- ({turn}) Destination changed to planet {}.",
             map.get(mission.destination).name

@@ -4,7 +4,6 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::combat::report::{MissionReport, Side};
-use crate::core::constants::PROBES_PER_PRODUCTION_LEVEL;
 use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -309,10 +308,7 @@ impl Player {
                                     ))
                                 }
                             } else if r.mission.owner == self.id
-                                && r.scout_probes
-                                    > u.production()
-                                        .saturating_sub(1)
-                                        .saturating_mul(PROBES_PER_PRODUCTION_LEVEL)
+                                && u.revealed_by_probes(r.scout_probes)
                             {
                                 Some((*u, r.planet.army.amount(u)))
                             } else {

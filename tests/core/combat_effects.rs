@@ -547,7 +547,7 @@ fn interceptors_finish_inside_the_incoming_missile_image() {
     let target = unit(&mut app, incoming, Side::Defender, Vec3::ZERO, 0, 0);
 
     for missed in [false, true] {
-        for _ in 0..3 {
+        for _ in 0..6 {
             fire(
                 &mut app,
                 source,
@@ -571,12 +571,104 @@ fn interceptors_finish_inside_the_incoming_missile_image() {
         .iter(app.world())
         .map(|impact| (impact.destination - target_center, impact.missed))
         .collect::<Vec<_>>();
-    assert_eq!(impacts.len(), 6);
+    assert_eq!(impacts.len(), 12);
     for (offset, _) in &impacts {
         assert!(offset.x.abs() <= 50. && offset.y.abs() <= 50., "{offset:?}");
     }
     assert!(impacts.iter().filter(|(_, missed)| *missed).all(|(offset, _)| offset.x > 25.));
     assert!(impacts.iter().filter(|(_, missed)| !*missed).all(|(offset, _)| offset.x.abs() < 25.));
+}
+
+#[test]
+fn missile_salvos_are_bounded_above_the_ordinary_weapon_limit() {
+    let mut app = app();
+    let interceptor = Unit::antiballistic_missile();
+    let incoming = Unit::interplanetary_missile();
+    let source = unit(&mut app, interceptor, Side::Attacker, Vec3::Y * -200., 0, 0);
+    unit(&mut app, incoming, Side::Defender, Vec3::ZERO, 0, 0);
+
+    for _ in 0..20 {
+        fire(
+            &mut app,
+            source,
+            interceptor,
+            incoming,
+            ShotReport {
+                missed: true,
+                ..default()
+            },
+            false,
+        );
+    }
+    step(&mut app, 0.);
+
+    assert_eq!(
+        app.world_mut().query::<&PendingImpact>().iter(app.world()).count(),
+        MISSILE_SALVO_LIMIT
+    );
+}
+
+#[test]
+fn every_recorded_bomber_raid_attempt_gets_its_own_bomb() {
+    let mut app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let building = Unit::resource_buildings()[0];
+    let source = unit(&mut app, bomber, Side::Attacker, Vec3::Y * 200., 6, 0);
+    unit(&mut app, building, Side::Defender, Vec3::ZERO, 6, 0);
+
+    for _ in 0..6 {
+        fire(
+            &mut app,
+            source,
+            bomber,
+            building,
+            ShotReport {
+                missed: true,
+                ..default()
+            },
+            false,
+        );
+    }
+    step(&mut app, 0.);
+
+    let mut delays = app
+        .world_mut()
+        .query::<&PendingImpact>()
+        .iter(app.world())
+        .map(|impact| impact.delay)
+        .collect::<Vec<_>>();
+    delays.sort_by(f32::total_cmp);
+    assert_eq!(delays.len(), 6);
+    assert!(delays.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn bomb_salvos_share_the_expanded_missile_bound() {
+    let mut app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let building = Unit::resource_buildings()[0];
+    let source = unit(&mut app, bomber, Side::Attacker, Vec3::Y * 200., 20, 0);
+    unit(&mut app, building, Side::Defender, Vec3::ZERO, 20, 0);
+
+    for _ in 0..20 {
+        fire(
+            &mut app,
+            source,
+            bomber,
+            building,
+            ShotReport {
+                missed: true,
+                ..default()
+            },
+            false,
+        );
+    }
+    step(&mut app, 0.);
+
+    assert_eq!(
+        app.world_mut().query::<&PendingImpact>().iter(app.world()).count(),
+        MISSILE_SALVO_LIMIT
+    );
 }
 
 #[test]

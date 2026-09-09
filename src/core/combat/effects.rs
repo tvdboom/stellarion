@@ -29,6 +29,10 @@ const MAX_PARTICLES: usize = 1800;
 const COMBAT_READOUT_RASTER_SCALE: f32 = 0.05;
 const MISSILE_FLIGHT_TIME: f32 = 0.95;
 const MISSILE_CURVE_HEIGHT: f32 = 0.58;
+/// Visible projectiles retained per missile or bomb source, target, and outcome.
+const MISSILE_SALVO_LIMIT: usize = 12;
+/// Keeps repeated missiles separately readable without turning them into sequential volleys.
+const MISSILE_LAUNCH_STAGGER: f32 = 0.03;
 // The original impact recording is quieter than the new firing cues. Preserve its
 // character while keeping an actual hull strike audible beneath their tails.
 const HULL_IMPACT_VOLUME: f32 = -10.0;
@@ -151,6 +155,19 @@ impl Weapon {
         }
     }
 
+    /// Returns whether playback uses the larger physical-projectile salvo.
+    fn uses_missile_salvo(self) -> bool {
+        matches!(self, Self::Missile | Self::Bomb)
+    }
+
+    fn visible_salvo_limit(self) -> usize {
+        if self.uses_missile_salvo() {
+            MISSILE_SALVO_LIMIT
+        } else {
+            self.salvo_limit()
+        }
+    }
+
     fn projectile_size(self, size: f32) -> Vec2 {
         size * match self {
             Self::Laser => Vec2::new(0.55, 0.06),
@@ -188,8 +205,8 @@ impl Weapon {
     }
 }
 
-/// One of at most three representative salvos per source/target/outcome. Aggregated
-/// counters retain *every* recorded hit, including building levels and repairs.
+/// One visible projectile or an aggregated representative salvo. Missiles and bombs use a larger
+/// bound than other weapons, while every recorded outcome is accumulated into the visible effects.
 #[derive(Component)]
 pub struct PendingImpact {
     target: Entity,
@@ -837,8 +854,8 @@ pub fn run_combat_animations(
         art: art.as_deref(),
     };
 
-    // A fleet of ten thousand ships costs the same number of visible salvos as a
-    // small fleet with the same unit types. BTreeMap gives stable launch ordering.
+    // Keep every weapon bounded, but give physical missiles and raid bombs a larger salvo.
+    // BTreeMap gives stable launch ordering and accumulated outcomes preserve combat results.
     let mut grouped = BTreeMap::<(Entity, Option<Entity>, bool, bool, usize), PendingImpact>::new();
     let mut counts = BTreeMap::new();
     for message in shots.read() {
@@ -881,6 +898,7 @@ pub fn run_combat_animations(
         } else {
             message.source.map_or(Weapon::Laser, |s| Weapon::for_unit(s.1))
         };
+        let projectile_index = *count % weapon.visible_salvo_limit();
         let lane = *count % weapon.salvo_limit();
         *count += 1;
         let interceptor = message.source.is_some_and(|(_, unit, _)| {
@@ -909,7 +927,7 @@ pub fn run_combat_animations(
             destination.x += (lane as f32 - center_lane) * size * 0.17;
         }
         let impact = grouped
-            .entry((target, source, message.repair, message.shot.missed, lane))
+            .entry((target, source, message.repair, message.shot.missed, projectile_index))
             .or_insert(PendingImpact {
                 target,
                 source,
@@ -926,7 +944,13 @@ pub fn run_combat_animations(
                 // Every target of one firing card belongs to the same visible volley. Lanes
                 // spread projectiles spatially without making rapid-fire chains or later target
                 // classes look like a second firing action.
-                delay: 0.08 + weapon.charge(),
+                delay: 0.08
+                    + weapon.charge()
+                    + if weapon.uses_missile_salvo() {
+                        projectile_index as f32 * MISSILE_LAUNCH_STAGGER
+                    } else {
+                        0.
+                    },
                 lane: if weapon.salvo_limit() == 1 {
                     0.
                 } else {

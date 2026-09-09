@@ -27,6 +27,7 @@ pub mod missions;
 pub mod orders;
 pub mod player;
 pub mod random;
+pub mod recycling;
 pub mod resources;
 pub(crate) mod settings;
 pub mod simulation;

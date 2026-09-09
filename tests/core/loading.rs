@@ -73,7 +73,7 @@ fn newly_resolved_railgun_strike_warns_everyone_except_its_shooters_once() {
             notifications[0].message,
             format!("Railgun shot fired on planet {}.", model.map.get(target).name)
         );
-        assert_eq!(notifications[0].action, Some(MessageAction::FocusPlanet(target)));
+        assert_eq!(notifications[0].action, Some(MessageAction::FocusRailgunTarget(target)));
     }
 
     assert!(
@@ -85,6 +85,41 @@ fn newly_resolved_railgun_strike_warns_everyone_except_its_shooters_once() {
         "refreshing the same canonical turn must not duplicate the warning"
     );
     assert!(orbital_strike_notifications(None, &model, observer, prior_turn).is_empty());
+}
+
+#[test]
+fn destroyed_moon_railgun_warning_remains_focusable() {
+    let mut model = GameModel::new([46; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let observer = model.players[1].id;
+    let origin = model.players[0].home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| planet.is_moon())
+        .map(|planet| planet.id)
+        .expect("the generated map should contain a moon");
+    let previous = model.map.clone();
+    model.map.get_mut(target).is_destroyed = true;
+    model.orbital_strikes.push(OrbitalStrike {
+        turn: model.turn,
+        origins: vec![origin],
+        target,
+        chance_basis_points: 500,
+        destroyed: true,
+    });
+
+    let notifications = orbital_strike_notifications(
+        Some(&previous),
+        &model,
+        observer,
+        model.turn.saturating_sub(1),
+    );
+
+    assert_eq!(notifications.len(), 1);
+    assert!(notifications[0].message.starts_with("Railgun shot fired on moon "));
+    assert_eq!(notifications[0].action, Some(MessageAction::FocusRailgunTarget(target)));
 }
 
 #[test]

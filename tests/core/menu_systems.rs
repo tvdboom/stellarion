@@ -947,24 +947,41 @@ fn in_game_menu_shows_the_current_session_recovery_code() {
 }
 
 #[test]
-fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
+fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
     for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(640.0, 480.0)] {
         let mut session = test_lobby();
-        let game = session.active_game.as_mut().unwrap();
-        game.status = MatchStatus::Finished;
-        game.persisted.state.status = MatchStatus::Finished;
-        let loser_home = game.persisted.state.players[1].home_planet;
-        game.persisted.state.map.get_mut(loser_home).owned = None;
-        game.persisted.state.map.get_mut(loser_home).controlled = None;
-        let winner = game.persisted.state.winner().unwrap();
-        let color = PLAYER_COLOR_PALETTE[4];
-        game.persisted.state.players.iter_mut().find(|player| player.id == winner).unwrap().color =
-            color;
-        let winner_name = session.player_name(winner).unwrap().to_string();
+        let (loser_membership, finished_game) = {
+            let game = session.active_game.as_mut().unwrap();
+            game.status = MatchStatus::Finished;
+            game.persisted.state.status = MatchStatus::Finished;
+            let loser = game.persisted.state.players[1].id;
+            let loser_home = game.persisted.state.players[1].home_planet;
+            game.persisted.state.map.get_mut(loser_home).owned = None;
+            game.persisted.state.map.get_mut(loser_home).controlled = None;
+            let winner = game.persisted.state.winner().unwrap();
+            game.persisted
+                .state
+                .players
+                .iter_mut()
+                .find(|player| player.id == winner)
+                .unwrap()
+                .color = PLAYER_COLOR_PALETTE[4];
+            let loser_membership =
+                game.members.iter().find(|member| member.player_id == loser).unwrap().clone();
+            (loser_membership, game.clone())
+        };
+        assert_eq!(local_end_game_heading(&session), "You won");
+        let mut losing_session = MultiplayerSession::default();
+        losing_session.membership = Some(loser_membership);
+        losing_session.active_game = Some(finished_game);
+        assert_eq!(local_end_game_heading(&losing_session), "You lost");
 
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<Settings>()
+            .init_resource::<Time>()
+            .init_resource::<EndGamePresentation>()
+            .init_resource::<EndGameOverlayFade>()
             .init_resource::<NextState<AppState>>()
             .init_resource::<NextState<GameState>>()
             .insert_resource(State::new(GameState::EndGame))
@@ -991,24 +1008,8 @@ fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
             );
         }
         assert!(egui.is_pointer_over_egui(), "map corner must be blocked");
-        let announcement = shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text)
-                    if text.galley.job.text == format!("{winner_name} wins by elimination.") =>
-                {
-                    Some(&text.galley.job)
-                },
-                _ => None,
-            })
-            .unwrap();
-        let name_section = &announcement.sections[0];
-        assert_eq!(
-            &announcement.text[name_section.byte_range.start.0..name_section.byte_range.end.0],
-            winner_name
-        );
-        assert_eq!(name_section.format.color, color.color().to_color32());
-        assert_ne!(announcement.sections[1].format.color, name_section.format.color);
+        assert!(visible_menu_label(&shapes, "You won").is_some());
+        assert!(visible_menu_label(&shapes, "Game finished").is_none());
         assert!(visible_menu_label(&shapes, "Return to Main Menu").is_some());
         let spectate = visible_menu_label(&shapes, "Spectate").unwrap().center();
         for pressed in [true, false] {
@@ -1033,6 +1034,13 @@ fn finished_overlay_uses_winner_color_blocks_map_and_allows_spectating() {
             NextState::Pending(GameState::Playing)
         ));
     }
+}
+
+#[test]
+fn end_game_overlay_fades_in_smoothly() {
+    assert_eq!(end_game_overlay_alpha(0.0), 0.0);
+    assert!((end_game_overlay_alpha(END_GAME_OVERLAY_FADE_SECONDS * 0.5) - 0.5).abs() < 0.001);
+    assert_eq!(end_game_overlay_alpha(END_GAME_OVERLAY_FADE_SECONDS), 1.0);
 }
 
 fn enter_event(repeat: bool, modifiers: egui::Modifiers) -> egui::Event {

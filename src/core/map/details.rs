@@ -1,6 +1,6 @@
 //! Close-zoom development and public battle debris; neither changes simulation state.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
 use bevy::prelude::*;
@@ -11,11 +11,16 @@ use super::planet::{Planet, PlanetId, PlanetKind};
 use super::utils::cursor;
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
-use crate::core::combat::report::{MissionReport, Side};
+#[cfg(test)]
+use crate::core::combat::report::MissionReport;
+use crate::core::combat::report::Side;
 use crate::core::constants::PLANET_Z;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
 use crate::core::missions::Missions;
 use crate::core::player::Player;
+#[cfg(test)]
+use crate::core::recycling::destroyed_ships;
+use crate::core::recycling::{debris_sites, DebrisSite, DebrisSize};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -23,69 +28,15 @@ use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 
-const DEBRIS_TURNS: usize = 3;
 const DEBRIS_CENTER_ANGLE: f32 = TAU * 0.5;
-const DEBRIS_ANGLE_STEP: f32 = 0.03;
 const DEBRIS_ANGLE_JITTER: f32 = 0.02;
-const DEBRIS_DEPTH: f32 = 0.26;
+pub(crate) const DEBRIS_DEPTH: f32 = 0.26;
 const PLANET_TERRAFORMER_ART_ASPECT: f32 = 1102.0 / 1427.0;
 pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 
-/// A coarse public trace, deliberately containing no army composition or intelligence.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DebrisSite {
-    losses: usize,
-    latest_turn: usize,
-    seed: u32,
-}
-
+#[cfg(test)]
 fn destroyed_units(report: &MissionReport) -> usize {
-    if report.combat_report.is_none() {
-        return 0;
-    }
-    [
-        (&report.mission.army, &report.surviving_attacker),
-        (&report.planet.army, &report.surviving_defender),
-    ]
-    .into_iter()
-    .enumerate()
-    .flat_map(|(side, (before, after))| {
-        // Consumed missiles, colony ships and demolished buildings aren't orbital wrecks.
-        before.iter().filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship()).map(
-            move |(unit, count)| {
-                count.saturating_sub(after.amount(unit)).saturating_sub(if side == 1 {
-                    report.escaped_defenders(unit)
-                } else {
-                    0
-                })
-            },
-        )
-    })
-    .fold(0usize, usize::saturating_add)
-}
-
-fn debris_sites<'a>(
-    reports: impl Iterator<Item = &'a MissionReport>,
-    turn: usize,
-) -> BTreeMap<PlanetId, DebrisSite> {
-    let mut seen = BTreeSet::new();
-    let mut sites = BTreeMap::<PlanetId, DebrisSite>::new();
-    for report in reports {
-        if !seen.insert(report.id)
-            || turn.checked_sub(report.turn).is_none_or(|age| age >= DEBRIS_TURNS)
-        {
-            continue;
-        }
-        let losses = destroyed_units(report);
-        if losses == 0 {
-            continue;
-        }
-        let site = sites.entry(report.mission.destination).or_default();
-        site.losses = site.losses.saturating_add(losses);
-        site.latest_turn = site.latest_turn.max(report.turn);
-        site.seed ^= report.id as u32;
-    }
-    sites
+    destroyed_ships(report)
 }
 
 fn noise(mut seed: u32) -> f32 {
@@ -116,11 +67,42 @@ impl DevelopmentVisibility {
     }
 }
 
-fn debris_count(losses: usize) -> usize {
-    if losses == 0 {
-        0
-    } else {
-        (1 + losses.ilog2() as usize / 2).min(5)
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DebrisVisuals {
+    pieces: usize,
+    angle_step: f32,
+    min_radius: f32,
+    radius_jitter: f32,
+    min_diameter: f32,
+    diameter_jitter: f32,
+}
+
+fn debris_visuals(size: DebrisSize) -> DebrisVisuals {
+    match size {
+        DebrisSize::Small => DebrisVisuals {
+            pieces: 2,
+            angle_step: 0.028,
+            min_radius: 1.02,
+            radius_jitter: 0.06,
+            min_diameter: 0.22,
+            diameter_jitter: 0.06,
+        },
+        DebrisSize::Medium => DebrisVisuals {
+            pieces: 5,
+            angle_step: 0.045,
+            min_radius: 1.04,
+            radius_jitter: 0.10,
+            min_diameter: 0.25,
+            diameter_jitter: 0.09,
+        },
+        DebrisSize::Large => DebrisVisuals {
+            pieces: 9,
+            angle_step: 0.055,
+            min_radius: 1.08,
+            radius_jitter: 0.12,
+            min_diameter: 0.29,
+            diameter_jitter: 0.11,
+        },
     }
 }
 
@@ -199,7 +181,7 @@ struct DetailCache {
 struct Detail {
     planet: PlanetId,
     opacity: f32,
-    debris_turn: Option<usize>,
+    debris_turn: Option<(usize, usize)>,
 }
 
 #[derive(Component)]
@@ -209,6 +191,12 @@ struct Debris {
     phase: f32,
     amplitude: f32,
     speed: f32,
+}
+
+#[derive(Component)]
+struct DebrisHitTarget {
+    planet: PlanetId,
+    site: DebrisSite,
 }
 
 fn animate_debris(elapsed: Res<DetailAnimationTime>, mut debris: Query<(&Debris, &mut Transform)>) {
@@ -470,65 +458,94 @@ fn spawn_debris(
     image_size: Vec2,
 ) {
     let planet_id = planet.id;
-    let count = debris_count(site.losses);
-    for index in 0..count {
+    let Some(size_class) = site.size() else {
+        return;
+    };
+    let visuals = debris_visuals(size_class);
+    let mut field_min = Vec2::splat(f32::INFINITY);
+    let mut field_max = Vec2::splat(f32::NEG_INFINITY);
+    for index in 0..visuals.pieces {
         let seed = site.seed.wrapping_add(index as u32 * 19);
         // Keep wreckage in the open corridor directly left of the planet, beyond the ordinary
         // orbital ring and between the fixed upper- and lower-left range infrastructure. Its
         // depth also keeps a passing orbital from briefly drawing over the wreckage.
-        let centered_index = index as f32 - count.saturating_sub(1) as f32 * 0.5;
+        let centered_index = index as f32 - visuals.pieces.saturating_sub(1) as f32 * 0.5;
         let angle = DEBRIS_CENTER_ANGLE
-            + centered_index * DEBRIS_ANGLE_STEP
+            + centered_index * visuals.angle_step
             + (noise(seed) - 0.5) * DEBRIS_ANGLE_JITTER;
-        let radius = planet.size() * (1.02 + noise(seed.wrapping_add(1)) * 0.08);
+        let radius = planet.size()
+            * (visuals.min_radius + noise(seed.wrapping_add(1)) * visuals.radius_jitter);
         let variant = (noise(seed.wrapping_add(2)) * 3.99) as usize;
         let cell = image_size * 0.5;
         let min = Vec2::new((variant % 2) as f32, (variant / 2) as f32) * cell;
-        let size = planet.size() * (0.26 + noise(seed.wrapping_add(3)) * 0.09);
+        let size = planet.size()
+            * (visuals.min_diameter + noise(seed.wrapping_add(3)) * visuals.diameter_jitter);
         let origin = planet.position + Vec2::from_angle(angle) * radius;
         let rotation = noise(seed.wrapping_add(4)) * TAU;
-        commands
-            .spawn((
-                Sprite {
-                    image: image.clone(),
-                    rect: Some(Rect::from_corners(min, min + cell)),
-                    custom_size: Some(Vec2::splat(size)),
-                    ..default()
-                },
-                Transform {
-                    translation: origin.extend(PLANET_Z + DEBRIS_DEPTH),
-                    rotation: Quat::from_rotation_z(rotation),
-                    ..default()
-                },
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                Detail {
-                    planet: planet.id,
-                    opacity: 0.9,
-                    debris_turn: Some(site.latest_turn),
-                },
-                Debris {
-                    origin,
-                    rotation,
-                    phase: noise(seed.wrapping_add(5)) * TAU,
-                    amplitude: planet.size() * 0.018,
-                    speed: 0.22 + noise(seed.wrapping_add(6)) * 0.12,
-                },
-                MapCmp,
-            ))
-            .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-            .observe(cursor::<Out>(SystemCursorIcon::Default))
-            .observe(
-                move |event: On<Pointer<Click>>,
-                      player: Res<Player>,
-                      mut state: ResMut<UiState>,
-                      game: Res<State<GameState>>| {
-                    if event.button == PointerButton::Primary && *game.get() == GameState::Playing {
-                        open_latest_battle(&player, planet_id, &mut state);
-                    }
-                },
-            );
+        let amplitude = planet.size() * 0.018;
+        // A rotated square is widest at 45 degrees. Include its full possible idle drift so the
+        // stable interaction target covers the art without making the art itself hover-sensitive.
+        let half_extent = Vec2::splat(size * std::f32::consts::FRAC_1_SQRT_2 + amplitude);
+        field_min = field_min.min(origin - half_extent);
+        field_max = field_max.max(origin + half_extent);
+        commands.spawn((
+            Sprite {
+                image: image.clone(),
+                rect: Some(Rect::from_corners(min, min + cell)),
+                custom_size: Some(Vec2::splat(size)),
+                ..default()
+            },
+            Transform {
+                translation: origin.extend(PLANET_Z + DEBRIS_DEPTH),
+                rotation: Quat::from_rotation_z(rotation),
+                ..default()
+            },
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            Detail {
+                planet: planet.id,
+                opacity: 0.9,
+                debris_turn: Some((site.latest_turn, size_class.lifetime_turns())),
+            },
+            Debris {
+                origin,
+                rotation,
+                phase: noise(seed.wrapping_add(5)) * TAU,
+                amplitude,
+                speed: 0.22 + noise(seed.wrapping_add(6)) * 0.12,
+            },
+            MapCmp,
+        ));
     }
+    // Runtime art is compressed, so it cannot provide alpha-aware sprite picking. A separate,
+    // permanently transparent rectangle keeps hover/click behavior stable and prevents pointer
+    // state from ever changing the visible debris sprites.
+    commands
+        .spawn((
+            Sprite::from_color(Color::NONE, field_max - field_min),
+            Transform::from_translation(
+                ((field_min + field_max) * 0.5).extend(PLANET_Z + DEBRIS_DEPTH + 0.001),
+            ),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            DebrisHitTarget {
+                planet: planet.id,
+                site: site.clone(),
+            },
+            MapCmp,
+        ))
+        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+        .observe(cursor::<Out>(SystemCursorIcon::Default))
+        .observe(
+            move |event: On<Pointer<Click>>,
+                  player: Res<Player>,
+                  mut state: ResMut<UiState>,
+                  game: Res<State<GameState>>| {
+                if event.button == PointerButton::Primary && *game.get() == GameState::Playing {
+                    open_latest_battle(&player, planet_id, &mut state);
+                }
+            },
+        );
 }
 
 fn spawn_light(
@@ -968,6 +985,7 @@ fn refresh_details(
     mut commands: Commands,
     mut cache: ResMut<DetailCache>,
     details: Query<(Entity, &Detail)>,
+    debris_hit_targets: Query<(Entity, &DebrisHitTarget)>,
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
@@ -1059,6 +1077,11 @@ fn refresh_details(
             commands.entity(entity).despawn();
         }
     }
+    for (entity, target) in &debris_hit_targets {
+        if cache.debris.get(&target.planet) != sites.get(&target.planet) {
+            commands.entity(entity).despawn();
+        }
+    }
     let image = assets.image("wreckage");
     let image_size = images.get(&image).map(|image| image.size().as_vec2());
     if let Some(image_size) = image_size {
@@ -1097,10 +1120,13 @@ fn fade_details(
         &Detail,
         &mut Sprite,
         &mut Visibility,
-        &mut Pickable,
         Option<&SurfaceLight>,
         Option<&PlatformLight>,
     )>,
+    mut debris_hit_targets: Query<
+        (&DebrisHitTarget, &mut Visibility, &mut Pickable),
+        Without<Detail>,
+    >,
 ) {
     let scale = match *camera {
         Projection::Orthographic(ref projection) => projection.scale,
@@ -1108,18 +1134,18 @@ fn fade_details(
     };
     let development_alpha =
         development_visibility.update(scale <= DEVELOPMENT_MAX_SCALE, time.delta_secs());
-    for (detail, mut sprite, mut visibility, mut pickable, light, platform_light) in &mut details {
+    for (detail, mut sprite, mut visibility, light, platform_light) in &mut details {
         let alpha = if detail.debris_turn.is_some() {
             detail_alpha(scale)
         } else {
             development_alpha
         };
-        let age_alpha = detail.debris_turn.map_or(1.0, |turn| {
+        let age_alpha = detail.debris_turn.map_or(1.0, |(turn, lifetime)| {
             settings
                 .turn
                 .checked_sub(turn)
-                .filter(|age| *age < DEBRIS_TURNS)
-                .map_or(0.0, |age| 1.0 - age as f32 * 0.24)
+                .filter(|age| *age < lifetime)
+                .map_or(0.0, |age| 1.0 - age as f32 / lifetime.max(1) as f32 * 0.72)
         });
         sprite.color.set_alpha(
             detail.opacity
@@ -1133,12 +1159,22 @@ fn fade_details(
         } else {
             Visibility::Hidden
         };
-        // The rendered sprite rectangle is the hit area. No extra invisible hit target or tooltip.
-        *pickable = if detail.debris_turn.is_some()
-            && alpha > 0.15
-            && age_alpha > 0.0
-            && *game.get() == GameState::Playing
-        {
+    }
+    for (target, mut visibility, mut pickable) in &mut debris_hit_targets {
+        let alpha = detail_alpha(scale);
+        let lifetime = target.site.size().map_or(0, DebrisSize::lifetime_turns);
+        let age_alpha = settings
+            .turn
+            .checked_sub(target.site.latest_turn)
+            .filter(|age| *age < lifetime)
+            .map_or(0.0, |age| 1.0 - age as f32 / lifetime.max(1) as f32 * 0.72);
+        let interactive = alpha > 0.15 && age_alpha > 0.0 && *game.get() == GameState::Playing;
+        *visibility = if interactive {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        *pickable = if interactive {
             Pickable::default()
         } else {
             Pickable::IGNORE

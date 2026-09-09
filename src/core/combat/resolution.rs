@@ -264,29 +264,12 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                     continue;
                 }
                 // Intercept incoming missiles before resolving damage
-                if unit.unit == Unit::interplanetary_missile() {
-                    for cu in enemy_army.iter_mut() {
-                        if cu.unit == Unit::antiballistic_missile()
-                            && !used_antiballistic.contains(&cu.id)
-                        {
-                            used_antiballistic.push(cu.id);
-
-                            let mut shot = ShotReport {
-                                unit: Some(Unit::interplanetary_missile()),
-                                ..Default::default()
-                            };
-
-                            if rng.random::<f32>() < 0.5 {
-                                shot.killed = true;
-                                cu.shots.push(shot);
-                                continue 'unit;
-                            } else {
-                                shot.missed = true;
-                            }
-
-                            cu.shots.push(shot);
-                        }
-                    }
+                if unit.unit == Unit::interplanetary_missile()
+                    && intercept_incoming_missile(enemy_army, &mut used_antiballistic, || {
+                        rng.random::<f32>()
+                    })
+                {
+                    continue 'unit;
                 }
 
                 if unit.unit.damage() == 0 {
@@ -634,6 +617,37 @@ fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f3
             >= RAPID_FIRE.get(attacker).and_then(|table| table.get(target)).copied().unwrap_or(0)
                 as f32
                 / 100.0
+}
+
+/// Fires unused antiballistic missiles sequentially until this incoming missile is destroyed.
+/// A successful interceptor ends the attempt immediately, preserving every later interceptor for
+/// the next incoming missile.
+fn intercept_incoming_missile(
+    defenders: &mut [CombatUnit],
+    used_antiballistic: &mut Vec<u64>,
+    mut roll: impl FnMut() -> f32,
+) -> bool {
+    for defender in defenders {
+        if defender.unit != Unit::antiballistic_missile()
+            || used_antiballistic.contains(&defender.id)
+        {
+            continue;
+        }
+        used_antiballistic.push(defender.id);
+        let intercepted = roll() < 0.5;
+        defender.shots.push(ShotReport {
+            unit: Some(Unit::interplanetary_missile()),
+            missed: !intercepted,
+            killed: intercepted,
+            ..Default::default()
+        });
+
+        if intercepted {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

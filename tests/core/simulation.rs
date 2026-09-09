@@ -446,8 +446,19 @@ fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
                 "the testing shortcut must create at most one Space Dock per planet"
             );
         }
-        let expected_resources =
-            preview.players[0].resources + preview.players[0].resource_production(&preview.map);
+        let mut preview_rng_state = preview.rng.clone();
+        let mut preview_rng = preview_rng_state.next_rng();
+        let expected_resources = preview.players[0].resources
+            + preview.players[0].energy_grid(&preview.map).scale_resources(
+                preview.players[0].raw_resource_production(&preview.map)
+                    + recycler_production(
+                        &preview.map,
+                        &preview.players,
+                        1,
+                        preview.turn as usize,
+                        &mut preview_rng,
+                    ),
+            );
         resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
         assert_eq!(model.turn, 2);
         assert_eq!(model.status, MatchStatus::Active);
@@ -1017,6 +1028,103 @@ fn resolved_spy_and_destroy_missions_preserve_their_images_on_the_return_trip() 
         assert_eq!(returning.objective, Icon::Deploy);
         assert_eq!(returning.image(&player), image);
     }
+}
+
+#[test]
+fn mission_redirected_from_destroyed_destination_has_distinct_route_endpoints() {
+    let mut model = started_model(2);
+    let player = model.players[0].clone();
+    let origin = model.map.get(player.home_planet).clone();
+    let destination = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| {
+            !planet.is_moon()
+                && model.players.iter().all(|candidate| candidate.home_planet != planet.id)
+        })
+        .unwrap()
+        .clone();
+    let mut mission = Mission::new_with_id(
+        53,
+        model.turn as usize,
+        player.id,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.advance(&model.map);
+    let position_before_redirect = mission.position;
+    let redirect_turn = model.turn as usize + 1;
+
+    model.map.get_mut(destination.id).destroy();
+    check_mission(&mut mission, &model.map, redirect_turn, usize::MAX);
+
+    assert_eq!(mission.origin, destination.id);
+    assert_eq!(mission.destination, origin.id);
+    assert_ne!(mission.origin, mission.destination);
+    assert_eq!(mission.position, position_before_redirect);
+    assert_eq!(mission.send, redirect_turn);
+    assert_eq!(mission.travel_turns, 0);
+    assert_eq!(mission.objective, Icon::Deploy);
+    assert!(!mission.jump_gate);
+    model.turn += 1;
+    model.missions.push(mission);
+    model.validate().unwrap();
+}
+
+#[test]
+fn end_of_turn_recheck_redirects_every_mission_from_a_destroyed_destination() {
+    let mut model = started_model(2);
+    let player = model.players[0].clone();
+    let origin = model.map.get(player.home_planet).clone();
+    let destination = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| {
+            !planet.is_moon()
+                && model.players.iter().all(|candidate| candidate.home_planet != planet.id)
+        })
+        .unwrap()
+        .clone();
+    model.missions.extend((60..63).map(|id| {
+        let mut mission = Mission::new_with_id(
+            id,
+            model.turn as usize,
+            player.id,
+            &origin,
+            &destination,
+            Icon::Attack,
+            Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.advance(&model.map);
+        mission
+    }));
+    let positions = model.missions.iter().map(|mission| mission.position).collect::<Vec<_>>();
+    let redirect_turn = model.turn as usize + 1;
+    model.turn += 1;
+    model.map.get_mut(destination.id).destroy();
+
+    check_missions(&mut model, redirect_turn).unwrap();
+
+    assert_eq!(model.missions.len(), positions.len());
+    for (mission, position) in model.missions.iter().zip(positions) {
+        assert_eq!(mission.origin, destination.id);
+        assert_eq!(mission.destination, origin.id);
+        assert_eq!(mission.position, position);
+        assert!(!model.map.get(mission.destination).is_destroyed);
+    }
+    model.validate().unwrap();
 }
 
 #[test]
@@ -1707,8 +1815,8 @@ fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
         "the test must exercise firing through an Energy shortage"
     );
     let preview = preview_commands(&model, 1, std::slice::from_ref(&fire)).unwrap();
-    assert_eq!(orbital_railgun_fire_cost(), Resources::new(0, 0, 1_000));
-    assert_eq!(ORBITAL_RAILGUN_FIRE_ENERGY_COST, 10);
+    assert_eq!(orbital_railgun_fire_cost(1), Resources::new(0, 0, 1_000));
+    assert_eq!(ORBITAL_RAILGUN_FIRE_ENERGY_COST, 5);
     assert_eq!(preview.players[0].resources, Resources::new(1_000, 1_000, 0));
     assert!(preview_commands(&model, 1, &[fire.clone(), fire]).is_err());
     assert!(preview_commands(
@@ -1722,7 +1830,7 @@ fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
 
     let firing_income = model.players[0]
         .energy_grid(&model.map)
-        .with_action_demand(ORBITAL_RAILGUN_FIRE_ENERGY_COST)
+        .with_action_demand(orbital_railgun_fire_energy_cost(1))
         .scale_resources(model.players[0].raw_resource_production(&model.map));
     let submissions = vec![
         TurnSubmission::new(
@@ -1822,7 +1930,13 @@ fn orbital_railguns_combine_by_target_and_persist_the_public_outcome() {
     )
     .unwrap();
     assert_eq!(preview.orbital_strikes[0].origins, vec![first.min(second), first.max(second)]);
-    assert_eq!(preview.players[0].resources, Resources::new(5_000, 5_000, 4_000));
+    assert_eq!(orbital_railgun_fire_cost(2), Resources::new(0, 0, 2_000));
+    assert_eq!(orbital_railgun_fire_energy_cost(2), 10);
+    assert_eq!(preview.players[0].resources, Resources::new(5_000, 5_000, 3_000));
+    let firing_income = model.players[0]
+        .energy_grid(&model.map)
+        .with_action_demand(orbital_railgun_fire_energy_cost(2))
+        .scale_resources(model.players[0].raw_resource_production(&model.map));
     let submissions = vec![
         TurnSubmission::new(
             1,
@@ -1835,6 +1949,7 @@ fn orbital_railguns_combine_by_target_and_persist_the_public_outcome() {
     ];
 
     resolve_turn(&mut model, &submissions).unwrap();
+    assert_eq!(model.players[0].resources, Resources::new(5_000, 5_000, 3_000) + firing_income);
     assert_eq!(model.orbital_strikes.len(), 1);
     let strike = &model.orbital_strikes[0];
     assert_eq!(strike.turn, model.turn);

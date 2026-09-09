@@ -34,3 +34,21 @@ fn unit_decoding_rejects_wrong_categories_malformed_names_and_non_strings() {
         assert!(serde_json::from_value::<Unit>(value).is_err());
     }
 }
+
+#[test]
+fn orbital_intelligence_requirements_are_distinct_from_production() {
+    for (unit, expected) in [
+        (Unit::Building(Building::SolarSatellite), Some(1)),
+        (Unit::Building(Building::Recycler), Some(2)),
+        (Unit::Building(Building::SensorPhalanx), Some(2)),
+        (Unit::Building(Building::CommandRelay), Some(3)),
+        (Unit::Building(Building::JumpGate), Some(4)),
+        (Unit::Building(Building::OrbitalRailgun), None),
+        (Unit::space_dock(), None),
+    ] {
+        assert_eq!(unit.intelligence_level(), expected, "{unit:?}");
+    }
+
+    assert_eq!(Unit::Building(Building::CommandRelay).production(), 1);
+    assert_eq!(Unit::Building(Building::JumpGate).production(), 1);
+}

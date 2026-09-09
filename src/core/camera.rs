@@ -15,6 +15,8 @@ const GALAXY_EDGE_SCREEN_FRACTION: f32 = 0.5;
 const OVERSCROLL_SCREEN_FRACTION: f32 = 0.25;
 /// Exponential return speed after input releases the camera outside its limits.
 const BOUNDS_RETURN_RATE: f32 = 14.0;
+/// Distance from the requested scale at which the zoom snaps to its exact destination.
+const FOCUS_ZOOM_EPSILON: f32 = 0.005;
 
 #[derive(Component)]
 /// Marker component for the unique strategic 2D camera.
@@ -191,6 +193,7 @@ pub fn move_camera(
                     projection.scale = new_scale;
                     state.to_selected = false;
                     state.focus_planet = None;
+                    state.focus_zoom = None;
                 }
             }
         }
@@ -200,9 +203,14 @@ pub fn move_camera(
 
     // Move camera on top of selected planet
     let mut shortcut_target = None;
+    let mut shortcut_zoom_complete = true;
     if state.to_selected {
         if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
+                if let Some(target_scale) = state.focus_zoom {
+                    (projection.scale, shortcut_zoom_complete) =
+                        advance_focus_zoom(projection.scale, target_scale);
+                }
                 let planet_position = pos.translation.truncate();
                 let target = map_camera_bounds(&map, projection.area.size())
                     .map_or(planet_position, |bounds| {
@@ -217,9 +225,21 @@ pub fn move_camera(
     }
 
     camera_t.translation = position.extend(camera_t.translation.z);
-    if shortcut_target.is_some_and(|target| position.distance(target) < 0.75) {
+    if shortcut_zoom_complete
+        && shortcut_target.is_some_and(|target| position.distance(target) < 0.75)
+    {
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_zoom = None;
+    }
+}
+
+fn advance_focus_zoom(scale: f32, target: f32) -> (f32, bool) {
+    let next = scale + (target - scale) * LERP_FACTOR;
+    if (next - target).abs() <= FOCUS_ZOOM_EPSILON {
+        (target, true)
+    } else {
+        (next.clamp(MIN_ZOOM, MAX_ZOOM), false)
     }
 }
 
@@ -277,21 +297,25 @@ pub fn move_camera_keyboard(
         camera_t.translation.x -= transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyD) {
         camera_t.translation.x += transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyW) {
         camera_t.translation.y += transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyS) {
         camera_t.translation.y -= transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_zoom = None;
     }
 }
 

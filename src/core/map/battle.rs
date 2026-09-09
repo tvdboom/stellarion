@@ -472,7 +472,7 @@ fn initialize_battles(
 }
 
 #[derive(Component)]
-struct BattleEffect {
+pub(crate) struct BattleEffect {
     planet: PlanetId,
     turn: usize,
     returning_spies: Vec<MissionId>,

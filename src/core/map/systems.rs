@@ -2,7 +2,7 @@
 
 pub use super::scanner::ScannerCmp;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::{PI, TAU};
 use std::time::Duration;
 
@@ -29,11 +29,11 @@ use crate::core::constants::{
 };
 use crate::core::identity::PlayerId;
 use crate::core::loading::{PublicStructure, PublicStructureChange};
-use crate::core::map::details::{DevelopmentVisibility, DEVELOPMENT_MAX_SCALE};
+use crate::core::map::details::{DevelopmentVisibility, DEBRIS_DEPTH, DEVELOPMENT_MAX_SCALE};
 use crate::core::map::detection::PublicStructureEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
-use crate::core::map::orbital_railgun::OrbitalStrikeEffect;
+use crate::core::map::orbital_railgun::{OrbitalRailgunFiring, OrbitalStrikeEffect};
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::scenery::CelestialKind;
 use crate::core::map::utils::{
@@ -41,6 +41,7 @@ use crate::core::map::utils::{
 };
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
+use crate::core::recycling::{debris_sites, recycler_sources, DebrisSite, RecyclerSource};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
@@ -65,11 +66,23 @@ const JUMP_GATE_LINK_STRANDS: usize = 2;
 const PLANETARY_SHIELD_DEPTH: f32 = 0.05;
 const SOLAR_SATELLITE_DEPTH: f32 = 0.10;
 const SOLAR_SATELLITE_DEPTH_STEP: f32 = 0.001;
+// Recyclers pass over their salvage target, so render them above debris while leaving them
+// non-pickable. Pointer hits then continue to the debris interaction target underneath.
+const RECYCLER_DEPTH: f32 = DEBRIS_DEPTH + 0.01;
+const RECYCLER_DEPTH_STEP: f32 = 0.001;
+const RECYCLER_SCAN_DEPTH: f32 = DEBRIS_DEPTH + 0.009;
+const RECYCLER_CYCLE_SECONDS: f32 = 6.0;
+const RECYCLER_PHASE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, 0.43, 0.78, 0.21, 0.62];
+const RECYCLER_HOME_RADIUS: f32 = 0.70;
+const RECYCLER_HOME_ANGLE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, -0.22, 0.22, -0.44, 0.44];
+const RECYCLER_TARGET_OFFSETS: [usize; Building::MAX_LEVEL] = [0, 2, 1, 3, 0];
 const JUMP_GATE_DEPTH: f32 = 0.15;
 const COMMAND_RELAY_DEPTH: f32 = 0.16;
 const SENSOR_PHALANX_DEPTH: f32 = 0.17;
 const SENSOR_PHALANX_DEPTH_RANGE: f32 = 0.035;
 const ORBITAL_RAILGUN_DEPTH: f32 = 0.22;
+const ORBITAL_RAILGUN_ANGLE: f32 = PI * 0.5;
+const ORBITAL_RAILGUN_RADIUS: f32 = 1.2;
 const SPACE_DOCK_DEPTH: f32 = 0.25;
 const PLANETARY_SHIELD_MAX_ALPHA: f32 = 0.85;
 const PLANETARY_SHIELD_PULSE_PEAK: Duration = Duration::from_millis(1_500);
@@ -440,6 +453,296 @@ pub struct SolarSatelliteCmp {
     level: usize,
 }
 
+#[derive(Component, Debug)]
+/// One small Recycler craft shuttling between its planet and the best available salvage source.
+pub struct RecyclerCmp {
+    planet: PlanetId,
+    level: usize,
+    phase: f32,
+    gate_angle: f32,
+}
+
+#[derive(Component, Debug)]
+/// Expanding scan ring shown while a Recycler inspects its current target.
+pub struct RecyclerScanCmp {
+    planet: PlanetId,
+    recycler_level: usize,
+    pulse_offset: f32,
+}
+
+#[derive(Default)]
+pub(crate) struct RecyclerAnimationCache {
+    scenery_seed: Option<u32>,
+    turn: usize,
+    debris: BTreeMap<PlanetId, DebrisSite>,
+    sources: BTreeMap<PlanetId, RecyclerSource>,
+    asteroid_targets: BTreeMap<PlanetId, Vec<Vec2>>,
+}
+
+fn recycler_smoothstep(amount: f32) -> f32 {
+    let amount = amount.clamp(0.0, 1.0);
+    amount * amount * (3.0 - 2.0 * amount)
+}
+
+fn recycler_angular_delta(from: f32, to: f32) -> f32 {
+    (to - from + PI).rem_euclid(TAU) - PI
+}
+
+fn recycler_avoid_angle(angle: f32, reserved: f32, clearance: f32, level: usize) -> f32 {
+    let delta = recycler_angular_delta(reserved, angle);
+    if delta.abs() >= clearance {
+        angle
+    } else {
+        let side = if delta.abs() > 0.001 {
+            delta.signum()
+        } else if level.is_multiple_of(2) {
+            -1.0
+        } else {
+            1.0
+        };
+        reserved + side * clearance
+    }
+}
+
+fn recycler_home(source_anchor: Vec2, recycler: &RecyclerCmp, planet: &Planet) -> Vec2 {
+    let destination_angle = (source_anchor - planet.position).to_angle();
+    let mut angle = destination_angle + RECYCLER_HOME_ANGLE_OFFSETS[recycler.level - 1];
+    // Recheck the short list because moving away from one station can approach its neighbor.
+    for _ in 0..2 {
+        for (reserved, clearance) in [
+            (ORBITAL_RAILGUN_ANGLE, 0.20),
+            (PI * 0.75, 0.38),
+            (PI * 1.25, 0.45),
+            (recycler.gate_angle, 0.40),
+        ] {
+            angle = recycler_avoid_angle(angle, reserved, clearance, recycler.level);
+        }
+    }
+    Vec2::from_angle(angle) * planet.size() * RECYCLER_HOME_RADIUS
+}
+
+fn recycler_progress(cycle: f32) -> f32 {
+    if cycle < 0.30 {
+        recycler_smoothstep(cycle / 0.30)
+    } else if cycle < 0.56 {
+        1.0
+    } else if cycle < 0.86 {
+        1.0 - recycler_smoothstep((cycle - 0.56) / 0.30)
+    } else {
+        0.0
+    }
+}
+
+fn recycler_route_position(home: Vec2, target: Vec2, progress: f32) -> Vec2 {
+    let angle =
+        home.to_angle() + recycler_angular_delta(home.to_angle(), target.to_angle()) * progress;
+    let radius = home.length() + (target.length() - home.length()) * progress;
+    Vec2::from_angle(angle) * radius
+}
+
+fn recycler_heading(outbound: Vec2, next_outbound: Vec2, cycle: f32) -> f32 {
+    let outbound_angle = outbound.to_angle();
+    if cycle < 0.43 {
+        outbound_angle
+    } else if cycle < 0.56 {
+        outbound_angle + recycler_smoothstep((cycle - 0.43) / 0.13) * PI
+    } else if cycle < 0.86 {
+        outbound_angle + PI
+    } else {
+        let homeward_angle = outbound_angle + PI;
+        homeward_angle
+            + recycler_angular_delta(homeward_angle, next_outbound.to_angle())
+                * recycler_smoothstep((cycle - 0.86) / 0.14)
+    }
+}
+
+fn recycler_animation_target(
+    source: RecyclerSource,
+    asteroid_targets: Option<&[Vec2]>,
+    recycler: &RecyclerCmp,
+    planet: &Planet,
+    trip: u64,
+) -> Vec2 {
+    match source {
+        RecyclerSource::AsteroidField {
+            target,
+        } => asteroid_targets
+            .filter(|targets| !targets.is_empty())
+            .map(|targets| {
+                let trip = (trip % targets.len() as u64) as usize;
+                targets[(trip + RECYCLER_TARGET_OFFSETS[recycler.level - 1]) % targets.len()]
+            })
+            .unwrap_or(target),
+        RecyclerSource::Debris {
+            target,
+            ..
+        } => {
+            let index = (recycler.level - 1 + (trip % Building::MAX_LEVEL as u64) as usize)
+                % Building::MAX_LEVEL;
+            let side = if index.is_multiple_of(2) {
+                -1.0
+            } else {
+                1.0
+            };
+            let lane = (index / 2 + 1) as f32;
+            target
+                + Vec2::new(
+                    (lane - 1.0) * planet.size() * -0.035,
+                    side * lane * planet.size() * 0.055,
+                )
+        },
+    }
+}
+
+/// Animates known Recycler craft, preferring fresh local debris over a reachable asteroid field.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn animate_recyclers(
+    time: Res<Time>,
+    map: Res<Map>,
+    player: Res<Player>,
+    missions: Res<Missions>,
+    session: Res<MultiplayerSession>,
+    settings: Res<Settings>,
+    camera: Single<&Projection, With<MainCamera>>,
+    mut cache: Local<RecyclerAnimationCache>,
+    mut recyclers: Query<
+        (&RecyclerCmp, &mut Transform, &mut Visibility, &mut Sprite),
+        Without<RecyclerScanCmp>,
+    >,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut scans: Query<
+        (&RecyclerScanCmp, &MeshMaterial2d<ColorMaterial>, &mut Transform, &mut Visibility),
+        Without<RecyclerCmp>,
+    >,
+) {
+    let sites = if let Some(record) = &session.active_game {
+        debris_sites(
+            record.persisted.state.players.iter().flat_map(|player| player.reports.iter()),
+            settings.turn,
+        )
+    } else {
+        debris_sites(player.reports.iter(), settings.turn)
+    };
+    let scenery_seed = map.scenery_seed();
+    if cache.scenery_seed != Some(scenery_seed)
+        || cache.turn != settings.turn
+        || cache.debris != sites
+    {
+        cache.scenery_seed = Some(scenery_seed);
+        cache.turn = settings.turn;
+        cache.sources = recycler_sources(&map, &sites);
+        cache.asteroid_targets = crate::core::map::asteroids::recycler_asteroid_target_groups(&map);
+        cache.debris = sites;
+    }
+    let elapsed = time.elapsed_secs();
+    let close_zoom = matches!(
+        *camera,
+        Projection::Orthographic(ref projection) if projection.scale <= DEVELOPMENT_MAX_SCALE
+    );
+
+    for (recycler, mut transform, mut visibility, mut sprite) in &mut recyclers {
+        let planet = map.get(recycler.planet);
+        let info =
+            (!player.controls(planet)).then(|| player.last_info(planet, &missions.0)).flatten();
+        let (army, controller) = if player.controls(planet) {
+            (Some(&planet.army), planet.controlled.or(planet.owned))
+        } else {
+            (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
+        };
+        let level = army.map_or(0, |army| {
+            army.amount(&Unit::Building(Building::Recycler)).min(Building::MAX_LEVEL)
+        });
+        let source = cache.sources.get(&planet.id).copied();
+        let active = close_zoom && recycler.level <= level && source.is_some();
+        *visibility = if active {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        let player_color = controller
+            .map(|id| session.player_color(id).color())
+            .unwrap_or(Color::srgb_u8(190, 198, 210));
+        let cycle_time = elapsed / RECYCLER_CYCLE_SECONDS + recycler.phase;
+        let trip = cycle_time.floor() as u64;
+        let cycle = cycle_time.fract();
+        let scanning = active && (0.30..0.56).contains(&cycle);
+        for (scan, material, mut scan_transform, mut scan_visibility) in &mut scans {
+            if scan.planet != recycler.planet || scan.recycler_level != recycler.level {
+                continue;
+            }
+            *scan_visibility = if scanning {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if let (true, Some(source)) = (scanning, source) {
+                let target = recycler_animation_target(
+                    source,
+                    cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
+                    recycler,
+                    planet,
+                    trip,
+                ) - planet.position;
+                let pulse = (((cycle - 0.30) / 0.26) + scan.pulse_offset).fract();
+                scan_transform.translation = target.extend(
+                    RECYCLER_SCAN_DEPTH + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP,
+                );
+                scan_transform.scale = Vec3::splat(5.0 + pulse * (14.0 + level as f32));
+                scan_transform.rotation = Quat::from_rotation_z(elapsed * 0.8);
+                if let Some(mut material) = materials.get_mut(&material.0) {
+                    material.color = player_color.with_alpha((1.0 - pulse) * 0.58);
+                }
+            }
+        }
+        let Some(source) = source.filter(|_| recycler.level <= level) else {
+            continue;
+        };
+
+        sprite.color = player_color;
+        let target_world = recycler_animation_target(
+            source,
+            cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
+            recycler,
+            planet,
+            trip,
+        );
+        let next_target_world = recycler_animation_target(
+            source,
+            cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
+            recycler,
+            planet,
+            trip.saturating_add(1),
+        );
+        let source_anchor = match source {
+            RecyclerSource::Debris {
+                target,
+                ..
+            }
+            | RecyclerSource::AsteroidField {
+                target,
+            } => target,
+        };
+        let target = target_world - planet.position;
+        let next_target = next_target_world - planet.position;
+        let home = recycler_home(source_anchor, recycler, planet);
+        let position = recycler_route_position(home, target, recycler_progress(cycle));
+        let tangent = Vec2::new(-position.y, position.x).normalize_or_zero();
+        let position = position + tangent * (elapsed * 2.2 + recycler.phase * TAU).sin() * 1.4;
+        transform.translation =
+            position.extend(RECYCLER_DEPTH + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP);
+        let outbound = target - home;
+        let scan_sway = if scanning {
+            ((cycle - 0.30) / 0.26 * TAU * 2.0).sin() * 0.12
+        } else {
+            0.0
+        };
+        transform.rotation = Quat::from_rotation_z(
+            recycler_heading(outbound, next_target - home, cycle) + scan_sway,
+        );
+        transform.scale = Vec3::ONE;
+    }
+}
+
 #[derive(Component)]
 /// Stationary, faction-tinted command-relay range marker beside a world.
 pub struct CommandRelayCmp;
@@ -488,18 +791,35 @@ pub(crate) fn animate_range_markers(
 
 /// Gives the public Railgun the same restrained free-floating drift as other fixed markers.
 pub(crate) fn animate_orbital_railguns(
+    mut commands: Commands,
     time: Res<Time>,
-    mut railguns: Query<(&OrbitalRailgunCmp, &mut Transform, &Visibility)>,
+    mut railguns: Query<(
+        Entity,
+        &OrbitalRailgunCmp,
+        &mut Transform,
+        &Visibility,
+        Option<&mut OrbitalRailgunFiring>,
+    )>,
 ) {
     let elapsed = time.elapsed_secs();
-    for (railgun, mut transform, visibility) in &mut railguns {
+    for (entity, railgun, mut transform, visibility, firing) in &mut railguns {
         if *visibility == Visibility::Hidden {
             continue;
         }
         let (position, tilt) = range_marker_pose(railgun.anchor, elapsed, railgun.phase);
+        let idle_rotation = railgun.base_rotation + tilt;
+        let (position, rotation, finished) = if let Some(mut firing) = firing {
+            firing.elapsed += time.delta_secs();
+            firing.pose(position, idle_rotation)
+        } else {
+            (position, idle_rotation, false)
+        };
         transform.translation = position.extend(ORBITAL_RAILGUN_DEPTH);
-        transform.rotation = Quat::from_rotation_z(railgun.base_rotation + tilt);
+        transform.rotation = Quat::from_rotation_z(rotation);
         transform.scale = Vec3::ONE;
+        if finished {
+            commands.entity(entity).remove::<OrbitalRailgunFiring>();
+        }
     }
 }
 
@@ -1519,6 +1839,7 @@ fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
     state.focus_planet = None;
+    state.focus_zoom = None;
     state.to_selected = false;
     state.mission = false;
     state.combat_report = None;
@@ -1559,6 +1880,7 @@ pub fn draw_map(
                 if event.button == PointerButton::Primary {
                     state.planet_selected = None;
                     state.focus_planet = None;
+                    state.focus_zoom = None;
                     state.to_selected = false;
                     commands.entity(*window_e).insert(CursorIcon::from(SystemCursorIcon::Grabbing));
                 }
@@ -1592,6 +1914,7 @@ pub fn draw_map(
                         .extend(camera_t.translation.z);
                         state.to_selected = false;
                         state.focus_planet = None;
+                        state.focus_zoom = None;
                     }
                 }
             },
@@ -1603,6 +1926,9 @@ pub fn draw_map(
 
     spawn_ambient_stars(&mut commands);
     spawn_background_landmarks(&mut commands, &assets, &map);
+    let asteroid_images =
+        ASTEROID_IMAGE_NAMES.iter().map(|name| assets.image(name)).collect::<Vec<_>>();
+    spawn_asteroid_belt(&mut commands, &map, &asteroid_images);
     for planet in &map.planets {
         let planet_id = planet.id;
 
@@ -1966,10 +2292,11 @@ pub fn draw_map(
                         SpaceDockCmp,
                     ));
 
-                    // The endgame Railgun stays beyond the ordinary orbital stack. Its barrel
-                    // points inward while idle; strike playback draws the synchronized beams.
-                    let railgun_angle = (angle + PI * 0.5).rem_euclid(TAU);
-                    let railgun_radius = planet.size() * 1.02;
+                    // The endgame Railgun holds a close fixed station above the planet, clear of
+                    // the upper-left Phalanx formation. Its barrel points inward while idle;
+                    // strike playback draws the synchronized beams.
+                    let railgun_angle = ORBITAL_RAILGUN_ANGLE;
+                    let railgun_radius = planet.size() * ORBITAL_RAILGUN_RADIUS;
                     let railgun_anchor =
                         Vec2::new(railgun_angle.cos(), railgun_angle.sin()) * railgun_radius;
                     let railgun_rotation = railgun_angle - PI * 0.5;
@@ -2112,6 +2439,58 @@ pub fn draw_map(
                                 level: index + 1,
                             },
                         ));
+                    }
+
+                    // Spawn one worker for every possible Recycler level. Animation places each
+                    // visible worker beyond the orbital stack on the side facing its destination,
+                    // where staggered phases keep the fleet from moving as one stacked sprite.
+                    let recycler_phase = visual_noise(planet.id as u32 + 4_337);
+                    for (index, phase_offset) in RECYCLER_PHASE_OFFSETS.into_iter().enumerate() {
+                        let level = index + 1;
+                        parent.spawn((
+                            Sprite {
+                                image: assets.image("recycler marker"),
+                                custom_size: Some(Vec2::new(
+                                    planet.size() * 0.30,
+                                    planet.size() * 0.214,
+                                )),
+                                ..default()
+                            },
+                            Transform::from_xyz(
+                                0.0,
+                                0.0,
+                                RECYCLER_DEPTH + index as f32 * RECYCLER_DEPTH_STEP,
+                            ),
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            RecyclerCmp {
+                                planet: planet.id,
+                                level,
+                                phase: (recycler_phase + phase_offset).fract(),
+                                gate_angle,
+                            },
+                        ));
+                        for pulse in 0..3 {
+                            parent.spawn((
+                                Mesh2d(meshes.add(Annulus::new(0.86, 1.0))),
+                                MeshMaterial2d(
+                                    materials
+                                        .add(ColorMaterial::from(Color::WHITE.with_alpha(0.0))),
+                                ),
+                                Transform::from_xyz(
+                                    0.0,
+                                    0.0,
+                                    RECYCLER_SCAN_DEPTH + index as f32 * RECYCLER_DEPTH_STEP,
+                                ),
+                                Pickable::IGNORE,
+                                Visibility::Hidden,
+                                RecyclerScanCmp {
+                                    planet: planet.id,
+                                    recycler_level: level,
+                                    pulse_offset: pulse as f32 / 3.0,
+                                },
+                            ));
+                        }
                     }
 
                     // Range infrastructure stays in fixed map positions so it remains easy to
