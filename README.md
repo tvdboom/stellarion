@@ -8,12 +8,12 @@
 <br><br>
 </div>
 
-<img src="assets/images/scenery/map.png" alt="Developed three-player galaxy after the conquest of Ilmar">
-<img src="assets/images/scenery/shop.png" alt="Mature three-player empire with a fully developed planetary construction screen">
-<img src="assets/images/scenery/incombat.png" alt="Planning a massive attack fleet in an established multiplayer match">
-<img src="assets/images/scenery/mission.png" alt="Active colonization, attack, and espionage missions in a three-player match">
-<img src="assets/images/scenery/report.png" alt="Live combat animation with beams and impacts across both fleets">
-<img src="assets/images/scenery/combat.png" alt="Detailed Battle of Ilmar report showing both fleets and planetary defenses">
+<img src="assets/images/scenery/map.png" alt="Zoomed-out three-player galaxy with friendly and enemy missions, a Space Dock, and sensor coverage">
+<img src="assets/images/scenery/shop.png" alt="Two-player mid-game empire with varied planetary construction">
+<img src="assets/images/scenery/mission-planning.png" alt="Planning a balanced attack fleet in a three-player match">
+<img src="assets/images/scenery/active-missions.png" alt="Active colonization, attack, and espionage missions in a three-player match">
+<img src="assets/images/scenery/combat.png" alt="Live two-player battle with varied fleets, weapon fire, and explosions">
+<img src="assets/images/scenery/battle-report.png" alt="Detailed two-player battle report with varied fleets and planetary defenses">
 
 <br>
 

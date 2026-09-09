@@ -25,11 +25,11 @@ const UNUSED_IMAGES: &[&str] = &[
     "images/bg/cover.png",
     "images/buildings/small_shield.png",
     "images/planets/planets.png",
+    "images/scenery/active-missions.png",
+    "images/scenery/battle-report.png",
     "images/scenery/combat.png",
-    "images/scenery/incombat.png",
     "images/scenery/map.png",
-    "images/scenery/mission.png",
-    "images/scenery/report.png",
+    "images/scenery/mission-planning.png",
     "images/scenery/shop.png",
 ];
 
