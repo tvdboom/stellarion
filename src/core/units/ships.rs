@@ -198,20 +198,24 @@ impl Combat for Ship {
             Ship::LightFighter | Ship::HeavyFighter => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
             ]),
             Ship::Destroyer => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Ship(Ship::LightFighter), 70),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
                 (Unit::Defense(Defense::RocketLauncher), 70),
             ]),
             Ship::Cruiser => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
             ]),
             Ship::Bomber => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 60),
@@ -222,6 +226,7 @@ impl Combat for Ship {
             Ship::Battleship => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
                 (Unit::Ship(Ship::HeavyFighter), 70),
                 (Unit::Ship(Ship::Destroyer), 60),
                 (Unit::Ship(Ship::Cruiser), 50),
@@ -229,6 +234,7 @@ impl Combat for Ship {
             Ship::Dreadnought => HashMap::from([
                 (Unit::Ship(Ship::Probe), 80),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
                 (Unit::Ship(Ship::Bomber), 40),
                 (Unit::Ship(Ship::Battleship), 40),
                 (Unit::Ship(Ship::Dreadnought), 30),
@@ -243,6 +249,7 @@ impl Combat for Ship {
                 (Unit::Ship(Ship::Battleship), 50),
                 (Unit::Ship(Ship::Dreadnought), 40),
                 (Unit::Defense(Defense::Crawler), 80),
+                (Unit::Defense(Defense::RepairTruck), 80),
                 (Unit::Defense(Defense::RocketLauncher), 80),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 60),

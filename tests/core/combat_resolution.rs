@@ -238,6 +238,29 @@ fn every_armed_ship_has_probe_strength_rapid_fire_against_crawlers() {
     }
 }
 
+#[test]
+fn ships_and_missiles_match_crawler_rapid_fire_against_repair_trucks() {
+    let attackers =
+        Unit::ships().into_iter().chain(Unit::defenses().into_iter().filter(Unit::is_missile));
+    let mut checked = 0;
+
+    for attacker in attackers {
+        let rapid_fire = attacker.rapid_fire();
+        let Some(crawler_rapid_fire) = rapid_fire.get(&Unit::crawler()) else {
+            continue;
+        };
+
+        checked += 1;
+        assert_eq!(
+            rapid_fire.get(&Unit::repair_truck()),
+            Some(crawler_rapid_fire),
+            "{attacker:?} must treat Repair Trucks like Crawlers"
+        );
+    }
+
+    assert!(checked > 0, "fixture must include rapid fire against Crawlers");
+}
+
 fn salvage_report(surviving_crawlers: usize) -> MissionReport {
     let destination = Planet {
         id: 1,

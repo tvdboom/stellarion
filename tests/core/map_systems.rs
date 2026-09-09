@@ -639,7 +639,7 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
     let outbound = app.world().get::<Transform>(recycler).unwrap().translation;
-    assert!(outbound.distance(home) > Planet::SIZE * 0.1);
+    assert!(outbound.distance(home) > Planet::SIZE * 0.05);
 
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();

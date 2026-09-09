@@ -224,6 +224,7 @@ impl Combat for Defense {
             ]),
             Defense::InterplanetaryMissile => HashMap::from([
                 (Unit::Defense(Defense::Crawler), 90),
+                (Unit::Defense(Defense::RepairTruck), 90),
                 (Unit::Defense(Defense::RocketLauncher), 90),
                 (Unit::Defense(Defense::LightLaser), 80),
                 (Unit::Defense(Defense::HeavyLaser), 70),
