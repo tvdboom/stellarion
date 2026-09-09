@@ -134,7 +134,7 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
 fn gas_development_tiles_have_transparent_gutters() {
     let source = ::image::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/assets/images/ambient/gas-development.png"
+        "/assets/images/planet-buildings/gas-development.png"
     ))
     .unwrap()
     .into_rgba8();
@@ -1141,7 +1141,7 @@ fn render_development_and_wreckage() {
                                 settings.linear_filtering = true;
                             },
                         )
-                        .load("images/ambient/development.basisu.ktx2")
+                        .load("images/planet-buildings/development.basisu.ktx2")
                 });
                 let Some(development_texture) = images.get(&*development_image) else {
                     return;
@@ -1154,7 +1154,7 @@ fn render_development_and_wreckage() {
                                 settings.linear_filtering = true;
                             },
                         )
-                        .load("images/ambient/facilities.basisu.ktx2")
+                        .load("images/planet-buildings/facilities.basisu.ktx2")
                 });
                 let Some(facilities_texture) = images.get(&*facilities_image) else {
                     return;
@@ -1165,7 +1165,7 @@ fn render_development_and_wreckage() {
                         |settings: &mut crate::core::basis_texture::BasisTextureSettings| {
                             settings.linear_filtering = true;
                         },
-                    ).load("images/ambient/gas-development.basisu.ktx2")
+                    ).load("images/planet-buildings/gas-development.basisu.ktx2")
                     });
                 let Some(gas_texture) = images.get(&*gas_image) else {
                     return;

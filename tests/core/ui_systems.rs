@@ -821,8 +821,15 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
     use crate::core::identity::{GameCode, GameId, UserId};
     use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
     use crate::multiplayer::model::{GameMembership, GameRecord};
-    let model = GameModel::new([21; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([21; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
+    model
+        .map
+        .planets
+        .iter_mut()
+        .find(|planet| !planet.is_moon() && planet.controlled.is_none())
+        .unwrap()
+        .controlled = Some(player.id);
     let id = GameId::new("enemy-progress");
     for connected in [true, false] {
         for width in [320.0, 480.0, 1280.0] {
@@ -836,15 +843,26 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
                 status: MatchStatus::Active,
                 persisted: PersistedGame::new(model.clone()),
                 submitted_players: vec![],
-                members: vec![GameMembership {
-                    game_id: id.clone(),
-                    player_id: 2,
-                    user_id: UserId::new("enemy"),
-                    display_name: "An exceptionally long enemy player name".into(),
-                    is_creator: false,
-                    identity_version: 1,
-                    connected,
-                }],
+                members: vec![
+                    GameMembership {
+                        game_id: id.clone(),
+                        player_id: player.id,
+                        user_id: UserId::new("local"),
+                        display_name: "Local player".into(),
+                        is_creator: true,
+                        identity_version: 1,
+                        connected: true,
+                    },
+                    GameMembership {
+                        game_id: id.clone(),
+                        player_id: 2,
+                        user_id: UserId::new("enemy"),
+                        display_name: "An exceptionally long enemy player name".into(),
+                        is_creator: false,
+                        identity_version: 1,
+                        connected,
+                    },
+                ],
             });
             let context = egui::Context::default();
             let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 360.0));
@@ -856,7 +874,7 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
                         ..default()
                     },
                     |context| {
-                        draw_enemy_players_widget(context, &session, &player, &model.map, &[]);
+                        draw_players_widget(context, &session, &player, &model.map, &[]);
                     },
                 );
                 output.textures_delta.clear();
@@ -864,7 +882,11 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
             }
             let progress = text_rect(&shapes, "?/15");
             assert!(viewport.contains_rect(progress), "width={width}, connected={connected}");
+            assert!(has_text(&shapes, "PLAYERS"));
+            assert!(has_text(&shapes, "2/15"));
+            let local_name = text_rect(&shapes, "Local player");
             let name = text_rect(&shapes, "An exceptionally long enemy player name");
+            assert!(local_name.top() < name.top());
             assert!(name.right() <= progress.left());
             if !connected {
                 let status = text_rect(&shapes, "DISCONNECTED");
@@ -876,7 +898,7 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
 }
 
 #[test]
-fn enemy_players_panel_matches_owned_worlds_width_and_left_inset() {
+fn players_panel_matches_owned_worlds_width_and_left_inset() {
     use crate::core::identity::{GameCode, GameId, UserId};
     use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
     use crate::multiplayer::model::{GameMembership, GameRecord};
@@ -894,15 +916,26 @@ fn enemy_players_panel_matches_owned_worlds_width_and_left_inset() {
         status: MatchStatus::Active,
         persisted: PersistedGame::new(model.clone()),
         submitted_players: vec![],
-        members: vec![GameMembership {
-            game_id: id,
-            player_id: 2,
-            user_id: UserId::new("enemy"),
-            display_name: "Enemy".into(),
-            is_creator: false,
-            identity_version: 1,
-            connected: true,
-        }],
+        members: vec![
+            GameMembership {
+                game_id: id.clone(),
+                player_id: player.id,
+                user_id: UserId::new("local"),
+                display_name: "Local player".into(),
+                is_creator: true,
+                identity_version: 1,
+                connected: true,
+            },
+            GameMembership {
+                game_id: id,
+                player_id: 2,
+                user_id: UserId::new("enemy"),
+                display_name: "Enemy".into(),
+                is_creator: false,
+                identity_version: 1,
+                connected: true,
+            },
+        ],
     });
 
     for viewport_size in [egui::vec2(1_280.0, 720.0), egui::vec2(1_920.0, 1_080.0)] {
@@ -913,7 +946,7 @@ fn enemy_players_panel_matches_owned_worlds_width_and_left_inset() {
         let mut settings = Settings::default();
         let images = ImageIds::default();
         let mut owned_panel = egui::Rect::NOTHING;
-        let mut enemy_panel = egui::Rect::NOTHING;
+        let mut players_panel = egui::Rect::NOTHING;
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(viewport),
@@ -928,14 +961,13 @@ fn enemy_players_panel_matches_owned_worlds_width_and_left_inset() {
                     &mut settings,
                     &images,
                 );
-                enemy_panel =
-                    draw_enemy_players_widget(context, &session, &player, &model.map, &[]);
+                players_panel = draw_players_widget(context, &session, &player, &model.map, &[]);
             },
         );
         output.textures_delta.clear();
 
-        assert_eq!(enemy_panel.left(), owned_panel.left());
-        assert_eq!(enemy_panel.width(), owned_panel.width());
+        assert_eq!(players_panel.left(), owned_panel.left());
+        assert_eq!(players_panel.width(), owned_panel.width());
     }
 }
 

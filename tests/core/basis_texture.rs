@@ -127,7 +127,7 @@ fn asteroid_cutouts_keep_photographic_shading_transparency_and_smooth_mips() {
     use bevy::image::ImageFilterMode;
 
     for name in ["bennu", "eros", "gaspra", "mathilde"] {
-        let bytes = runtime_asset(&format!("images/asteroids/{name}.basisu.ktx2"));
+        let bytes = runtime_asset(&format!("images/ambient/{name}.basisu.ktx2"));
         let image = transcode_basis_texture(
             &bytes,
             TranscodeTarget::from_features(WgpuFeatures::empty()),
@@ -161,8 +161,11 @@ fn world_structure_cutouts_have_smooth_mips_for_small_map_sprites() {
         "images/moon-buildings/shipyard.basisu.ktx2",
         "images/moon-buildings/tidal generator.basisu.ktx2",
         "images/moon-buildings/orbital radar.basisu.ktx2",
-        "images/planet-buildings/robotics.basisu.ktx2",
-        "images/planet-buildings/robotics gas.basisu.ktx2",
+        "images/planet-buildings/development.basisu.ktx2",
+        "images/planet-buildings/facilities.basisu.ktx2",
+        "images/planet-buildings/gas-development.basisu.ktx2",
+        "images/planet-buildings/colonial administration.basisu.ktx2",
+        "images/planet-buildings/colonial administration gas.basisu.ktx2",
         "images/planet-buildings/terraformer.basisu.ktx2",
         "images/planet-buildings/terraformer gas.basisu.ktx2",
     ] {

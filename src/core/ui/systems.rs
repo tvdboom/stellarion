@@ -1053,8 +1053,8 @@ pub(crate) fn known_planet_counts(
     counts
 }
 
-/// Shows opposing players and their known progress toward territorial victory.
-fn draw_enemy_players_widget(
+/// Shows the local player first, followed by opponents and their territorial progress.
+fn draw_players_widget(
     context: &egui::Context,
     session: &MultiplayerSession,
     local_player: &Player,
@@ -1064,19 +1064,21 @@ fn draw_enemy_players_widget(
     let Some(game) = &session.active_game else {
         return egui::Rect::NOTHING;
     };
-    let enemies = game
-        .members
-        .iter()
-        .filter(|member| member.player_id != local_player.id)
-        .collect::<Vec<_>>();
-    if enemies.is_empty() {
+    let mut members = game.members.iter().collect::<Vec<_>>();
+    if members.is_empty() {
         return egui::Rect::NOTHING;
     }
+    members.sort_by_key(|member| member.player_id != local_player.id);
     let counts = known_planet_counts(map, local_player, missions);
+    let local_progress = map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && !planet.is_destroyed && local_player.controls(planet))
+        .count();
     let target = game.persisted.state.planets_to_win();
     let scale = owned_worlds_hud_scale(context.content_rect().size());
 
-    egui::Area::new("stellarion_enemy_players".into())
+    egui::Area::new("stellarion_players".into())
         .anchor(
             Align2::LEFT_BOTTOM,
             egui::vec2(OWNED_WORLDS_LEFT * scale, -18.0 * scale),
@@ -1092,14 +1094,15 @@ fn draw_enemy_players_widget(
                     ui.set_width((OWNED_WORLDS_WIDTH * scale).min(max_width));
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0) * scale;
                     ui.label(
-                        RichText::new("ENEMY PLAYERS")
+                        RichText::new("PLAYERS")
                             .size(11.0 * scale)
                             .strong()
                             .color(Color32::from_rgb(166, 188, 211)),
                     );
                     ui.add_space(5.0 * scale);
-                    for member in enemies {
+                    for member in members {
                         ui.horizontal(|ui| {
+                            let is_local = member.player_id == local_player.id;
                             let color = session.player_color(member.player_id);
                             let [red, green, blue] = color.rgb();
                             let (rect, _) = ui
@@ -1138,9 +1141,13 @@ fn draw_enemy_players_widget(
                             let progress = egui::WidgetText::from(
                                 RichText::new(format!(
                                     "{}/{}",
-                                    counts
-                                        .get(&member.player_id)
-                                        .map_or_else(|| "?".to_owned(), usize::to_string),
+                                    if is_local {
+                                        local_progress.to_string()
+                                    } else {
+                                        counts
+                                            .get(&member.player_id)
+                                            .map_or_else(|| "?".to_owned(), usize::to_string)
+                                    },
                                     target,
                                 ))
                                 .size(13.0 * scale)
@@ -1175,9 +1182,16 @@ fn draw_enemy_players_widget(
                                 TextStyle::Body,
                             );
                             ui.add(egui::Label::new(name));
-                            ui.add(egui::Label::new(progress)).on_hover_small(
-                                "Known controlled planets needed to win. Intelligence may be outdated.",
-                            );
+                            let progress = ui.add(egui::Label::new(progress));
+                            if is_local {
+                                progress.on_hover_small(
+                                    "Your controlled planets and the number needed to win. You must also retain your home planet.",
+                                );
+                            } else {
+                                progress.on_hover_small(
+                                    "Known controlled planets needed to win. Intelligence may be outdated.",
+                                );
+                            }
                             if let Some(status) = status {
                                 draw_disconnected_icon(ui, scale);
                                 ui.add(egui::Label::new(status));
@@ -3474,7 +3488,7 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
-            draw_enemy_players_widget(context, &session, &player, &map, &missions.0);
+            draw_players_widget(context, &session, &player, &map, &missions.0);
             draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
             draw_resources_widget(
                 context,

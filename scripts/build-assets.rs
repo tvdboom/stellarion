@@ -356,7 +356,6 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
         || source_relative.ends_with(" large.png")
         || source_relative.starts_with("images/ambient/")
-        || source_relative.starts_with("images/asteroids/")
         || source_relative.starts_with("images/moon-buildings/")
         || source_relative.starts_with("images/planet-buildings/")
         || matches!(

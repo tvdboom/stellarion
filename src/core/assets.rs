@@ -259,7 +259,7 @@ impl WorldAssets {
                 .with_settings(|settings: &mut BasisTextureSettings| {
                     settings.linear_filtering = true;
                 })
-                .load(format!("images/ambient/{name}.basisu.ktx2"));
+                .load(format!("images/planet-buildings/{name}.basisu.ktx2"));
             self.gameplay_handles.push(image.clone().untyped());
             self.images.insert(name.to_string(), image);
         }
@@ -293,13 +293,16 @@ impl WorldAssets {
             &mut self.images,
             &mut self.gameplay_handles,
             "colonial administration",
-            "images/buildings/robotics.basisu.ktx2",
+            "images/buildings/colonial administration.basisu.ktx2",
         );
         for (name, path) in [
-            ("planet colonial administration", "images/planet-buildings/robotics.basisu.ktx2"),
+            (
+                "planet colonial administration",
+                "images/planet-buildings/colonial administration.basisu.ktx2",
+            ),
             (
                 "gas planet colonial administration",
-                "images/planet-buildings/robotics gas.basisu.ktx2",
+                "images/planet-buildings/colonial administration gas.basisu.ktx2",
             ),
         ] {
             load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
@@ -310,7 +313,7 @@ impl WorldAssets {
                 &mut self.images,
                 &mut self.gameplay_handles,
                 name,
-                &format!("images/asteroids/{name}.basisu.ktx2"),
+                &format!("images/ambient/{name}.basisu.ktx2"),
             );
         }
         load_category(
