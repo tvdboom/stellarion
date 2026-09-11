@@ -108,9 +108,8 @@ pub(super) fn draw_stat_hover(ui: &mut Ui, stat: &CombatStats, images: &ImageIds
     });
 }
 
-/// Draws the building-and-orbital Spy intelligence requirement.
-pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
-    let stat = CombatStats::Intelligence;
+/// Draws one full-width unit stat row.
+fn draw_unit_stat(ui: &mut Ui, unit: &Unit, stat: CombatStats, images: &ImageIds) -> Response {
     ui.separator();
     ui.add_space(12.);
     let response = ui.horizontal(|ui| {
@@ -121,6 +120,27 @@ pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds
     });
     ui.add_space(12.);
     response.response.on_hover_ui(|ui| draw_stat_hover(ui, &stat, images))
+}
+
+/// Draws the building-and-orbital Spy intelligence requirement.
+pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
+    draw_unit_stat(ui, unit, CombatStats::Intelligence, images)
+}
+
+/// Draws an orbital's Shipyard production requirement.
+pub(super) fn draw_production_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
+    draw_unit_stat(ui, unit, CombatStats::Production, images)
+}
+
+/// Draws the production and intelligence boxes in orbital hover-panel order.
+pub(super) fn draw_orbital_stats(
+    ui: &mut Ui,
+    unit: &Unit,
+    images: &ImageIds,
+) -> (Response, Response) {
+    let production = draw_production_stat(ui, unit, images);
+    let intelligence = draw_intelligence_stat(ui, unit, images);
+    (production, intelligence)
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
@@ -185,7 +205,10 @@ fn draw_unit_hover(
 
             if !unit.is_building() {
                 for (i, row) in CombatStats::iter()
-                    .filter(|c| !matches!(c, CombatStats::RapidFire | CombatStats::Intelligence))
+                    .filter(|c| {
+                        !(matches!(c, CombatStats::RapidFire | CombatStats::Intelligence)
+                            || *c == CombatStats::Production && unit.is_orbital())
+                    })
                     .collect::<Vec<CombatStats>>()
                     .chunks(3)
                     .enumerate()
@@ -214,7 +237,9 @@ fn draw_unit_hover(
                 }
             }
 
-            if unit.is_building() || unit.is_orbital() {
+            if unit.is_orbital() {
+                let _ = draw_orbital_stats(ui, unit, images);
+            } else if unit.is_building() {
                 let _ = draw_intelligence_stat(ui, unit, images);
             }
 

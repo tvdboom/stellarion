@@ -13,8 +13,8 @@ fn empty_planet_colonization_starts_with_a_balanced_resource_grid() {
     planet.colonize(7);
 
     assert_eq!(
-        planet.army,
-        Army::from([
+        planet.army.controller(),
+        &Army::from([
             (Unit::Building(Building::MetalMine), 1),
             (Unit::Building(Building::CrystalMine), 1),
             (Unit::Building(Building::DeuteriumSynthesizer), 1),

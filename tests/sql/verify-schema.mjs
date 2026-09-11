@@ -268,20 +268,9 @@ for (const signature of [
 const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
   ["ABCDEF", "Guest", guestRecovery]);
 assert.equal(joined.recovery_code, guestRecovery);
-const save = (actor, record, persisted) => rpc(actor,
-  "select public.stellarion_save_game($1, $2, $3) as result", [id, record.revision, persisted]);
 const setColor = (actor, color) => rpc(actor,
   "select public.stellarion_set_player_color($1, $2) as result", [id, color]);
 let lobby = joined.game;
-const missingColor = structuredClone(lobby.persisted);
-delete missingColor.state.players[0].color;
-await assert.rejects(save(host, lobby, missingColor), /STLR_INVALID_DATA:players/);
-const occupied = structuredClone(lobby.persisted);
-occupied.state.players[0].color = occupied.state.players[1].color;
-await assert.rejects(save(host, lobby, occupied), /STLR_INVALID_DATA:color_unavailable/);
-const otherPlayer = structuredClone(lobby.persisted);
-otherPlayer.state.players[1].color = 5;
-await assert.rejects(save(host, lobby, otherPlayer), /STLR_FORBIDDEN/);
 await assert.rejects(setColor(host, 6), /STLR_INVALID_DATA:player_color/);
 lobby = await setColor(host, 2);
 assert.equal(lobby.persisted.state.players[0].color, 2);
@@ -290,11 +279,7 @@ const losingClaim = await setColor(guest, 2);
 assert.equal(losingClaim.revision, winningRevision);
 assert.equal(losingClaim.persisted.state.players[0].color, 2);
 assert.equal(losingClaim.persisted.state.players[1].color, 1);
-const forgedLobby = structuredClone(lobby.persisted);
-forgedLobby.state.players[0].resources.metal += 1;
-await assert.rejects(save(host, lobby, forgedLobby), /STLR_FORBIDDEN/);
 lobby = await setColor(host, 0);
-lobby = await save(host, lobby, lobby.persisted);
 const start = (actor, persisted = fixtures.active, revision = lobby.revision) => rpc(actor,
   "select public.stellarion_start_game($1, $2, $3) as result", [id, revision, persisted]);
 await assert.rejects(start(guest), /STLR_INVALID_STATUS/);
@@ -310,14 +295,25 @@ const startedSavedAt = active.saved_at;
 const summaries = await rpc(host, "select public.stellarion_list_games() as result");
 assert.equal(summaries.length, 1);
 assert.equal(summaries[0].saved_at, startedSavedAt);
-for (const field of ["resources", "color"]) {
-  const forged = structuredClone(active.persisted);
-  if (field === "resources") forged.state.players[0].resources.metal += 1;
-  else forged.state.players[0].color = 5;
-  await assert.rejects(save(guest, active, forged), /STLR_FORBIDDEN/);
-}
-active = await save(host, active, active.persisted);
+const save = (actor, record, player, turn = 1, commands = [], generation = 0) => rpc(actor,
+  "select public.stellarion_save_game($1, $2, $3) as result",
+  [id, record.revision, { player_id: player, turn, commands, generation }]);
+await assert.rejects(save(guest, active, 1), /STLR_FORBIDDEN/);
+await assert.rejects(save(outsider, active, 1), /STLR_FORBIDDEN/);
+await assert.rejects(save(host, active, 1, 2), /STLR_STALE_SUBMISSION/);
+await assert.rejects(save(host, { ...active, revision: active.revision - 1 }, 1), /STLR_CONFLICT/);
+await assert.rejects(rpc(host,
+  "select public.stellarion_save_game($1, $2, $3) as result",
+  [id, active.revision, { player_id: 1, turn: 1, commands: [] }]), /STLR_INVALID_DATA:submission/);
+const acknowledgement = await save(host, active, 1);
+assert.equal(acknowledgement.revision, active.revision);
+active = { ...active, ...acknowledgement };
 assert(active.saved_at >= startedSavedAt);
+const savedDrafts = await rpc(host,
+  "select public.stellarion_load_turn_submissions($1, $2) as result", [id, 1]);
+assert.equal(savedDrafts.length, 1);
+assert.equal(savedDrafts[0].ready, false);
+assert.deepEqual(savedDrafts[0].submission.commands, []);
 const submit = (actor, player, turn = 1, commands = [], generation = 0) => rpc(actor,
   "select public.stellarion_submit_turn($1, $2) as result",
   [id, { player_id: player, turn, commands, generation }]);
@@ -370,7 +366,9 @@ assert(events.events.some(e => e.kind === "turn_withdrawn"));
 const temporary = await create(host, "XYZABC");
 await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
   ["XYZABC", "Guest", "CDEF-0123-4567-89AB"]);
-await rpc(host, "select public.stellarion_set_connected($1, false) as result", [temporary.game.id]);
+const deletedLobbyPresence = await rpc(host,
+  "select public.stellarion_set_connected($1, false) as result", [temporary.game.id]);
+assert.deepEqual(deletedLobbyPresence, { ok: true, members: [] });
 await assert.rejects(rpc(guest, "select public.stellarion_load_game($1) as result", [temporary.game.id]), /STLR_GAME_NOT_FOUND/);
 await rpc(host, "select public.stellarion_set_connected($1, false) as result", [id]);
 const disconnected = await rpc(guest, "select public.stellarion_load_game($1) as result", [id]);
@@ -380,7 +378,11 @@ assert.equal(disconnected.saved_at, resolved.saved_at, "presence is not a gamepl
 // must expose expiry without renewing it or deleting an active match.
 for (const [departed, observer] of [[host, guest], [guest, host]]) {
   for (const actor of [host, guest]) {
-    await rpc(actor, "select public.stellarion_set_connected($1, true) as result", [id]);
+    const heartbeat = await rpc(actor,
+      "select public.stellarion_set_connected($1, true) as result", [id]);
+    assert.equal(heartbeat.ok, true);
+    assert.equal(heartbeat.members.length, 2);
+    assert(!("persisted" in heartbeat), "presence must not return the gameplay snapshot");
   }
   const before = await rpc(observer, "select public.stellarion_events_since($1, $2) as result", [id, 0]);
   await db.query(

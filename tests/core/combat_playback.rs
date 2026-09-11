@@ -24,7 +24,8 @@ fn app_with_raid(bombers: usize, raid: BombingRaid) -> App {
     let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
     target.colonize(2);
     target.army =
-        Army::from([(Unit::Defense(Defense::GaussCannon), 12), (Unit::planetary_shield(), 5)]);
+        Army::from([(Unit::Defense(Defense::GaussCannon), 12), (Unit::planetary_shield(), 5)])
+            .into();
     if raid != BombingRaid::None {
         for unit in Unit::resource_buildings() {
             target.army.insert(unit, 5);
@@ -111,7 +112,8 @@ fn playback_uses_the_recorded_energy_scaled_planetary_shield_strength() {
     let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
     target.colonize(2);
     target.army =
-        Army::from([(Unit::planetary_shield(), 5), (Unit::Defense(Defense::GaussCannon), 12)]);
+        Army::from([(Unit::planetary_shield(), 5), (Unit::Defense(Defense::GaussCannon), 12)])
+            .into();
     let mission = Mission::new_with_id(
         29,
         1,
@@ -325,7 +327,8 @@ fn rewinding_a_fully_intercepted_missile_strike_replays_the_interceptors() {
     let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
     target.colonize(2);
     target.army =
-        Army::from([(Unit::antiballistic_missile(), 16), (Unit::Defense(Defense::GaussCannon), 1)]);
+        Army::from([(Unit::antiballistic_missile(), 16), (Unit::Defense(Defense::GaussCannon), 1)])
+            .into();
     let mission = Mission::new_with_id(
         11,
         1,

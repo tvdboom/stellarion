@@ -228,14 +228,15 @@ pub struct SpawnShotMsg {
 fn spawn_combat_identity(
     commands: &mut Commands,
     role: &str,
-    name: Option<&str>,
+    participants: &[(String, Color)],
     color: Color,
     top: Option<f32>,
     bottom: Option<f32>,
     assets: &WorldAssets,
     window: &Window,
 ) {
-    let has_name = name.is_some();
+    let has_name = !participants.is_empty();
+    let name_lines = participants.len();
     let mut node = Node {
         position_type: PositionType::Absolute,
         left: Val::Px(18.0),
@@ -245,7 +246,7 @@ fn spawn_combat_identity(
             132.0
         }),
         height: Val::Px(if has_name {
-            54.0
+            38.0 + 16.0 * name_lines as f32
         } else {
             38.0
         }),
@@ -306,10 +307,10 @@ fn spawn_combat_identity(
                             color
                         }),
                     ));
-                    if let Some(name) = name {
+                    for (name, participant_color) in participants {
                         content.spawn((
                             add_text(name, "medium", 9.0, assets, window),
-                            TextColor(color),
+                            TextColor(*participant_color),
                         ));
                     }
                 });
@@ -660,14 +661,25 @@ pub fn setup_combat(
         .player_name(attacker_id)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let defender_name = defender_id.map(|id| {
-        session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
-    });
+    let attackers = vec![(attacker_name, attack_c)];
+    let defenders = report
+        .defender_players()
+        .into_iter()
+        .map(|id| {
+            (
+                session
+                    .player_name(id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {id}")),
+                session.player_color(id).color(),
+            )
+        })
+        .collect::<Vec<_>>();
 
     spawn_combat_identity(
         &mut commands,
         "Attacker",
-        Some(&attacker_name),
+        &attackers,
         attack_c,
         Some(COMBAT_IDENTITY_EDGE_INSET),
         None,
@@ -677,7 +689,7 @@ pub fn setup_combat(
     spawn_combat_identity(
         &mut commands,
         "Defender",
-        defender_name.as_deref(),
+        &defenders,
         defend_c,
         None,
         Some(COMBAT_IDENTITY_EDGE_INSET),
@@ -708,10 +720,11 @@ pub fn setup_combat(
         attacker_row_y,
     );
 
+    let defending_army = report.planet.army.combined();
     let defending_def = Unit::defenses()
         .into_iter()
         .filter_map(|u| {
-            let amount = report.planet.army.amount(&u);
+            let amount = defending_army.amount(&u);
             ((!u.is_missile()
                 || report.mission.objective == Icon::MissileStrike
                     && u == Unit::antiballistic_missile())
@@ -726,7 +739,7 @@ pub fn setup_combat(
             .into_iter()
             .chain(vec![Unit::space_dock()])
             .filter_map(|u| {
-                let amount = report.planet.army.amount(&u);
+                let amount = defending_army.amount(&u);
                 (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
             })
             .collect::<Vec<_>>()

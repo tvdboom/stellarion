@@ -1,6 +1,5 @@
 //! Deterministic snapshot and command validation shared by clients and the mock backend.
 
-use crate::core::identity::PlayerId;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     resolved_turn, validate_submission_batch, GameModel, MatchStatus, PersistedGame,
@@ -28,19 +27,6 @@ pub fn initial_snapshot(
     }
     model.player_mut(1).map_err(invalid)?.color = color;
     Ok(PersistedGame::new(model))
-}
-
-/// A normal save may only acknowledge the canonical state.
-pub fn validate_save(
-    record: &GameRecord,
-    _player_id: PlayerId,
-    candidate: &PersistedGame,
-) -> Result<(), BackendError> {
-    candidate.validate().map_err(invalid)?;
-    if same_snapshot(&record.persisted, candidate)? {
-        return Ok(());
-    }
-    Err(BackendError::Forbidden)
 }
 
 /// Validates an incoming immutable row against every row already accepted this turn.

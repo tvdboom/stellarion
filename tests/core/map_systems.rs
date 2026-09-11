@@ -1104,7 +1104,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
         (Unit::Building(Building::JumpGate), 1),
     ]);
     for home in [own_home, enemy_home, unknown_home] {
-        model.map.get_mut(home).army = army.clone();
+        model.map.get_mut(home).army = army.clone().into();
     }
     let mut player = model.players[0].clone();
     player.reports.push(MissionReport {
@@ -1121,7 +1121,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
         planet: model.map.get(enemy_home).clone(),
         scout_probes: 1_000_000,
         surviving_attacker: Army::new(),
-        surviving_defender: army,
+        surviving_defender: army.into(),
         planet_colonized: false,
         planet_destroyed: false,
         destination_owned: Some(2),

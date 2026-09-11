@@ -78,7 +78,7 @@ fn snapshot_card(
                 return None;
             }
             if retreat.after_round.is_none() {
-                let count = report.planet.army.amount(&unit);
+                let count = report.planet.army.controller().amount(&unit);
                 return Some(CombatUnitCmp {
                     unit,
                     side,
@@ -323,7 +323,8 @@ pub fn control_combat_playback(world: &mut World) {
             return;
         }
         // Empty, unguarded planets must still play bombing/destruction missions.
-        let started_with_both = [&report.mission.army, &report.planet.army]
+        let defending_army = report.planet.army.combined();
+        let started_with_both = [&report.mission.army, &defending_army]
             .into_iter()
             .all(|army| army.iter().any(|(unit, count)| *count > 0 && combatant(*unit)));
         if !started_with_both

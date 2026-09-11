@@ -317,7 +317,7 @@ fn planet_building_roster_includes_both_home_and_colony_capstones() {
 }
 
 #[test]
-fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
+fn orbitals_require_their_production_level_in_completed_shipyards() {
     let mut game = game();
     let home = game.players[0].home_planet;
     game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
@@ -331,26 +331,24 @@ fn distinct_orbitals_queue_without_shipyard_or_factory_capacity() {
         vec![
             Unit::Building(Building::SolarSatellite),
             Unit::Building(Building::Recycler),
-            Unit::Building(Building::SensorPhalanx),
             Unit::Building(Building::CommandRelay),
+            Unit::Building(Building::SensorPhalanx),
             Unit::Building(Building::JumpGate),
             Unit::Building(Building::OrbitalRailgun),
             Unit::space_dock(),
         ]
     );
     for orbital in Unit::orbitals() {
-        assert_eq!(purchase_limit(player, planet, orbital, Building::MAX_LEVEL).unwrap(), 1);
-        planet.buy.push(orbital);
+        let required = orbital.production();
+        planet.army.insert(Unit::Building(Building::Shipyard), required - 1);
+        assert_eq!(
+            purchase_limit(player, planet, orbital, Building::MAX_LEVEL),
+            Err(OrderError::Production),
+            "{orbital:?} should require Shipyard level {required}"
+        );
+        planet.army.insert(Unit::Building(Building::Shipyard), required);
+        assert_eq!(purchase_limit(player, planet, orbital, Building::MAX_LEVEL), Ok(1));
     }
-    assert_eq!(planet.buy.len(), 7);
-    assert!(purchase_limit(
-        player,
-        planet,
-        Unit::Building(Building::SolarSatellite),
-        Building::MAX_LEVEL,
-    )
-    .is_err());
-    assert!(purchase_limit(player, planet, Unit::space_dock(), Building::MAX_LEVEL).is_err());
 }
 
 #[test]
@@ -509,7 +507,7 @@ fn every_rapid_fire_shot_starts_with_full_damage() {
     let game = game();
     let origin = game.map.get(game.players[0].home_planet);
     let mut destination = game.map.get(game.players[1].home_planet).clone();
-    destination.army = Army::from([(Unit::Ship(Ship::HeavyFighter), 20)]);
+    destination.army = Army::from([(Unit::Ship(Ship::HeavyFighter), 20)]).into();
     let attacker = Unit::Ship(Ship::Battleship);
     let mission = Mission::new_with_id(
         1,
@@ -554,7 +552,7 @@ fn bombing_damage_is_persisted_when_attackers_win() {
         let target =
             game.map.planets.iter().find(|p| p.owned.is_none() && !p.is_moon()).unwrap().id;
         let mine = Unit::Building(Building::MetalMine);
-        game.map.get_mut(target).army = Army::from([(mine, 5)]);
+        game.map.get_mut(target).army = Army::from([(mine, 5)]).into();
         let mut mission = Mission::new_with_id(
             123,
             1,

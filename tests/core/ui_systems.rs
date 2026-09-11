@@ -408,7 +408,7 @@ fn combat_selection_uses_prebattle_planet_artwork() {
         planet: destination.clone(),
         scout_probes: 0,
         surviving_attacker: Army::new(),
-        surviving_defender: Army::new(),
+        surviving_defender: Army::new().into(),
         planet_colonized: false,
         planet_destroyed: true,
         destination_owned: None,
@@ -438,7 +438,7 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
         planet,
         scout_probes: 0,
         surviving_attacker: Army::new(),
-        surviving_defender: Army::new(),
+        surviving_defender: Army::new().into(),
         planet_colonized: false,
         planet_destroyed: false,
         destination_owned: None,
@@ -449,6 +449,7 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
     let round = RoundReport {
         defender: vec![CombatUnit {
             id: 7,
+            owner: None,
             unit: Unit::space_dock(),
             hull: Unit::space_dock().hull(),
             shield: Unit::space_dock().shield(),
@@ -475,7 +476,8 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
         (Unit::crawler(), 15),
         (Unit::Defense(Defense::RocketLauncher), 10),
         (Unit::Defense(Defense::PlasmaTurret), 2),
-    ]);
+    ])
+    .into();
     let report = MissionReport {
         id: 1,
         turn: 1,
@@ -492,7 +494,8 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
             (Unit::crawler(), 5),
             (Unit::Defense(Defense::RocketLauncher), 4),
             (Unit::Defense(Defense::PlasmaTurret), 1),
-        ]),
+        ])
+        .into(),
         planet_colonized: false,
         planet_destroyed: false,
         destination_owned: Some(2),
@@ -704,8 +707,8 @@ fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
         (Building::Senate, 5),
         (Building::ColonialAdministration, 5),
         (Building::SolarSatellite, 1),
-        (Building::SensorPhalanx, 2),
-        (Building::CommandRelay, 3),
+        (Building::CommandRelay, 2),
+        (Building::SensorPhalanx, 3),
         (Building::JumpGate, 4),
     ];
     target.army = tiers
@@ -797,6 +800,39 @@ fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
         "---"
     );
     assert_eq!(Unit::space_dock().get_stat(&CombatStats::Intelligence), "---");
+}
+
+#[test]
+fn orbital_hover_stats_put_production_before_intelligence() {
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 300.0));
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let production = egui::TextureId::User(1);
+    let intelligence = egui::TextureId::User(2);
+    let images = ImageIds(HashMap::from([
+        ("production".into(), production),
+        ("intelligence".into(), intelligence),
+    ]));
+    let unit = Unit::Building(Building::OrbitalRailgun);
+    let mut production_box = egui::Rect::NOTHING;
+    let mut intelligence_box = egui::Rect::NOTHING;
+
+    let input = egui::RawInput {
+        screen_rect: Some(viewport),
+        ..default()
+    };
+    let mut output = context.run_ui(input, |ui| {
+        let (production, intelligence) = shop::draw_orbital_stats(ui, &unit, &images);
+        production_box = production.rect;
+        intelligence_box = intelligence.rect;
+    });
+    output.textures_delta.clear();
+
+    assert!(has_text(&output.shapes, "5"));
+    assert!(has_text(&output.shapes, "---"));
+    assert_eq!(images.get("production"), production);
+    assert_eq!(images.get("intelligence"), intelligence);
+    assert!(production_box.bottom() < intelligence_box.top());
 }
 
 #[test]

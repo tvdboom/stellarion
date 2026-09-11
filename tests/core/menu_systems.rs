@@ -810,7 +810,7 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
             app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
         assert!(matches!(requests.as_slice(), [MultiplayerRequest::StartLocalPractice {
             player_color, rules,
-        }] if *player_color == chosen && rules.practice_mode && rules.player_count == 1));
+        }] if *player_color == chosen && rules.practice_mode && rules.player_count == 2));
 
         menu_app_frame(
             &mut app,

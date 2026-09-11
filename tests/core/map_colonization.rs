@@ -96,7 +96,7 @@ fn successful_colony_mission_flies_in_and_lands_before_conquest_celebrates() {
         planet: before,
         scout_probes: 0,
         surviving_attacker: Army::new(),
-        surviving_defender: Army::new(),
+        surviving_defender: Army::new().into(),
         planet_colonized: true,
         planet_destroyed: false,
         destination_owned: Some(player_id),
@@ -190,6 +190,25 @@ fn colonies_announce_once_and_wait_for_combat_to_finish() {
     app.insert_resource(State::new(GameState::Playing));
     app.update();
     assert_eq!(take_toasts(&mut app)[0].action, Some(MessageAction::FocusColony(second)));
+}
+
+#[test]
+fn switching_viewed_player_does_not_celebrate_existing_colonies() {
+    let (mut app, second_home, _) = presentation_app();
+    let first_player = app.world().resource::<Player>().clone();
+    app.world_mut().resource_mut::<Map>().get_mut(second_home).colonize(2);
+
+    app.insert_resource(Player::new(2, second_home));
+    app.update();
+    app.update();
+    assert!(take_toasts(&mut app).is_empty());
+    assert_eq!(app.world_mut().query::<&ColonyEffect>().iter(app.world()).count(), 0);
+
+    app.insert_resource(first_player);
+    app.update();
+    app.update();
+    assert!(take_toasts(&mut app).is_empty());
+    assert_eq!(app.world_mut().query::<&ColonyEffect>().iter(app.world()).count(), 0);
 }
 
 #[test]

@@ -645,7 +645,7 @@ pub(crate) fn animate_recyclers(
         let info =
             (!player.controls(planet)).then(|| player.last_info(planet, &missions.0)).flatten();
         let (army, controller) = if player.controls(planet) {
-            (Some(&planet.army), planet.controlled.or(planet.owned))
+            (Some(planet.army.controller()), planet.controlled.or(planet.owned))
         } else {
             (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
         };
@@ -1843,7 +1843,7 @@ pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Playe
     state.to_selected = false;
     state.mission = false;
     state.combat_report = None;
-    if player.owns(planet) || player.controls(planet) {
+    if planet.mission_origin_army(player.id).is_some() {
         state.mission_info.origin = planet.id;
     }
 }
@@ -2048,7 +2048,7 @@ pub fn draw_map(
                         parent
                             .spawn((
                                 Sprite {
-                                    image: assets.image(icon.to_lowername().as_str()),
+                                    image: assets.image(icon.asset_key()),
                                     custom_size: Some(Vec2::splat(Icon::SIZE)),
                                     color: MAP_ICON_IDLE_TINT,
                                     ..default()
@@ -2141,21 +2141,35 @@ pub fn draw_map(
                                             let origin_id = state
                                                 .planet_selected
                                                 .filter(|&id| {
-                                                    id != planet_id && icon.condition(map.get(id))
+                                                    id != planet_id
+                                                        && map
+                                                            .get(id)
+                                                            .mission_origin_army(player.id)
+                                                            .is_some_and(|army| {
+                                                                icon.condition_for_army(army)
+                                                            })
                                                 })
                                                 .unwrap_or(
                                                     map.planets
                                                         .iter()
                                                         .find_map(|p| {
                                                             (p.id != planet_id
-                                                                && player.controls(p)
-                                                                && icon.condition(p))
+                                                                && p.mission_origin_army(player.id)
+                                                                    .is_some_and(|army| {
+                                                                        icon.condition_for_army(
+                                                                            army,
+                                                                        )
+                                                                    }))
                                                             .then_some(p.id)
                                                         })
                                                         .unwrap_or(player.home_planet),
                                                 );
 
                                             let origin = map.get(origin_id);
+                                            let origin_army = origin
+                                                .mission_origin_army(player.id)
+                                                .cloned()
+                                                .unwrap_or_default();
                                             state.mission_info =
                                                 Mission::new(
                                                     settings.turn,
@@ -2170,10 +2184,9 @@ pub fn draw_map(
                                                         )]),
                                                         Icon::Spy => Army::from([(
                                                             Unit::probe(),
-                                                            origin.army.amount(&Unit::probe()),
+                                                            origin_army.amount(&Unit::probe()),
                                                         )]),
-                                                        Icon::Attack | Icon::Destroy => origin
-                                                            .army
+                                                        Icon::Attack | Icon::Destroy => origin_army
                                                             .iter()
                                                             .filter_map(|(u, c)| {
                                                                 (*c > 0 && u.is_combat_ship())
@@ -2182,12 +2195,11 @@ pub fn draw_map(
                                                             .collect(),
                                                         Icon::MissileStrike => Army::from([(
                                                             Unit::interplanetary_missile(),
-                                                            origin.army.amount(
+                                                            origin_army.amount(
                                                                 &Unit::interplanetary_missile(),
                                                             ),
                                                         )]),
-                                                        Icon::Deploy => origin
-                                                            .army
+                                                        Icon::Deploy | Icon::Protect => origin_army
                                                             .iter()
                                                             .filter_map(|(u, c)| {
                                                                 (*c > 0 && u.is_ship())
@@ -2761,7 +2773,7 @@ pub fn update_planet_info(
                 let visible = match icon {
                     Icon::Attacked => world.missions.iter().any(|m| {
                         player.owns(planet)
-                            && m.objective != Icon::Deploy
+                            && !matches!(m.objective, Icon::Deploy | Icon::Protect)
                             && m.destination == planet.id
                     }),
                     Icon::RailgunStrike => railgun_action_available(
@@ -2808,23 +2820,20 @@ pub fn update_planet_info(
                         let has_condition = {
                             map.planets.iter().any(|p| {
                                 p.id != planet.id
-                                    && icon.condition(p)
+                                    && p.mission_origin_army(player.id)
+                                        .is_some_and(|army| icon.condition_for_army(army))
                                     && match icon {
-                                        Icon::Deploy => {
-                                            player.controls(p) && player.controls(planet)
-                                        },
+                                        Icon::Deploy => player.controls(planet),
+                                        Icon::Protect => planet.allows_protection(player.id),
                                         Icon::Colonize => {
-                                            player.controls(p)
-                                                && !player.owns(planet)
+                                            !player.owns(planet)
                                                 && !planet.is_moon()
                                                 && n_owned < n_max_owned
                                         },
                                         Icon::MissileStrike => {
-                                            player.controls(p)
-                                                && !player.controls(planet)
-                                                && !planet.is_moon()
+                                            !player.controls(planet) && !planet.is_moon()
                                         },
-                                        _ => player.controls(p) && !player.controls(planet),
+                                        _ => !player.controls(planet),
                                     }
                             })
                         };
@@ -3029,7 +3038,7 @@ pub fn update_planet_defenses(
         // Read intelligence once per planet. A hidden capture must not change its displayed color.
         let info = (!controls).then(|| player.last_info(planet, &world.missions.0)).flatten();
         let (army, controller) = if controls {
-            (Some(&planet.army), planet.controlled)
+            (Some(planet.army.controller()), planet.controlled)
         } else {
             (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
         };

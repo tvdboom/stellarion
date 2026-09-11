@@ -78,24 +78,23 @@ pub(crate) fn destroyed_ships(report: &MissionReport) -> usize {
     if report.combat_report.is_none() {
         return 0;
     }
-    [
-        (&report.mission.army, &report.surviving_attacker),
-        (&report.planet.army, &report.surviving_defender),
-    ]
-    .into_iter()
-    .enumerate()
-    .flat_map(|(side, (before, after))| {
-        before.iter().filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship()).map(
-            move |(unit, count)| {
-                count.saturating_sub(after.amount(unit)).saturating_sub(if side == 1 {
-                    report.escaped_defenders(unit)
-                } else {
-                    0
-                })
-            },
-        )
-    })
-    .fold(0usize, usize::saturating_add)
+    let defending_before = report.planet.army.combined();
+    let defending_after = report.surviving_defender.combined();
+    [(&report.mission.army, &report.surviving_attacker), (&defending_before, &defending_after)]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(side, (before, after))| {
+            before.iter().filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship()).map(
+                move |(unit, count)| {
+                    count.saturating_sub(after.amount(unit)).saturating_sub(if side == 1 {
+                        report.escaped_defenders(unit)
+                    } else {
+                        0
+                    })
+                },
+            )
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// Builds public debris from canonical participant reports, deduplicating their persisted copies.

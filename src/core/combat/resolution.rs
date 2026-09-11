@@ -1,6 +1,6 @@
 //! Deterministic fleet-combat resolution independent of rendering and networking.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 use bevy::prelude::*;
@@ -15,7 +15,7 @@ use crate::core::combat::report::{
 use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
 use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
-use crate::core::map::planet::Planet;
+use crate::core::map::planet::{Garrison, Planet};
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
@@ -41,6 +41,9 @@ static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> = LazyLock::new
 #[serde(deny_unknown_fields)]
 /// Outcome of one combatant firing once at a selected target.
 pub struct ShotReport {
+    /// Exact combatant selected by this shot, when it targeted an ordinary unit.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub target_id: Option<u64>,
     /// Unit kind represented by this record or presentation component.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub unit: Option<Unit>,
@@ -71,6 +74,9 @@ impl ShotReport {
 pub struct CombatUnit {
     /// Stable identifier used to cross-reference this value.
     pub id: u64,
+    /// Player whose independently persisted fleet supplied this unit.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub owner: Option<crate::core::identity::PlayerId>,
     /// Unit kind represented by this record or presentation component.
     pub unit: Unit,
     /// Hull points remaining at this stage of combat.
@@ -86,8 +92,18 @@ pub struct CombatUnit {
 impl CombatUnit {
     /// Creates a combat unit from the supplied deterministic stream.
     pub fn new_with_rng<R: Rng + ?Sized>(unit: &Unit, rng: &mut R) -> Self {
+        Self::new_owned_with_rng(unit, None, rng)
+    }
+
+    /// Creates a combat unit while retaining the contributing player's identity.
+    pub fn new_owned_with_rng<R: Rng + ?Sized>(
+        unit: &Unit,
+        owner: Option<crate::core::identity::PlayerId>,
+        rng: &mut R,
+    ) -> Self {
         Self {
             id: rng.random(),
+            owner,
             unit: *unit,
             hull: unit.hull(),
             shield: unit.shield(),
@@ -137,7 +153,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     retreat_home: Option<crate::core::map::planet::PlanetId>,
     rng: &mut R,
 ) -> MissionReport {
-    if mission.objective == Icon::Deploy
+    if matches!(mission.objective, Icon::Deploy | Icon::Protect)
         || (mission.objective == Icon::Colonize && destination.controlled == Some(mission.owner))
     {
         return MissionReport {
@@ -176,7 +192,14 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         .filter(|(unit, _)| unit.is_ship())
         .map(|(unit, count)| unit.production() as u128 * *count as u128)
         .sum::<u128>();
-    let mut support_colonies = destination.army.amount(&Unit::colony_ship());
+    let defender_owner = destination.controlled.or(destination.owned);
+    let mut support_colonies = BTreeMap::<crate::core::identity::PlayerId, usize>::new();
+    if let Some(owner) = defender_owner {
+        support_colonies.insert(owner, destination.army.controller().amount(&Unit::colony_ship()));
+    }
+    for (owner, fleet) in destination.army.protectors() {
+        support_colonies.insert(owner, fleet.amount(&Unit::colony_ship()));
+    }
 
     let mut buildings: Army =
         destination.army.iter().filter_map(|(u, c)| u.is_building().then_some((*u, *c))).collect();
@@ -188,7 +211,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     let mut attack_army = Vec::new();
     for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
         for _ in 0..*count {
-            attack_army.push(CombatUnit::new_with_rng(unit, rng));
+            attack_army.push(CombatUnit::new_owned_with_rng(unit, Some(mission.owner), rng));
         }
     }
 
@@ -203,7 +226,22 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             }
     }) {
         for _ in 0..*count {
-            defend_army.push(CombatUnit::new_with_rng(unit, rng));
+            defend_army.push(CombatUnit::new_owned_with_rng(unit, defender_owner, rng));
+        }
+    }
+
+    for (owner, fleet) in destination.army.protectors() {
+        for (unit, count) in fleet.iter().filter(|(unit, _)| {
+            **unit != Unit::colony_ship()
+                && if mission.objective == Icon::MissileStrike {
+                    **unit != Unit::interplanetary_missile()
+                } else {
+                    !unit.is_missile()
+                }
+        }) {
+            for _ in 0..*count {
+                defend_army.push(CombatUnit::new_owned_with_rng(unit, Some(owner), rng));
+            }
         }
     }
 
@@ -225,6 +263,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             &mut combat_report,
             &mut defend_army,
             &mut support_colonies,
+            defender_owner,
             retreat_home,
             None,
         );
@@ -324,6 +363,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
                     let target = if let Some(target) = target {
                         shot.unit = Some(target.unit);
+                        shot.target_id = Some(target.id);
                         target
                     } else {
                         if shot.unit.is_some() {
@@ -408,6 +448,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                 &mut combat_report,
                 &mut defend_army,
                 &mut support_colonies,
+                defender_owner,
                 retreat_home,
                 Some(round - 1),
             );
@@ -415,10 +456,13 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         } else if !withdrawal_ordered && !attack_army.is_empty() {
             let remaining = defend_army
                 .iter()
-                .filter(|unit| unit.unit.is_ship())
+                .filter(|unit| unit.unit.is_ship() && unit.owner == defender_owner)
                 .map(|unit| unit.unit.production() as u128)
                 .sum::<u128>()
-                + support_colonies as u128 * Unit::colony_ship().production() as u128;
+                + defender_owner
+                    .and_then(|owner| support_colonies.get(&owner).copied())
+                    .unwrap_or_default() as u128
+                    * Unit::colony_ship().production() as u128;
             if threshold.is_some_and(|percent| {
                 remaining > 0
                     && initial_fleet_strength > 0
@@ -431,6 +475,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                         &mut combat_report,
                         &mut defend_army,
                         &mut support_colonies,
+                        defender_owner,
                         retreat_home,
                         Some(round - 1),
                     );
@@ -480,24 +525,47 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         army
     });
 
-    let mut surviving_defense = defend_army.iter().fold(Army::new(), |mut army, cu| {
-        *army.entry(cu.unit).or_insert(0) += 1;
-        army
-    });
+    let defense_survives = !defend_army.is_empty();
+    let mut surviving_controller = Army::new();
+    let mut surviving_protectors = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
+    for combatant in &defend_army {
+        let army = if combatant.owner == defender_owner {
+            &mut surviving_controller
+        } else if let Some(owner) = combatant.owner {
+            surviving_protectors.entry(owner).or_default()
+        } else {
+            continue;
+        };
+        let count = army.entry(combatant.unit).or_default();
+        *count = count.saturating_add(1);
+    }
 
-    if !attack_army.is_empty() || surviving_defense.is_empty() {
+    if !attack_army.is_empty() || !defense_survives {
         // Add the non-combat ships to the attacker
         *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
             mission.army.amount(&Unit::colony_ship());
     }
-    if !surviving_defense.is_empty() {
+    if defense_survives {
         // Defender support units survive a stalemate as well as a defensive victory.
-        // Add non-combat ships and the remaining missiles to the defender
-        *surviving_defense.entry(Unit::colony_ship()).or_insert(0) = support_colonies;
-        *surviving_defense.entry(Unit::antiballistic_missile()).or_insert(0) =
-            destination.army.amount(&Unit::antiballistic_missile()) - used_antiballistic.len();
-        *surviving_defense.entry(Unit::interplanetary_missile()).or_insert(0) =
-            destination.army.amount(&Unit::interplanetary_missile());
+        // Add each commander's non-combat ships and the controller's remaining missiles.
+        if let Some(owner) = defender_owner {
+            let colonies = support_colonies.get(&owner).copied().unwrap_or_default();
+            if colonies > 0 {
+                surviving_controller.insert(Unit::colony_ship(), colonies);
+            }
+        }
+        for (owner, count) in &support_colonies {
+            if Some(*owner) != defender_owner && *count > 0 {
+                surviving_protectors.entry(*owner).or_default().insert(Unit::colony_ship(), *count);
+            }
+        }
+        *surviving_controller.entry(Unit::antiballistic_missile()).or_insert(0) = destination
+            .army
+            .controller()
+            .amount(&Unit::antiballistic_missile())
+            .saturating_sub(used_antiballistic.len());
+        *surviving_controller.entry(Unit::interplanetary_missile()).or_insert(0) =
+            destination.army.controller().amount(&Unit::interplanetary_missile());
     }
 
     // Add the scout probes to the surviving attacker
@@ -505,9 +573,12 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
     // Add the buildings to the surviving defense
     if !planet_destroyed {
-        surviving_defense =
-            surviving_defense.iter().chain(buildings.iter()).map(|(u, v)| (*u, *v)).collect();
+        surviving_controller.extend(buildings);
+    } else {
+        surviving_controller.clear();
+        surviving_protectors.clear();
     }
+    let surviving_defense = Garrison::from_parts(surviving_controller, surviving_protectors);
 
     MissionReport {
         id: rng.random(),
@@ -537,16 +608,17 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 fn record_defender_retreat(
     report: &mut CombatReport,
     army: &mut Vec<CombatUnit>,
-    colonies: &mut usize,
+    colonies: &mut BTreeMap<crate::core::identity::PlayerId, usize>,
+    withdrawing_owner: Option<crate::core::identity::PlayerId>,
     home: Option<crate::core::map::planet::PlanetId>,
     after_round: Option<usize>,
 ) {
-    let Some(home_planet) = home else {
+    let (Some(home_planet), Some(withdrawing_owner)) = (home, withdrawing_owner) else {
         return;
     };
     let mut ships = Army::new();
     army.retain(|unit| {
-        if unit.unit.is_ship() {
+        if unit.unit.is_ship() && unit.owner == Some(withdrawing_owner) {
             if unit.hull > 0 {
                 *ships.entry(unit.unit).or_default() += 1;
             }
@@ -555,9 +627,11 @@ fn record_defender_retreat(
             true
         }
     });
-    if *colonies > 0 {
-        *ships.entry(Unit::colony_ship()).or_default() += *colonies;
-        *colonies = 0;
+    if let Some(count) = colonies.get_mut(&withdrawing_owner) {
+        if *count > 0 {
+            *ships.entry(Unit::colony_ship()).or_default() += *count;
+            *count = 0;
+        }
     }
     if ships.has_army() {
         report.defender_retreat = Some(DefenderRetreat {

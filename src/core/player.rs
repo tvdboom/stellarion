@@ -292,12 +292,12 @@ impl Player {
                                 if r.winner() == r.planet.controlled
                                     || r.mission.objective == Icon::Destroy
                                 {
-                                    Some((*u, r.surviving_defender.amount(u)))
+                                    Some((*u, r.surviving_defender.combined_amount(u)))
                                 } else {
                                     Some((
                                         *u,
                                         if u.is_building() {
-                                            r.surviving_defender.amount(u)
+                                            r.surviving_defender.combined_amount(u)
                                         } else if *u == Unit::probe() {
                                             r.surviving_attacker
                                                 .amount(u)
@@ -310,7 +310,7 @@ impl Player {
                             } else if r.mission.owner == self.id
                                 && u.revealed_by_probes(r.scout_probes)
                             {
-                                Some((*u, r.planet.army.amount(u)))
+                                Some((*u, r.planet.army.combined_amount(u)))
                             } else {
                                 None
                             }

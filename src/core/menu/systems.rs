@@ -482,7 +482,7 @@ fn main_screen(
         });
 }
 
-/// Configures and starts an isolated one-player deterministic match in debug builds.
+/// Configures and starts an isolated locally controlled deterministic match in debug builds.
 #[cfg(debug_assertions)]
 fn local_practice_screen(
     ui: &mut egui::Ui,
@@ -496,6 +496,13 @@ fn local_practice_screen(
     menu_form(ui, "local_practice_setup", "Local Practice", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
             setup_color_picker(ui, &mut form.practice_color);
+            choice_row(
+                ui,
+                "Local players",
+                "Creates one independently controlled empire per player in this window.",
+                &mut form.practice_player_count,
+                &[(1, "1"), (2, "2"), (3, "3"), (4, "4")],
+            );
             map_rule_rows(ui, settings);
         });
     });
@@ -509,7 +516,7 @@ fn local_practice_screen(
                 planets_per_player: settings.n_planets,
                 colonizable_percent: settings.p_colonizable,
                 moons_percent: settings.p_moons,
-                player_count: 1,
+                player_count: form.practice_player_count,
                 practice_mode: true,
             },
             player_color: form.practice_color,
@@ -518,6 +525,7 @@ fn local_practice_screen(
 }
 
 /// Shows every empire color and keeps the selected swatch outlined.
+#[cfg(debug_assertions)]
 fn setup_color_picker(ui: &mut egui::Ui, selected: &mut PlayerColor) {
     form_option_card(
         ui,

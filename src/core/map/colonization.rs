@@ -12,6 +12,7 @@ use super::planet::{Planet, PlanetId};
 use super::systems::{draw_map, VoronoiCmp};
 use crate::core::assets::WorldAssets;
 use crate::core::constants::{PLANET_Z, VORONOI_Z};
+use crate::core::identity::PlayerId;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::player::Player;
@@ -91,6 +92,7 @@ impl ColonyEvent {
 /// Remembers ownership across projections, including immediate local command previews.
 #[derive(Resource, Default)]
 struct Colonies {
+    viewer: Option<PlayerId>,
     owned: BTreeSet<PlanetId>,
     pending: BTreeMap<PlanetId, ColonyEvent>,
     announced: BTreeSet<(PlanetId, ColonyAnnouncement)>,
@@ -113,11 +115,22 @@ impl Colonies {
         pending_commands: &PendingTurnCommands,
         turn: usize,
     ) -> bool {
+        let owned = owned_colonies(map, player);
+        if self.viewer != Some(player.id) {
+            // A local-practice player switch replaces the entire viewer projection. Its existing
+            // colonies are a new baseline, not ownership changes made by the previously viewed
+            // player.
+            self.viewer = Some(player.id);
+            self.owned = owned;
+            self.pending.clear();
+            self.announced.clear();
+            self.turn = turn;
+            return false;
+        }
         if self.turn != turn {
             self.turn = turn;
             self.announced.clear();
         }
-        let owned = owned_colonies(map, player);
         let mut changed = false;
         for &planet in owned.difference(&self.owned) {
             let event = ColonyEvent::for_world(player, planet, turn);
@@ -154,6 +167,7 @@ fn initialize_colonies(
     settings: Res<Settings>,
 ) {
     *colonies = Colonies {
+        viewer: Some(player.id),
         owned: owned_colonies(&map, &player),
         turn: settings.turn,
         ..default()

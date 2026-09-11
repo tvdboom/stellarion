@@ -13,8 +13,8 @@ use crate::core::simulation::{
 use crate::multiplayer::backend::{BackendError, BackendFuture, MultiplayerBackend};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary,
-    JoinGameRequest, MembershipResult, RecoverPlayerRequest, StoredTurnSubmission,
-    SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
+    JoinGameRequest, MembershipResult, RecoverPlayerRequest, SaveAcknowledgement,
+    StoredTurnSubmission, SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
 };
 use crate::multiplayer::recovery::RecoveryCode;
 use crate::platform::config::SupabaseConfig;
@@ -277,7 +277,7 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, ()> {
         Box::pin(async move {
-            let acknowledgement: PresenceRpcResponse = self
+            let acknowledgement: AcknowledgementRpcResponse = self
                 .rpc(
                     session,
                     "stellarion_resume_game",
@@ -296,28 +296,33 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Saves complete state from any member using compare-and-swap semantics.
+    /// Saves the caller's draft without uploading or downloading unchanged canonical state.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         expected_revision: u64,
-        persisted: PersistedGame,
-    ) -> BackendFuture<'a, GameRecord> {
+        draft: TurnSubmission,
+    ) -> BackendFuture<'a, SaveAcknowledgement> {
         Box::pin(async move {
-            validate_persisted(&persisted)?;
-            let record = self
+            validate_submission(&draft, None)?;
+            let acknowledgement: SaveAcknowledgement = self
                 .rpc(
                     session,
                     "stellarion_save_game",
-                    &StateWriteRpc {
+                    &SaveRpc {
                         game_id: &game_id.0,
                         expected_revision,
-                        persisted,
+                        draft,
                     },
                 )
                 .await?;
-            validate_game_record(record, Some(game_id), Some(&session.user_id))
+            if acknowledgement.revision != expected_revision || acknowledgement.saved_at == 0 {
+                return invalid_protocol(
+                    "save acknowledgement contains an invalid revision or timestamp",
+                );
+            }
+            Ok(acknowledgement)
         })
     }
 
@@ -451,7 +456,7 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         connected: bool,
-    ) -> BackendFuture<'a, ()> {
+    ) -> BackendFuture<'a, Vec<GameMembership>> {
         Box::pin(async move {
             let response: PresenceRpcResponse = self
                 .rpc(
@@ -464,7 +469,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 )
                 .await?;
             if response.ok {
-                Ok(())
+                validate_presence_members(response.members, game_id, &session.user_id, !connected)
             } else {
                 Err(BackendError::Protocol(
                     "presence RPC did not acknowledge the update".to_string(),
@@ -537,6 +542,17 @@ struct StateWriteRpc<'a> {
 }
 
 #[derive(Serialize)]
+/// Compact manual-save request containing only the caller's draft and snapshot revision.
+struct SaveRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_expected_revision")]
+    expected_revision: u64,
+    #[serde(rename = "p_submission")]
+    draft: TurnSubmission,
+}
+
+#[derive(Serialize)]
 /// Borrowed game identifier and intentional command submission passed to the database.
 struct SubmitTurnRpc<'a> {
     #[serde(rename = "p_game_id")]
@@ -602,9 +618,16 @@ struct PresenceRpc<'a> {
 }
 
 #[derive(Deserialize)]
-/// Acknowledgement returned after updating coarse presence.
+/// Generic acknowledgement returned by RPCs with no response payload.
+struct AcknowledgementRpcResponse {
+    ok: bool,
+}
+
+#[derive(Deserialize)]
+/// Compact roster returned after updating coarse presence.
 struct PresenceRpcResponse {
     ok: bool,
+    members: Vec<GameMembership>,
 }
 
 #[derive(Deserialize)]
@@ -732,6 +755,50 @@ fn validate_membership(
         return invalid_protocol("membership identity version must be positive");
     }
     Ok(())
+}
+
+/// Validates the small membership projection returned by a presence heartbeat.
+fn validate_presence_members(
+    members: Vec<GameMembership>,
+    game_id: &GameId,
+    expected_user_id: &UserId,
+    allow_deleted_lobby: bool,
+) -> Result<Vec<GameMembership>, BackendError> {
+    if members.is_empty() {
+        return if allow_deleted_lobby {
+            Ok(members)
+        } else {
+            invalid_protocol("presence response omitted the active membership roster")
+        };
+    }
+    if members.len() > 4 {
+        return invalid_protocol("presence response exceeded the multiplayer capacity");
+    }
+    let model_players = (1..=4).collect::<HashSet<_>>();
+    let mut player_ids = HashSet::with_capacity(members.len());
+    let mut user_ids = HashSet::with_capacity(members.len());
+    let mut previous_slot = 0;
+    let mut creator_count = 0;
+    for member in &members {
+        validate_membership(member, game_id, &model_players)?;
+        if member.player_id <= previous_slot
+            || !player_ids.insert(member.player_id)
+            || !user_ids.insert(&member.user_id)
+        {
+            return invalid_protocol("presence response contains unordered or duplicate members");
+        }
+        previous_slot = member.player_id;
+        if member.is_creator {
+            creator_count += 1;
+            if member.player_id != 1 {
+                return invalid_protocol("presence response assigns the creator to another slot");
+            }
+        }
+    }
+    if creator_count != 1 || !user_ids.contains(expected_user_id) {
+        return invalid_protocol("presence response omitted the creator or authenticated member");
+    }
+    Ok(members)
 }
 
 /// Validates a create, join, or recovery response and its returned caller mapping.

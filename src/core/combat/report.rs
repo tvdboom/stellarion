@@ -6,7 +6,7 @@ use strum_macros::EnumIter;
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
-use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::map::planet::{Garrison, Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::resources::Resources;
@@ -34,8 +34,8 @@ pub struct MissionReport {
     /// Surviving units from the attacker
     pub surviving_attacker: Army,
 
-    /// Surviving units from the defender
-    pub surviving_defender: Army,
+    /// Surviving defending forces, retaining the commander of every unit.
+    pub surviving_defender: Garrison,
 
     /// Whether the planet was colonized
     pub planet_colonized: bool,
@@ -60,6 +60,24 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns every player whose forces began this report on the defending side.
+    pub fn defender_players(&self) -> Vec<PlayerId> {
+        let mut players = self.planet.army.protector_ids().collect::<Vec<_>>();
+        if let Some(controller) = self.planet.controlled.or(self.planet.owned) {
+            players.push(controller);
+        }
+        players.sort_unstable();
+        players.dedup();
+        players
+    }
+
+    /// Returns whether this player participated in the defense recorded by the report.
+    pub fn is_defender(&self, player_id: PlayerId) -> bool {
+        self.planet.controlled == Some(player_id)
+            || self.planet.owned == Some(player_id)
+            || self.planet.army.protector(player_id).is_some()
+    }
+
     /// Returns the exact shared shield strength at the start of recorded combat.
     ///
     /// The first snapshot stores the strength remaining after that round. Adding its recorded
@@ -191,7 +209,7 @@ impl MissionReport {
                             0
                         }
             })
-            && self.surviving_defender.iter().any(|(unit, count)| {
+            && self.surviving_defender.combined().iter().any(|(unit, count)| {
                 *count > 0
                     && !unit.is_building()
                     && !unit.is_missile()
@@ -204,6 +222,7 @@ impl MissionReport {
         match self.winner() {
             None => "draw",
             Some(id) if id == player.id => "victory",
+            Some(id) if self.is_defender(player.id) && self.is_defender(id) => "victory",
             _ => "defeat",
         }
     }
@@ -214,6 +233,12 @@ impl MissionReport {
             Icon::MissileStrike => "missile",
             Icon::Spy if self.scout_probes > 0 => "eye",
             _ if self.winner() == Some(player.id) => "won",
+            _ if self
+                .winner()
+                .is_some_and(|winner| self.is_defender(player.id) && self.is_defender(winner)) =>
+            {
+                "won"
+            },
             _ => "lost",
         }
     }
@@ -223,13 +248,11 @@ impl MissionReport {
         match side {
             Side::Attacker => {
                 self.mission.owner == player_id
-                    || self.planet.owned == Some(player_id)
+                    || self.is_defender(player_id)
                     || self.winner() == Some(player_id)
                     || matches!(self.mission.objective, Icon::Spy | Icon::MissileStrike)
             },
-            Side::Defender => {
-                self.planet.controlled == Some(player_id) || self.winner() == Some(player_id)
-            },
+            Side::Defender => self.is_defender(player_id) || self.winner() == Some(player_id),
         }
     }
 }

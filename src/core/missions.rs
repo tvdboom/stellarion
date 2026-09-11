@@ -181,6 +181,9 @@ pub struct Mission {
     pub position: Vec2,
     /// Strategic objective applied on arrival.
     pub objective: Icon,
+    /// Controller whose permission this Protect mission relies on.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub protected_player: Option<PlayerId>,
     /// Original objective whose silhouette is retained while a mission returns home.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub return_objective: Option<Icon>,
@@ -245,7 +248,7 @@ impl Mission {
             origin: origin.id,
             origin_owned: origin.owned,
             origin_controlled: origin.controlled,
-            origin_army: origin.army.clone(),
+            origin_army: origin.mission_origin_army(owner).cloned().unwrap_or_default(),
             destination: destination.id,
             send: turn,
             travel_turns: 0,
@@ -255,6 +258,9 @@ impl Mission {
                 origin.position + direction * Planet::SIZE * 0.7
             },
             objective,
+            protected_player: (objective == Icon::Protect)
+                .then_some(destination.controlled)
+                .flatten(),
             return_objective: None,
             army,
             bombing,
@@ -340,7 +346,7 @@ impl Mission {
 
     /// Retains an outbound objective's silhouette while this mission resolves as a safe deploy.
     pub(crate) fn with_return_objective(mut self, objective: Icon) -> Self {
-        debug_assert!(matches!(objective, Icon::Spy | Icon::Destroy));
+        debug_assert!(matches!(objective, Icon::Spy | Icon::Destroy | Icon::Protect));
         debug_assert_eq!(self.objective, Icon::Deploy);
         self.return_objective = Some(objective);
         self
@@ -364,11 +370,12 @@ impl Mission {
         self.origin = outbound_destination.id;
         self.origin_owned = outbound_destination.owned;
         self.origin_controlled = outbound_destination.controlled;
-        self.origin_army.clone_from(&outbound_destination.army);
+        self.origin_army.clone_from(outbound_destination.army.controller());
         self.destination = original_origin;
         self.send = turn;
         self.travel_turns = 0;
         self.objective = Icon::Deploy;
+        self.protected_player = None;
         self.return_objective = Some(original_objective);
         self.bombing = BombingRaid::None;
         self.combat_probes = false;
@@ -381,9 +388,16 @@ impl Mission {
 
     /// Returns whether the optional return-trip presentation metadata is internally consistent.
     pub(crate) fn has_valid_return_objective(&self) -> bool {
-        self.return_objective.is_none_or(|objective| {
-            objective.is_mission() && matches!(self.objective, Icon::Deploy | Icon::Attack)
-        })
+        let protection_is_valid = if self.objective == Icon::Protect {
+            self.protected_player.is_some()
+        } else {
+            self.protected_player.is_none()
+        };
+        protection_is_valid
+            && self.return_objective.is_none_or(|objective| {
+                objective.is_mission()
+                    && matches!(self.objective, Icon::Deploy | Icon::Attack | Icon::Protect)
+            })
     }
 
     /// Returns the route-marker speed shared by the strategic map and mission panels.
@@ -529,7 +543,7 @@ impl Mission {
     /// else go to the nearest friendly planet
     pub fn check_origin(&self, map: &Map) -> PlanetId {
         let origin = map.get(self.origin);
-        if origin.controlled == Some(self.owner) {
+        if origin.controlled == Some(self.owner) || origin.allows_protection(self.owner) {
             origin.id
         } else {
             map.planets

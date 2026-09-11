@@ -12,7 +12,7 @@ pub enum AppState {
     Boot,
     /// Top-level navigation after authentication completes.
     MainMenu,
-    /// Debug-only one-player practice setup; release builds redirect to the main menu.
+    /// Debug-only local practice setup; release builds redirect to the main menu.
     SinglePlayerMenu,
     /// Creator settings and display-name form.
     CreateGame,

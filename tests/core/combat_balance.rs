@@ -112,7 +112,7 @@ impl Scenario {
         let mut rng = DeterministicRngState::from_u64(90210).next_rng();
         let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
         origin.colonize(1);
-        origin.army = self.attacker.clone();
+        origin.army = self.attacker.clone().into();
         let mut destination = Planet::new_with_rng(
             1,
             "Target".into(),
@@ -128,7 +128,7 @@ impl Scenario {
             2
         });
         destination.owned = (!self.moon).then_some(destination.controlled.unwrap());
-        destination.army = self.defender.clone();
+        destination.army = self.defender.clone().into();
         let mission = Mission::new_with_id(
             100,
             1,
@@ -1041,7 +1041,7 @@ fn same_turn_missiles_resolve_before_spying_and_colonizing() {
             (Unit::colony_ship(), 1),
         ]));
         game.map.get_mut(target).colonize(2);
-        game.map.get_mut(target).army = defense(Defense::RocketLauncher, 20);
+        game.map.get_mut(target).army = defense(Defense::RocketLauncher, 20).into();
         turn(
             &mut game,
             vec![
@@ -1108,7 +1108,8 @@ fn bombing_losses_persist_for_both_target_categories() {
                 (Unit::Building(Building::Factory), 5),
                 (Unit::Defense(Defense::GaussCannon), 12),
                 (Unit::planetary_shield(), 1),
-            ]);
+            ])
+            .into();
             turn(
                 &mut game,
                 vec![send(
@@ -1186,7 +1187,7 @@ fn scouts_return_without_gaining_control() {
     let (mut game, origin, target) = campaign(seed(0));
     game.map.get_mut(origin).army.extend(ships(Ship::Probe, 30));
     game.map.get_mut(target).colonize(2);
-    game.map.get_mut(target).army = defense(Defense::RocketLauncher, 5);
+    game.map.get_mut(target).army = defense(Defense::RocketLauncher, 5).into();
     turn(
         &mut game,
         vec![send(
@@ -1214,7 +1215,7 @@ fn bounded_stalemate_preserves_defender_and_returns_colonization_fleet() {
     let fleet = army(&[(Unit::probe(), 1), (Unit::colony_ship(), 1)]);
     game.map.get_mut(origin).army.extend(fleet.clone());
     game.map.get_mut(target).colonize(2);
-    game.map.get_mut(target).army = ships(Ship::Probe, 1);
+    game.map.get_mut(target).army = ships(Ship::Probe, 1).into();
     let mut order = send(101, origin, target, Icon::Colonize, fleet, BombingRaid::None, false);
     if let TurnCommand::SendMission {
         combat_probes,
@@ -1273,7 +1274,8 @@ fn moon_conquest_preserves_tidal_generator_and_lunar_buildings() {
             (Unit::Building(Building::TidalGenerator), 3),
             (Unit::Building(Building::Laboratory), 2),
             (Unit::Building(Building::OrbitalRadar), 3),
-        ]);
+        ])
+        .into();
         game.map.get_mut(origin).army.extend(ships(Ship::Cruiser, 1));
         turn(
             &mut game,
@@ -1510,7 +1512,7 @@ fn combined_operations(seeds: usize) -> Vec<OperationRow> {
                 let (mut template, origin, target) = campaign(seed(0));
                 template.map.get_mut(origin).army.extend(attackers.clone());
                 template.map.get_mut(target).colonize(2);
-                template.map.get_mut(target).army = defenders.clone();
+                template.map.get_mut(target).army = defenders.clone().into();
                 let mut row = OperationRow {
                     id: format!("{ship:?}-{missiles}-missiles-vs-{name}"),
                     seeds,

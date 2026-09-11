@@ -15,6 +15,7 @@ use crate::utils::NameFromEnum;
 
 pub mod buildings;
 pub mod defense;
+pub mod orbitals;
 pub mod ships;
 
 #[cfg(test)]
@@ -195,15 +196,7 @@ impl Unit {
 
     /// Returns planet-only orbital structures in their shop display order.
     pub fn orbitals() -> Vec<Self> {
-        vec![
-            Self::Building(Building::SolarSatellite),
-            Self::Building(Building::Recycler),
-            Self::Building(Building::SensorPhalanx),
-            Self::Building(Building::CommandRelay),
-            Self::Building(Building::JumpGate),
-            Self::Building(Building::OrbitalRailgun),
-            Self::space_dock(),
-        ]
+        orbitals::ALL.to_vec()
     }
 
     /// Returns every ship unit kind.
@@ -354,17 +347,7 @@ impl Unit {
 
     /// Returns whether this unit belongs to the planet-only orbital roster.
     pub fn is_orbital(&self) -> bool {
-        matches!(
-            self,
-            Unit::Building(
-                Building::SolarSatellite
-                    | Building::Recycler
-                    | Building::SensorPhalanx
-                    | Building::CommandRelay
-                    | Building::JumpGate
-                    | Building::OrbitalRailgun
-            )
-        ) || *self == Self::space_dock()
+        orbitals::is_orbital(*self)
     }
 
     /// Returns whether this value turret.
@@ -379,19 +362,7 @@ impl Unit {
 
     /// Returns whether constructing this unit consumes a planetary or lunar field.
     pub fn consumes_field(&self) -> bool {
-        self.is_building()
-            && !matches!(
-                self,
-                Unit::Building(
-                    Building::LunarBase
-                        | Building::SolarSatellite
-                        | Building::Recycler
-                        | Building::SensorPhalanx
-                        | Building::CommandRelay
-                        | Building::JumpGate
-                        | Building::OrbitalRailgun
-                )
-            )
+        self.is_building() && !self.is_orbital() && *self != Unit::Building(Building::LunarBase)
     }
 
     /// Returns whether this value economic building.
@@ -411,6 +382,10 @@ impl Unit {
 
     /// Returns the production-time/value score shared by economy and combat ordering.
     pub fn production(&self) -> usize {
+        if let Some(level) = orbitals::production_level(*self) {
+            return level;
+        }
+
         match self {
             Unit::Building(building) => building.production(),
             Unit::Ship(s) => s.production(),
@@ -420,12 +395,15 @@ impl Unit {
 
     /// Returns the minimum Spy intelligence level needed to reveal this unit.
     ///
-    /// Buildings have dedicated intelligence requirements. Ships and defenses use their
-    /// production level. `None` marks the Space Dock and Orbital Railgun as public structures.
+    /// Orbitals have category-specific requirements. Other buildings, ships, and defenses use
+    /// their production level. `None` marks the Space Dock and Orbital Railgun as public.
     pub fn intelligence_level(&self) -> Option<usize> {
+        if self.is_orbital() {
+            return orbitals::intelligence_level(*self);
+        }
+
         match self {
-            Unit::Building(building) => building.intelligence_level(),
-            Unit::Defense(Defense::SpaceDock) => None,
+            Unit::Building(building) => Some(building.production()),
             Unit::Ship(ship) => Some(ship.production()),
             Unit::Defense(defense) => Some(defense.production()),
         }

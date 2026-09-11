@@ -1060,7 +1060,7 @@ fn refresh_details(
             let info =
                 (!player.controls(planet)).then(|| player.last_info(planet, &missions.0)).flatten();
             let army = if player.controls(planet) {
-                Some(&planet.army)
+                Some(planet.army.controller())
             } else {
                 info.as_ref().map(|info| &info.army)
             };

@@ -17,7 +17,7 @@ fn battle(
     origin.colonize(1);
     let mut colony = Planet::new_with_rng(1, "Colony".into(), Vec2::X, false, 1., &mut rng);
     colony.colonize(2);
-    colony.army = defender;
+    colony.army = defender.into();
     colony.army.insert(Unit::Building(Building::ColonialAdministration), level);
     colony.fleet_withdrawal = withdrawal;
     let mission = Mission::new_with_id(

@@ -609,7 +609,7 @@ fn escaping_ships_do_not_become_public_battle_wreckage() {
 fn development_requires_known_completed_buildings_and_disappears_on_destruction() {
     let model = model();
     let mut planet = model.map.planets[0].clone();
-    planet.army = Army::from([(Unit::Building(Building::MetalMine), 5)]);
+    planet.army = Army::from([(Unit::Building(Building::MetalMine), 5)]).into();
     assert_eq!(development(&planet, None), Development::default());
     assert_eq!(development(&planet, Some(&planet.army)).settlement, 3);
     let known = Army::from([(Unit::Building(Building::MetalMine), 2)]);

@@ -31,10 +31,10 @@ impl Description for CombatStats {
         match self {
             CombatStats::Production => {
                 "\
-                Production cost of the unit. The production cost determines the minimum level \
-                of the building required to build it, the minimum level a Sensor Phalanx must have \
-                to see it, the jump cost it has through a Jump Gate, and the minimum intelligence \
-                level an enemy Spy mission needs to see it."
+                Production level of the unit. It determines the minimum Shipyard level required \
+                for a ship or orbital, the Factory or Missile Silo level required for a defense, \
+                the minimum Sensor Phalanx level needed to see a fleet unit, and its Jump Gate \
+                capacity cost."
             },
             CombatStats::Intelligence => {
                 "The minimum intelligence level required for an enemy Spy mission to see this structure."

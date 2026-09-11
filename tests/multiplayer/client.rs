@@ -71,6 +71,7 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         })
         .add_message::<MultiplayerRequest>()
         .add_message::<MessageMsg>()
@@ -169,6 +170,7 @@ fn color_update_success_does_not_create_a_toast() {
         storage: Arc::new(MemoryStorage::default()),
         profile: ClientProfile::default(),
         practice_return: None,
+        practice_players: Vec::new(),
     };
     let mut session = MultiplayerSession::default();
     let mut form = MultiplayerForm::default();
@@ -189,12 +191,12 @@ fn color_update_success_does_not_create_a_toast() {
 
 #[test]
 fn manual_save_reports_success_and_failure() {
-    let success = operation_notification(&BackendOutput::Record(
-        Operation::Save,
-        record("game-a", 2, 1, MatchStatus::Active),
-    ))
+    let success = operation_notification(&BackendOutput::Saved(SaveAcknowledgement {
+        revision: 2,
+        saved_at: 1_700_000_001,
+    }))
     .unwrap();
-    assert_eq!(success.message, "Game saved successfully.");
+    assert_eq!(success.message, "Shared game and your current turn draft saved.");
     assert_eq!(success.level, crate::core::messages::MessageLevel::Info);
 
     let error = BackendError::Offline("test outage".to_string());
@@ -255,6 +257,12 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
             1,
             "the local player's presence change must not create a toast"
         );
+        session.local_practice = true;
+        assert!(
+            disconnected_player_notifications(&output, &session).is_empty(),
+            "locally controlled players must never appear disconnected"
+        );
+        session.local_practice = false;
         session.active_game = Some(next);
         assert!(disconnected_player_notifications(&output, &session).is_empty());
     }
@@ -309,12 +317,13 @@ fn host_and_guest_disconnects_refresh_before_due_event_polls() {
                 storage: Arc::new(MemoryStorage::default()),
                 profile: ClientProfile::default(),
                 practice_return: None,
+                practice_players: Vec::new(),
             })
             .insert_resource(MultiplayerSession {
                 auth: Some(auth.clone()),
                 membership: active.membership_for(&auth.user_id).cloned(),
                 active_game: Some(active.clone()),
-                reload_needed: true,
+                reload_needed: false,
                 ..default()
             });
         block_on(backend.set_connected(remote, &active.id, false)).unwrap();
@@ -355,7 +364,8 @@ fn local_practice_backend_advances_without_an_opponent() {
         ..GameRules::default()
     };
     let color = PlayerColor::new(4).unwrap();
-    let (backend, auth, result) = block_on(create_local_practice(rules, color)).unwrap();
+    let (backend, result, players) = block_on(create_local_practice(rules, color)).unwrap();
+    let auth = players[0].auth.clone();
     assert_eq!(result.game.status, MatchStatus::Active);
     assert_eq!(result.game.max_players, 1);
     assert_eq!(result.game.members.len(), 1);
@@ -396,13 +406,110 @@ fn local_practice_backend_advances_without_an_opponent() {
 }
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_switching_preserves_each_players_draft() {
+    let mut app = local_practice_app_with_players(2);
+    settle_local_practice(&mut app);
+    assert_eq!(
+        app.world().resource::<MultiplayerSession>().membership.as_ref().unwrap().player_id,
+        1
+    );
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
+        TurnCommand::PracticeBoost {
+            owned_worlds_only: false,
+        },
+    ));
+
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+    app.update();
+    assert_eq!(
+        app.world().resource::<MultiplayerSession>().membership.as_ref().unwrap().player_id,
+        2
+    );
+    assert!(app.world().resource::<PendingTurnCommands>().commands.is_empty());
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
+        TurnCommand::PracticeBoost {
+            owned_worlds_only: true,
+        },
+    ));
+
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
+    app.update();
+    assert!(matches!(
+        app.world().resource::<PendingTurnCommands>().commands.as_slice(),
+        [TurnCommand::PracticeBoost {
+            owned_worlds_only: false,
+        }]
+    ));
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+    app.update();
+    assert!(matches!(
+        app.world().resource::<PendingTurnCommands>().commands.as_slice(),
+        [TurnCommand::PracticeBoost {
+            owned_worlds_only: true,
+        }]
+    ));
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_next_turn_resolves_every_players_draft_at_once() {
+    use crate::core::units::{Amount, Unit};
+
+    let mut app = local_practice_app_with_players(2);
+    settle_local_practice(&mut app);
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
+        TurnCommand::PracticeBoost {
+            owned_worlds_only: false,
+        },
+    ));
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+    app.update();
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
+        TurnCommand::PracticeBoost {
+            owned_worlds_only: false,
+        },
+    ));
+
+    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    settle_local_practice(&mut app);
+
+    let session = app.world().resource::<MultiplayerSession>();
+    let record = session.active_game.as_ref().unwrap();
+    assert_eq!(record.persisted.state.turn, 2);
+    assert!(record.submitted_players.is_empty());
+    for player in &record.persisted.state.players {
+        assert!(
+            record.persisted.state.map.get(player.home_planet).army.amount(&Unit::war_sun()) >= 3,
+            "each local player's testing command must affect its own homeworld"
+        );
+    }
+    assert_eq!(session.membership.as_ref().unwrap().player_id, 2);
+    let pending = app.world().resource::<PendingTurnCommands>();
+    assert_eq!(pending.turn, 2);
+    assert!(pending.is_editable());
+    assert!(pending.commands.is_empty());
+    let runtime = app.world().resource::<ClientRuntime>();
+    assert!(runtime.practice_players.iter().all(|player| {
+        player.pending.turn == 2
+            && player.pending.is_editable()
+            && player.pending.commands.is_empty()
+    }));
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 pub(crate) fn local_practice_app() -> App {
+    local_practice_app_with_players(1)
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub(crate) fn local_practice_app_with_players(player_count: u8) -> App {
     let rules = GameRules {
-        player_count: 1,
+        player_count,
         practice_mode: true,
         ..GameRules::default()
     };
-    let (backend, auth, result) =
+    let (backend, result, players) =
         block_on(create_local_practice(rules, PlayerColor::for_player(1))).unwrap();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
@@ -418,6 +525,7 @@ pub(crate) fn local_practice_app() -> App {
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         })
         .add_message::<MultiplayerRequest>()
         .add_message::<MessageMsg>()
@@ -437,8 +545,8 @@ pub(crate) fn local_practice_app() -> App {
     spawn_backend_task(&mut app.world_mut().resource_mut::<BackendTasks>(), async move {
         BackendOutput::PracticeReady {
             backend,
-            auth,
             result,
+            players,
         }
     });
     app
@@ -528,6 +636,158 @@ fn same_turn_refresh_does_not_require_projection_reset() {
     assert!(record_requires_gameplay_install(Some(&saved), &next_turn));
     assert!(record_requires_gameplay_install(Some(&current), &other_game));
     assert!(record_requires_gameplay_install(None, &current));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_world() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let host = block_on(backend.authenticate(None)).unwrap();
+    let guest = block_on(backend.authenticate(None)).unwrap();
+    let created = block_on(backend.create_game(
+        &host,
+        CreateGameRequest {
+            code: GameCode::new("ABCDEF"),
+            display_name: "Host".into(),
+            recovery_code: "0123-4567-89AB-CDEF".into(),
+            persisted: PersistedGame::new(GameModel::new([7; 32], GameRules::default()).unwrap()),
+        },
+    ))
+    .unwrap();
+    let joined = block_on(backend.join_game(
+        &guest,
+        JoinGameRequest {
+            code: created.game.code,
+            display_name: "Guest".into(),
+            recovery_code: "FEDC-BA98-7654-3210".into(),
+        },
+    ))
+    .unwrap();
+    let snapshot = started_snapshot_for_members(&joined.game, [8; 32]).unwrap();
+    let active =
+        block_on(backend.start_game(&host, &joined.game.id, joined.game.revision, snapshot))
+            .unwrap();
+    let command = TurnCommand::BuyUnits {
+        planet_id: active.persisted.state.players[0].home_planet,
+        unit: crate::core::units::Unit::probe(),
+        count: 1,
+    };
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(State::new(AppState::Game))
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<MultiplayerForm>()
+        .init_resource::<BackendTasks>()
+        .insert_resource(PendingTurnCommands {
+            turn: active.persisted.state.turn,
+            commands: vec![command.clone()],
+            ..default()
+        })
+        .insert_resource(MultiplayerSession {
+            auth: Some(host.clone()),
+            active_game: Some(active.clone()),
+            membership: active.membership_for(&host.user_id).cloned(),
+            ..default()
+        })
+        .insert_resource(ClientRuntime {
+            backend: Some(backend.clone()),
+            realtime_config: None,
+            storage: Arc::new(MemoryStorage::default()),
+            profile: ClientProfile::default(),
+            practice_return: None,
+            practice_players: Vec::new(),
+        })
+        .add_message::<MultiplayerRequest>()
+        .add_message::<MessageMsg>()
+        .add_message::<RefreshGameplayProjection>()
+        .add_message::<RefreshTurnDraft>()
+        .add_systems(Update, (process_requests, poll_backend_tasks).chain());
+
+    app.world_mut().write_message(MultiplayerRequest::SaveGame);
+    for _ in 0..1000 {
+        app.update();
+        if app.world().resource::<BackendTasks>().0.is_empty()
+            && !app.world().resource::<MultiplayerSession>().busy
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!app.world().resource::<MultiplayerSession>().busy);
+    let saved =
+        block_on(backend.load_turn_submissions(&host, &active.id, active.persisted.state.turn))
+            .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].ready);
+    assert_eq!(
+        serde_json::to_value(&saved[0].submission.commands).unwrap(),
+        serde_json::to_value([command]).unwrap()
+    );
+    assert_eq!(block_on(backend.load_game(&guest, &active.id)).unwrap().revision, active.revision);
+}
+
+#[test]
+/// Small roster and readiness events update projections without downloading the world snapshot.
+fn semantic_events_only_reload_for_a_new_canonical_state() {
+    use crate::multiplayer::model::BackendEvent;
+
+    let game = record("game-a", 4, 7, MatchStatus::Active);
+    let mut runtime = ClientRuntime {
+        backend: None,
+        realtime_config: None,
+        storage: Arc::new(MemoryStorage::default()),
+        profile: ClientProfile::default(),
+        practice_return: None,
+        practice_players: Vec::new(),
+    };
+    let mut session = MultiplayerSession {
+        active_game: Some(game.clone()),
+        ..default()
+    };
+    let mut pending = PendingTurnCommands::default();
+    let mut next = NextState::default();
+    let event = |sequence, kind, revision, turn, player_id| BackendEvent {
+        sequence,
+        game_id: game.id.clone(),
+        kind,
+        revision,
+        turn,
+        player_id,
+    };
+
+    apply_output(
+        BackendOutput::Events(EventBatch {
+            events: vec![
+                event(1, BackendEventKind::PlayerConnected, Some(4), None, Some(2)),
+                event(2, BackendEventKind::TurnSubmitted, Some(4), Some(7), Some(2)),
+                event(3, BackendEventKind::StateChanged, Some(4), None, None),
+            ],
+            cursor: 3,
+        }),
+        &mut runtime,
+        &mut session,
+        &mut MultiplayerForm::default(),
+        &mut pending,
+        &mut next,
+        false,
+    );
+    assert!(!session.reload_needed);
+    assert!(session.presence_needed && session.resolve_needed);
+    assert_eq!(session.active_game.as_ref().unwrap().submitted_players, vec![2]);
+
+    apply_output(
+        BackendOutput::Events(EventBatch {
+            events: vec![event(4, BackendEventKind::StateChanged, Some(5), None, None)],
+            cursor: 4,
+        }),
+        &mut runtime,
+        &mut session,
+        &mut MultiplayerForm::default(),
+        &mut pending,
+        &mut next,
+        false,
+    );
+    assert!(session.reload_needed);
 }
 
 #[test]
@@ -652,6 +912,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         };
         let mut session = MultiplayerSession {
             auth: Some(auth.clone()),
@@ -731,6 +992,7 @@ fn created_player_name_is_available_for_later_joins() {
         storage: Arc::new(MemoryStorage::default()),
         profile: ClientProfile::default(),
         practice_return: None,
+        practice_players: Vec::new(),
     };
     let mut session = MultiplayerSession {
         auth: Some(auth.clone()),
@@ -790,6 +1052,7 @@ fn combat_preferences_are_copied_into_the_local_player_profile() {
         storage: Arc::new(MemoryStorage::default()),
         profile: ClientProfile::default(),
         practice_return: None,
+        practice_players: Vec::new(),
     });
 
     app.world_mut().run_system_once(profile::sync_combat_preferences).unwrap();
@@ -842,6 +1105,7 @@ fn lobby_departure_clears_guests_and_local_history() {
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         };
         let mut session = MultiplayerSession {
             membership: Some(GameMembership {
@@ -912,6 +1176,7 @@ fn heartbeat_refreshes_resume_roster_without_renewing_again_immediately() {
         storage: Arc::new(MemoryStorage::default()),
         profile: ClientProfile::default(),
         practice_return: None,
+        practice_players: Vec::new(),
     };
     let mut session = MultiplayerSession {
         membership: Some(game.members[0].clone()),
@@ -923,21 +1188,12 @@ fn heartbeat_refreshes_resume_roster_without_renewing_again_immediately() {
     install_record(game.clone(), &mut runtime, &mut session, &mut pending, &mut next, false);
     assert!(session.presence_needed);
 
-    // Simulate a successful heartbeat after the peer's last lease has expired.
+    // Simulate the compact roster returned by a heartbeat after the peer lease expired.
     session.presence_needed = false;
     session.presence_elapsed = Duration::from_secs(1);
-    apply_output(
-        BackendOutput::Presence,
-        &mut runtime,
-        &mut session,
-        &mut MultiplayerForm::default(),
-        &mut pending,
-        &mut next,
-        false,
-    );
-    assert!(session.reload_needed);
+    game.members[0].connected = true;
     game.members[1].connected = false;
-    let output = BackendOutput::Record(Operation::Load, game);
+    let output = BackendOutput::Presence(game.members.clone());
     assert_eq!(disconnected_player_notifications(&output, &session).len(), 1);
     apply_output(
         output,
@@ -999,6 +1255,7 @@ fn rejected_recovery_keeps_the_player_on_the_form_with_an_actionable_error() {
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         };
         let mut session = MultiplayerSession {
             busy: true,
@@ -1045,6 +1302,7 @@ fn leaving_while_busy_discards_pending_loads_and_never_waits_for_authentication(
             .init_resource::<NextState<AppState>>()
             .add_message::<MultiplayerRequest>()
             .add_message::<MessageMsg>()
+            .add_message::<RefreshGameplayProjection>()
             .add_systems(Update, process_requests);
         let backend = Arc::new(InMemoryBackend::new());
         let host = block_on(backend.authenticate(None)).unwrap();
@@ -1067,6 +1325,7 @@ fn leaving_while_busy_discards_pending_loads_and_never_waits_for_authentication(
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         });
         app.insert_resource(MultiplayerSession {
             auth: lost_access.then_some(stranger),
@@ -1234,6 +1493,7 @@ fn lobby_color_requests_reach_the_backend_after_default_assignment() {
             storage: Arc::new(MemoryStorage::default()),
             profile: ClientProfile::default(),
             practice_return: None,
+            practice_players: Vec::new(),
         })
         .add_message::<MultiplayerRequest>()
         .add_message::<MessageMsg>()

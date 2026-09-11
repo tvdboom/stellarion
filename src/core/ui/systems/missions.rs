@@ -489,6 +489,7 @@ fn draw_new_mission(
 ) {
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
+    let origin_army = origin.mission_origin_army(player.id).cloned().unwrap_or_default();
 
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
 
@@ -505,22 +506,23 @@ fn draw_new_mission(
         state.mission_info.objective = Icon::Deploy;
     }
 
-    if origin.controlled == destination.controlled {
-        // Check for ownership since you can colonize a controlled planet
-        if destination.owned == Some(player.id) || state.mission_info.objective != Icon::Colonize {
-            state.mission_info.objective = Icon::Deploy;
-        }
-    } else if state.mission_info.objective == Icon::Deploy {
-        state.mission_info.objective = Icon::default();
+    let objectives = Icon::objectives(
+        player.owns(destination),
+        player.controls(destination),
+        destination.allows_protection(player.id),
+    );
+    if !objectives.contains(&state.mission_info.objective) {
+        state.mission_info.objective = objectives.first().copied().unwrap_or_default();
     }
 
-    if !state.mission_info.objective.condition(origin)
+    if !state.mission_info.objective.condition_for_army(&origin_army)
         || (destination.is_moon() && state.mission_info.objective.on_planet_only())
     {
-        state.mission_info.objective = Icon::iter()
+        state.mission_info.objective = objectives
+            .iter()
+            .copied()
             .find(|i| {
-                i.is_mission()
-                    && i.condition(origin)
+                i.condition_for_army(&origin_army)
                     && (!destination.is_moon() || !i.on_planet_only())
             })
             .unwrap_or_default();
@@ -560,7 +562,7 @@ fn draw_new_mission(
                 state.planet_selected = Some(planet.id);
                 state.to_selected = true;
                 state.mission = false;
-                if player.owns(planet) {
+                if planet.mission_origin_army(player.id).is_some() {
                     state.mission_info.origin = planet.id;
                 }
             } else if r.secondary_clicked() && !planet.is_destroyed {
@@ -592,7 +594,7 @@ fn draw_new_mission(
                         let controlled = map
                             .planets
                             .iter()
-                            .filter(|p| player.controls(p))
+                            .filter(|planet| planet.mission_origin_army(player.id).is_some())
                             .sorted_by(|a, b| a.name.cmp(&b.name))
                             .collect::<Vec<_>>();
 
@@ -635,7 +637,7 @@ fn draw_new_mission(
 
                 if response.clicked() {
                     state.mission_info.army =
-                        army.iter().map(|u| (*u, origin.army.amount(u))).collect();
+                        army.iter().map(|unit| (*unit, origin_army.amount(unit))).collect();
                 } else if response.secondary_clicked() {
                     state.mission_info.army.clear();
                 }
@@ -703,7 +705,7 @@ fn draw_new_mission(
                         ui.spacing_mut().item_spacing.x = 8.;
 
                         for (i, unit) in army.iter().enumerate() {
-                            let n = origin.army.amount(unit);
+                            let n = origin_army.amount(unit);
 
                             ui.add_enabled_ui(n > 0, |ui| {
                                 ui.vertical_centered(|ui| {
@@ -763,7 +765,7 @@ fn draw_new_mission(
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.add_image(
-                                    images.get(format!("{} cover", icon.to_lowername())),
+                                    images.get(format!("{} cover", icon.asset_key())),
                                     [150., 150.],
                                 );
                             });
@@ -783,18 +785,20 @@ fn draw_new_mission(
                         });
                     };
 
-                    for icon in
-                        Icon::objectives(player.owns(destination), player.controls(destination))
-                    {
+                    for icon in Icon::objectives(
+                        player.owns(destination),
+                        player.controls(destination),
+                        destination.allows_protection(player.id),
+                    ) {
                         ui.add_enabled_ui(
-                            icon.condition(origin)
+                            icon.condition_for_army(&origin_army)
                                 && !(destination.is_moon() && icon.on_planet_only())
                                 && !(icon == Icon::Colonize && n_owned >= n_max_owned),
                             |ui| {
                                 let button = ui
                                     .add(
                                         egui::Button::image(SizedTexture::new(
-                                            images.get(icon.to_lowername()),
+                                            images.get(icon.asset_key()),
                                             [40.; 2],
                                         ))
                                         .corner_radius(5.),
@@ -837,7 +841,7 @@ fn draw_new_mission(
                     ui.small("🎯 Objective:");
 
                     ui.spacing_mut().item_spacing.x = 4.;
-                    ui.add_image(images.get(state.mission_info.objective.to_lowername()), [20.; 2]);
+                    ui.add_image(images.get(state.mission_info.objective.asset_key()), [20.; 2]);
                     ui.small(state.mission_info.objective.to_name());
                 });
 
@@ -1183,7 +1187,7 @@ fn draw_active_missions(
 
                                 ui.add_image(
                                     images.get(if mission.owner == player.id {
-                                        mission.objective.to_lowername()
+                                        mission.objective.asset_key()
                                     } else {
                                         Icon::Attacked.to_lowername()
                                     }),
@@ -1314,7 +1318,7 @@ fn draw_mission_reports(
                             ui.add_space(7.);
 
                             ui.add_image(
-                                images.get(report.mission.objective.to_lowername()),
+                                images.get(report.mission.objective.asset_key()),
                                 [25.; 2],
                             );
 
@@ -1473,7 +1477,7 @@ fn draw_mission_reports(
                             ui.spacing_mut().item_spacing.x = 4.;
 
                             ui.add_image(
-                                images.get(report.mission.objective.to_lowername()),
+                                images.get(report.mission.objective.asset_key()),
                                 [25.; 2],
                             )
                             .on_hover_small(report.mission.objective.to_name());

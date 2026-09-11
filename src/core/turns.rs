@@ -111,10 +111,18 @@ pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<
 pub fn check_turn_ended(
     mut state: ResMut<UiState>,
     mut pending: ResMut<PendingTurnCommands>,
+    session: Option<Res<MultiplayerSession>>,
     mut requests: MessageWriter<MultiplayerRequest>,
 ) {
+    #[cfg(not(debug_assertions))]
+    let _ = &session;
     if std::mem::take(&mut state.end_turn) {
         if matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
+            #[cfg(debug_assertions)]
+            if session.as_deref().is_some_and(|session| session.local_practice) {
+                requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
+                return;
+            }
             requests.write(MultiplayerRequest::SubmitTurn);
         } else {
             pending.request_resume();
@@ -143,6 +151,9 @@ fn report_notification(
             ))
         },
         Icon::Deploy => MessageMsg::info(format!("Deployed fleet to planet {}.", destination.name)),
+        Icon::Protect => {
+            MessageMsg::info(format!("Protection fleet stationed at planet {}.", destination.name))
+        },
         Icon::Colonize if report.planet_colonized => {
             let text = if report.mission.owner == player.id {
                 if report.planet.has_buildings() {

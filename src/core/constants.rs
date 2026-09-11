@@ -97,6 +97,12 @@ pub const ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST: usize = 1_000;
 pub const ORBITAL_RAILGUN_FIRE_ENERGY_COST: usize = 5;
 /// Empire-grid demand added by every completed Orbital Railgun level.
 pub const ORBITAL_RAILGUN_ENERGY_PER_LEVEL: usize = 4;
+/// Base destruction chance contributed by each firing Orbital Railgun level.
+pub const ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL: usize = 500;
+/// Destruction chance removed by each target Planetary Shield level.
+pub const ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL: usize = 100;
+/// Destruction chance removed per target Shield level while it is overloaded.
+pub const ORBITAL_RAILGUN_OVERLOADED_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL: usize = 200;
 /// Hull points repaired by one Repair Truck after each round.
 pub const REPAIR_TRUCK_HEALING_PER_ROUND: usize = 50;
 

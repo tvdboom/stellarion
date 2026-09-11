@@ -417,7 +417,15 @@ fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
     };
     block_on(backend.set_connected(&session, &created.game.id, true)).unwrap();
     let loaded = block_on(backend.load_game(&session, &created.game.id)).unwrap();
-    block_on(backend.save_game(&session, &loaded.id, loaded.revision, loaded.persisted)).unwrap();
+    assert!(matches!(
+        block_on(backend.save_game(
+            &session,
+            &loaded.id,
+            loaded.revision,
+            TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
+        )),
+        Err(BackendError::InvalidGameStatus)
+    ));
     assert_eq!(backend.lock().unwrap().games[&created.game.id].finished_at, Some(finished_at));
     assert_eq!(block_on(backend.list_games(&session)).unwrap().len(), 1);
     backend.lock().unwrap().games.get_mut(&created.game.id).unwrap().finished_at =
@@ -461,12 +469,19 @@ fn only_snapshot_saves_extend_save_retention() {
     let backend = InMemoryBackend::new();
     let (session, recovery) = identity(&backend);
     let created = create(&backend, &session, &recovery, 2);
+    let active = start_with_guest(&backend, &session, &created.game);
     let old_save = current_unix_timestamp() - 29 * 24 * 60 * 60;
     backend.lock().unwrap().games.get_mut(&created.game.id).unwrap().record.saved_at = old_save;
     block_on(backend.set_connected(&session, &created.game.id, true)).unwrap();
     let loaded = block_on(backend.load_game(&session, &created.game.id)).unwrap();
     assert_eq!(loaded.saved_at, old_save);
-    block_on(backend.save_game(&session, &loaded.id, loaded.revision, loaded.persisted)).unwrap();
+    block_on(backend.save_game(
+        &session,
+        &loaded.id,
+        loaded.revision,
+        TurnSubmission::new(1, active.persisted.state.turn, vec![]),
+    ))
+    .unwrap();
     assert!(backend.lock().unwrap().games[&created.game.id].record.saved_at > old_save);
 }
 
@@ -662,13 +677,13 @@ fn reports_typed_recovery_failures() {
 }
 
 #[test]
-/// Any member may save, while simultaneous stale writes are rejected.
-fn saves_by_multiple_players_use_optimistic_revisions() {
+/// Any member may save without advancing the world, while stale snapshots are rejected.
+fn saves_by_multiple_players_keep_the_world_revision_and_reject_stale_snapshots() {
     let backend = InMemoryBackend::new();
     let (creator, creator_recovery) = identity(&backend);
     let created = create(&backend, &creator, &creator_recovery, 2);
     let (joiner, joiner_recovery) = identity(&backend);
-    block_on(backend.join_game(
+    let joined = block_on(backend.join_game(
         &joiner,
         JoinGameRequest {
             code: created.game.code,
@@ -677,45 +692,63 @@ fn saves_by_multiple_players_use_optimistic_revisions() {
         },
     ))
     .unwrap();
-    let loaded = block_on(backend.load_game(&creator, &created.game.id)).unwrap();
+    let mut starting = joined.game.persisted.clone();
+    starting.state.start().unwrap();
+    let loaded =
+        block_on(backend.start_game(&creator, &created.game.id, joined.game.revision, starting))
+            .unwrap();
     let creator_saved = block_on(backend.save_game(
         &creator,
         &created.game.id,
         loaded.revision,
-        loaded.persisted.clone(),
+        TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
     ))
     .unwrap();
     let saved = block_on(backend.save_game(
         &joiner,
         &created.game.id,
         creator_saved.revision,
-        loaded.persisted.clone(),
+        TurnSubmission::new(2, loaded.persisted.state.turn, vec![]),
     ))
     .unwrap();
-    assert_eq!(saved.revision, loaded.revision + 2);
+    assert_eq!(creator_saved.revision, loaded.revision);
+    assert_eq!(saved.revision, loaded.revision);
+    let stale_revision = loaded.revision.saturating_sub(1);
     assert!(matches!(
         block_on(backend.save_game(
             &creator,
             &created.game.id,
-            loaded.revision,
-            loaded.persisted,
+            stale_revision,
+            TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
         )),
         Err(BackendError::Conflict { expected, actual })
-            if expected == loaded.revision && actual == saved.revision
+            if expected == stale_revision && actual == loaded.revision
     ));
+    let drafts = block_on(backend.load_turn_submissions(
+        &creator,
+        &created.game.id,
+        loaded.persisted.state.turn,
+    ))
+    .unwrap();
+    assert_eq!(drafts.len(), 2);
+    assert!(drafts.iter().all(|draft| !draft.ready));
 }
 
 #[test]
-/// A saved snapshot is discoverable and exact after restoring the member's local session.
+/// The canonical checkpoint remains discoverable and exact after restoring a local session.
 fn resumes_exact_saved_state() {
     let backend = InMemoryBackend::new();
     let (creator, recovery) = identity(&backend);
     let created = create(&backend, &creator, &recovery, 2);
     let started = start_with_guest(&backend, &creator, &created.game);
-    let changed = started.persisted.clone();
-    let expected_metal = changed.state.players[0].resources.metal;
-    let saved =
-        block_on(backend.save_game(&creator, &created.game.id, started.revision, changed)).unwrap();
+    let expected_metal = started.persisted.state.players[0].resources.metal;
+    let saved = block_on(backend.save_game(
+        &creator,
+        &created.game.id,
+        started.revision,
+        TurnSubmission::new(1, started.persisted.state.turn, vec![]),
+    ))
+    .unwrap();
 
     let restored = block_on(backend.authenticate(Some(&creator))).unwrap();
     let listed = block_on(backend.list_games(&restored)).unwrap();
@@ -850,54 +883,55 @@ fn host_departure_preserves_started_games() {
 }
 
 #[test]
-/// Invalid complete-state snapshots are rejected before they can advance a revision.
-fn rejects_malformed_saved_state() {
+/// Invalid player-scoped drafts are rejected before they can advance a revision.
+fn rejects_malformed_saved_draft() {
     let backend = InMemoryBackend::new();
     let (creator, recovery) = identity(&backend);
     let created = create(&backend, &creator, &recovery, 2);
-    let mut malformed = created.game.persisted.clone();
-    malformed.state.players.pop();
+    let active = start_with_guest(&backend, &creator, &created.game);
+    let malformed = TurnSubmission::new(0, active.persisted.state.turn, vec![]);
     assert!(matches!(
-        block_on(backend.save_game(&creator, &created.game.id, created.game.revision, malformed,)),
+        block_on(backend.save_game(&creator, &created.game.id, active.revision, malformed,)),
         Err(BackendError::InvalidData(_))
     ));
     assert_eq!(
         block_on(backend.load_game(&creator, &created.game.id)).unwrap().revision,
-        created.game.revision
+        active.revision
     );
 }
 
 #[test]
-/// Two genuinely concurrent saves serialize to one success and one revision conflict.
-fn simultaneous_saves_accept_exactly_one_writer() {
+/// Identical concurrent draft saves are idempotent and do not advance canonical revision.
+fn simultaneous_saves_do_not_conflict_or_advance_the_world() {
     use std::sync::{Arc, Barrier};
 
     let backend = InMemoryBackend::new();
     let (creator, recovery) = identity(&backend);
     let created = create(&backend, &creator, &recovery, 2);
+    let active = start_with_guest(&backend, &creator, &created.game);
     let barrier = Arc::new(Barrier::new(3));
     let mut workers = Vec::new();
     for _ in 0..2 {
         let backend = backend.clone();
         let creator = creator.clone();
         let game_id = created.game.id.clone();
-        let persisted = created.game.persisted.clone();
+        let revision = active.revision;
+        let turn = active.persisted.state.turn;
         let barrier = Arc::clone(&barrier);
         workers.push(std::thread::spawn(move || {
             barrier.wait();
-            block_on(backend.save_game(&creator, &game_id, 0, persisted))
+            block_on(backend.save_game(
+                &creator,
+                &game_id,
+                revision,
+                TurnSubmission::new(1, turn, vec![]),
+            ))
         }));
     }
     barrier.wait();
     let results = workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>();
-    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(
-        results
-            .iter()
-            .filter(|result| matches!(result, Err(BackendError::Conflict { .. })))
-            .count(),
-        1
-    );
+    assert!(results.iter().all(Result::is_ok));
+    assert!(results.iter().all(|result| result.as_ref().unwrap().revision == active.revision));
 }
 
 #[test]

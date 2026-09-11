@@ -38,9 +38,9 @@ fn battle_report(id: ReportId, planet: &Planet, outcome: Outcome) -> MissionRepo
             Army::new()
         },
         surviving_defender: if outcome != Outcome::Victory {
-            Army::from([(Unit::Ship(Ship::LightFighter), 1)])
+            Army::from([(Unit::Ship(Ship::LightFighter), 1)]).into()
         } else {
-            Army::new()
+            Army::new().into()
         },
         planet_colonized: false,
         planet_destroyed: false,

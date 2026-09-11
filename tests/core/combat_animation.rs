@@ -125,7 +125,8 @@ fn colonial_withdrawal_hides_colony_ships_and_flies_combat_ships_to_an_upper_cor
             (Unit::Ship(Ship::Dreadnought), 2),
             (Unit::colony_ship(), 1),
             (Unit::Defense(Defense::GaussCannon), 3),
-        ]);
+        ])
+        .into();
         source.planet.fleet_withdrawal = FleetWithdrawal::Immediate;
         let mut rng = DeterministicRngState::from_u64(17).next_rng();
         let report = resolve_combat_with_retreat_with_rng(
@@ -1082,7 +1083,8 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
             (Unit::repair_truck(), 8),
             (Unit::Defense(Defense::GaussCannon), 8),
             (Unit::Defense(Defense::PlasmaTurret), 3),
-        ]);
+        ])
+        .into();
         let mission = Mission::new_with_id(
             10,
             1,
@@ -1161,10 +1163,10 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
 fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let mut report = report(1, 0, true, 19);
     report.planet.army =
-        Army::from([(Unit::crawler(), 4), (Unit::Defense(Defense::RocketLauncher), 5)]);
+        Army::from([(Unit::crawler(), 4), (Unit::Defense(Defense::RocketLauncher), 5)]).into();
     report.surviving_attacker.clear();
     report.surviving_defender =
-        Army::from([(Unit::crawler(), 2), (Unit::Defense(Defense::RocketLauncher), 3)]);
+        Army::from([(Unit::crawler(), 2), (Unit::Defense(Defense::RocketLauncher), 3)]).into();
     assert_eq!(report.defender_salvage(), crate::core::resources::Resources::new(2, 0, 0));
 
     let mut app = playback_app(report, 0, CombatState::Salvage);

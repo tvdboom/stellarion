@@ -54,6 +54,20 @@ fn debris_size_controls_one_two_and_three_turn_lifetimes() {
 }
 
 #[test]
+fn debris_counts_destroyed_protection_ships_from_the_shared_garrison() {
+    let model = GameModel::new([18; 32], GameRules::default()).unwrap();
+    let mut battle = report(20, 8, &model.map.planets[0], 0);
+    battle.planet.controlled = Some(1);
+    battle.planet.owned = Some(1);
+    battle.planet.army = Army::from([(Unit::Ship(Ship::LightFighter), 3)]).into();
+    battle.planet.army.dock_protector(2, Army::from([(Unit::Ship(Ship::LightFighter), 4)]));
+    battle.surviving_defender = Army::from([(Unit::Ship(Ship::LightFighter), 2)]).into();
+    battle.surviving_defender.dock_protector(2, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
+
+    assert_eq!(destroyed_ships(&battle), 4);
+}
+
+#[test]
 fn recycler_prefers_debris_and_scales_output_by_level() {
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     let asteroid_targets = recycler_asteroid_targets(&model.map);

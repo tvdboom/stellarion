@@ -36,6 +36,7 @@ fn failed_delivery_and_same_turn_reload_preserve_the_locked_payload() {
         storage: Arc::new(MemoryStorage::default()),
         profile: ClientProfile::default(),
         practice_return: None,
+        practice_players: Vec::new(),
     };
     let mut session = MultiplayerSession::default();
     let mut form = MultiplayerForm::default();

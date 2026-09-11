@@ -10,7 +10,8 @@ use crate::core::player::PlayerColor;
 use crate::core::simulation::{PersistedGame, TurnSubmission};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, JoinGameRequest,
-    MembershipResult, RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition,
+    MembershipResult, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
+    SubmissionDisposition,
 };
 
 /// A heartbeat lease shared by displayed presence, resume readiness, and recovery protection.
@@ -173,14 +174,15 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
     ) -> BackendFuture<'a, ()>;
 
-    /// Acknowledges canonical state with a revision check.
+    /// Saves the caller's unfinished commands and renews the canonical checkpoint timestamp.
+    /// The shared snapshot is guarded by, but does not advance, its revision.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         expected_revision: u64,
-        persisted: PersistedGame,
-    ) -> BackendFuture<'a, GameRecord>;
+        draft: TurnSubmission,
+    ) -> BackendFuture<'a, SaveAcknowledgement>;
 
     /// Marks a command draft ready, with idempotent retries for each readiness generation.
     fn submit_turn<'a>(
@@ -226,12 +228,13 @@ pub trait MultiplayerBackend: Send + Sync {
         after_sequence: u64,
     ) -> BackendFuture<'a, EventBatch>;
 
-    /// Renews connection presence; it expires after 15 seconds without a heartbeat.
+    /// Renews connection presence and returns the current compact membership roster.
+    /// Presence expires after 15 seconds without a heartbeat.
     /// Disconnecting the host of an unstarted lobby permanently deletes that lobby and its data.
     fn set_connected<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         connected: bool,
-    ) -> BackendFuture<'a, ()>;
+    ) -> BackendFuture<'a, Vec<crate::multiplayer::model::GameMembership>>;
 }

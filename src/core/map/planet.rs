@@ -1,5 +1,8 @@
 //! Persisted planet/moon state, production, ownership, and capacity rules.
 
+use std::collections::{btree_map, BTreeMap, BTreeSet};
+use std::ops::{Deref, DerefMut};
+
 use bevy::math::Vec2;
 use rand::{rng, Rng, RngExt};
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,176 @@ use crate::core::units::{Amount, Army, Unit};
 
 /// Stable index identifying a planet inside one persisted map.
 pub type PlanetId = usize;
+
+/// Every force stationed on one world, partitioned by the player who may command it.
+///
+/// Keeping this ownership detail behind one type prevents callers from maintaining a flat army
+/// and an ownership side channel that can drift out of sync. Ordinary army operations address
+/// the controller's units; [`Self::combined`] and [`Self::combined_amount`] explicitly aggregate
+/// all commanders.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Garrison {
+    controller: Army,
+    protectors: BTreeMap<PlayerId, Army>,
+}
+
+impl Garrison {
+    /// Creates a garrison from a controller force and zero or more foreign protection fleets.
+    pub fn from_parts(controller: Army, protectors: BTreeMap<PlayerId, Army>) -> Self {
+        Self {
+            controller,
+            protectors: protectors.into_iter().filter(|(_, army)| army.has_army()).collect(),
+        }
+    }
+
+    /// Returns only the units commanded by the planet controller.
+    pub fn controller(&self) -> &Army {
+        &self.controller
+    }
+
+    /// Returns mutable access to the units commanded by the planet controller.
+    pub fn controller_mut(&mut self) -> &mut Army {
+        &mut self.controller
+    }
+
+    /// Returns the protection fleet commanded by this player, if stationed here.
+    pub fn protector(&self, player_id: PlayerId) -> Option<&Army> {
+        self.protectors.get(&player_id)
+    }
+
+    /// Returns mutable access to an existing protection fleet.
+    pub fn protector_mut(&mut self, player_id: PlayerId) -> Option<&mut Army> {
+        self.protectors.get_mut(&player_id)
+    }
+
+    /// Iterates over every foreign protection fleet in player-id order.
+    pub fn protectors(&self) -> impl Iterator<Item = (PlayerId, &Army)> {
+        self.protectors.iter().map(|(player_id, army)| (*player_id, army))
+    }
+
+    /// Iterates over the IDs of all players with a protection fleet stationed here.
+    pub fn protector_ids(&self) -> impl Iterator<Item = PlayerId> + '_ {
+        self.protectors().map(|(player_id, _)| player_id)
+    }
+
+    /// Adds units to one player's protection fleet.
+    pub fn dock_protector(&mut self, player_id: PlayerId, army: Army) {
+        let fleet = self.protectors.entry(player_id).or_default();
+        for (unit, count) in army {
+            let stationed = fleet.entry(unit).or_default();
+            *stationed = stationed.saturating_add(count);
+        }
+        fleet.retain(|_, count| *count > 0);
+        if !fleet.has_army() {
+            self.protectors.remove(&player_id);
+        }
+    }
+
+    /// Removes and returns one player's protection fleet.
+    pub fn remove_protector(&mut self, player_id: PlayerId) -> Option<Army> {
+        self.protectors.remove(&player_id)
+    }
+
+    /// Removes every protection fleet while retaining the controller's units.
+    pub fn clear_protectors(&mut self) {
+        self.protectors.clear();
+    }
+
+    /// Retains only protection fleets accepted by the predicate.
+    pub fn retain_protectors(&mut self, mut retain: impl FnMut(PlayerId, &mut Army) -> bool) {
+        self.protectors.retain(|player_id, army| retain(*player_id, army));
+    }
+
+    /// Returns the complete stationed force without discarding ownership in this garrison.
+    pub fn combined(&self) -> Army {
+        let mut combined = self.controller.clone();
+        for army in self.protectors.values() {
+            for (unit, count) in army {
+                let total = combined.entry(*unit).or_default();
+                *total = total.saturating_add(*count);
+            }
+        }
+        combined
+    }
+
+    /// Counts this unit across the controller and every protection fleet.
+    pub fn combined_amount(&self, unit: &Unit) -> usize {
+        self.protectors.values().fold(self.controller.amount(unit), |total, army| {
+            total.saturating_add(army.amount(unit))
+        })
+    }
+
+    /// Returns whether any commander has a ship stationed here.
+    pub fn has_fleet(&self) -> bool {
+        std::iter::once(&self.controller)
+            .chain(self.protectors.values())
+            .any(|army| army.iter().any(|(unit, count)| unit.is_ship() && *count > 0))
+    }
+
+    /// Removes every controller and protector unit.
+    pub fn clear(&mut self) {
+        self.controller.clear();
+        self.protectors.clear();
+    }
+
+    /// Returns whether no owner has a nonzero unit count.
+    pub fn is_empty(&self) -> bool {
+        !self.controller.has_army() && !self.protectors.values().any(Army::has_army)
+    }
+}
+
+impl From<Army> for Garrison {
+    fn from(army: Army) -> Self {
+        Self {
+            controller: army,
+            protectors: BTreeMap::new(),
+        }
+    }
+}
+
+impl FromIterator<(Unit, usize)> for Garrison {
+    fn from_iter<T: IntoIterator<Item = (Unit, usize)>>(iter: T) -> Self {
+        Self::from(iter.into_iter().collect::<Army>())
+    }
+}
+
+impl Deref for Garrison {
+    type Target = Army;
+
+    fn deref(&self) -> &Self::Target {
+        self.controller()
+    }
+}
+
+impl DerefMut for Garrison {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.controller_mut()
+    }
+}
+
+impl<'a> IntoIterator for &'a Garrison {
+    type Item = (&'a Unit, &'a usize);
+    type IntoIter = btree_map::Iter<'a, Unit, usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.controller().iter()
+    }
+}
+
+impl Amount for Garrison {
+    fn amount(&self, unit: &Unit) -> usize {
+        self.controller().amount(unit)
+    }
+
+    fn has_army(&self) -> bool {
+        self.controller().has_army()
+    }
+
+    fn total_production(&self) -> usize {
+        self.controller().total_production()
+    }
+}
 
 /// One-turn operating state of a Planetary Shield overload.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -285,8 +458,10 @@ pub struct Planet {
     /// Player with current military control, if any.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub controlled: Option<PlayerId>,
-    /// Units stationed on this world or travelling with this mission.
-    pub army: Army,
+    /// All controller and protection forces stationed here, indexed internally by commander.
+    pub army: Garrison,
+    /// Players currently allowed by this world's controller to send a Protect mission here.
+    pub protection_permissions: BTreeSet<PlayerId>,
     /// Units queued for production at the next turn transition.
     pub buy: Vec<Unit>,
     /// Permanent first-completion slots for surface artwork, retained across saves and control changes.
@@ -405,7 +580,8 @@ impl Planet {
             is_destroyed: false,
             owned: None,
             controlled: None,
-            army: Army::new(),
+            army: Garrison::default(),
+            protection_permissions: BTreeSet::new(),
             buy: vec![],
             surface_build_order: [None; 4],
         }
@@ -465,7 +641,8 @@ impl Planet {
             (Unit::Building(Building::Factory), 1),
             (Unit::Building(Building::Reactor), 1),
             (Unit::Defense(Defense::RocketLauncher), 5),
-        ]);
+        ])
+        .into();
         self.surface_build_order =
             [Some(Building::MetalMine), Some(Building::Shipyard), None, None];
     }
@@ -476,6 +653,7 @@ impl Planet {
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.owned = None;
         self.controlled = None;
+        self.protection_permissions.clear();
         self.army.retain(|u, _| u.is_building());
         self.buy = Vec::new();
     }
@@ -501,6 +679,7 @@ impl Planet {
     pub fn control(&mut self, player_id: PlayerId) {
         if self.controlled != Some(player_id) {
             self.fleet_withdrawal = FleetWithdrawal::Off;
+            self.protection_permissions.clear();
         }
         self.controlled = Some(player_id);
         if self.owned != Some(player_id) {
@@ -514,7 +693,7 @@ impl Planet {
         self.fleet_withdrawal = FleetWithdrawal::Off;
         let former_owner = self.owned.take();
         self.army.retain(|u, _| !u.is_defense());
-        self.controlled = if self.has_fleet() {
+        self.controlled = if self.army.has_fleet() {
             // Ownership implies control, so use it as the authority when converting an owned
             // planet into a merely controlled one. Presentation projections may temporarily
             // omit the redundant `controlled` value for an owned planet.
@@ -522,21 +701,29 @@ impl Planet {
         } else {
             None
         };
+        if self.controlled.is_none() {
+            self.protection_permissions.clear();
+        }
+    }
+
+    /// Returns the diameter-dependent War Sun destruction chance in hundredths of one percent.
+    pub fn destroy_probability_basis_points(&self) -> u16 {
+        match self.diameter {
+            1000..2000 => 1_800,
+            2000..3000 => 1_700,
+            3000..4000 => 1_600,
+            4000..6000 => 1_500,
+            6000..9000 => 1_400,
+            9000..13000 => 1_300,
+            13000..20000 => 1_200,
+            20000..100000 => 1_100,
+            _ => 1_000,
+        }
     }
 
     /// Returns the bounded War Sun destruction chance for the current turn.
     pub fn destroy_probability(&self) -> f32 {
-        match self.diameter {
-            1000..2000 => 0.18,
-            2000..3000 => 0.17,
-            3000..4000 => 0.16,
-            4000..6000 => 0.15,
-            6000..9000 => 0.14,
-            9000..13000 => 0.13,
-            13000..20000 => 0.12,
-            20000..100000 => 0.11,
-            _ => 0.10,
-        }
+        f32::from(self.destroy_probability_basis_points()) / 10_000.0
     }
 
     /// Moves all queued units into the stationed army with saturating counts.
@@ -727,7 +914,7 @@ impl Planet {
 
     /// Returns whether at least one copy of the requested unit is stationed here.
     pub fn has(&self, unit: &Unit) -> bool {
-        self.army.amount(unit) > 0
+        self.army.controller().amount(unit) > 0
     }
 
     /// Returns whether this value has buildings.
@@ -740,6 +927,39 @@ impl Planet {
         self.army.iter().any(|(u, c)| u.is_ship() && *c > 0)
     }
 
+    /// Returns the units this player may dispatch from this world.
+    ///
+    /// A controller uses the ordinary planet army. A foreign protector may dispatch only their
+    /// own separately stationed fleet, while receiving no access to local structures or defenses.
+    pub fn mission_origin_army(&self, player_id: PlayerId) -> Option<&Army> {
+        if self.controlled == Some(player_id) || self.owned == Some(player_id) {
+            Some(self.army.controller())
+        } else {
+            self.army.protector(player_id)
+        }
+    }
+
+    /// Returns this player's mutable dispatch pool on the world.
+    pub fn mission_origin_army_mut(&mut self, player_id: PlayerId) -> Option<&mut Army> {
+        if self.controlled == Some(player_id) || self.owned == Some(player_id) {
+            Some(self.army.controller_mut())
+        } else {
+            self.army.protector_mut(player_id)
+        }
+    }
+
+    /// Returns whether the current controller has invited this player to protect the world.
+    pub fn allows_protection(&self, player_id: PlayerId) -> bool {
+        self.controlled.is_some()
+            && self.controlled != Some(player_id)
+            && self.protection_permissions.contains(&player_id)
+    }
+
+    /// Stations one foreign player's surviving Protect fleet without transferring control.
+    pub fn dock_protecting_fleet(&mut self, player_id: PlayerId, army: Army) {
+        self.army.dock_protector(player_id, army);
+    }
+
     /// Returns whether this world has a non-orbital defense unit.
     pub fn has_defense(&self) -> bool {
         self.army
@@ -749,8 +969,9 @@ impl Planet {
 
     /// Releases control after a fleet departs when no infrastructure or ships remain.
     pub fn release_control_if_vacant(&mut self) {
-        if !self.has_buildings() && !self.has_fleet() {
+        if !self.has_buildings() && !self.army.has_fleet() {
             self.controlled = None;
+            self.protection_permissions.clear();
         }
     }
 
@@ -766,7 +987,8 @@ impl Planet {
     pub fn destroy(&mut self) {
         self.owned = None;
         self.controlled = None;
-        self.army = Army::new();
+        self.army.clear();
+        self.protection_permissions.clear();
         self.buy = Vec::new();
         self.is_destroyed = true;
         self.terraformer_focus = None;

@@ -11,7 +11,7 @@ fn launch_mission(draft_full: bool) -> App {
     let mut map = Map::new(2, 0);
     let origin_id = map.planets[0].id;
     let army = Army::from([(Unit::probe(), MIN_SPY_PROBES)]);
-    map.planets[0].army = army.clone();
+    map.planets[0].army = army.clone().into();
     map.planets[0].army.insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);
     map.planets[0].controlled = Some(1);
     map.planets[0].owned = Some(1);

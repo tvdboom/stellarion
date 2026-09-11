@@ -12,14 +12,16 @@ use crate::core::combat::resolution::{
     resolve_combat_with_retreat_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
 };
 use crate::core::constants::{
-    ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST, ORBITAL_RAILGUN_FIRE_ENERGY_COST,
-    ORBITAL_RAILGUN_RANGE_PER_LEVEL,
+    ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST,
+    ORBITAL_RAILGUN_FIRE_ENERGY_COST,
+    ORBITAL_RAILGUN_OVERLOADED_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
+    ORBITAL_RAILGUN_RANGE_PER_LEVEL, ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
 };
 use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::planet::{Planet, PlanetId, ShieldOverloadState};
+use crate::core::map::planet::{Garrison, Planet, PlanetId, ShieldOverloadState};
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
@@ -57,7 +59,7 @@ pub struct GameRules {
     pub moons_percent: usize,
     /// Number of generated player slots in this snapshot.
     pub player_count: u8,
-    /// Allows the debug-only one-player practice flow to remain active without opponents.
+    /// Allows the debug-only local practice flow to remain active without a victory condition.
     pub practice_mode: bool,
 }
 
@@ -65,7 +67,7 @@ impl GameRules {
     /// Validates supported setting boundaries before map generation.
     pub fn validate(&self) -> Result<(), GameError> {
         let valid_player_count = if self.practice_mode {
-            self.player_count == 1
+            (1..=MAX_MULTIPLAYER_PLAYERS).contains(&self.player_count)
         } else {
             PLAYER_COUNT_RANGE.contains(&self.player_count)
         };
@@ -354,6 +356,7 @@ impl GameModel {
                 let references_known_players = [
                     mission.origin_owned,
                     mission.origin_controlled,
+                    mission.protected_player,
                     report.planet.owned,
                     report.planet.controlled,
                     report.destination_owned,
@@ -361,7 +364,19 @@ impl GameModel {
                 ]
                 .into_iter()
                 .flatten()
+                .chain(report.planet.protection_permissions.iter().copied())
+                .chain(report.planet.army.protector_ids())
+                .chain(report.surviving_defender.protector_ids())
                 .all(|id| player_ids.contains(&id));
+                let defending_forces_are_valid = valid_protection_fleets(
+                    &report.planet.army,
+                    report.planet.controlled.or(report.planet.owned),
+                    &player_ids,
+                ) && valid_protection_fleets(
+                    &report.surviving_defender,
+                    report.planet.controlled.or(report.planet.owned),
+                    &player_ids,
+                );
                 let combat_is_bounded = report.combat_report.as_ref().is_none_or(|combat| {
                     combat.rounds.len() <= MAX_COMBAT_ROUNDS + 1
                         && combat.defender_retreat.as_ref().is_none_or(|retreat| {
@@ -377,7 +392,8 @@ impl GameModel {
                             round.destroy_probability.is_finite()
                                 && (0.0..=1.0).contains(&round.destroy_probability)
                                 && round.attacker.iter().chain(&round.defender).all(|unit| {
-                                    unit.shots.len() <= MAX_SHOTS_PER_UNIT_PER_ROUND + 1
+                                    unit.owner.is_none_or(|owner| player_ids.contains(&owner))
+                                        && unit.shots.len() <= MAX_SHOTS_PER_UNIT_PER_ROUND + 1
                                 })
                         })
                 });
@@ -393,6 +409,7 @@ impl GameModel {
                     || mission.send > report.turn
                     || !u64::try_from(report.turn).is_ok_and(|turn| turn <= self.turn)
                     || !references_known_players
+                    || !defending_forces_are_valid
                     || !combat_is_bounded
                 {
                     return Err(GameError::MalformedState(format!(
@@ -410,6 +427,22 @@ impl GameModel {
                         planet.id
                     )));
                 }
+            }
+            let permissions_valid = planet.protection_permissions.iter().all(|protector| {
+                player_ids.contains(protector) && planet.controlled != Some(*protector)
+            });
+            let protecting_fleets_valid =
+                valid_protection_fleets(&planet.army, planet.controlled, &player_ids);
+            if !permissions_valid
+                || !protecting_fleets_valid
+                || (planet.is_destroyed
+                    && (!planet.protection_permissions.is_empty()
+                        || planet.army.protector_ids().next().is_some()))
+            {
+                return Err(GameError::MalformedState(format!(
+                    "planet {} contains invalid protection state",
+                    planet.id
+                )));
             }
         }
         for strike in &self.orbital_strikes {
@@ -436,10 +469,11 @@ impl GameModel {
         }
         let mut mission_ids = HashSet::with_capacity(self.missions.len());
         for mission in &self.missions {
-            let origin_references_known_players = [mission.origin_owned, mission.origin_controlled]
-                .into_iter()
-                .flatten()
-                .all(|id| player_ids.contains(&id));
+            let mission_references_known_players =
+                [mission.origin_owned, mission.origin_controlled, mission.protected_player]
+                    .into_iter()
+                    .flatten()
+                    .all(|id| player_ids.contains(&id));
             if !player_ids.contains(&mission.owner)
                 || !planet_ids.contains(&mission.origin)
                 || !planet_ids.contains(&mission.destination)
@@ -449,7 +483,7 @@ impl GameModel {
                 || mission.id == 0
                 || !mission_ids.insert(mission.id)
                 || !mission.position.is_finite()
-                || !origin_references_known_players
+                || !mission_references_known_players
                 || mission.send == 0
                 || !u64::try_from(mission.send).is_ok_and(|turn| turn <= self.turn)
                 || !u64::try_from(mission.travel_turns).is_ok_and(|age| age <= self.turn)
@@ -462,6 +496,22 @@ impl GameModel {
         }
         Ok(())
     }
+}
+
+fn valid_protection_fleets(
+    garrison: &Garrison,
+    controller: Option<PlayerId>,
+    player_ids: &HashSet<PlayerId>,
+) -> bool {
+    let mut has_protector = false;
+    let fleets_are_valid = garrison.protectors().all(|(owner, army)| {
+        has_protector = true;
+        player_ids.contains(&owner)
+            && controller != Some(owner)
+            && army.has_army()
+            && army.iter().all(|(unit, count)| unit.is_ship() && *count > 0)
+    });
+    fleets_are_valid && (!has_protector || controller.is_some())
 }
 
 /// Validated snapshot stored in the database JSON column.
@@ -555,6 +605,15 @@ pub enum TurnCommand {
         planet_id: PlanetId,
         /// Loss threshold, immediate withdrawal, or off.
         withdrawal: FleetWithdrawal,
+    },
+    /// Grants or revokes another player's permission to protect one controlled world.
+    SetProtectionPermission {
+        /// World whose controller owns the permission list.
+        planet_id: PlanetId,
+        /// Foreign player receiving or losing access.
+        protector: PlayerId,
+        /// Whether Protect missions are currently accepted from that player.
+        allowed: bool,
     },
     /// Fires every owned Orbital Railgun that can reach one target during this simultaneous turn.
     FireOrbitalRailguns {
@@ -743,10 +802,22 @@ pub(crate) fn resolved_turn(
     working.orbital_strikes.clear();
     let mut ordered = submissions.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|submission| submission.player_id);
+    let mut protection_changes = Vec::new();
     for submission in ordered {
         for command in &submission.commands {
-            apply_command(&mut working, submission.player_id, command)?;
+            if matches!(command, TurnCommand::SetProtectionPermission { .. }) {
+                protection_changes.push((submission.player_id, command));
+            } else {
+                apply_command(&mut working, submission.player_id, command)?;
+            }
         }
+    }
+    // Invitations are visible at the start of planning. Resolve their changes only after every
+    // ordinary order so a same-turn revocation redirects an already-valid Protect launch instead
+    // of invalidating the complete simultaneous turn. A newly granted invitation becomes usable
+    // on the following turn, when the invited player can actually see it.
+    for (player_id, command) in protection_changes {
+        apply_command(&mut working, player_id, command)?;
     }
 
     advance_simulation(&mut working)?;
@@ -875,6 +946,11 @@ fn apply_command(
             planet_id,
             withdrawal,
         } => apply_fleet_withdrawal(model, player_id, *planet_id, *withdrawal),
+        TurnCommand::SetProtectionPermission {
+            planet_id,
+            protector,
+            allowed,
+        } => apply_protection_permission(model, player_id, *planet_id, *protector, *allowed),
         TurnCommand::FireOrbitalRailguns {
             target,
         } => apply_orbital_railgun_fire(model, player_id, *target),
@@ -909,6 +985,35 @@ fn apply_command(
             mission_id,
         } => apply_recall(model, player_id, *mission_id),
     }
+}
+
+/// Changes a controller-owned, planet-specific invitation for one foreign protection fleet.
+fn apply_protection_permission(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    protector: PlayerId,
+    allowed: bool,
+) -> Result<(), GameError> {
+    if protector == player_id
+        || model.player(protector).is_err()
+        || model.player(protector).is_ok_and(|player| player.spectator)
+    {
+        return invalid(player_id, "protection permission references an invalid player");
+    }
+    let planet = model
+        .map
+        .try_get_mut(planet_id)
+        .ok_or_else(|| invalid_error(player_id, "protection planet does not exist"))?;
+    if planet.is_destroyed || planet.controlled != Some(player_id) {
+        return invalid(player_id, "only the current controller can change protection access");
+    }
+    if allowed {
+        planet.protection_permissions.insert(protector);
+    } else {
+        planet.protection_permissions.remove(&protector);
+    }
+    Ok(())
 }
 
 /// Reverses one owned active mission without charging resources or moving it immediately.
@@ -1189,8 +1294,16 @@ pub fn orbital_railgun_fire_energy_cost(firing_railguns: usize) -> usize {
     ORBITAL_RAILGUN_FIRE_ENERGY_COST.saturating_mul(firing_railguns)
 }
 
-/// Returns the combined destruction chance: five percent per completed firing level.
-pub fn orbital_railgun_destruction_basis_points(map: &Map, origins: &[PlanetId]) -> u16 {
+/// Returns the combined destruction chance after target size and Planetary Shield modifiers.
+///
+/// Every firing Railgun level contributes five percentage points. The target receives the same
+/// zero-to-eight-point small-world bonus used by the War Sun curve above its ten-percent floor.
+/// Each Planetary Shield level removes one point, or two points while overloaded.
+pub fn orbital_railgun_destruction_basis_points(
+    map: &Map,
+    origins: &[PlanetId],
+    target: PlanetId,
+) -> u16 {
     let firing_levels = origins.iter().fold(0usize, |total, origin| {
         total.saturating_add(
             map.try_get(*origin)
@@ -1203,7 +1316,32 @@ pub fn orbital_railgun_destruction_basis_points(map: &Map, origins: &[PlanetId])
                 .unwrap_or_default(),
         )
     });
-    u16::try_from(firing_levels.saturating_mul(500).min(10_000)).unwrap_or(10_000)
+    let Some(target) = map.try_get(target) else {
+        return 0;
+    };
+    if firing_levels == 0 {
+        return 0;
+    }
+
+    const WAR_SUN_LARGE_WORLD_FLOOR_BASIS_POINTS: u16 = 1_000;
+    let size_bonus = usize::from(
+        target
+            .destroy_probability_basis_points()
+            .saturating_sub(WAR_SUN_LARGE_WORLD_FLOOR_BASIS_POINTS),
+    );
+    let shield_levels =
+        target.army.amount(&Unit::Building(Building::PlanetaryShield)).min(Building::MAX_LEVEL);
+    let shield_reduction_per_level = if target.shield_overload.is_overloaded() {
+        ORBITAL_RAILGUN_OVERLOADED_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL
+    } else {
+        ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL
+    };
+    let chance = firing_levels
+        .saturating_mul(ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL)
+        .saturating_add(size_bonus)
+        .saturating_sub(shield_levels.saturating_mul(shield_reduction_per_level))
+        .min(10_000);
+    u16::try_from(chance).unwrap_or(10_000)
 }
 
 /// Validates and pays for every in-range owned Railgun, then records one synchronized event.
@@ -1254,7 +1392,8 @@ fn resolve_orbital_railgun_strikes<R: Rng + ?Sized>(model: &mut GameModel, rng: 
     for (target, mut origins) in groups {
         origins.sort_unstable();
         origins.dedup();
-        let chance_basis_points = orbital_railgun_destruction_basis_points(&model.map, &origins);
+        let chance_basis_points =
+            orbital_railgun_destruction_basis_points(&model.map, &origins, target);
         let destroyed = rng.random_range(0_u16..10_000) < chance_basis_points;
         outcomes.push(OrbitalStrike {
             turn: model.turn,
@@ -1346,7 +1485,7 @@ fn apply_colonize(
         || planet.controlled != Some(player_id)
         || planet.owned == Some(player_id)
         || owned >= max_owned
-        || planet.army.amount(&Unit::colony_ship()) == 0
+        || planet.army.controller().amount(&Unit::colony_ship()) == 0
     {
         return invalid(player_id, "planet cannot currently be colonized");
     }
@@ -1435,11 +1574,16 @@ fn apply_mission(
     if jump_gate {
         origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
     }
+    let source_army = origin
+        .mission_origin_army_mut(player_id)
+        .ok_or_else(|| invalid_error(player_id, "mission origin is no longer available"))?;
     for (unit, count) in &mission.army {
-        if let Some(available) = origin.army.get_mut(unit) {
+        if let Some(available) = source_army.get_mut(unit) {
             *available = available.saturating_sub(*count);
         }
     }
+    source_army.retain(|_, count| *count > 0);
+    origin.army.retain_protectors(|_, army| army.has_army());
     origin.release_control_if_vacant();
     model.missions.push(mission);
     Ok(())
@@ -1538,6 +1682,14 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
 
     check_missions(model, turn)?;
+    recall_unpermitted_protecting_fleets(
+        model,
+        turn,
+        &mut rng,
+        &mut used_mission_ids,
+        &mut new_missions,
+    )?;
+    resolve_protect_arrivals(model, turn, &mut rng);
 
     for player_id in player_order {
         for planet_id in &planet_ids {
@@ -1716,6 +1868,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     }
 
                     if report.winner() == Some(mission.owner) {
+                        destination.army.clear_protectors();
                         if report.mission.objective == Icon::Destroy {
                             if report.planet_destroyed {
                                 destination.destroy();
@@ -1786,8 +1939,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     .collect(),
                             );
                         }
-                    } else {
-                        destination.army.clone_from(&report.surviving_defender);
+                    } else if report.combat_report.is_some() {
+                        destination.army = report.surviving_defender.clone();
                     }
 
                     let defender_salvage = report.defender_salvage();
@@ -1809,9 +1962,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         if player.controls(destination) {
                             player.record_world_acquisition(destination.id);
                         }
-                        if report.planet.controlled == Some(player.id)
-                            || report.mission.owner == player.id
-                        {
+                        if report.is_defender(player.id) || report.mission.owner == player.id {
                             let mut player_report = report.clone();
                             if relay_diverts_spy && report.mission.owner == player.id {
                                 spoof_spy_report_as_empty(&mut player_report);
@@ -1894,15 +2045,145 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
             .map(|player| player.id)
             .collect::<HashSet<_>>();
         for planet in &mut model.map.planets {
+            planet.protection_permissions.retain(|player| !eliminated.contains(player));
+            planet.army.retain_protectors(|player, _| !eliminated.contains(&player));
             if planet.controlled.is_some_and(|id| eliminated.contains(&id)) {
                 planet.clean();
             }
         }
         model.missions.retain(|mission| !eliminated.contains(&mission.owner));
+        let mut dismissed = Vec::new();
+        recall_unpermitted_protecting_fleets(
+            model,
+            turn,
+            &mut rng,
+            &mut used_mission_ids,
+            &mut dismissed,
+        )?;
+        dismissed.retain(|mission| !eliminated.contains(&mission.owner));
+        if dismissed.len() > MAX_ACTIVE_MISSIONS.saturating_sub(model.missions.len()) {
+            return Err(GameError::MalformedState(format!(
+                "protection recalls exceed {MAX_ACTIVE_MISSIONS} active missions"
+            )));
+        }
+        model.missions.extend(dismissed);
+        check_missions(model, turn)?;
     } else {
         model.status = MatchStatus::Finished;
         for player in &mut model.players {
             player.spectator = true;
+        }
+    }
+    Ok(())
+}
+
+/// Docks every valid same-turn Protect arrival before any hostile mission is resolved.
+///
+/// This destination-first phase removes the previous shuffled-player ordering effect: a fleet
+/// whose displayed arrival turn matches an attack is always present for that defense.
+fn resolve_protect_arrivals<R: Rng + ?Sized>(model: &mut GameModel, turn: usize, rng: &mut R) {
+    let mut groups = BTreeMap::<(PlanetId, PlayerId), Mission>::new();
+    let mut arrived_ids = HashSet::new();
+    for mission in model.missions.iter().filter(|mission| {
+        mission.objective == Icon::Protect && mission.turns_to_destination(&model.map) < 2
+    }) {
+        arrived_ids.insert(mission.id);
+        groups
+            .entry((mission.destination, mission.owner))
+            .and_modify(|grouped| grouped.merge(mission))
+            .or_insert_with(|| mission.clone());
+    }
+
+    for ((destination_id, protector), mission) in groups {
+        let destination = model.map.get_mut(destination_id);
+        let mut report = resolve_combat_with_retreat_with_rng(
+            turn,
+            &mission,
+            destination,
+            Default::default(),
+            None,
+            rng,
+        );
+        report
+            .mission
+            .logs
+            .push_str(&format!("\n- ({turn}) Protection fleet stationed at {}.", destination.name));
+        destination.dock_protecting_fleet(protector, mission.army.clone());
+        report.planet = destination.clone();
+        report.surviving_defender = destination.army.clone();
+        report.destination_owned = destination.owned;
+        report.destination_controlled = destination.controlled;
+
+        for player in &mut model.players {
+            if player.id == protector || Some(player.id) == mission.protected_player {
+                player.push_report(report.clone());
+            }
+        }
+    }
+
+    model.missions.retain(|mission| !arrived_ids.contains(&mission.id));
+}
+
+/// Sends stationed fleets home when their invitation or intended controller is no longer valid.
+fn recall_unpermitted_protecting_fleets<R: Rng + ?Sized>(
+    model: &mut GameModel,
+    turn: usize,
+    rng: &mut R,
+    used_mission_ids: &mut HashSet<u64>,
+    returning: &mut Vec<Mission>,
+) -> Result<(), GameError> {
+    let home_planets = model
+        .players
+        .iter()
+        .map(|player| (player.id, player.home_planet))
+        .collect::<BTreeMap<_, _>>();
+
+    for planet_index in 0..model.map.planets.len() {
+        let invalid = {
+            let planet = &model.map.planets[planet_index];
+            planet
+                .army
+                .protector_ids()
+                .filter(|owner| !planet.allows_protection(*owner))
+                .collect::<Vec<_>>()
+        };
+        for owner in invalid {
+            let Some(home_planet) = home_planets.get(&owner).copied() else {
+                continue;
+            };
+            let (origin, army) = {
+                let planet = &mut model.map.planets[planet_index];
+                let Some(army) = planet.army.remove_protector(owner) else {
+                    continue;
+                };
+                (planet.clone(), army)
+            };
+            if origin.id == home_planet {
+                model.map.get_mut(home_planet).dock(army);
+                continue;
+            }
+            if model.map.get(home_planet).is_destroyed {
+                continue;
+            }
+            let home = model.map.get(home_planet);
+            let mission = Mission::new_with_id(
+                next_unique_mission_id(rng, used_mission_ids)?,
+                turn,
+                owner,
+                &origin,
+                home,
+                Icon::Deploy,
+                army,
+                BombingRaid::None,
+                false,
+                false,
+                Some(format!(
+                    "- ({turn}) Protection access at {} canceled; returning to home planet {}.",
+                    origin.name, home.name
+                )),
+            )
+            .with_return_objective(Icon::Protect);
+            returning.push(mission);
         }
     }
     Ok(())
@@ -1915,12 +2196,18 @@ fn check_missions(model: &mut GameModel, turn: usize) -> Result<(), GameError> {
         .iter()
         .map(|player| colony_limit(model, player.id).map(|limit| (player.id, limit)))
         .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+    let home_planets = model
+        .players
+        .iter()
+        .map(|player| (player.id, player.home_planet))
+        .collect::<std::collections::HashMap<_, _>>();
     for mission in &mut model.missions {
         check_mission(
             mission,
             &model.map,
             turn,
             colony_limits.get(&mission.owner).copied().unwrap_or(0),
+            home_planets.get(&mission.owner).copied(),
         );
     }
     Ok(())
@@ -1955,6 +2242,7 @@ fn spoof_spy_report_as_empty(report: &mut MissionReport) {
     report.planet.owned = None;
     report.planet.controlled = None;
     report.planet.army.clear();
+    report.planet.protection_permissions.clear();
     report.planet.buy.clear();
     report.planet.surface_build_order = [None; 4];
     report.planet.terraformer_focus = None;
@@ -1969,6 +2257,7 @@ fn spoof_spy_report_as_empty(report: &mut MissionReport) {
 
 /// Merges same-player missions by objective and original gameplay priority.
 fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
+    let mut protect: Option<Mission> = None;
     let mut deploy: Option<Mission> = None;
     let mut missile: Option<Mission> = None;
     let mut spy: Option<Mission> = None;
@@ -1977,6 +2266,7 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
         let target = match mission.objective {
             Icon::MissileStrike => &mut missile,
             Icon::Spy => &mut spy,
+            Icon::Protect => &mut protect,
             Icon::Deploy => &mut deploy,
             _ => &mut rest,
         };
@@ -1986,7 +2276,7 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
             *target = Some(mission.clone());
         }
     }
-    [deploy, missile, spy, rest].into_iter().flatten().collect()
+    [protect, deploy, missile, spy, rest].into_iter().flatten().collect()
 }
 
 /// Allocates a nonzero mission identifier with finite randomized and sequential fallbacks.
@@ -2009,17 +2299,57 @@ fn next_unique_mission_id<R: Rng + ?Sized>(
 }
 
 /// Updates a mission whose destination ownership changed earlier in the turn.
-fn check_mission(mission: &mut Mission, map: &Map, turn: usize, max_owned: usize) {
+fn check_mission(
+    mission: &mut Mission,
+    map: &Map,
+    turn: usize,
+    max_owned: usize,
+    home_planet: Option<PlanetId>,
+) {
     let old_objective = mission.objective;
     let destination = map.get(mission.destination);
+    let protection_canceled = mission.objective == Icon::Protect
+        && (mission.protected_player != destination.controlled
+            || !destination.allows_protection(mission.owner));
+    if protection_canceled {
+        let return_destination = home_planet.unwrap_or_else(|| mission.check_origin(map));
+        mission.origin = destination.id;
+        mission.origin_owned = destination.owned;
+        mission.origin_controlled = destination.controlled;
+        mission.origin_army =
+            destination.mission_origin_army(mission.owner).cloned().unwrap_or_default();
+        mission.destination = return_destination;
+        mission.send = turn;
+        mission.travel_turns = 0;
+        mission.objective = Icon::Deploy;
+        mission.protected_player = None;
+        mission.return_objective = Some(Icon::Protect);
+        mission.bombing = BombingRaid::None;
+        mission.combat_probes = false;
+        mission.jump_gate = false;
+        mission.logs.push_str(&format!(
+            "\n- ({turn}) Protection access canceled; returning to home planet {}.",
+            map.get(return_destination).name
+        ));
+        return;
+    }
     // Colonization intent survives friendly ownership changes while the fleet travels.
     if destination.controlled == Some(mission.owner)
-        && !matches!(mission.objective, Icon::Deploy | Icon::MissileStrike | Icon::Colonize)
+        && !matches!(
+            mission.objective,
+            Icon::Deploy | Icon::MissileStrike | Icon::Colonize | Icon::Protect
+        )
     {
         mission.objective = Icon::Deploy;
+        mission.protected_player = None;
     }
     if destination.controlled != Some(mission.owner) && mission.objective == Icon::Deploy {
-        mission.objective = Icon::Attack;
+        if destination.allows_protection(mission.owner) {
+            mission.objective = Icon::Protect;
+            mission.protected_player = destination.controlled;
+        } else {
+            mission.objective = Icon::Attack;
+        }
     }
     let owned = map.planets.iter().filter(|planet| planet.owned == Some(mission.owner)).count();
     if mission.objective == Icon::Colonize
@@ -2041,7 +2371,7 @@ fn check_mission(mission: &mut Mission, map: &Map, turn: usize, max_owned: usize
         mission.origin = destination.id;
         mission.origin_owned = destination.owned;
         mission.origin_controlled = destination.controlled;
-        mission.origin_army.clone_from(&destination.army);
+        mission.origin_army.clone_from(destination.army.controller());
         mission.destination = return_destination;
         mission.send = turn;
         mission.travel_turns = 0;

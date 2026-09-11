@@ -19,7 +19,7 @@ fn battle(bombers: usize, defenders: Army, raid: BombingRaid, seed: u64) -> Miss
     origin.colonize(1);
     let mut destination = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1., &mut rng);
     destination.colonize(2);
-    destination.army = defenders;
+    destination.army = defenders.into();
     let mission = Mission::new_with_id(
         10,
         1,

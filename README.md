@@ -33,7 +33,9 @@ home planet, you are eliminated.
 
 Victory is checked after all battles and ownership changes for the turn resolve, with no holding
 period or countdown. A player who loses their home planet that turn cannot win by territory.
-Local Practice has no territorial victory condition.
+Local Practice has no territorial victory condition. Debug builds can place one to four locally
+controlled empires in the same match: select an empire's name in the Players panel to edit its
+independent orders. The standard **End turn** control resolves every local player's draft at once.
 
 
 ### Resources
@@ -80,6 +82,11 @@ defenses.
 ### Mission types
 
 - **Deploy:** Move a fleet to another planet or moon you control.
+- **Protect:** With the target controller's planet-specific permission, station a fleet at another
+  player's planet or moon. The fleet joins that world's defense but remains separately owned: the
+  controller cannot dispatch it, while its owner can use the protected world as an origin for a
+  later mission. Revoking permission sends both travelling and stationed protection fleets to
+  their owner's homeworld. Protect fleets arriving on the same turn as an attack defend first.
 - **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
   The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
   planet.
@@ -110,7 +117,8 @@ You can build four types of units on an owned planet:
   such as extending sensor range, enabling faster travel, or supporting fleet operations. The
   costly, publicly visible Orbital Railgun can fire once per turn at a planet within its
   level-scaled range; Railguns aimed at one world combine their small, size-dependent destruction
-  chances into a synchronized strike.
+  chances into a synchronized strike. Each Planetary Shield level reduces that chance, with twice
+  the reduction while the shield is overloaded.
 - **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
   them better or worse suited for certain strategies. Some ships are also stronger or weaker against
   other specific ship types, so try to build your fleet according to your enemy's composition.
@@ -189,7 +197,8 @@ Things to keep in mind:
 - Missions are resolved in arbitrary player order each turn. This means that you cannot know if
   reinforcements will arrive before or after an attack when they both arrive at the destination
   planet the same turn. If reinforcements arrive after the planet has been conquered, the objective
-  automatically is transformed in an attack.
+  automatically is transformed in an attack. Protect missions are the exception: every valid
+  same-turn Protect arrival is stationed before hostile missions at that world resolve.
 - Attacks on the same planet on the same turn are merged per player and per objective. The planet
   of origin becomes the planet that send the largest army. The order of resolution becomes: Missile
   strikes are resolved first, followed by spying missions, and then the remaining, which are

@@ -50,7 +50,7 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
+use crate::multiplayer::client::{MultiplayerRequest, MultiplayerSession, PendingTurnCommands};
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 mod missions;
@@ -1054,13 +1054,16 @@ pub(crate) fn known_planet_counts(
 }
 
 /// Shows the local player first, followed by opponents and their territorial progress.
-fn draw_players_widget(
+fn draw_players_widget_with_controls(
     context: &egui::Context,
     session: &MultiplayerSession,
     local_player: &Player,
     map: &Map,
     missions: &[Mission],
+    mut requests: Option<&mut MessageWriter<MultiplayerRequest>>,
 ) -> egui::Rect {
+    #[cfg(not(debug_assertions))]
+    let _ = &mut requests;
     let Some(game) = &session.active_game else {
         return egui::Rect::NOTHING;
     };
@@ -1103,6 +1106,7 @@ fn draw_players_widget(
                     for member in members {
                         ui.horizontal(|ui| {
                             let is_local = member.player_id == local_player.id;
+                            let connected = session.local_practice || member.connected;
                             let color = session.player_color(member.player_id);
                             let [red, green, blue] = color.rgb();
                             let (rect, _) = ui
@@ -1117,14 +1121,14 @@ fn draw_players_widget(
                                     red,
                                     green,
                                     blue,
-                                    if member.connected {
+                                    if connected {
                                         255
                                     } else {
                                         110
                                     },
                                 ),
                             );
-                            let status = (!member.connected).then(|| {
+                            let status = (!connected).then(|| {
                                 egui::WidgetText::from(
                                     RichText::new("DISCONNECTED")
                                         .size(9.0 * scale)
@@ -1167,7 +1171,7 @@ fn draw_players_widget(
                             });
                             let name = egui::WidgetText::from(
                                 RichText::new(&member.display_name).size(14.0 * scale).strong().color(
-                                    if member.connected {
+                                    if connected {
                                         ui.visuals().text_color()
                                     } else {
                                         Color32::from_rgb(174, 181, 190)
@@ -1181,7 +1185,43 @@ fn draw_players_widget(
                                     - ui.spacing().item_spacing.x).max(0.0),
                                 TextStyle::Body,
                             );
-                            ui.add(egui::Label::new(name));
+                            if session.local_practice {
+                                let sense = if session.busy {
+                                    Sense::hover()
+                                } else {
+                                    Sense::click()
+                                };
+                                let response = ui
+                                    .add(egui::Label::new(name).sense(sense))
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .on_hover_text("Control this empire and edit its turn draft.");
+                                if response.hovered() && !session.busy {
+                                    ui.painter().line_segment(
+                                        [response.rect.left_bottom(), response.rect.right_bottom()],
+                                        Stroke::new(
+                                            1.0 * scale,
+                                            Color32::from_rgba_unmultiplied(
+                                                red, green, blue, 190,
+                                            ),
+                                        ),
+                                    );
+                                }
+                                #[cfg(not(debug_assertions))]
+                                let _ = &response;
+                                #[cfg(debug_assertions)]
+                                if !is_local && response.clicked() {
+                                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                                    if let Some(requests) = requests.as_deref_mut() {
+                                        requests.write(
+                                            MultiplayerRequest::SwitchLocalPracticePlayer(
+                                                member.player_id,
+                                            ),
+                                        );
+                                    }
+                                }
+                            } else {
+                                ui.add(egui::Label::new(name));
+                            }
                             let progress = ui.add(egui::Label::new(progress));
                             if is_local {
                                 progress.on_hover_small(
@@ -1202,6 +1242,17 @@ fn draw_players_widget(
         })
         .response
         .rect
+}
+
+#[cfg(test)]
+fn draw_players_widget(
+    context: &egui::Context,
+    session: &MultiplayerSession,
+    local_player: &Player,
+    map: &Map,
+    missions: &[Mission],
+) -> egui::Rect {
+    draw_players_widget_with_controls(context, session, local_player, map, missions, None)
 }
 
 /// Draws a small slashed Wi-Fi symbol without depending on a font's icon coverage.
@@ -1245,8 +1296,11 @@ fn draw_mission_report_unit(
         (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
     } else {
         (
-            report.surviving_defender.amount(unit).saturating_add(report.escaped_defenders(unit)),
-            report.planet.army.amount(unit),
+            report
+                .surviving_defender
+                .combined_amount(unit)
+                .saturating_add(report.escaped_defenders(unit)),
+            report.planet.army.combined_amount(unit),
         )
     };
     let lost = total.saturating_sub(survived);
@@ -2295,6 +2349,7 @@ fn draw_planet_overview(
     settings: &Settings,
     message: &mut MessageWriter<MessageMsg>,
     pending: &mut PendingTurnCommands,
+    session: &MultiplayerSession,
     abandon_confirmation: &mut Option<PlanetId>,
     detail_line_progress: &[f32; PLANET_DETAIL_LINE_COUNT],
     right_side: bool,
@@ -2383,6 +2438,60 @@ fn draw_planet_overview(
         });
     });
 
+    if player.controls(planet) {
+        ui.scope_builder(UiBuilder::new().max_rect(rect.shrink(15.)), |ui| {
+            ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                let members = session
+                    .active_game
+                    .as_ref()
+                    .map(|game| {
+                        game.members
+                            .iter()
+                            .filter(|member| member.player_id != player.id)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if members.is_empty() {
+                    return;
+                }
+                let granted = planet.protection_permissions.len();
+                ComboBox::from_id_salt(("protection access", planet.id))
+                    .selected_text(format!("🛡 Protection access ({granted})"))
+                    .show_ui(ui, |ui| {
+                        for member in members {
+                            let allowed = planet.protection_permissions.contains(&member.player_id);
+                            let label = RichText::new(&member.display_name)
+                                .color(session.player_color(member.player_id).color().to_color32());
+                            if ui.selectable_label(allowed, label).clicked() {
+                                let next = !allowed;
+                                if pending.push(TurnCommand::SetProtectionPermission {
+                                    planet_id: planet.id,
+                                    protector: member.player_id,
+                                    allowed: next,
+                                }) {
+                                    if next {
+                                        planet.protection_permissions.insert(member.player_id);
+                                    } else {
+                                        planet.protection_permissions.remove(&member.player_id);
+                                    }
+                                } else {
+                                    message.write(MessageMsg::error(
+                                        "This turn already contains the maximum number of commands.",
+                                    ));
+                                }
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_small_ext(
+                        "Allow selected players to send Protect missions to this world. Revoking \
+                        access recalls their travelling and stationed protection fleets to their \
+                        home planets.",
+                    );
+            });
+        });
+    }
+
     if !planet.is_moon() {
         let owned =
             pending.can_accept_commands() && player.owns(planet) && player.home_planet != planet.id;
@@ -2418,7 +2527,7 @@ fn draw_planet_overview(
             });
         } else if controlled {
             ui.add_enabled_ui(
-                planet.army.amount(&Unit::colony_ship()) > 0 && n_owned < n_max_owned,
+                planet.army.controller().amount(&Unit::colony_ship()) > 0 && n_owned < n_max_owned,
                 |ui| {
                     let mut response = ui
                         .interact(rect, ui.id(), Sense::click())
@@ -2487,7 +2596,7 @@ fn abandon_planet(
             planet: planet.clone(),
             scout_probes: 0,
             surviving_attacker: Army::new(),
-            surviving_defender: Army::new(),
+            surviving_defender: Army::new().into(),
             planet_colonized: false,
             planet_destroyed: false,
             destination_owned: None,
@@ -2502,7 +2611,13 @@ fn abandon_planet(
 }
 
 /// Draws the overview interface and emits any resulting local actions.
-fn draw_overview(ui: &mut Ui, planet: &Planet, home_planet: PlanetId, images: &ImageIds) {
+fn draw_overview(
+    ui: &mut Ui,
+    planet: &Planet,
+    home_planet: PlanetId,
+    session: &MultiplayerSession,
+    images: &ImageIds,
+) {
     ui.add_space(17.);
 
     ui.horizontal(|ui| {
@@ -2529,7 +2644,7 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, home_planet: PlanetId, images: &I
 
             ui.vertical(|ui| {
                 for unit in units {
-                    let n = planet.army.amount(&unit);
+                    let n = planet.army.combined_amount(&unit);
 
                     ui.add_enabled_ui(n > 0, |ui| {
                         let response = ui.add_image(images.get(unit.to_lowername()), [50.; 2]);
@@ -2548,6 +2663,40 @@ fn draw_overview(ui: &mut Ui, planet: &Planet, home_planet: PlanetId, images: &I
             });
         }
     });
+
+    if planet.army.protector_ids().next().is_some() {
+        ui.add_space(12.);
+        ui.separator();
+        ui.small("Stationed fleets");
+        let controller = planet.controlled.or(planet.owned);
+        for owner in controller.into_iter().chain(planet.army.protector_ids()) {
+            let fleet =
+                planet.mission_origin_army(owner).unwrap_or_else(|| planet.army.controller());
+            let ship_count = fleet
+                .iter()
+                .filter(|(unit, _)| unit.is_ship())
+                .map(|(_, count)| *count)
+                .fold(0, usize::saturating_add);
+            let name = session
+                .player_name(owner)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Player {owner}"));
+            let details = fleet
+                .iter()
+                .filter(|(unit, count)| unit.is_ship() && **count > 0)
+                .map(|(unit, count)| format!("{count} {}", unit.to_name()))
+                .join("\n");
+            ui.colored_label(
+                session.player_color(owner).color().to_color32(),
+                RichText::new(format!("● {name}: {ship_count}")).small(),
+            )
+            .on_hover_small(if details.is_empty() {
+                "No ships stationed.".to_string()
+            } else {
+                details
+            });
+        }
+    }
 }
 
 /// Draws the report overview interface and emits any resulting local actions.
@@ -2717,7 +2866,7 @@ fn draw_combat_report(
 
         ui.add_space(25.);
 
-        ui.add_image(images.get(report.mission.objective.to_lowername()), [25.; 2]);
+        ui.add_image(images.get(report.mission.objective.asset_key()), [25.; 2]);
         ui.add_image(images.get(report.mission.image(player)), [50.; 2]);
         ui.small(report.turn.to_string());
 
@@ -2906,8 +3055,15 @@ fn draw_combat_report(
         .player_name(attacker_id)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let defender_name = defender_id.map(|id| {
-        session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
+    let defender_players = report.defender_players();
+    let defender_name = (!defender_players.is_empty()).then(|| {
+        defender_players
+            .iter()
+            .copied()
+            .map(|id| {
+                session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
+            })
+            .join(" + ")
     });
 
     ui.horizontal(|ui| {
@@ -2943,6 +3099,50 @@ fn draw_combat_report(
             ui.separator();
         });
     });
+
+    if defender_players.len() > 1 {
+        let ship_count = |army: &Army| {
+            army.iter()
+                .filter(|(unit, _)| unit.is_ship())
+                .map(|(_, count)| *count)
+                .fold(0, usize::saturating_add)
+        };
+        ui.horizontal(|ui| {
+            ui.add_space(40. + attacker_w);
+            ui.horizontal_wrapped(|ui| {
+                for defender in defender_players {
+                    let starting = if Some(defender) == defender_id {
+                        ship_count(report.planet.army.controller())
+                    } else {
+                        report.planet.army.protector(defender).map_or(0, ship_count)
+                    };
+                    let surviving = if Some(defender) == defender_id {
+                        ship_count(report.surviving_defender.controller()).saturating_add(
+                            combat
+                                .defender_retreat
+                                .as_ref()
+                                .map_or(0, |retreat| ship_count(&retreat.ships)),
+                        )
+                    } else {
+                        report.surviving_defender.protector(defender).map_or(0, ship_count)
+                    };
+                    let name = session
+                        .player_name(defender)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("Player {defender}"));
+                    ui.colored_label(
+                        session.player_color(defender).color().to_color32(),
+                        RichText::new(format!(
+                            "● {name}: {starting}→{surviving} (-{})",
+                            starting.saturating_sub(surviving)
+                        ))
+                        .small(),
+                    )
+                    .on_hover_small("Ships entering combat, surviving or retreating, and lost.");
+                }
+            });
+        });
+    }
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
@@ -3209,7 +3409,7 @@ fn draw_mission_info_hover(
         } else {
             Icon::Attacked
         };
-        ui.add_image(images.get(objective.to_lowername()), [20.; 2]);
+        ui.add_image(images.get(objective.asset_key()), [20.; 2]);
         ui.small(objective.to_name());
     });
 
@@ -3353,7 +3553,7 @@ fn draw_combat_selection(
                 let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1., 1.));
 
                 ui.painter().image(
-                    images.get(report.mission.objective.to_lowername()),
+                    images.get(report.mission.objective.asset_key()),
                     objective_rect,
                     uv,
                     Color32::WHITE,
@@ -3451,7 +3651,10 @@ pub fn draw_ui(
         MessageWriter<SendMissionMsg>,
         MessageWriter<RecallMissionMsg>,
     ),
-    mut message: MessageWriter<MessageMsg>,
+    (mut message, mut multiplayer_requests): (
+        MessageWriter<MessageMsg>,
+        MessageWriter<MultiplayerRequest>,
+    ),
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     missions: Res<Missions>,
@@ -3488,7 +3691,14 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
-            draw_players_widget(context, &session, &player, &map, &missions.0);
+            draw_players_widget_with_controls(
+                context,
+                &session,
+                &player,
+                &map,
+                &missions.0,
+                Some(&mut multiplayer_requests),
+            );
             draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
             draw_resources_widget(
                 context,
@@ -3589,6 +3799,7 @@ pub fn draw_ui(
                         &settings,
                         &mut message,
                         &mut pending,
+                        &session,
                         abandon_confirmation,
                         &detail_line_progress,
                         right_side,
@@ -3603,7 +3814,8 @@ pub fn draw_ui(
         // Check whether there is a report on this planet
         let info = player.last_info(planet, &missions.0);
 
-        if player.controls(planet) || player.spectator {
+        if player.controls(planet) || planet.army.protector(player.id).is_some() || player.spectator
+        {
             include_planet_panel_rect(
                 &mut panel_rects,
                 draw_sliding_panel(
@@ -3621,7 +3833,7 @@ pub fn draw_ui(
                     (window_w, window_h),
                     slide_distance,
                     &images,
-                    |ui| draw_overview(ui, planet, player.home_planet, &images),
+                    |ui| draw_overview(ui, planet, player.home_planet, &session, &images),
                 ),
             );
 
@@ -3876,7 +4088,7 @@ pub fn draw_ui(
             let cost = orbital_railgun_fire_cost(origins.len());
             let energy_cost = orbital_railgun_fire_energy_cost(origins.len());
             let has_deuterium = player.resources.deuterium >= cost.deuterium;
-            let chance = orbital_railgun_destruction_basis_points(&map, &origins);
+            let chance = orbital_railgun_destruction_basis_points(&map, &origins, target);
             if let Ok(context) = contexts.ctx_mut() {
                 if let Some(action) = draw_railgun_confirmation(
                     context,

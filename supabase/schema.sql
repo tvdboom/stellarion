@@ -420,7 +420,7 @@ $$;
 -- Presence is a renewable lease, not a saved fact. Closing a window or losing the
 -- network can prevent an explicit disconnect. All roster responses, resume checks,
 -- and recovery guards therefore use the same 15-second heartbeat deadline. Clients
--- renew every 3 seconds and reload the roster even if no durable event arrived.
+-- renew every 5 seconds and receive only this small roster, never the game snapshot.
 -- Read-only loads never extend the lease, and expiry does not delete a saved game.
 create function public.stellarion_connection_is_live(
     p_connected boolean,
@@ -432,6 +432,35 @@ volatile
 set search_path = pg_catalog
 as $$
     select p_connected and p_last_seen_at > clock_timestamp() - interval '15 seconds';
+$$;
+
+-- Compact roster projection used by both full records and frequent heartbeats.
+-- Keeping it separate prevents presence refreshes from retransmitting the persisted
+-- map, missions, and combat history every few seconds.
+create function public.stellarion_membership_records(p_game_id uuid)
+returns jsonb
+language sql
+volatile
+set search_path = pg_catalog, public
+as $$
+    select coalesce(
+        jsonb_agg(
+            jsonb_build_object(
+                'game_id', gp.game_id::text,
+                'player_id', gp.player_id,
+                'user_id', gp.user_id::text,
+                'display_name', gp.display_name,
+                'is_creator', gp.is_creator,
+                'identity_version', gp.identity_version,
+                'connected', public.stellarion_connection_is_live(
+                    gp.connected, gp.last_seen_at
+                )
+            ) order by gp.player_id
+        ),
+        '[]'::jsonb
+    )
+    from public.stellarion_game_players as gp
+    where gp.game_id = p_game_id;
 $$;
 
 -- Builds the exact JSON shape consumed by multiplayer::model::GameRecord.
@@ -452,26 +481,7 @@ begin
                'status', g.status,
                'persisted', g.state,
                'submitted_players', coalesce((select jsonb_agg(s.player_id order by s.player_id) from public.stellarion_turn_submissions s where s.game_id = g.id and s.turn = g.current_turn and s.ready), '[]'::jsonb),
-               'members', coalesce(
-                   (
-                       select jsonb_agg(
-                           jsonb_build_object(
-                               'game_id', gp.game_id::text,
-                               'player_id', gp.player_id,
-                               'user_id', gp.user_id::text,
-                               'display_name', gp.display_name,
-                               'is_creator', gp.is_creator,
-                               'identity_version', gp.identity_version,
-                               'connected', public.stellarion_connection_is_live(
-                                   gp.connected, gp.last_seen_at
-                               )
-                           ) order by gp.player_id
-                       )
-                       from public.stellarion_game_players as gp
-                       where gp.game_id = g.id
-                   ),
-                   '[]'::jsonb
-               )
+               'members', public.stellarion_membership_records(g.id)
            )
       into v_result
       from public.stellarion_games as g
@@ -548,7 +558,8 @@ begin
         p_game_id, v_sequence, p_kind, v_revision, p_turn, p_player_id
     );
 
-    -- Realtime is a wake-up path; persisted state is always reloaded. Keeping
+    -- Realtime is only a wake-up path. Clients replay these durable semantic
+    -- events and reload the full snapshot only when an event changed it. Keeping
     -- the latest 2,048 events prevents an abandoned game growing forever.
     delete from public.stellarion_game_events
      where game_id = p_game_id
@@ -729,7 +740,7 @@ $$;
 
 -- Every player has one stable private code for the lifetime of this game. Recovery
 -- rebinds the player slot without changing that code. A live player cannot be
--- displaced by recovery. Clients renew presence every 3 seconds;
+-- displaced by recovery. Clients renew presence every 5 seconds;
 -- after an unexpected close, recovery is available after 15 seconds without a
 -- heartbeat. Leaving the game releases it immediately. The game/member locks also
 -- serialize competing claims, and recovery claims presence before returning.
@@ -1041,21 +1052,56 @@ begin
 end;
 $$;
 
+-- Manual Save checkpoints the already-authoritative shared snapshot and the
+-- caller's current unfinished turn. Other players' local-only choices cannot be
+-- observed here; each player transmits their own draft by saving or ending turn.
 create function public.stellarion_save_game(
     p_game_id uuid,
     p_expected_revision bigint,
-    p_persisted jsonb
+    p_submission jsonb
 )
 returns jsonb
 language plpgsql
 security definer
-set search_path = pg_catalog, public, auth
+set search_path = pg_catalog, public, extensions, auth
 as $$
 declare
     v_game public.stellarion_games%rowtype;
+    v_player_id bigint;
+    v_turn bigint;
+    v_generation bigint;
+    v_digest text;
+    v_existing public.stellarion_turn_submissions%rowtype;
+    v_existing_found boolean;
+    v_revision bigint;
+    v_saved_at timestamptz;
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
+    end if;
+    if p_submission is null or jsonb_typeof(p_submission) is distinct from 'object'
+       or pg_column_size(p_submission) > 1048576
+       or not (p_submission ?& array['player_id', 'turn', 'generation', 'commands'])
+       or p_submission - array['player_id', 'turn', 'generation', 'commands'] <> '{}'::jsonb
+       or jsonb_typeof(p_submission -> 'commands') is distinct from 'array'
+       or (case
+           when jsonb_typeof(p_submission -> 'commands') = 'array'
+               then jsonb_array_length(p_submission -> 'commands') > 1024
+           else true
+       end) then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission';
+    end if;
+    begin
+        v_player_id := (p_submission ->> 'player_id')::bigint;
+        v_turn := (p_submission ->> 'turn')::bigint;
+        v_generation := (p_submission ->> 'generation')::bigint;
+    exception
+        when invalid_text_representation or numeric_value_out_of_range then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission_ids';
+    end;
+    if v_player_id is null or v_player_id not between 1 and 4
+       or v_turn is null or v_turn < 1 or v_generation is null or v_generation < 0 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission_ids';
     end if;
     select * into v_game from public.stellarion_games where id = p_game_id for update;
     if not found then
@@ -1063,9 +1109,20 @@ begin
     end if;
     if not exists (
         select 1 from public.stellarion_game_players
-        where game_id = p_game_id and user_id = auth.uid()
+        where game_id = p_game_id and user_id = auth.uid() and player_id = v_player_id
+    ) or not exists (
+        select 1 from jsonb_array_elements(v_game.state #> '{state,players}') as players(player)
+        where (player ->> 'id')::bigint = v_player_id
+          and (player ->> 'spectator')::boolean = false
     ) then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    if v_game.status <> 'active' then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_STATUS';
+    end if;
+    if v_turn is distinct from v_game.current_turn then
+        raise exception using errcode = 'P0001',
+            message = 'STLR_STALE_SUBMISSION:' || v_game.current_turn::text || ':' || v_turn::text;
     end if;
     if p_expected_revision is null or p_expected_revision < 0 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:revision';
@@ -1074,24 +1131,55 @@ begin
         raise exception using errcode = 'P0001',
             message = 'STLR_CONFLICT:' || p_expected_revision::text || ':' || v_game.revision::text;
     end if;
-    perform public.stellarion_validate_persisted(
-        p_persisted, v_game.max_players, v_game.status, v_game.current_turn
-    );
 
-    -- Normal saves only acknowledge the stored snapshot. Lobby colors have a
-    -- dedicated row-locked RPC; turn progression has its own checked RPC.
-    if p_persisted is distinct from v_game.state then
-        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    v_digest := encode(
+        digest(
+            convert_to('stellarion-turn-submission-v1' || p_submission::text, 'UTF8'),
+            'sha256'
+        ),
+        'hex'
+    );
+    select * into v_existing
+      from public.stellarion_turn_submissions
+      where game_id = p_game_id and turn = v_turn and player_id = v_player_id;
+    v_existing_found := found;
+    if v_existing_found then
+        if (v_existing.submission ->> 'generation')::bigint <> v_generation then
+            raise exception using errcode = 'P0001',
+                message = 'STLR_DUPLICATE_SUBMISSION:' || v_player_id::text || ':' || v_turn::text;
+        end if;
+        if v_existing.ready and v_existing.digest <> v_digest then
+            raise exception using errcode = 'P0001', message = 'STLR_TURN_COMMITTED';
+        end if;
+    elsif v_generation <> 0 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:readiness_generation';
+    end if;
+    if not v_existing_found or not v_existing.ready then
+        insert into public.stellarion_turn_submissions (
+            game_id, turn, player_id, submission, digest, ready
+        ) values (
+            p_game_id, v_turn, v_player_id, p_submission, v_digest, false
+        ) on conflict (game_id, turn, player_id) do update
+            set submission = excluded.submission,
+                digest = excluded.digest,
+                ready = false,
+                submitted_at = clock_timestamp();
     end if;
 
+    -- The matching revision proves that this client already has the canonical
+    -- snapshot. Persist only this caller's unfinished commands and renew the
+    -- retention checkpoint. Draft saves deliberately do not advance the shared
+    -- revision or emit an event, so players can save concurrently without
+    -- invalidating each other's canonical snapshot.
     update public.stellarion_games
-       set state = p_persisted,
-           revision = revision + 1,
-           saved_at = clock_timestamp(),
+       set saved_at = clock_timestamp(),
            updated_at = clock_timestamp()
-     where id = p_game_id;
-    perform public.stellarion_emit_event(p_game_id, 'state_changed', null, null);
-    return public.stellarion_game_record(p_game_id);
+     where id = p_game_id
+     returning revision, saved_at into v_revision, v_saved_at;
+    return jsonb_build_object(
+        'revision', v_revision,
+        'saved_at', floor(extract(epoch from v_saved_at))::bigint
+    );
 end;
 $$;
 
@@ -1585,7 +1673,7 @@ begin
         -- No tombstone is retained: guest event polls report GAME_NOT_FOUND and
         -- return those clients to the menu, even if a Realtime hint was missed.
         delete from public.stellarion_games where id = p_game_id;
-        return jsonb_build_object('ok', true);
+        return jsonb_build_object('ok', true, 'members', '[]'::jsonb);
     end if;
 
     update public.stellarion_game_players
@@ -1602,7 +1690,10 @@ begin
             v_player.player_id
         );
     end if;
-    return jsonb_build_object('ok', true);
+    return jsonb_build_object(
+        'ok', true,
+        'members', public.stellarion_membership_records(p_game_id)
+    );
 end;
 $$;
 
@@ -1622,6 +1713,8 @@ revoke all on function public.stellarion_validate_persisted(jsonb, smallint, tex
 revoke all on function public.stellarion_stamp_finished_game()
     from public, anon, authenticated;
 revoke all on function public.stellarion_connection_is_live(boolean, timestamptz)
+    from public, anon, authenticated;
+revoke all on function public.stellarion_membership_records(uuid)
     from public, anon, authenticated;
 revoke all on function public.stellarion_game_record(uuid)
     from public, anon, authenticated;

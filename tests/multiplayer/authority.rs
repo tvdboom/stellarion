@@ -77,17 +77,17 @@ fn invalid_orders_cannot_poison_an_immutable_submission_slot() {
 }
 
 #[test]
-fn member_writes_cannot_change_resources_turn_or_lifecycle() {
+fn member_drafts_cannot_replace_another_player_or_resolved_state() {
     let (backend, host, guest, active) = started();
-    for mutation in 0..3 {
-        let mut forged = active.persisted.clone();
-        match mutation {
-            0 => forged.state.players[0].resources.metal += 1,
-            1 => forged.state.turn += 1,
-            _ => forged.state.status = crate::core::simulation::MatchStatus::Lobby,
-        }
-        assert!(block_on(backend.save_game(&guest, &active.id, active.revision, forged)).is_err());
-    }
+    assert!(matches!(
+        block_on(backend.save_game(
+            &guest,
+            &active.id,
+            active.revision,
+            TurnSubmission::new(1, 1, vec![]),
+        )),
+        Err(BackendError::Forbidden)
+    ));
     let submissions = vec![TurnSubmission::new(1, 1, vec![]), TurnSubmission::new(2, 1, vec![])];
     block_on(backend.submit_turn(&host, &active.id, submissions[0].clone())).unwrap();
     block_on(backend.submit_turn(&guest, &active.id, submissions[1].clone())).unwrap();

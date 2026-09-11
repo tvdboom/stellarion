@@ -127,6 +127,7 @@ pub fn finish_gameplay_loading(
         &mut start_turn,
         true,
         true,
+        true,
     ) {
         next_app_state.set(AppState::Game);
     }
@@ -145,33 +146,46 @@ pub fn refresh_gameplay_projection(
     mut messages: MessageWriter<MessageMsg>,
     mut structure_changes: MessageWriter<PublicStructureChangeMsg>,
 ) {
-    if refresh.read().count() == 0 {
-        return;
+    let mut refresh_kind = None;
+    for request in refresh.read() {
+        if matches!(request, RefreshGameplayProjection::CanonicalTurn) || refresh_kind.is_none() {
+            refresh_kind = Some(*request);
+        }
     }
+    let Some(refresh_kind) = refresh_kind else {
+        return;
+    };
+    let present_turn = matches!(refresh_kind, RefreshGameplayProjection::CanonicalTurn);
     let previous_turn = settings.turn as u64;
-    let structure_notifications = session
-        .active_game
-        .as_ref()
-        .zip(session.membership.as_ref())
-        .map_or_else(Vec::new, |(record, membership)| {
-            public_structure_notifications(
-                previous_map.as_deref(),
-                &record.persisted.state,
-                membership.player_id,
-            )
-        });
-    let railgun_notifications = session
-        .active_game
-        .as_ref()
-        .zip(session.membership.as_ref())
-        .map_or_else(Vec::new, |(record, membership)| {
-            orbital_strike_notifications(
-                previous_map.as_deref(),
-                &record.persisted.state,
-                membership.player_id,
-                previous_turn,
-            )
-        });
+    let structure_notifications = if present_turn {
+        session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
+            Vec::new,
+            |(record, membership)| {
+                public_structure_notifications(
+                    previous_map.as_deref(),
+                    &record.persisted.state,
+                    membership.player_id,
+                )
+            },
+        )
+    } else {
+        Vec::new()
+    };
+    let railgun_notifications = if present_turn {
+        session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
+            Vec::new,
+            |(record, membership)| {
+                orbital_strike_notifications(
+                    previous_map.as_deref(),
+                    &record.persisted.state,
+                    membership.player_id,
+                    previous_turn,
+                )
+            },
+        )
+    } else {
+        Vec::new()
+    };
     if install_gameplay_projection(
         &mut commands,
         &session,
@@ -179,8 +193,9 @@ pub fn refresh_gameplay_projection(
         &mut settings,
         &mut next_game_state,
         &mut start_turn,
-        false,
-        false,
+        !present_turn,
+        !present_turn,
+        present_turn,
     ) {
         for notification in railgun_notifications {
             messages.write(notification);
@@ -235,8 +250,8 @@ fn battle_that_destroyed(
         usize::try_from(model.turn).is_ok_and(|turn| report.turn == turn)
             && report.mission.destination == planet
             && report.combat_report.is_some()
-            && report.planet.army.amount(&unit) > 0
-            && report.surviving_defender.amount(&unit) == 0
+            && report.planet.army.combined_amount(&unit) > 0
+            && report.surviving_defender.combined_amount(&unit) == 0
     })
 }
 
@@ -369,6 +384,7 @@ fn install_gameplay_projection(
     start_turn: &mut MessageWriter<StartTurnMsg>,
     skip_battle: bool,
     skip_end_game: bool,
+    present_turn: bool,
 ) -> bool {
     let (Some(record), Some(membership)) = (&session.active_game, &session.membership) else {
         return false;
@@ -396,8 +412,18 @@ fn install_gameplay_projection(
     commands.insert_resource(player.clone());
     commands.insert_resource(Missions(filter_missions(&model.missions, &model.map, player)));
     commands.insert_resource(OrbitalStrikes(model.orbital_strikes.clone()));
-    commands.insert_resource(UiState::default());
-    start_turn.write(StartTurnMsg::new(skip_battle, skip_end_game));
+    commands.insert_resource(if present_turn {
+        UiState::default()
+    } else {
+        UiState {
+            focus_planet: Some(player.home_planet),
+            to_selected: true,
+            ..default()
+        }
+    });
+    if present_turn {
+        start_turn.write(StartTurnMsg::new(skip_battle, skip_end_game));
+    }
     next_game_state.set(GameState::Playing);
     true
 }

@@ -9,6 +9,8 @@ use crate::core::map::planet::Planet;
 #[cfg(feature = "app")]
 use crate::core::ui::systems::Shop;
 use crate::core::units::{Amount, Army, Description, Unit};
+#[cfg(feature = "app")]
+use crate::utils::NameFromEnum;
 
 #[derive(
     Component, EnumIter, Copy, Clone, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize,
@@ -40,11 +42,26 @@ pub enum Icon {
     Defenses,
     /// The deploy value.
     Deploy,
+    /// Stations a player-owned fleet at another player's world with the controller's permission.
+    Protect,
 }
 
 impl Icon {
     /// Rendered size associated with this map object.
     pub const SIZE: f32 = Planet::SIZE * 0.2;
+
+    /// Returns the runtime image key used for this objective.
+    ///
+    /// Protect deliberately reuses the established Deploy artwork until it receives dedicated
+    /// source assets; its label and description still make the distinct behavior explicit.
+    #[cfg(feature = "app")]
+    pub fn asset_key(&self) -> String {
+        if *self == Icon::Protect {
+            "deploy".to_string()
+        } else {
+            self.to_lowername()
+        }
+    }
 
     /// Handles the units interaction.
     pub fn on_units(&self) -> bool {
@@ -66,12 +83,21 @@ impl Icon {
                 | Icon::Spy
                 | Icon::MissileStrike
                 | Icon::Destroy
+                | Icon::Protect
         )
     }
 
     /// Returns whether an active mission with this objective may be recalled after launch.
     pub fn is_recallable(self) -> bool {
-        matches!(self, Icon::Deploy | Icon::Colonize | Icon::Attack | Icon::Spy | Icon::Destroy)
+        matches!(
+            self,
+            Icon::Deploy
+                | Icon::Colonize
+                | Icon::Attack
+                | Icon::Spy
+                | Icon::Destroy
+                | Icon::Protect
+        )
     }
 
     /// Returns whether this value hidden.
@@ -100,16 +126,23 @@ impl Icon {
             Icon::MissileStrike => Some(5),
             Icon::Destroy => Some(3),
             Icon::Deploy => Some(0),
+            Icon::Protect => Some(0),
             _ => None,
         }
     }
 
     /// Returns mission objectives available for the selected origin and destination.
-    pub fn objectives(to_owned_planet: bool, to_controlled_planet: bool) -> Vec<Icon> {
+    pub fn objectives(
+        to_owned_planet: bool,
+        to_controlled_planet: bool,
+        protection_allowed: bool,
+    ) -> Vec<Icon> {
         if to_owned_planet {
             vec![Icon::Deploy]
         } else if to_controlled_planet {
             vec![Icon::Colonize, Icon::Deploy]
+        } else if protection_allowed {
+            vec![Icon::Protect]
         } else {
             vec![Icon::Colonize, Icon::Attack, Icon::Spy, Icon::MissileStrike, Icon::Destroy]
         }
@@ -130,6 +163,25 @@ impl Icon {
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::Deploy => origin.has_fleet(),
+            Icon::Protect => origin.has_fleet(),
+            Icon::RailgunStrike | Icon::Attacked => false,
+        }
+    }
+
+    /// Returns whether this objective can be launched from the supplied player-owned unit pool.
+    pub fn condition_for_army(&self, army: &Army) -> bool {
+        match self {
+            Icon::Colonize => army.amount(&Unit::colony_ship()) > 0,
+            Icon::Attack => army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship()),
+            Icon::Spy => army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
+            Icon::MissileStrike => army.amount(&Unit::interplanetary_missile()) > 0,
+            Icon::Destroy => army.amount(&Unit::war_sun()) > 0,
+            Icon::Deploy | Icon::Protect | Icon::Fleet => {
+                army.iter().any(|(unit, count)| unit.is_ship() && *count > 0)
+            },
+            Icon::Buildings => army.iter().any(|(unit, count)| unit.is_building() && *count > 0),
+            Icon::Orbitals => army.iter().any(|(unit, count)| unit.is_orbital() && *count > 0),
+            Icon::Defenses => army.iter().any(|(unit, count)| unit.is_defense() && *count > 0),
             Icon::RailgunStrike | Icon::Attacked => false,
         }
     }
@@ -144,7 +196,7 @@ impl Icon {
                 only(|unit| *unit == Unit::probe()) && army.amount(&Unit::probe()) >= MIN_SPY_PROBES
             },
             Self::MissileStrike => only(|unit| *unit == Unit::interplanetary_missile()),
-            Self::Deploy => only(Unit::is_ship),
+            Self::Deploy | Self::Protect => only(Unit::is_ship),
             Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
             Self::Destroy => only(Unit::is_ship) && army.amount(&Unit::war_sun()) > 0,
             Self::Attack => {
@@ -174,6 +226,9 @@ impl Icon {
             },
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
+            Icon::Protect => {
+                "No ships on the origin planet or the target controller has not granted protection access."
+            },
             Icon::RailgunStrike => {
                 "At least one owned Orbital Railgun must have this world in range."
             },
@@ -227,9 +282,17 @@ impl Description for Icon {
                 "Commit every owned Orbital Railgun that can reach this world. All participating \
                 Railguns charge separately, converge their fire, and strike together at the start \
                 of the next turn. Each participating Railgun adds to the resource cost and the \
-                combined destruction chance."
+                combined destruction chance. Smaller worlds are easier to destroy, while every \
+                Planetary Shield level reduces the chance and an overloaded Shield reduces it \
+                twice as much."
             },
             Icon::Deploy => "Send a fleet to another planet you control.",
+            Icon::Protect => {
+                "Send your fleet to a world whose controller has granted you protection access. \
+                The fleet remains yours, joins that world's defense, and may later launch any \
+                normal mission. If access is canceled while it is travelling, it returns to your \
+                home planet."
+            },
             _ => "This icon selects a local map or shop category.",
         }
     }

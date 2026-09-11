@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::resources::Resources;
-use crate::core::units::{Description, Price};
+use crate::core::units::{orbitals, Description, Price, Unit};
 
 #[derive(
     EnumIter, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
@@ -118,6 +118,10 @@ impl Building {
 
     /// Returns the production-equivalent tier used by shared unit calculations.
     pub fn production(&self) -> usize {
+        if let Some(level) = orbitals::production_level(Unit::Building(*self)) {
+            return level;
+        }
+
         match self {
             Building::MetalMine | Building::CrystalMine | Building::DeuteriumSynthesizer => 1,
             Building::Reactor | Building::Terraformer => 2,
@@ -125,21 +129,6 @@ impl Building {
             Building::PlanetaryShield => 4,
             Building::Senate | Building::ColonialAdministration => 5,
             _ => 1,
-        }
-    }
-
-    /// Returns the Spy intelligence level needed to reveal this building.
-    ///
-    /// `None` marks public infrastructure that is visible without a Spy report.
-    pub fn intelligence_level(&self) -> Option<usize> {
-        match self {
-            Building::SolarSatellite => Some(1),
-            Building::Recycler => Some(2),
-            Building::SensorPhalanx => Some(2),
-            Building::CommandRelay => Some(3),
-            Building::JumpGate => Some(4),
-            Building::OrbitalRailgun => None,
-            _ => Some(self.production()),
         }
     }
 }
@@ -170,9 +159,9 @@ impl Description for Building {
                 synthesizer's level."
             },
             Building::Shipyard => {
-                "The Shipyard is responsible for the construction of all ships. At higher levels, \
-                more advanced ships can be build. Higher levels also increase the production \
-                limit, i.e., the number of ships that can be build per turn."
+                "The Shipyard constructs ships and orbital structures. At higher levels, more \
+                advanced ships and orbitals can be built. Higher levels also increase the fleet \
+                production limit, i.e., the number of ships that can be built per turn."
             },
             Building::Factory => {
                 "The Factory is responsible for the construction of planet defenses. At higher \
@@ -231,10 +220,11 @@ impl Description for Building {
             Building::OrbitalRailgun => {
                 "The Orbital Railgun is a colossal superweapon. Once per turn, each Railgun can \
                 join a strike against an enemy world within range. Railguns always aim at the \
-                same target. Every firing level adds a 5% destruction chance. A synchronized \
-                strike costs 1,000 Deuterium and requires 10 free Energy. Each level extends the \
-                firing range by 2 AU. The Orbital Railgun is always visible by all players in the \
-                galaxy."
+                same target. Every firing level adds a 5% destruction chance, while smaller worlds \
+                add up to 8%. Each Planetary Shield level removes 1%, or 2% while overloaded. A \
+                synchronized strike costs 1,000 Deuterium and 5 Energy per firing Railgun. Each \
+                level extends the firing range by 2 AU. The Orbital Railgun is always visible by \
+                all players in the galaxy."
             },
             Building::Laboratory => {
                 "The Laboratory allows to convert resources of one type to another. The higher \

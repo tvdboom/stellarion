@@ -9,7 +9,7 @@ use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::player::Player;
 use crate::core::units::buildings::Building;
-use crate::core::units::{Amount, Price, Unit};
+use crate::core::units::{orbitals, Amount, Price, Unit};
 
 /// A player-facing reason why an order cannot currently be accepted.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -91,6 +91,11 @@ pub fn purchase_limit(
     if affordable == 0 {
         return Err(OrderError::Resources);
     }
+    if orbitals::production_level(unit)
+        .is_some_and(|required| planet.army.amount(&Unit::Building(Building::Shipyard)) < required)
+    {
+        return Err(OrderError::Production);
+    }
     let capacity = match unit {
         Unit::Building(building) => {
             if building == Building::ColonialAdministration && planet.id == player.home_planet {
@@ -169,7 +174,7 @@ pub fn validate_mission(
 ) -> Result<(), OrderError> {
     if player.spectator
         || mission.owner != player.id
-        || !player.controls(origin)
+        || origin.mission_origin_army(player.id).is_none()
         || origin.is_destroyed
         || destination.is_destroyed
         || mission.origin != origin.id
@@ -181,14 +186,24 @@ pub fn validate_mission(
     if mission.objective == Icon::Spy && mission.army.amount(&Unit::probe()) < MIN_SPY_PROBES {
         return Err(OrderError::SpyProbes);
     }
-    if !mission.objective.accepts_army(&mission.army)
-        || (destination.is_moon() && mission.objective.on_planet_only())
-        || !Icon::objectives(player.owns(destination), player.controls(destination))
-            .contains(&mission.objective)
+    if (mission.objective == Icon::Protect && mission.protected_player != destination.controlled)
+        || (mission.objective != Icon::Protect && mission.protected_player.is_some())
     {
         return Err(OrderError::Objective);
     }
-    if mission.army.iter().any(|(unit, count)| *count > origin.army.amount(unit)) {
+    if !mission.objective.accepts_army(&mission.army)
+        || (destination.is_moon() && mission.objective.on_planet_only())
+        || !Icon::objectives(
+            player.owns(destination),
+            player.controls(destination),
+            destination.allows_protection(player.id),
+        )
+        .contains(&mission.objective)
+    {
+        return Err(OrderError::Objective);
+    }
+    let available = origin.mission_origin_army(player.id).ok_or(OrderError::Ownership)?;
+    if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
         return Err(OrderError::Fleet);
     }
     if mission.bombing != BombingRaid::None

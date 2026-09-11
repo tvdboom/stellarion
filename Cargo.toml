@@ -77,6 +77,8 @@ bevy = { version = "0.19.1", default-features = false, features = [
 directories = "6.0.0"
 fs2 = "0.4.3"
 reqwest = { version = "0.13.4", default-features = false, features = [
+    "brotli",
+    "gzip",
     "json",
     "rustls",
 ] }

@@ -24,7 +24,8 @@ fn zero_damage_stalemate_terminates() {
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
-        army: Army::from([(Unit::probe(), 1)]),
+        army: Army::from([(Unit::probe(), 1)]).into(),
+        protection_permissions: Default::default(),
         buy: Vec::new(),
         surface_build_order: [None; 4],
     };
@@ -90,6 +91,7 @@ fn antiballistic_missiles_fire_one_at_a_time_and_stop_after_each_interception() 
     let mut defenders = (1..=4)
         .map(|id| CombatUnit {
             id,
+            owner: None,
             unit: Unit::antiballistic_missile(),
             hull: Unit::antiballistic_missile().hull(),
             shield: Unit::antiballistic_missile().shield(),
@@ -111,6 +113,59 @@ fn antiballistic_missiles_fire_one_at_a_time_and_stop_after_each_interception() 
     assert!(!intercept_incoming_missile(&mut defenders, &mut used, || {
         panic!("no roll should be made after every interceptor has been used")
     }));
+}
+
+#[test]
+fn combined_defense_casualties_retain_their_exact_owner() {
+    let mut destination = Planet::new(1, "Protected".into(), Vec2::X, false, 1.0);
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    destination.army = Army::from([(Unit::probe(), 1)]).into();
+    destination.protection_permissions.insert(3);
+    destination.army.dock_protector(3, Army::from([(Unit::probe(), 1)]));
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let mut mission = Mission::new_with_id(
+        2,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = destination.position;
+
+    let report = resolve_combat_with_rng(
+        1,
+        &mission,
+        &destination,
+        &mut rand_chacha::ChaCha8Rng::from_seed([12; 32]),
+    );
+    let combat = report.combat_report.unwrap();
+    let target_owners = combat
+        .rounds
+        .iter()
+        .flat_map(|round| &round.defender)
+        .map(|unit| (unit.id, unit.owner))
+        .collect::<std::collections::HashMap<_, _>>();
+    let killed_owners = combat
+        .rounds
+        .iter()
+        .flat_map(|round| &round.attacker)
+        .flat_map(|unit| &unit.shots)
+        .filter(|shot| shot.killed)
+        .filter_map(|shot| shot.target_id)
+        .filter_map(|target| target_owners.get(&target).copied().flatten())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(killed_owners, std::collections::BTreeSet::from([2, 3]));
+    assert!(report.surviving_defender.protector(3).is_none());
 }
 
 #[test]
@@ -172,7 +227,8 @@ fn ship_fire_never_reaches_ground_defenses_while_the_planetary_shield_remains() 
         (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 12),
         (Unit::Defense(crate::core::units::defense::Defense::GaussCannon), 12),
         (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 12),
-    ]);
+    ])
+    .into();
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     origin.owned = Some(1);
     origin.controlled = Some(1);
@@ -285,7 +341,9 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
             (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 2),
             (Unit::space_dock(), 1),
             (Unit::antiballistic_missile(), 1),
-        ]),
+        ])
+        .into(),
+        protection_permissions: Default::default(),
         buy: Vec::new(),
         surface_build_order: [None; 4],
     };
@@ -318,7 +376,8 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
             (Unit::crawler(), surviving_crawlers),
             (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 4),
             (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 1),
-        ]),
+        ])
+        .into(),
         planet_colonized: false,
         planet_destroyed: false,
         destination_owned: Some(2),

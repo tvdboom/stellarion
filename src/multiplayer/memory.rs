@@ -14,7 +14,7 @@ use crate::core::simulation::{
 };
 use crate::multiplayer::authority::{
     initial_snapshot, recolored_lobby_snapshot, resolved_snapshot, same_snapshot,
-    started_snapshot_for_members, validate_incoming, validate_save,
+    started_snapshot_for_members, validate_incoming,
 };
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, PLAYER_CONNECTION_TIMEOUT,
@@ -22,7 +22,8 @@ use crate::multiplayer::backend::{
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
     GameRecord, GameSummary, JoinDisposition, JoinGameRequest, MembershipResult,
-    RecoverPlayerRequest, StoredTurnSubmission, SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
+    RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition,
+    MAX_DISPLAY_NAME_CHARS,
 };
 use crate::multiplayer::recovery::{generate_user_token, RecoveryCode};
 
@@ -432,7 +433,7 @@ impl MultiplayerBackend for InMemoryBackend {
             let member = authorize_member(stored, &user_id)?;
             let member_count = stored.record.members.len();
             let valid_member_count = if persisted.state.rules.practice_mode {
-                member_count == 1 && stored.record.max_players == 1
+                (1..=usize::from(stored.record.max_players)).contains(&member_count)
             } else {
                 (2..=usize::from(stored.record.max_players)).contains(&member_count)
             };
@@ -477,28 +478,90 @@ impl MultiplayerBackend for InMemoryBackend {
         })
     }
 
-    /// Saves from any member and rejects stale revisions.
+    /// Saves the caller's draft and renews the unchanged canonical snapshot's timestamp.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         expected_revision: u64,
-        persisted: PersistedGame,
-    ) -> BackendFuture<'a, GameRecord> {
+        draft: TurnSubmission,
+    ) -> BackendFuture<'a, SaveAcknowledgement> {
         Box::pin(async move {
-            persisted.validate().map_err(invalid_game)?;
+            if draft.player_id == 0
+                || draft.player_id > 4
+                || draft.turn == 0
+                || draft.generation > i64::MAX as u64
+                || draft.commands.len() > MAX_COMMANDS_PER_SUBMISSION
+            {
+                return Err(BackendError::InvalidData(format!(
+                    "turn draft contains invalid boundaries or exceeds {MAX_COMMANDS_PER_SUBMISSION} commands"
+                )));
+            }
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
             let player_id = authorize_member(stored, &user_id)?.player_id;
             compare_revision(stored, expected_revision)?;
-            if persisted.state.status != stored.record.status {
+            if stored.record.status != MatchStatus::Active {
                 return Err(BackendError::InvalidGameStatus);
             }
-            validate_save(&stored.record, player_id, &persisted)?;
-            commit_state(stored, persisted);
-            push_event(stored, BackendEventKind::StateChanged, None, None);
-            Ok(stored.record.clone())
+            if draft.player_id != player_id {
+                return Err(BackendError::Forbidden);
+            }
+            if draft.turn != stored.record.persisted.state.turn {
+                return Err(BackendError::StaleSubmission {
+                    expected: stored.record.persisted.state.turn,
+                    actual: draft.turn,
+                });
+            }
+            if !stored
+                .record
+                .persisted
+                .state
+                .players
+                .iter()
+                .any(|player| player.id == player_id && !player.spectator)
+            {
+                return Err(BackendError::Forbidden);
+            }
+            let key = (draft.turn, player_id);
+            let digest = submission_digest(&draft)?;
+            let existing = stored.submissions.get(&key);
+            if let Some(existing) = existing {
+                if existing.submission.generation != draft.generation {
+                    return Err(BackendError::DuplicateSubmission {
+                        player_id,
+                        turn: draft.turn,
+                    });
+                }
+                if existing.ready && existing.digest != digest {
+                    return Err(BackendError::TurnCommitted);
+                }
+            } else if draft.generation != 0 {
+                return Err(BackendError::InvalidData("unknown readiness generation".into()));
+            }
+            if !existing.is_some_and(|stored| stored.ready) {
+                let ready_submissions = stored
+                    .submissions
+                    .range((draft.turn, 0)..=(draft.turn, PlayerId::MAX))
+                    .filter(|(_, stored)| stored.ready)
+                    .map(|(_, stored)| stored.submission.clone())
+                    .collect::<Vec<_>>();
+                validate_incoming(&stored.record, &ready_submissions, &draft)?;
+                stored.submissions.insert(
+                    key,
+                    StoredTurnSubmission {
+                        submission: draft,
+                        digest,
+                        ready: false,
+                    },
+                );
+            }
+            stored.record.saved_at = current_unix_timestamp();
+            Ok(SaveAcknowledgement {
+                revision: stored.record.revision,
+                saved_at: stored.record.saved_at,
+            })
         })
     }
 
@@ -788,7 +851,7 @@ impl MultiplayerBackend for InMemoryBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         connected: bool,
-    ) -> BackendFuture<'a, ()> {
+    ) -> BackendFuture<'a, Vec<GameMembership>> {
         Box::pin(async move {
             let mut state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
@@ -798,7 +861,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 let code = stored.record.code.clone();
                 state.games.remove(game_id);
                 state.codes.remove(&code);
-                return Ok(());
+                return Ok(Vec::new());
             }
             let player_id = member.player_id;
             let changed = member.connected != connected;
@@ -824,7 +887,7 @@ impl MultiplayerBackend for InMemoryBackend {
                     Some(player_id),
                 );
             }
-            Ok(())
+            Ok(stored.record.members.clone())
         })
     }
 }

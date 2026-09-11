@@ -439,6 +439,9 @@ fn schema_contains_the_complete_secure_contract() {
     assert!(SCHEMA.contains("add table public.stellarion_game_events"));
     assert!(SCHEMA.contains("alter table public.stellarion_game_events replica identity full"));
     assert!(SCHEMA.contains("grant select on table public.stellarion_game_events to authenticated"));
+    assert!(SCHEMA.contains("create function public.stellarion_membership_records"));
+    assert!(SCHEMA.contains("Draft saves deliberately do not advance the shared"));
+    assert!(!SCHEMA.contains("'game_saved'"));
     assert_eq!(SCHEMA.matches("revision is distinct from p_expected_revision").count(), 3);
     assert!(SCHEMA.contains("p_after_sequence is null or p_after_sequence < 0"));
     assert!(SCHEMA.contains("v_planet_total > 160"));

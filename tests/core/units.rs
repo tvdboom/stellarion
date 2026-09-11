@@ -36,19 +36,20 @@ fn unit_decoding_rejects_wrong_categories_malformed_names_and_non_strings() {
 }
 
 #[test]
-fn orbital_intelligence_requirements_are_distinct_from_production() {
-    for (unit, expected) in [
-        (Unit::Building(Building::SolarSatellite), Some(1)),
-        (Unit::Building(Building::Recycler), Some(2)),
-        (Unit::Building(Building::SensorPhalanx), Some(2)),
-        (Unit::Building(Building::CommandRelay), Some(3)),
-        (Unit::Building(Building::JumpGate), Some(4)),
-        (Unit::Building(Building::OrbitalRailgun), None),
-        (Unit::space_dock(), None),
-    ] {
-        assert_eq!(unit.intelligence_level(), expected, "{unit:?}");
-    }
+fn orbital_production_levels_follow_shop_order_and_match_non_public_intelligence() {
+    let expected = [
+        (Unit::Building(Building::SolarSatellite), 1, Some(1)),
+        (Unit::Building(Building::Recycler), 1, Some(1)),
+        (Unit::Building(Building::CommandRelay), 2, Some(2)),
+        (Unit::Building(Building::SensorPhalanx), 3, Some(3)),
+        (Unit::Building(Building::JumpGate), 4, Some(4)),
+        (Unit::Building(Building::OrbitalRailgun), 5, None),
+        (Unit::space_dock(), 5, None),
+    ];
 
-    assert_eq!(Unit::Building(Building::CommandRelay).production(), 1);
-    assert_eq!(Unit::Building(Building::JumpGate).production(), 1);
+    assert_eq!(Unit::orbitals(), expected.iter().map(|(unit, _, _)| *unit).collect::<Vec<_>>());
+    for (unit, production, intelligence) in expected {
+        assert_eq!(unit.production(), production, "{unit:?}");
+        assert_eq!(unit.intelligence_level(), intelligence, "{unit:?}");
+    }
 }

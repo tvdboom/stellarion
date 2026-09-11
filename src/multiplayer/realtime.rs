@@ -69,6 +69,11 @@ impl Default for SupabaseRealtimeClient {
 }
 
 impl SupabaseRealtimeClient {
+    /// Returns whether the selected channel completed its authenticated join.
+    pub fn is_connected(&self) -> bool {
+        self.socket.as_ref().is_some_and(|socket| socket.joined)
+    }
+
     /// Advances connection, join, heartbeat, and retry state without blocking the Bevy frame.
     pub fn update(
         &mut self,

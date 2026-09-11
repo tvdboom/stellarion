@@ -91,6 +91,16 @@ impl GameRecord {
     }
 }
 
+/// Compact acknowledgement for a saved player draft and canonical-state checkpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveAcknowledgement {
+    /// Unchanged canonical revision guarded by the save.
+    pub revision: u64,
+    /// Unix timestamp at which the snapshot lease was renewed.
+    pub saved_at: u64,
+}
+
 /// Lightweight item displayed in the resume-game list.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

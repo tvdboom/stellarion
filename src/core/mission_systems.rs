@@ -503,10 +503,14 @@ pub fn send_mission(
             origin.jump_gate = origin.jump_gate.saturating_add(mission.jump_cost());
         }
 
-        // Subtract armies from the origin planet
-        origin.army.iter_mut().for_each(|(u, c)| {
-            *c = c.saturating_sub(mission.army.amount(u));
-        });
+        // Subtract only this player's fleet. A protector never gains access to the host's units.
+        if let Some(source_army) = origin.mission_origin_army_mut(player.id) {
+            source_army.iter_mut().for_each(|(unit, count)| {
+                *count = count.saturating_sub(mission.army.amount(unit));
+            });
+            source_army.retain(|_, count| *count > 0);
+        }
+        origin.army.retain_protectors(|_, army| army.has_army());
 
         // Keep the immediate map projection aligned with the deterministic turn preview.
         origin.release_control_if_vacant();
