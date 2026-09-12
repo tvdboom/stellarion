@@ -60,6 +60,21 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns every player whose fleet began this report on the attacking side.
+    pub fn attacker_players(&self) -> Vec<PlayerId> {
+        if let Some(attack) =
+            self.mission.joint_attack.as_ref().filter(|attack| !attack.attackers.is_empty())
+        {
+            return attack.attackers.keys().copied().collect();
+        }
+        vec![self.mission.owner]
+    }
+
+    /// Returns whether this player participated in the attack recorded by the report.
+    pub fn is_attacker(&self, player_id: PlayerId) -> bool {
+        self.attacker_players().contains(&player_id)
+    }
+
     /// Returns every player whose forces began this report on the defending side.
     pub fn defender_players(&self) -> Vec<PlayerId> {
         let mut players = self.planet.army.protector_ids().collect::<Vec<_>>();

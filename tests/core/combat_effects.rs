@@ -28,6 +28,7 @@ fn unit(app: &mut App, unit: Unit, side: Side, pos: Vec3, hull: usize, shield: u
                 shield,
                 max_shield: shield,
                 fire: FireState::Fired,
+                outcome_visible: true,
             },
             Sprite {
                 custom_size: Some(Vec2::splat(100.)),

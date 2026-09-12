@@ -106,7 +106,7 @@ assert.equal(
   (await db.query(
     "select count(*)::int as n from pg_class c join pg_namespace s on s.oid = c.relnamespace where s.nspname = 'public' and c.relrowsecurity",
   )).rows[0].n,
-  4,
+  5,
 );
 console.log(
   "Second reset removed app data, obsolete objects/jobs/history, and recreated current RLS and schedule; managed auth and unrelated jobs survived.",
@@ -254,6 +254,11 @@ assert.equal((await db.query("select to_regprocedure('public.stellarion_trusted_
 for (const signature of [
   "stellarion_create_game(text,text,text,smallint,jsonb)",
   "stellarion_start_game(uuid,bigint,jsonb)",
+  "stellarion_create_joint_attack(uuid,jsonb)",
+  "stellarion_respond_joint_attack(uuid,bigint,text,jsonb)",
+  "stellarion_cancel_joint_attack(uuid,bigint)",
+  "stellarion_load_joint_attacks(uuid)",
+  "stellarion_set_protection_permission(uuid,bigint,bigint,boolean)",
   "stellarion_set_player_color(uuid,smallint)",
   "stellarion_save_game(uuid,bigint,jsonb)",
   "stellarion_submit_turn(uuid,jsonb)",
@@ -291,6 +296,11 @@ let active = await start(host);
 assert.equal(active.status, "active");
 assert.equal(active.max_players, 2);
 assert.equal(active.members.length, 2);
+await assert.rejects(rpc(host,
+  "select public.stellarion_set_protection_permission($1, $2, $3, $4) as result",
+  [id, active.persisted.state.players[0].home_planet, 2, true]),
+  /STLR_INVALID_DATA:protection_player/,
+  "two-player games never enable protection");
 const startedSavedAt = active.saved_at;
 const summaries = await rpc(host, "select public.stellarion_list_games() as result");
 assert.equal(summaries.length, 1);
@@ -430,6 +440,214 @@ const recoveredAgain = await rpc(
 );
 assert.equal(recoveredAgain.membership.user_id, guest);
 assert.equal(recoveredAgain.recovery_code, guestRecovery);
+
+// Protection access is an immediate compact patch in matches with at least three active players.
+const protectionLobby = await create(host, "PRTCT1");
+let protectionGame = (await rpc(guest,
+  "select public.stellarion_join_game($1, $2, $3) as result",
+  ["PRTCT1", "Protector", "2222-2222-2222-2222"])).game;
+protectionGame = (await rpc(outsider,
+  "select public.stellarion_join_game($1, $2, $3) as result",
+  ["PRTCT1", "Third", "3333-3333-3333-3333"])).game;
+protectionGame = await rpc(host,
+  "select public.stellarion_start_game($1, $2, $3) as result",
+  [protectionLobby.game.id, protectionGame.revision, fixtures.active_three]);
+const protectedPlanet = protectionGame.persisted.state.players[0].home_planet;
+const protectorHome = protectionGame.persisted.state.players[1].home_planet;
+const thirdHome = protectionGame.persisted.state.players[2].home_planet;
+const protectionSavedAt = protectionGame.saved_at;
+
+// Joint-attack coordination stores only the invitation, is visible only to its participants,
+// and targets wake-up events to those participants while advancing every member's cursor.
+const jointAttack = {
+  id: 7001,
+  turn: protectionGame.persisted.state.turn,
+  inviter: 1,
+  destination: thirdHome,
+  objective: "Attack",
+  bombing: "None",
+  combat_probes: false,
+  canceled: false,
+  participants: [
+    {
+      player_id: 1,
+      response: "accepted",
+      contribution: { player_id: 1, origin: protectedPlanet, army: { "Ship(LightFighter)": 1 } },
+    },
+    { player_id: 2, response: "pending", contribution: null },
+  ],
+};
+const createJointAttack = (actor, invitation = jointAttack) => rpc(actor,
+  "select public.stellarion_create_joint_attack($1, $2) as result",
+  [protectionGame.id, invitation]);
+const respondJointAttack = (actor, attackId, response, contribution = null) => rpc(actor,
+  "select public.stellarion_respond_joint_attack($1, $2, $3, $4) as result",
+  [protectionGame.id, attackId, response, contribution]);
+const cancelJointAttack = (actor, attackId) => rpc(actor,
+  "select public.stellarion_cancel_joint_attack($1, $2) as result",
+  [protectionGame.id, attackId]);
+const loadJointAttacks = actor => rpc(actor,
+  "select public.stellarion_load_joint_attacks($1) as result", [protectionGame.id]);
+await assert.rejects(createJointAttack(guest), /STLR_INVALID_DATA:joint_attack/);
+assert.equal((await createJointAttack(host)).id, jointAttack.id);
+assert.equal((await loadJointAttacks(host)).length, 1);
+assert.equal((await loadJointAttacks(guest)).length, 1);
+assert.deepEqual(await loadJointAttacks(outsider), []);
+const outsiderEvents = await rpc(outsider,
+  "select public.stellarion_events_since($1, $2) as result", [protectionGame.id, 0]);
+assert(!outsiderEvents.events.some(event => event.kind === "joint_attack_changed"));
+assert(outsiderEvents.cursor > 0, "private events must not stall an uninvolved member's cursor");
+const outsiderRealtimeKinds = await rpc(outsider,
+  "select coalesce(jsonb_agg(kind), '[]'::jsonb) as result from public.stellarion_game_events where game_id = $1",
+  [protectionGame.id]);
+assert(!outsiderRealtimeKinds.includes("joint_attack_changed"),
+  "Realtime table visibility must hide private joint-attack wake-ups");
+const guestContribution = {
+  player_id: 2,
+  origin: protectorHome,
+  army: { "Ship(LightFighter)": 1 },
+};
+let updatedJointAttack = await respondJointAttack(guest, jointAttack.id, "accepted", guestContribution);
+assert.equal(updatedJointAttack.participants[1].response, "accepted");
+assert.deepEqual(updatedJointAttack.participants[1].contribution, guestContribution);
+const jointCommand = {
+  kind: "send_joint_mission",
+  attack_id: jointAttack.id,
+  mission_id: 8001,
+  destination: jointAttack.destination,
+  objective: jointAttack.objective,
+  bombing: jointAttack.bombing,
+  combat_probes: jointAttack.combat_probes,
+  contributions: [jointAttack.participants[0].contribution, guestContribution],
+};
+const saveJointDraft = commands => rpc(host,
+  "select public.stellarion_save_game($1, $2, $3) as result",
+  [protectionGame.id, protectionGame.revision, {
+    player_id: 1,
+    turn: protectionGame.persisted.state.turn,
+    commands,
+    generation: 0,
+  }]);
+const spoofedJointCommand = structuredClone(jointCommand);
+spoofedJointCommand.contributions.pop();
+await assert.rejects(saveJointDraft([spoofedJointCommand]), /STLR_INVALID_DATA:joint_attack/);
+assert.equal((await saveJointDraft([jointCommand])).revision, protectionGame.revision);
+await assert.rejects(cancelJointAttack(host, jointAttack.id), /STLR_FORBIDDEN/,
+  "an allied attack cannot be canceled after its launch command is saved");
+await db.query(
+  "delete from public.stellarion_turn_submissions where game_id = $1 and turn = $2 and player_id = 1",
+  [protectionGame.id, protectionGame.persisted.state.turn],
+);
+await assert.rejects(respondJointAttack(guest, jointAttack.id, "rejected"), /STLR_FORBIDDEN/,
+  "an accepted contribution is final");
+await assert.rejects(respondJointAttack(host, jointAttack.id, "accepted", guestContribution), /STLR_FORBIDDEN/);
+
+const rejectedAttack = structuredClone(jointAttack);
+rejectedAttack.id = 7002;
+await createJointAttack(host, rejectedAttack);
+updatedJointAttack = await respondJointAttack(guest, rejectedAttack.id, "rejected");
+assert.equal(updatedJointAttack.participants[1].response, "rejected");
+assert.equal(updatedJointAttack.participants[1].contribution, null);
+
+const canceledAttack = structuredClone(jointAttack);
+canceledAttack.id = 7004;
+await createJointAttack(host, canceledAttack);
+const acceptedCanceledAttack = await respondJointAttack(
+  guest, canceledAttack.id, "accepted", guestContribution);
+await assert.rejects(cancelJointAttack(guest, canceledAttack.id), /STLR_FORBIDDEN/);
+updatedJointAttack = await cancelJointAttack(host, canceledAttack.id);
+assert.equal(updatedJointAttack.canceled, true);
+assert((await loadJointAttacks(guest)).some(invitation =>
+  invitation.id === canceledAttack.id && invitation.canceled));
+await assert.rejects(respondJointAttack(guest, canceledAttack.id, "rejected"), /STLR_FORBIDDEN/);
+const canceledJointCommand = structuredClone(jointCommand);
+canceledJointCommand.attack_id = canceledAttack.id;
+canceledJointCommand.mission_id = 8002;
+canceledJointCommand.contributions = acceptedCanceledAttack.participants
+  .map(participant => participant.contribution)
+  .filter(Boolean);
+await assert.rejects(saveJointDraft([canceledJointCommand]), /STLR_INVALID_DATA:joint_attack/);
+
+const ownTargetAttack = structuredClone(jointAttack);
+ownTargetAttack.id = 7003;
+ownTargetAttack.participants[1] = { player_id: 3, response: "pending", contribution: null };
+await createJointAttack(host, ownTargetAttack);
+await assert.rejects(respondJointAttack(outsider, ownTargetAttack.id, "accepted", {
+  player_id: 3,
+  origin: thirdHome,
+  army: { "Ship(LightFighter)": 1 },
+}), /STLR_FORBIDDEN/, "a target owner may see an unknown-intel invite but cannot accept it");
+console.log("Private joint-attack invitations, live responses, cancellation, rejection, and own-target acceptance guard passed.");
+
+const setProtection = (allowed) => rpc(host,
+  "select public.stellarion_set_protection_permission($1, $2, $3, $4) as result",
+  [protectionGame.id, protectedPlanet, 2, allowed]);
+const granted = await setProtection(true);
+assert.deepEqual(Object.keys(granted).sort(),
+  ["allowed", "controller", "planet_id", "protector", "revision", "turn"]);
+assert.equal(granted.revision, protectionGame.revision + 1);
+let protectionRecord = await rpc(guest,
+  "select public.stellarion_load_game($1) as result", [protectionGame.id]);
+assert.equal(protectionRecord.saved_at, protectionSavedAt,
+  "permission patches do not renew the snapshot retention checkpoint");
+assert(protectionRecord.persisted.state.map.planets
+  .find(planet => planet.id === protectedPlanet).protection_permissions.includes(2));
+assert.equal(protectionRecord.persisted.state.players[1].protection_intel[protectedPlanet], 1);
+const protectedUnit = "Ship(LightFighter)";
+protectionRecord.persisted.state.map.planets
+  .find(planet => planet.id === protectorHome).army.controller[protectedUnit] = 1;
+assert.equal((await rpc(guest,
+  "select public.stellarion_submit_turn($1, $2) as result",
+  [protectionGame.id, {
+    player_id: 2,
+    turn: protectionRecord.persisted.state.turn,
+    generation: 0,
+    commands: [{ SendMission: {
+      mission_id: 91,
+      origin: protectorHome,
+      destination: protectedPlanet,
+      objective: "Protect",
+      army: { [protectedUnit]: 1 },
+      bombing: "None",
+      combat_probes: false,
+      jump_gate: false,
+    } }],
+  }])).disposition, "inserted");
+
+// Seed a stationed protector into the canonical snapshot so revocation exercises the immediate
+// return path without waiting for a turn-resolution snapshot.
+const protectedState = protectionRecord.persisted.state.map.planets
+  .find(planet => planet.id === protectedPlanet);
+protectedState.army.protectors["2"] = { [protectedUnit]: 1 };
+await db.query("update public.stellarion_games set state = $2 where id = $1",
+  [protectionGame.id, protectionRecord.persisted]);
+
+const revoked = await setProtection(false);
+assert.equal(revoked.revision, granted.revision + 1);
+protectionRecord = await rpc(guest,
+  "select public.stellarion_load_game($1) as result", [protectionGame.id]);
+const revokedPlanet = protectionRecord.persisted.state.map.planets
+  .find(planet => planet.id === protectedPlanet);
+assert(!revokedPlanet.protection_permissions.includes(2));
+assert(!("2" in revokedPlanet.army.protectors));
+assert.equal(protectionRecord.persisted.state.players[1].protection_intel[protectedPlanet], 1,
+  "revocation preserves controller intelligence");
+const immediateReturn = protectionRecord.persisted.state.missions
+  .find(mission => mission.owner === 2 && mission.origin === protectedPlanet);
+assert.equal(immediateReturn.destination, protectorHome);
+assert.equal(immediateReturn.objective, "Deploy");
+assert.equal(immediateReturn.return_objective, "Protect");
+assert(!protectionRecord.submitted_players.includes(2));
+const protectionDrafts = await rpc(guest,
+  "select public.stellarion_load_turn_submissions($1, $2) as result",
+  [protectionGame.id, protectionRecord.persisted.state.turn]);
+assert.equal(protectionDrafts.length, 1);
+assert.equal(protectionDrafts[0].ready, false);
+const protectionEvents = await rpc(guest,
+  "select public.stellarion_events_since($1, $2) as result", [protectionGame.id, 0]);
+assert.equal(protectionEvents.events.filter(event => event.kind === "protection_changed").length, 2);
+assert(protectionEvents.events.some(event =>
+  event.kind === "turn_withdrawn" && event.player_id === 2));
 console.log("Host and guest presence expires after 15 seconds; read-only refreshes, resume guards, reconnects, and saved games remain consistent.");
 console.log("Direct authenticated SQL RPCs: create/join/recovery/start/save/ready/continue/resolve, stable recovery codes, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
 await db.close();

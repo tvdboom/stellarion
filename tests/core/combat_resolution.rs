@@ -62,6 +62,92 @@ fn zero_damage_stalemate_terminates() {
 }
 
 #[test]
+fn space_dock_blocks_the_death_ray_while_it_survives() {
+    let mut destination = Planet::new(1, "Fortress".into(), Vec2::X, false, 1.0);
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    destination.army.insert(Unit::space_dock(), 1);
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let mut mission = Mission::new_with_id(
+        2,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Destroy,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = destination.position;
+
+    let report = resolve_combat_with_rng(
+        1,
+        &mission,
+        &destination,
+        &mut rand_chacha::ChaCha8Rng::from_seed([13; 32]),
+    );
+    let first_round = &report.combat_report.unwrap().rounds[0];
+
+    assert!(first_round
+        .defender
+        .iter()
+        .any(|unit| unit.unit == Unit::space_dock() && unit.hull > 0));
+    assert_eq!(first_round.destroy_probability, 0.0);
+}
+
+#[test]
+fn ships_and_bombers_use_opposite_target_priorities_with_fallbacks() {
+    fn combatant(id: u64, unit: Unit) -> CombatUnit {
+        CombatUnit {
+            id,
+            owner: Some(2),
+            unit,
+            hull: unit.hull(),
+            shield: unit.shield(),
+            repairs: Vec::new(),
+            shots: Vec::new(),
+        }
+    }
+
+    let ship = Unit::Ship(Ship::Probe);
+    let dock = Unit::space_dock();
+    let defense = Unit::Defense(crate::core::units::defense::Defense::RocketLauncher);
+    let mut mixed = vec![combatant(1, ship), combatant(2, dock), combatant(3, defense)];
+    let mut rng = rand_chacha::ChaCha8Rng::from_seed([14; 32]);
+
+    let ordinary_target = choose_combat_target(Unit::Ship(Ship::Cruiser), &mut mixed, &mut rng)
+        .expect("ordinary ship must find a target")
+        .unit;
+    assert!(ordinary_target == ship || ordinary_target == dock);
+
+    let bomber_target = choose_combat_target(Unit::Ship(Ship::Bomber), &mut mixed, &mut rng)
+        .expect("bomber must find a target")
+        .unit;
+    assert!(bomber_target.is_defense());
+
+    let mut defense_only = vec![combatant(4, defense)];
+    assert_eq!(
+        choose_combat_target(Unit::Ship(Ship::Cruiser), &mut defense_only, &mut rng)
+            .expect("ordinary ship must fall back to defenses")
+            .unit,
+        defense
+    );
+
+    let mut ship_only = vec![combatant(5, ship)];
+    assert_eq!(
+        choose_combat_target(Unit::Ship(Ship::Bomber), &mut ship_only, &mut rng)
+            .expect("bomber must fall back to ships")
+            .unit,
+        ship
+    );
+}
+
+#[test]
 /// An adversarial rapid-fire roll cannot keep one firing loop alive forever.
 fn rapid_fire_chain_has_a_hard_limit() {
     let attacker = Unit::war_sun();

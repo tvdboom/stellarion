@@ -170,6 +170,15 @@ pub(crate) fn recycler_sources(
     debris: &BTreeMap<PlanetId, DebrisSite>,
 ) -> BTreeMap<PlanetId, RecyclerSource> {
     let asteroid_targets = recycler_asteroid_targets(map);
+    recycler_sources_with_asteroid_targets(map, debris, &asteroid_targets)
+}
+
+/// Selects sources using the supplied current asteroid positions for map presentation.
+pub(crate) fn recycler_sources_with_asteroid_targets(
+    map: &Map,
+    debris: &BTreeMap<PlanetId, DebrisSite>,
+    asteroid_targets: &BTreeMap<PlanetId, Vec2>,
+) -> BTreeMap<PlanetId, RecyclerSource> {
     map.planets()
         .into_iter()
         .filter_map(|planet| {

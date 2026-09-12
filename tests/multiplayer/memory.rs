@@ -3,8 +3,13 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 use crate::core::identity::GameCode;
+use crate::core::map::icon::Icon;
+use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
-use crate::core::simulation::{resolve_turn, GameModel, GameRules};
+use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand};
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Unit};
+use crate::multiplayer::model::JointAttackParticipant;
 use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 
 /// Creates a session and a matching recovery credential.
@@ -183,6 +188,343 @@ fn starts_with_current_lobby_members_instead_of_waiting_for_capacity() {
     assert_eq!(active.members.len(), 2);
     assert_eq!(active.persisted.state.players.len(), 2);
     assert_eq!(active.persisted.state.rules.player_count, 2);
+}
+
+#[test]
+fn protection_access_updates_canonical_state_immediately_with_a_compact_revision() {
+    let backend = InMemoryBackend::new();
+    let (host, host_recovery) = identity(&backend);
+    let created = create(&backend, &host, &host_recovery, 3);
+    let mut guests = Vec::new();
+    let mut game = created.game;
+    for slot in 2..=3 {
+        let (guest, recovery) = identity(&backend);
+        game = block_on(backend.join_game(
+            &guest,
+            JoinGameRequest {
+                code: game.code.clone(),
+                display_name: format!("Guest {slot}"),
+                recovery_code: recovery.expose().to_string(),
+            },
+        ))
+        .unwrap()
+        .game;
+        guests.push(guest);
+    }
+    game.persisted.state.start().unwrap();
+    let active =
+        block_on(backend.start_game(&host, &game.id, game.revision, game.persisted)).unwrap();
+    let protected = active.persisted.state.player(1).unwrap().home_planet;
+    let saved_at = active.saved_at;
+
+    let granted =
+        block_on(backend.set_protection_permission(&host, &active.id, protected, 2, true)).unwrap();
+    assert_eq!(granted.revision, active.revision + 1);
+    assert!(granted.allowed);
+    let visible_to_guest = block_on(backend.load_game(&guests[0], &active.id)).unwrap();
+    assert_eq!(visible_to_guest.saved_at, saved_at);
+    assert!(visible_to_guest.persisted.state.map.get(protected).allows_protection(2));
+    assert_eq!(
+        visible_to_guest
+            .persisted
+            .state
+            .player(2)
+            .unwrap()
+            .protection_controller(visible_to_guest.persisted.state.map.get(protected)),
+        Some(1)
+    );
+
+    let protector_home = visible_to_guest.persisted.state.player(2).unwrap().home_planet;
+    let fleet_unit = Unit::Ship(Ship::LightFighter);
+    backend
+        .lock()
+        .unwrap()
+        .games
+        .get_mut(&active.id)
+        .unwrap()
+        .record
+        .persisted
+        .state
+        .map
+        .get_mut(protector_home)
+        .army
+        .insert(fleet_unit, 1);
+    assert_eq!(
+        block_on(backend.submit_turn(
+            &guests[0],
+            &active.id,
+            TurnSubmission::new(
+                2,
+                visible_to_guest.persisted.state.turn,
+                vec![TurnCommand::SendMission {
+                    mission_id: 91,
+                    origin: protector_home,
+                    destination: protected,
+                    objective: Icon::Protect,
+                    army: Army::from([(fleet_unit, 1)]),
+                    bombing: BombingRaid::None,
+                    combat_probes: false,
+                    jump_gate: false,
+                }],
+            ),
+        ))
+        .unwrap(),
+        SubmissionDisposition::Inserted
+    );
+
+    let revoked =
+        block_on(backend.set_protection_permission(&host, &active.id, protected, 2, false))
+            .unwrap();
+    assert_eq!(revoked.revision, granted.revision + 1);
+    let after = block_on(backend.load_game(&guests[0], &active.id)).unwrap();
+    assert!(!after.persisted.state.map.get(protected).allows_protection(2));
+    assert_eq!(
+        after
+            .persisted
+            .state
+            .player(2)
+            .unwrap()
+            .protection_controller(after.persisted.state.map.get(protected)),
+        Some(1)
+    );
+    assert!(!after.submitted_players.contains(&2));
+    let drafts =
+        block_on(backend.load_turn_submissions(&guests[0], &active.id, after.persisted.state.turn))
+            .unwrap();
+    assert_eq!(drafts.len(), 1);
+    assert!(!drafts[0].ready);
+    let replay = block_on(backend.subscribe(&guests[0], &active.id, 0)).unwrap();
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| event.kind == BackendEventKind::ProtectionChanged)
+            .count(),
+        2
+    );
+    assert!(replay.events.iter().any(|event| {
+        event.kind == BackendEventKind::TurnWithdrawn && event.player_id == Some(2)
+    }));
+}
+
+#[test]
+fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world() {
+    let backend = InMemoryBackend::new();
+    let (host, host_recovery) = identity(&backend);
+    let created = create(&backend, &host, &host_recovery, 3);
+    let mut sessions = Vec::new();
+    let mut game = created.game;
+    for slot in 2..=3 {
+        let (guest, recovery) = identity(&backend);
+        game = block_on(backend.join_game(
+            &guest,
+            JoinGameRequest {
+                code: game.code.clone(),
+                display_name: format!("Guest {slot}"),
+                recovery_code: recovery.expose().to_string(),
+            },
+        ))
+        .unwrap()
+        .game;
+        sessions.push(guest);
+    }
+    game.persisted.state.start().unwrap();
+    let active =
+        block_on(backend.start_game(&host, &game.id, game.revision, game.persisted)).unwrap();
+    let host_home = active.persisted.state.player(1).unwrap().home_planet;
+    let guest_home = active.persisted.state.player(2).unwrap().home_planet;
+    let outsider_home = active.persisted.state.player(3).unwrap().home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let contribution = |player_id, origin| crate::core::simulation::JointAttackContribution {
+        player_id,
+        origin,
+        army: Army::from([(fighter, 1)]),
+    };
+    let invitation = JointAttackInvitation {
+        id: 501,
+        turn: active.persisted.state.turn,
+        inviter: 1,
+        destination: outsider_home,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        canceled: false,
+        participants: vec![
+            JointAttackParticipant {
+                player_id: 1,
+                response: JointAttackResponse::Accepted,
+                contribution: Some(contribution(1, host_home)),
+            },
+            JointAttackParticipant {
+                player_id: 2,
+                response: JointAttackResponse::Pending,
+                contribution: None,
+            },
+        ],
+    };
+    block_on(backend.create_joint_attack(&host, &active.id, invitation.clone())).unwrap();
+    assert_eq!(block_on(backend.load_joint_attacks(&host, &active.id)).unwrap().len(), 1);
+    assert_eq!(block_on(backend.load_joint_attacks(&sessions[0], &active.id)).unwrap().len(), 1);
+    assert!(block_on(backend.load_joint_attacks(&sessions[1], &active.id)).unwrap().is_empty());
+    let outsider_replay = block_on(backend.subscribe(&sessions[1], &active.id, 0)).unwrap();
+    assert!(!outsider_replay
+        .events
+        .iter()
+        .any(|event| event.kind == BackendEventKind::JointAttackChanged));
+    assert!(outsider_replay.cursor > 0);
+
+    let accepted = block_on(backend.respond_joint_attack(
+        &sessions[0],
+        &active.id,
+        invitation.id,
+        JointAttackResponse::Accepted,
+        Some(contribution(2, guest_home)),
+    ))
+    .unwrap();
+    assert_eq!(accepted.participants[1].response, JointAttackResponse::Accepted);
+    assert!(accepted.participants[1].contribution.is_some());
+    let exact_contributions = accepted
+        .participants
+        .iter()
+        .filter_map(|participant| participant.contribution.clone())
+        .collect::<Vec<_>>();
+    let exact_launch = TurnSubmission::new(
+        1,
+        active.persisted.state.turn,
+        vec![TurnCommand::SendJointMission {
+            attack_id: invitation.id,
+            mission_id: 8_001,
+            destination: invitation.destination,
+            objective: invitation.objective,
+            bombing: invitation.bombing.clone(),
+            combat_probes: invitation.combat_probes,
+            contributions: exact_contributions,
+        }],
+    );
+    {
+        let mut state = backend.lock().unwrap();
+        let stored = state.games.get_mut(&active.id).unwrap();
+        assert!(validate_joint_attack_commands(stored, &exact_launch).is_ok());
+        let mut spoofed_launch = exact_launch.clone();
+        if let TurnCommand::SendJointMission {
+            contributions,
+            ..
+        } = &mut spoofed_launch.commands[0]
+        {
+            contributions.pop();
+        }
+        assert!(validate_joint_attack_commands(stored, &spoofed_launch).is_err());
+        stored.submissions.insert(
+            (active.persisted.state.turn, 1),
+            StoredTurnSubmission {
+                submission: exact_launch.clone(),
+                digest: "saved-joint-launch".to_owned(),
+                ready: false,
+            },
+        );
+    }
+    assert!(matches!(
+        block_on(backend.cancel_joint_attack(&host, &active.id, invitation.id)),
+        Err(BackendError::Forbidden)
+    ));
+    assert!(matches!(
+        block_on(backend.respond_joint_attack(
+            &sessions[0],
+            &active.id,
+            invitation.id,
+            JointAttackResponse::Rejected,
+            None,
+        )),
+        Err(BackendError::Forbidden)
+    ));
+
+    let mut rejected_invitation = invitation.clone();
+    rejected_invitation.id = 502;
+    block_on(backend.create_joint_attack(&host, &active.id, rejected_invitation.clone())).unwrap();
+    let rejected = block_on(backend.respond_joint_attack(
+        &sessions[0],
+        &active.id,
+        rejected_invitation.id,
+        JointAttackResponse::Rejected,
+        None,
+    ))
+    .unwrap();
+    assert_eq!(rejected.participants[1].response, JointAttackResponse::Rejected);
+    assert!(rejected.participants[1].contribution.is_none());
+
+    let mut canceled_invitation = invitation.clone();
+    canceled_invitation.id = 504;
+    block_on(backend.create_joint_attack(&host, &active.id, canceled_invitation.clone())).unwrap();
+    let accepted_before_cancel = block_on(backend.respond_joint_attack(
+        &sessions[0],
+        &active.id,
+        canceled_invitation.id,
+        JointAttackResponse::Accepted,
+        Some(contribution(2, guest_home)),
+    ))
+    .unwrap();
+    assert!(matches!(
+        block_on(backend.cancel_joint_attack(&sessions[0], &active.id, canceled_invitation.id,)),
+        Err(BackendError::Forbidden)
+    ));
+    let canceled =
+        block_on(backend.cancel_joint_attack(&host, &active.id, canceled_invitation.id)).unwrap();
+    assert!(canceled.canceled);
+    assert!(block_on(backend.load_joint_attacks(&sessions[0], &active.id))
+        .unwrap()
+        .iter()
+        .any(|invitation| invitation.id == canceled.id && invitation.canceled));
+    assert!(matches!(
+        block_on(backend.respond_joint_attack(
+            &sessions[0],
+            &active.id,
+            canceled_invitation.id,
+            JointAttackResponse::Rejected,
+            None,
+        )),
+        Err(BackendError::Forbidden)
+    ));
+    let canceled_launch = TurnSubmission::new(
+        1,
+        active.persisted.state.turn,
+        vec![TurnCommand::SendJointMission {
+            attack_id: canceled.id,
+            mission_id: 8_002,
+            destination: canceled.destination,
+            objective: canceled.objective,
+            bombing: canceled.bombing.clone(),
+            combat_probes: canceled.combat_probes,
+            contributions: accepted_before_cancel
+                .participants
+                .iter()
+                .filter_map(|participant| participant.contribution.clone())
+                .collect(),
+        }],
+    );
+    {
+        let state = backend.lock().unwrap();
+        let stored = state.games.get(&active.id).unwrap();
+        assert!(validate_joint_attack_commands(stored, &canceled_launch).is_err());
+    }
+
+    let mut own_target = invitation;
+    own_target.id = 503;
+    own_target.participants[1] = JointAttackParticipant {
+        player_id: 3,
+        response: JointAttackResponse::Pending,
+        contribution: None,
+    };
+    block_on(backend.create_joint_attack(&host, &active.id, own_target.clone())).unwrap();
+    assert!(matches!(
+        block_on(backend.respond_joint_attack(
+            &sessions[1],
+            &active.id,
+            own_target.id,
+            JointAttackResponse::Accepted,
+            Some(contribution(3, outsider_home)),
+        )),
+        Err(BackendError::Forbidden)
+    ));
 }
 
 #[test]

@@ -34,7 +34,9 @@ fn escape_closes_mission_and_combat_details_without_opening_the_menu() {
 
 #[test]
 fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
-    for (abandon_confirmation, railgun_confirmation) in [(Some(2), None), (None, Some(3))] {
+    for (abandon_confirmation, colonize_confirmation, railgun_confirmation) in
+        [(Some(2), None, None), (None, Some(4), None), (None, None, Some(3))]
+    {
         let mut keyboard = ButtonInput::default();
         keyboard.press(KeyCode::Escape);
 
@@ -47,6 +49,7 @@ fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
             .insert_resource(UiState {
                 planet_selected: Some(1),
                 abandon_confirmation,
+                colonize_confirmation,
                 railgun_confirmation,
                 ..default()
             })
@@ -57,6 +60,7 @@ fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
 
         let state = app.world().resource::<UiState>();
         assert_eq!(state.abandon_confirmation, None);
+        assert_eq!(state.colonize_confirmation, None);
         assert_eq!(state.railgun_confirmation, None);
         assert_eq!(state.planet_selected, Some(1));
         assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));

@@ -1,5 +1,7 @@
 //! Persisted player economy, reports, home world, and spectator state.
 
+use std::collections::BTreeMap;
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -16,9 +18,9 @@ use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
 /// Largest Senate level supported by any match configuration.
-pub const SENATE_MAX_LEVEL: usize = 3;
-/// Number of map planets required to unlock another possible Senate level.
-pub const SENATE_PLANETS_PER_LEVEL: usize = 20;
+pub const SENATE_MAX_LEVEL: usize = 5;
+/// Base colony slots required for each possible Senate level.
+pub const SENATE_COLONIES_PER_LEVEL: usize = 4;
 
 /// Maximum number of resolved mission reports retained for one player.
 pub const MAX_REPORTS_PER_PLAYER: usize = 512;
@@ -107,6 +109,8 @@ pub struct Player {
     pub resources: Resources,
     /// Resolved mission reports visible to this player.
     pub reports: Vec<MissionReport>,
+    /// Controllers learned through protection invitations, retained after access is revoked.
+    pub protection_intel: BTreeMap<PlanetId, PlayerId>,
     /// Whether this player is eliminated and no longer submits turns.
     pub spectator: bool,
     /// Lobby-selected identity color.
@@ -126,6 +130,7 @@ impl Default for Player {
                 deuterium: 1000,
             },
             reports: Vec::new(),
+            protection_intel: BTreeMap::new(),
             spectator: false,
             color: PlayerColor::for_player(0),
         }
@@ -182,6 +187,25 @@ impl Player {
         planet.controlled == Some(self.id)
     }
 
+    /// Returns the controller currently or historically disclosed by protection access.
+    pub fn protection_controller(&self, planet: &Planet) -> Option<PlayerId> {
+        planet
+            .allows_protection(self.id)
+            .then_some(planet.controlled)
+            .flatten()
+            .or_else(|| self.protection_intel.get(&planet.id).copied())
+    }
+
+    /// Returns the controller visible through direct control, protection, or mission intelligence.
+    pub fn known_controller(&self, planet: &Planet, missions: &[Mission]) -> Option<PlayerId> {
+        if self.controls(planet) {
+            planet.controlled
+        } else {
+            self.protection_controller(planet)
+                .or_else(|| self.last_info(planet, missions).and_then(|info| info.controlled))
+        }
+    }
+
     /// Computes resource production for the current owned worlds.
     pub fn resource_production(&self, map: &Map) -> Resources {
         self.energy_grid(map).scale_resources(self.raw_resource_production(map))
@@ -219,21 +243,11 @@ impl Player {
         base.saturating_add(senate_levels).min(total)
     }
 
-    /// Returns the Senate level cap derived from galaxy size and the ownership setting.
+    /// Returns the Senate level cap derived from the match's base colony allowance.
     pub fn senate_level_limit(map: &Map, colonizable_percent: usize) -> usize {
-        let setting_limit = match colonizable_percent {
-            25 => 3,
-            35 => 2,
-            50 => 1,
-            _ => 0,
-        };
-        let map_limit = map
-            .planets
-            .iter()
-            .filter(|planet| !planet.is_moon())
-            .count()
-            .div_ceil(SENATE_PLANETS_PER_LEVEL);
-        setting_limit.min(map_limit).min(SENATE_MAX_LEVEL)
+        let total = map.planets.iter().filter(|planet| !planet.is_moon()).count();
+        let base = base_colony_limit(total, colonizable_percent);
+        (base / SENATE_COLONIES_PER_LEVEL).clamp(1, SENATE_MAX_LEVEL)
     }
 
     /// Returns the most recent information report for a planet when present.

@@ -40,15 +40,10 @@ impl Ship {
     /// Minim level of the shipyard to build this ship
     pub fn production(&self) -> usize {
         match self {
-            Ship::Probe => 1,
-            Ship::ColonyShip => 2,
-            Ship::LightFighter => 1,
-            Ship::HeavyFighter => 1,
-            Ship::Destroyer => 2,
-            Ship::Cruiser => 3,
-            Ship::Bomber => 3,
-            Ship::Battleship => 4,
-            Ship::Dreadnought => 4,
+            Ship::Probe | Ship::LightFighter | Ship::HeavyFighter => 1,
+            Ship::ColonyShip | Ship::Destroyer => 2,
+            Ship::Cruiser | Ship::Bomber => 3,
+            Ship::Battleship | Ship::Dreadnought => 4,
             Ship::WarSun => 5,
         }
     }
@@ -97,16 +92,17 @@ impl Description for Ship {
                 "The Bomber is used primarily to destroy planetary buildings and defenses. Its \
                 high Rapid Fire against most defensive structures makes it very effective for \
                 planetary assaults. It's the only ship with Rapid Fire against the Plasma Turret. \
-                Having Bombers in an offensive mission enables bombing raids, which destabilize \
-                the enemy's economy or industrial capabilities. Bombers target the Planetary \
-                Shield (if there is one) before any other unit when bombing. After the first \
-                round ending with the Shield down, each surviving Bomber gets one 25% chance \
-                to destroy a level of a random building in the selected category. This raid \
-                occurs once per battle and destroys at most 3 levels per building, 9 in total."
+                Unlike other ships, Bombers target defenses before enemy ships. Having Bombers in \
+                an offensive mission enables bombing raids, which destabilize the enemy's economy \
+                or industrial capabilities. After the first round ending with no Planetary Shield, \
+                each surviving Bomber gets one 25% chance to destroy a level of a random building \
+                in the selected category. This raid occurs once per battle and destroys at most 3 \
+                levels per building."
             },
             Ship::Battleship => {
-                "The Battleship is the mean between the Cruiser and the Dreadnought. Its Rapid \
-                Fire capabilities makes him highly effective against medium-sized ships."
+                "The Battleship is a powerfull war ship, more powerful than the Cruiser but less \
+                so than the Dreadnought. Its Rapid Fire capabilities makes him highly effective \
+                against medium-sized ships."
             },
             Ship::Dreadnought => {
                 "Dreadnoughts are the largest and most powerful ships, second only to the War Sun. \
@@ -118,7 +114,7 @@ impl Description for Ship {
                 "The War Sun is the most advanced ship in the game. It has the highest damage, \
                 shield strength, and health of all ships. Additionally, it's equipped with a Death \
                 Ray, a weapon capable of destroying an entire planet. Some consider that building \
-                a War Sun the ultimate achievement in the universe."
+                a War Sun is the ultimate achievement in the universe."
             },
         }
     }

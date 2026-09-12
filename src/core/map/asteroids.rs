@@ -28,6 +28,8 @@ pub(crate) struct AsteroidBeltLayout {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AsteroidBeltPlacement {
+    #[cfg(feature = "app")]
+    pub(crate) seed: u32,
     pub(crate) phase: f32,
     pub(crate) radius: f32,
     pub(crate) diameter: f32,
@@ -40,12 +42,20 @@ pub(crate) const ASTEROID_BELT_MINIMUM_COUNT: usize = 96;
 pub(crate) const ASTEROID_BELT_MAXIMUM_COUNT: usize = 420;
 pub(crate) const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 32;
 pub(crate) const ASTEROID_BELT_VISIBLE_SUBDIVISIONS: usize = 8;
+/// Smallest physical rock diameter used by placement and Recycler reach calculations.
+pub(crate) const ASTEROID_MINIMUM_DIAMETER: f32 = 18.0;
+pub(crate) const ASTEROID_MAXIMUM_RADIUS: f32 = 15.0;
 pub(crate) const ASTEROID_MINIMUM_WOBBLE: f32 = 4.0;
 pub(crate) const ASTEROID_WOBBLE_RANGE: f32 = 6.0;
 pub(crate) const ASTEROID_MAXIMUM_WOBBLE: f32 = ASTEROID_MINIMUM_WOBBLE + ASTEROID_WOBBLE_RANGE;
+/// Slow counter-clockwise orbit of the asteroid belt, in radians per second.
+#[cfg(feature = "app")]
+pub(crate) const ASTEROID_BELT_ANGULAR_SPEED: f32 = 0.0045;
 
 /// Recycler reach beyond a planet's and asteroid's visible surfaces, measured in AU.
-pub(crate) const RECYCLER_ASTEROID_REACH_AU: f32 = 1.5;
+pub(crate) const RECYCLER_ASTEROID_REACH_AU: f32 = 2.25;
+/// Preferred minimum flight distance beyond both visible surfaces, measured in AU.
+pub(crate) const RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU: f32 = 0.75;
 /// Nearby rocks rotated between a planet's level-based Recycler workers.
 pub(crate) const RECYCLER_ASTEROID_TARGET_COUNT: usize = 4;
 
@@ -86,7 +96,7 @@ pub(crate) fn solar_band_gaps(map: &Map) -> Vec<AsteroidBeltGap> {
 fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> AsteroidBeltLayout {
     let surface_width = gap.outer_edge - gap.inner_edge;
     let (safe_inner, safe_outer, maximum_asteroid_radius) = if surface_width > 0.0 {
-        let maximum_asteroid_radius = 19.0_f32.min(surface_width * 0.2);
+        let maximum_asteroid_radius = ASTEROID_MAXIMUM_RADIUS.min(surface_width * 0.2);
         let planet_padding = 8.0_f32.min(surface_width * 0.08);
         (
             gap.inner_edge + maximum_asteroid_radius + planet_padding,
@@ -95,7 +105,11 @@ fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> As
         )
     } else {
         let center_width = gap.outer_center - gap.inner_center;
-        (gap.inner_center + center_width * 0.12, gap.outer_center - center_width * 0.12, 19.0)
+        (
+            gap.inner_center + center_width * 0.12,
+            gap.outer_center - center_width * 0.12,
+            ASTEROID_MAXIMUM_RADIUS,
+        )
     };
     let safe_width = safe_outer - safe_inner;
     let radial_half_width = (safe_width * 0.32).min(50.0);
@@ -212,7 +226,7 @@ impl AsteroidBeltPlacementGenerator {
             + (visual_noise(seed) - 0.5) * TAU / self.count as f32 * 0.7;
         let radius = self.layout.radius
             + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
-        let minimum_diameter = 18.0_f32.min(self.layout.maximum_asteroid_diameter);
+        let minimum_diameter = ASTEROID_MINIMUM_DIAMETER.min(self.layout.maximum_asteroid_diameter);
         let diameter = minimum_diameter
             + visual_noise(seed.wrapping_add(2))
                 * (self.layout.maximum_asteroid_diameter - minimum_diameter);
@@ -236,6 +250,8 @@ impl AsteroidBeltPlacementGenerator {
                 .then_some(phase)
         })?;
         Some(AsteroidBeltPlacement {
+            #[cfg(feature = "app")]
+            seed,
             phase,
             radius,
             diameter,
@@ -285,19 +301,10 @@ pub(crate) fn asteroid_belt_placements(
     placements
 }
 
-/// Returns the nearest reachable rock centers for each planet, ordered by surface distance.
-pub(crate) fn recycler_asteroid_target_groups(map: &Map) -> BTreeMap<PlanetId, Vec<Vec2>> {
-    let Some(layout) = asteroid_belt_layout(map) else {
-        return BTreeMap::new();
-    };
-    let center = map.solar_star_position();
-    let asteroids = asteroid_belt_placements(map, layout)
-        .into_iter()
-        .map(|placement| {
-            let position = center + Vec2::from_angle(placement.phase) * placement.radius;
-            (position, placement.diameter * 0.5)
-        })
-        .collect::<Vec<_>>();
+fn recycler_targets_from_positions(
+    map: &Map,
+    asteroids: &[(Vec2, f32)],
+) -> BTreeMap<PlanetId, Vec<Vec2>> {
     map.planets()
         .into_iter()
         .filter_map(|planet| {
@@ -311,7 +318,14 @@ pub(crate) fn recycler_asteroid_target_groups(map: &Map) -> BTreeMap<PlanetId, V
                 })
                 .filter(|(_, gap)| *gap <= Planet::SIZE * RECYCLER_ASTEROID_REACH_AU)
                 .collect::<Vec<_>>();
-            targets.sort_by(|left, right| left.1.total_cmp(&right.1));
+            let preferred_gap = Planet::SIZE * RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU;
+            // Prefer the nearest rocks in the farther working band. Close rocks remain a fallback
+            // so unusual map shapes never disable an otherwise reachable Recycler.
+            targets.sort_by(|left, right| {
+                (left.1 < preferred_gap)
+                    .cmp(&(right.1 < preferred_gap))
+                    .then_with(|| left.1.total_cmp(&right.1))
+            });
             let targets = targets
                 .into_iter()
                 .take(RECYCLER_ASTEROID_TARGET_COUNT)
@@ -320,6 +334,59 @@ pub(crate) fn recycler_asteroid_target_groups(map: &Map) -> BTreeMap<PlanetId, V
             (!targets.is_empty()).then_some((planet.id, targets))
         })
         .collect()
+}
+
+/// Returns a rock's current presentation position, including its small radial wobble.
+#[cfg(feature = "app")]
+pub(crate) fn asteroid_position_at_elapsed(
+    map: &Map,
+    placement: &AsteroidBeltPlacement,
+    elapsed: f32,
+) -> Vec2 {
+    let angle = placement.phase + elapsed * ASTEROID_BELT_ANGULAR_SPEED;
+    let wobble_phase = visual_noise(placement.seed.wrapping_add(6)) * TAU;
+    let wobble_speed = 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5;
+    let wobble_amplitude = ASTEROID_MINIMUM_WOBBLE
+        + visual_noise(placement.seed.wrapping_add(8)) * ASTEROID_WOBBLE_RANGE;
+    let radius =
+        placement.radius + (elapsed * wobble_speed + wobble_phase).sin() * wobble_amplitude;
+    map.solar_star_position() + Vec2::from_angle(angle) * radius
+}
+
+/// Returns the nearest currently reachable rocks for each planet, ordered by surface distance.
+/// This advances only presentation coordinates; canonical planet positions remain unchanged.
+#[cfg(feature = "app")]
+pub(crate) fn recycler_asteroid_target_groups_at_elapsed(
+    map: &Map,
+    placements: &[AsteroidBeltPlacement],
+    elapsed: f32,
+) -> BTreeMap<PlanetId, Vec<Vec2>> {
+    let asteroids = placements
+        .iter()
+        .map(|placement| {
+            (asteroid_position_at_elapsed(map, placement, elapsed), placement.diameter * 0.5)
+        })
+        .collect::<Vec<_>>();
+    recycler_targets_from_positions(map, &asteroids)
+}
+
+/// Returns the nearest reachable rock centers at the belt's initial presentation phase.
+pub(crate) fn recycler_asteroid_target_groups(map: &Map) -> BTreeMap<PlanetId, Vec<Vec2>> {
+    let Some(layout) = asteroid_belt_layout(map) else {
+        return BTreeMap::new();
+    };
+    let placements = asteroid_belt_placements(map, layout);
+    let center = map.solar_star_position();
+    let asteroids = placements
+        .iter()
+        .map(|placement| {
+            (
+                center + Vec2::from_angle(placement.phase) * placement.radius,
+                placement.diameter * 0.5,
+            )
+        })
+        .collect::<Vec<_>>();
+    recycler_targets_from_positions(map, &asteroids)
 }
 
 /// Returns the nearest reachable rock center used by authoritative Recycler production.

@@ -4,6 +4,10 @@ use bevy::prelude::Resource;
 
 use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
 
+/// Feedback shown when a turn draft has reached the shared command limit.
+pub(crate) const COMMAND_LIMIT_REACHED_MESSAGE: &str =
+    "This turn already contains the maximum number of commands.";
+
 /// Delivery state of the local simultaneous-turn draft.
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum SubmissionState {

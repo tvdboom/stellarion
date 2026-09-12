@@ -88,6 +88,74 @@ fn newly_resolved_railgun_strike_warns_everyone_except_its_shooters_once() {
 }
 
 #[test]
+fn newly_eliminated_player_is_announced_to_the_remaining_opponents_once() {
+    use crate::core::identity::{GameId, UserId};
+    use crate::core::simulation::MatchStatus;
+    use crate::multiplayer::model::GameMembership;
+
+    let mut model = GameModel::new(
+        [47; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let attacker = model.players[0].id;
+    let eliminated = model.players[1].id;
+    let observer = model.players[2].id;
+    let defeated_home = model.players[1].home_planet;
+    let previous = model.map.clone();
+    let home = model.map.get_mut(defeated_home);
+    home.owned = Some(attacker);
+    home.controlled = Some(attacker);
+    model.players[1].spectator = true;
+
+    let game_id = GameId::new("elimination-notification");
+    let members = [(attacker, "Attacker"), (eliminated, "Fallen empire"), (observer, "Observer")]
+        .into_iter()
+        .map(|(player_id, display_name)| GameMembership {
+            game_id: game_id.clone(),
+            player_id,
+            user_id: UserId::new(format!("user-{player_id}")),
+            display_name: display_name.into(),
+            is_creator: player_id == attacker,
+            identity_version: 1,
+            connected: true,
+        })
+        .collect::<Vec<_>>();
+    for local_player in [attacker, observer] {
+        let notifications =
+            player_elimination_notifications(Some(&previous), &model, &members, local_player);
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].level, MessageLevel::Warning);
+        assert_eq!(notifications[0].message, "Fallen empire has been eliminated.");
+    }
+    assert!(
+        player_elimination_notifications(Some(&previous), &model, &members, eliminated).is_empty(),
+        "the defeated player receives the end-game presentation instead"
+    );
+    assert!(
+        player_elimination_notifications(Some(&model.map), &model, &members, observer).is_empty(),
+        "refreshing the same snapshot must not repeat the notification"
+    );
+    assert!(player_elimination_notifications(None, &model, &members, observer).is_empty());
+
+    model.rules.player_count = 2;
+    assert!(
+        player_elimination_notifications(Some(&previous), &model, &members, observer).is_empty(),
+        "two-player games end instead of continuing after an elimination"
+    );
+    model.rules.player_count = 3;
+    model.status = MatchStatus::Finished;
+    assert!(
+        player_elimination_notifications(Some(&previous), &model, &members, observer).is_empty(),
+        "terminal resolution is already communicated by the end-game presentation"
+    );
+}
+
+#[test]
 fn destroyed_moon_railgun_warning_remains_focusable() {
     let mut model = GameModel::new([46; 32], GameRules::default()).unwrap();
     model.start().unwrap();

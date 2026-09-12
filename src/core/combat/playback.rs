@@ -87,6 +87,7 @@ fn snapshot_card(
                     shield: count * unit.shield(),
                     max_shield: count * unit.shield(),
                     fire: FireState::Idle,
+                    outcome_visible: false,
                 });
             }
         }
@@ -159,6 +160,7 @@ fn snapshot_card(
         } else {
             FireState::Idle
         },
+        outcome_visible: finished,
     })
 }
 
@@ -204,6 +206,7 @@ fn seek(
                 shield: 0,
                 max_shield: 0,
                 fire: FireState::Fired,
+                outcome_visible: true,
             })
         });
         if let Some(mut card) = card {

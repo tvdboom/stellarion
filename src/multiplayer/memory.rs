@@ -10,8 +10,12 @@ use sha2::{Digest, Sha256};
 use crate::core::identity::{GameId, PlayerId, UserId};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
-    MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
+    add_trade_agreement_immediately, set_protection_permission_immediately,
+    validate_submission_batch, MatchStatus, PersistedGame, TurnCommand, TurnSubmission,
+    MAX_COMMANDS_PER_SUBMISSION,
 };
+use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent, TradeAgreement};
+use crate::core::units::Amount;
 use crate::multiplayer::authority::{
     initial_snapshot, recolored_lobby_snapshot, resolved_snapshot, same_snapshot,
     started_snapshot_for_members, validate_incoming,
@@ -21,9 +25,10 @@ use crate::multiplayer::backend::{
 };
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
-    GameRecord, GameSummary, JoinDisposition, JoinGameRequest, MembershipResult,
-    RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition,
-    MAX_DISPLAY_NAME_CHARS,
+    GameRecord, GameSummary, JoinDisposition, JoinGameRequest, JointAttackInvitation,
+    JointAttackResponse, MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest,
+    SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition, TradeInvitation,
+    TradeResponse, MAX_DISPLAY_NAME_CHARS,
 };
 use crate::multiplayer::recovery::{generate_user_token, RecoveryCode};
 
@@ -73,6 +78,8 @@ struct StoredGame {
     finished_at: Option<Instant>,
     recovery_codes: HashMap<PlayerId, String>,
     submissions: BTreeMap<(u64, PlayerId), StoredTurnSubmission>,
+    joint_attacks: BTreeMap<u64, JointAttackInvitation>,
+    trades: BTreeMap<u64, TradeInvitation>,
     events: Vec<BackendEvent>,
     connected_players: HashMap<PlayerId, Instant>,
 }
@@ -198,6 +205,8 @@ impl MultiplayerBackend for InMemoryBackend {
                 finished_at: None,
                 recovery_codes: HashMap::from([(1, request.recovery_code.clone())]),
                 submissions: BTreeMap::new(),
+                joint_attacks: BTreeMap::new(),
+                trades: BTreeMap::new(),
                 events: Vec::new(),
                 connected_players: HashMap::new(),
             };
@@ -377,6 +386,503 @@ impl MultiplayerBackend for InMemoryBackend {
         })
     }
 
+    /// Applies protection access without waiting for turn submission or uploading a snapshot.
+    fn set_protection_permission<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        planet_id: usize,
+        protector: PlayerId,
+        allowed: bool,
+    ) -> BackendFuture<'a, ProtectionPermissionUpdate> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let controller = authorize_member(stored, &user_id)?.player_id;
+            if stored.record.status != MatchStatus::Active {
+                return Err(BackendError::InvalidGameStatus);
+            }
+            let changed = set_protection_permission_immediately(
+                &mut stored.record.persisted.state,
+                controller,
+                planet_id,
+                protector,
+                allowed,
+            )
+            .map_err(invalid_game)?;
+            if changed {
+                stored.record.revision = stored.record.revision.saturating_add(1);
+                let turn = stored.record.persisted.state.turn;
+                if !allowed {
+                    let key = (turn, protector);
+                    let withdrew = stored.submissions.get_mut(&key).is_some_and(|submission| {
+                        let contains_protect =
+                            submission.submission.commands.iter().any(|command| {
+                                matches!(
+                                    command,
+                                    crate::core::simulation::TurnCommand::SendMission {
+                                        destination,
+                                        objective: crate::core::map::icon::Icon::Protect,
+                                        ..
+                                    } if *destination == planet_id
+                                )
+                            });
+                        if contains_protect && submission.ready {
+                            submission.ready = false;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if withdrew {
+                        stored.record.submitted_players.retain(|id| *id != protector);
+                        push_event(
+                            stored,
+                            BackendEventKind::TurnWithdrawn,
+                            Some(turn),
+                            Some(protector),
+                        );
+                    }
+                }
+                push_event(
+                    stored,
+                    BackendEventKind::ProtectionChanged,
+                    Some(turn),
+                    Some(protector),
+                );
+            }
+            Ok(ProtectionPermissionUpdate {
+                revision: stored.record.revision,
+                turn: stored.record.persisted.state.turn,
+                planet_id,
+                controller,
+                protector,
+                allowed,
+            })
+        })
+    }
+
+    fn create_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        invitation: JointAttackInvitation,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let inviter = authorize_member(stored, &user_id)?.player_id;
+            if stored.record.status != MatchStatus::Active
+                || invitation.turn != stored.record.persisted.state.turn
+            {
+                return Err(BackendError::InvalidGameStatus);
+            }
+            let mut participant_ids = HashSet::new();
+            let first = invitation.participants.first();
+            let destination = stored.record.persisted.state.map.try_get(invitation.destination);
+            if invitation.id == 0
+                || invitation.inviter != inviter
+                || invitation.canceled
+                || !matches!(
+                    invitation.objective,
+                    crate::core::map::icon::Icon::Colonize
+                        | crate::core::map::icon::Icon::Attack
+                        | crate::core::map::icon::Icon::Destroy
+                )
+                || invitation.participants.len() < 2
+                || destination.is_none_or(|planet| {
+                    planet.is_destroyed
+                        || planet.owned == Some(inviter)
+                        || planet.controlled == Some(inviter)
+                })
+                || first.is_none_or(|participant| {
+                    participant.player_id != inviter
+                        || participant.response != JointAttackResponse::Accepted
+                        || participant.contribution.as_ref().is_none_or(|entry| {
+                            entry.player_id != inviter
+                                || !invitation.objective.condition_for_army(&entry.army)
+                        })
+                })
+                || invitation.participants.iter().skip(1).any(|participant| {
+                    participant.response != JointAttackResponse::Pending
+                        || participant.contribution.is_some()
+                })
+                || invitation.participants.iter().any(|participant| {
+                    !participant_ids.insert(participant.player_id)
+                        || !stored
+                            .record
+                            .members
+                            .iter()
+                            .any(|member| member.player_id == participant.player_id)
+                })
+            {
+                return Err(BackendError::InvalidData("joint_attack".into()));
+            }
+            if stored.joint_attacks.contains_key(&invitation.id) {
+                return Err(BackendError::InvalidData("joint_attack_id".into()));
+            }
+            stored.joint_attacks.insert(invitation.id, invitation.clone());
+            for participant in &invitation.participants {
+                push_event(
+                    stored,
+                    BackendEventKind::JointAttackChanged,
+                    Some(invitation.turn),
+                    Some(participant.player_id),
+                );
+            }
+            Ok(invitation)
+        })
+    }
+
+    fn respond_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        attack_id: u64,
+        response: JointAttackResponse,
+        contribution: Option<crate::core::simulation::JointAttackContribution>,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            let current_turn = stored.record.persisted.state.turn;
+            let invitation =
+                stored.joint_attacks.get_mut(&attack_id).ok_or(BackendError::GameNotFound)?;
+            if invitation.turn != current_turn
+                || invitation.canceled
+                || player_id == invitation.inviter
+            {
+                return Err(BackendError::Forbidden);
+            }
+            let destination = stored
+                .record
+                .persisted
+                .state
+                .map
+                .try_get(invitation.destination)
+                .ok_or_else(|| BackendError::InvalidData("joint_attack_destination".into()))?;
+            if response == JointAttackResponse::Accepted
+                && (destination.owned == Some(player_id)
+                    || destination.controlled == Some(player_id))
+            {
+                return Err(BackendError::Forbidden);
+            }
+            let participant = invitation
+                .participants
+                .iter_mut()
+                .find(|participant| participant.player_id == player_id)
+                .ok_or(BackendError::Forbidden)?;
+            if participant.response != JointAttackResponse::Pending {
+                return Err(BackendError::Forbidden);
+            }
+            participant.response = response;
+            participant.contribution = match response {
+                JointAttackResponse::Accepted => Some(
+                    contribution
+                        .filter(|entry| entry.player_id == player_id && entry.army.has_army())
+                        .ok_or_else(|| {
+                            BackendError::InvalidData("joint_attack_contribution".into())
+                        })?,
+                ),
+                JointAttackResponse::Pending | JointAttackResponse::Rejected => None,
+            };
+            let result = invitation.clone();
+            let participant_ids = result
+                .participants
+                .iter()
+                .map(|participant| participant.player_id)
+                .collect::<Vec<_>>();
+            for participant_id in participant_ids {
+                push_event(
+                    stored,
+                    BackendEventKind::JointAttackChanged,
+                    Some(current_turn),
+                    Some(participant_id),
+                );
+            }
+            Ok(result)
+        })
+    }
+
+    fn cancel_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        attack_id: u64,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            let current_turn = stored.record.persisted.state.turn;
+            let launch_already_submitted = stored.submissions.values().any(|submission| {
+                submission.submission.turn == current_turn
+                    && submission.submission.player_id == player_id
+                    && submission.submission.commands.iter().any(|command| {
+                        matches!(
+                            command,
+                            TurnCommand::SendJointMission {
+                                attack_id: submitted_id,
+                                ..
+                            } if *submitted_id == attack_id
+                        )
+                    })
+            });
+            let invitation =
+                stored.joint_attacks.get_mut(&attack_id).ok_or(BackendError::GameNotFound)?;
+            if invitation.turn != current_turn
+                || invitation.inviter != player_id
+                || invitation.canceled
+                || launch_already_submitted
+            {
+                return Err(BackendError::Forbidden);
+            }
+            invitation.canceled = true;
+            let result = invitation.clone();
+            let participant_ids = result
+                .participants
+                .iter()
+                .map(|participant| participant.player_id)
+                .collect::<Vec<_>>();
+            for participant_id in participant_ids {
+                push_event(
+                    stored,
+                    BackendEventKind::JointAttackChanged,
+                    Some(current_turn),
+                    Some(participant_id),
+                );
+            }
+            Ok(result)
+        })
+    }
+
+    fn load_joint_attacks<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<JointAttackInvitation>> {
+        Box::pin(async move {
+            let state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            Ok(stored
+                .joint_attacks
+                .values()
+                .filter(|invitation| {
+                    invitation.turn == stored.record.persisted.state.turn
+                        && invitation
+                            .participants
+                            .iter()
+                            .any(|participant| participant.player_id == player_id)
+                })
+                .cloned()
+                .collect())
+        })
+    }
+
+    fn create_trade<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        invitation: TradeInvitation,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let proposer = authorize_member(stored, &user_id)?.player_id;
+            let [first, second] = &invitation.participants;
+            let participant_ids = [first.player_id, second.player_id];
+            let proposer_party = invitation.participant(proposer);
+            let other_party = invitation
+                .participants
+                .iter()
+                .find(|participant| participant.player_id != proposer);
+            let already_negotiating = stored.trades.values().any(|trade| {
+                trade.turn == invitation.turn
+                    && trade.participants.clone().map(|participant| participant.player_id)
+                        == participant_ids
+            });
+            if stored.record.status != MatchStatus::Active
+                || invitation.turn != stored.record.persisted.state.turn
+                || invitation.id == 0
+                || invitation.proposer != proposer
+                || invitation.canceled
+                || invitation.finalized
+                || first.player_id >= second.player_id
+                || already_negotiating
+                || stored.trades.contains_key(&invitation.id)
+                || participant_ids.iter().any(|player_id| {
+                    !stored.record.members.iter().any(|member| member.player_id == *player_id)
+                        || stored.record.submitted_players.contains(player_id)
+                })
+                || proposer_party.is_none_or(|party| {
+                    party.response != TradeResponse::Accepted || party.resources.is_empty()
+                })
+                || other_party.is_none_or(|party| {
+                    party.response != TradeResponse::Pending || !party.resources.is_empty()
+                })
+                || stored
+                    .record
+                    .persisted
+                    .state
+                    .map
+                    .try_get(first.planet_id)
+                    .map_or(0, |planet| trading_post_capacity(planet, first.player_id))
+                    < first.resources.total()
+                || !trading_posts_are_adjacent(
+                    &stored.record.persisted.state.map,
+                    first.player_id,
+                    first.planet_id,
+                    second.player_id,
+                    second.planet_id,
+                )
+            {
+                return Err(BackendError::InvalidData("trade".into()));
+            }
+            stored.trades.insert(invitation.id, invitation.clone());
+            for player_id in participant_ids {
+                push_event(
+                    stored,
+                    BackendEventKind::TradeChanged,
+                    Some(invitation.turn),
+                    Some(player_id),
+                );
+            }
+            Ok(invitation)
+        })
+    }
+
+    fn respond_trade<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        trade_id: u64,
+        resources: crate::core::resources::Resources,
+        response: TradeResponse,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async move {
+            let mut state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            let current_turn = stored.record.persisted.state.turn;
+            let mut invitation =
+                stored.trades.get(&trade_id).cloned().ok_or(BackendError::GameNotFound)?;
+            if invitation.turn != current_turn
+                || invitation.canceled
+                || invitation.finalized
+                || !matches!(response, TradeResponse::Accepted | TradeResponse::Rejected)
+                || invitation.participant(player_id).is_none()
+                || invitation.participants.iter().any(|participant| {
+                    stored.record.submitted_players.contains(&participant.player_id)
+                })
+            {
+                return Err(BackendError::Forbidden);
+            }
+
+            let index = invitation
+                .participants
+                .iter()
+                .position(|participant| participant.player_id == player_id)
+                .ok_or(BackendError::Forbidden)?;
+            if response == TradeResponse::Rejected {
+                invitation.participants[index].response = TradeResponse::Rejected;
+                invitation.canceled = true;
+            } else {
+                let participant = &invitation.participants[index];
+                let capacity = stored
+                    .record
+                    .persisted
+                    .state
+                    .map
+                    .try_get(participant.planet_id)
+                    .map_or(0, |planet| trading_post_capacity(planet, player_id));
+                if resources.is_empty() || resources.total() > capacity {
+                    return Err(BackendError::InvalidData("trade_resources".into()));
+                }
+                if resources != participant.resources {
+                    invitation.participants[1 - index].response = TradeResponse::Pending;
+                }
+                invitation.participants[index].resources = resources;
+                invitation.participants[index].response = TradeResponse::Accepted;
+            }
+
+            if invitation
+                .participants
+                .iter()
+                .all(|participant| participant.response == TradeResponse::Accepted)
+            {
+                let agreement = TradeAgreement {
+                    id: invitation.id,
+                    turn: invitation.turn,
+                    parties: invitation.participants.clone().map(|participant| participant.party()),
+                };
+                let mut candidate = stored.record.persisted.state.clone();
+                add_trade_agreement_immediately(&mut candidate, agreement).map_err(invalid_game)?;
+                for draft in stored.submissions.values().filter(|draft| {
+                    draft.submission.turn == current_turn
+                        && invitation.participant(draft.submission.player_id).is_some()
+                }) {
+                    validate_submission_batch(&candidate, &[draft.submission.clone()])
+                        .map_err(invalid_game)?;
+                }
+                stored.record.persisted.state = candidate;
+                stored.record.revision = stored.record.revision.saturating_add(1);
+                invitation.finalized = true;
+            }
+
+            stored.trades.insert(trade_id, invitation.clone());
+            let participant_ids =
+                invitation.participants.clone().map(|participant| participant.player_id);
+            for participant_id in participant_ids {
+                push_event(
+                    stored,
+                    BackendEventKind::TradeChanged,
+                    Some(current_turn),
+                    Some(participant_id),
+                );
+                if invitation.finalized {
+                    push_event(
+                        stored,
+                        BackendEventKind::StateChanged,
+                        Some(current_turn),
+                        Some(participant_id),
+                    );
+                }
+            }
+            Ok(invitation)
+        })
+    }
+
+    fn load_trades<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<TradeInvitation>> {
+        Box::pin(async move {
+            let state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            Ok(stored
+                .trades
+                .values()
+                .filter(|invitation| {
+                    invitation.turn == stored.record.persisted.state.turn
+                        && invitation.participant(player_id).is_some()
+                })
+                .cloned()
+                .collect())
+        })
+    }
+
     /// Serializes color claims under the game lock and leaves a losing claimant unchanged.
     fn set_player_color<'a>(
         &'a self,
@@ -547,6 +1053,7 @@ impl MultiplayerBackend for InMemoryBackend {
                     .filter(|(_, stored)| stored.ready)
                     .map(|(_, stored)| stored.submission.clone())
                     .collect::<Vec<_>>();
+                validate_joint_attack_commands(stored, &draft)?;
                 validate_incoming(&stored.record, &ready_submissions, &draft)?;
                 stored.submissions.insert(
                     key,
@@ -627,6 +1134,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 .filter(|(_, stored)| stored.ready)
                 .map(|(_, stored)| stored.submission.clone())
                 .collect::<Vec<_>>();
+            validate_joint_attack_commands(stored, &submission)?;
             validate_incoming(&stored.record, &existing, &submission)?;
             let player_id = submission.player_id;
             let turn = submission.turn;
@@ -814,6 +1322,9 @@ impl MultiplayerBackend for InMemoryBackend {
             );
             let oldest_retained = resolved_turn.saturating_sub(8);
             stored.submissions.retain(|(turn, _), _| *turn >= oldest_retained);
+            let current_turn = stored.record.persisted.state.turn;
+            stored.joint_attacks.retain(|_, invitation| invitation.turn >= current_turn);
+            stored.trades.retain(|_, invitation| invitation.turn >= current_turn);
             Ok(stored.record.clone())
         })
     }
@@ -829,15 +1340,22 @@ impl MultiplayerBackend for InMemoryBackend {
             let state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
-            authorize_member(stored, &user_id)?;
-            let events = stored
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            let replay = stored
                 .events
                 .iter()
                 .filter(|event| event.sequence > after_sequence)
                 .take(256)
                 .cloned()
                 .collect::<Vec<_>>();
-            let cursor = events.last().map_or(after_sequence, |event| event.sequence);
+            let cursor = replay.last().map_or(after_sequence, |event| event.sequence);
+            let events = replay
+                .into_iter()
+                .filter(|event| {
+                    event.kind != BackendEventKind::JointAttackChanged
+                        || event.player_id == Some(player_id)
+                })
+                .collect();
             Ok(EventBatch {
                 events,
                 cursor,
@@ -890,6 +1408,57 @@ impl MultiplayerBackend for InMemoryBackend {
             Ok(stored.record.members.clone())
         })
     }
+}
+
+fn validate_joint_attack_commands(
+    stored: &StoredGame,
+    submission: &TurnSubmission,
+) -> Result<(), BackendError> {
+    for command in &submission.commands {
+        let TurnCommand::SendJointMission {
+            attack_id,
+            destination,
+            objective,
+            bombing,
+            combat_probes,
+            contributions,
+            ..
+        } = command
+        else {
+            continue;
+        };
+        let invitation = stored.joint_attacks.get(attack_id).ok_or_else(|| {
+            BackendError::InvalidData("joint attack invitation is missing".into())
+        })?;
+        let expected = invitation
+            .participants
+            .iter()
+            .filter(|participant| participant.response == JointAttackResponse::Accepted)
+            .filter_map(|participant| participant.contribution.as_ref())
+            .collect::<Vec<_>>();
+        if invitation.canceled
+            || invitation.turn != submission.turn
+            || invitation.inviter != submission.player_id
+            || invitation.destination != *destination
+            || invitation.objective != *objective
+            || invitation.bombing != *bombing
+            || invitation.combat_probes != *combat_probes
+            || invitation
+                .participants
+                .iter()
+                .any(|participant| participant.response == JointAttackResponse::Pending)
+            || expected.len() < 2
+            || serde_json::to_value(expected)
+                .map_err(|error| BackendError::InvalidData(error.to_string()))?
+                != serde_json::to_value(contributions)
+                    .map_err(|error| BackendError::InvalidData(error.to_string()))?
+        {
+            return Err(BackendError::InvalidData(
+                "joint attack does not match final accepted contributions".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validates a session token against the in-memory session registry.

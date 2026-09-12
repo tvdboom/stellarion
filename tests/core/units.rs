@@ -41,6 +41,7 @@ fn orbital_production_levels_follow_shop_order_and_match_non_public_intelligence
         (Unit::Building(Building::SolarSatellite), 1, Some(1)),
         (Unit::Building(Building::Recycler), 1, Some(1)),
         (Unit::Building(Building::CommandRelay), 2, Some(2)),
+        (Unit::Building(Building::TradingPost), 3, Some(3)),
         (Unit::Building(Building::SensorPhalanx), 3, Some(3)),
         (Unit::Building(Building::JumpGate), 4, Some(4)),
         (Unit::Building(Building::OrbitalRailgun), 5, None),

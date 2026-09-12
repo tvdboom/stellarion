@@ -70,9 +70,9 @@ If losing combat on a controlled planet, no intelligence is gained.
 
 There is a limit to the amount of planets that can be owned by a player. Spots are only freed 
 if a planet is abandoned, conquered or destroyed. A Senate on the home planet raises this limit
-by one planet per level. Galaxy size permits one Senate level per 20 planets, rounded up to a
-maximum of three; the 25%, 35%, and 50% ownership settings further cap it at three, two, and one
-levels respectively.
+by one planet per level. The base ownership allowance set by the galaxy size and colonizable
+planet percentage permits one Senate level per four planets, rounded down, with a minimum of one
+and a maximum of five levels.
 
 Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets, 
 players can build on a controlled moon. Moons only have a limited number of fields on which to 
@@ -82,11 +82,13 @@ defenses.
 ### Mission types
 
 - **Deploy:** Move a fleet to another planet or moon you control.
-- **Protect:** With the target controller's planet-specific permission, station a fleet at another
-  player's planet or moon. The fleet joins that world's defense but remains separately owned: the
-  controller cannot dispatch it, while its owner can use the protected world as an origin for a
-  later mission. Revoking permission sends both travelling and stationed protection fleets to
-  their owner's homeworld. Protect fleets arriving on the same turn as an attack defend first.
+- **Protect:** A world controller can grant another player planet-specific protection access.
+  The invitation is applied immediately and adds Protect alongside the mission choices. A
+  protecting fleet joins that world's defense but remains separately owned. Revoking protection
+  access applies immediately, and sends both traveling and stationed protection fleets to their
+  owner's homeworld. A player cannot launch missions from a stationed protection fleet or target
+  the protected world with hostile missions or Orbital Railguns. They may send more protection or
+  recall the entire stationed fleet home first.
 - **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
   The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
   planet.
@@ -101,9 +103,9 @@ defenses.
   hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
   intelligence, cannot be detected by a Sensor Phalanx, and do not reveal their origin.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
-  enemy ships remaining, every War Sun has a size-dependent chance to destroy the planet (the
-  chance falls in later rounds). The fleet returns whether destruction succeeds. A destroyed
-  planet can never be colonized again.
+  enemy ships or Space Dock remaining, every War Sun has a size-dependent chance to destroy the
+  planet (the chance falls in later rounds). The fleet returns whether destruction succeeds. A
+  destroyed planet can never be colonized again.
 
 
 ### Units
@@ -163,18 +165,21 @@ the planet and the surviving attackers return to their origin.
 
 Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S), 
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
-unit starts with its shield at its initial value. The hull has the value of previous round 
-(initial value of the ship if it's the first round). In each round, all participating units 
-randomly choose a target enemy unit. Shots are resolved per ship type in increasing production
-order, i.e., the lowest production units shoots first, and the highest production units shoot last
-(ships fire before defenses).
+unit starts with its shield at its initial value. The hull has the value of previous round
+(initial value of the ship if it's the first round). In each round, ordinary ships randomly target
+enemy ships and the Space Dock first, falling back to other defenses only when those targets are
+gone. Bombers reverse that priority, targeting defenses before ships. Stationary defenses choose
+randomly among all enemy units. Shots are resolved per ship type in increasing production order,
+i.e., the lowest production units shoot first, and the highest production units shoot last (ships
+fire before defenses).
 
 For each shooting unit:
 
 1. If it's the first round of a missile strike, the defender's Antiballistic Missiles will fire
    sequentially until they are depleted or no Interplanetary Missiles remain.
-2. A random enemy unit is chosen as target. If the unit is a defense unit and the planet has a 
-   Planetary Shield with remaining shield, the Planetary Shield is chosen as target instead.
+2. A random enemy unit is chosen from the shooter's highest-priority target category. If the unit
+   is a defense unit and the planet has a Planetary Shield with remaining shield, the Planetary
+   Shield is chosen as target instead.
 3. If the damage is lower than the enemy's shield, the shield absorbs the shot, and the unit does 
    not lose hull: S = S - W.
 4. Else, if W > S, the shield only absorbs part of the shot and the rest of the damage is dealt to 
@@ -182,9 +187,9 @@ For each shooting unit:
 5. If the shooting unit has rapid fire against the target unit, it has a chance of RF% of choosing 
    another target at random, and repeating the above steps for that new target.
 6. All ships with H=0 (no hull points left) are destroyed.
-7. If the objective is to destroy the planet and there are no enemy ships left, each attacking 
-   War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet is
-   immediately destroyed and all defenses and buildings with it.
+7. If the objective is to destroy the planet and there are no enemy ships or Space Dock left, each
+   attacking War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet
+   is immediately destroyed and all defenses and buildings with it.
 8. If it's the first round of combat and there are any Probes on the attacker's side, they leave 
    combat and fly back to the origin planet (if `combat probes` option disabled).
 9. If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 
@@ -207,6 +212,7 @@ Things to keep in mind:
   are scout probes, he can only see the number of enemy units prior to combat.
 - A defender player receives no enemy unit information if all its units are destroyed and he
   doesn't own the planet.
+- Protection fleets arriving on the same turn as an attack defend first.
 
 <br>
 

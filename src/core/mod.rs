@@ -34,6 +34,7 @@ pub mod simulation;
 pub mod states;
 #[cfg(feature = "app")]
 mod systems;
+pub mod trading;
 #[cfg(feature = "app")]
 mod turns;
 #[cfg(feature = "app")]

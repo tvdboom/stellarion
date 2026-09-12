@@ -33,8 +33,8 @@ use crate::core::map::systems::{
     animate_asteroid_belts, animate_map_ambience, animate_orbital_railguns, animate_phalanx_drones,
     animate_range_markers, animate_recyclers, animate_space_scenery, draw_map,
     ensure_asteroid_belt, hide_planet_details, position_home_crown, run_map_animations,
-    update_ambient_comets, update_end_turn, update_jump_gate_links, update_planet_defenses,
-    update_planet_info, update_voronoi, AmbientCometSpawner,
+    sync_home_crown, update_ambient_comets, update_end_turn, update_jump_gate_links,
+    update_planet_defenses, update_planet_info, update_voronoi, AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -42,10 +42,12 @@ use crate::core::menu::systems::{
     setup_menu, EndGameOverlayFade,
 };
 use crate::core::messages::MessageMsg;
-use crate::core::mission_systems::animate_mission_recalls;
+use crate::core::mission_systems::{
+    animate_jump_gate_missions, animate_mission_recalls, recall_protection,
+};
 use crate::core::missions::{
     recall_mission, send_mission, update_mission_route_arrow, update_missions,
-    MissionRecallAnimationMsg, RecallMissionMsg, SendMissionMsg,
+    MissionRecallAnimationMsg, RecallMissionMsg, RecallProtectionMsg, SendMissionMsg,
 };
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
@@ -97,6 +99,7 @@ impl Plugin for GamePlugin {
             .add_message::<StartTurnMsg>()
             .add_message::<SendMissionMsg>()
             .add_message::<RecallMissionMsg>()
+            .add_message::<RecallProtectionMsg>()
             .add_message::<MissionRecallAnimationMsg>()
             .add_message::<SpawnShotMsg>()
             // Resources
@@ -255,7 +258,9 @@ impl Plugin for GamePlugin {
                             .chain(),
                         animate_phalanx_drones,
                         animate_range_markers,
-                        animate_recyclers.after(update_planet_defenses),
+                        animate_recyclers
+                            .after(update_planet_defenses)
+                            .after(animate_asteroid_belts),
                         animate_map_ambience,
                         animate_space_scenery,
                         update_voronoi.after(animate_public_structure_changes),
@@ -271,10 +276,13 @@ impl Plugin for GamePlugin {
                         update_ambient_comets,
                         send_mission,
                         recall_mission,
+                        recall_protection,
                         update_missions
                             .after(BattleAftermathSet)
                             .after(send_mission)
-                            .after(recall_mission),
+                            .after(recall_mission)
+                            .after(recall_protection),
+                        animate_jump_gate_missions.after(update_missions),
                         animate_mission_recalls.after(update_missions).after(recall_mission),
                         update_mission_route_arrow,
                     )
@@ -287,7 +295,8 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 PostUpdate,
-                position_home_crown
+                (sync_home_crown, position_home_crown)
+                    .chain()
                     .after(bevy::sprite::update_text2d_layout)
                     .before(bevy::transform::TransformSystems::Propagate)
                     .in_set(InGameSet),

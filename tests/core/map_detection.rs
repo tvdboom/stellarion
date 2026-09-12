@@ -97,7 +97,7 @@ fn structure_effects(app: &mut App) -> Vec<Entity> {
 #[test]
 fn newly_visible_enemy_mission_gets_a_radar_ping_at_its_map_position() {
     let (mut app, mission, player) = presentation_app();
-    assert!(detected_by_scanner(&mission, app.world().resource::<Map>(), &player));
+    assert!(newly_detectable(&mission, app.world().resource::<Map>(), &player));
 
     app.insert_resource(Missions(vec![mission.clone()]));
     app.update();
@@ -129,6 +129,37 @@ fn newly_visible_enemy_mission_gets_a_radar_ping_at_its_map_position() {
         PULSE_COUNT
     );
     assert!(children.iter().any(|child| {
+        app.world().get::<Text2d>(child).is_some_and(|text| text.0 == "ENEMY MISSION DETECTED")
+    }));
+}
+
+#[test]
+fn incoming_protection_uses_an_informational_toast_and_protection_label() {
+    let (mut app, mut mission, player) = presentation_app();
+    mission.objective = Icon::Protect;
+    mission.protected_player = Some(player.id);
+    mission.position = app.world().resource::<Map>().get(mission.origin).position;
+    assert_eq!(mission.is_seen_by_phalanx(app.world().resource::<Map>(), &player), None);
+    assert_eq!(mission.is_seen_by_radar(app.world().resource::<Map>(), &player), None);
+    assert!(newly_detectable(&mission, app.world().resource::<Map>(), &player));
+
+    app.insert_resource(Missions(vec![mission]));
+    app.update();
+    app.update();
+
+    let notifications =
+        app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].message, "Protection fleet incoming.");
+    assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Info);
+    assert_eq!(notifications[0].action, Some(MessageAction::OpenEnemyMissions));
+
+    let effect = effects(&mut app)[0];
+    let children = app.world().get::<Children>(effect).unwrap();
+    assert!(children.iter().any(|child| {
+        app.world().get::<Text2d>(child).is_some_and(|text| text.0 == "PROTECTION FLEET INCOMING")
+    }));
+    assert!(!children.iter().any(|child| {
         app.world().get::<Text2d>(child).is_some_and(|text| text.0 == "ENEMY MISSION DETECTED")
     }));
 }

@@ -42,17 +42,14 @@ impl Defense {
     /// Minimum level of the factory/silo to build this defense
     pub fn production(&self) -> usize {
         match self {
-            Defense::Crawler => 1,
-            Defense::RepairTruck => 1,
-            Defense::RocketLauncher => 1,
-            Defense::LightLaser => 2,
-            Defense::HeavyLaser => 2,
-            Defense::GaussCannon => 3,
-            Defense::IonCannon => 3,
+            Defense::Crawler
+            | Defense::RepairTruck
+            | Defense::RocketLauncher
+            | Defense::AntiballisticMissile => 1,
+            Defense::LightLaser | Defense::HeavyLaser | Defense::InterplanetaryMissile => 2,
+            Defense::GaussCannon | Defense::IonCannon => 3,
             Defense::PlasmaTurret => 4,
             Defense::SpaceDock => 5,
-            Defense::AntiballisticMissile => 1,
-            Defense::InterplanetaryMissile => 2,
         }
     }
 

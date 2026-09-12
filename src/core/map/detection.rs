@@ -33,9 +33,10 @@ const STRUCTURE_PULSE_COUNT: usize = 3;
 const STRUCTURE_PULSE_INTERVAL_SECONDS: f32 = 0.42;
 const STRUCTURE_PULSE_SECONDS: f32 = 1.55;
 
-fn detected_by_scanner(mission: &Mission, map: &Map, player: &Player) -> bool {
+fn newly_detectable(mission: &Mission, map: &Map, player: &Player) -> bool {
     mission.owner != player.id
-        && (mission.is_seen_by_phalanx(map, player).is_some()
+        && (mission.is_incoming_protection_for(player.id)
+            || mission.is_seen_by_phalanx(map, player).is_some()
             || mission.is_seen_by_radar(map, player).is_some())
 }
 
@@ -61,12 +62,12 @@ impl DetectedMissions {
         for mission in missions.iter().filter(|mission| {
             !self.visible.contains(&mission.id)
                 && !self.announced.contains(&mission.id)
-                && detected_by_scanner(mission, map, player)
+                && newly_detectable(mission, map, player)
         }) {
             added |= self.pending.insert(mission.id);
         }
         self.pending.retain(|id| {
-            missions.get(*id).is_some_and(|mission| detected_by_scanner(mission, map, player))
+            missions.get(*id).is_some_and(|mission| newly_detectable(mission, map, player))
         });
         self.visible = visible;
         added
@@ -146,18 +147,23 @@ fn show_detections(
 
     for id in std::mem::take(&mut detections.pending) {
         let Some(mission) =
-            missions.get(id).filter(|mission| detected_by_scanner(mission, &map, &player))
+            missions.get(id).filter(|mission| newly_detectable(mission, &map, &player))
         else {
             continue;
         };
         detections.announced.insert(id);
-        messages.write(
-            MessageMsg::warning("Enemy mission detected.")
-                .with_action(MessageAction::OpenEnemyMissions),
-        );
+        let incoming_protection =
+            mission.displayed_objective(player.id) == super::icon::Icon::Protect;
+        let (notification, label) = if incoming_protection {
+            (MessageMsg::info("Protection fleet incoming."), "PROTECTION FLEET INCOMING")
+        } else {
+            (MessageMsg::warning("Enemy mission detected."), "ENEMY MISSION DETECTED")
+        };
+        messages.write(notification.with_action(MessageAction::OpenEnemyMissions));
         spawn_detection(
             &mut commands,
             mission,
+            label,
             settings.turn,
             player.color().color(),
             &assets,
@@ -170,6 +176,7 @@ fn show_detections(
 fn spawn_detection(
     commands: &mut Commands,
     mission: &Mission,
+    label: &str,
     turn: usize,
     color: Color,
     assets: &WorldAssets,
@@ -204,7 +211,7 @@ fn spawn_detection(
                 ));
             }
             parent.spawn((
-                Text2d::new("ENEMY MISSION DETECTED"),
+                Text2d::new(label),
                 TextFont {
                     font: assets.font("bold").into(),
                     font_size: 17.0.into(),

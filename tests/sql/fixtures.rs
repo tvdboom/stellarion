@@ -21,6 +21,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     active.start()?;
+    let mut active_three = GameModel::new(
+        [9; 32],
+        GameRules {
+            player_count: 3,
+            ..rules.clone()
+        },
+    )?;
+    active_three.start()?;
     let mut resolved = active.clone();
     resolve_turn(
         &mut resolved,
@@ -31,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({
             "lobby": lobby,
             "active": PersistedGame::new(active),
+            "active_three": PersistedGame::new(active_three),
             "resolved": PersistedGame::new(resolved),
         })
     );

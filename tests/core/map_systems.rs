@@ -47,6 +47,14 @@ fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed(
         target: moon,
     }));
     assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, true));
+
+    pending.commands.clear();
+    model
+        .map
+        .get_mut(target)
+        .army
+        .dock_protector(player.id, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, true));
 }
 
 /// Finds the defenses spawned by the real map setup without a window or GPU.
@@ -338,8 +346,18 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 assert!(transform.translation.z < PLANET_Z);
                 assert!(transform.translation.z > VORONOI_Z);
                 assert_eq!(transform.translation.z, ASTEROID_BELT_DEPTH);
-                assert!((0.0..=38.0).contains(&sprite.custom_size.unwrap().x));
-                assert_eq!(sprite.color, Color::srgba(0.78, 0.76, 0.72, 0.82));
+                assert!(
+                    (0.0..=ASTEROID_MAXIMUM_RADIUS * 2.0).contains(&sprite.custom_size.unwrap().x)
+                );
+                assert!(
+                    sprite.custom_size.unwrap().x
+                        >= ASTEROID_MINIMUM_DIAMETER.min(layout.maximum_asteroid_diameter),
+                    "asteroid cutout is too small to remain legible at strategic camera scales"
+                );
+                assert_eq!(sprite.color, ASTEROID_TINT);
+                let tint = sprite.color.to_srgba();
+                assert!(tint.red >= 0.8 && tint.green >= 0.78 && tint.blue >= 0.74);
+                assert!(tint.alpha >= 0.9);
                 for (planet_position, planet_radius) in &planets {
                     let asteroid_radius = sprite.custom_size.unwrap().x * 0.5;
                     assert!(
@@ -351,7 +369,9 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 if !image_ids.contains(&sprite.image.id()) {
                     image_ids.push(sprite.image.id());
                 }
-                phases.push(world.get::<AsteroidCmp>(entity).unwrap().phase.rem_euclid(TAU));
+                phases.push(
+                    world.get::<AsteroidCmp>(entity).unwrap().placement.phase.rem_euclid(TAU),
+                );
                 (entity, *transform)
             })
             .collect::<Vec<_>>();
@@ -385,10 +405,38 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         app.world().get::<Transform>(*entity).unwrap().translation.distance(transform.translation)
             > 0.5
     }));
+    let center = app.world().resource::<Map>().solar_star_position();
+    assert!(before.iter().all(|(entity, transform)| {
+        let start_angle = (transform.translation.truncate() - center).to_angle();
+        let end_angle = (app.world().get::<Transform>(*entity).unwrap().translation.truncate()
+            - center)
+            .to_angle();
+        (recycler_angular_delta(start_angle, end_angle) - ASTEROID_BELT_ANGULAR_SPEED).abs() < 0.001
+    }));
+    let map = app.world().resource::<Map>();
+    let layout = shared_asteroid_belt_layout(map).unwrap();
+    let shared_placements = shared_asteroid_belt_placements(map, layout);
+    let elapsed = app.world().resource::<Time>().elapsed_secs();
+    assert!(before.iter().all(|(entity, _)| {
+        let asteroid = app.world().get::<AsteroidCmp>(*entity).unwrap();
+        let placement = shared_placements
+            .iter()
+            .find(|placement| {
+                placement.phase.to_bits() == asteroid.placement.phase.to_bits()
+                    && placement.radius.to_bits() == asteroid.placement.radius.to_bits()
+            })
+            .unwrap();
+        let expected =
+            crate::core::map::asteroids::asteroid_position_at_elapsed(map, placement, elapsed);
+        app.world().get::<Transform>(*entity).unwrap().translation.truncate().distance(expected)
+            < 0.001
+    }));
     assert!(before.iter().any(|(entity, transform)| {
         app.world().get::<Transform>(*entity).unwrap().rotation.angle_between(transform.rotation)
             > 0.08
     }));
+    assert_eq!(asteroid_render_scale(ASTEROID_REFERENCE_CAMERA_SCALE), 1.0);
+    assert_eq!(asteroid_render_scale(MAX_ZOOM), ASTEROID_MAX_RENDER_SCALE);
 }
 
 #[test]
@@ -432,6 +480,112 @@ fn local_practice_map_draw_spawns_one_visible_asteroid_belt_immediately() {
         })
         .count();
     assert!(visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT);
+}
+
+/// Explicit GPU visual review for the actual generated asteroid textures.
+#[test]
+#[ignore = "renders a complete asteroid belt with a local GPU"]
+#[cfg(target_os = "windows")]
+fn render_asteroid_belt_preview() {
+    use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
+    use bevy::camera::RenderTarget;
+    use bevy::render::{
+        render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
+        view::screenshot::{save_to_disk, Screenshot},
+        RenderPlugin,
+    };
+    use bevy::window::ExitCondition;
+    use bevy::winit::WinitPlugin;
+
+    let output = "target/asteroid-belt-preview.png";
+    let _ = std::fs::remove_file(output);
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: format!("{}/assets-runtime", env!("CARGO_MANIFEST_DIR")),
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .disable::<WinitPlugin>(),
+    )
+    .add_plugins(BasisTexturePlugin);
+    app.finish();
+    app.cleanup();
+
+    let images = ASTEROID_IMAGE_NAMES
+        .iter()
+        .map(|name| {
+            app.world()
+                .resource::<AssetServer>()
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.linear_filtering = true
+                })
+                .load(format!("images/ambient/{name}.basisu.ktx2"))
+        })
+        .collect::<Vec<Handle<Image>>>();
+    let mut render_image = Image::new_uninit(
+        Extent3d {
+            width: 1536,
+            height: 888,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    render_image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT;
+    let target = app.world_mut().resource_mut::<Assets<Image>>().add(render_image);
+    let rules = GameRules {
+        planets_per_player: 5,
+        moons_percent: 30,
+        player_count: 3,
+        practice_mode: true,
+        ..default()
+    };
+    let seed = crate::core::random::DeterministicRngState::from_u64(1841).seed;
+    let model = GameModel::new(seed, rules).unwrap();
+    let mut projection = OrthographicProjection::default_2d();
+    projection.scale = crate::core::constants::MAX_ZOOM;
+    app.world_mut().spawn((
+        Camera2d,
+        RenderTarget::Image(target.clone().into()),
+        Projection::Orthographic(projection),
+        Transform::from_translation(
+            model.map.get(model.players[0].home_planet).position.extend(1000.0),
+        ),
+    ));
+    let layout = asteroid_belt_layout(&model.map).unwrap();
+    let center = model.map.solar_star_position();
+    for (index, placement) in asteroid_belt_placements(&model.map, layout).into_iter().enumerate() {
+        app.world_mut().spawn((
+            Sprite {
+                image: images[index % images.len()].clone(),
+                custom_size: Some(Vec2::splat(placement.diameter * ASTEROID_MAX_RENDER_SCALE)),
+                color: ASTEROID_TINT,
+                ..default()
+            },
+            Transform::from_translation(
+                (center + Vec2::from_angle(placement.phase) * placement.radius).extend(1.0),
+            ),
+        ));
+    }
+    for frame in 0..90 {
+        if frame == 60 {
+            app.world_mut().spawn(Screenshot::image(target.clone())).observe(save_to_disk(output));
+        }
+        app.update();
+    }
+    assert!(std::path::Path::new(output).exists());
 }
 
 #[test]
@@ -497,7 +651,10 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .add_systems(Startup, draw_map)
         .add_systems(Update, animate_recyclers);
     let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
+    // The fade needs elapsed time, while the route assertions below intentionally start at zero.
+    app.world_mut().insert_resource(Time::<()>::default());
 
     let (recyclers, scans, idle_recyclers, idle_scans) = {
         let world = app.world_mut();
@@ -534,13 +691,20 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         (1..=Building::MAX_LEVEL).collect::<Vec<_>>()
     );
     assert!(recyclers.windows(2).all(|pair| pair[0].2 != pair[1].2));
+    for (_, level, phase) in &recyclers {
+        assert_eq!(*phase, recycler_phase(planet_id, *level));
+    }
     assert_eq!(scans.len(), Building::MAX_LEVEL * 3);
     assert_eq!(idle_recyclers.len(), Building::MAX_LEVEL);
     assert_eq!(idle_scans.len(), Building::MAX_LEVEL * 3);
     for (entity, _, _) in &recyclers {
         let transform = app.world().get::<Transform>(*entity).unwrap();
         let pickable = app.world().get::<Pickable>(*entity).unwrap();
-        assert!(transform.translation.z > DEBRIS_DEPTH);
+        if app.world().get::<Visibility>(*entity) == Some(&Visibility::Inherited) {
+            let world_depth = PLANET_Z + transform.translation.z;
+            assert!(world_depth > ASTEROID_BELT_DEPTH);
+            assert!(world_depth < PLANET_Z);
+        }
         assert_eq!(*pickable, Pickable::IGNORE);
     }
     assert_eq!(
@@ -575,17 +739,23 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     let home = {
         let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
         let planet = app.world().resource::<Map>().get(planet_id);
-        recycler_home(first_asteroid, marker, planet).extend(RECYCLER_DEPTH)
+        recycler_home(first_asteroid, marker, planet).extend(RECYCLER_ASTEROID_DEPTH)
     };
     let planet = app.world().resource::<Map>().get(planet_id);
     let destination_direction = (first_asteroid - planet.position).normalize();
     assert!(home.truncate().normalize().dot(destination_direction) > 0.85);
+    assert!(
+        planet.position.distance(first_asteroid)
+            > planet.size() * 0.5
+                + Planet::SIZE * crate::core::map::asteroids::RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU
+    );
     let recycler_radius = Vec2::new(planet.size() * 0.30, planet.size() * 0.214).length() * 0.5;
     assert!(
         home.truncate().length() - recycler_radius > planet.size() * 0.5,
         "a docked Recycler must touch the destination-facing edge without overlapping the planet"
     );
-    assert!(home.truncate().length() < planet.size() * 0.75);
+    assert!(home.truncate().length() > planet.size() * 0.80);
+    assert!(home.truncate().length() < planet.size() * 0.85);
     let rotating_targets = {
         let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
         (0..4)
@@ -636,12 +806,16 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     app.world_mut().get_mut::<RecyclerCmp>(recycler).unwrap().phase = 0.0;
     app.update();
 
-    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(RECYCLER_CYCLE_SECONDS / 6.0));
     app.update();
     let outbound = app.world().get::<Transform>(recycler).unwrap().translation;
     assert!(outbound.distance(home) > Planet::SIZE * 0.05);
 
-    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(RECYCLER_CYCLE_SECONDS / 6.0));
     app.update();
     assert!(level_one_scans
         .iter()
@@ -668,10 +842,64 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         assert!((scan_color.blue - recycler_color.blue).abs() < 1e-6);
     }
 
-    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(4));
+    let assigned_asteroid = |app: &App, scan: Entity| {
+        let map = app.world().resource::<Map>();
+        let layout = shared_asteroid_belt_layout(map).unwrap();
+        let placements = shared_asteroid_belt_placements(map, layout);
+        let elapsed = app.world().resource::<Time>().elapsed_secs();
+        let scan_target = app.world().get::<Transform>(scan).unwrap().translation.truncate()
+            + map.get(planet_id).position;
+        placements
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                crate::core::map::asteroids::asteroid_position_at_elapsed(map, left, elapsed)
+                    .distance_squared(scan_target)
+                    .total_cmp(
+                        &crate::core::map::asteroids::asteroid_position_at_elapsed(
+                            map, right, elapsed,
+                        )
+                        .distance_squared(scan_target),
+                    )
+            })
+            .unwrap()
+            .0
+    };
+    let assignment_before = assigned_asteroid(&app, first_scan);
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert_eq!(assigned_asteroid(&app, first_scan), assignment_before);
+    assert_eq!(app.world().get::<Visibility>(recycler), Some(&Visibility::Inherited));
+
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(RECYCLER_CYCLE_SECONDS * 2.0 / 3.0 - 1.0));
     app.update();
     let returned = app.world().get::<Transform>(recycler).unwrap().translation;
-    assert!(returned.distance(home) < Planet::SIZE * 0.04);
+    let (current_home, current_target) = {
+        let map = app.world().resource::<Map>();
+        let layout = shared_asteroid_belt_layout(map).unwrap();
+        let placements = shared_asteroid_belt_placements(map, layout);
+        let elapsed = app.world().resource::<Time>().elapsed_secs();
+        let targets = recycler_asteroid_target_groups_at_elapsed(map, &placements, elapsed);
+        let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
+        let current_target = recycler_animation_target(
+            RecyclerSource::AsteroidField {
+                target: targets[&planet_id][0],
+            },
+            Some(&targets[&planet_id]),
+            marker,
+            map.get(planet_id),
+            1,
+        );
+        (
+            recycler_home(current_target, marker, map.get(planet_id))
+                .extend(RECYCLER_ASTEROID_DEPTH),
+            current_target,
+        )
+    };
+    assert!(returned.distance(current_home) < Planet::SIZE * 0.04);
+    assert!(current_target.distance(first_asteroid) > 1.0);
     assert!(level_one_scans
         .iter()
         .all(|scan| app.world().get::<Visibility>(*scan) == Some(&Visibility::Hidden)));
@@ -697,6 +925,26 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     {
         projection.scale = DEVELOPMENT_MAX_SCALE + 0.01;
     }
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    let faded_recyclers = recyclers
+        .iter()
+        .filter(|(entity, _, _)| {
+            app.world().get::<Visibility>(*entity) == Some(&Visibility::Inherited)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(faded_recyclers.len(), Building::MAX_LEVEL);
+    assert!(faded_recyclers.iter().all(|(entity, _, _)| {
+        let alpha = app.world().get::<Sprite>(*entity).unwrap().color.alpha();
+        (0.4..0.5).contains(&alpha)
+    }));
+
+    if let Projection::Orthographic(projection) =
+        &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
+    {
+        projection.scale = 1.06;
+    }
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
     assert!(recyclers
         .iter()
@@ -708,8 +956,49 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     let before_wrap = Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, 0.9999));
     let after_wrap = Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, 0.0001));
     assert!(before_wrap.angle_between(after_wrap) < 0.01);
-    assert!((recycler_progress(0.8599) - recycler_progress(0.8601)).abs() < 0.001);
+    assert_eq!(recycler_progress(0.30), 1.0);
+    assert_eq!(recycler_progress(0.6199), 1.0);
+    assert!((recycler_progress(0.9199) - recycler_progress(0.9201)).abs() < 0.001);
     assert!((recycler_progress(0.9999) - recycler_progress(0.0001)).abs() < 0.001);
+}
+
+#[test]
+fn recycler_phase_offsets_keep_collection_turnarounds_on_separate_asteroids() {
+    let planet = Planet::new(0, "Recycler".into(), Vec2::ZERO, false, 1.0);
+    let targets = [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y];
+    let recyclers = (1..=Building::MAX_LEVEL)
+        .map(|level| RecyclerCmp {
+            planet: planet.id,
+            level,
+            phase: recycler_phase(planet.id, level),
+            gate_angle: 0.0,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(recyclers.iter().any(|recycler| recycler.phase >= 1.0));
+    for step in 0..1_000 {
+        let elapsed_cycles = step as f32 / 1_000.0;
+        let mut occupied = Vec::new();
+        for recycler in &recyclers {
+            let cycle_time = elapsed_cycles + recycler.phase;
+            let cycle = cycle_time.fract();
+            if (0.30..0.62).contains(&cycle) {
+                occupied.push(recycler_animation_target(
+                    RecyclerSource::AsteroidField {
+                        target: targets[0],
+                    },
+                    Some(&targets),
+                    recycler,
+                    &planet,
+                    cycle_time.floor() as u64,
+                ));
+            }
+        }
+        assert!(occupied
+            .iter()
+            .enumerate()
+            .all(|(index, target)| occupied[..index].iter().all(|other| other != target)));
+    }
 }
 
 #[test]
@@ -866,6 +1155,48 @@ fn every_game_map_has_one_visible_belt_between_adjacent_solar_areas() {
 }
 
 #[test]
+fn three_player_five_world_practice_keeps_the_belt_in_every_home_view() {
+    let rules = GameRules {
+        planets_per_player: 5,
+        moons_percent: 30,
+        player_count: 3,
+        practice_mode: true,
+        ..default()
+    };
+    let viewport_size = Vec2::new(1536.0, 888.0) * crate::core::constants::MAX_ZOOM;
+    let mut minimum_visible = usize::MAX;
+    for sample in 0..2048_u64 {
+        let seed = crate::core::random::DeterministicRngState::from_u64(sample).seed;
+        let model = GameModel::new(seed, rules.clone()).unwrap();
+        let layout = asteroid_belt_layout(&model.map).unwrap();
+        let placements = asteroid_belt_placements(&model.map, layout);
+        for player in &model.players {
+            let view =
+                Rect::from_center_size(model.map.get(player.home_planet).position, viewport_size);
+            let visible = placements
+                .iter()
+                .filter(|placement| {
+                    let margin = placement.diameter * ASTEROID_MAX_RENDER_SCALE * 0.5
+                        + ASTEROID_MAXIMUM_WOBBLE;
+                    let position = model.map.solar_star_position()
+                        + Vec2::from_angle(placement.phase) * placement.radius;
+                    position.x - margin >= view.min.x
+                        && position.x + margin <= view.max.x
+                        && position.y - margin >= view.min.y
+                        && position.y + margin <= view.max.y
+                })
+                .count();
+            minimum_visible = minimum_visible.min(visible);
+        }
+    }
+    assert!(
+        minimum_visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT,
+        "a 3-player, 5-world practice home view can lose the asteroid belt: \
+         minimum_visible={minimum_visible}"
+    );
+}
+
+#[test]
 fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() {
     for expected_kind in CelestialKind::ALL {
         let map = (0..64)
@@ -969,6 +1300,9 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         assert_eq!(transform.translation(), anchor);
         let mut suns = world.query_filtered::<&GlobalTransform, With<SolarStarCmp>>();
         assert_eq!(suns.single(world).unwrap().translation(), sun_anchor);
+        let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
+        let expected_rotation = Quat::from_rotation_z(36_000.0 * SOLAR_STAR_ANGULAR_SPEED);
+        assert!(sun_roots.single(world).unwrap().rotation.angle_between(expected_rotation) < 1e-4);
     }
 }
 
@@ -1742,6 +2076,46 @@ fn planet_selection_stops_camera_focus_and_preserves_the_origin_for_other_owners
 }
 
 #[test]
+fn stationed_protection_world_cannot_become_a_new_mission_origin() {
+    let mut model = GameModel::new([74; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let protected_world = model.players[1].home_planet;
+    let mut state = UiState::default();
+    assert!(!has_stationed_protection_fleet(model.map.get(protected_world), player.id));
+
+    model
+        .map
+        .get_mut(protected_world)
+        .army
+        .dock_protector(player.id, Army::from([(Unit::Ship(Ship::LightFighter), 3)]));
+    assert!(has_stationed_protection_fleet(model.map.get(protected_world), player.id));
+    for icon in [
+        Icon::Colonize,
+        Icon::Attack,
+        Icon::Spy,
+        Icon::MissileStrike,
+        Icon::Destroy,
+        Icon::RailgunStrike,
+    ] {
+        assert!(action_blocked_by_stationed_protection(
+            model.map.get(protected_world),
+            player.id,
+            icon,
+        ));
+    }
+    assert!(!action_blocked_by_stationed_protection(
+        model.map.get(protected_world),
+        player.id,
+        Icon::Protect,
+    ));
+    state.mission_info.origin = player.home_planet;
+    select_planet(model.map.get(protected_world), &mut state, &player);
+    assert_eq!(state.planet_selected, Some(protected_world));
+    assert_eq!(state.mission_info.origin, player.home_planet);
+}
+
+#[test]
 fn range_marker_idle_motion_meets_seamlessly_at_its_cycle_boundary() {
     let anchor = Vec2::new(-60.0, -55.0);
     for phase in [0.0, 0.4, PI, TAU - 0.1] {
@@ -2108,31 +2482,33 @@ fn home_crown_tracks_the_measured_name_width() {
 }
 
 #[test]
-fn home_map_label_follows_the_same_hover_and_info_rules_as_other_planets() {
+fn home_map_label_and_crown_follow_the_locally_projected_player() {
     let model = GameModel::new([31; 32], GameRules::default()).unwrap();
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Time>()
+        .init_resource::<UiState>()
+        .init_resource::<MultiplayerSession>()
+        .insert_resource(Settings {
+            show_info: false,
+            ..default()
+        })
+        .init_resource::<Missions>()
+        .insert_resource(model.map.clone())
+        .insert_resource(model.players[0].clone())
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, (update_planet_info, sync_home_crown).chain());
+    app.world_mut().spawn((Camera2d, MainCamera));
+
     for player in &model.players {
-        let mut app = App::new();
-        app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
-            .init_asset::<Image>()
-            .init_asset::<Font>()
-            .init_asset::<TextureAtlasLayout>()
-            .init_asset::<bevy_kira_audio::AudioSource>()
-            .init_resource::<WorldAssets>()
-            .init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<ColorMaterial>>()
-            .init_resource::<Time>()
-            .init_resource::<UiState>()
-            .init_resource::<MultiplayerSession>()
-            .insert_resource(Settings {
-                show_info: false,
-                ..default()
-            })
-            .init_resource::<Missions>()
-            .insert_resource(model.map.clone())
-            .insert_resource(player.clone())
-            .add_systems(Startup, draw_map)
-            .add_systems(Update, update_planet_info);
-        app.world_mut().spawn((Camera2d, MainCamera));
+        app.insert_resource(player.clone());
         let other = model.map.planets.iter().find(|p| p.id != player.home_planet).unwrap().id;
         for (hover, show_info) in [
             (None, false),

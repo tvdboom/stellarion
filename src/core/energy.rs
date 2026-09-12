@@ -37,6 +37,7 @@ impl EnergyGrid {
             | Building::MissileSilo
             | Building::Recycler
             | Building::CommandRelay
+            | Building::TradingPost
             | Building::ColonialAdministration => Self::default(),
             Building::TidalGenerator => Self {
                 supply: TIDAL_GENERATOR_ENERGY_PER_LEVEL,

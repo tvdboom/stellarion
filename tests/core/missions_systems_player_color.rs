@@ -79,7 +79,14 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         .insert_resource(session)
         .insert_resource(missions)
         .add_systems(Startup, draw_map)
-        .add_systems(Update, (update_missions, update_mission_route_arrow));
+        .add_systems(
+            Update,
+            (
+                update_missions,
+                animate_jump_gate_missions.after(update_missions),
+                update_mission_route_arrow,
+            ),
+        );
     app.world_mut().spawn((Camera2d, MainCamera));
     app.world_mut().resource_scope(|world, mut assets: Mut<WorldAssets>| {
         let server = world.resource::<AssetServer>().clone();
@@ -171,20 +178,20 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             let key = if mission.id == 4 {
                 "mission missile"
             } else if mission.id == 2 {
-                if owner.id == model.players[viewer].id {
-                    "mission destroy jump"
-                } else {
-                    "mission destroy"
-                }
+                "mission destroy"
             } else if mission.id == 3 {
                 "mission spy"
-            } else if owner.id == model.players[viewer].id {
-                "mission jump"
             } else {
                 "mission"
             };
             assert_eq!(sprite.image, world.resource::<WorldAssets>().image(key));
         }
+        let effects =
+            world.query::<(&JumpGateMissionEffect, &Visibility)>().iter(world).collect::<Vec<_>>();
+        assert_eq!(effects.len(), 4);
+        assert!(effects.iter().all(|(effect, visibility)| {
+            (**visibility == Visibility::Inherited) == (effect.owner == model.players[viewer].id)
+        }));
         let route_styles = world
             .query::<&MissionRouteArrowCmp>()
             .iter(world)
@@ -208,6 +215,21 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             assert!(glyphs.iter().all(|glyph| *glyph == JUMP_GATE_ROUTE_GLYPH));
         }
     }
+}
+
+#[test]
+fn jump_gate_portal_waves_pass_from_ahead_of_the_fleet_to_behind_it() {
+    let (ahead, ahead_alpha) = jump_gate_wave_visual(0, JUMP_GATE_WAVE_PERIOD_SECONDS * 0.2);
+    let (behind, behind_alpha) = jump_gate_wave_visual(0, JUMP_GATE_WAVE_PERIOD_SECONDS * 0.8);
+
+    assert!(ahead.translation.x > 0.0);
+    assert!(ahead.translation.z > 0.0);
+    assert!(behind.translation.x < 0.0);
+    assert!(behind.translation.z < 0.0);
+    assert!(ahead.scale.x < ahead.scale.y);
+    assert!(behind.scale.x < behind.scale.y);
+    assert!(ahead_alpha > 0.0);
+    assert!(behind_alpha > 0.0);
 }
 
 #[test]

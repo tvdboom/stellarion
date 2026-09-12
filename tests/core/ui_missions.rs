@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn incoming_protection_reveals_its_objective_only_to_the_protected_player() {
+    let mission = Mission {
+        owner: 2,
+        objective: Icon::Protect,
+        protected_player: Some(1),
+        ..default()
+    };
+
+    assert_eq!(mission.displayed_objective(1), Icon::Protect);
+    assert_eq!(mission.displayed_objective(2), Icon::Protect);
+    assert_eq!(mission.displayed_objective(3), Icon::EnemyFleet);
+    assert!(mission.is_incoming_protection_for(1));
+    assert!(!mission.is_incoming_protection_for(2));
+    assert!(!mission.is_incoming_protection_for(3));
+}
+
+#[test]
+fn joint_attackers_share_an_allied_marker_while_the_target_sees_an_unknown_fleet() {
+    let mission = Mission {
+        owner: 1,
+        objective: Icon::Destroy,
+        joint_attack: Some(JointAttackMission {
+            leader: 1,
+            attackers: std::collections::BTreeMap::from([
+                (1, Army::from([(Unit::war_sun(), 1)])),
+                (2, Army::from([(Unit::Ship(Ship::LightFighter), 2)])),
+            ]),
+            ..default()
+        }),
+        ..default()
+    };
+
+    assert_eq!(mission.displayed_objective(1), Icon::AlliedAttack);
+    assert_eq!(mission.displayed_objective(2), Icon::AlliedAttack);
+    assert_eq!(mission.displayed_objective(3), Icon::EnemyFleet);
+}
+
+#[test]
+fn joint_attack_fleet_strength_uses_each_ships_production_level() {
+    let army = Army::from([
+        (Unit::probe(), 2),
+        (Unit::colony_ship(), 3),
+        (Unit::war_sun(), 4),
+        (Unit::space_dock(), 9),
+    ]);
+
+    assert_eq!(fleet_strength(&army), 28);
+}
+
+#[test]
+fn mission_timing_copy_explains_acceleration_and_the_arrival_turn() {
+    let movement_tooltip = mission_movement_tooltip(false);
+    assert!(movement_tooltip.contains("not a fixed per-turn speed"));
+    assert!(movement_tooltip.contains("accelerate each travel turn"));
+    assert!(mission_movement_tooltip(true).contains("Jump Gate"));
+    assert_eq!(mission_arrival_turn(1, 6), 7);
+    assert_eq!(mission_arrival_tooltip(1, 6), "The fleet will arrive during turn 7.");
+}
+
+#[test]
 fn planet_report_layout_contains_every_unit_exactly_once() {
     for is_home_planet in [false, true] {
         let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
@@ -26,6 +86,95 @@ fn planet_report_layout_contains_every_unit_exactly_once() {
         assert_eq!(unique.len(), presented.len());
         assert_eq!(unique, expected.into_iter().collect());
     }
+}
+
+#[test]
+fn planet_report_uses_the_recorded_administration_when_it_is_visible() {
+    let mut home = Planet::new(9, "Home".into(), Vec2::ZERO, false, 1.0);
+    home.controlled = Some(1);
+    home.army.insert(Unit::Building(Building::Senate), 3);
+    let mut report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            owner: 2,
+            objective: Icon::Protect,
+            destination: home.id,
+            protected_player: Some(1),
+            army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+            ..default()
+        },
+        planet: home.clone(),
+        scout_probes: 0,
+        surviving_attacker: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        surviving_defender: home.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: None,
+        destination_controlled: home.controlled,
+        combat_report: None,
+        hidden: false,
+    };
+
+    assert_eq!(mission_report_administration(&report, 2), Unit::Building(Building::Senate));
+
+    report.planet.army.remove(&Unit::Building(Building::Senate));
+    report.planet.army.insert(Unit::Building(Building::ColonialAdministration), 2);
+    assert_eq!(
+        mission_report_administration(&report, 2),
+        Unit::Building(Building::ColonialAdministration)
+    );
+}
+
+#[test]
+fn planet_report_reveals_a_senate_only_with_sufficient_intelligence() {
+    let mut home = Planet::new(9, "Unknown home".into(), Vec2::ZERO, false, 1.0);
+    home.controlled = Some(1);
+    home.army.insert(Unit::Building(Building::Senate), 3);
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            owner: 2,
+            objective: Icon::Attack,
+            destination: home.id,
+            ..default()
+        },
+        planet: home.clone(),
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: home.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: None,
+        destination_controlled: home.controlled,
+        combat_report: None,
+        hidden: false,
+    };
+
+    assert!(!mission_report_unit_is_visible(
+        &report,
+        2,
+        &Side::Defender,
+        &Unit::Building(Building::Senate)
+    ));
+    assert_eq!(
+        mission_report_administration(&report, 2),
+        Unit::Building(Building::ColonialAdministration)
+    );
+
+    let mut informed_report = report;
+    informed_report.scout_probes = usize::MAX;
+    assert!(mission_report_unit_is_visible(
+        &informed_report,
+        2,
+        &Side::Defender,
+        &Unit::Building(Building::Senate)
+    ));
+    assert_eq!(
+        mission_report_administration(&informed_report, 2),
+        Unit::Building(Building::Senate)
+    );
 }
 
 #[test]
@@ -74,13 +223,7 @@ fn planet_report_compact_intel_fits_the_existing_column() {
         |ui| {
             rect = ui
                 .scope(|ui| {
-                    draw_mission_report_planet_intel(
-                        ui,
-                        &report,
-                        &Player::new(7, 0),
-                        false,
-                        &images,
-                    );
+                    draw_mission_report_planet_intel(ui, &report, &Player::new(7, 0), &images);
                 })
                 .response
                 .rect;
@@ -372,7 +515,7 @@ fn active_mission_eta_never_displays_plus_zero() {
 }
 
 #[test]
-fn missile_strikes_do_not_offer_the_recall_action() {
+fn missile_strikes_and_allied_attacks_do_not_offer_the_recall_action() {
     let owned_attack = Mission {
         owner: 7,
         objective: Icon::Attack,
@@ -382,9 +525,14 @@ fn missile_strikes_do_not_offer_the_recall_action() {
         objective: Icon::MissileStrike,
         ..owned_attack.clone()
     };
+    let allied_attack = Mission {
+        joint_attack: Some(JointAttackMission::default()),
+        ..owned_attack.clone()
+    };
 
     assert!(mission_recall_available(&owned_attack, 7));
     assert!(!mission_recall_available(&missile_strike, 7));
+    assert!(!mission_recall_available(&allied_attack, 7));
 }
 
 #[test]
@@ -497,7 +645,7 @@ fn report_thumbnail_scales_balance_broad_mission_artwork() {
         mission_report_image_size("mission colonize", base_size),
         base_size * MISSION_COLONY_IMAGE_SCALE
     );
-    assert_eq!(mission_report_image_size("mission jump", base_size), base_size);
+    assert_eq!(mission_report_image_size("mission destroy", base_size), base_size);
 }
 
 #[test]
@@ -627,7 +775,7 @@ fn remembered_jump_gate_selection_only_applies_to_an_available_route() {
     sync_jump_gate_selection(&mut draft, &origin, &destination, &player, true);
 
     assert!(draft.jump_gate);
-    assert_eq!(draft.image(&player), "mission jump");
+    assert_eq!(draft.image(&player), "mission");
 
     draft.objective = Icon::Attack;
     sync_jump_gate_selection(&mut draft, &origin, &destination, &player, true);

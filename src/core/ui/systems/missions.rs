@@ -33,6 +33,28 @@ const MISSION_REPORT_INTEL_IMAGE_SIZE: f32 = (MISSION_REPORT_PLANET_INTEL_WIDTH
     / MISSION_REPORT_INTEL_COLUMNS as f32;
 const MISSION_REPORT_INTEL_COLUMNS: usize = 3;
 const MISSION_REPORT_INTEL_GROUP_GAP: f32 = 12.0;
+const FLEET_MOVEMENT_TOOLTIP: &str = "Distance the fleet will travel next turn. Fleets accelerate \
+    each travel turn, so this is not a fixed per-turn speed.";
+const JUMP_GATE_MOVEMENT_TOOLTIP: &str =
+    "A Jump Gate bypasses normal fleet movement and delivers the fleet in one turn.";
+
+/// Keeps mission-planning and active-mission movement explanations in agreement.
+pub(super) const fn mission_movement_tooltip(jump_gate: bool) -> &'static str {
+    if jump_gate {
+        JUMP_GATE_MOVEMENT_TOOLTIP
+    } else {
+        FLEET_MOVEMENT_TOOLTIP
+    }
+}
+
+/// Keeps the displayed arrival turn and its explanatory tooltip in agreement.
+pub(super) fn mission_arrival_turn(current_turn: usize, duration: usize) -> usize {
+    current_turn.saturating_add(duration)
+}
+
+pub(super) fn mission_arrival_tooltip(current_turn: usize, duration: usize) -> String {
+    format!("The fleet will arrive during turn {}.", mission_arrival_turn(current_turn, duration))
+}
 
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
 fn mission_row_layout(available_width: f32) -> (f32, f32) {
@@ -52,9 +74,23 @@ fn mission_display_turns(mission: &Mission, map: &Map) -> usize {
     mission.turns_to_destination(map).max(1)
 }
 
+/// Summarizes a private fleet without exposing its exact ship composition to co-attackers.
+fn fleet_strength(army: &Army) -> usize {
+    army.iter().fold(0_usize, |strength, (unit, count)| {
+        if unit.is_ship() {
+            strength.saturating_add(count.saturating_mul(unit.production()))
+        } else {
+            strength
+        }
+    })
+}
+
 /// Returns whether the local player should be offered the active-mission recall action.
 fn mission_recall_available(mission: &Mission, player_id: PlayerId) -> bool {
-    mission.owner == player_id && !mission.is_returning() && mission.objective.is_recallable()
+    mission.owner == player_id
+        && mission.joint_attack.is_none()
+        && !mission.is_returning()
+        && mission.objective.is_recallable()
 }
 
 /// Paints the compact turn-back action used to recall an active mission.
@@ -322,12 +358,57 @@ fn draw_mission_planet_link(
     (image_response, name_response)
 }
 
+/// Applies the shared click, secondary-click, and hover behavior for mission planet links.
+fn handle_mission_planet_link(
+    image: &Response,
+    name: &Response,
+    planet: &Planet,
+    changed_hover: &mut bool,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+) {
+    if image.clicked() || name.clicked() {
+        state.planet_hover = None;
+        state.mission_planet_hover = None;
+        state.planet_selected = Some(planet.id);
+        state.to_selected = true;
+        state.mission = false;
+        if player.owns(planet) {
+            state.mission_info.origin = planet.id;
+        }
+    } else if (image.secondary_clicked() || name.secondary_clicked()) && !planet.is_destroyed {
+        state.mission_tab = MissionTab::NewMission;
+        state.mission_info.origin = state
+            .planet_selected
+            .filter(|&selected| player.owns(map.get(selected)))
+            .unwrap_or(player.home_planet);
+        state.mission_info.destination = planet.id;
+    } else if image.hovered() || name.hovered() {
+        state.planet_hover = None;
+        state.mission_planet_hover = Some(planet.id);
+        *changed_hover = true;
+    }
+}
+
+/// Returns the administration whose identity the current report is allowed to disclose.
+fn mission_report_administration(report: &MissionReport, player_id: PlayerId) -> Unit {
+    let senate = Unit::Building(Building::Senate);
+    if mission_report_unit_is_visible(report, player_id, &Side::Defender, &senate)
+        && report.planet.army.combined_amount(&senate) > 0
+    {
+        senate
+    } else {
+        Unit::Building(Building::ColonialAdministration)
+    }
+}
+
 /// Returns the prominent and compact unit groups shown in a planet mission report.
-fn mission_report_planet_intel(is_home_planet: bool) -> ([Unit; 2], Vec<Unit>, Vec<Unit>) {
+fn mission_report_planet_intel(shows_senate: bool) -> ([Unit; 2], Vec<Unit>, Vec<Unit>) {
     let critical = [Unit::planetary_shield(), Unit::space_dock()];
     let orbitals =
         Unit::orbitals().into_iter().filter(|unit| *unit != Unit::space_dock()).collect();
-    let buildings = Unit::buildings_for_world(false, is_home_planet)
+    let buildings = Unit::buildings_for_world(false, shows_senate)
         .into_iter()
         .filter(|unit| *unit != Unit::planetary_shield())
         .collect();
@@ -372,10 +453,11 @@ fn draw_mission_report_planet_intel(
     ui: &mut Ui,
     report: &MissionReport,
     player: &Player,
-    is_home_planet: bool,
     images: &ImageIds,
 ) {
-    let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
+    let administration = mission_report_administration(report, player.id);
+    let (critical, orbitals, buildings) =
+        mission_report_planet_intel(administration == Unit::Building(Building::Senate));
 
     ui.vertical(|ui| {
         ui.set_width(MISSION_REPORT_PLANET_INTEL_WIDTH);
@@ -420,9 +502,12 @@ fn jump_gate_route_available(
     destination: &Planet,
     player: &Player,
 ) -> bool {
-    mission.objective == Icon::Deploy
+    matches!(mission.objective, Icon::Deploy | Icon::Protect)
         && player.owns(origin)
-        && player.owns(destination)
+        && (player.owns(destination)
+            || (mission.objective == Icon::Protect
+                && mission.protected_player == destination.controlled
+                && destination.allows_protection(player.id)))
         && origin.has(&Unit::Building(Building::JumpGate))
         && destination.has(&Unit::Building(Building::JumpGate))
         && mission.jump_cost() <= origin.max_jump_capacity().saturating_sub(origin.jump_gate)
@@ -475,21 +560,392 @@ fn draw_mission_tabs(ui: &mut Ui, selected: &mut MissionTab) -> egui::Rect {
     .inner
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_joint_attack_invite_picker(
+    context: &egui::Context,
+    state: &mut UiState,
+    missions: &[Mission],
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    session: &MultiplayerSession,
+    requests: &mut MessageWriter<MultiplayerRequest>,
+    images: &ImageIds,
+    origin: &Planet,
+    destination: &Planet,
+    active_invitation: Option<&JointAttackInvitation>,
+) {
+    let known_defender = player.last_info(destination, missions).and_then(|info| info.controlled);
+    let members = session
+        .active_game
+        .as_ref()
+        .map(|record| {
+            record
+                .members
+                .iter()
+                .filter(|member| {
+                    member.player_id != player.id
+                        && known_defender != Some(member.player_id)
+                        && record
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .is_ok_and(|player| !player.spectator)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let listed_players = active_invitation
+        .map_or(members.len(), |invitation| invitation.participants.len().saturating_sub(1));
+    let available = context.content_rect().size() - egui::vec2(32.0, 32.0);
+    let desired_height = 250.0 + listed_players as f32 * 49.0;
+    let size = egui::vec2(590.0_f32.min(available.x), desired_height.min(available.y));
+    let modal_id = egui::Id::new(("joint attack invite picker", destination.id));
+    let can_invite = active_invitation.is_none()
+        && !state.joint_attack_invitees.is_empty()
+        && validate_mission(player, map, origin, destination, &state.mission_info).is_ok()
+        && !session.joint_attack_update_pending;
+    let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
+        let header = draw_modal_header(
+            ui,
+            rect,
+            content,
+            RichText::new(if active_invitation.is_some() {
+                "Joint Attack"
+            } else {
+                "Invite Co-attackers"
+            })
+            .size(21.0)
+            .strong()
+            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            images.get(state.mission_info.objective.asset_key()),
+        );
+        let footer = egui::Rect::from_min_size(
+            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+        );
+        let intro = egui::Rect::from_min_max(
+            egui::pos2(content.left(), header.bottom() + 9.0),
+            egui::pos2(content.right(), (header.bottom() + 58.0).min(footer.top())),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(intro), |ui| {
+            ui.set_clip_rect(intro);
+            ui.vertical_centered(|ui| {
+                if let Some(invitation) = active_invitation {
+                    let accepted = invitation
+                        .participants
+                        .iter()
+                        .filter(|participant| {
+                            participant.player_id != player.id
+                                && participant.response == JointAttackResponse::Accepted
+                        })
+                        .count();
+                    let pending = invitation
+                        .participants
+                        .iter()
+                        .filter(|participant| {
+                            participant.player_id != player.id
+                                && participant.response == JointAttackResponse::Pending
+                        })
+                        .count();
+                    let arrival_turn = invitation.participants.iter().fold(
+                        settings.turn,
+                        |latest, participant| {
+                            participant.contribution.as_ref().map_or(latest, |contribution| {
+                                let route = Mission::new_with_id(
+                                    invitation.id,
+                                    settings.turn,
+                                    contribution.player_id,
+                                    map.get(contribution.origin),
+                                    destination,
+                                    invitation.objective,
+                                    contribution.army.clone(),
+                                    invitation.bombing.clone(),
+                                    invitation.combat_probes,
+                                    false,
+                                    None,
+                                );
+                                latest.max(settings.turn.saturating_add(route.duration(map)))
+                            })
+                        },
+                    );
+                    ui.small(format!(
+                        "{} on {} · {accepted} accepted · {pending} waiting · arrival turn {arrival_turn}",
+                        invitation.objective.to_name(),
+                        destination.name
+                    ));
+                } else {
+                    ui.small(format!(
+                        "Choose players to invite to the {} on {}.",
+                        state.mission_info.objective.to_lowername(),
+                        destination.name
+                    ));
+                }
+            });
+        });
+
+        let list_top = (intro.bottom() + 12.0).min(footer.top());
+        let list = egui::Rect::from_min_max(
+            egui::pos2(content.left(), list_top),
+            egui::pos2(content.right(), (footer.top() - 10.0).max(list_top)),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list);
+            ScrollArea::vertical()
+                .id_salt(("joint attack invite players", destination.id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_width(list.width());
+                    ui.spacing_mut().item_spacing.y = 7.0;
+                    if let Some(invitation) = active_invitation {
+                        for participant in invitation
+                            .participants
+                            .iter()
+                            .filter(|participant| participant.player_id != player.id)
+                        {
+                            let name = session
+                                .player_name(participant.player_id)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| format!("Player {}", participant.player_id));
+                            let status = match participant.response {
+                                JointAttackResponse::Accepted => participant
+                                    .contribution
+                                    .as_ref()
+                                    .map(|contribution| {
+                                        format!(
+                                            "Accepted · strength {}",
+                                            fleet_strength(&contribution.army)
+                                        )
+                                    })
+                                    .unwrap_or_else(|| "Accepted".to_owned()),
+                                JointAttackResponse::Pending => "Waiting for response".to_owned(),
+                                JointAttackResponse::Rejected => "Rejected".to_owned(),
+                            };
+                            let row_width = 310.0_f32.min(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                                protection_player_row(
+                                    ui,
+                                    row_width,
+                                    42.0,
+                                    &format!("{name} · {status}"),
+                                    session
+                                        .player_color(participant.player_id)
+                                        .color()
+                                        .to_color32(),
+                                    participant.response == JointAttackResponse::Accepted,
+                                    false,
+                                );
+                            });
+                        }
+                    } else if members.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.small("No eligible co-attackers are available.");
+                        });
+                    } else {
+                        for member in &members {
+                            let selected = state.joint_attack_invitees.contains(&member.player_id);
+                            let row_width = 260.0_f32.min(ui.available_width());
+                            let row = ui
+                                .horizontal(|ui| {
+                                    ui.add_space(
+                                        ((ui.available_width() - row_width) * 0.5).max(0.0),
+                                    );
+                                    protection_player_row(
+                                        ui,
+                                        row_width,
+                                        42.0,
+                                        &member.display_name,
+                                        session.player_color(member.player_id).color().to_color32(),
+                                        selected,
+                                        !session.joint_attack_update_pending,
+                                    )
+                                })
+                                .inner;
+                            if row.clicked() {
+                                if selected {
+                                    state.joint_attack_invitees.remove(&member.player_id);
+                                } else {
+                                    state.joint_attack_invitees.insert(member.player_id);
+                                }
+                            }
+                        }
+                    }
+                });
+        });
+
+        let mut close = false;
+        let mut send = false;
+        let mut cancel = false;
+        ui.scope_builder(UiBuilder::new().max_rect(footer), |ui| {
+            style_modal_buttons(ui);
+            let gap = 12.0;
+            let button_width = 126.0_f32.min(((footer.width() - gap) * 0.5).max(1.0));
+            let button_count = 2.0;
+            let row_width = button_width * button_count + gap * (button_count - 1.0);
+            ui.horizontal(|ui| {
+                ui.add_space(((footer.width() - row_width) * 0.5).max(0.0));
+                if ui
+                    .add_sized(
+                        [button_width, MODAL_BUTTON_HEIGHT],
+                        egui::Button::new(RichText::new("Close").strong()),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    close = true;
+                }
+                if active_invitation.is_none()
+                    && ui
+                        .add_enabled(
+                            can_invite,
+                            egui::Button::new(RichText::new("Send invites").strong())
+                                .min_size(egui::vec2(button_width, MODAL_BUTTON_HEIGHT)),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                {
+                    send = true;
+                }
+                if active_invitation.is_some()
+                    && ui
+                        .add_enabled(
+                            !session.joint_attack_update_pending,
+                            egui::Button::new(RichText::new("Cancel attack").strong())
+                                .min_size(egui::vec2(button_width, MODAL_BUTTON_HEIGHT)),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .clicked()
+                {
+                    cancel = true;
+                }
+            });
+        });
+        (close, send, cancel)
+    });
+
+    let (mut close, send, cancel) = response.inner;
+    close |= response.should_close();
+    if send {
+        let attack_id = rand::random::<u64>().max(1);
+        let leader = JointAttackContribution {
+            player_id: player.id,
+            origin: state.mission_info.origin,
+            army: state.mission_info.army.clone(),
+        };
+        let mut participants = vec![JointAttackParticipant {
+            player_id: player.id,
+            response: JointAttackResponse::Accepted,
+            contribution: Some(leader),
+        }];
+        participants.extend(state.joint_attack_invitees.iter().map(|player_id| {
+            JointAttackParticipant {
+                player_id: *player_id,
+                response: JointAttackResponse::Pending,
+                contribution: None,
+            }
+        }));
+        requests.write(MultiplayerRequest::CreateJointAttack(JointAttackInvitation {
+            id: attack_id,
+            turn: settings.turn as u64,
+            inviter: player.id,
+            destination: destination.id,
+            objective: state.mission_info.objective,
+            bombing: state.mission_info.bombing.clone(),
+            combat_probes: state.mission_info.combat_probes,
+            canceled: false,
+            participants,
+        }));
+        state.joint_attack_draft_id = Some(attack_id);
+        close = true;
+    }
+    if cancel {
+        if let Some(invitation) = active_invitation {
+            requests.write(MultiplayerRequest::CancelJointAttack {
+                attack_id: invitation.id,
+            });
+        }
+        close = true;
+    }
+    if close {
+        state.joint_attack_invite_picker_open = false;
+    }
+}
+
 /// Draws the new mission interface and emits any resulting local actions.
 fn draw_new_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
+    missions: &[Mission],
     settings: &Settings,
     state: &mut UiState,
     map: &mut Map,
     player: &mut Player,
+    session: &MultiplayerSession,
+    multiplayer_requests: &mut MessageWriter<MultiplayerRequest>,
     is_hovered: bool,
     keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
 ) {
+    let active_invitation = state
+        .joint_attack_draft_id
+        .and_then(|id| {
+            session
+                .joint_attacks
+                .iter()
+                .find(|invitation| invitation.id == id && !invitation.canceled)
+        })
+        .cloned();
+    if state.joint_attack_draft_id.is_some()
+        && active_invitation.is_none()
+        && !session.joint_attack_update_pending
+    {
+        state.joint_attack_draft_id = None;
+        state.joint_attack_invitees.clear();
+        state.joint_attack_invite_picker_open = false;
+    }
+    if let Some(invitation) = &active_invitation {
+        if let Some(contribution) = invitation
+            .participants
+            .first()
+            .and_then(|participant| participant.contribution.as_ref())
+        {
+            state.mission_info.origin = contribution.origin;
+            state.mission_info.destination = invitation.destination;
+            state.mission_info.objective = invitation.objective;
+            state.mission_info.army.clone_from(&contribution.army);
+            state.mission_info.bombing.clone_from(&invitation.bombing);
+            state.mission_info.combat_probes = invitation.combat_probes;
+        }
+    }
+    if !map
+        .try_get(state.mission_info.origin)
+        .is_some_and(|planet| player.owns(planet) || player.controls(planet))
+    {
+        state.mission_info.origin = player.home_planet;
+    }
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
-    let origin_army = origin.mission_origin_army(player.id).cloned().unwrap_or_default();
+    let mut origin_army = origin.mission_origin_army(player.id).cloned().unwrap_or_default();
+    for reserved in session
+        .joint_attacks
+        .iter()
+        .filter(|invitation| !invitation.canceled && invitation.inviter != player.id)
+        .flat_map(|invitation| &invitation.participants)
+        .filter(|participant| {
+            participant.player_id == player.id
+                && participant.response == JointAttackResponse::Accepted
+        })
+        .filter_map(|participant| participant.contribution.as_ref())
+        .filter(|contribution| contribution.origin == origin.id)
+    {
+        for (unit, count) in &reserved.army {
+            if let Some(available) = origin_army.get_mut(unit) {
+                *available = available.saturating_sub(*count);
+            }
+        }
+    }
+    origin_army.retain(|_, count| *count > 0);
 
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
 
@@ -510,6 +966,7 @@ fn draw_new_mission(
         player.owns(destination),
         player.controls(destination),
         destination.allows_protection(player.id),
+        destination.is_protected_by(player.id),
     );
     if !objectives.contains(&state.mission_info.objective) {
         state.mission_info.objective = objectives.first().copied().unwrap_or_default();
@@ -525,7 +982,7 @@ fn draw_new_mission(
                 i.condition_for_army(&origin_army)
                     && (!destination.is_moon() || !i.on_planet_only())
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| objectives.first().copied().unwrap_or_default());
     }
 
     // Normalize route state before choosing the center icon. The toggle preference deliberately
@@ -562,7 +1019,7 @@ fn draw_new_mission(
                 state.planet_selected = Some(planet.id);
                 state.to_selected = true;
                 state.mission = false;
-                if planet.mission_origin_army(player.id).is_some() {
+                if player.owns(planet) || player.controls(planet) {
                     state.mission_info.origin = planet.id;
                 }
             } else if r.secondary_clicked() && !planet.is_destroyed {
@@ -594,7 +1051,7 @@ fn draw_new_mission(
                         let controlled = map
                             .planets
                             .iter()
-                            .filter(|planet| planet.mission_origin_army(player.id).is_some())
+                            .filter(|planet| player.owns(planet) || player.controls(planet))
                             .sorted_by(|a, b| a.name.cmp(&b.name))
                             .collect::<Vec<_>>();
 
@@ -789,6 +1246,7 @@ fn draw_new_mission(
                         player.owns(destination),
                         player.controls(destination),
                         destination.allows_protection(player.id),
+                        destination.is_protected_by(player.id),
                     ) {
                         ui.add_enabled_ui(
                             icon.condition_for_army(&origin_army)
@@ -850,16 +1308,18 @@ fn draw_new_mission(
                         Target distance is the length of the route from the origin world to the \
                         destination world.",
                 );
+                let movement_tooltip = mission_movement_tooltip(speed == f32::MAX);
                 ui.small(format!(
-                    "🚀 Movement: {}",
+                    "🚀 First-turn movement: {}",
                     if speed == 0. || speed == f32::MAX {
                         "---".to_string()
                     } else {
-                        format!("{speed} AU/turn")
+                        format!("{speed} AU")
                     }
                 ))
-                .on_hover_small("How many astronomical units the selected fleet moves per turn.");
-                ui.small(format!(
+                .on_hover_small(movement_tooltip);
+                let arrival_turn = mission_arrival_turn(settings.turn, duration);
+                let duration_response = ui.small(format!(
                     "⏱ Duration: {}",
                     if duration == 0 {
                         "---".to_string()
@@ -872,10 +1332,18 @@ fn draw_new_mission(
                             } else {
                                 "s"
                             },
-                            settings.turn + duration,
+                            arrival_turn,
                         )
                     }
                 ));
+                if duration == 0 {
+                    duration_response.on_hover_small(
+                        "Select a valid fleet and route to calculate its arrival turn.",
+                    );
+                } else {
+                    duration_response
+                        .on_hover_small(mission_arrival_tooltip(settings.turn, duration));
+                }
                 let fuel_text = format!("⛽ Fuel consumption: {fuel}");
                 let fuel_response = if fuel_check {
                     ui.small(fuel_text)
@@ -964,9 +1432,12 @@ fn draw_new_mission(
                     }
                 }
 
-                if state.mission_info.objective == Icon::Deploy {
+                if matches!(state.mission_info.objective, Icon::Deploy | Icon::Protect) {
                     if player.owns(origin)
-                        && player.owns(destination)
+                        && (player.owns(destination)
+                            || (state.mission_info.objective == Icon::Protect
+                                && state.mission_info.protected_player == destination.controlled
+                                && destination.allows_protection(player.id)))
                         && origin.has(&Unit::Building(Building::JumpGate))
                         && destination.has(&Unit::Building(Building::JumpGate))
                     {
@@ -1013,6 +1484,14 @@ fn draw_new_mission(
             });
         });
 
+        let joint_objective =
+            matches!(state.mission_info.objective, Icon::Colonize | Icon::Attack | Icon::Destroy);
+        if !joint_objective || !session.has_active_game() {
+            state.joint_attack_invitees.clear();
+            state.joint_attack_invite_picker_open = false;
+            state.joint_attack_draft_id = None;
+        }
+
         ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
             ui.add_space(60.);
 
@@ -1020,43 +1499,159 @@ fn draw_new_mission(
             let validation =
                 validate_mission(player, map, origin, destination, &state.mission_info);
             let objective_check = validation.is_ok();
+            let invitees_answered = state.joint_attack_draft_id.is_none()
+                || active_invitation.as_ref().is_some_and(|invitation| {
+                    invitation
+                        .participants
+                        .iter()
+                        .all(|participant| participant.response != JointAttackResponse::Pending)
+                });
 
             ui.horizontal(|ui| {
                 ui.add_space(40.);
 
-                ui.add_enabled_ui(army_check && fuel_check && objective_check, |ui| {
-                    let response =
-                        ui.add_custom_button("Send mission", images).on_disabled_hover_ui(|ui| {
-                            if !army_check {
-                                ui.small("No ships selected for the mission.");
-                            } else if !fuel_check {
-                                ui.small("Not enough fuel (deuterium) for the mission.");
-                            } else if let Err(error) = &validation {
-                                ui.small(error.to_string());
+                if joint_objective && session.has_active_game() {
+                    let label = active_invitation.as_ref().map_or_else(
+                        || {
+                            if state.joint_attack_invitees.is_empty() {
+                                "Invite players".to_owned()
+                            } else {
+                                format!("Invite players ({})", state.joint_attack_invitees.len())
                             }
-                        });
-
-                    if response.clicked()
-                        || (response.enabled() && keyboard.just_pressed(KeyCode::Enter))
-                    {
-                        let mission = Mission::from_mission(
-                            settings.turn,
-                            player.id,
-                            origin,
-                            destination,
-                            &state.mission_info,
-                        );
-
-                        send_mission.write(SendMissionMsg::new(mission));
-                        // The accepted command emits its launch cue in send_mission.
-                        set_ui_sound(ui.ctx(), None);
-                        state.planet_selected = None;
-                        state.mission = false;
-                        state.mission_info = Mission::default();
+                        },
+                        |invitation| {
+                            let accepted = invitation
+                                .participants
+                                .iter()
+                                .filter(|participant| {
+                                    participant.player_id != player.id
+                                        && participant.response == JointAttackResponse::Accepted
+                                })
+                                .count();
+                            let invited = invitation.participants.len().saturating_sub(1);
+                            format!("Joint attack {accepted}/{invited}")
+                        },
+                    );
+                    if ui.add_custom_button(label, images).clicked() {
+                        state.joint_attack_invite_picker_open = true;
                     }
-                });
+                    ui.add_space(18.0);
+                }
+
+                ui.add_enabled_ui(
+                    army_check && fuel_check && objective_check && invitees_answered,
+                    |ui| {
+                        let response = ui
+                            .add_custom_button("Send mission", images)
+                            .on_disabled_hover_ui(|ui| {
+                                if !army_check {
+                                    ui.small("No ships selected for the mission.");
+                                } else if !fuel_check {
+                                    ui.small("Not enough fuel (deuterium) for the mission.");
+                                } else if let Err(error) = &validation {
+                                    ui.small(error.to_string());
+                                } else if !invitees_answered {
+                                    ui.small("Every invited player must accept or reject first.");
+                                }
+                            });
+
+                        if response.clicked()
+                            || (response.enabled() && keyboard.just_pressed(KeyCode::Enter))
+                        {
+                            let mut mission = Mission::from_mission(
+                                settings.turn,
+                                player.id,
+                                origin,
+                                destination,
+                                &state.mission_info,
+                            );
+
+                            let accepted = active_invitation.as_ref().map(|invitation| {
+                                invitation
+                                    .participants
+                                    .iter()
+                                    .filter(|participant| {
+                                        participant.response == JointAttackResponse::Accepted
+                                    })
+                                    .filter_map(|participant| participant.contribution.clone())
+                                    .collect::<Vec<_>>()
+                            });
+                            if let (Some(invitation), Some(contributions)) = (
+                                active_invitation.as_ref(),
+                                accepted.filter(|items| items.len() > 1),
+                            ) {
+                                let arrival_turn =
+                                    contributions.iter().fold(settings.turn, |latest, item| {
+                                        let route = Mission::new_with_id(
+                                            invitation.id,
+                                            settings.turn,
+                                            item.player_id,
+                                            map.get(item.origin),
+                                            destination,
+                                            invitation.objective,
+                                            item.army.clone(),
+                                            invitation.bombing.clone(),
+                                            invitation.combat_probes,
+                                            false,
+                                            None,
+                                        );
+                                        latest
+                                            .max(settings.turn.saturating_add(route.duration(map)))
+                                    });
+                                mission.joint_attack = Some(JointAttackMission {
+                                    id: invitation.id,
+                                    leader: player.id,
+                                    arrival_turn,
+                                    attackers: contributions
+                                        .iter()
+                                        .map(|item| (item.player_id, item.army.clone()))
+                                        .collect(),
+                                    survivors: std::collections::BTreeMap::new(),
+                                    origins: contributions
+                                        .iter()
+                                        .map(|item| (item.player_id, item.origin))
+                                        .collect(),
+                                });
+                                send_mission.write(SendMissionMsg::joint(
+                                    mission,
+                                    JointMissionLaunch {
+                                        attack_id: invitation.id,
+                                        contributions,
+                                    },
+                                ));
+                            } else {
+                                send_mission.write(SendMissionMsg::new(mission));
+                            }
+                            // The accepted command emits its launch cue in send_mission.
+                            set_ui_sound(ui.ctx(), None);
+                            state.planet_selected = None;
+                            state.mission = false;
+                            state.mission_info = Mission::default();
+                            state.joint_attack_invitees.clear();
+                            state.joint_attack_draft_id = None;
+                        }
+                    },
+                );
             });
         });
+
+        if state.joint_attack_invite_picker_open {
+            let context = ui.ctx().clone();
+            draw_joint_attack_invite_picker(
+                &context,
+                state,
+                missions,
+                settings,
+                map,
+                player,
+                session,
+                multiplayer_requests,
+                images,
+                origin,
+                destination,
+                active_invitation.as_ref(),
+            );
+        }
     }
 }
 
@@ -1103,36 +1698,6 @@ fn draw_active_missions(
             ui.horizontal(|ui| {
                 ui.add_space(leading_space);
 
-                let action = |r1: Response,
-                              r2: Response,
-                              planet: &Planet,
-                              h: &mut bool,
-                              state: &mut UiState| {
-                    if r1.clicked() || r2.clicked() {
-                        state.planet_hover = None;
-                        state.mission_planet_hover = None;
-                        state.planet_selected = Some(planet.id);
-                        state.to_selected = true;
-                        state.mission = false;
-                        if player.owns(planet) {
-                            state.mission_info.origin = planet.id;
-                        }
-                    } else if (r1.secondary_clicked() || r2.secondary_clicked())
-                        && !planet.is_destroyed
-                    {
-                        state.mission_tab = MissionTab::NewMission;
-                        state.mission_info.origin = state
-                            .planet_selected
-                            .filter(|&p| player.owns(map.get(p)))
-                            .unwrap_or(player.home_planet);
-                        state.mission_info.destination = planet.id;
-                    } else if r1.hovered() || r2.hovered() {
-                        state.planet_hover = None;
-                        state.mission_planet_hover = Some(planet.id);
-                        *h = true;
-                    }
-                };
-
                 let mut changed_hover = false;
                 egui::Grid::new("active missions")
                     .spacing([MISSION_COLUMN_GAP, 0.])
@@ -1170,7 +1735,15 @@ fn draw_active_missions(
                                     });
                                 }
 
-                                action(resp1, resp2, origin, &mut changed_hover, state);
+                                handle_mission_planet_link(
+                                    &resp1,
+                                    &resp2,
+                                    origin,
+                                    &mut changed_hover,
+                                    state,
+                                    map,
+                                    player,
+                                );
                             } else {
                                 draw_mission_planet_link(
                                     ui,
@@ -1186,11 +1759,7 @@ fn draw_active_missions(
                                 ui.spacing_mut().item_spacing.x = 8.;
 
                                 ui.add_image(
-                                    images.get(if mission.owner == player.id {
-                                        mission.objective.asset_key()
-                                    } else {
-                                        Icon::Attacked.to_lowername()
-                                    }),
+                                    images.get(mission.displayed_objective(player.id).asset_key()),
                                     [25.; 2],
                                 );
 
@@ -1251,7 +1820,15 @@ fn draw_active_missions(
                             let resp4 = resp4.on_hover_cursor(CursorIcon::PointingHand);
                             let resp3 = resp3.on_hover_cursor(CursorIcon::PointingHand);
 
-                            action(resp3, resp4, destination, &mut changed_hover, state);
+                            handle_mission_planet_link(
+                                &resp3,
+                                &resp4,
+                                destination,
+                                &mut changed_hover,
+                                state,
+                                map,
+                                player,
+                            );
 
                             ui.end_row();
                         }
@@ -1399,36 +1976,6 @@ fn draw_mission_reports(
             };
 
             ui.horizontal(|ui| {
-                let action = |r1: Response,
-                              r2: Response,
-                              planet: &Planet,
-                              h: &mut bool,
-                              state: &mut UiState| {
-                    if r1.clicked() || r2.clicked() {
-                        state.planet_hover = None;
-                        state.mission_planet_hover = None;
-                        state.planet_selected = Some(planet.id);
-                        state.to_selected = true;
-                        state.mission = false;
-                        if player.owns(planet) {
-                            state.mission_info.origin = planet.id;
-                        }
-                    } else if (r1.secondary_clicked() || r2.secondary_clicked())
-                        && !planet.is_destroyed
-                    {
-                        state.mission_tab = MissionTab::NewMission;
-                        state.mission_info.origin = state
-                            .planet_selected
-                            .filter(|&p| player.owns(map.get(p)))
-                            .unwrap_or(player.home_planet);
-                        state.mission_info.destination = planet.id;
-                    } else if r1.hovered() || r2.hovered() {
-                        state.planet_hover = None;
-                        state.mission_planet_hover = Some(planet.id);
-                        *h = true;
-                    }
-                };
-
                 ui.add_space(55.);
 
                 let mut changed_hover = false;
@@ -1464,7 +2011,15 @@ fn draw_mission_reports(
                                 .on_hover_cursor(CursorIcon::PointingHand)
                         });
 
-                        action(resp1, resp2, origin, &mut changed_hover, state);
+                        handle_mission_planet_link(
+                            &resp1,
+                            &resp2,
+                            origin,
+                            &mut changed_hover,
+                            state,
+                            map,
+                            player,
+                        );
                     } else {
                         ui.cell(70., |ui| {
                             ui.add_image(images.get("unknown"), [60.; 2]);
@@ -1517,7 +2072,15 @@ fn draw_mission_reports(
                         ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
                     }
 
-                    action(resp3, resp4, destination, &mut changed_hover, state);
+                    handle_mission_planet_link(
+                        &resp3,
+                        &resp4,
+                        destination,
+                        &mut changed_hover,
+                        state,
+                        map,
+                        player,
+                    );
 
                     // If not hovering anything, reset all hover selections
                     if is_hovered && !changed_hover {
@@ -1633,13 +2196,7 @@ fn draw_mission_reports(
                                 player,
                                 images,
                             );
-                            draw_mission_report_planet_intel(
-                                ui,
-                                report,
-                                player,
-                                destination.id == player.home_planet,
-                                images,
-                            );
+                            draw_mission_report_planet_intel(ui, report, player, images);
                         }
                     });
 
@@ -1676,6 +2233,570 @@ fn draw_mission_reports(
     });
 }
 
+const JOINT_ATTACK_TOAST_ACCENT: Color32 = Color32::from_rgb(112, 190, 255);
+
+fn joint_attack_toast_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).small().strong().color(JOINT_ATTACK_TOAST_ACCENT))
+            .min_size(egui::vec2(72.0, 28.0))
+            .fill(Color32::from_rgb(18, 31, 43))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(75, 126, 163)))
+            .corner_radius(4.0),
+    )
+    .on_hover_cursor(CursorIcon::PointingHand)
+}
+
+fn joint_attack_toast<R>(
+    ui: &mut Ui,
+    width: f32,
+    text: impl Into<String>,
+    buttons: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(28, 36, 48, 235))
+        .stroke(Stroke::new(1.0, JOINT_ATTACK_TOAST_ACCENT))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_max_width(width);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text.into()).small().color(JOINT_ATTACK_TOAST_ACCENT),
+                )
+                .halign(Align::Min)
+                .wrap(),
+            );
+            ui.add_space(3.0);
+            buttons(ui)
+        })
+        .inner
+}
+
+fn joint_attack_fleet_picker(
+    ui: &mut Ui,
+    army: &mut Army,
+    available: &Army,
+    images: &ImageIds,
+    editable: bool,
+) {
+    egui::Grid::new("joint attack fleet").num_columns(2).spacing([18.0, 6.0]).show(ui, |ui| {
+        for (index, unit) in Unit::ships().into_iter().enumerate() {
+            let maximum = available.amount(&unit);
+            let count = army.entry(unit).or_default();
+            *count = (*count).min(maximum);
+            let enabled = editable && maximum > 0;
+            ui.horizontal(|ui| {
+                ui.set_width(136.0);
+                let response = ui
+                    .add_image(images.get(unit.to_lowername()), [48.0, 48.0])
+                    .interact(if enabled {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
+                    })
+                    .on_hover_small(unit.to_name());
+                let response = if enabled {
+                    response.on_hover_cursor(CursorIcon::PointingHand)
+                } else {
+                    response
+                };
+                if response.clicked() {
+                    *count = maximum;
+                }
+                if response.secondary_clicked() {
+                    *count = 0;
+                }
+                ui.add_text_on_image(
+                    maximum.to_string(),
+                    Color32::WHITE,
+                    TextStyle::Small,
+                    response.rect.left_bottom(),
+                    Align2::LEFT_BOTTOM,
+                );
+                ui.style_mut().drag_value_text_style = TextStyle::Body;
+                ui.spacing_mut().interact_size.x = 44.0;
+                ui.add_enabled(enabled, egui::DragValue::new(count).speed(0.2).range(0..=maximum));
+            });
+            if index % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+    army.retain(|_, count| *count > 0);
+}
+
+fn draw_joint_attack_response_panel(
+    context: &egui::Context,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    session: &MultiplayerSession,
+    requests: &mut MessageWriter<MultiplayerRequest>,
+    images: &ImageIds,
+    invitation: &JointAttackInvitation,
+    destination: &Planet,
+    participant_response: JointAttackResponse,
+) {
+    let available_size = context.content_rect().size() - egui::vec2(32.0, 32.0);
+    let size = egui::vec2(820.0_f32.min(available_size.x), 610.0_f32.min(available_size.y));
+    let modal_id = egui::Id::new(("joint attack response", invitation.id));
+    let response = show_panel_modal(context, images, modal_id, size, |ui, _rect, content| {
+        let header = egui::Rect::from_min_size(
+            content.min,
+            egui::vec2(content.width(), MODAL_HEADER_HEIGHT.min(content.height())),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(header), |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    RichText::new("Joint Attack")
+                        .size(21.0)
+                        .strong()
+                        .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                );
+            });
+        });
+        let footer = egui::Rect::from_min_size(
+            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+        );
+        let body = egui::Rect::from_min_max(
+            egui::pos2(content.left(), header.bottom() + 4.0),
+            egui::pos2(content.right(), footer.top() - 8.0),
+        );
+
+        ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            ui.set_clip_rect(body);
+            let origin = map.get(state.joint_attack_contribution.origin);
+            ui.horizontal(|ui| {
+                ui.add_space(((body.width() - 520.0) * 0.5).max(0.0));
+                ui.add_image(images.get(origin.image()), [58.0, 58.0]);
+                ui.vertical(|ui| {
+                    ui.small("Your origin");
+                    ui.add_enabled_ui(participant_response == JointAttackResponse::Pending, |ui| {
+                        ComboBox::from_id_salt(("joint_attack_origin", invitation.id))
+                            .width(125.0)
+                            .selected_text(&map.get(state.joint_attack_contribution.origin).name)
+                            .show_ui(ui, |ui| {
+                                for origin in map
+                                    .planets
+                                    .iter()
+                                    .filter(|planet| player.owns(planet) || player.controls(planet))
+                                {
+                                    ui.selectable_value(
+                                        &mut state.joint_attack_contribution.origin,
+                                        origin.id,
+                                        &origin.name,
+                                    );
+                                }
+                            });
+                    });
+                });
+                ui.add_space(20.0);
+                ui.add_image(images.get(invitation.objective.asset_key()), [44.0, 44.0]);
+                ui.add_space(20.0);
+                ui.vertical(|ui| {
+                    ui.small(invitation.objective.to_name());
+                    ui.strong(&destination.name);
+                });
+                ui.add_image(images.get(destination.image()), [58.0, 58.0]);
+            });
+            ui.separator();
+
+            let origin = map.get(state.joint_attack_contribution.origin);
+            let available = origin.mission_origin_army(player.id).cloned().unwrap_or_default();
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(330.0);
+                    ui.strong("Your fleet");
+                    ui.add_space(3.0);
+                    joint_attack_fleet_picker(
+                        ui,
+                        &mut state.joint_attack_contribution.army,
+                        &available,
+                        images,
+                        participant_response == JointAttackResponse::Pending,
+                    );
+                });
+                ui.add_space(18.0);
+                let route = Mission::new_with_id(
+                    invitation.id,
+                    invitation.turn as usize,
+                    player.id,
+                    origin,
+                    destination,
+                    invitation.objective,
+                    state.joint_attack_contribution.army.clone(),
+                    invitation.bombing.clone(),
+                    invitation.combat_probes,
+                    false,
+                    None,
+                );
+                let own_arrival = invitation.turn as usize + route.duration(map);
+                let coordinated_arrival =
+                    invitation.participants.iter().fold(own_arrival, |latest, participant| {
+                        participant.contribution.as_ref().map_or(latest, |contribution| {
+                            let participant_route = Mission::new_with_id(
+                                invitation.id,
+                                invitation.turn as usize,
+                                contribution.player_id,
+                                map.get(contribution.origin),
+                                destination,
+                                invitation.objective,
+                                contribution.army.clone(),
+                                invitation.bombing.clone(),
+                                invitation.combat_probes,
+                                false,
+                                None,
+                            );
+                            latest.max(invitation.turn as usize + participant_route.duration(map))
+                        })
+                    });
+                ui.vertical(|ui| {
+                    ui.set_width((body.width() - 366.0).max(220.0));
+                    let inviter_name =
+                        session.player_name(invitation.inviter).unwrap_or("Another player");
+                    ui.strong(format!("{inviter_name}'s {}", invitation.objective.to_lowername()));
+                    ui.small("Inviter receives ownership or control on success.");
+                    ui.small(format!(
+                        "Arrival {own_arrival} · Coordinated {coordinated_arrival} · Fuel {}",
+                        route.fuel_consumption(map)
+                    ));
+                    let own_target = destination.owned == Some(player.id)
+                        || destination.controlled == Some(player.id);
+                    let protected_target = destination.is_protected_by(player.id);
+                    if own_target {
+                        ui.colored_label(
+                            Color32::RED,
+                            RichText::new("You cannot attack your own planet.").small(),
+                        );
+                    } else if protected_target {
+                        ui.colored_label(
+                            Color32::RED,
+                            RichText::new("Recall your protection fleet before joining.").small(),
+                        );
+                    }
+                    ui.add_space(3.0);
+                    ui.separator();
+                    ui.small(RichText::new("Contributions").strong());
+                    ScrollArea::vertical()
+                        .id_salt(("joint attack contributions", invitation.id))
+                        .auto_shrink([false, false])
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            for participant in &invitation.participants {
+                                let name = session
+                                    .player_name(participant.player_id)
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| format!("Player {}", participant.player_id));
+                                let (status, selected) = match &participant.contribution {
+                                    Some(contribution) => (
+                                        format!(
+                                            "Fleet strength {}",
+                                            fleet_strength(&contribution.army)
+                                        ),
+                                        true,
+                                    ),
+                                    None if participant.response
+                                        == JointAttackResponse::Rejected =>
+                                    {
+                                        ("Rejected".to_owned(), false)
+                                    },
+                                    None => ("Pending".to_owned(), false),
+                                };
+                                protection_player_row(
+                                    ui,
+                                    ui.available_width(),
+                                    34.0,
+                                    &format!("{name} · {status}"),
+                                    session
+                                        .player_color(participant.player_id)
+                                        .color()
+                                        .to_color32(),
+                                    selected,
+                                    false,
+                                );
+                                ui.add_space(3.0);
+                            }
+                        });
+                });
+            });
+        });
+
+        let origin = map.get(state.joint_attack_contribution.origin);
+        let route = Mission::new_with_id(
+            invitation.id,
+            invitation.turn as usize,
+            player.id,
+            origin,
+            destination,
+            invitation.objective,
+            state.joint_attack_contribution.army.clone(),
+            invitation.bombing.clone(),
+            invitation.combat_probes,
+            false,
+            None,
+        );
+        let own_target =
+            destination.owned == Some(player.id) || destination.controlled == Some(player.id);
+        let can_accept = route.army.has_army()
+            && route.fuel_consumption(map) <= player.resources.deuterium
+            && !own_target
+            && !destination.is_protected_by(player.id)
+            && !session.joint_attack_update_pending;
+        let mut close = false;
+        let mut action = None;
+        ui.scope(|ui| {
+            style_modal_buttons(ui);
+            if participant_response == JointAttackResponse::Pending {
+                let gap = 12.0;
+                let width = 108.0_f32.min((footer.width() - gap) * 0.5);
+                let row_width = width * 2.0 + gap;
+                let left = footer.center().x - row_width * 0.5;
+                let accept_rect = egui::Rect::from_min_size(
+                    egui::pos2(left, footer.top()),
+                    egui::vec2(width, MODAL_BUTTON_HEIGHT),
+                );
+                let accept = ui
+                    .add_enabled_ui(can_accept, |ui| {
+                        ui.put(
+                            accept_rect,
+                            egui::Button::new(RichText::new("Accept").strong()).selected(true),
+                        )
+                    })
+                    .inner;
+                if accept.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    action = Some(JointAttackResponse::Accepted);
+                }
+                let reject_rect = egui::Rect::from_min_size(
+                    egui::pos2(left + width + gap, footer.top()),
+                    egui::vec2(width, MODAL_BUTTON_HEIGHT),
+                );
+                let reject = ui
+                    .add_enabled_ui(!session.joint_attack_update_pending, |ui| {
+                        ui.put(reject_rect, egui::Button::new(RichText::new("Reject").strong()))
+                    })
+                    .inner;
+                if reject.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    action = Some(JointAttackResponse::Rejected);
+                }
+            } else {
+                let button = egui::Rect::from_center_size(
+                    footer.center(),
+                    egui::vec2(108.0_f32.min(footer.width()), MODAL_BUTTON_HEIGHT),
+                );
+                if ui
+                    .put(button, egui::Button::new(RichText::new("Close").strong()))
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    close = true;
+                }
+            }
+        });
+        (close, action, can_accept)
+    });
+
+    let (mut close, action, _) = response.inner;
+    close |= response.should_close();
+    if let Some(action) = action {
+        let contribution =
+            (action == JointAttackResponse::Accepted).then(|| JointAttackContribution {
+                player_id: player.id,
+                origin: state.joint_attack_contribution.origin,
+                army: state.joint_attack_contribution.army.clone(),
+            });
+        requests.write(MultiplayerRequest::RespondJointAttack {
+            attack_id: invitation.id,
+            response: action,
+            contribution,
+        });
+        close = true;
+    }
+    if close {
+        state.joint_attack_open = None;
+    }
+}
+
+/// Draws persistent actionable invitations in normal toast chrome and opens the response panel.
+pub(super) fn draw_joint_attack_notifications(
+    context: &egui::Context,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    session: &MultiplayerSession,
+    requests: &mut MessageWriter<MultiplayerRequest>,
+    messages: &mut MessageWriter<MessageMsg>,
+    images: &ImageIds,
+) {
+    for invitation in &session.joint_attacks {
+        if invitation.canceled && invitation.inviter != player.id {
+            let participated = invitation
+                .participants
+                .iter()
+                .any(|participant| participant.player_id == player.id);
+            if participated && state.joint_attack_cancellations_notified.insert(invitation.id) {
+                let inviter_name = session
+                    .player_name(invitation.inviter)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {}", invitation.inviter));
+                let target_name = map
+                    .try_get(invitation.destination)
+                    .map(|planet| planet.name.as_str())
+                    .unwrap_or("an unknown planet");
+                messages.write(MessageMsg::info(format!(
+                    "{inviter_name} canceled the allied attack on {target_name}."
+                )));
+            }
+        }
+        if invitation.inviter != player.id {
+            continue;
+        }
+        let target_name = map
+            .try_get(invitation.destination)
+            .map(|planet| planet.name.as_str())
+            .unwrap_or("an unknown planet");
+        for rejected in invitation.participants.iter().filter(|participant| {
+            !invitation.canceled && participant.response == JointAttackResponse::Rejected
+        }) {
+            if state.joint_attack_rejections_notified.insert((invitation.id, rejected.player_id)) {
+                let name = session
+                    .player_name(rejected.player_id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {}", rejected.player_id));
+                messages.write(MessageMsg::info(format!(
+                    "{name} rejected the joint attack on {target_name}."
+                )));
+            }
+        }
+    }
+
+    let notification_top = 70.0_f32.max(resource_bar_bottom(context.content_rect().size()) + 12.0);
+    egui::Area::new("joint_attack_notifications".into())
+        .anchor(Align2::RIGHT_TOP, egui::vec2(-12.0, notification_top))
+        .order(Order::Tooltip)
+        .interactable(true)
+        .layout(Layout::top_down(Align::Max))
+        .show(context, |ui| {
+            ui.set_max_width(380.0_f32.min((context.content_rect().width() - 50.0).max(0.0)));
+            ui.spacing_mut().item_spacing.y = 6.0;
+            for invitation in &session.joint_attacks {
+                if invitation.canceled {
+                    continue;
+                }
+                let Some(participant) = invitation
+                    .participants
+                    .iter()
+                    .find(|participant| participant.player_id == player.id)
+                else {
+                    continue;
+                };
+                if invitation.inviter == player.id
+                    || state.joint_attack_open == Some(invitation.id)
+                    || participant.response == JointAttackResponse::Rejected
+                {
+                    continue;
+                }
+                let inviter_name = session
+                    .player_name(invitation.inviter)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {}", invitation.inviter));
+                let target_name = map
+                    .try_get(invitation.destination)
+                    .map(|planet| planet.name.as_str())
+                    .unwrap_or("an unknown planet");
+                if participant.response == JointAttackResponse::Pending {
+                    joint_attack_toast(
+                        ui,
+                        350.0,
+                        format!(
+                            "{inviter_name} invited you to join a {} on {target_name}.",
+                            invitation.objective.to_lowername()
+                        ),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                if joint_attack_toast_button(ui, "Open", true).clicked() {
+                                    state.joint_attack_open = Some(invitation.id);
+                                }
+                                if joint_attack_toast_button(
+                                    ui,
+                                    "Reject",
+                                    !session.joint_attack_update_pending,
+                                )
+                                .clicked()
+                                {
+                                    requests.write(MultiplayerRequest::RespondJointAttack {
+                                        attack_id: invitation.id,
+                                        response: JointAttackResponse::Rejected,
+                                        contribution: None,
+                                    });
+                                }
+                            });
+                        },
+                    );
+                } else if participant.response == JointAttackResponse::Accepted {
+                    joint_attack_toast(
+                        ui,
+                        330.0,
+                        format!("You joined {inviter_name}'s attack on {target_name}."),
+                        |ui| {
+                            if joint_attack_toast_button(ui, "Review", true).clicked() {
+                                state.joint_attack_open = Some(invitation.id);
+                            }
+                        },
+                    );
+                }
+            }
+        });
+
+    let Some(open_id) = state.joint_attack_open else {
+        return;
+    };
+    let Some(invitation) = session.joint_attacks.iter().find(|item| item.id == open_id).cloned()
+    else {
+        state.joint_attack_open = None;
+        return;
+    };
+    if invitation.canceled {
+        state.joint_attack_open = None;
+        return;
+    }
+    let Some(destination) = map.try_get(invitation.destination) else {
+        state.joint_attack_open = None;
+        return;
+    };
+    let participant =
+        invitation.participants.iter().find(|participant| participant.player_id == player.id);
+    let participant_response = participant
+        .map(|participant| participant.response)
+        .unwrap_or(JointAttackResponse::Rejected);
+    if participant_response == JointAttackResponse::Accepted {
+        if let Some(contribution) = participant.and_then(|entry| entry.contribution.as_ref()) {
+            state.joint_attack_contribution.origin = contribution.origin;
+            state.joint_attack_contribution.army = contribution.army.clone();
+        }
+    }
+    if !map
+        .try_get(state.joint_attack_contribution.origin)
+        .is_some_and(|origin| player.owns(origin) || player.controls(origin))
+    {
+        state.joint_attack_contribution.origin = player.home_planet;
+        state.joint_attack_contribution.army.clear();
+    }
+    draw_joint_attack_response_panel(
+        context,
+        state,
+        map,
+        player,
+        session,
+        requests,
+        images,
+        &invitation,
+        destination,
+        participant_response,
+    );
+}
+
 /// Draws the mission interface and emits any resulting local actions.
 pub(super) fn draw_mission(
     ui: &mut Ui,
@@ -1687,6 +2808,7 @@ pub(super) fn draw_mission(
     map: &mut Map,
     player: &mut Player,
     session: &MultiplayerSession,
+    multiplayer_requests: &mut MessageWriter<MultiplayerRequest>,
     is_hovered: bool,
     keyboard: &ButtonInput<KeyCode>,
     images: &ImageIds,
@@ -1704,10 +2826,13 @@ pub(super) fn draw_mission(
                 draw_new_mission(
                     ui,
                     send_mission,
+                    missions,
                     settings,
                     state,
                     map,
                     player,
+                    session,
+                    multiplayer_requests,
                     is_hovered,
                     keyboard,
                     images,

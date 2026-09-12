@@ -199,7 +199,9 @@ fn check_messages(
 
     let elapsed = time.delta_secs();
     let in_game = app_state.as_ref().is_some_and(|s| *s.get() == AppState::Game);
-    let playing = in_game && game_state.as_ref().is_some_and(|s| *s.get() == GameState::Playing);
+    let current_game_state = game_state.as_ref().map(|state| *state.get());
+    let playing = in_game && current_game_state == Some(GameState::Playing);
+    let combat_active = notifications_hidden_during_combat(in_game, current_game_state);
     messages.0.retain_mut(|message| {
         let actionable_planet_is_valid = match message.action {
             Some(MessageAction::FocusColony(id)) => {
@@ -231,8 +233,7 @@ fn check_messages(
                 return true;
             }
         }
-        message.remaining_seconds -= elapsed;
-        message.remaining_seconds > 0.0
+        advance_message_lifetime(message, elapsed, combat_active)
     });
     if messages.0.is_empty() {
         return;
@@ -241,7 +242,7 @@ fn check_messages(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    if let Some((index, action)) = draw_notifications(context, &messages, playing) {
+    if let Some((index, action)) = draw_notifications(context, &messages, playing, combat_active) {
         messages.0.remove(index);
         if let Some(state) = state.as_mut() {
             match action {
@@ -301,7 +302,12 @@ fn draw_notifications(
     context: &egui::Context,
     messages: &Messages,
     playing: bool,
+    hidden_for_combat: bool,
 ) -> Option<(usize, MessageAction)> {
+    if hidden_for_combat {
+        return None;
+    }
+
     let mut clicked_message = None;
     let notification_top = if playing {
         DEFAULT_NOTIFICATION_TOP
@@ -311,8 +317,6 @@ fn draw_notifications(
     };
     egui::Area::new("stellarion_notifications".into())
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, notification_top))
-        // Combat uses foreground input layers of its own. Keep actionable notifications
-        // above them so a visible toast always owns pointer input inside its frame.
         .order(egui::Order::Tooltip)
         .interactable(true)
         .layout(egui::Layout::top_down(egui::Align::Max))
@@ -376,6 +380,25 @@ fn draw_notifications(
             }
         });
     clicked_message
+}
+
+/// Returns whether combat currently owns the complete game viewport.
+const fn notifications_hidden_during_combat(in_game: bool, game_state: Option<GameState>) -> bool {
+    in_game && matches!(game_state, Some(GameState::CombatMenu | GameState::Combat))
+}
+
+/// Advances a toast only while it is eligible to be shown.
+fn advance_message_lifetime(
+    message: &mut ActiveMessage,
+    elapsed: f32,
+    paused_for_combat: bool,
+) -> bool {
+    if paused_for_combat {
+        true
+    } else {
+        message.remaining_seconds -= elapsed;
+        message.remaining_seconds > 0.0
+    }
 }
 
 /// Selects and centers a colony without trusting stale toast targets.

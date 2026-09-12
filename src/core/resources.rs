@@ -67,7 +67,7 @@ impl Description for ResourceName {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Saturating bundle of metal, crystal, and deuterium amounts.
 pub struct Resources {
@@ -110,6 +110,23 @@ impl Resources {
     /// Returns the smallest amount among the three resource kinds.
     pub fn min(&self) -> usize {
         self.metal.min(self.crystal).min(self.deuterium)
+    }
+
+    /// Returns the saturating total of all stored, tradable resource kinds.
+    pub fn total(&self) -> usize {
+        self.metal.saturating_add(self.crystal).saturating_add(self.deuterium)
+    }
+
+    /// Returns whether every resource amount is zero.
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
+    /// Returns whether this bundle contains every amount in another bundle.
+    pub fn contains(&self, other: Self) -> bool {
+        self.metal >= other.metal
+            && self.crystal >= other.crystal
+            && self.deuterium >= other.deuterium
     }
 
     /// Applies a percentage, rounding each amount down and saturating only the final result.

@@ -370,6 +370,71 @@ fn command_relay_no_longer_changes_jump_gate_capacity() {
 }
 
 #[test]
+fn protect_can_jump_to_the_receivers_gate_but_not_back_from_it() {
+    let mut game = game();
+    let protector = game.players[0].id;
+    let receiver = game.players[1].id;
+    let home = game.players[0].home_planet;
+    let receiving_planet = game.players[1].home_planet;
+    let gate = Unit::Building(Building::JumpGate);
+    let ship = Unit::Ship(Ship::LightFighter);
+
+    game.map.get_mut(home).army.insert(gate, 1);
+    game.map.get_mut(home).army.insert(ship, 1);
+    game.map.get_mut(receiving_planet).army.insert(gate, 1);
+    game.map.get_mut(receiving_planet).protection_permissions.insert(protector);
+
+    let protect = Mission::new_with_id(
+        71,
+        game.turn as usize,
+        protector,
+        game.map.get(home),
+        game.map.get(receiving_planet),
+        Icon::Protect,
+        Army::from([(ship, 1)]),
+        BombingRaid::None,
+        false,
+        true,
+        None,
+    );
+    assert_eq!(protect.protected_player, Some(receiver));
+    assert_eq!(
+        validate_mission(
+            &game.players[0],
+            &game.map,
+            game.map.get(home),
+            game.map.get(receiving_planet),
+            &protect,
+        ),
+        Ok(())
+    );
+
+    let returning = Mission::new_with_id(
+        72,
+        game.turn as usize,
+        protector,
+        game.map.get(receiving_planet),
+        game.map.get(home),
+        Icon::Deploy,
+        Army::from([(ship, 1)]),
+        BombingRaid::None,
+        false,
+        true,
+        None,
+    );
+    assert_eq!(
+        validate_mission(
+            &game.players[0],
+            &game.map,
+            game.map.get(receiving_planet),
+            game.map.get(home),
+            &returning,
+        ),
+        Err(OrderError::Ownership)
+    );
+}
+
+#[test]
 fn spy_missions_require_five_probes_but_can_reach_any_world() {
     let mut game = game();
     let origin_id = game.players[0].home_planet;

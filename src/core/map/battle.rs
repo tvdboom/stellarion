@@ -141,7 +141,7 @@ impl MissionArrivalImage {
     fn from_report(report: &MissionReport, player: &Player) -> Self {
         match report.mission.image(player) {
             "mission colonize" => Self::Colony,
-            "mission destroy" | "mission destroy jump" => Self::Destroy,
+            "mission destroy" => Self::Destroy,
             _ => Self::Fleet,
         }
     }

@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::core::identity::GameCode;
 
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+pub(crate) const CROCKFORD_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const RECOVERY_BYTES: usize = 10;
 const RECOVERY_SYMBOLS: usize = 16;
 
@@ -24,7 +24,7 @@ impl RecoveryCode {
     pub fn parse(value: impl AsRef<str>) -> Result<Self, RecoveryCodeError> {
         let canonical = normalize(value.as_ref());
         if canonical.len() != RECOVERY_SYMBOLS
-            || !canonical.bytes().all(|byte| CROCKFORD.contains(&byte))
+            || !canonical.bytes().all(|byte| CROCKFORD_ALPHABET.contains(&byte))
         {
             return Err(RecoveryCodeError::Malformed);
         }
@@ -73,12 +73,12 @@ fn encode_crockford(bytes: &[u8]) -> String {
         while bits >= 5 {
             bits -= 5;
             let index = ((buffer >> bits) & 0x1f) as usize;
-            output.push(CROCKFORD[index] as char);
+            output.push(CROCKFORD_ALPHABET[index] as char);
         }
     }
     if bits > 0 {
         let index = ((buffer << (5 - bits)) & 0x1f) as usize;
-        output.push(CROCKFORD[index] as char);
+        output.push(CROCKFORD_ALPHABET[index] as char);
     }
     output
 }

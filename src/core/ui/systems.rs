@@ -26,13 +26,15 @@ use crate::core::constants::{
     TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
 };
 use crate::core::energy::EnergyGrid;
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId, PlanetKind, SolarBand};
 use crate::core::map::systems::select_planet;
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
-    BombingRaid, Mission, MissionId, Missions, RecallMissionMsg, SendMissionMsg,
+    BombingRaid, JointAttackMission, JointMissionLaunch, Mission, MissionId, Missions,
+    RecallMissionMsg, RecallProtectionMsg, SendMissionMsg,
 };
 use crate::core::orders::{purchase_limit, validate_mission};
 use crate::core::player::{PlanetInfo, Player};
@@ -40,7 +42,8 @@ use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::simulation::{
     orbital_railgun_destruction_basis_points, orbital_railgun_fire_cost,
-    orbital_railgun_fire_energy_cost, orbital_railgun_origins, TurnCommand,
+    orbital_railgun_fire_energy_cost, orbital_railgun_origins, JointAttackContribution,
+    TurnCommand,
 };
 use crate::core::states::GameState;
 use crate::core::ui::aesthetics::Aesthetics;
@@ -50,13 +53,23 @@ use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
-use crate::multiplayer::client::{MultiplayerRequest, MultiplayerSession, PendingTurnCommands};
+use crate::multiplayer::client::{
+    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+};
+use crate::multiplayer::model::{
+    JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+};
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 mod missions;
-use missions::draw_mission;
+use missions::{
+    draw_joint_attack_notifications, draw_mission, mission_arrival_tooltip, mission_arrival_turn,
+    mission_movement_tooltip,
+};
 mod shop;
 use shop::draw_shop;
+mod trading;
+use trading::draw_trade_notifications;
 
 #[derive(Component)]
 /// Marker for entities owned by the in-game UI projection.
@@ -122,6 +135,20 @@ pub struct UiState {
     pub planet_selected: Option<PlanetId>,
     /// Planet awaiting confirmation before its abandon command is added to the turn draft.
     pub(crate) abandon_confirmation: Option<PlanetId>,
+    /// Controlled planet awaiting confirmation before colonization is added to the turn draft.
+    pub(crate) colonize_confirmation: Option<PlanetId>,
+    /// Controlled world whose immediate protection-access modal is open.
+    pub(crate) protection_access: Option<PlanetId>,
+    /// Trading Post marker whose bilateral commerce panel is open.
+    pub(crate) trading_post_open: Option<PlanetId>,
+    /// Existing trade negotiation currently open in the bilateral commerce panel.
+    pub(crate) trade_open: Option<u64>,
+    /// Trade identifier whose local resource controls are currently initialized.
+    pub(crate) trade_draft_id: Option<u64>,
+    /// Resources selected for the local side of a Trading Post negotiation.
+    pub(crate) trade_resources: Resources,
+    /// Completed or canceled trade notices dismissed during the current local session.
+    pub(crate) trade_notices_dismissed: std::collections::BTreeSet<u64>,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
@@ -135,6 +162,20 @@ pub struct UiState {
     pub mission: bool,
     pub mission_tab: MissionTab,
     pub mission_info: Mission,
+    /// Player slots selected for the current joint-attack invitation.
+    pub(crate) joint_attack_invitees: std::collections::BTreeSet<PlayerId>,
+    /// Whether the compact new-mission control has opened the co-attacker picker.
+    pub(crate) joint_attack_invite_picker_open: bool,
+    /// Invitation created from the current frozen mission draft.
+    pub(crate) joint_attack_draft_id: Option<u64>,
+    /// Invitation currently opened from its persistent notification.
+    pub(crate) joint_attack_open: Option<u64>,
+    /// Origin and units being prepared in the invitation response modal.
+    pub(crate) joint_attack_contribution: Mission,
+    /// Rejections already forwarded into the ordinary transient notification queue.
+    pub(crate) joint_attack_rejections_notified: std::collections::BTreeSet<(u64, PlayerId)>,
+    /// Canceled invitations already forwarded into the ordinary transient notification queue.
+    pub(crate) joint_attack_cancellations_notified: std::collections::BTreeSet<u64>,
     pub jump_gate_history: bool,
     pub mission_hover: Option<MissionId>,
     /// UI hover expires each pass; map hover persists until a picking event changes it.
@@ -170,6 +211,146 @@ enum ConfirmationAction {
 
 const ABANDON_CONFIRMATION_TEXT_COLOR: Color32 = Color32::from_rgb(166, 188, 211);
 const ABANDON_CONFIRMATION_BUTTON_FILL: Color32 = Color32::from_rgb(18, 28, 39);
+const MODAL_ICON_SIZE: f32 = 44.0;
+const MODAL_ICON_TOP_INSET: f32 = 32.0;
+const MODAL_ICON_RIGHT_INSET: f32 = 18.0;
+const MODAL_HEADER_HEIGHT: f32 = 54.0;
+const MODAL_BUTTON_HEIGHT: f32 = 40.0;
+const PROTECTION_PLAYER_ROW_WIDTH_FRACTION: f32 = 0.44;
+const PROTECTION_PLAYER_ROW_MIN_WIDTH: f32 = 176.0;
+const PROTECTION_PLAYER_ROW_MAX_WIDTH: f32 = 240.0;
+const PLANET_ACTION_ICON_IDLE_TINT: Color32 = Color32::from_gray(205);
+const PLANET_ACTION_ICON_HOVER_TINT: Color32 = Color32::from_gray(245);
+const PLANET_ACTION_ICON_PRESSED_TINT: Color32 = Color32::from_gray(165);
+
+/// Gives compact planet actions a visible rest, hover, and pointer-down response.
+fn planet_action_icon_tint(response: &Response) -> Color32 {
+    if response.is_pointer_button_down_on() {
+        PLANET_ACTION_ICON_PRESSED_TINT
+    } else if response.hovered() {
+        PLANET_ACTION_ICON_HOVER_TINT
+    } else {
+        PLANET_ACTION_ICON_IDLE_TINT
+    }
+}
+
+/// Keeps modal content away from the ornamental edges of the shared panel artwork.
+fn modal_content_rect(panel: egui::Rect) -> egui::Rect {
+    let horizontal = (panel.width() * 0.07).clamp(12.0, 34.0);
+    let vertical = (panel.height() * 0.07).clamp(10.0, 24.0);
+    panel.shrink2(egui::vec2(horizontal, vertical))
+}
+
+/// Centers and paints the shared panel behind an input-blocking modal's custom contents.
+fn show_panel_modal<R>(
+    context: &egui::Context,
+    images: &ImageIds,
+    modal_id: egui::Id,
+    size: egui::Vec2,
+    content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
+) -> egui::ModalResponse<R> {
+    let content_rect = context.content_rect();
+    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min;
+    let area = egui::Modal::default_area(modal_id).anchor(Align2::LEFT_TOP, panel_offset);
+    egui::Modal::new(modal_id).area(area).frame(egui::Frame::NONE).show(context, |ui| {
+        let (panel, _) = ui.allocate_exact_size(size, Sense::hover());
+        ui.painter().image(
+            images.get("panel"),
+            panel,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        content(ui, panel, modal_content_rect(panel))
+    })
+}
+
+/// Paints a shared modal header with a truly centered title and a corner action icon.
+fn draw_modal_header(
+    ui: &mut Ui,
+    panel: egui::Rect,
+    content: egui::Rect,
+    title: impl Into<RichText>,
+    icon: egui::TextureId,
+) -> egui::Rect {
+    let height = MODAL_HEADER_HEIGHT.min(content.height());
+    let header = egui::Rect::from_min_size(content.min, egui::vec2(content.width(), height));
+    let icon_size = MODAL_ICON_SIZE.min(header.width() * 0.18);
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            panel.right() - MODAL_ICON_RIGHT_INSET - icon_size,
+            panel.top() + MODAL_ICON_TOP_INSET,
+        ),
+        egui::vec2(icon_size, icon_size),
+    );
+    ui.painter().image(
+        icon,
+        icon_rect,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+
+    // Reserve the same space on both sides so the title remains centered in the panel rather
+    // than merely centered in the area left of the icon.
+    let reserve = icon_size + 10.0;
+    let title_rect = header.shrink2(egui::vec2(reserve.min(header.width() * 0.25), 0.0));
+    ui.scope_builder(UiBuilder::new().max_rect(title_rect), |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.label(title.into());
+        });
+    });
+    header
+}
+
+/// Applies the restrained dark button treatment shared by confirmation modal footers.
+fn style_modal_buttons(ui: &mut Ui) {
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    for (visuals, fill, stroke) in [
+        (&mut widgets.inactive, ABANDON_CONFIRMATION_BUTTON_FILL, Color32::from_rgb(74, 99, 122)),
+        (&mut widgets.hovered, Color32::from_rgb(31, 47, 61), Color32::from_rgb(123, 158, 188)),
+        (&mut widgets.active, Color32::from_rgb(39, 94, 123), Color32::from_rgb(139, 183, 216)),
+    ] {
+        visuals.bg_fill = fill;
+        visuals.weak_bg_fill = fill;
+        visuals.bg_stroke = Stroke::new(1.0, stroke);
+        visuals.corner_radius = egui::CornerRadius::same(6);
+        visuals.expansion = 0.0;
+    }
+}
+
+/// Draws a centered Yes/No footer entirely inside the supplied modal region.
+fn draw_confirmation_buttons(
+    ui: &mut Ui,
+    footer: egui::Rect,
+    confirm_enabled: bool,
+) -> Option<ConfirmationAction> {
+    let gap = 12.0_f32.min(footer.width() * 0.05);
+    let width = 96.0_f32.min(((footer.width() - gap) * 0.5).max(1.0));
+    let row_width = width * 2.0 + gap;
+    let left = footer.center().x - row_width * 0.5;
+    let yes_rect = egui::Rect::from_min_size(
+        egui::pos2(left, footer.center().y - MODAL_BUTTON_HEIGHT * 0.5),
+        egui::vec2(width, MODAL_BUTTON_HEIGHT),
+    );
+    let no_rect = yes_rect.translate(egui::vec2(width + gap, 0.0));
+    let button = |label| {
+        egui::Button::new(
+            RichText::new(label).size(17.0).strong().color(ABANDON_CONFIRMATION_TEXT_COLOR),
+        )
+    };
+
+    let mut action = None;
+    ui.scope(|ui| {
+        style_modal_buttons(ui);
+        let yes = ui.add_enabled_ui(confirm_enabled, |ui| ui.put(yes_rect, button("Yes"))).inner;
+        if yes.enabled() && yes.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            action = Some(ConfirmationAction::Confirm);
+        }
+        if ui.put(no_rect, button("No")).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            action = Some(ConfirmationAction::Cancel);
+        }
+    });
+    action
+}
 
 fn visible_planet_panel(state: &UiState) -> Option<(PlanetId, PlanetPanelMode)> {
     state
@@ -258,6 +439,8 @@ impl PlanetPanelSlide {
 #[derive(Default)]
 pub(crate) struct PlanetPanelHoverHold {
     target: Option<PlanetPanelSlideTarget>,
+    pending_target: Option<PlanetPanelSlideTarget>,
+    pending_elapsed: f32,
     panel_rects: [Option<egui::Rect>; 2],
     remaining: f32,
 }
@@ -269,9 +452,50 @@ impl PlanetPanelHoverHold {
         pointer: Option<egui::Pos2>,
         delta_seconds: f32,
     ) -> Option<PlanetPanelSlideTarget> {
+        let over_panel = pointer.is_some_and(|pointer| {
+            self.panel_rects.iter().flatten().any(|rect| rect.contains(pointer))
+        });
+
+        // The UI panel owns pointer intent even if map picking still reports a planet behind it.
+        // This also makes the final step onto an action button cancel any pending hover switch.
+        if self.target.is_some() && over_panel {
+            self.pending_target = None;
+            self.pending_elapsed = 0.0;
+            self.remaining = PLANET_PANEL_HOVER_HOLD_DURATION;
+            return self.target;
+        }
+
         if let Some(target) = direct_target {
             if target.mode == PlanetPanelMode::Full {
-                self.target = Some(target);
+                // Once a full panel opens for one world, keep its side fixed while the pointer
+                // travels from the world into the panel. Recomputing the side at the viewport
+                // midpoint makes controls jump away before they can be reached.
+                if let Some(current) = self
+                    .target
+                    .filter(|current| current.id == target.id && current.mode == target.mode)
+                {
+                    self.target = Some(current);
+                    self.pending_target = None;
+                    self.pending_elapsed = 0.0;
+                } else if self.target.is_none() {
+                    self.target = Some(target);
+                } else {
+                    // Crossing another planet on the way to the open panel must not steal it.
+                    // A deliberate switch still works after the pointer rests on the new planet.
+                    if self.pending_target.is_some_and(|pending| {
+                        pending.id == target.id && pending.mode == target.mode
+                    }) {
+                        self.pending_elapsed += delta_seconds.max(0.0);
+                    } else {
+                        self.pending_target = Some(target);
+                        self.pending_elapsed = 0.0;
+                    }
+
+                    if self.pending_elapsed >= PLANET_PANEL_HOVER_SWITCH_DELAY {
+                        self.target = self.pending_target.take();
+                        self.pending_elapsed = 0.0;
+                    }
+                }
                 self.remaining = PLANET_PANEL_HOVER_HOLD_DURATION;
             } else {
                 // Mission links are transient unit previews and must not revive a previous map
@@ -280,16 +504,11 @@ impl PlanetPanelHoverHold {
                 return Some(target);
             }
         } else if self.target.is_some() {
-            let over_panel = pointer.is_some_and(|pointer| {
-                self.panel_rects.iter().flatten().any(|rect| rect.contains(pointer))
-            });
-            if over_panel {
-                self.remaining = PLANET_PANEL_HOVER_HOLD_DURATION;
-            } else {
-                self.remaining = (self.remaining - delta_seconds.max(0.0)).max(0.0);
-                if self.remaining == 0.0 {
-                    self.clear();
-                }
+            self.pending_target = None;
+            self.pending_elapsed = 0.0;
+            self.remaining = (self.remaining - delta_seconds.max(0.0)).max(0.0);
+            if self.remaining == 0.0 {
+                self.clear();
             }
         }
 
@@ -302,6 +521,8 @@ impl PlanetPanelHoverHold {
 
     fn clear(&mut self) {
         self.target = None;
+        self.pending_target = None;
+        self.pending_elapsed = 0.0;
         self.panel_rects = [None; 2];
         self.remaining = 0.0;
     }
@@ -315,6 +536,7 @@ fn include_planet_panel_rect(panel_rects: &mut [Option<egui::Rect>; 2], rect: Op
 
 const PLANET_PANEL_SLIDE_DURATION: f32 = 0.22;
 const PLANET_PANEL_HOVER_HOLD_DURATION: f32 = 0.8;
+const PLANET_PANEL_HOVER_SWITCH_DELAY: f32 = 0.15;
 const PLANET_DETAIL_LINE_DURATION: f32 = 0.12;
 const PLANET_DETAIL_LINE_STAGGER: f32 = 0.04;
 const PLANET_DETAIL_LINE_COUNT: usize = 4;
@@ -493,107 +715,343 @@ fn draw_panel_with_horizontal_overflow<R>(
         .map(|response| response.response.rect)
 }
 
-/// Draws a centered, input-blocking abandon prompt over the game interface.
-fn draw_abandon_confirmation(
+/// Draws a centered, input-blocking planet action prompt over the game interface.
+fn draw_planet_confirmation(
     context: &egui::Context,
     images: &ImageIds,
+    planet_name: &str,
+    action: &str,
+    image: &str,
 ) -> Option<ConfirmationAction> {
     let content_rect = context.content_rect();
     let available = content_rect.size() - egui::vec2(32.0, 32.0);
-    let size = egui::vec2(520.0_f32.min(available.x), 230.0_f32.min(available.y));
-    let modal_id = egui::Id::new("abandon planet confirmation");
-    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min;
-    let area = egui::Modal::default_area(modal_id).anchor(Align2::LEFT_TOP, panel_offset);
-    let response =
-        egui::Modal::new(modal_id).area(area).frame(egui::Frame::NONE).show(context, |ui| {
-            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-            ui.painter().image(
-                images.get("panel"),
-                rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-
-            let mut action = None;
-            ui.scope_builder(
-                UiBuilder::new().max_rect(rect.shrink2(egui::vec2(34.0, 24.0))),
-                |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(42.0);
-                        ui.label(
-                            RichText::new("Are you sure you want to abandon this planet?")
-                                .size(22.0)
-                                .strong()
-                                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                        );
-                        ui.add_space(24.0);
-                        ui.scope(|ui| {
-                            let widgets = &mut ui.style_mut().visuals.widgets;
-                            for (visuals, fill, stroke) in [
-                                (
-                                    &mut widgets.inactive,
-                                    ABANDON_CONFIRMATION_BUTTON_FILL,
-                                    Color32::from_rgb(74, 99, 122),
-                                ),
-                                (
-                                    &mut widgets.hovered,
-                                    Color32::from_rgb(31, 47, 61),
-                                    Color32::from_rgb(123, 158, 188),
-                                ),
-                                (
-                                    &mut widgets.active,
-                                    Color32::from_rgb(39, 94, 123),
-                                    Color32::from_rgb(139, 183, 216),
-                                ),
-                            ] {
-                                visuals.bg_fill = fill;
-                                visuals.weak_bg_fill = fill;
-                                visuals.bg_stroke = Stroke::new(1.0, stroke);
-                                visuals.corner_radius = egui::CornerRadius::same(6);
-                                visuals.expansion = 0.0;
-                            }
-
-                            ui.horizontal(|ui| {
-                                const BUTTON_WIDTH: f32 = 96.0;
-                                const BUTTON_GAP: f32 = 12.0;
-                                let row_width = BUTTON_WIDTH * 2.0 + BUTTON_GAP;
-                                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                                let button = |label| {
-                                    egui::Button::new(
-                                        RichText::new(label)
-                                            .size(17.0)
-                                            .strong()
-                                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                                    )
-                                };
-                                if ui
-                                    .add_sized([BUTTON_WIDTH, 36.0], button("Yes"))
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    action = Some(ConfirmationAction::Confirm);
-                                }
-                                if ui
-                                    .add_sized([BUTTON_WIDTH, 36.0], button("No"))
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    action = Some(ConfirmationAction::Cancel);
-                                }
-                            });
-                        });
-                    });
-                },
-            );
-            action
+    let size = egui::vec2(520.0_f32.min(available.x), 250.0_f32.min(available.y));
+    let modal_id = egui::Id::new((action, "planet confirmation"));
+    let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
+        let header = draw_modal_header(
+            ui,
+            rect,
+            content,
+            RichText::new(format!("{} PLANET", action.to_uppercase()))
+                .size(21.0)
+                .strong()
+                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            images.get(image),
+        );
+        let footer = egui::Rect::from_min_size(
+            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+        );
+        let body = egui::Rect::from_min_max(
+            egui::pos2(content.left(), header.bottom() + 8.0),
+            egui::pos2(content.right(), (footer.top() - 10.0).max(header.bottom() + 8.0)),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            ui.set_clip_rect(body);
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Are you sure you want to {action} planet {planet_name}?"
+                    ))
+                    .size(19.0)
+                    .strong()
+                    .color(Color32::WHITE),
+                );
+            });
         });
+        draw_confirmation_buttons(ui, footer, true)
+    });
 
     if response.should_close() {
         Some(ConfirmationAction::Cancel)
     } else {
         response.inner
     }
+}
+
+fn draw_abandon_confirmation(
+    context: &egui::Context,
+    images: &ImageIds,
+    planet_name: &str,
+) -> Option<ConfirmationAction> {
+    draw_planet_confirmation(context, images, planet_name, "abandon", "abandon")
+}
+
+fn draw_colonize_confirmation(
+    context: &egui::Context,
+    images: &ImageIds,
+    planet_name: &str,
+) -> Option<ConfirmationAction> {
+    draw_planet_confirmation(context, images, planet_name, "colonize", "colonize")
+}
+
+/// Explains protection access and lists every current player allowed to use it.
+fn draw_protection_access_tooltip(ui: &mut Ui, planet: &Planet, session: &MultiplayerSession) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    ui.small("Manage protection access. Revoking access sends protection fleets home.");
+
+    let local_player = session.membership.as_ref().map(|member| member.player_id);
+    let allowed_players = session
+        .active_game
+        .as_ref()
+        .map(|game| {
+            game.members
+                .iter()
+                .filter(|member| {
+                    Some(member.player_id) != local_player
+                        && planet.protection_permissions.contains(&member.player_id)
+                        && game
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .is_ok_and(|player| !player.spectator)
+                })
+                .collect_vec()
+        })
+        .unwrap_or_default();
+
+    if allowed_players.is_empty() {
+        return;
+    }
+
+    ui.add_space(5.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.small(RichText::new("Players currently allowed:").strong());
+        ui.add_space(4.0);
+        for (index, member) in allowed_players.into_iter().enumerate() {
+            if index > 0 {
+                ui.small(", ");
+            }
+            let color = session.player_color(member.player_id).color().to_color32();
+            ui.label(RichText::new(&member.display_name).small().color(color));
+        }
+    });
+}
+
+/// Draws a compact protection-access choice without egui's oversized selected-button fill.
+fn protection_player_row(
+    ui: &mut Ui,
+    width: f32,
+    height: f32,
+    display_name: &str,
+    player_color: Color32,
+    allowed: bool,
+    enabled: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width.min(ui.available_width()), height),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let response = if enabled {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    };
+    let fill = if !enabled {
+        Color32::from_rgba_unmultiplied(12, 19, 27, 180)
+    } else if response.is_pointer_button_down_on() {
+        Color32::from_rgb(10, 27, 39)
+    } else if response.hovered() {
+        Color32::from_rgb(27, 44, 58)
+    } else if allowed {
+        Color32::from_rgb(18, 39, 53)
+    } else {
+        Color32::from_rgb(13, 23, 32)
+    };
+    let stroke = if allowed {
+        Stroke::new(1.5, Color32::from_rgb(91, 178, 218))
+    } else if response.hovered() && enabled {
+        Stroke::new(1.0, Color32::from_rgb(105, 148, 181))
+    } else {
+        Stroke::new(1.0, Color32::from_rgb(54, 75, 93))
+    };
+    ui.painter().rect(rect, 7.0, fill, stroke, StrokeKind::Inside);
+
+    let marker = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 20.0, rect.center().y),
+        egui::vec2(18.0, 18.0),
+    );
+    ui.painter().rect(
+        marker,
+        4.0,
+        if allowed {
+            player_color
+        } else {
+            Color32::TRANSPARENT
+        },
+        Stroke::new(
+            1.5,
+            if allowed {
+                player_color
+            } else {
+                Color32::from_rgb(103, 130, 151)
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    if allowed {
+        let check_stroke = Stroke::new(2.0, Color32::WHITE);
+        let check_midpoint = egui::pos2(marker.left() + 8.0, marker.bottom() - 4.0);
+        ui.painter().line_segment(
+            [egui::pos2(marker.left() + 4.0, marker.center().y), check_midpoint],
+            check_stroke,
+        );
+        ui.painter().line_segment(
+            [check_midpoint, egui::pos2(marker.right() - 3.0, marker.top() + 4.0)],
+            check_stroke,
+        );
+    }
+
+    ui.painter().with_clip_rect(rect.shrink2(egui::vec2(10.0, 0.0))).text(
+        egui::pos2(marker.right() + 12.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        display_name,
+        egui::FontId::proportional(17.0),
+        if enabled || allowed {
+            player_color
+        } else {
+            player_color.gamma_multiply(0.55)
+        },
+    );
+    response
+}
+
+/// Draws the immediate, per-player protection-access controls for one world.
+fn draw_protection_access_modal(
+    context: &egui::Context,
+    images: &ImageIds,
+    planet: &Planet,
+    session: &MultiplayerSession,
+) -> (bool, Vec<(crate::core::identity::PlayerId, bool)>) {
+    let local_player = session.membership.as_ref().map(|member| member.player_id);
+    let members = session
+        .active_game
+        .as_ref()
+        .map(|game| {
+            game.members
+                .iter()
+                .filter(|member| {
+                    Some(member.player_id) != local_player
+                        && game
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .is_ok_and(|player| !player.spectator)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let content_rect = context.content_rect();
+    let available = content_rect.size() - egui::vec2(32.0, 32.0);
+    let desired_height = 242.0 + members.len() as f32 * 46.0;
+    let size = egui::vec2(560.0_f32.min(available.x), desired_height.min(available.y));
+    let modal_id = egui::Id::new(("protection access", planet.id));
+    let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
+        let mut changes = Vec::new();
+        let mut close = false;
+        let header = draw_modal_header(
+            ui,
+            rect,
+            content,
+            RichText::new("Protection Access")
+                .size(21.0)
+                .strong()
+                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            images.get("protect"),
+        );
+        let footer = egui::Rect::from_min_size(
+            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+        );
+        let intro = egui::Rect::from_min_max(
+            egui::pos2(content.left(), header.bottom() + 12.0),
+            egui::pos2(content.right(), (header.bottom() + 52.0).min(footer.top())),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(intro), |ui| {
+            ui.set_clip_rect(intro);
+            ui.vertical_centered(|ui| {
+                ui.small(format!(
+                    "Choose who may send fleets to {}. Changes apply immediately.",
+                    planet.name
+                ));
+            });
+        });
+
+        let list_top = (intro.bottom() + 20.0).min(footer.top());
+        let list_bottom = (footer.top() - 12.0).max(list_top);
+        let list = egui::Rect::from_min_max(
+            egui::pos2(content.left(), list_top),
+            egui::pos2(content.right(), list_bottom),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list);
+            egui::ScrollArea::vertical()
+                .id_salt(("protection access players", planet.id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_width(list.width());
+                    ui.spacing_mut().item_spacing.y = 7.0;
+                    for member in &members {
+                        let allowed = planet.protection_permissions.contains(&member.player_id);
+                        let available_width = ui.available_width();
+                        let row_width = (available_width * PROTECTION_PLAYER_ROW_WIDTH_FRACTION)
+                            .clamp(PROTECTION_PLAYER_ROW_MIN_WIDTH, PROTECTION_PLAYER_ROW_MAX_WIDTH)
+                            .min(available_width);
+                        let response = ui
+                            .horizontal(|ui| {
+                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                                protection_player_row(
+                                    ui,
+                                    row_width,
+                                    42.0,
+                                    &member.display_name,
+                                    session.player_color(member.player_id).color().to_color32(),
+                                    allowed,
+                                    !session.protection_update_pending,
+                                )
+                            })
+                            .inner;
+                        if response.clicked() {
+                            changes.push((member.player_id, !allowed));
+                        }
+                    }
+                });
+        });
+
+        ui.scope(|ui| {
+            style_modal_buttons(ui);
+            let width = 110.0_f32.min(footer.width());
+            let button_rect = egui::Rect::from_center_size(
+                footer.center(),
+                egui::vec2(width, MODAL_BUTTON_HEIGHT),
+            );
+            if ui
+                .put(
+                    button_rect,
+                    egui::Button::new(
+                        RichText::new("Close")
+                            .size(17.0)
+                            .strong()
+                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                    ),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .clicked()
+            {
+                close = true;
+            }
+        });
+        (close, changes)
+    });
+    let should_close = response.should_close();
+    let (mut close, changes) = response.inner;
+    close |= should_close;
+    (close, changes)
 }
 
 /// Draws the input-blocking confirmation for a synchronized Railgun strike.
@@ -609,179 +1067,118 @@ fn draw_railgun_confirmation(
 ) -> Option<ConfirmationAction> {
     let content_rect = context.content_rect();
     let available = content_rect.size() - egui::vec2(32.0, 32.0);
-    let size = egui::vec2(610.0_f32.min(available.x), 300.0_f32.min(available.y));
+    let size = egui::vec2(610.0_f32.min(available.x), 330.0_f32.min(available.y));
     let modal_id = egui::Id::new("orbital railgun confirmation");
-    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min;
-    let area = egui::Modal::default_area(modal_id).anchor(Align2::LEFT_TOP, panel_offset);
-    let response =
-        egui::Modal::new(modal_id).area(area).frame(egui::Frame::NONE).show(context, |ui| {
-            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-            ui.painter().image(
-                images.get("panel"),
-                rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-
-            let mut action = None;
-            const VERTICAL_INSET: f32 = 40.0;
-            const HEADING_TO_COST_GAP: f32 = 24.0;
-            const COST_TO_DETAILS_GAP: f32 = 24.0;
-            const DETAIL_LINE_GAP: f32 = 8.0;
-            const BUTTON_HEIGHT: f32 = 40.0;
-            const BUTTON_BOTTOM_INSET: f32 = 32.0;
-            let content_rect = rect.shrink2(egui::vec2(34.0, VERTICAL_INSET));
-            ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(
-                        RichText::new(format!(
-                            "Are you sure you want to shoot planet {target_name}?"
-                        ))
-                        .size(21.0)
-                        .strong()
-                        .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                    );
-                    ui.add_space(HEADING_TO_COST_GAP);
-                    let deuterium_amount = RichText::new(format_thousands(deuterium_cost))
-                        .size(20.0)
-                        .strong()
-                        .color(Color32::WHITE);
-                    let energy_amount = RichText::new(format_thousands(energy_cost))
-                        .size(20.0)
-                        .strong()
-                        .color(Color32::WHITE);
-                    let text_width = |text: RichText| {
-                        egui::WidgetText::from(text)
-                            .into_galley(
-                                ui,
-                                Some(egui::TextWrapMode::Extend),
-                                f32::INFINITY,
-                                TextStyle::Body,
-                            )
-                            .size()
-                            .x
-                    };
-                    let row_width = 50.0
-                        + 8.0
-                        + text_width(deuterium_amount.clone())
-                        + 28.0
-                        + 50.0
-                        + 8.0
-                        + text_width(energy_amount.clone());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                        let (deuterium_icon, _) =
-                            ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
-                        ui.painter().image(
-                            images.get("deuterium"),
-                            deuterium_icon,
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                        ui.add_space(8.0);
-                        ui.label(deuterium_amount);
-                        ui.add_space(28.0);
-                        let (energy_icon, _) =
-                            ui.allocate_exact_size(egui::vec2(50.0, 35.0), Sense::hover());
-                        ui.painter().image(
-                            images.get("energy"),
-                            energy_icon,
-                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                        ui.add_space(8.0);
-                        ui.label(energy_amount);
-                    });
-                    ui.add_space(COST_TO_DETAILS_GAP);
-                    ui.label(
-                        RichText::new(format!("Orbital Railguns firing: {railgun_count}"))
+    let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
+        let header = draw_modal_header(
+            ui,
+            rect,
+            content,
+            RichText::new("ORBITAL RAILGUN STRIKE")
+                .size(21.0)
+                .strong()
+                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            images.get("railgun strike"),
+        );
+        let footer = egui::Rect::from_min_size(
+            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+        );
+        let body_top = (header.bottom() + 6.0).min(footer.top());
+        let body = egui::Rect::from_min_max(
+            egui::pos2(content.left(), body_top),
+            egui::pos2(content.right(), (footer.top() - 10.0).max(body_top)),
+        );
+        ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            ui.set_clip_rect(body);
+            egui::ScrollArea::vertical()
+                .id_salt("railgun confirmation details")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_width(body.width());
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(
+                            RichText::new(format!(
+                                "Fire every available Railgun at {target_name}?"
+                            ))
                             .size(18.0)
-                            .strong(),
-                    );
-                    ui.add_space(DETAIL_LINE_GAP);
-                    ui.label(
-                        RichText::new(format!(
-                            "Destruction chance: {}%",
-                            chance_basis_points / 100,
-                        ))
-                        .size(18.0)
-                        .strong(),
-                    );
-                });
-
-                let button_row_height = BUTTON_HEIGHT.max(ui.spacing().interact_size.y);
-                let button_row_rect = egui::Rect::from_min_max(
-                    egui::pos2(
-                        content_rect.left(),
-                        rect.bottom() - BUTTON_BOTTOM_INSET - button_row_height,
-                    ),
-                    egui::pos2(content_rect.right(), rect.bottom() - BUTTON_BOTTOM_INSET),
-                );
-                ui.scope_builder(UiBuilder::new().max_rect(button_row_rect), |ui| {
-                    ui.spacing_mut().interact_size.y = BUTTON_HEIGHT;
-                    let widgets = &mut ui.style_mut().visuals.widgets;
-                    for (visuals, fill, stroke) in [
-                        (
-                            &mut widgets.inactive,
-                            ABANDON_CONFIRMATION_BUTTON_FILL,
-                            Color32::from_rgb(74, 99, 122),
-                        ),
-                        (
-                            &mut widgets.hovered,
-                            Color32::from_rgb(31, 47, 61),
-                            Color32::from_rgb(123, 158, 188),
-                        ),
-                        (
-                            &mut widgets.active,
-                            Color32::from_rgb(39, 94, 123),
-                            Color32::from_rgb(139, 183, 216),
-                        ),
-                    ] {
-                        visuals.bg_fill = fill;
-                        visuals.weak_bg_fill = fill;
-                        visuals.bg_stroke = Stroke::new(1.0, stroke);
-                        visuals.corner_radius = egui::CornerRadius::same(6);
-                        visuals.expansion = 0.0;
-                    }
-
-                    ui.horizontal(|ui| {
-                        const BUTTON_WIDTH: f32 = 96.0;
-                        const BUTTON_GAP: f32 = 12.0;
-                        let row_width = BUTTON_WIDTH * 2.0 + BUTTON_GAP;
-                        ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-                        ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                        let button = |label| {
-                            egui::Button::new(
-                                RichText::new(label)
-                                    .size(17.0)
-                                    .strong()
-                                    .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                            )
+                            .strong()
+                            .color(Color32::WHITE),
+                        );
+                        ui.add_space(12.0);
+                        let deuterium_amount = RichText::new(format_thousands(deuterium_cost))
+                            .size(20.0)
+                            .strong()
+                            .color(Color32::WHITE);
+                        let energy_amount = RichText::new(format_thousands(energy_cost))
+                            .size(20.0)
+                            .strong()
+                            .color(Color32::WHITE);
+                        let text_width = |text: RichText| {
+                            egui::WidgetText::from(text)
+                                .into_galley(
+                                    ui,
+                                    Some(egui::TextWrapMode::Extend),
+                                    f32::INFINITY,
+                                    TextStyle::Body,
+                                )
+                                .size()
+                                .x
                         };
-                        if ui
-                            .add_enabled_ui(has_deuterium, |ui| {
-                                ui.add_sized([BUTTON_WIDTH, BUTTON_HEIGHT], button("Yes"))
-                            })
-                            .inner
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            action = Some(ConfirmationAction::Confirm);
-                        }
-                        if ui
-                            .add_sized([BUTTON_WIDTH, BUTTON_HEIGHT], button("No"))
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            action = Some(ConfirmationAction::Cancel);
-                        }
+                        let icon_width = 42.0;
+                        let row_width = icon_width
+                            + 7.0
+                            + text_width(deuterium_amount.clone())
+                            + 22.0
+                            + icon_width
+                            + 7.0
+                            + text_width(energy_amount.clone());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
+                            let (deuterium_icon, _) = ui
+                                .allocate_exact_size(egui::vec2(icon_width, 30.0), Sense::hover());
+                            ui.painter().image(
+                                images.get("deuterium"),
+                                deuterium_icon,
+                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                            ui.add_space(7.0);
+                            ui.label(deuterium_amount);
+                            ui.add_space(22.0);
+                            let (energy_icon, _) = ui
+                                .allocate_exact_size(egui::vec2(icon_width, 30.0), Sense::hover());
+                            ui.painter().image(
+                                images.get("energy"),
+                                energy_icon,
+                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                            ui.add_space(7.0);
+                            ui.label(energy_amount);
+                        });
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new(format!("Orbital Railguns firing: {railgun_count}"))
+                                .size(17.0)
+                                .strong(),
+                        );
+                        ui.add_space(5.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Destruction chance: {}%",
+                                chance_basis_points / 100,
+                            ))
+                            .size(17.0)
+                            .strong(),
+                        );
                     });
                 });
-            });
-            action
         });
+        draw_confirmation_buttons(ui, footer, has_deuterium)
+    });
 
     if response.should_close() {
         Some(ConfirmationAction::Cancel)
@@ -791,13 +1188,12 @@ fn draw_railgun_confirmation(
 }
 
 /// Selects the stationed fleet silhouette shown beside a world shortcut.
-fn world_shortcut_fleet_image(planet: &Planet) -> Option<&'static str> {
-    if planet.has(&Unit::war_sun()) {
+fn world_shortcut_fleet_image(army: &Army) -> Option<&'static str> {
+    if army.amount(&Unit::war_sun()) > 0 {
         Some("mission destroy")
-    } else if !planet.has_fleet() {
+    } else if !army.iter().any(|(unit, count)| unit.is_ship() && *count > 0) {
         None
-    } else if planet
-        .army
+    } else if army
         .iter()
         .all(|(unit, count)| *count == 0 || !unit.is_ship() || *unit == Unit::probe())
     {
@@ -807,23 +1203,44 @@ fn world_shortcut_fleet_image(planet: &Planet) -> Option<&'static str> {
     }
 }
 
+/// Iterates the controller fleet first, then protection fleets in stable player order.
+fn world_shortcut_fleet_icons<'a>(
+    planet: &'a Planet,
+    controller_fleet_color: Color32,
+    session: &'a MultiplayerSession,
+) -> impl Iterator<Item = (&'static str, Color32)> + 'a {
+    std::iter::once((planet.army.controller(), controller_fleet_color))
+        .chain(
+            planet.army.protectors().map(|(player_id, army)| {
+                (army, session.player_color(player_id).color().to_color32())
+            }),
+        )
+        .filter_map(|(army, color)| world_shortcut_fleet_image(army).map(|image| (image, color)))
+}
+
 /// Draws one compact, fully clickable world shortcut.
 fn draw_world_shortcut(
     ui: &mut Ui,
     planet: &Planet,
     is_home: bool,
-    fleet_color: Color32,
+    controller_fleet_color: Color32,
+    session: &MultiplayerSession,
     images: &ImageIds,
     scale: f32,
 ) -> bool {
     let available_width = ui.available_width();
     const FLEET_ICON_GAP: f32 = 6.0;
     const FLEET_ICON_SIZE: f32 = 20.0;
-    let fleet_image = world_shortcut_fleet_image(planet);
-    let fleet_icon_width = if fleet_image.is_some() {
-        (FLEET_ICON_GAP + FLEET_ICON_SIZE) * scale
-    } else {
+    const FLEET_ICON_SPACING: f32 = 3.0;
+    let fleet_icon_count =
+        world_shortcut_fleet_icons(planet, controller_fleet_color, session).count();
+    let fleet_icon_width = if fleet_icon_count == 0 {
         0.0
+    } else {
+        (FLEET_ICON_GAP
+            + FLEET_ICON_SIZE * fleet_icon_count as f32
+            + FLEET_ICON_SPACING * fleet_icon_count.saturating_sub(1) as f32)
+            * scale
     };
     let crown_width = if is_home {
         19.0 * scale
@@ -884,10 +1301,16 @@ fn draw_world_shortcut(
         ui.painter().add(crown);
     }
 
-    if let Some(fleet_image) = fleet_image {
+    for (index, (fleet_image, fleet_color)) in
+        world_shortcut_fleet_icons(planet, controller_fleet_color, session).enumerate()
+    {
         let fleet_icon_rect = egui::Rect::from_center_size(
             egui::pos2(
-                text_x + name_size.x + FLEET_ICON_GAP * scale + FLEET_ICON_SIZE * scale * 0.5,
+                text_x
+                    + name_size.x
+                    + FLEET_ICON_GAP * scale
+                    + FLEET_ICON_SIZE * scale * 0.5
+                    + index as f32 * (FLEET_ICON_SIZE + FLEET_ICON_SPACING) * scale,
                 rect.center().y,
             ),
             egui::Vec2::splat(FLEET_ICON_SIZE * scale),
@@ -936,6 +1359,7 @@ fn draw_owned_worlds_widget(
     context: &egui::Context,
     map: &Map,
     player: &Player,
+    session: &MultiplayerSession,
     state: &mut UiState,
     settings: &mut Settings,
     images: &ImageIds,
@@ -983,6 +1407,7 @@ fn draw_owned_worlds_widget(
                             planet,
                             planet.id == player.home_planet,
                             fleet_color,
+                            session,
                             images,
                             scale,
                         ) {
@@ -1010,6 +1435,7 @@ fn draw_owned_worlds_widget(
                             planet,
                             planet.id == player.home_planet,
                             fleet_color,
+                            session,
                             images,
                             scale,
                         ) {
@@ -1044,7 +1470,7 @@ pub(crate) fn known_planet_counts(
         } else if player.controls(planet) {
             planet.controlled
         } else {
-            player.last_info(planet, missions).and_then(|info| info.controlled)
+            player.known_controller(planet, missions)
         };
         if let Some(controller) = controller {
             *counts.entry(controller).or_default() += 1;
@@ -1106,6 +1532,11 @@ fn draw_players_widget_with_controls(
                     for member in members {
                         ui.horizontal(|ui| {
                             let is_local = member.player_id == local_player.id;
+                            let is_eliminated = game
+                                .persisted
+                                .state
+                                .player(member.player_id)
+                                .is_ok_and(|player| player.spectator);
                             let connected = session.local_practice || member.connected;
                             let color = session.player_color(member.player_id);
                             let [red, green, blue] = color.rgb();
@@ -1145,7 +1576,9 @@ fn draw_players_widget_with_controls(
                             let progress = egui::WidgetText::from(
                                 RichText::new(format!(
                                     "{}/{}",
-                                    if is_local {
+                                    if is_eliminated {
+                                        "0".to_owned()
+                                    } else if is_local {
                                         local_progress.to_string()
                                     } else {
                                         counts
@@ -1171,7 +1604,9 @@ fn draw_players_widget_with_controls(
                             });
                             let name = egui::WidgetText::from(
                                 RichText::new(&member.display_name).size(14.0 * scale).strong().color(
-                                    if connected {
+                                    if is_eliminated {
+                                        Color32::from_rgb(142, 148, 156)
+                                    } else if connected {
                                         ui.visuals().text_color()
                                     } else {
                                         Color32::from_rgb(174, 181, 190)
@@ -1185,24 +1620,25 @@ fn draw_players_widget_with_controls(
                                     - ui.spacing().item_spacing.x).max(0.0),
                                 TextStyle::Body,
                             );
-                            if session.local_practice {
-                                let sense = if session.busy {
-                                    Sense::hover()
-                                } else {
+                            let name_response = if session.local_practice {
+                                let interactive = !is_local && !session.busy;
+                                let sense = if interactive {
                                     Sense::click()
+                                } else {
+                                    Sense::hover()
                                 };
-                                let response = ui
-                                    .add(egui::Label::new(name).sense(sense))
-                                    .on_hover_cursor(CursorIcon::PointingHand)
-                                    .on_hover_text("Control this empire and edit its turn draft.");
-                                if response.hovered() && !session.busy {
+                                let response = ui.add(egui::Label::new(name).sense(sense));
+                                let response = if interactive {
+                                    response.on_hover_cursor(CursorIcon::PointingHand)
+                                } else {
+                                    response
+                                };
+                                if interactive && response.hovered() {
                                     ui.painter().line_segment(
                                         [response.rect.left_bottom(), response.rect.right_bottom()],
                                         Stroke::new(
-                                            1.0 * scale,
-                                            Color32::from_rgba_unmultiplied(
-                                                red, green, blue, 190,
-                                            ),
+                                            scale,
+                                            Color32::from_rgba_unmultiplied(red, green, blue, 190),
                                         ),
                                     );
                                 }
@@ -1219,11 +1655,20 @@ fn draw_players_widget_with_controls(
                                         );
                                     }
                                 }
+                                response
                             } else {
-                                ui.add(egui::Label::new(name));
+                                ui.add(egui::Label::new(name))
+                            };
+                            if is_eliminated {
+                                ui.painter().line_segment(
+                                    [name_response.rect.left_center(), name_response.rect.right_center()],
+                                    Stroke::new(1.4 * scale, Color32::from_rgb(190, 82, 82)),
+                                );
                             }
                             let progress = ui.add(egui::Label::new(progress));
-                            if is_local {
+                            if is_eliminated {
+                                progress.on_hover_small("This player has been eliminated.");
+                            } else if is_local {
                                 progress.on_hover_small(
                                     "Your controlled planets and the number needed to win. You must also retain your home planet.",
                                 );
@@ -1311,10 +1756,7 @@ fn draw_mission_report_unit(
         } else {
             total.to_string()
         }
-    } else if report.mission.owner == player.id
-        && side == Side::Defender
-        && unit.revealed_by_probes(report.scout_probes)
-    {
+    } else if mission_report_unit_is_revealed_by_probes(report, player.id, &side, unit) {
         // Even if attacker lost combat, he can see enemy starting units with scouts.
         total.to_string()
     } else {
@@ -1350,6 +1792,28 @@ fn draw_mission_report_unit(
             Align2::LEFT_BOTTOM,
         );
     });
+}
+
+/// Returns whether a report discloses one unit through participation, victory, or spy intel.
+fn mission_report_unit_is_visible(
+    report: &MissionReport,
+    player_id: PlayerId,
+    side: &Side,
+    unit: &Unit,
+) -> bool {
+    report.can_see(side, player_id)
+        || mission_report_unit_is_revealed_by_probes(report, player_id, side, unit)
+}
+
+fn mission_report_unit_is_revealed_by_probes(
+    report: &MissionReport,
+    player_id: PlayerId,
+    side: &Side,
+    unit: &Unit,
+) -> bool {
+    report.mission.owner == player_id
+        && *side == Side::Defender
+        && unit.revealed_by_probes(report.scout_probes)
 }
 
 /// Draws a full-size, two-column unit group in a mission report.
@@ -2120,13 +2584,14 @@ fn resource_bar_content_width(
     width + resource_bar_gap(compact, scale) * 5.0
 }
 
-fn draw_resource_tooltip(
+fn draw_resource_tooltip_with_trade(
     ui: &mut Ui,
     resource: ResourceName,
     map: &Map,
     player: &Player,
     images: &ImageIds,
     action_demand: usize,
+    trade_incoming: Resources,
 ) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
@@ -2138,6 +2603,10 @@ fn draw_resource_tooltip(
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.style_mut().interaction.selectable_labels = true;
                 draw_resource_production_row(ui, map, player, resource, action_demand);
+                let incoming = trade_incoming.get(&resource);
+                if incoming > 0 {
+                    ui.small(format!("Trade: +{incoming}"));
+                }
             });
             ui.add_space(3.0);
             ui.small(resource.description());
@@ -2147,8 +2616,28 @@ fn draw_resource_tooltip(
     .inner
 }
 
+#[cfg(test)]
+fn draw_resource_tooltip(
+    ui: &mut Ui,
+    resource: ResourceName,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+    action_demand: usize,
+) -> egui::Rect {
+    draw_resource_tooltip_with_trade(
+        ui,
+        resource,
+        map,
+        player,
+        images,
+        action_demand,
+        Resources::default(),
+    )
+}
+
 /// Draws the resources interface and emits any resulting local actions.
-fn draw_resources(
+fn draw_resources_with_trade(
     ui: &mut Ui,
     settings: &Settings,
     map: &Map,
@@ -2157,6 +2646,7 @@ fn draw_resources(
     compact: bool,
     scale: f32,
     action_demand: usize,
+    trade_incoming: Resources,
 ) {
     let gap = resource_bar_gap(compact, scale);
     let (n_owned, n_max_owned) = player.planets_owned(map, settings);
@@ -2228,7 +2718,15 @@ fn draw_resources(
 
             if settings.show_hover {
                 response.on_hover_ui(|ui| {
-                    draw_resource_tooltip(ui, resource, map, player, images, action_demand);
+                    draw_resource_tooltip_with_trade(
+                        ui,
+                        resource,
+                        map,
+                        player,
+                        images,
+                        action_demand,
+                        trade_incoming,
+                    );
                 });
             }
 
@@ -2256,14 +2754,39 @@ fn draw_resources(
     });
 }
 
+#[cfg(test)]
+fn draw_resources(
+    ui: &mut Ui,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+    compact: bool,
+    scale: f32,
+    action_demand: usize,
+) {
+    draw_resources_with_trade(
+        ui,
+        settings,
+        map,
+        player,
+        images,
+        compact,
+        scale,
+        action_demand,
+        Resources::default(),
+    );
+}
+
 /// Shows turn, ownership, and stockpile totals in the same framed style as the world list.
-fn draw_resources_widget(
+fn draw_resources_widget_with_trade(
     context: &egui::Context,
     settings: &Settings,
     map: &Map,
     player: &Player,
     images: &ImageIds,
     action_demand: usize,
+    trade_incoming: Resources,
 ) -> egui::Rect {
     let scale = strategic_hud_scale(context.content_rect().size());
     egui::Area::new("stellarion_resources".into())
@@ -2292,11 +2815,41 @@ fn draw_resources_widget(
                     scale,
                     action_demand,
                 ) > max_width;
-                draw_resources(ui, settings, map, player, images, compact, scale, action_demand);
+                draw_resources_with_trade(
+                    ui,
+                    settings,
+                    map,
+                    player,
+                    images,
+                    compact,
+                    scale,
+                    action_demand,
+                    trade_incoming,
+                );
             });
         })
         .response
         .rect
+}
+
+#[cfg(test)]
+fn draw_resources_widget(
+    context: &egui::Context,
+    settings: &Settings,
+    map: &Map,
+    player: &Player,
+    images: &ImageIds,
+    action_demand: usize,
+) -> egui::Rect {
+    draw_resources_widget_with_trade(
+        context,
+        settings,
+        map,
+        player,
+        images,
+        action_demand,
+        Resources::default(),
+    )
 }
 
 /// Explains a world's climate flavor and the Solar Satellite output of its stellar zone.
@@ -2347,10 +2900,10 @@ fn draw_planet_overview(
     map: &mut Map,
     player: &mut Player,
     settings: &Settings,
-    message: &mut MessageWriter<MessageMsg>,
     pending: &mut PendingTurnCommands,
+    recall_protection: &mut MessageWriter<RecallProtectionMsg>,
     session: &MultiplayerSession,
-    abandon_confirmation: &mut Option<PlanetId>,
+    state: &mut UiState,
     detail_line_progress: &[f32; PLANET_DETAIL_LINE_COUNT],
     right_side: bool,
     images: &ImageIds,
@@ -2438,57 +2991,62 @@ fn draw_planet_overview(
         });
     });
 
-    if player.controls(planet) {
-        ui.scope_builder(UiBuilder::new().max_rect(rect.shrink(15.)), |ui| {
-            ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                let members = session
-                    .active_game
-                    .as_ref()
-                    .map(|game| {
-                        game.members
-                            .iter()
-                            .filter(|member| member.player_id != player.id)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if members.is_empty() {
-                    return;
-                }
-                let granted = planet.protection_permissions.len();
-                ComboBox::from_id_salt(("protection access", planet.id))
-                    .selected_text(format!("🛡 Protection access ({granted})"))
-                    .show_ui(ui, |ui| {
-                        for member in members {
-                            let allowed = planet.protection_permissions.contains(&member.player_id);
-                            let label = RichText::new(&member.display_name)
-                                .color(session.player_color(member.player_id).color().to_color32());
-                            if ui.selectable_label(allowed, label).clicked() {
-                                let next = !allowed;
-                                if pending.push(TurnCommand::SetProtectionPermission {
-                                    planet_id: planet.id,
-                                    protector: member.player_id,
-                                    allowed: next,
-                                }) {
-                                    if next {
-                                        planet.protection_permissions.insert(member.player_id);
-                                    } else {
-                                        planet.protection_permissions.remove(&member.player_id);
-                                    }
-                                } else {
-                                    message.write(MessageMsg::error(
-                                        "This turn already contains the maximum number of commands.",
-                                    ));
-                                }
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_small_ext(
-                        "Allow selected players to send Protect missions to this world. Revoking \
-                        access recalls their travelling and stationed protection fleets to their \
-                        home planets.",
-                    );
-            });
+    let protection_available = player.controls(planet)
+        && session.active_game.as_ref().is_some_and(|game| {
+            game.persisted.state.players.iter().filter(|player| !player.spectator).count() >= 3
+        });
+    let action_size = egui::vec2(40.0, 40.0);
+    let action_position = |index: usize| {
+        egui::Rect::from_min_size(
+            rect.left_bottom() + egui::vec2(20.0 + index as f32 * 48.0, -action_size.y - 7.0),
+            action_size,
+        )
+    };
+    let mut action_index = 0;
+    if protection_available {
+        let action_rect = action_position(action_index);
+        action_index += 1;
+        let response = ui
+            .interact(
+                action_rect,
+                ui.id().with(("protection access action", planet.id)),
+                Sense::click(),
+            )
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_ui(|ui| draw_protection_access_tooltip(ui, planet, session));
+        ui.add_tinted_image_painter(
+            images.get("protect"),
+            action_rect,
+            planet_action_icon_tint(&response),
+        );
+        if response.clicked() {
+            state.protection_access = Some(planet.id);
+        }
+    }
+
+    if planet.is_protected_by(player.id) {
+        let action_rect = action_position(action_index);
+        action_index += 1;
+        ui.add_enabled_ui(pending.can_accept_commands(), |ui| {
+            let response = ui
+                .interact(
+                    action_rect,
+                    ui.id().with(("recall protection action", planet.id)),
+                    Sense::click(),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_small_ext("Recall your entire protection fleet to your home planet.")
+                .on_disabled_hover_small_ext(
+                    "Continue your turn before changing protection orders.",
+                );
+            ui.add_tinted_image_painter(
+                images.get("recall"),
+                action_rect,
+                planet_action_icon_tint(&response),
+            );
+            if response.clicked() {
+                recall_protection.write(RecallProtectionMsg::new(planet.id));
+            }
         });
     }
 
@@ -2498,9 +3056,7 @@ fn draw_planet_overview(
         let controlled =
             pending.can_accept_commands() && player.controls(planet) && !player.owns(planet);
 
-        let size = egui::vec2(40., 40.);
-        let pos = rect.left_bottom() - egui::vec2(-20., size.y + 7.);
-        let rect = egui::Rect::from_min_size(pos, size);
+        let rect = action_position(action_index);
 
         if owned {
             ui.add_enabled_ui(planet.buy.is_empty(), |ui| {
@@ -2519,10 +3075,14 @@ fn draw_planet_overview(
                     response = response.on_hover_cursor(CursorIcon::PointingHand);
                 }
 
-                ui.add_image_painter(images.get("abandon"), rect);
+                ui.add_tinted_image_painter(
+                    images.get("abandon"),
+                    rect,
+                    planet_action_icon_tint(&response),
+                );
 
                 if response.clicked() {
-                    *abandon_confirmation = Some(planet.id);
+                    state.abandon_confirmation = Some(planet.id);
                 }
             });
         } else if controlled {
@@ -2542,27 +3102,42 @@ fn draw_planet_overview(
                         response = response.on_hover_cursor(CursorIcon::PointingHand);
                     }
 
-                    ui.add_image_painter(images.get("colonize"), rect);
+                    ui.add_tinted_image_painter(
+                        images.get("colonize"),
+                        rect,
+                        planet_action_icon_tint(&response),
+                    );
 
                     if response.clicked() {
-                        if !pending.push(TurnCommand::ColonizePlanet {
-                            planet_id: planet.id,
-                        }) {
-                            message.write(MessageMsg::error(
-                                "This turn already contains the maximum number of commands.",
-                            ));
-                            return;
-                        }
-                        let colony_ships = planet.army.entry(Unit::colony_ship()).or_insert(1);
-                        *colony_ships = colony_ships.saturating_sub(1);
-                        planet.colonize(player.id);
-                        // The map presentation announces the ownership change once, including
-                        // direct colonization and colonies established by arriving missions.
+                        state.colonize_confirmation = Some(planet.id);
                     }
                 },
             );
         }
     }
+}
+
+/// Adds an approved colonize command and updates the local turn projection.
+fn colonize_planet(
+    id: PlanetId,
+    map: &mut Map,
+    player: &Player,
+    message: &mut MessageWriter<MessageMsg>,
+    pending: &mut PendingTurnCommands,
+) {
+    if !pending.push(TurnCommand::ColonizePlanet {
+        planet_id: id,
+    }) {
+        message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+        return;
+    }
+
+    let planet = map.get_mut(id);
+    let colony_ships = planet.army.entry(Unit::colony_ship()).or_insert(1);
+    *colony_ships = colony_ships.saturating_sub(1);
+    planet.colonize(player.id);
+    // The map presentation announces the ownership change once, including direct colonization
+    // and colonies established by arriving missions.
 }
 
 /// Adds an approved abandon command and updates the local turn projection.
@@ -2581,8 +3156,7 @@ fn abandon_planet(
     if !pending.push(TurnCommand::AbandonPlanet {
         planet_id: planet.id,
     }) {
-        message
-            .write(MessageMsg::error("This turn already contains the maximum number of commands."));
+        message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
         return;
     }
     planet.abandon();
@@ -2644,59 +3218,70 @@ fn draw_overview(
 
             ui.vertical(|ui| {
                 for unit in units {
-                    let n = planet.army.combined_amount(&unit);
+                    let owner_count = planet.army.controller().amount(&unit);
+                    let combined_count = planet.army.combined_amount(&unit);
+                    let protection = protecting_unit_counts(planet, &unit);
 
-                    ui.add_enabled_ui(n > 0, |ui| {
-                        let response = ui.add_image(images.get(unit.to_lowername()), [50.; 2]);
-                        ui.add_text_on_image(
-                            n.to_string(),
-                            Color32::WHITE,
-                            TextStyle::Body,
-                            response.rect.left_bottom(),
-                            Align2::LEFT_BOTTOM,
-                        );
-                    })
-                    .response
-                    .on_hover_small(unit.to_name())
-                    .on_disabled_hover_small(unit.to_name());
+                    let response = ui
+                        .add_enabled_ui(combined_count > 0, |ui| {
+                            let response = ui.add_image(images.get(unit.to_lowername()), [50.; 2]);
+                            draw_overview_unit_counts(
+                                ui,
+                                response.rect,
+                                owner_count,
+                                &protection,
+                                session,
+                            );
+                        })
+                        .response;
+                    if combined_count > 0 {
+                        response.on_hover_small(unit.to_name());
+                    } else {
+                        response.on_disabled_hover_small(unit.to_name());
+                    }
                 }
             });
         }
     });
+}
 
-    if planet.army.protector_ids().next().is_some() {
-        ui.add_space(12.);
-        ui.separator();
-        ui.small("Stationed fleets");
-        let controller = planet.controlled.or(planet.owned);
-        for owner in controller.into_iter().chain(planet.army.protector_ids()) {
-            let fleet =
-                planet.mission_origin_army(owner).unwrap_or_else(|| planet.army.controller());
-            let ship_count = fleet
-                .iter()
-                .filter(|(unit, _)| unit.is_ship())
-                .map(|(_, count)| *count)
-                .fold(0, usize::saturating_add);
-            let name = session
-                .player_name(owner)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("Player {owner}"));
-            let details = fleet
-                .iter()
-                .filter(|(unit, count)| unit.is_ship() && **count > 0)
-                .map(|(unit, count)| format!("{count} {}", unit.to_name()))
-                .join("\n");
-            ui.colored_label(
-                session.player_color(owner).color().to_color32(),
-                RichText::new(format!("● {name}: {ship_count}")).small(),
-            )
-            .on_hover_small(if details.is_empty() {
-                "No ships stationed.".to_string()
-            } else {
-                details
-            });
-        }
+/// Paints the controller's count followed by smaller, player-colored protection contributions.
+fn draw_overview_unit_counts(
+    ui: &mut Ui,
+    image_rect: egui::Rect,
+    owner_count: usize,
+    protection: &[(PlayerId, usize)],
+    session: &MultiplayerSession,
+) {
+    ui.set_clip_rect(ui.clip_rect().intersect(image_rect));
+    let mut count_rect = ui.add_text_on_image(
+        owner_count.to_string(),
+        Color32::WHITE,
+        TextStyle::Body,
+        image_rect.left_bottom(),
+        Align2::LEFT_BOTTOM,
+    );
+    for (player_id, count) in protection {
+        count_rect = ui.add_text_on_image(
+            count.to_string(),
+            session.player_color(*player_id).color().to_color32(),
+            TextStyle::Small,
+            egui::pos2(count_rect.right(), image_rect.bottom()),
+            Align2::LEFT_BOTTOM,
+        );
     }
+}
+
+/// Returns the separately stationed protection contribution for one unit, in player order.
+fn protecting_unit_counts(planet: &Planet, unit: &Unit) -> Vec<(PlayerId, usize)> {
+    planet
+        .army
+        .protectors()
+        .filter_map(|(player_id, army)| {
+            let count = army.amount(unit);
+            (count > 0).then_some((player_id, count))
+        })
+        .collect()
 }
 
 /// Draws the report overview interface and emits any resulting local actions.
@@ -2797,6 +3382,7 @@ fn draw_mission_fleet_hover(
                     let response = ui.add_image(images.get(unit.to_lowername()), [50.; 2]);
                     ui.add_text_on_image(
                         if mission.owner != player.id
+                            && !mission.is_incoming_protection_for(player.id)
                             && !player.spectator
                             && mission
                                 .is_seen_by_phalanx(map, player)
@@ -2822,6 +3408,33 @@ fn draw_mission_fleet_hover(
                 .on_disabled_hover_small(unit.to_name());
             }
         });
+    });
+}
+
+/// Draws a combat role followed by independently colored participant names.
+fn draw_colored_combat_heading(
+    ui: &mut Ui,
+    role: &str,
+    role_color: Color32,
+    participants: &[(String, Color32)],
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(
+            RichText::new(if participants.is_empty() {
+                role.to_owned()
+            } else {
+                format!("{role} · ")
+            })
+            .strong()
+            .color(role_color),
+        );
+        for (index, (name, color)) in participants.iter().enumerate() {
+            if index > 0 {
+                ui.label(RichText::new(" + ").strong().color(role_color));
+            }
+            ui.label(RichText::new(name).strong().color(*color));
+        }
     });
 }
 
@@ -3056,15 +3669,19 @@ fn draw_combat_report(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Player {attacker_id}"));
     let defender_players = report.defender_players();
-    let defender_name = (!defender_players.is_empty()).then(|| {
-        defender_players
-            .iter()
-            .copied()
-            .map(|id| {
-                session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"))
-            })
-            .join(" + ")
-    });
+    let defender_names = defender_players
+        .iter()
+        .copied()
+        .map(|id| {
+            (
+                session
+                    .player_name(id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {id}")),
+                session.player_color(id).color().to_color32(),
+            )
+        })
+        .collect::<Vec<_>>();
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
@@ -3085,64 +3702,11 @@ fn draw_combat_report(
         });
         ui.vertical(|ui| {
             ui.set_width(defender_w);
-            ui.label(
-                RichText::new(
-                    defender_name.map_or_else(
-                        || "Defender".to_string(),
-                        |name| format!("Defender · {name}"),
-                    ),
-                )
-                .strong()
-                .color(defend_c.to_color32()),
-            );
+            draw_colored_combat_heading(ui, "Defender", defend_c.to_color32(), &defender_names);
             ui.visuals_mut().widgets.noninteractive.bg_stroke.color = defend_c.to_color32();
             ui.separator();
         });
     });
-
-    if defender_players.len() > 1 {
-        let ship_count = |army: &Army| {
-            army.iter()
-                .filter(|(unit, _)| unit.is_ship())
-                .map(|(_, count)| *count)
-                .fold(0, usize::saturating_add)
-        };
-        ui.horizontal(|ui| {
-            ui.add_space(40. + attacker_w);
-            ui.horizontal_wrapped(|ui| {
-                for defender in defender_players {
-                    let starting = if Some(defender) == defender_id {
-                        ship_count(report.planet.army.controller())
-                    } else {
-                        report.planet.army.protector(defender).map_or(0, ship_count)
-                    };
-                    let surviving = if Some(defender) == defender_id {
-                        ship_count(report.surviving_defender.controller()).saturating_add(
-                            combat
-                                .defender_retreat
-                                .as_ref()
-                                .map_or(0, |retreat| ship_count(&retreat.ships)),
-                        )
-                    } else {
-                        report.surviving_defender.protector(defender).map_or(0, ship_count)
-                    };
-                    let name = session
-                        .player_name(defender)
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!("Player {defender}"));
-                    ui.colored_label(
-                        session.player_color(defender).color().to_color32(),
-                        RichText::new(format!(
-                            "● {name}: {starting}→{surviving} (-{})",
-                            starting.saturating_sub(surviving)
-                        ))
-                        .small(),
-                    )
-                    .on_hover_small("Ships entering combat, surviving or retreating, and lost.");
-                }
-            });
-        });
-    }
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
@@ -3404,11 +3968,7 @@ fn draw_mission_info_hover(
         ui.small("🎯 Objective:");
 
         ui.spacing_mut().item_spacing.x = 4.;
-        let objective = if mission.owner == player.id {
-            mission.objective
-        } else {
-            Icon::Attacked
-        };
+        let objective = mission.displayed_objective(player.id);
         ui.add_image(images.get(objective.asset_key()), [20.; 2]);
         ui.small(objective.to_name());
     });
@@ -3420,7 +3980,8 @@ fn draw_mission_info_hover(
         ui.vertical(|ui| {
             ui.small(format!("📏 Distance: {:.1} AU", mission.distance(map)));
 
-            ui.small(format!("🚀 Movement: {:.2} AU/turn", mission.next_turn_movement(map)));
+            ui.small(format!("🚀 Next-turn movement: {:.2} AU", mission.next_turn_movement(map)))
+                .on_hover_small(mission_movement_tooltip(mission.jump_gate));
 
             let duration = mission.duration(map);
             ui.small(format!(
@@ -3431,8 +3992,9 @@ fn draw_mission_info_hover(
                 } else {
                     "s"
                 },
-                settings.turn + duration
-            ));
+                mission_arrival_turn(settings.turn, duration)
+            ))
+            .on_hover_small(mission_arrival_tooltip(settings.turn, duration));
         });
     });
 }
@@ -3647,9 +4209,10 @@ pub fn add_ui_images(
 /// Draws the ui interface and emits any resulting local actions.
 pub fn draw_ui(
     mut contexts: EguiContexts,
-    (mut send_mission, mut recall_mission): (
+    (mut send_mission, mut recall_mission, mut recall_protection): (
         MessageWriter<SendMissionMsg>,
         MessageWriter<RecallMissionMsg>,
+        MessageWriter<RecallProtectionMsg>,
     ),
     (mut message, mut multiplayer_requests): (
         MessageWriter<MessageMsg>,
@@ -3691,6 +4254,26 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
+            draw_joint_attack_notifications(
+                context,
+                &mut state,
+                &map,
+                &player,
+                &session,
+                &mut multiplayer_requests,
+                &mut message,
+                &images,
+            );
+            draw_trade_notifications(
+                context,
+                &mut state,
+                &map,
+                &player,
+                &session,
+                &mut multiplayer_requests,
+                &mut message,
+                &images,
+            );
             draw_players_widget_with_controls(
                 context,
                 &session,
@@ -3699,14 +4282,25 @@ pub fn draw_ui(
                 &missions.0,
                 Some(&mut multiplayer_requests),
             );
-            draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
-            draw_resources_widget(
+            draw_owned_worlds_widget(
+                context,
+                &map,
+                &player,
+                &session,
+                &mut state,
+                &mut settings,
+                &images,
+            );
+            draw_resources_widget_with_trade(
                 context,
                 &settings,
                 &map,
                 &player,
                 &images,
                 railgun_energy_demand,
+                session.active_game.as_ref().map_or_else(Resources::default, |game| {
+                    game.persisted.state.trade_incoming(player.id)
+                }),
             );
         }
     }
@@ -3761,7 +4355,7 @@ pub fn draw_ui(
             }
         }
 
-        let mut draw_planet_info = |contexts, id, map, player, abandon_confirmation, extension| {
+        let mut draw_planet_info = |contexts, id, map, player, state, extension| {
             let (window_w2, window_h2) = (518., 216.);
 
             draw_sliding_panel(
@@ -3797,10 +4391,10 @@ pub fn draw_ui(
                         map,
                         player,
                         &settings,
-                        &mut message,
                         &mut pending,
+                        &mut recall_protection,
                         &session,
-                        abandon_confirmation,
+                        state,
                         &detail_line_progress,
                         right_side,
                         &images,
@@ -3840,14 +4434,7 @@ pub fn draw_ui(
             if mode == PlanetPanelMode::Full {
                 include_planet_panel_rect(
                     &mut panel_rects,
-                    draw_planet_info(
-                        &mut contexts,
-                        id,
-                        &mut map,
-                        &mut player,
-                        &mut state.abandon_confirmation,
-                        true,
-                    ),
+                    draw_planet_info(&mut contexts, id, &mut map, &mut player, &mut state, true),
                 );
             }
         } else if let Some(info) = info {
@@ -3882,7 +4469,7 @@ pub fn draw_ui(
                             id,
                             &mut map,
                             &mut player,
-                            &mut state.abandon_confirmation,
+                            &mut state,
                             true,
                         ),
                     );
@@ -3890,27 +4477,13 @@ pub fn draw_ui(
             } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
                 include_planet_panel_rect(
                     &mut panel_rects,
-                    draw_planet_info(
-                        &mut contexts,
-                        id,
-                        &mut map,
-                        &mut player,
-                        &mut state.abandon_confirmation,
-                        false,
-                    ),
+                    draw_planet_info(&mut contexts, id, &mut map, &mut player, &mut state, false),
                 );
             }
         } else if !planet.is_destroyed && mode == PlanetPanelMode::Full {
             include_planet_panel_rect(
                 &mut panel_rects,
-                draw_planet_info(
-                    &mut contexts,
-                    id,
-                    &mut map,
-                    &mut player,
-                    &mut state.abandon_confirmation,
-                    false,
-                ),
+                draw_planet_info(&mut contexts, id, &mut map, &mut player, &mut state, false),
             );
         }
         planet_panel_hover_hold.set_panel_rects(panel_rects);
@@ -3979,6 +4552,7 @@ pub fn draw_ui(
                     &mut map,
                     &mut player,
                     &session,
+                    &mut multiplayer_requests,
                     is_hovered,
                     &keyboard,
                     &images,
@@ -4069,6 +4643,39 @@ pub fn draw_ui(
         );
     }
 
+    if let Some(id) = state.protection_access {
+        let protection_enabled = session.active_game.as_ref().is_some_and(|game| {
+            game.persisted.state.players.iter().filter(|player| !player.spectator).count() >= 3
+        });
+        let valid = protection_enabled
+            && map
+                .try_get(id)
+                .is_some_and(|planet| !planet.is_destroyed && player.controls(planet));
+        if !valid {
+            state.protection_access = None;
+        } else if let Ok(context) = contexts.ctx_mut() {
+            let (close, changes) =
+                draw_protection_access_modal(context, &images, map.get(id), &session);
+            if close {
+                state.protection_access = None;
+            }
+            for (protector, allowed) in changes {
+                let planet = map.get_mut(id);
+                if allowed {
+                    planet.protection_permissions.insert(protector);
+                } else {
+                    planet.protection_permissions.remove(&protector);
+                }
+                multiplayer_requests.write(MultiplayerRequest::SetProtectionPermission {
+                    planet_id: id,
+                    protector,
+                    allowed,
+                });
+                set_ui_sound(context, Some(SoundEffect::Button));
+            }
+        }
+    }
+
     if let Some(target) = state.railgun_confirmation {
         let origins = orbital_railgun_origins(&map, player.id, target);
         let already_committed = pending
@@ -4079,7 +4686,9 @@ pub fn draw_ui(
         let valid = pending.can_accept_commands()
             && !origins.is_empty()
             && !already_committed
-            && map.try_get(target).is_some_and(|planet| !planet.is_destroyed);
+            && map
+                .try_get(target)
+                .is_some_and(|planet| !planet.is_destroyed && !planet.is_protected_by(player.id));
 
         if !valid {
             state.railgun_confirmation = None;
@@ -4111,9 +4720,7 @@ pub fn draw_ui(
                                 "Railgun shots committed on {target_name}."
                             )));
                         } else {
-                            message.write(MessageMsg::error(
-                                "This turn already contains the maximum number of commands.",
-                            ));
+                            message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
                         }
                     }
                 }
@@ -4133,7 +4740,7 @@ pub fn draw_ui(
             state.abandon_confirmation = None;
         } else {
             if let Ok(context) = contexts.ctx_mut() {
-                if let Some(action) = draw_abandon_confirmation(context, &images) {
+                if let Some(action) = draw_abandon_confirmation(context, &images, &planet.name) {
                     state.abandon_confirmation = None;
                     if action == ConfirmationAction::Confirm {
                         abandon_planet(
@@ -4144,6 +4751,32 @@ pub fn draw_ui(
                             &mut message,
                             &mut pending,
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(id) = state.colonize_confirmation {
+        let (n_owned, n_max_owned) = player.planets_owned(&map, &settings);
+        let can_colonize = pending.can_accept_commands()
+            && map.try_get(id).is_some_and(|planet| {
+                !planet.is_moon()
+                    && player.controls(planet)
+                    && !player.owns(planet)
+                    && planet.army.controller().amount(&Unit::colony_ship()) > 0
+            })
+            && n_owned < n_max_owned;
+
+        if !can_colonize {
+            state.colonize_confirmation = None;
+        } else {
+            let planet_name = map.get(id).name.clone();
+            if let Ok(context) = contexts.ctx_mut() {
+                if let Some(action) = draw_colonize_confirmation(context, &images, &planet_name) {
+                    state.colonize_confirmation = None;
+                    if action == ConfirmationAction::Confirm {
+                        colonize_planet(id, &mut map, &player, &mut message, &mut pending);
                     }
                 }
             }

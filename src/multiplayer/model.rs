@@ -3,8 +3,126 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
+use crate::core::map::icon::Icon;
+use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
-use crate::core::simulation::{MatchStatus, PersistedGame, TurnSubmission};
+use crate::core::simulation::{
+    JointAttackContribution, MatchStatus, PersistedGame, TurnSubmission,
+};
+use crate::core::trading::TradeParty;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// One player's current response to a bilateral trade draft.
+pub enum TradeResponse {
+    /// This player must review or re-confirm the latest resource amounts.
+    #[default]
+    Pending,
+    /// This player accepts the currently displayed amounts.
+    Accepted,
+    /// This player rejected the trade for the current turn.
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// One player's editable side of a bilateral trade invitation.
+pub struct TradeParticipant {
+    /// Player contributing this side of the exchange.
+    pub player_id: PlayerId,
+    /// Owned world whose Trading Post supplies the player's capacity.
+    pub planet_id: usize,
+    /// Resources offered to the other participant.
+    pub resources: crate::core::resources::Resources,
+    /// Confirmation state for the latest two-sided draft.
+    pub response: TradeResponse,
+}
+
+impl TradeParticipant {
+    /// Converts an accepted participant into the deterministic settlement shape.
+    pub fn party(&self) -> TradeParty {
+        TradeParty {
+            player_id: self.player_id,
+            planet_id: self.planet_id,
+            resources: self.resources,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Private current-turn Trading Post negotiation shared by exactly two players.
+pub struct TradeInvitation {
+    /// Stable negotiation and eventual settlement identifier.
+    pub id: u64,
+    /// Turn during which this trade may be completed.
+    pub turn: u64,
+    /// Player who opened the other participant's Trading Post.
+    pub proposer: PlayerId,
+    /// Whether either participant rejected the negotiation.
+    pub canceled: bool,
+    /// Whether both latest resource amounts were accepted and reserved.
+    pub finalized: bool,
+    /// Two distinct players stored in ascending player-slot order.
+    pub participants: [TradeParticipant; 2],
+}
+
+impl TradeInvitation {
+    /// Returns one participant by stable player slot.
+    pub fn participant(&self, player_id: PlayerId) -> Option<&TradeParticipant> {
+        self.participants.iter().find(|participant| participant.player_id == player_id)
+    }
+}
+
+/// Response state visible to every participant in a joint-attack invitation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JointAttackResponse {
+    /// The invited player has not made a decision yet.
+    #[default]
+    Pending,
+    /// The invited player accepted with the stored contribution.
+    Accepted,
+    /// The invited player declined this operation.
+    Rejected,
+}
+
+/// One invited player and their optional accepted fleet contribution.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointAttackParticipant {
+    /// Invited stable player slot.
+    pub player_id: PlayerId,
+    /// Current decision shown in the shared invitation panel.
+    pub response: JointAttackResponse,
+    /// Accepted origin and army; absent while pending or rejected.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub contribution: Option<JointAttackContribution>,
+}
+
+/// Private, current-turn attack information shared with explicitly invited players.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointAttackInvitation {
+    /// Stable operation identifier.
+    pub id: u64,
+    /// Turn on which the invitation and eventual launch were prepared.
+    pub turn: u64,
+    /// Player who owns the objective and conquest claim.
+    pub inviter: PlayerId,
+    /// Target planet.
+    pub destination: usize,
+    /// Shared Colonize, Attack, or Destroy objective.
+    pub objective: Icon,
+    /// Inviter-selected bombing policy.
+    pub bombing: BombingRaid,
+    /// Inviter-selected probe combat policy.
+    pub combat_probes: bool,
+    /// Whether the inviter canceled this draft before launching the mission.
+    pub canceled: bool,
+    /// Inviter contribution followed by every invited player in stable slot order.
+    pub participants: Vec<JointAttackParticipant>,
+}
 
 /// Maximum number of Unicode characters allowed in a player's displayed name.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 16;
@@ -99,6 +217,24 @@ pub struct SaveAcknowledgement {
     pub revision: u64,
     /// Unix timestamp at which the snapshot lease was renewed.
     pub saved_at: u64,
+}
+
+/// Compact acknowledgement for an immediate protection-access change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectionPermissionUpdate {
+    /// Canonical revision after applying the permission and any immediate recalls.
+    pub revision: u64,
+    /// Current turn to which the returned patch belongs.
+    pub turn: u64,
+    /// World whose access list changed.
+    pub planet_id: usize,
+    /// Controller who changed the invitation.
+    pub controller: PlayerId,
+    /// Foreign player whose access changed.
+    pub protector: PlayerId,
+    /// Whether access is now enabled.
+    pub allowed: bool,
 }
 
 /// Lightweight item displayed in the resume-game list.
@@ -252,6 +388,12 @@ pub enum BackendEventKind {
     TurnSubmitted,
     /// A player continued the turn before everyone was ready.
     TurnWithdrawn,
+    /// Protection access changed immediately outside turn submission.
+    ProtectionChanged,
+    /// A private joint-attack invitation or response changed.
+    JointAttackChanged,
+    /// A private Trading Post negotiation or finalized exchange changed.
+    TradeChanged,
     /// Persisted state or revision changed.
     StateChanged,
     /// The lobby transitioned to active play.

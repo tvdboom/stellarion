@@ -19,6 +19,8 @@ use crate::utils::NameFromEnum;
 pub enum Icon {
     /// The colonize value.
     Colonize,
+    /// Stations a player-owned fleet at another player's world with the controller's permission.
+    Protect,
     #[default]
     /// The attack value.
     Attack,
@@ -30,8 +32,10 @@ pub enum Icon {
     Destroy,
     /// Commits every in-range owned Orbital Railgun against this world.
     RailgunStrike,
-    /// The attacked value.
-    Attacked,
+    /// A coordinated attack whose participating fleets are visible to the local player.
+    AlliedAttack,
+    /// An incoming hostile fleet whose exact objective is unknown to the local player.
+    EnemyFleet,
     /// The buildings value.
     Buildings,
     /// The orbitals value.
@@ -42,8 +46,6 @@ pub enum Icon {
     Defenses,
     /// The deploy value.
     Deploy,
-    /// Stations a player-owned fleet at another player's world with the controller's permission.
-    Protect,
 }
 
 impl Icon {
@@ -52,15 +54,10 @@ impl Icon {
 
     /// Returns the runtime image key used for this objective.
     ///
-    /// Protect deliberately reuses the established Deploy artwork until it receives dedicated
-    /// source assets; its label and description still make the distinct behavior explicit.
+    /// Returns the dedicated mission/action artwork for every objective.
     #[cfg(feature = "app")]
     pub fn asset_key(&self) -> String {
-        if *self == Icon::Protect {
-            "deploy".to_string()
-        } else {
-            self.to_lowername()
-        }
+        self.to_lowername()
     }
 
     /// Handles the units interaction.
@@ -105,6 +102,19 @@ impl Icon {
         matches!(self, Icon::Spy | Icon::MissileStrike)
     }
 
+    /// Returns whether this action is hostile toward its destination.
+    pub fn is_hostile_action(self) -> bool {
+        matches!(
+            self,
+            Icon::Colonize
+                | Icon::Attack
+                | Icon::Spy
+                | Icon::MissileStrike
+                | Icon::Destroy
+                | Icon::RailgunStrike
+        )
+    }
+
     #[cfg(feature = "app")]
     /// Returns the shop category associated with this map icon.
     pub fn shop(&self) -> Option<Shop> {
@@ -125,8 +135,7 @@ impl Icon {
             Icon::Spy => Some(4),
             Icon::MissileStrike => Some(5),
             Icon::Destroy => Some(3),
-            Icon::Deploy => Some(0),
-            Icon::Protect => Some(0),
+            Icon::Deploy | Icon::Protect => Some(0),
             _ => None,
         }
     }
@@ -136,15 +145,21 @@ impl Icon {
         to_owned_planet: bool,
         to_controlled_planet: bool,
         protection_allowed: bool,
+        already_protecting: bool,
     ) -> Vec<Icon> {
         if to_owned_planet {
             vec![Icon::Deploy]
         } else if to_controlled_planet {
             vec![Icon::Colonize, Icon::Deploy]
-        } else if protection_allowed {
+        } else if already_protecting {
             vec![Icon::Protect]
         } else {
-            vec![Icon::Colonize, Icon::Attack, Icon::Spy, Icon::MissileStrike, Icon::Destroy]
+            let mut objectives =
+                vec![Icon::Colonize, Icon::Attack, Icon::Spy, Icon::MissileStrike, Icon::Destroy];
+            if protection_allowed {
+                objectives.insert(1, Icon::Protect);
+            }
+            objectives
         }
     }
 
@@ -155,16 +170,14 @@ impl Icon {
             Icon::Orbitals => {
                 origin.army.iter().any(|(unit, count)| unit.is_orbital() && *count > 0)
             },
-            Icon::Fleet => origin.has_fleet(),
+            Icon::Fleet | Icon::Deploy | Icon::Protect => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
             Icon::Colonize => origin.has(&Unit::colony_ship()),
             Icon::Attack => origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
             Icon::Spy => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
-            Icon::Deploy => origin.has_fleet(),
-            Icon::Protect => origin.has_fleet(),
-            Icon::RailgunStrike | Icon::Attacked => false,
+            Icon::RailgunStrike | Icon::AlliedAttack | Icon::EnemyFleet => false,
         }
     }
 
@@ -182,7 +195,7 @@ impl Icon {
             Icon::Buildings => army.iter().any(|(unit, count)| unit.is_building() && *count > 0),
             Icon::Orbitals => army.iter().any(|(unit, count)| unit.is_orbital() && *count > 0),
             Icon::Defenses => army.iter().any(|(unit, count)| unit.is_defense() && *count > 0),
-            Icon::RailgunStrike | Icon::Attacked => false,
+            Icon::RailgunStrike | Icon::AlliedAttack | Icon::EnemyFleet => false,
         }
     }
 
@@ -204,7 +217,8 @@ impl Icon {
                     && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
             Self::RailgunStrike
-            | Self::Attacked
+            | Self::AlliedAttack
+            | Self::EnemyFleet
             | Self::Buildings
             | Self::Orbitals
             | Self::Fleet
@@ -272,11 +286,11 @@ impl Description for Icon {
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \
-                if there are no enemy ships left, every War Sun tries to destroy the target planet \
-                with a 10-15% chance (depending on the planet's size), decreased with 1% for every \
-                round afterwards (long battles reduce the destruction chance to zero). Regardless \
-                of the result, the fleet returns after combat. A destroyed planet can't be \
-                colonized again."
+                if there are no enemy ships or Space Dock left, every War Sun tries to destroy the \
+                target planet with a 10-15% chance (depending on the planet's size), decreased with \
+                1% for every round afterwards (long battles reduce the destruction chance to zero). \
+                Regardless of the result, the fleet returns after combat. A destroyed planet can't \
+                be colonized again."
             },
             Icon::RailgunStrike => {
                 "Commit every owned Orbital Railgun that can reach this world. All participating \
@@ -289,9 +303,9 @@ impl Description for Icon {
             Icon::Deploy => "Send a fleet to another planet you control.",
             Icon::Protect => {
                 "Send your fleet to a world whose controller has granted you protection access. \
-                The fleet remains yours, joins that world's defense, and may later launch any \
-                normal mission. If access is canceled while it is travelling, it returns to your \
-                home planet."
+                The fleet remains yours and joins that world's defense. While any of your fleet \
+                remains stationed there, you cannot attack that world or launch new missions from \
+                it. Recall the protection fleet to your home planet before attacking."
             },
             _ => "This icon selects a local map or shop category.",
         }

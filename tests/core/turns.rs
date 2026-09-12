@@ -5,6 +5,7 @@ use crate::core::combat::report::CombatReport;
 use crate::core::messages::MessageLevel;
 use crate::core::missions::BombingRaid;
 use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::units::ships::Ship;
 use crate::core::units::Army;
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
@@ -121,6 +122,36 @@ fn owner_can_see_own_empty_mission_list() {
     let player = Player::default();
     let map = Map::new_with_rng(5, 0, &mut rand_chacha::ChaCha8Rng::from_seed([3; 32]));
     assert!(filter_missions(&[], &map, &player).is_empty());
+}
+
+#[test]
+fn protected_player_sees_the_complete_fleet_without_scanner_coverage() {
+    let mut model = GameModel::new([13; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let protected = model.players[0].clone();
+    let protector = &model.players[1];
+    let origin = model.map.get(protector.home_planet);
+    let destination = model.map.get(protected.home_planet);
+    let fleet = Army::from([(Unit::probe(), 17), (Unit::colony_ship(), 4), (Unit::war_sun(), 1)]);
+    let mission = Mission::new_with_id(
+        92,
+        1,
+        protector.id,
+        origin,
+        destination,
+        crate::core::map::icon::Icon::Protect,
+        fleet.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(mission.is_seen_by_phalanx(&model.map, &protected), None);
+    assert_eq!(mission.is_seen_by_radar(&model.map, &protected), None);
+
+    let visible = filter_missions(&[mission], &model.map, &protected);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].army, fleet);
 }
 
 #[test]
@@ -326,6 +357,51 @@ fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report(
 }
 
 #[test]
+fn protection_fleet_receives_a_victory_notification_when_the_defending_team_wins() {
+    let mut model = GameModel::new([27; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let attacker = &model.players[0];
+    let protector = Player::new(99, 0);
+    let origin = model.map.get(attacker.home_planet).clone();
+    let mut destination = model.map.get(model.players[1].home_planet).clone();
+    destination
+        .army
+        .dock_protector(protector.id, Army::from([(Unit::Ship(Ship::LightFighter), 3)]));
+    let mission = Mission::new_with_id(
+        73,
+        1,
+        attacker.id,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let report = MissionReport {
+        id: 74,
+        turn: 2,
+        mission,
+        planet: destination.clone(),
+        scout_probes: 0,
+        surviving_attacker: Army::new(),
+        surviving_defender: destination.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: destination.owned,
+        destination_controlled: destination.controlled,
+        combat_report: Some(CombatReport::default()),
+        hidden: false,
+    };
+
+    let notification = report_notification(&report, &protector, &origin, &destination);
+    assert_eq!(notification.message, format!("Battle won at planet {}.", destination.name));
+    assert_eq!(notification.level, MessageLevel::Info);
+}
+
+#[test]
 fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
     let player = Player::default();
     let mut mission = Mission {
@@ -335,7 +411,7 @@ fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
         jump_gate: true,
         ..default()
     };
-    assert_eq!(mission.image(&player), "mission destroy jump");
+    assert_eq!(mission.image(&player), "mission destroy");
 
     mission.objective = Icon::Deploy;
     mission.jump_gate = false;
@@ -361,7 +437,7 @@ fn only_colonize_objectives_and_their_returns_use_the_colony_icon() {
 
     mission.objective = Icon::Deploy;
     mission.army = Army::from([(Unit::colony_ship(), 2), (Unit::probe(), 0)]);
-    assert_eq!(mission.image(&player), "mission jump");
+    assert_eq!(mission.image(&player), "mission");
 
     mission.jump_gate = false;
     assert_eq!(mission.image(&player), "mission");

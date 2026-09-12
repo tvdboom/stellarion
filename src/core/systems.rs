@@ -17,7 +17,9 @@ use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::multiplayer::client::MultiplayerRequest;
 #[cfg(debug_assertions)]
-use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
+use crate::multiplayer::client::{
+    MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+};
 
 #[derive(Component)]
 /// Invisible full-screen Bevy UI layer that blocks picking beneath in-game menus.
@@ -114,12 +116,16 @@ pub fn check_keys_menu(
                     GameState::Playing => {
                         if let Some(state) = state.as_mut() {
                             if state.abandon_confirmation.is_some()
+                                || state.colonize_confirmation.is_some()
                                 || state.railgun_confirmation.is_some()
+                                || state.protection_access.is_some()
                             {
                                 // Confirmation prompts consume Escape before their underlying
                                 // planet selection or the in-game menu can react to the same key.
                                 state.abandon_confirmation = None;
+                                state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
+                                state.protection_access = None;
                             } else if state.planet_selected.is_some() || state.mission {
                                 state.planet_selected = None;
                                 state.mission = false;
@@ -340,9 +346,7 @@ pub fn debug_cheat_keys(
     if !pending.push(TurnCommand::PracticeBoost {
         owned_worlds_only: keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
     }) {
-        messages.write(crate::core::messages::MessageMsg::error(
-            "This turn already contains the maximum number of commands.",
-        ));
+        messages.write(crate::core::messages::MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
         return;
     }
     let preview = preview_commands(&record.persisted.state, player.id, &pending.commands);

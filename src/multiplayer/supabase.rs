@@ -13,10 +13,11 @@ use crate::core::simulation::{
 use crate::multiplayer::backend::{BackendError, BackendFuture, MultiplayerBackend};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary,
-    JoinGameRequest, MembershipResult, RecoverPlayerRequest, SaveAcknowledgement,
-    StoredTurnSubmission, SubmissionDisposition, MAX_DISPLAY_NAME_CHARS,
+    JoinGameRequest, JointAttackInvitation, JointAttackResponse, MembershipResult,
+    ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
+    SubmissionDisposition, TradeInvitation, TradeResponse, MAX_DISPLAY_NAME_CHARS,
 };
-use crate::multiplayer::recovery::RecoveryCode;
+use crate::multiplayer::recovery::{RecoveryCode, CROCKFORD_ALPHABET};
 use crate::platform::config::SupabaseConfig;
 
 /// Browser-compatible Supabase client that ships only a public publishable key.
@@ -214,6 +215,169 @@ impl MultiplayerBackend for SupabaseBackend {
                 )
                 .await?;
             validate_game_record(record, Some(game_id), Some(&session.user_id))
+        })
+    }
+
+    /// Changes protection access through the narrow immediate-state RPC.
+    fn set_protection_permission<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        planet_id: usize,
+        protector: PlayerId,
+        allowed: bool,
+    ) -> BackendFuture<'a, ProtectionPermissionUpdate> {
+        Box::pin(async move {
+            let update = self
+                .rpc(
+                    session,
+                    "stellarion_set_protection_permission",
+                    &ProtectionPermissionRpc {
+                        game_id: &game_id.0,
+                        planet_id,
+                        protector,
+                        allowed,
+                    },
+                )
+                .await?;
+            validate_protection_update(update, game_id, planet_id, protector, allowed)
+        })
+    }
+
+    fn create_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        invitation: JointAttackInvitation,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_create_joint_attack",
+                &CreateJointAttackRpc {
+                    game_id: &game_id.0,
+                    invitation,
+                },
+            )
+            .await
+        })
+    }
+
+    fn respond_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        attack_id: u64,
+        response: JointAttackResponse,
+        contribution: Option<crate::core::simulation::JointAttackContribution>,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_respond_joint_attack",
+                &RespondJointAttackRpc {
+                    game_id: &game_id.0,
+                    attack_id,
+                    response,
+                    contribution,
+                },
+            )
+            .await
+        })
+    }
+
+    fn cancel_joint_attack<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        attack_id: u64,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_cancel_joint_attack",
+                &CancelJointAttackRpc {
+                    game_id: &game_id.0,
+                    attack_id,
+                },
+            )
+            .await
+        })
+    }
+
+    fn load_joint_attacks<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<JointAttackInvitation>> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_load_joint_attacks",
+                &GameIdRpc {
+                    game_id: &game_id.0,
+                },
+            )
+            .await
+        })
+    }
+
+    fn create_trade<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        invitation: TradeInvitation,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_create_trade",
+                &CreateTradeRpc {
+                    game_id: &game_id.0,
+                    invitation,
+                },
+            )
+            .await
+        })
+    }
+
+    fn respond_trade<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        trade_id: u64,
+        resources: crate::core::resources::Resources,
+        response: TradeResponse,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_respond_trade",
+                &RespondTradeRpc {
+                    game_id: &game_id.0,
+                    trade_id,
+                    resources,
+                    response,
+                },
+            )
+            .await
+        })
+    }
+
+    fn load_trades<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<TradeInvitation>> {
+        Box::pin(async move {
+            self.rpc(
+                session,
+                "stellarion_load_trades",
+                &GameIdRpc {
+                    game_id: &game_id.0,
+                },
+            )
+            .await
         })
     }
 
@@ -531,6 +695,66 @@ struct PlayerColorRpc<'a> {
 }
 
 #[derive(Serialize)]
+struct ProtectionPermissionRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_planet_id")]
+    planet_id: usize,
+    #[serde(rename = "p_protector")]
+    protector: PlayerId,
+    #[serde(rename = "p_allowed")]
+    allowed: bool,
+}
+
+#[derive(Serialize)]
+struct CreateJointAttackRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_invitation")]
+    invitation: JointAttackInvitation,
+}
+
+#[derive(Serialize)]
+struct RespondJointAttackRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_attack_id")]
+    attack_id: u64,
+    #[serde(rename = "p_response")]
+    response: JointAttackResponse,
+    #[serde(rename = "p_contribution")]
+    contribution: Option<crate::core::simulation::JointAttackContribution>,
+}
+
+#[derive(Serialize)]
+struct CancelJointAttackRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_attack_id")]
+    attack_id: u64,
+}
+
+#[derive(Serialize)]
+struct CreateTradeRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_invitation")]
+    invitation: TradeInvitation,
+}
+
+#[derive(Serialize)]
+struct RespondTradeRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_trade_id")]
+    trade_id: u64,
+    #[serde(rename = "p_resources")]
+    resources: crate::core::resources::Resources,
+    #[serde(rename = "p_response")]
+    response: TradeResponse,
+}
+
+#[derive(Serialize)]
 /// Borrowed game identifier, expected revision, and state passed to a CAS write.
 struct StateWriteRpc<'a> {
     #[serde(rename = "p_game_id")]
@@ -659,6 +883,28 @@ struct SupabaseErrorBody {
 /// Rejects a malformed core envelope before it is sent or installed locally.
 fn validate_persisted(persisted: &PersistedGame) -> Result<(), BackendError> {
     persisted.validate().map_err(|error| BackendError::InvalidData(error.to_string()))
+}
+
+fn validate_protection_update(
+    update: ProtectionPermissionUpdate,
+    game_id: &GameId,
+    planet_id: usize,
+    protector: PlayerId,
+    allowed: bool,
+) -> Result<ProtectionPermissionUpdate, BackendError> {
+    if update.turn == 0
+        || update.controller == 0
+        || update.controller > 4
+        || update.protector == 0
+        || update.protector > 4
+        || update.planet_id != planet_id
+        || update.protector != protector
+        || update.allowed != allowed
+        || game_id.0.trim().is_empty()
+    {
+        return invalid_protocol("protection update does not match the request");
+    }
+    Ok(update)
 }
 
 /// Validates a complete RPC game record and its membership cross-references.
@@ -875,8 +1121,7 @@ fn validate_recovery_code(code: &str) -> Result<(), BackendError> {
 
 /// Validates one game code against the database's Crockford share-code constraint.
 fn validate_game_code(code: &GameCode) -> Result<(), BackendError> {
-    const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    if code.0.len() == 6 && code.0.bytes().all(|byte| ALPHABET.contains(&byte)) {
+    if code.0.len() == 6 && code.0.bytes().all(|byte| CROCKFORD_ALPHABET.contains(&byte)) {
         Ok(())
     } else {
         invalid_protocol("game record contains an invalid share code")

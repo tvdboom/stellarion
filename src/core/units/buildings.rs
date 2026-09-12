@@ -41,6 +41,8 @@ pub enum Building {
     Recycler,
     /// The orbital command-relay network.
     CommandRelay,
+    /// The orbital commerce hub used for bilateral resource trading.
+    TradingPost,
     /// The sensor phalanx building.
     SensorPhalanx,
     /// The jump gate building.
@@ -123,7 +125,6 @@ impl Building {
         }
 
         match self {
-            Building::MetalMine | Building::CrystalMine | Building::DeuteriumSynthesizer => 1,
             Building::Reactor | Building::Terraformer => 2,
             Building::Shipyard | Building::Factory | Building::MissileSilo => 3,
             Building::PlanetaryShield => 4,
@@ -205,6 +206,13 @@ impl Description for Building {
                 per completed level with a report of an empty planet. Larger groups gather \
                 intelligence normally."
             },
+            Building::TradingPost => {
+                "A Trading Post establishes a commerce route with another player's Trading Post \
+                within 3 AU. Each completed level lets its owner send up to 500 Metal, Crystal, \
+                and Deuterium combined in one bilateral trade per player pair each turn. Outgoing \
+                resources are reserved when both players accept; incoming resources arrive when \
+                the turn resolves."
+            },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
                 A Phalanx of level N scans the space at 1.0 * N AU from the planet, and it only \
@@ -220,8 +228,9 @@ impl Description for Building {
             Building::OrbitalRailgun => {
                 "The Orbital Railgun is a colossal superweapon. Once per turn, each Railgun can \
                 join a strike against an enemy world within range. Railguns always aim at the \
-                same target. Every firing level adds a 5% destruction chance, while smaller worlds \
-                add up to 8%. Each Planetary Shield level removes 1%, or 2% while overloaded. A \
+                same target. Every firing level adds a 5% destruction chance, modified by -2% to \
+                +2% depending on the target's size. Each Planetary Shield level removes 1%, or 2% \
+                while overloaded. A \
                 synchronized strike costs 1,000 Deuterium and 5 Energy per firing Railgun. Each \
                 level extends the firing range by 2 AU. The Orbital Railgun is always visible by \
                 all players in the galaxy."
@@ -270,6 +279,7 @@ impl Price for Building {
             Building::SolarSatellite => Resources::new(100, 150, 0),
             Building::Recycler => Resources::new(250, 200, 100),
             Building::CommandRelay => Resources::new(300, 250, 250),
+            Building::TradingPost => Resources::new(400, 300, 250),
             Building::SensorPhalanx => Resources::new(250, 200, 150),
             Building::JumpGate => Resources::new(500, 300, 500),
             Building::OrbitalRailgun => Resources::new(750, 500, 750),

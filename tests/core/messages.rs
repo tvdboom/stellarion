@@ -14,7 +14,7 @@ fn notification_frame(
             ..default()
         },
         |ui| {
-            draw_notifications(ui.ctx(), messages, true);
+            draw_notifications(ui.ctx(), messages, true, false);
         },
     );
     output.textures_delta.clear();
@@ -141,7 +141,7 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
                     events,
                     ..default()
                 },
-                |ui| clicked = draw_notifications(ui.ctx(), &messages, true),
+                |ui| clicked = draw_notifications(ui.ctx(), &messages, true, false),
             );
             output.textures_delta.clear();
             clicked
@@ -173,59 +173,44 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
 }
 
 #[test]
-fn report_toast_remains_clickable_above_combat_overlays() {
-    let context = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-    let mut messages = Messages::default();
-    messages.push(
-        &MessageMsg::info("Battle won at planet Ganymede.")
-            .with_action(MessageAction::OpenMissionReport(42)),
-    );
-    let frame = |events| {
+fn toasts_are_hidden_and_paused_during_combat_selection_and_animation() {
+    for game_state in [GameState::CombatMenu, GameState::Combat] {
+        let hidden_for_combat = notifications_hidden_during_combat(true, Some(game_state));
+        assert!(hidden_for_combat);
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut messages = Messages::default();
+        messages.push(
+            &MessageMsg::info("Battle won at planet Ganymede.")
+                .with_action(MessageAction::OpenMissionReport(42)),
+        );
         let mut clicked = None;
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
-                events,
                 ..default()
             },
-            |ui| {
-                clicked = draw_notifications(ui.ctx(), &messages, false);
-                egui::Area::new("combat foreground overlay".into())
-                    .fixed_pos(screen.min)
-                    .order(egui::Order::Foreground)
-                    .show(ui.ctx(), |ui| {
-                        ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
-                    });
-            },
+            |ui| clicked = draw_notifications(ui.ctx(), &messages, false, hidden_for_combat),
         );
         output.textures_delta.clear();
-        clicked
-    };
 
-    frame(vec![]);
-    frame(vec![]);
-    let rect = context
-        .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
-        .unwrap();
-    let pos = rect.center();
-    frame(vec![
-        egui::Event::PointerMoved(pos),
-        egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: default(),
-        },
-    ]);
-    let clicked = frame(vec![egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: default(),
-    }]);
+        assert_eq!(clicked, None, "toast opened during {game_state:?}");
+        assert!(
+            context
+                .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
+                .is_none(),
+            "toast was drawn during {game_state:?}"
+        );
 
-    assert_eq!(clicked, Some((0, MessageAction::OpenMissionReport(42))));
+        let remaining = messages.0[0].remaining_seconds;
+        assert!(advance_message_lifetime(&mut messages.0[0], 1.0, true));
+        assert_eq!(
+            messages.0[0].remaining_seconds, remaining,
+            "toast expired during {game_state:?}"
+        );
+        assert!(advance_message_lifetime(&mut messages.0[0], 1.0, false));
+        assert_eq!(messages.0[0].remaining_seconds, remaining - 1.0);
+    }
 }
 
 #[test]
@@ -245,7 +230,7 @@ fn spy_toast_click_opens_the_requested_mission_report() {
                 events,
                 ..default()
             },
-            |ui| clicked = draw_notifications(ui.ctx(), &messages, true),
+            |ui| clicked = draw_notifications(ui.ctx(), &messages, true, false),
         );
         output.textures_delta.clear();
         clicked

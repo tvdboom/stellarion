@@ -24,12 +24,26 @@ use crate::core::assets::{WorldAssets, ASTEROID_IMAGE_NAMES};
 use crate::core::camera::{drag_camera_position, MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    MISSION_Z, ORBITAL_RAILGUN_RANGE_PER_LEVEL, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
+    MAX_ZOOM, MISSION_Z, ORBITAL_RAILGUN_RANGE_PER_LEVEL, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
     RADAR_DISTANCE, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
 use crate::core::loading::{PublicStructure, PublicStructureChange};
-use crate::core::map::details::{DevelopmentVisibility, DEBRIS_DEPTH, DEVELOPMENT_MAX_SCALE};
+#[cfg(test)]
+use crate::core::map::asteroids::{
+    asteroid_belt_asteroid_count, asteroid_belt_layout, asteroid_belt_placements, solar_band_gaps,
+    visible_asteroid_count, ASTEROID_BELT_ANGULAR_SPEED, ASTEROID_BELT_MAXIMUM_COUNT,
+    ASTEROID_BELT_MINIMUM_COUNT, ASTEROID_BELT_MINIMUM_VISIBLE_COUNT, ASTEROID_MAXIMUM_RADIUS,
+    ASTEROID_MAXIMUM_WOBBLE, ASTEROID_MINIMUM_DIAMETER, ASTEROID_PLANET_CLEARANCE,
+};
+use crate::core::map::asteroids::{
+    asteroid_belt_layout as shared_asteroid_belt_layout,
+    asteroid_belt_placements as shared_asteroid_belt_placements, asteroid_position_at_elapsed,
+    recycler_asteroid_target_groups_at_elapsed, AsteroidBeltPlacement as SharedAsteroidPlacement,
+};
+#[cfg(test)]
+use crate::core::map::details::DEVELOPMENT_MAX_SCALE;
+use crate::core::map::details::{ZoomDetailVisibility, DEBRIS_DEPTH};
 use crate::core::map::detection::PublicStructureEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
@@ -41,11 +55,14 @@ use crate::core::map::utils::{
 };
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
-use crate::core::recycling::{debris_sites, recycler_sources, DebrisSite, RecyclerSource};
+use crate::core::recycling::{
+    debris_sites, recycler_sources_with_asteroid_targets, DebrisSite, RecyclerSource,
+};
 use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
+use crate::core::trading::{adjacent_trading_posts, planets_are_adjacent};
 use crate::core::ui::systems::{MapRangePreview, MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -71,15 +88,21 @@ const SOLAR_SATELLITE_DEPTH_STEP: f32 = 0.001;
 const RECYCLER_DEPTH: f32 = DEBRIS_DEPTH + 0.01;
 const RECYCLER_DEPTH_STEP: f32 = 0.001;
 const RECYCLER_SCAN_DEPTH: f32 = DEBRIS_DEPTH + 0.009;
-const RECYCLER_CYCLE_SECONDS: f32 = 6.0;
+// Asteroid workers are children of their home planet. Use a negative local depth so their global
+// depth remains just above the belt but below every planet, naturally occluding crossing routes.
+const RECYCLER_ASTEROID_DEPTH: f32 = VORONOI_Z + 0.21 - PLANET_Z;
+const RECYCLER_ASTEROID_SCAN_DEPTH: f32 = VORONOI_Z + 0.209 - PLANET_Z;
+const RECYCLER_CYCLE_SECONDS: f32 = 12.0;
+const SOLAR_STAR_ANGULAR_SPEED: f32 = 0.024;
 const RECYCLER_PHASE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, 0.43, 0.78, 0.21, 0.62];
-const RECYCLER_HOME_RADIUS: f32 = 0.70;
+const RECYCLER_HOME_RADIUS: f32 = 0.82;
 const RECYCLER_HOME_ANGLE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, -0.22, 0.22, -0.44, 0.44];
 const RECYCLER_TARGET_OFFSETS: [usize; Building::MAX_LEVEL] = [0, 2, 1, 3, 0];
 const JUMP_GATE_DEPTH: f32 = 0.15;
 const COMMAND_RELAY_DEPTH: f32 = 0.16;
 const SENSOR_PHALANX_DEPTH: f32 = 0.17;
 const SENSOR_PHALANX_DEPTH_RANGE: f32 = 0.035;
+const TRADING_POST_DEPTH: f32 = 0.18;
 const ORBITAL_RAILGUN_DEPTH: f32 = 0.22;
 const ORBITAL_RAILGUN_ANGLE: f32 = PI * 0.5;
 const ORBITAL_RAILGUN_RADIUS: f32 = 1.2;
@@ -209,13 +232,7 @@ pub(crate) struct AsteroidBeltCmp;
 #[derive(Component)]
 /// One decorative, non-authoritative rock tumbling along a solar-band boundary.
 pub(crate) struct AsteroidCmp {
-    center: Vec2,
-    radius: f32,
-    phase: f32,
-    angular_speed: f32,
-    wobble_phase: f32,
-    wobble_speed: f32,
-    wobble_amplitude: f32,
+    placement: SharedAsteroidPlacement,
     spin: f32,
     tumble_phase: f32,
     tumble_speed: f32,
@@ -295,6 +312,33 @@ pub struct PlanetNameCmp;
 /// Crown attached to the local home planet's name, inheriting its visibility.
 pub(crate) struct HomeCrownCmp;
 
+/// Keeps the single home marker attached to the currently projected player's planet name.
+///
+/// Local Practice can change the projected player without rebuilding the map entities, so the
+/// marker cannot rely solely on the player that was active when [`draw_map`] first ran.
+pub(crate) fn sync_home_crown(
+    mut commands: Commands,
+    player: Res<Player>,
+    crowns: Query<(Entity, &ChildOf), With<HomeCrownCmp>>,
+    names: Query<(Entity, &ChildOf), With<PlanetNameCmp>>,
+    planets: Query<&PlanetCmp>,
+) {
+    let Some(home_name) = names.iter().find_map(|(name, parent)| {
+        planets
+            .get(parent.parent())
+            .is_ok_and(|planet| planet.id == player.home_planet)
+            .then_some(name)
+    }) else {
+        return;
+    };
+
+    for (crown, parent) in &crowns {
+        if parent.parent() != home_name {
+            commands.entity(crown).insert(ChildOf(home_name));
+        }
+    }
+}
+
 /// Places the crown before the measured name after font loading or text changes.
 pub(crate) fn position_home_crown(
     names: Query<&bevy::text::TextLayoutInfo, With<PlanetNameCmp>>,
@@ -365,6 +409,12 @@ pub struct OrbitalRailgunCmp {
 #[derive(Component)]
 /// Animated, faction-tinted jump-gate marker orbiting a world.
 pub struct JumpGateCmp {
+    planet: PlanetId,
+}
+
+#[derive(Component)]
+/// Public close-zoom Trading Post marker that opens bilateral commerce.
+pub struct TradingPostCmp {
     planet: PlanetId,
 }
 
@@ -470,13 +520,25 @@ pub struct RecyclerScanCmp {
     pulse_offset: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RecyclerAsteroidAssignment {
+    trip: u64,
+    placement_index: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct RecyclerAnimationCache {
     scenery_seed: Option<u32>,
     turn: usize,
     debris: BTreeMap<PlanetId, DebrisSite>,
-    sources: BTreeMap<PlanetId, RecyclerSource>,
-    asteroid_targets: BTreeMap<PlanetId, Vec<Vec2>>,
+    asteroid_placements: Vec<SharedAsteroidPlacement>,
+    asteroid_assignments: BTreeMap<(PlanetId, usize), RecyclerAsteroidAssignment>,
+}
+
+fn recycler_phase(planet: PlanetId, level: usize) -> f32 {
+    // Keep the whole cycle offset. Wrapping only the fractional part makes workers on opposite
+    // sides of the wrap lose a trip, which can send them to the same asteroid while they turn.
+    visual_noise(planet as u32 + 4_337) + RECYCLER_PHASE_OFFSETS[level - 1]
 }
 
 fn recycler_smoothstep(amount: f32) -> f32 {
@@ -524,10 +586,10 @@ fn recycler_home(source_anchor: Vec2, recycler: &RecyclerCmp, planet: &Planet) -
 fn recycler_progress(cycle: f32) -> f32 {
     if cycle < 0.30 {
         recycler_smoothstep(cycle / 0.30)
-    } else if cycle < 0.56 {
+    } else if cycle < 0.62 {
         1.0
-    } else if cycle < 0.86 {
-        1.0 - recycler_smoothstep((cycle - 0.56) / 0.30)
+    } else if cycle < 0.92 {
+        1.0 - recycler_smoothstep((cycle - 0.62) / 0.30)
     } else {
         0.0
     }
@@ -542,17 +604,17 @@ fn recycler_route_position(home: Vec2, target: Vec2, progress: f32) -> Vec2 {
 
 fn recycler_heading(outbound: Vec2, next_outbound: Vec2, cycle: f32) -> f32 {
     let outbound_angle = outbound.to_angle();
-    if cycle < 0.43 {
+    if cycle < 0.49 {
         outbound_angle
-    } else if cycle < 0.56 {
-        outbound_angle + recycler_smoothstep((cycle - 0.43) / 0.13) * PI
-    } else if cycle < 0.86 {
+    } else if cycle < 0.62 {
+        outbound_angle + recycler_smoothstep((cycle - 0.49) / 0.13) * PI
+    } else if cycle < 0.92 {
         outbound_angle + PI
     } else {
         let homeward_angle = outbound_angle + PI;
         homeward_angle
             + recycler_angular_delta(homeward_angle, next_outbound.to_angle())
-                * recycler_smoothstep((cycle - 0.86) / 0.14)
+                * recycler_smoothstep((cycle - 0.92) / 0.08)
     }
 }
 
@@ -594,10 +656,69 @@ fn recycler_animation_target(
     }
 }
 
+fn assigned_recycler_asteroid_target(
+    map: &Map,
+    placements: &[SharedAsteroidPlacement],
+    assignments: &mut BTreeMap<(PlanetId, usize), RecyclerAsteroidAssignment>,
+    current_targets: Option<&[Vec2]>,
+    recycler: &RecyclerCmp,
+    trip: u64,
+    elapsed: f32,
+) -> Option<Vec2> {
+    let key = (recycler.planet, recycler.level);
+    let previous = assignments.get(&key).copied();
+    let assignment = if previous.is_some_and(|assignment| assignment.trip == trip) {
+        previous
+    } else {
+        let targets = current_targets.filter(|targets| !targets.is_empty());
+        let selected = targets.map(|targets| {
+            let trip_offset = (trip % targets.len() as u64) as usize;
+            targets[(trip_offset + RECYCLER_TARGET_OFFSETS[recycler.level - 1]) % targets.len()]
+        });
+        let replacement = selected.and_then(|selected| {
+            placements
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| {
+                    asteroid_position_at_elapsed(map, left, elapsed)
+                        .distance_squared(selected)
+                        .total_cmp(
+                            &asteroid_position_at_elapsed(map, right, elapsed)
+                                .distance_squared(selected),
+                        )
+                })
+                .map(|(placement_index, _)| RecyclerAsteroidAssignment {
+                    trip,
+                    placement_index,
+                })
+        });
+        if let Some(replacement) = replacement {
+            assignments.insert(key, replacement);
+            Some(replacement)
+        } else {
+            // A rock that drifts just beyond acquisition range remains valid until another nearby
+            // one can be selected for a later trip. Lock it for this trip as well so an asteroid
+            // entering range mid-flight cannot replace it and teleport the worker.
+            previous.map(|previous| {
+                let retained = RecyclerAsteroidAssignment {
+                    trip,
+                    ..previous
+                };
+                assignments.insert(key, retained);
+                retained
+            })
+        }
+    }?;
+    placements
+        .get(assignment.placement_index)
+        .map(|placement| asteroid_position_at_elapsed(map, placement, elapsed))
+}
+
 /// Animates known Recycler craft, preferring fresh local debris over a reachable asteroid field.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn animate_recyclers(
     time: Res<Time>,
+    mut zoom_detail_visibility: Local<ZoomDetailVisibility>,
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
@@ -624,21 +745,35 @@ pub(crate) fn animate_recyclers(
         debris_sites(player.reports.iter(), settings.turn)
     };
     let scenery_seed = map.scenery_seed();
-    if cache.scenery_seed != Some(scenery_seed)
-        || cache.turn != settings.turn
-        || cache.debris != sites
-    {
+    if cache.scenery_seed != Some(scenery_seed) {
         cache.scenery_seed = Some(scenery_seed);
+        cache.asteroid_placements = shared_asteroid_belt_layout(&map)
+            .map(|layout| shared_asteroid_belt_placements(&map, layout))
+            .unwrap_or_default();
+        cache.asteroid_assignments.clear();
+    }
+    if cache.turn != settings.turn || cache.debris != sites {
         cache.turn = settings.turn;
-        cache.sources = recycler_sources(&map, &sites);
-        cache.asteroid_targets = crate::core::map::asteroids::recycler_asteroid_target_groups(&map);
         cache.debris = sites;
     }
     let elapsed = time.elapsed_secs();
-    let close_zoom = matches!(
-        *camera,
-        Projection::Orthographic(ref projection) if projection.scale <= DEVELOPMENT_MAX_SCALE
-    );
+    let asteroid_targets =
+        recycler_asteroid_target_groups_at_elapsed(&map, &cache.asteroid_placements, elapsed);
+    let nearest_asteroids = asteroid_targets
+        .iter()
+        .filter_map(|(planet, targets)| targets.first().copied().map(|target| (*planet, target)))
+        .collect();
+    let sources = recycler_sources_with_asteroid_targets(&map, &cache.debris, &nearest_asteroids);
+    let scale = match *camera {
+        Projection::Orthographic(ref projection) => projection.scale,
+        _ => f32::INFINITY,
+    };
+    let zoom_detail_alpha = zoom_detail_visibility.update(scale, time.delta_secs());
+    let RecyclerAnimationCache {
+        asteroid_placements,
+        asteroid_assignments,
+        ..
+    } = &mut *cache;
 
     for (recycler, mut transform, mut visibility, mut sprite) in &mut recyclers {
         let planet = map.get(recycler.planet);
@@ -647,13 +782,35 @@ pub(crate) fn animate_recyclers(
         let (army, controller) = if player.controls(planet) {
             (Some(planet.army.controller()), planet.controlled.or(planet.owned))
         } else {
-            (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
+            (info.as_ref().map(|info| &info.army), player.known_controller(planet, &missions.0))
         };
         let level = army.map_or(0, |army| {
             army.amount(&Unit::Building(Building::Recycler)).min(Building::MAX_LEVEL)
         });
-        let source = cache.sources.get(&planet.id).copied();
-        let active = close_zoom && recycler.level <= level && source.is_some();
+        let cycle_time = elapsed / RECYCLER_CYCLE_SECONDS + recycler.phase;
+        let trip = cycle_time.floor() as u64;
+        let cycle = cycle_time.fract();
+        let debris_source = sources
+            .get(&planet.id)
+            .copied()
+            .filter(|source| matches!(source, RecyclerSource::Debris { .. }));
+        let asteroid_target = debris_source.is_none().then(|| {
+            assigned_recycler_asteroid_target(
+                &map,
+                asteroid_placements,
+                asteroid_assignments,
+                asteroid_targets.get(&planet.id).map(Vec::as_slice),
+                recycler,
+                trip,
+                elapsed,
+            )
+        });
+        let source = debris_source.or_else(|| {
+            asteroid_target.flatten().map(|target| RecyclerSource::AsteroidField {
+                target,
+            })
+        });
+        let active = zoom_detail_alpha > 0.01 && recycler.level <= level && source.is_some();
         *visibility = if active {
             Visibility::Inherited
         } else {
@@ -662,10 +819,7 @@ pub(crate) fn animate_recyclers(
         let player_color = controller
             .map(|id| session.player_color(id).color())
             .unwrap_or(Color::srgb_u8(190, 198, 210));
-        let cycle_time = elapsed / RECYCLER_CYCLE_SECONDS + recycler.phase;
-        let trip = cycle_time.floor() as u64;
-        let cycle = cycle_time.fract();
-        let scanning = active && (0.30..0.56).contains(&cycle);
+        let scanning = active && (0.30..0.62).contains(&cycle);
         for (scan, material, mut scan_transform, mut scan_visibility) in &mut scans {
             if scan.planet != recycler.planet || scan.recycler_level != recycler.level {
                 continue;
@@ -676,21 +830,24 @@ pub(crate) fn animate_recyclers(
                 Visibility::Hidden
             };
             if let (true, Some(source)) = (scanning, source) {
-                let target = recycler_animation_target(
-                    source,
-                    cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
-                    recycler,
-                    planet,
-                    trip,
-                ) - planet.position;
-                let pulse = (((cycle - 0.30) / 0.26) + scan.pulse_offset).fract();
+                let target = recycler_animation_target(source, None, recycler, planet, trip)
+                    - planet.position;
+                let pulse = (((cycle - 0.30) / 0.32) + scan.pulse_offset).fract();
                 scan_transform.translation = target.extend(
-                    RECYCLER_SCAN_DEPTH + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP,
+                    match source {
+                        RecyclerSource::AsteroidField {
+                            ..
+                        } => RECYCLER_ASTEROID_SCAN_DEPTH,
+                        RecyclerSource::Debris {
+                            ..
+                        } => RECYCLER_SCAN_DEPTH,
+                    } + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP,
                 );
                 scan_transform.scale = Vec3::splat(5.0 + pulse * (14.0 + level as f32));
                 scan_transform.rotation = Quat::from_rotation_z(elapsed * 0.8);
                 if let Some(mut material) = materials.get_mut(&material.0) {
-                    material.color = player_color.with_alpha((1.0 - pulse) * 0.58);
+                    material.color =
+                        player_color.with_alpha((1.0 - pulse) * 0.58 * zoom_detail_alpha);
                 }
             }
         }
@@ -698,21 +855,10 @@ pub(crate) fn animate_recyclers(
             continue;
         };
 
-        sprite.color = player_color;
-        let target_world = recycler_animation_target(
-            source,
-            cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
-            recycler,
-            planet,
-            trip,
-        );
-        let next_target_world = recycler_animation_target(
-            source,
-            cache.asteroid_targets.get(&planet.id).map(Vec::as_slice),
-            recycler,
-            planet,
-            trip.saturating_add(1),
-        );
+        sprite.color = player_color.with_alpha(zoom_detail_alpha);
+        let target_world = recycler_animation_target(source, None, recycler, planet, trip);
+        let next_target_world =
+            recycler_animation_target(source, None, recycler, planet, trip.saturating_add(1));
         let source_anchor = match source {
             RecyclerSource::Debris {
                 target,
@@ -728,11 +874,18 @@ pub(crate) fn animate_recyclers(
         let position = recycler_route_position(home, target, recycler_progress(cycle));
         let tangent = Vec2::new(-position.y, position.x).normalize_or_zero();
         let position = position + tangent * (elapsed * 2.2 + recycler.phase * TAU).sin() * 1.4;
-        transform.translation =
-            position.extend(RECYCLER_DEPTH + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP);
+        let depth = match source {
+            RecyclerSource::AsteroidField {
+                ..
+            } => RECYCLER_ASTEROID_DEPTH,
+            RecyclerSource::Debris {
+                ..
+            } => RECYCLER_DEPTH,
+        } + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP;
+        transform.translation = position.extend(depth);
         let outbound = target - home;
         let scan_sway = if scanning {
-            ((cycle - 0.30) / 0.26 * TAU * 2.0).sin() * 0.12
+            ((cycle - 0.30) / 0.32 * TAU * 2.0).sin() * 0.12
         } else {
             0.0
         };
@@ -1300,292 +1453,35 @@ fn spawn_ambient_stars(commands: &mut Commands) {
     spawn_ambient_pulsars(commands);
 }
 
-#[derive(Clone, Copy, Debug)]
-struct AsteroidBeltGap {
-    between_bands: usize,
-    inner_center: f32,
-    outer_center: f32,
-    inner_edge: f32,
-    outer_edge: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AsteroidBeltLayout {
-    between_bands: usize,
-    radius: f32,
-    radial_half_width: f32,
-    maximum_asteroid_diameter: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AsteroidBeltPlacement {
-    seed: u32,
-    phase: f32,
-    radius: f32,
-    diameter: f32,
-}
-
-const ASTEROID_PLANET_CLEARANCE: f32 = 12.0;
-const ASTEROID_BELT_RADIUS_SAMPLES: usize = 12;
-const ASTEROID_BELT_TARGET_SPACING: f32 = 34.0;
-const ASTEROID_BELT_MINIMUM_COUNT: usize = 96;
-const ASTEROID_BELT_MAXIMUM_COUNT: usize = 420;
-const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 32;
-const ASTEROID_BELT_VISIBLE_SUBDIVISIONS: usize = 8;
 const ASTEROID_BELT_DEPTH: f32 = VORONOI_Z + 0.2;
-const ASTEROID_MINIMUM_WOBBLE: f32 = 4.0;
-const ASTEROID_WOBBLE_RANGE: f32 = 6.0;
-const ASTEROID_MAXIMUM_WOBBLE: f32 = ASTEROID_MINIMUM_WOBBLE + ASTEROID_WOBBLE_RANGE;
-
-fn solar_band_gaps(map: &Map) -> Vec<AsteroidBeltGap> {
-    let star = map.solar_star_position();
-    let mut bands = [Vec::new(), Vec::new(), Vec::new()];
-    for planet in map.planets() {
-        let index = match map.solar_band(planet.id) {
-            Some(crate::core::map::planet::SolarBand::Inner) => 0,
-            Some(crate::core::map::planet::SolarBand::Temperate) => 1,
-            Some(crate::core::map::planet::SolarBand::Outer) => 2,
-            None => continue,
-        };
-        bands[index].push((planet.position.distance(star), planet.size() * 0.5));
-    }
-    [(0, 1), (1, 2)]
-        .into_iter()
-        .enumerate()
-        .filter_map(|(between_bands, (near, far))| {
-            let inner_center =
-                bands[near].iter().map(|(distance, _)| *distance).reduce(f32::max)?;
-            let outer_center = bands[far].iter().map(|(distance, _)| *distance).reduce(f32::min)?;
-            let inner_edge =
-                bands[near].iter().map(|(distance, radius)| distance + radius).reduce(f32::max)?;
-            let outer_edge =
-                bands[far].iter().map(|(distance, radius)| distance - radius).reduce(f32::min)?;
-            (inner_center < outer_center).then_some(AsteroidBeltGap {
-                between_bands,
-                inner_center,
-                outer_center,
-                inner_edge,
-                outer_edge,
-            })
-        })
-        .collect()
-}
-
-fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> AsteroidBeltLayout {
-    let surface_width = gap.outer_edge - gap.inner_edge;
-    let (safe_inner, safe_outer, maximum_asteroid_radius) = if surface_width > 0.0 {
-        let maximum_asteroid_radius = 19.0_f32.min(surface_width * 0.2);
-        let planet_padding = 8.0_f32.min(surface_width * 0.08);
-        (
-            gap.inner_edge + maximum_asteroid_radius + planet_padding,
-            gap.outer_edge - maximum_asteroid_radius - planet_padding,
-            maximum_asteroid_radius,
-        )
-    } else {
-        let center_width = gap.outer_center - gap.inner_center;
-        (gap.inner_center + center_width * 0.12, gap.outer_center - center_width * 0.12, 19.0)
-    };
-    let safe_width = safe_outer - safe_inner;
-    let radial_half_width = (safe_width * 0.32).min(50.0);
-    let minimum_radius = safe_inner + radial_half_width;
-    let maximum_radius = safe_outer - radial_half_width;
-    AsteroidBeltLayout {
-        between_bands: gap.between_bands,
-        radius: minimum_radius + (maximum_radius - minimum_radius) * radial_position,
-        radial_half_width,
-        maximum_asteroid_diameter: maximum_asteroid_radius * 2.0,
-    }
-}
-
-fn asteroid_is_visible_on_map(map: &Map, placement: &AsteroidBeltPlacement) -> bool {
-    let center = map.solar_star_position();
-    let position = center + Vec2::from_angle(placement.phase) * placement.radius;
-    let visibility_margin = placement.diameter * 0.5 + ASTEROID_MAXIMUM_WOBBLE;
-    let clear_of_star = placement.radius - visibility_margin > SOLAR_STAR_SIZE * 0.5;
-    let fully_on_map = position.x - visibility_margin >= map.rect.min.x
-        && position.x + visibility_margin <= map.rect.max.x
-        && position.y - visibility_margin >= map.rect.min.y
-        && position.y + visibility_margin <= map.rect.max.y;
-    clear_of_star && fully_on_map
-}
-
-fn visible_asteroid_count(map: &Map, placements: &[AsteroidBeltPlacement]) -> usize {
-    placements.iter().filter(|placement| asteroid_is_visible_on_map(map, placement)).count()
-}
-
-/// Selects a complete belt in either the inner/temperate or temperate/outer gap. Sampling each
-/// safe radial span keeps the layout seed-varied while preferring the arc with the most rocks
-/// inside the playable map instead of choosing a ring that is mostly beyond its corner.
-fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
-    let seed = map.scenery_seed().wrapping_add(0x7a21_6d4b);
-    let gaps = solar_band_gaps(map);
-    let clear_gaps =
-        gaps.iter().copied().filter(|gap| gap.inner_edge < gap.outer_edge).collect::<Vec<_>>();
-    let candidates = if clear_gaps.is_empty() {
-        gaps
-    } else {
-        clear_gaps
-    };
-    let radial_offset = visual_noise(seed.wrapping_add(1));
-    candidates
-        .into_iter()
-        .flat_map(|gap| {
-            (0..ASTEROID_BELT_RADIUS_SAMPLES).map(move |sample| {
-                let radial_position =
-                    (radial_offset + sample as f32 / ASTEROID_BELT_RADIUS_SAMPLES as f32).fract();
-                asteroid_belt_layout_in_gap(gap, radial_position)
-            })
-        })
-        .enumerate()
-        .max_by_key(|(candidate, layout)| {
-            let placements = asteroid_belt_base_placements(map, *layout);
-            let complete = placements.len() == asteroid_belt_asteroid_count(layout.radius);
-            (
-                visible_asteroid_count(map, &placements),
-                complete,
-                visual_noise(seed.wrapping_add(*candidate as u32 + 2)).to_bits(),
-            )
-        })
-        .map(|(_, layout)| layout)
-}
-
-fn asteroid_belt_asteroid_count(radius: f32) -> usize {
-    ((TAU * radius / ASTEROID_BELT_TARGET_SPACING).round() as usize)
-        .clamp(ASTEROID_BELT_MINIMUM_COUNT, ASTEROID_BELT_MAXIMUM_COUNT)
-}
-
-struct AsteroidBeltPlacementGenerator {
-    center: Vec2,
-    planets: Vec<(Vec2, f32)>,
-    layout: AsteroidBeltLayout,
-    count: usize,
-    belt_seed: u32,
-    starting_angle: f32,
-    search_increment: f32,
-}
-
-impl AsteroidBeltPlacementGenerator {
-    fn new(map: &Map, layout: AsteroidBeltLayout) -> Self {
-        let count = asteroid_belt_asteroid_count(layout.radius);
-        let belt_seed = map
-            .scenery_seed()
-            .wrapping_add(0x2c91_7a4d)
-            .wrapping_add((layout.between_bands as u32).wrapping_mul(0x51d7_34ab));
-        Self {
-            center: map.solar_star_position(),
-            planets: map
-                .planets()
-                .into_iter()
-                .map(|planet| (planet.position, planet.size() * 0.5))
-                .collect(),
-            layout,
-            count,
-            belt_seed,
-            starting_angle: visual_noise(belt_seed) * TAU,
-            search_increment: TAU / count as f32 * 0.25,
-        }
-    }
-
-    fn placement(&self, sequence: usize, angular_index: f32) -> Option<AsteroidBeltPlacement> {
-        let seed = self.belt_seed.wrapping_add((sequence as u32).wrapping_mul(31));
-        let base_phase = self.starting_angle
-            + angular_index / self.count as f32 * TAU
-            + (visual_noise(seed) - 0.5) * TAU / self.count as f32 * 0.7;
-        let radius = self.layout.radius
-            + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
-        let minimum_diameter = 18.0_f32.min(self.layout.maximum_asteroid_diameter);
-        let diameter = minimum_diameter
-            + visual_noise(seed.wrapping_add(2))
-                * (self.layout.maximum_asteroid_diameter - minimum_diameter);
-        let phase = (0..=self.count * 4).find_map(|search| {
-            let offset = match search {
-                0 => 0.0,
-                value if value % 2 == 1 => (value / 2 + 1) as f32,
-                value => -((value / 2) as f32),
-            };
-            let phase = base_phase + offset * self.search_increment;
-            let position = self.center + Vec2::from_angle(phase) * radius;
-            self.planets
-                .iter()
-                .all(|(planet_position, planet_radius)| {
-                    position.distance(*planet_position)
-                        > planet_radius
-                            + diameter * 0.5
-                            + ASTEROID_PLANET_CLEARANCE
-                            + ASTEROID_MAXIMUM_WOBBLE
-                })
-                .then_some(phase)
-        })?;
-        Some(AsteroidBeltPlacement {
-            seed,
-            phase,
-            radius,
-            diameter,
-        })
-    }
-
-    fn base_placements(&self) -> Vec<AsteroidBeltPlacement> {
-        (0..self.count).filter_map(|index| self.placement(index, index as f32)).collect()
-    }
-}
-
-fn asteroid_belt_base_placements(
-    map: &Map,
-    layout: AsteroidBeltLayout,
-) -> Vec<AsteroidBeltPlacement> {
-    AsteroidBeltPlacementGenerator::new(map, layout).base_placements()
-}
-
-fn asteroid_belt_placements(map: &Map, layout: AsteroidBeltLayout) -> Vec<AsteroidBeltPlacement> {
-    let generator = AsteroidBeltPlacementGenerator::new(map, layout);
-    let mut placements = generator.base_placements();
-    let mut visible = visible_asteroid_count(map, &placements);
-    if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
-        return placements;
-    }
-
-    // Keep portions beyond the playable map sparse, and only subdivide its on-map arc. This
-    // guarantees a readable belt without multiplying sprite cost across the whole orbit.
-    'supplements: for subdivision in 1..ASTEROID_BELT_VISIBLE_SUBDIVISIONS {
-        for index in 0..generator.count {
-            let sequence = generator.count + (subdivision - 1) * generator.count + index;
-            let angular_index =
-                index as f32 + subdivision as f32 / ASTEROID_BELT_VISIBLE_SUBDIVISIONS as f32;
-            let Some(placement) = generator.placement(sequence, angular_index) else {
-                continue;
-            };
-            if asteroid_is_visible_on_map(map, &placement) {
-                placements.push(placement);
-                visible += 1;
-                if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
-                    break 'supplements;
-                }
-            }
-        }
-    }
-    placements
-}
+// The source canvases retain transparent framing around their irregular NASA cutouts. Scale only
+// the presentation so their visible bodies survive maximum zoom-out without changing placement,
+// collision clearance, or Recycler reach.
+const ASTEROID_MAX_RENDER_SCALE: f32 = 1.65;
+const ASTEROID_REFERENCE_CAMERA_SCALE: f32 = 0.8;
+// Preserve enough of the cutouts' photographed highlights and opacity to separate the belt from
+// the detailed star field. The slight warm cast keeps it behind the brighter interactive pieces.
+const ASTEROID_TINT: Color = Color::srgba(0.96, 0.90, 0.78, 0.98);
 
 fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Image>]) {
     if images.is_empty() {
         return;
     }
-    let Some(layout) = asteroid_belt_layout(map) else {
+    let Some(layout) = shared_asteroid_belt_layout(map) else {
         return;
     };
-    let center = map.solar_star_position();
-    let placements = asteroid_belt_placements(map, layout);
+    let placements = shared_asteroid_belt_placements(map, layout);
     commands.spawn((Name::new("Asteroid belt"), AsteroidBeltCmp, MapCmp));
     // Keep renderable rocks as world roots so their visibility never depends on the non-rendering
     // lifecycle marker. This also lets projection repair replace either side independently.
     for (index, placement) in placements.into_iter().enumerate() {
-        let position = center + Vec2::from_angle(placement.phase) * placement.radius;
+        let position = asteroid_position_at_elapsed(map, &placement, 0.0);
         commands.spawn((
             Sprite {
                 image: images[index % images.len()].clone(),
                 custom_size: Some(Vec2::splat(placement.diameter)),
                 // Keep the decorative belt visually behind interactive planets and overlays.
-                color: Color::srgba(0.78, 0.76, 0.72, 0.82),
+                color: ASTEROID_TINT,
                 ..default()
             },
             Transform {
@@ -1597,14 +1493,7 @@ fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Imag
             },
             Pickable::IGNORE,
             AsteroidCmp {
-                center,
-                radius: placement.radius,
-                phase: placement.phase,
-                angular_speed: 0.0,
-                wobble_phase: visual_noise(placement.seed.wrapping_add(6)) * TAU,
-                wobble_speed: 0.35 + visual_noise(placement.seed.wrapping_add(7)) * 0.5,
-                wobble_amplitude: ASTEROID_MINIMUM_WOBBLE
-                    + visual_noise(placement.seed.wrapping_add(8)) * ASTEROID_WOBBLE_RANGE,
+                placement,
                 spin: (0.1 + visual_noise(placement.seed.wrapping_add(9)) * 0.22)
                     * if visual_noise(placement.seed.wrapping_add(10)) < 0.5 {
                         -1.0
@@ -1843,9 +1732,23 @@ pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Playe
     state.to_selected = false;
     state.mission = false;
     state.combat_report = None;
-    if planet.mission_origin_army(player.id).is_some() {
+    if player.owns(planet) || player.controls(planet) {
         state.mission_info.origin = planet.id;
     }
+}
+
+/// Returns whether this player commands a protection fleet stationed on the world.
+fn has_stationed_protection_fleet(planet: &Planet, player_id: PlayerId) -> bool {
+    planet.army.protector(player_id).is_some_and(|army| Icon::Deploy.condition_for_army(army))
+}
+
+/// Hostile map actions disappear while the local player is defending the target.
+fn action_blocked_by_stationed_protection(
+    planet: &Planet,
+    player_id: PlayerId,
+    icon: Icon,
+) -> bool {
+    planet.is_protected_by(player_id) && icon.is_hostile_action()
 }
 
 /// Draws the map interface and emits any resulting local actions.
@@ -2068,6 +1971,7 @@ pub fn draw_map(
                                       mut sprites: Query<&mut Sprite, With<Icon>>,
                                       mut state: ResMut<UiState>,
                                       map: Res<Map>,
+                                      player: Res<Player>,
                                       missions: Res<Missions>| {
                                     if let Ok(mut sprite) = sprites.get_mut(event.entity) {
                                         sprite.color = Color::WHITE;
@@ -2083,7 +1987,13 @@ pub fn draw_map(
                                         })
                                         .find(|m| {
                                             m.destination == planet_id
-                                                && (m.objective == icon || icon == Icon::Attacked)
+                                                && (m.objective == icon
+                                                    || (icon == Icon::EnemyFleet
+                                                        && m.owner != player.id
+                                                        && !matches!(
+                                                            m.objective,
+                                                            Icon::Deploy | Icon::Protect
+                                                        )))
                                         })
                                     {
                                         state.mission_hover = Some(mission.id);
@@ -2122,7 +2032,7 @@ pub fn draw_map(
                                             if let Some(shop) = icon.shop() {
                                                 state.shop = shop;
                                             }
-                                        } else if icon == Icon::Attacked {
+                                        } else if icon == Icon::EnemyFleet {
                                             state.mission = true;
                                             state.planet_selected = None;
                                             state.mission_tab = MissionTab::EnemyMissions;
@@ -2142,6 +2052,8 @@ pub fn draw_map(
                                                 .planet_selected
                                                 .filter(|&id| {
                                                     id != planet_id
+                                                        && (player.owns(map.get(id))
+                                                            || player.controls(map.get(id)))
                                                         && map
                                                             .get(id)
                                                             .mission_origin_army(player.id)
@@ -2154,6 +2066,8 @@ pub fn draw_map(
                                                         .iter()
                                                         .find_map(|p| {
                                                             (p.id != planet_id
+                                                                && (player.owns(p)
+                                                                    || player.controls(p))
                                                                 && p.mission_origin_army(player.id)
                                                                     .is_some_and(|army| {
                                                                         icon.condition_for_army(
@@ -2456,8 +2370,7 @@ pub fn draw_map(
                     // Spawn one worker for every possible Recycler level. Animation places each
                     // visible worker beyond the orbital stack on the side facing its destination,
                     // where staggered phases keep the fleet from moving as one stacked sprite.
-                    let recycler_phase = visual_noise(planet.id as u32 + 4_337);
-                    for (index, phase_offset) in RECYCLER_PHASE_OFFSETS.into_iter().enumerate() {
+                    for index in 0..Building::MAX_LEVEL {
                         let level = index + 1;
                         parent.spawn((
                             Sprite {
@@ -2478,7 +2391,7 @@ pub fn draw_map(
                             RecyclerCmp {
                                 planet: planet.id,
                                 level,
-                                phase: (recycler_phase + phase_offset).fract(),
+                                phase: recycler_phase(planet.id, level),
                                 gate_angle,
                             },
                         ));
@@ -2582,6 +2495,38 @@ pub fn draw_map(
                             phase: relay_phase,
                         },
                     ));
+
+                    let trading_angle = PI * 1.72;
+                    let trading_radius = planet.size() * 0.86;
+                    parent
+                        .spawn((
+                            Sprite {
+                                image: assets.image("trading post marker"),
+                                custom_size: Some(Vec2::splat(planet.size() * 0.38)),
+                                ..default()
+                            },
+                            Transform::from_xyz(
+                                trading_angle.cos() * trading_radius,
+                                trading_angle.sin() * trading_radius,
+                                TRADING_POST_DEPTH,
+                            ),
+                            Pickable::IGNORE,
+                            Visibility::Hidden,
+                            TradingPostCmp {
+                                planet: planet_id,
+                            },
+                        ))
+                        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                        .observe(cursor::<Out>(SystemCursorIcon::Default))
+                        .observe(
+                            move |mut event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
+                                event.propagate(false);
+                                if event.button == PointerButton::Primary {
+                                    state.trading_post_open = Some(planet_id);
+                                    state.planet_selected = None;
+                                }
+                            },
+                        );
 
                     // Vertex alpha supplies the scanner's soft field, rim glow, and fading trails.
                     let scanner_material = materials.add(ColorMaterial {
@@ -2693,6 +2638,7 @@ fn railgun_action_available(
     hovered
         && can_accept
         && !already_committed
+        && !action_blocked_by_stationed_protection(map.get(target), player.id, Icon::RailgunStrike)
         && !orbital_railgun_origins(map, player.id, target).is_empty()
 }
 
@@ -2770,9 +2716,12 @@ pub fn update_planet_info(
         let mut count = 0;
         for child in children_q.iter_descendants(planet_e) {
             if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
+                let stationed_protection =
+                    *icon == Icon::Protect && has_stationed_protection_fleet(planet, player.id);
                 let visible = match icon {
-                    Icon::Attacked => world.missions.iter().any(|m| {
+                    Icon::EnemyFleet => world.missions.iter().any(|m| {
                         player.owns(planet)
+                            && m.owner != player.id
                             && !matches!(m.objective, Icon::Deploy | Icon::Protect)
                             && m.destination == planet.id
                     }),
@@ -2809,6 +2758,10 @@ pub fn update_planet_info(
                             && (hovered || icon.condition(planet) || settings.show_info)
                     },
                     _ => {
+                        if action_blocked_by_stationed_protection(planet, player.id, *icon) {
+                            *icon_v = Visibility::Hidden;
+                            continue;
+                        }
                         // Existing missions stay visible; hover or the info toggle also shows
                         // available objectives from worlds under the player's control.
                         let has_mission = world.missions.iter().any(|m| {
@@ -2820,6 +2773,7 @@ pub fn update_planet_info(
                         let has_condition = {
                             map.planets.iter().any(|p| {
                                 p.id != planet.id
+                                    && (player.owns(p) || player.controls(p))
                                     && p.mission_origin_army(player.id)
                                         .is_some_and(|army| icon.condition_for_army(army))
                                     && match icon {
@@ -2838,7 +2792,9 @@ pub fn update_planet_info(
                             })
                         };
 
-                        has_mission || ((hovered || settings.show_info) && has_condition)
+                        stationed_protection
+                            || has_mission
+                            || ((hovered || settings.show_info) && has_condition)
                     },
                 };
 
@@ -2964,7 +2920,12 @@ pub fn update_planet_defenses(
     )>,
     mut dock_q: Query<
         (&mut Visibility, &mut Sprite),
-        (With<SpaceDockCmp>, Without<JumpGateCmp>, Without<PlanetaryShieldCmp>),
+        (
+            With<SpaceDockCmp>,
+            Without<JumpGateCmp>,
+            Without<TradingPostCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
     >,
     mut railgun_q: Query<
         (&mut Visibility, &mut Sprite, &mut Pickable),
@@ -2975,12 +2936,18 @@ pub fn update_planet_defenses(
             Without<SolarSatelliteCmp>,
             Without<CommandRelayCmp>,
             Without<SensorPhalanxCmp>,
+            Without<TradingPostCmp>,
             Without<PlanetaryShieldCmp>,
         ),
     >,
     mut gate_q: Query<
         (&mut Visibility, &mut Sprite, &mut Pickable),
-        (With<JumpGateCmp>, Without<SpaceDockCmp>, Without<PlanetaryShieldCmp>),
+        (
+            With<JumpGateCmp>,
+            Without<SpaceDockCmp>,
+            Without<TradingPostCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
     >,
     mut satellite_q: Query<
         (&mut Visibility, &mut Sprite, &SolarSatelliteCmp),
@@ -2988,6 +2955,7 @@ pub fn update_planet_defenses(
             With<SolarSatelliteCmp>,
             Without<SpaceDockCmp>,
             Without<JumpGateCmp>,
+            Without<TradingPostCmp>,
             Without<PlanetaryShieldCmp>,
         ),
     >,
@@ -2999,6 +2967,7 @@ pub fn update_planet_defenses(
             Without<SolarSatelliteCmp>,
             Without<SpaceDockCmp>,
             Without<JumpGateCmp>,
+            Without<TradingPostCmp>,
             Without<PlanetaryShieldCmp>,
         ),
     >,
@@ -3010,12 +2979,24 @@ pub fn update_planet_defenses(
             Without<SolarSatelliteCmp>,
             Without<SpaceDockCmp>,
             Without<JumpGateCmp>,
+            Without<TradingPostCmp>,
+            Without<PlanetaryShieldCmp>,
+        ),
+    >,
+    mut trading_q: Query<
+        (&mut Visibility, &mut Sprite, &mut Pickable, &TradingPostCmp),
+        (
+            Without<CommandRelayCmp>,
+            Without<SensorPhalanxCmp>,
+            Without<SolarSatelliteCmp>,
+            Without<SpaceDockCmp>,
+            Without<JumpGateCmp>,
             Without<PlanetaryShieldCmp>,
         ),
     >,
     camera: Single<&Projection, With<MainCamera>>,
     time: Res<Time>,
-    mut development_visibility: Local<DevelopmentVisibility>,
+    mut zoom_detail_visibility: Local<ZoomDetailVisibility>,
     world: PlanetInfoResources,
 ) {
     let map = &world.map;
@@ -3026,8 +3007,7 @@ pub fn update_planet_defenses(
         Projection::Orthographic(ref projection) => projection.scale,
         _ => f32::INFINITY,
     };
-    let detail_alpha =
-        development_visibility.update(scale <= DEVELOPMENT_MAX_SCALE, time.delta_secs());
+    let detail_alpha = zoom_detail_visibility.update(scale, time.delta_secs());
 
     for (entity, planet_c) in &planet_q {
         let planet = map.get(planet_c.id);
@@ -3040,7 +3020,10 @@ pub fn update_planet_defenses(
         let (army, controller) = if controls {
             (Some(planet.army.controller()), planet.controlled)
         } else {
-            (info.as_ref().map(|info| &info.army), info.as_ref().and_then(|info| info.controlled))
+            (
+                info.as_ref().map(|info| &info.army),
+                player.known_controller(planet, &world.missions.0),
+            )
         };
         let has_ps = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::planetary_shield()) > 0);
@@ -3078,6 +3061,10 @@ pub fn update_planet_defenses(
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::CommandRelay)) > 0);
         let has_phalanx = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::SensorPhalanx)) > 0);
+        let trading_owner = (!planet.is_destroyed
+            && planet.army.amount(&Unit::Building(Building::TradingPost)) > 0)
+            .then_some(planet.owned)
+            .flatten();
         // Defenses left on an unclaimed world have no player color.
         let color = controller
             .map(|id| session.player_color(id).color())
@@ -3086,6 +3073,9 @@ pub fn update_planet_defenses(
             .map(|id| session.player_color(id).color())
             .unwrap_or(Color::srgb_u8(190, 198, 210));
         let railgun_color = railgun_owner
+            .map(|id| session.player_color(id).color())
+            .unwrap_or(Color::srgb_u8(190, 198, 210));
+        let trading_color = trading_owner
             .map(|id| session.player_color(id).color())
             .unwrap_or(Color::srgb_u8(190, 198, 210));
 
@@ -3231,6 +3221,38 @@ pub fn update_planet_defenses(
                     sprite.color = color;
                 }
             }
+            if let Ok((mut visibility, mut sprite, mut pickable, trading)) =
+                trading_q.get_mut(child)
+            {
+                let enemy_visible = trading_owner.is_some_and(|owner| {
+                    owner != player.id
+                        && map.planets.iter().any(|adjacent| {
+                            player.controls(adjacent) && planets_are_adjacent(adjacent, planet)
+                        })
+                });
+                let has_route = trading_owner.is_some_and(|owner| {
+                    owner != player.id
+                        && map.planets.iter().any(|own| {
+                            own.owned == Some(player.id)
+                                && adjacent_trading_posts(map, player.id, own.id)
+                                    .contains(&(owner, trading.planet))
+                        })
+                });
+                let visible_to_player = trading_owner == Some(player.id) || enemy_visible;
+                *visibility = if visible_to_player && detail_alpha > 0.01 {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                *pickable = if has_route && detail_alpha > 0.01 {
+                    Pickable::default()
+                } else {
+                    Pickable::IGNORE
+                };
+                if trading_owner.is_some() {
+                    sprite.color = trading_color.with_alpha(detail_alpha);
+                }
+            }
         }
     }
 }
@@ -3359,7 +3381,7 @@ pub(crate) fn update_voronoi(
                 if player.controls(planet) {
                     planet.controlled
                 } else {
-                    player.last_info(planet, &missions.0).and_then(|info| info.controlled)
+                    player.known_controller(planet, &missions.0)
                 }
             });
             controller.map(|controller| (planet.id, controller))
@@ -3569,7 +3591,7 @@ pub(crate) fn animate_space_scenery(
 ) {
     let elapsed = time.elapsed_secs_f64() as f32;
     for mut transform in &mut star_q {
-        transform.rotation = Quat::from_rotation_z(elapsed * 0.018);
+        transform.rotation = Quat::from_rotation_z(elapsed * SOLAR_STAR_ANGULAR_SPEED);
         transform.scale = Vec3::splat(1.0 + (elapsed * 0.72).sin() * 0.012);
     }
     for (frame, mut sprite) in &mut solar_frame_q {
@@ -3811,19 +3833,39 @@ pub(crate) fn animate_map_ambience(
 /// Advances the visible, non-authoritative asteroid-band drift and tumbling.
 pub(crate) fn animate_asteroid_belts(
     mut asteroids: Query<(&AsteroidCmp, &mut Transform)>,
+    camera: Query<&Projection, With<MainCamera>>,
+    map: Res<Map>,
     time: Res<Time>,
 ) {
     let elapsed = time.elapsed_secs_f64() as f32;
+    let camera_scale = camera
+        .single()
+        .ok()
+        .and_then(|projection| match projection {
+            Projection::Orthographic(projection) => Some(projection.scale),
+            _ => None,
+        })
+        .unwrap_or(ASTEROID_REFERENCE_CAMERA_SCALE);
+    let render_scale = asteroid_render_scale(camera_scale);
     for (asteroid, mut transform) in &mut asteroids {
-        let angle = asteroid.phase + elapsed * asteroid.angular_speed;
-        let wobble = (elapsed * asteroid.wobble_speed + asteroid.wobble_phase).sin();
-        let radius = asteroid.radius + wobble * asteroid.wobble_amplitude;
-        transform.translation =
-            (asteroid.center + Vec2::from_angle(angle) * radius).extend(transform.translation.z);
-        transform.rotation = Quat::from_rotation_z(elapsed * asteroid.spin + asteroid.phase);
+        transform.translation = asteroid_position_at_elapsed(&map, &asteroid.placement, elapsed)
+            .extend(transform.translation.z);
+        transform.rotation =
+            Quat::from_rotation_z(elapsed * asteroid.spin + asteroid.placement.phase);
         let tumble = (elapsed * asteroid.tumble_speed + asteroid.tumble_phase).sin();
-        transform.scale = Vec3::new(1.0 + tumble * 0.04, 1.0 - tumble * 0.04, 1.0);
+        transform.scale = Vec3::new(
+            (1.0 + tumble * 0.04) * render_scale,
+            (1.0 - tumble * 0.04) * render_scale,
+            1.0,
+        );
     }
+}
+
+fn asteroid_render_scale(camera_scale: f32) -> f32 {
+    let zoom_out = ((camera_scale - ASTEROID_REFERENCE_CAMERA_SCALE)
+        / (MAX_ZOOM - ASTEROID_REFERENCE_CAMERA_SCALE))
+        .clamp(0.0, 1.0);
+    1.0 + zoom_out * (ASTEROID_MAX_RENDER_SCALE - 1.0)
 }
 
 /// Advances map animations effects for the current frame.

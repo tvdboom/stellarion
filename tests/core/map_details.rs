@@ -580,9 +580,11 @@ fn debris_requires_actual_ship_losses_and_is_bounded() {
     let medium = debris_visuals(DebrisSize::Medium);
     let large = debris_visuals(DebrisSize::Large);
     assert!(small.pieces < medium.pieces && medium.pieces < large.pieces);
-    assert!(small.angle_step < medium.angle_step && medium.angle_step < large.angle_step);
-    assert!(medium.angle_step * (medium.pieces - 1) as f32 > 0.17);
-    assert!(large.angle_step * (large.pieces - 1) as f32 > 0.43);
+    let radial_span =
+        |visuals: DebrisVisuals| visuals.radial_step * visuals.pieces.saturating_sub(1) as f32;
+    assert!(radial_span(small) < radial_span(medium));
+    assert!(radial_span(medium) < radial_span(large));
+    assert!(large.angle_step * ((large.pieces - 1) as f32) < 0.1);
     assert!(small.min_radius < medium.min_radius && medium.min_radius < large.min_radius);
     assert!(small.min_diameter < medium.min_diameter);
     assert!(medium.min_diameter < large.min_diameter);
@@ -894,6 +896,9 @@ fn zoom_and_age_disable_invisible_hit_targets() {
             Pickable::IGNORE,
         ))
         .id();
+    app.world_mut()
+        .resource_mut::<Time<Real>>()
+        .advance_by(std::time::Duration::from_secs_f32(ZOOM_DETAIL_FADE_SECONDS));
     app.update();
     assert_eq!(*app.world().get::<Visibility>(detail).unwrap(), Visibility::Inherited);
     assert!(!app.world().get::<Pickable>(detail).unwrap().is_hoverable);
@@ -904,6 +909,17 @@ fn zoom_and_age_disable_invisible_hit_targets() {
     {
         projection.scale = 1.4;
     }
+    app.world_mut()
+        .resource_mut::<Time<Real>>()
+        .advance_by(std::time::Duration::from_secs_f32(ZOOM_DETAIL_FADE_SECONDS * 0.5));
+    app.update();
+    assert_eq!(*app.world().get::<Visibility>(detail).unwrap(), Visibility::Inherited);
+    assert!(app.world().get::<Pickable>(hit_target).unwrap().is_hoverable);
+    let fading_alpha = app.world().get::<Sprite>(detail).unwrap().color.alpha();
+    assert!(fading_alpha > 0.0 && fading_alpha < 0.9);
+    app.world_mut()
+        .resource_mut::<Time<Real>>()
+        .advance_by(std::time::Duration::from_secs_f32(ZOOM_DETAIL_FADE_SECONDS));
     app.update();
     assert_eq!(*app.world().get::<Visibility>(detail).unwrap(), Visibility::Hidden);
     assert!(!app.world().get::<Pickable>(detail).unwrap().is_hoverable);
@@ -960,6 +976,37 @@ fn development_fades_finish_and_can_reverse_mid_transition() {
     assert!((fade.update(true, 0.055) - 0.75).abs() < 0.001);
     assert_eq!(fade.update(false, 0.22), 0.0);
     assert_eq!(fade.update(false, 1.0), 0.0);
+}
+
+#[test]
+fn zoom_details_follow_the_debris_curve_and_settle_gradually() {
+    let mut fade = ZoomDetailVisibility::default();
+
+    assert_eq!(fade.update(1.05, 1.0), 0.0);
+    let halfway_in = fade.update(0.75, ZOOM_DETAIL_FADE_SECONDS * 0.5);
+    assert!((0.7..0.8).contains(&halfway_in));
+    let nearly_visible = fade.update(0.75, ZOOM_DETAIL_FADE_SECONDS * 0.5);
+    assert!((0.94..0.96).contains(&nearly_visible));
+
+    let halfway_out = fade.update(1.05, ZOOM_DETAIL_FADE_SECONDS * 0.5);
+    assert!((0.2..0.22).contains(&halfway_out));
+    assert_eq!(fade.update(1.05, ZOOM_DETAIL_FADE_SECONDS * 1.1), 0.0);
+
+    let mut midpoint_fade = ZoomDetailVisibility::default();
+    let midpoint = midpoint_fade.update(0.9, ZOOM_DETAIL_FADE_SECONDS);
+    assert!((0.47..0.49).contains(&midpoint));
+}
+
+#[test]
+fn debris_fields_form_long_shallow_plumes() {
+    for size in [DebrisSize::Small, DebrisSize::Medium, DebrisSize::Large] {
+        let visuals = debris_visuals(size);
+        let radial_span = visuals.radial_step * visuals.pieces.saturating_sub(1) as f32;
+        let angular_span = visuals.angle_step * visuals.pieces.saturating_sub(1) as f32;
+
+        assert!(radial_span > angular_span * 3.0);
+        assert!(radial_span >= 0.16);
+    }
 }
 
 #[test]

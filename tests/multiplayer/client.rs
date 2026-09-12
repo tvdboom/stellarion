@@ -268,6 +268,40 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
     }
 }
 
+#[test]
+fn protection_changes_notify_the_affected_player_and_focus_the_world() {
+    let current = record("protection", 4, 7, MatchStatus::Active);
+    let protected = current.persisted.state.players[0].home_planet;
+    let mut granted = current.clone();
+    granted.persisted.state.map.get_mut(protected).protection_permissions.insert(2);
+    let mut session = MultiplayerSession {
+        membership: Some(membership(&current.id, 2, "Protector", true)),
+        active_game: Some(current),
+        ..default()
+    };
+
+    let notices = protection_permission_notifications(
+        &BackendOutput::Record(Operation::Load, granted.clone()),
+        &session,
+    );
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
+    assert!(notices[0].message.starts_with("You can now protect planet "));
+    assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+
+    session.active_game = Some(granted.clone());
+    let mut revoked = granted;
+    revoked.persisted.state.map.get_mut(protected).protection_permissions.remove(&2);
+    let notices = protection_permission_notifications(
+        &BackendOutput::Record(Operation::Load, revoked),
+        &session,
+    );
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Warning);
+    assert!(notices[0].message.contains("was revoked"));
+    assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn host_and_guest_disconnects_refresh_before_due_event_polls() {
@@ -363,15 +397,14 @@ fn local_practice_backend_advances_without_an_opponent() {
         practice_mode: true,
         ..GameRules::default()
     };
-    let color = PlayerColor::new(4).unwrap();
-    let (backend, result, players) = block_on(create_local_practice(rules, color)).unwrap();
+    let (backend, result, players) = block_on(create_local_practice(rules)).unwrap();
     let auth = players[0].auth.clone();
     assert_eq!(result.game.status, MatchStatus::Active);
     assert_eq!(result.game.max_players, 1);
     assert_eq!(result.game.members.len(), 1);
     assert_eq!(
         result.game.persisted.state.player(result.membership.player_id).unwrap().color(),
-        color
+        PlayerColor::for_player(1)
     );
 
     let turn = result.game.persisted.state.turn;
@@ -401,7 +434,7 @@ fn local_practice_backend_advances_without_an_opponent() {
     assert_eq!(advanced.status, MatchStatus::Active);
     assert_eq!(
         advanced.persisted.state.player(result.membership.player_id).unwrap().color(),
-        color
+        PlayerColor::for_player(1)
     );
 }
 
@@ -495,6 +528,47 @@ fn local_practice_next_turn_resolves_every_players_draft_at_once() {
             && player.pending.is_editable()
             && player.pending.commands.is_empty()
     }));
+    assert_eq!(
+        runtime
+            .practice_players
+            .iter()
+            .map(|player| (player.membership.player_id, player.presented_turn))
+            .collect::<Vec<_>>(),
+        vec![(1, 1), (2, 2)],
+        "only the empire selected when the turn advances has seen its presentation"
+    );
+
+    let mut refreshes =
+        app.world().resource::<Messages<RefreshGameplayProjection>>().get_cursor_current();
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
+    app.update();
+    let messages = app.world().resource::<Messages<RefreshGameplayProjection>>();
+    assert!(matches!(
+        refreshes.read(messages).collect::<Vec<_>>().as_slice(),
+        [RefreshGameplayProjection::PracticePlayer {
+            present_turn: true
+        }]
+    ));
+
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+    app.update();
+    let messages = app.world().resource::<Messages<RefreshGameplayProjection>>();
+    assert!(matches!(
+        refreshes.read(messages).collect::<Vec<_>>().as_slice(),
+        [RefreshGameplayProjection::PracticePlayer {
+            present_turn: false
+        }]
+    ));
+
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
+    app.update();
+    let messages = app.world().resource::<Messages<RefreshGameplayProjection>>();
+    assert!(matches!(
+        refreshes.read(messages).collect::<Vec<_>>().as_slice(),
+        [RefreshGameplayProjection::PracticePlayer {
+            present_turn: false
+        }]
+    ));
 }
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
@@ -509,8 +583,7 @@ pub(crate) fn local_practice_app_with_players(player_count: u8) -> App {
         practice_mode: true,
         ..GameRules::default()
     };
-    let (backend, result, players) =
-        block_on(create_local_practice(rules, PlayerColor::for_player(1))).unwrap();
+    let (backend, result, players) = block_on(create_local_practice(rules)).unwrap();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(State::new(AppState::Game))

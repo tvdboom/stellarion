@@ -715,7 +715,7 @@ fn settings_navigation_remains_reachable_on_short_windows() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
+fn local_practice_omits_color_selection_and_starts_by_button_or_enter() {
     for viewport in [egui::vec2(400.0, 700.0), egui::vec2(400.0, 400.0), egui::vec2(1600.0, 900.0)]
     {
         let (mut app, context) = menu_app();
@@ -724,42 +724,13 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
             menu_app_frame(&mut app, &context, viewport, state, vec![]);
         }
         let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
-        let swatches = filled_circles(&shapes, 11.0);
-        assert_eq!(swatches.len(), PLAYER_COLOR_PALETTE.len());
+        assert!(visible_menu_label(&shapes, "Player color").is_none());
+        assert!(filled_circles(&shapes, 11.0).is_empty());
         let title = visible_menu_label(&shapes, "Local Practice").unwrap();
         assert!(title.top() >= 0.0);
-        for shape in &shapes {
-            if let egui::Shape::Circle(circle) = &shape.shape {
-                if circle.radius >= 11.0 {
-                    assert!(shape.clip_rect.contains_rect(circle.visual_bounding_rect()));
-                    assert!(circle.center.y > title.bottom());
-                }
-            }
-        }
-        assert_eq!(
-            app.world().resource::<MultiplayerForm>().practice_color,
-            PLAYER_COLOR_PALETTE[0]
-        );
-        click_menu_app(&mut app, &context, viewport, state, swatches[4]);
-        let chosen = PLAYER_COLOR_PALETTE[4];
-        assert_eq!(app.world().resource::<MultiplayerForm>().practice_color, chosen);
-        assert!(app.world().resource::<Messages<MultiplayerRequest>>().is_empty());
-
-        let shapes = menu_app_frame(
-            &mut app,
-            &context,
-            viewport,
-            state,
-            vec![egui::Event::PointerMoved(egui::Pos2::ZERO)],
-        );
-        assert!(shapes.iter().any(|shape| matches!(
-            &shape.shape,
-            egui::Shape::Circle(circle) if circle.radius == 14.0 && circle.center == swatches[4]
-        )));
 
         app.world_mut().resource_mut::<MultiplayerSession>().busy = true;
         menu_app_frame(&mut app, &context, viewport, state, vec![]);
-        click_menu_app(&mut app, &context, viewport, state, swatches[1]);
         menu_app_frame(
             &mut app,
             &context,
@@ -776,7 +747,6 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
                 },
             ],
         );
-        assert_eq!(app.world().resource::<MultiplayerForm>().practice_color, chosen);
         assert!(app.world().resource::<Messages<MultiplayerRequest>>().is_empty());
         app.world_mut().resource_mut::<MultiplayerSession>().busy = false;
 
@@ -787,7 +757,7 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
             viewport,
             state,
             vec![
-                egui::Event::PointerMoved(swatches[4]),
+                egui::Event::PointerMoved(title.center()),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -1000.0),
@@ -809,8 +779,8 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
         let requests: Vec<_> =
             app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
         assert!(matches!(requests.as_slice(), [MultiplayerRequest::StartLocalPractice {
-            player_color, rules,
-        }] if *player_color == chosen && rules.practice_mode && rules.player_count == 2));
+            rules,
+        }] if rules.practice_mode && rules.player_count == 2));
 
         menu_app_frame(
             &mut app,
@@ -821,9 +791,7 @@ fn local_practice_color_survives_scrolling_and_is_used_by_start_and_enter() {
         );
         let requests: Vec<_> =
             app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
-        assert!(matches!(requests.as_slice(), [MultiplayerRequest::StartLocalPractice {
-            player_color, ..
-        }] if *player_color == chosen));
+        assert!(matches!(requests.as_slice(), [MultiplayerRequest::StartLocalPractice { .. }]));
     }
 }
 
@@ -1077,20 +1045,23 @@ fn menu_frame_sized(
     let mut world = World::new();
     world.init_resource::<Messages<MultiplayerRequest>>();
     let mut system = SystemState::<MessageWriter<MultiplayerRequest>>::new(&mut world);
-    let mut requests = system.get_mut(&mut world).unwrap();
-    let mut output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
-            events,
-            ..default()
-        },
-        |ui| {
-            ui.set_width(560.0);
-            draw(ui, &mut requests);
-        },
-    );
+    let mut output = {
+        let mut requests = system.get_mut(&mut world).unwrap();
+        context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                events,
+                ..default()
+            },
+            |ui| {
+                ui.set_width(560.0);
+                draw(ui, &mut requests);
+            },
+        )
+    };
     // Headless tests inspect shapes without uploading font textures to a GPU.
     output.textures_delta.clear();
+    system.apply(&mut world);
     let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
     (output.shapes, requests)
 }

@@ -283,23 +283,96 @@ fn protection_permission_is_planet_specific_and_controller_only() {
     let mut model = started_model(3);
     let protected = model.players[0].home_planet;
 
-    apply_protection_permission(&mut model, 1, protected, 2, true).unwrap();
+    set_protection_permission_immediately(&mut model, 1, protected, 2, true).unwrap();
 
     assert!(model.map.get(protected).allows_protection(2));
     assert!(!model.map.get(protected).allows_protection(3));
-    assert!(apply_protection_permission(&mut model, 2, protected, 3, true).is_err());
-    assert!(apply_protection_permission(&mut model, 1, protected, 1, true).is_err());
+    assert!(set_protection_permission_immediately(&mut model, 2, protected, 3, true).is_err());
+    assert!(set_protection_permission_immediately(&mut model, 1, protected, 1, true).is_err());
     let loaded = PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
     assert!(loaded.state.map.get(protected).allows_protection(2));
 }
 
 #[test]
-fn only_the_protector_can_dispatch_their_stationed_fleet() {
+fn protection_is_disabled_until_three_players_are_active() {
+    let mut model = started_model(2);
+    let protected = model.players[0].home_planet;
+
+    assert!(set_protection_permission_immediately(&mut model, 1, protected, 2, true).is_err());
+    assert!(model.map.get(protected).protection_permissions.is_empty());
+    assert!(model.players[1].protection_intel.is_empty());
+}
+
+#[test]
+fn protection_is_an_additional_hostile_world_objective_until_a_fleet_is_stationed() {
+    let objectives = Icon::objectives(false, false, true, false);
+
+    assert_eq!(
+        objectives,
+        vec![
+            Icon::Colonize,
+            Icon::Protect,
+            Icon::Attack,
+            Icon::Spy,
+            Icon::MissileStrike,
+            Icon::Destroy,
+        ]
+    );
+
+    assert_eq!(Icon::objectives(false, false, true, true), vec![Icon::Protect]);
+}
+
+#[test]
+fn immediate_revocation_recalls_protection_and_preserves_controller_intelligence() {
     let mut model = started_model(3);
     let protected = model.players[0].home_planet;
+    let protector_home = model.players[1].home_planet;
+    let cruiser = Unit::Ship(Ship::Cruiser);
+    let fighter = Unit::Ship(Ship::LightFighter);
+
+    assert!(set_protection_permission_immediately(&mut model, 1, protected, 2, true).unwrap());
+    assert_eq!(model.players[1].protection_controller(model.map.get(protected)), Some(1));
+    model.map.get_mut(protected).army.dock_protector(2, Army::from([(cruiser, 2)]));
+    let mut travelling = Mission::new_with_id(
+        900,
+        model.turn as usize,
+        2,
+        model.map.get(protector_home),
+        model.map.get(protected),
+        Icon::Protect,
+        Army::from([(fighter, 3)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    travelling.position =
+        (model.map.get(protector_home).position + model.map.get(protected).position) * 0.5;
+    model.missions.push(travelling);
+
+    assert!(set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap());
+
+    assert!(!model.map.get(protected).allows_protection(2));
+    assert!(model.map.get(protected).army.protector(2).is_none());
+    assert_eq!(model.players[1].protection_controller(model.map.get(protected)), Some(1));
+    let in_flight = model.missions.iter().find(|mission| mission.id == 900).unwrap();
+    assert_eq!((in_flight.destination, in_flight.objective), (protector_home, Icon::Deploy));
+    assert_eq!(in_flight.return_objective, Some(Icon::Protect));
+    let stationed = model.missions.iter().find(|mission| mission.id != 900).unwrap();
+    assert_eq!((stationed.origin, stationed.destination), (protected, protector_home));
+    assert_eq!(stationed.army.amount(&cruiser), 2);
+    assert_eq!(stationed.return_objective, Some(Icon::Protect));
+}
+
+#[test]
+fn stationed_protection_can_only_be_recalled_home() {
+    let mut model = started_model(3);
+    let protected = model.players[0].home_planet;
+    let protector_home = model.players[1].home_planet;
     let target = model.players[2].home_planet;
     let fighter = Unit::Ship(Ship::LightFighter);
     model.players[1].resources = Resources::new(1_000_000, 1_000_000, 1_000_000);
+    model.map.get_mut(protector_home).army.insert(fighter, 1);
     model.map.get_mut(protected).protection_permissions.insert(2);
     model.map.get_mut(protected).army.dock_protector(2, Army::from([(fighter, 5)]));
     let host_army = model.map.get(protected).army.controller().clone();
@@ -315,139 +388,44 @@ fn only_the_protector_can_dispatch_their_stationed_fleet() {
     };
 
     assert!(preview_commands(&model, 1, std::slice::from_ref(&attack)).is_err());
-    let preview = preview_commands(&model, 2, &[attack]).unwrap();
+    assert!(preview_commands(&model, 2, &[attack]).is_err());
+
+    let preview = preview_commands(
+        &model,
+        2,
+        &[TurnCommand::RecallProtection {
+            mission_id: 701,
+            planet_id: protected,
+        }],
+    )
+    .unwrap();
 
     assert_eq!(preview.map.get(protected).army.controller(), &host_army);
-    assert_eq!(preview.map.get(protected).army.protector(2).unwrap().amount(&fighter), 2);
+    assert!(preview.map.get(protected).army.protector(2).is_none());
     assert_eq!(preview.missions.len(), 1);
     assert_eq!(
-        (preview.missions[0].owner, preview.missions[0].origin, preview.missions[0].objective),
-        (2, protected, Icon::Attack)
+        (
+            preview.missions[0].owner,
+            preview.missions[0].origin,
+            preview.missions[0].destination,
+            preview.missions[0].objective,
+            preview.missions[0].return_objective,
+        ),
+        (2, protected, protector_home, Icon::Deploy, Some(Icon::Protect))
     );
-}
+    assert_eq!(preview.missions[0].army.amount(&fighter), 5);
 
-#[test]
-fn canceled_in_flight_protection_returns_to_the_protectors_homeworld() {
-    let mut model = started_model(3);
-    let protected = model.players[0].home_planet;
-    let protector_home = model.players[1].home_planet;
-    model.map.get_mut(protected).protection_permissions.insert(2);
-    let mut mission = Mission::new_with_id(
-        701,
-        model.turn as usize,
-        2,
-        model.map.get(protector_home),
-        model.map.get(protected),
-        Icon::Protect,
-        Army::from([(Unit::Ship(Ship::Cruiser), 2)]),
-        BombingRaid::None,
-        false,
-        false,
-        None,
-    );
-    mission.position = model.map.get(protected).position;
-    model.missions.push(mission);
-    let submissions = vec![
-        TurnSubmission::new(
-            1,
-            model.turn,
-            vec![TurnCommand::SetProtectionPermission {
-                planet_id: protected,
-                protector: 2,
-                allowed: false,
-            }],
-        ),
-        TurnSubmission::new(2, model.turn, vec![]),
-        TurnSubmission::new(3, model.turn, vec![]),
-    ];
-
-    resolve_turn(&mut model, &submissions).unwrap();
-
-    let returning = model.missions.iter().find(|mission| mission.id == 701).unwrap();
-    assert_eq!(returning.destination, protector_home);
-    assert_eq!(returning.objective, Icon::Deploy);
-    assert_eq!(returning.return_objective, Some(Icon::Protect));
-    assert_eq!(returning.protected_player, None);
-    assert!(returning.logs.contains("returning to home planet"));
-}
-
-#[test]
-fn same_turn_revocation_accepts_then_recalls_a_planned_protect_launch() {
-    let mut model = started_model(3);
-    let protected = model.players[0].home_planet;
-    let protector_home = model.players[1].home_planet;
-    let cruiser = Unit::Ship(Ship::Cruiser);
-    model.map.get_mut(protected).protection_permissions.insert(2);
-    model.map.get_mut(protector_home).army.insert(cruiser, 2);
-    model.players[1].resources = Resources::new(1_000_000, 1_000_000, 1_000_000);
-    let submissions = vec![
-        TurnSubmission::new(
-            1,
-            model.turn,
-            vec![TurnCommand::SetProtectionPermission {
-                planet_id: protected,
-                protector: 2,
-                allowed: false,
-            }],
-        ),
-        TurnSubmission::new(
-            2,
-            model.turn,
-            vec![TurnCommand::SendMission {
-                mission_id: 704,
-                origin: protector_home,
-                destination: protected,
-                objective: Icon::Protect,
-                army: Army::from([(cruiser, 2)]),
-                bombing: BombingRaid::None,
-                combat_probes: false,
-                jump_gate: false,
-            }],
-        ),
-        TurnSubmission::new(3, model.turn, vec![]),
-    ];
-
-    resolve_turn(&mut model, &submissions).unwrap();
-
-    assert!(model.missions.iter().all(|mission| mission.id != 704));
-    assert_eq!(model.map.get(protector_home).army.amount(&cruiser), 2);
-    assert!(model.map.get(protected).army.protector(2).is_none());
-    let report = model.players[1].reports.iter().find(|report| report.mission.id == 704).unwrap();
-    assert_eq!(report.mission.destination, protector_home);
-    assert_eq!(report.mission.objective, Icon::Deploy);
-    assert_eq!(report.mission.return_objective, Some(Icon::Protect));
-}
-
-#[test]
-fn revoking_stationed_protection_launches_one_homeward_return() {
-    let mut model = started_model(3);
-    let protected = model.players[0].home_planet;
-    let protector_home = model.players[1].home_planet;
-    let fleet = Army::from([(Unit::Ship(Ship::LightFighter), 4), (Unit::Ship(Ship::Cruiser), 1)]);
-    model.map.get_mut(protected).protection_permissions.insert(2);
-    model.map.get_mut(protected).army.dock_protector(2, fleet.clone());
-    let submissions = vec![
-        TurnSubmission::new(
-            1,
-            model.turn,
-            vec![TurnCommand::SetProtectionPermission {
-                planet_id: protected,
-                protector: 2,
-                allowed: false,
-            }],
-        ),
-        TurnSubmission::new(2, model.turn, vec![]),
-        TurnSubmission::new(3, model.turn, vec![]),
-    ];
-
-    resolve_turn(&mut model, &submissions).unwrap();
-
-    assert!(model.map.get(protected).army.protector(2).is_none());
-    let returning = model.missions.iter().find(|mission| mission.owner == 2).unwrap();
-    assert_eq!((returning.origin, returning.destination), (protected, protector_home));
-    assert_eq!(returning.objective, Icon::Deploy);
-    assert_eq!(returning.return_objective, Some(Icon::Protect));
-    assert_eq!(returning.army, fleet);
+    let attack_protected_world = TurnCommand::SendMission {
+        mission_id: 702,
+        origin: protector_home,
+        destination: protected,
+        objective: Icon::Attack,
+        army: Army::from([(fighter, 1)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        jump_gate: false,
+    };
+    assert!(preview_commands(&model, 2, &[attack_protected_world]).is_err());
 }
 
 #[test]
@@ -934,6 +912,47 @@ fn mission_commands_ignore_zero_count_units() {
 }
 
 #[test]
+fn recalling_a_mission_launched_in_the_same_turn_restores_the_exact_prelaunch_state() {
+    let mut model = started_model(3);
+    let player_id = model.players[0].id;
+    let destination = model.players[2].home_planet;
+    let origin = model
+        .map
+        .planets()
+        .into_iter()
+        .find(|planet| !planet.is_moon() && planet.controlled.is_none())
+        .unwrap()
+        .id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let origin_planet = model.map.get_mut(origin);
+    origin_planet.controlled = Some(player_id);
+    origin_planet.army = Army::from([(fighter, 3)]).into();
+    origin_planet.protection_permissions.insert(2);
+    model.players[0].resources = Resources::new(100_000, 100_000, 100_000);
+    let before = serde_json::to_value(&model).unwrap();
+    let mission_id = 8_001;
+    let commands = [
+        TurnCommand::SendMission {
+            mission_id,
+            origin,
+            destination,
+            objective: Icon::Attack,
+            army: Army::from([(fighter, 3)]),
+            bombing: BombingRaid::None,
+            combat_probes: false,
+            jump_gate: false,
+        },
+        TurnCommand::RecallMission {
+            mission_id,
+        },
+    ];
+
+    let preview = preview_commands(&model, player_id, &commands).unwrap();
+
+    assert_eq!(serde_json::to_value(preview).unwrap(), before);
+}
+
+#[test]
 fn every_recallable_mission_type_can_be_recalled_from_its_current_position_for_free() {
     let model = started_model(2);
     let player_id = model.players[0].id;
@@ -1032,6 +1051,47 @@ fn missile_strikes_cannot_be_recalled_once_launched() {
         ),
         Err(GameError::InvalidCommand { reason, .. })
             if reason == "missile strikes cannot be recalled once launched"
+    ));
+}
+
+#[test]
+fn allied_attacks_cannot_be_recalled_once_launched() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut mission = Mission::new_with_id(
+        72,
+        model.turn as usize,
+        player_id,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        Army::from([(fighter, 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.joint_attack = Some(JointAttackMission {
+        id: 44,
+        leader: player_id,
+        arrival_turn: model.turn as usize + 1,
+        attackers: std::collections::BTreeMap::from([(player_id, mission.army.clone())]),
+        origins: std::collections::BTreeMap::from([(player_id, origin)]),
+        ..Default::default()
+    });
+    model.missions.push(mission);
+
+    assert!(matches!(
+        preview_commands(
+            &model,
+            player_id,
+            &[TurnCommand::RecallMission { mission_id: 72 }]
+        ),
+        Err(GameError::InvalidCommand { reason, .. })
+            if reason == "allied attacks cannot be recalled once launched"
     ));
 }
 
@@ -1813,6 +1873,89 @@ fn empty_turn(model: &mut GameModel) -> TurnResult {
 }
 
 #[test]
+fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protection() {
+    let mut model = started_model(3);
+    let leader_origin = model.player(1).unwrap().home_planet;
+    let supporter_origin = model.player(2).unwrap().home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let target_position = Vec2::ZERO;
+    model.map.get_mut(target).position = target_position;
+    model.map.get_mut(target).controlled = Some(3);
+    model.map.get_mut(target).army.clear();
+    model.map.get_mut(leader_origin).position = target_position + Vec2::X * Planet::SIZE;
+    model.map.get_mut(supporter_origin).position = target_position + Vec2::X * Planet::SIZE * 12.0;
+    model.map.get_mut(leader_origin).army.insert(Unit::Ship(Ship::LightFighter), 4);
+    model.map.get_mut(supporter_origin).army.insert(Unit::Ship(Ship::LightFighter), 3);
+    for participant in &mut model.players {
+        participant.resources.deuterium = 100_000;
+    }
+
+    let joint = TurnCommand::SendJointMission {
+        attack_id: 77,
+        mission_id: 7_700,
+        destination: target,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        contributions: vec![
+            JointAttackContribution {
+                player_id: 1,
+                origin: leader_origin,
+                army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
+            },
+            JointAttackContribution {
+                player_id: 2,
+                origin: supporter_origin,
+                army: Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
+            },
+        ],
+    };
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[
+            TurnSubmission::new(1, turn, vec![joint]),
+            TurnSubmission::new(2, turn, Vec::new()),
+            TurnSubmission::new(3, turn, Vec::new()),
+        ],
+    )
+    .unwrap();
+
+    let joint_fleets = model
+        .missions
+        .iter()
+        .filter(|mission| mission.joint_attack.as_ref().is_some_and(|attack| attack.id == 77))
+        .collect::<Vec<_>>();
+    assert_eq!(joint_fleets.len(), 2);
+    assert_eq!(
+        joint_fleets[0].joint_attack.as_ref().unwrap().arrival_turn,
+        joint_fleets[1].joint_attack.as_ref().unwrap().arrival_turn
+    );
+
+    for _ in 0..16 {
+        if model.map.get(target).controlled == Some(1) {
+            break;
+        }
+        empty_turn(&mut model);
+    }
+    let conquered = model.map.get(target);
+    assert_eq!(conquered.controlled, Some(1));
+    assert!(conquered.allows_protection(2));
+    assert_eq!(
+        conquered.army.protector(2).map_or(0, |army| army.amount(&Unit::Ship(Ship::LightFighter))),
+        3
+    );
+    let report = model.player(2).unwrap().reports.last().unwrap();
+    assert_eq!(report.attacker_players(), vec![1, 2]);
+}
+
+#[test]
 fn territory_target_uses_surviving_planets_and_starting_players_and_rounds_up() {
     for (players, expected, expected_after_destruction) in [(2, 15, 8), (3, 20, 10), (4, 25, 13)] {
         let mut model = started_model(players);
@@ -1880,9 +2023,9 @@ fn senate_levels_scale_with_galaxy_size_and_the_ownership_setting() {
     let home = model.players[0].home_planet;
     let total = model.map.planets().len();
     assert_eq!(total, 80);
-    model.map.get_mut(home).army.insert(Unit::Building(Building::Senate), 3);
+    model.map.get_mut(home).army.insert(Unit::Building(Building::Senate), 5);
 
-    for (percent, senate_levels, expected_limit) in [(25, 3, 23), (35, 2, 30), (50, 1, 41)] {
+    for (percent, senate_levels, expected_limit) in [(25, 5, 25), (35, 5, 33), (50, 5, 45)] {
         model.rules.colonizable_percent = percent;
         assert_eq!(Player::senate_level_limit(&model.map, percent), senate_levels);
         assert_eq!(colony_limit(&model, player_id).unwrap(), expected_limit);
@@ -1890,18 +2033,33 @@ fn senate_levels_scale_with_galaxy_size_and_the_ownership_setting() {
 }
 
 #[test]
-fn smaller_galaxies_reduce_the_senate_level_cap() {
-    for (players, planets_per_player, expected) in [(2, 5, 1), (2, 20, 2), (4, 20, 3)] {
+fn senate_level_cap_increases_with_available_colonies() {
+    for (players, planets_per_player, colonizable_percent, expected) in [
+        (2, 5, 25, 1),
+        (2, 10, 25, 1),
+        (2, 10, 50, 2),
+        (2, 20, 35, 3),
+        (3, 10, 50, 3),
+        (4, 10, 35, 3),
+        (4, 10, 50, 5),
+        (4, 20, 25, 5),
+        (4, 20, 50, 5),
+    ] {
         let model = GameModel::new(
             [players; 32],
             GameRules {
                 planets_per_player,
+                colonizable_percent,
                 player_count: players,
                 ..GameRules::default()
             },
         )
         .unwrap();
-        assert_eq!(Player::senate_level_limit(&model.map, 25), expected);
+        assert_eq!(
+            Player::senate_level_limit(&model.map, colonizable_percent),
+            expected,
+            "{players} players, {planets_per_player} planets per player, {colonizable_percent}% colonizable"
+        );
     }
 }
 
@@ -2077,6 +2235,13 @@ fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
             < ORBITAL_RAILGUN_FIRE_ENERGY_COST as i128,
         "the test must exercise firing through an Energy shortage"
     );
+    model
+        .map
+        .get_mut(target)
+        .army
+        .dock_protector(1, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
+    assert!(preview_commands(&model, 1, std::slice::from_ref(&fire)).is_err());
+    model.map.get_mut(target).army.remove_protector(1);
     let preview = preview_commands(&model, 1, std::slice::from_ref(&fire)).unwrap();
     assert_eq!(orbital_railgun_fire_cost(1), Resources::new(0, 0, 1_000));
     assert_eq!(ORBITAL_RAILGUN_FIRE_ENERGY_COST, 5);
@@ -2174,7 +2339,9 @@ fn orbital_railguns_combine_by_target_and_persist_the_public_outcome() {
     let target_position = model.map.get(target).position;
     for (index, origin) in [first, second].into_iter().enumerate() {
         let planet = model.map.get_mut(origin);
-        planet.position = target_position + Vec2::X * Planet::SIZE * (index as f32 + 1.0);
+        // Keep both origins comfortably inside range; generated coordinates need not make an
+        // exact floating-point boundary distance round inward.
+        planet.position = target_position + Vec2::X * Planet::SIZE * (index as f32 + 0.5);
         planet.army.insert(Unit::Building(Building::OrbitalRailgun), 1);
     }
     model.players[0].resources = Resources::new(5_000, 5_000, 5_000);
@@ -2228,7 +2395,7 @@ fn orbital_railguns_combine_by_target_and_persist_the_public_outcome() {
 }
 
 #[test]
-fn orbital_railgun_chance_combines_firing_levels_with_the_war_sun_size_curve() {
+fn orbital_railgun_chance_combines_firing_levels_with_centered_planet_size_modifier() {
     let mut model = started_model(2);
     let first = model.players[0].home_planet;
     let second = model
@@ -2242,15 +2409,17 @@ fn orbital_railgun_chance_combines_firing_levels_with_the_war_sun_size_curve() {
     model.map.get_mut(first).army.insert(Unit::Building(Building::OrbitalRailgun), 5);
     model.map.get_mut(second).army.insert(Unit::Building(Building::OrbitalRailgun), 2);
 
-    for (diameter, size_bonus) in [(1_500, 800), (10_000, 300), (120_000, 0)] {
+    for (diameter, first_chance, combined_chance) in
+        [(1_500, 2_700, 3_700), (10_000, 2_450, 3_450), (120_000, 2_300, 3_300)]
+    {
         model.map.get_mut(target).diameter = diameter;
         assert_eq!(
             orbital_railgun_destruction_basis_points(&model.map, &[first], target),
-            2_500 + size_bonus
+            first_chance
         );
         assert_eq!(
             orbital_railgun_destruction_basis_points(&model.map, &[first, second], target),
-            3_500 + size_bonus
+            combined_chance
         );
     }
 }
@@ -2265,9 +2434,9 @@ fn planetary_shield_levels_reduce_railgun_chance_twice_as_much_when_overloaded()
     target_planet.diameter = 10_000;
     target_planet.army.insert(Unit::Building(Building::PlanetaryShield), 2);
 
-    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[origin], target), 600);
+    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[origin], target), 250);
     model.map.get_mut(target).shield_overload = ShieldOverloadState::Overloaded;
-    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[origin], target), 400);
+    assert_eq!(orbital_railgun_destruction_basis_points(&model.map, &[origin], target), 50);
 
     model
         .map

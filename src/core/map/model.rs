@@ -10,8 +10,12 @@ use serde::{Deserialize, Serialize};
 use crate::core::constants::{HEIGHT, PLANET_NAMES, SOLAR_STAR_SIZE, WIDTH};
 use crate::core::map::planet::{Planet, PlanetId, SolarBand};
 
-const SOLAR_SECTOR_EDGE_ANGLE: f32 = std::f32::consts::PI / 15.0;
-const SOLAR_SECTOR_ANGLE: f32 = std::f32::consts::FRAC_PI_2 - SOLAR_SECTOR_EDGE_ANGLE * 2.0;
+const SOLAR_SECTOR_CENTER_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
+const SOLAR_SECTOR_ANGLE: f32 = std::f32::consts::TAU / 3.0;
+const SOLAR_SECTOR_START_ANGLE: f32 = SOLAR_SECTOR_CENTER_ANGLE - SOLAR_SECTOR_ANGLE * 0.5;
+const SOLAR_SECTOR_END_ANGLE: f32 = SOLAR_SECTOR_CENTER_ANGLE + SOLAR_SECTOR_ANGLE * 0.5;
+// The 120-degree arc extends this fraction of its radius behind each adjacent map edge.
+const SOLAR_SECTOR_WING: f32 = 0.258_819_04;
 const SOLAR_STAR_OUTSIDE_FACTOR: f32 = 0.06;
 const SOLAR_SECTOR_MAP_SCALE: f32 = 1.08;
 
@@ -22,25 +26,36 @@ pub(crate) enum SolarCorner {
     BottomRight,
     TopLeft,
     TopRight,
+    WideBottomLeft,
+    WideBottomRight,
+    WideTopLeft,
+    WideTopRight,
 }
 
 impl SolarCorner {
     fn from_index(index: usize) -> Self {
         match index % 4 {
-            0 => Self::BottomLeft,
-            1 => Self::BottomRight,
-            2 => Self::TopLeft,
-            _ => Self::TopRight,
+            0 => Self::WideBottomLeft,
+            1 => Self::WideBottomRight,
+            2 => Self::WideTopLeft,
+            _ => Self::WideTopRight,
         }
     }
 
     fn direction(self) -> Vec2 {
         match self {
-            Self::BottomLeft => Vec2::new(-1.0, -1.0),
-            Self::BottomRight => Vec2::new(1.0, -1.0),
-            Self::TopLeft => Vec2::new(-1.0, 1.0),
-            Self::TopRight => Vec2::ONE,
+            Self::BottomLeft | Self::WideBottomLeft => Vec2::new(-1.0, -1.0),
+            Self::BottomRight | Self::WideBottomRight => Vec2::new(1.0, -1.0),
+            Self::TopLeft | Self::WideTopLeft => Vec2::new(-1.0, 1.0),
+            Self::TopRight | Self::WideTopRight => Vec2::ONE,
         }
+    }
+
+    fn uses_wide_arc(self) -> bool {
+        matches!(
+            self,
+            Self::WideBottomLeft | Self::WideBottomRight | Self::WideTopLeft | Self::WideTopRight
+        )
     }
 }
 
@@ -85,7 +100,7 @@ impl Map {
         let mut rect = Rect::new(-WIDTH * scale, -HEIGHT * scale, WIDTH * scale, HEIGHT * scale);
 
         // Scatter worlds in continuous polar space; only enforce clearance, not fixed intervals.
-        let positions = generate_positions(&mut rect, &moons, solar_corner.direction(), rng);
+        let positions = generate_positions(&mut rect, &moons, solar_corner, rng);
 
         // Compute total distance per world to the three closest planets (ignore moons).
         let mut sum_closest = Vec::with_capacity(positions.len());
@@ -109,7 +124,7 @@ impl Map {
             .map(|td| (1. + (td - mean) / max_dev).clamp(1., 2.))
             .collect::<Vec<_>>();
 
-        let bands = solar_bands(rect, &positions, &moons, solar_corner.direction());
+        let bands = solar_bands(&positions, &moons, solar_star_position(rect, solar_corner));
         let names = PLANET_NAMES.iter().sample(rng, n_total);
         Self {
             rect,
@@ -140,8 +155,7 @@ impl Map {
     /// # Panics
     /// Panics if the identifier is missing. Use [`Self::try_get`] for external identifiers.
     pub fn get(&self, planet_id: PlanetId) -> &Planet {
-        self.try_get(planet_id)
-            .unwrap_or_else(|| panic!("planet {planet_id} is missing from validated map state"))
+        self.try_get(planet_id).unwrap_or_else(|| missing_validated_planet(planet_id))
     }
 
     /// Mutably borrows a planet from a map whose identifiers have already been validated.
@@ -149,8 +163,7 @@ impl Map {
     /// # Panics
     /// Panics if the identifier is missing. Use [`Self::try_get_mut`] for external identifiers.
     pub fn get_mut(&mut self, planet_id: PlanetId) -> &mut Planet {
-        self.try_get_mut(planet_id)
-            .unwrap_or_else(|| panic!("planet {planet_id} is missing from validated map state"))
+        self.try_get_mut(planet_id).unwrap_or_else(|| missing_validated_planet(planet_id))
     }
 
     /// Looks up a planet without assuming the caller already validated its identifier.
@@ -185,8 +198,7 @@ impl Map {
 
     /// Returns the authoritative center of the rendered primary star.
     pub fn solar_star_position(&self) -> Vec2 {
-        let corner = self.solar_corner();
-        map_corner(self.rect, corner) + corner * SOLAR_STAR_SIZE * SOLAR_STAR_OUTSIDE_FACTOR
+        solar_star_position(self.rect, self.solar_corner)
     }
 
     /// Returns the relative solar band for a non-moon planet.
@@ -217,6 +229,11 @@ impl Map {
     }
 }
 
+/// Reports an internal identifier invariant shared by immutable and mutable map access.
+fn missing_validated_planet(planet_id: PlanetId) -> ! {
+    panic!("planet {planet_id} is missing from validated map state")
+}
+
 fn scenery_seed(positions: impl IntoIterator<Item = Vec2>) -> u32 {
     positions.into_iter().fold(0x915f_43b7_u32, |seed, position| {
         seed.rotate_left(7)
@@ -240,13 +257,22 @@ fn map_corner(rect: Rect, direction: Vec2) -> Vec2 {
     )
 }
 
-fn solar_bands(
-    rect: Rect,
-    positions: &[Vec2],
-    moons: &[bool],
-    corner: Vec2,
-) -> Vec<Option<SolarBand>> {
-    let star = map_corner(rect, corner) + corner * SOLAR_STAR_SIZE * SOLAR_STAR_OUTSIDE_FACTOR;
+fn solar_star_position(rect: Rect, corner: SolarCorner) -> Vec2 {
+    let direction = corner.direction();
+    let map_corner = map_corner(rect, direction);
+    if !corner.uses_wide_arc() {
+        return map_corner + direction * SOLAR_STAR_SIZE * SOLAR_STAR_OUTSIDE_FACTOR;
+    }
+
+    // Keep the star close to the selected corner while leaving room for the two short wings of
+    // the 120-degree sector. The remaining map-scale padding is split evenly across both sides.
+    let outer_radius = rect.width() / ((1.0 + SOLAR_SECTOR_WING) * SOLAR_SECTOR_MAP_SCALE);
+    let inset = outer_radius
+        * (SOLAR_SECTOR_WING + (SOLAR_SECTOR_MAP_SCALE - 1.0) * (1.0 + SOLAR_SECTOR_WING) * 0.5);
+    map_corner - direction * inset
+}
+
+fn solar_bands(positions: &[Vec2], moons: &[bool], star: Vec2) -> Vec<Option<SolarBand>> {
     let mut ordered = positions
         .iter()
         .enumerate()
@@ -308,7 +334,7 @@ fn minimum_separation(left_is_moon: bool, right_is_moon: bool) -> f32 {
 fn generate_positions<R: Rng + ?Sized>(
     rect: &mut Rect,
     moons: &[bool],
-    corner: Vec2,
+    solar_corner: SolarCorner,
     rng: &mut R,
 ) -> Vec<Vec2> {
     if moons.is_empty() {
@@ -327,22 +353,32 @@ fn generate_positions<R: Rng + ?Sized>(
                 positions.iter().enumerate().all(|(other, position)| {
                     let clearance = minimum_separation(is_moon, moons[other]);
                     position.distance_squared(candidate) >= clearance * clearance
+                        && route_clears_star(*position, candidate)
                 })
             })
             .unwrap_or_else(|| {
                 // A new outer shell is farther from every earlier point than the largest
                 // possible clearance. This bounds generation without weakening separation.
                 outer_radius += minimum_separation(false, false) + 1.0;
-                Vec2::from_angle(std::f32::consts::FRAC_PI_4) * outer_radius
+                Vec2::from_angle(SOLAR_SECTOR_CENTER_ANGLE) * outer_radius
             });
         positions.push(position);
     }
 
-    let side = outer_radius * SOLAR_SECTOR_MAP_SCALE;
+    let side = outer_radius * (1.0 + SOLAR_SECTOR_WING) * SOLAR_SECTOR_MAP_SCALE;
     *rect = Rect::from_center_size(center, Vec2::splat(side));
-    let star = map_corner(*rect, corner) + corner * SOLAR_STAR_SIZE * SOLAR_STAR_OUTSIDE_FACTOR;
+    let star = solar_star_position(*rect, solar_corner);
+    let corner = solar_corner.direction();
     let inward = -corner;
     positions.into_iter().map(|position| star + position * inward).collect()
+}
+
+/// Keeps every straight inter-world route outside the visible body of the star.
+fn route_clears_star(start: Vec2, end: Vec2) -> bool {
+    let route = end - start;
+    let progress = (-start.dot(route) / route.length_squared()).clamp(0.0, 1.0);
+    let closest = start + route * progress;
+    closest.length_squared() >= (SOLAR_STAR_SIZE * 0.5).powi(2)
 }
 
 /// Samples a continuous annular sector uniformly by area.
@@ -351,9 +387,7 @@ fn random_sector_position<R: Rng + ?Sized>(
     outer_radius: f32,
     rng: &mut R,
 ) -> Vec2 {
-    let angle = rng.random_range(
-        SOLAR_SECTOR_EDGE_ANGLE..=std::f32::consts::FRAC_PI_2 - SOLAR_SECTOR_EDGE_ANGLE,
-    );
+    let angle = rng.random_range(SOLAR_SECTOR_START_ANGLE..=SOLAR_SECTOR_END_ANGLE);
     let radius_squared = rng.random_range(inner_radius.powi(2)..=outer_radius.powi(2));
     Vec2::from_angle(angle) * radius_squared.sqrt()
 }

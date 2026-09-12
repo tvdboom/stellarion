@@ -13,10 +13,11 @@ use futures_lite::future::{block_on, poll_once};
 use rand::RngExt;
 
 use crate::core::identity::{GameCode, GameId};
-use crate::core::messages::MessageMsg;
+use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
-    resolved_turn, GameModel, GameRules, MatchStatus, PersistedGame, TurnSubmission,
+    resolved_turn, set_protection_permission_immediately, GameModel, GameRules, MatchStatus,
+    PersistedGame, TurnSubmission,
 };
 use crate::core::states::AppState;
 use crate::multiplayer::authority::started_snapshot_for_members;
@@ -24,8 +25,8 @@ use crate::multiplayer::backend::{BackendError, MultiplayerBackend};
 use crate::multiplayer::memory::InMemoryBackend;
 use crate::multiplayer::model::{
     AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GameRecord,
-    GameSummary, JoinDisposition, JoinGameRequest, MembershipResult, RecoverPlayerRequest,
-    SaveAcknowledgement,
+    GameSummary, JoinDisposition, JoinGameRequest, MembershipResult, ProtectionPermissionUpdate,
+    RecoverPlayerRequest, SaveAcknowledgement, TradeInvitation, TradeResponse,
 };
 use crate::multiplayer::realtime::{RealtimeSignal, SupabaseRealtimeClient};
 use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
@@ -73,6 +74,9 @@ const EVENT_POLL_INTERVAL_CONNECTED: Duration = Duration::from_secs(30);
 const EVENT_POLL_INTERVAL_FALLBACK: Duration = Duration::from_secs(2);
 const HOST_CLOSED_LOBBY_NOTICE: &str = "The host closed the lobby.";
 const HOST_CLOSED_LOBBY_NOTICE_DURATION: Duration = Duration::from_secs(2);
+const GAME_UNAVAILABLE_NOTICE: &str = "This game is no longer available.";
+const GAME_SAVED_NOTICE: &str = "Shared game and your current turn draft saved.";
+const WAITING_FOR_PLAYERS_NOTICE: &str = "Waiting for other players to finish their turn.";
 
 /// Stable connection feedback that does not flash during a brief recovery attempt.
 #[derive(Resource, Default)]
@@ -118,9 +122,6 @@ pub struct MultiplayerForm {
     pub game_code: String,
     /// High-entropy recovery code entered on a replacement device.
     pub recovery_code: String,
-    /// Empire color selected for the next local practice match.
-    #[cfg(debug_assertions)]
-    pub practice_color: PlayerColor,
     /// Number of locally controlled empires in the next practice match.
     #[cfg(debug_assertions)]
     pub practice_player_count: u8,
@@ -143,8 +144,6 @@ impl Default for MultiplayerForm {
             game_code: String::new(),
             recovery_code: String::new(),
             #[cfg(debug_assertions)]
-            practice_color: PlayerColor::for_player(1),
-            #[cfg(debug_assertions)]
             practice_player_count: 2,
         }
     }
@@ -159,6 +158,10 @@ pub struct MultiplayerSession {
     pub games: Vec<GameSummary>,
     /// Latest persisted record for the selected game.
     pub active_game: Option<GameRecord>,
+    /// Private current-turn coordinated attacks involving the selected player.
+    pub joint_attacks: Vec<crate::multiplayer::model::JointAttackInvitation>,
+    /// Private current-turn Trading Post negotiations involving the selected player.
+    pub trades: Vec<TradeInvitation>,
     /// Stable slot for the current identity in the selected game.
     pub membership: Option<GameMembership>,
     /// Selected player's stable recovery code, returned by membership and resume operations.
@@ -177,12 +180,20 @@ pub struct MultiplayerSession {
     pub local_practice: bool,
     /// Whether a foreground menu operation is still running.
     pub busy: bool,
+    /// Whether one compact protection patch is still in flight.
+    pub(crate) protection_update_pending: bool,
+    /// Whether an invitation create/response/load operation is in flight.
+    pub(crate) joint_attack_update_pending: bool,
+    /// Whether a trade create/response/load operation is in flight.
+    pub(crate) trade_update_pending: bool,
     /// Whether an active match is paused in its all-players reconnection lobby.
     pub reconnect_lobby: bool,
     reload_needed: bool,
     resolve_needed: bool,
     resolving: bool,
     restore_draft_needed: bool,
+    joint_attack_reload_needed: bool,
+    trade_reload_needed: bool,
     event_poll_needed: bool,
     submitted_turn: Option<u64>,
     presence_needed: bool,
@@ -226,8 +237,15 @@ impl MultiplayerSession {
         self.resolve_needed = false;
         self.resolving = false;
         self.restore_draft_needed = false;
+        self.joint_attack_reload_needed = false;
+        self.trade_reload_needed = false;
         self.event_poll_needed = false;
         self.submitted_turn = None;
+        self.protection_update_pending = false;
+        self.joint_attacks.clear();
+        self.joint_attack_update_pending = false;
+        self.trades.clear();
+        self.trade_update_pending = false;
         self.presence_needed = false;
         self.presence_elapsed = Duration::ZERO;
         self.reconnect_lobby = false;
@@ -238,6 +256,7 @@ impl MultiplayerSession {
 
 mod profile;
 mod submission;
+pub(crate) use submission::COMMAND_LIMIT_REACHED_MESSAGE;
 pub use submission::{PendingTurnCommands, SubmissionState};
 
 /// Foreground operations requested by menu buttons or gameplay UI.
@@ -248,8 +267,6 @@ pub enum MultiplayerRequest {
     StartLocalPractice {
         /// Deterministic rules selected in the local-practice setup screen.
         rules: GameRules,
-        /// Empire color selected in the local-practice setup screen.
-        player_color: PlayerColor,
     },
     /// Changes which local-practice empire is projected and accepts commands.
     #[cfg(debug_assertions)]
@@ -288,6 +305,46 @@ pub enum MultiplayerRequest {
     StartGame,
     /// Changes the current member's empire color while the game is still in its lobby.
     SetPlayerColor(PlayerColor),
+    /// Immediately grants or revokes another player's access to protect one controlled world.
+    SetProtectionPermission {
+        /// World controlled by the current player.
+        planet_id: usize,
+        /// Foreign player receiving or losing access.
+        protector: crate::core::identity::PlayerId,
+        /// Whether access is enabled.
+        allowed: bool,
+    },
+    /// Creates a private invitation from a completed hostile mission draft.
+    CreateJointAttack(crate::multiplayer::model::JointAttackInvitation),
+    /// Accepts with the selected fleet or rejects an invitation.
+    RespondJointAttack {
+        /// Stable invitation identifier.
+        attack_id: u64,
+        /// New response state.
+        response: crate::multiplayer::model::JointAttackResponse,
+        /// Origin and army supplied only for acceptance.
+        contribution: Option<crate::core::simulation::JointAttackContribution>,
+    },
+    /// Cancels an invitation before its inviter launches the allied mission.
+    CancelJointAttack {
+        /// Stable invitation identifier.
+        attack_id: u64,
+    },
+    /// Reloads private invitations after a durable wake-up.
+    RefreshJointAttacks,
+    /// Creates a private bilateral Trading Post negotiation.
+    CreateTrade(TradeInvitation),
+    /// Updates this player's resources and response in one trade.
+    RespondTrade {
+        /// Stable trade identifier.
+        trade_id: u64,
+        /// Resources offered by the current player.
+        resources: crate::core::resources::Resources,
+        /// Acceptance or rejection of the latest draft.
+        response: TradeResponse,
+    },
+    /// Reloads private trade negotiations after a durable wake-up.
+    RefreshTrades,
     /// Saves the latest canonical snapshot from any member and reports the result to the player.
     SaveGame,
     /// Marks the local player ready to finish this turn.
@@ -303,9 +360,12 @@ pub enum MultiplayerRequest {
 pub(crate) enum RefreshGameplayProjection {
     /// Installs a newly loaded or resolved canonical turn with its normal presentation.
     CanonicalTurn,
-    /// Reprojects the same practice turn for another locally controlled empire.
+    /// Reprojects the same practice turn for another locally controlled empire, optionally
+    /// presenting that turn when this is the empire's first view of it.
     #[cfg(debug_assertions)]
-    PracticePlayer,
+    PracticePlayer {
+        present_turn: bool,
+    },
 }
 
 /// Restores local orders without replaying turn-boundary presentation or clearing selection.
@@ -331,6 +391,8 @@ struct PracticePlayer {
     auth: AuthSession,
     membership: GameMembership,
     pending: PendingTurnCommands,
+    /// Latest canonical turn whose presentation this locally controlled empire has seen.
+    presented_turn: u64,
 }
 
 /// Online/mock state temporarily replaced while a local-practice match is active.
@@ -363,6 +425,9 @@ enum Operation {
     Resume,
     Start,
     Color,
+    Protection,
+    JointAttack,
+    Trade,
     Save,
     Submit,
     Withdraw,
@@ -401,6 +466,11 @@ enum BackendOutput {
     ResumeLoaded(GameRecord, String),
     Record(Operation, GameRecord),
     Saved(SaveAcknowledgement),
+    ProtectionChanged(ProtectionPermissionUpdate),
+    JointAttackChanged(crate::multiplayer::model::JointAttackInvitation),
+    JointAttacksLoaded(Vec<crate::multiplayer::model::JointAttackInvitation>),
+    TradeChanged(TradeInvitation),
+    TradesLoaded(Vec<TradeInvitation>),
     Resumed,
     Submitted(u64),
     Withdrawn(TurnSubmission),
@@ -464,6 +534,8 @@ impl Plugin for MultiplayerClientPlugin {
                     drive_auth_refresh,
                     drive_realtime,
                     drive_reload,
+                    drive_joint_attack_reload,
+                    drive_trade_reload,
                     drive_presence,
                     poll_durable_events,
                     drive_resolution,
@@ -558,7 +630,6 @@ async fn select_backend(
 #[cfg(debug_assertions)]
 async fn create_local_practice(
     rules: GameRules,
-    player_color: PlayerColor,
 ) -> Result<(Arc<dyn MultiplayerBackend>, MembershipResult, Vec<PracticePlayer>), BackendError> {
     let backend = Arc::new(InMemoryBackend::new());
     let host_auth = backend.authenticate(None).await?;
@@ -567,10 +638,8 @@ async fn create_local_practice(
     getrandom::fill(&mut seed).map_err(|error| BackendError::Protocol(error.to_string()))?;
     let recovery =
         RecoveryCode::generate().map_err(|error| BackendError::Protocol(error.to_string()))?;
-    let mut model = GameModel::new(seed, rules)
+    let model = GameModel::new(seed, rules)
         .map_err(|error| BackendError::InvalidData(error.to_string()))?;
-    model.player_mut(1).map_err(|error| BackendError::InvalidData(error.to_string()))?.color =
-        player_color;
     let mut result = backend
         .create_game(
             &host_auth,
@@ -587,6 +656,7 @@ async fn create_local_practice(
         auth: host_auth.clone(),
         membership: result.membership.clone(),
         pending: PendingTurnCommands::default(),
+        presented_turn: 0,
     }];
     for player_id in 2..=u64::from(player_count) {
         let auth = backend.authenticate(None).await?;
@@ -607,6 +677,7 @@ async fn create_local_practice(
             auth,
             membership: joined.membership,
             pending: PendingTurnCommands::default(),
+            presented_turn: 0,
         });
     }
     let mut started = result.game.persisted.clone();
@@ -624,6 +695,8 @@ async fn create_local_practice(
             .cloned()
             .ok_or(BackendError::PlayerNoLongerInGame)?;
         player.pending.reset(result.game.persisted.state.turn);
+        // Initial loading is intentionally quiet; there is no resolved turn to replay yet.
+        player.presented_turn = result.game.persisted.state.turn;
     }
     result.membership = players[0].membership.clone();
     Ok((backend, result, players))
@@ -799,7 +872,6 @@ fn process_requests(
         #[cfg(debug_assertions)]
         if let MultiplayerRequest::StartLocalPractice {
             rules,
-            player_color,
         } = request
         {
             runtime.practice_return = Some(PracticeReturn {
@@ -814,9 +886,8 @@ fn process_requests(
             session.busy = true;
             session.notice = None;
             let rules = rules.clone();
-            let player_color = *player_color;
             spawn_backend_task(&mut tasks, async move {
-                match create_local_practice(rules, player_color).await {
+                match create_local_practice(rules).await {
                     Ok((backend, result, players)) => BackendOutput::PracticeReady {
                         backend,
                         result,
@@ -833,18 +904,24 @@ fn process_requests(
                 continue;
             }
             store_selected_practice_draft(&mut runtime, &session, &pending);
+            if session.membership.as_ref().map(|member| member.player_id) == Some(*player_id) {
+                continue;
+            }
+            let current_turn = session
+                .active_game
+                .as_ref()
+                .map_or(pending.turn, |record| record.persisted.state.turn);
             let Some(player) = runtime
                 .practice_players
-                .iter()
+                .iter_mut()
                 .find(|player| player.membership.player_id == *player_id)
-                .cloned()
             else {
                 request_error(&mut session, "That practice player is unavailable.");
                 continue;
             };
-            if session.membership.as_ref().map(|member| member.player_id) == Some(*player_id) {
-                continue;
-            }
+            let present_turn = player.presented_turn != current_turn;
+            player.presented_turn = current_turn;
+            let player = player.clone();
             session.auth = Some(player.auth);
             session.membership = Some(player.membership);
             session.submitted_turn = matches!(
@@ -856,7 +933,9 @@ fn process_requests(
             session.resolve_needed = false;
             session.notice = None;
             *pending = player.pending;
-            refresh_gameplay.write(RefreshGameplayProjection::PracticePlayer);
+            refresh_gameplay.write(RefreshGameplayProjection::PracticePlayer {
+                present_turn,
+            });
             continue;
         }
         #[cfg(debug_assertions)]
@@ -1099,7 +1178,7 @@ fn process_requests(
             },
             MultiplayerRequest::ResumeGame(game_id) => {
                 let Some(summary) = session.games.iter().find(|game| &game.id == game_id) else {
-                    request_error(&mut session, "This game is no longer available.");
+                    request_error(&mut session, GAME_UNAVAILABLE_NOTICE);
                     continue;
                 };
                 spawn_backend_task(
@@ -1166,6 +1245,162 @@ fn process_requests(
                     match backend.set_player_color(&auth, &record.id, color).await {
                         Ok(record) => BackendOutput::Record(Operation::Color, record),
                         Err(error) => BackendOutput::Failed(Operation::Color, error),
+                    }
+                });
+            },
+            MultiplayerRequest::SetProtectionPermission {
+                planet_id,
+                protector,
+                allowed,
+            } => {
+                if session.protection_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.protection_update_pending = true;
+                let (planet_id, protector, allowed) = (*planet_id, *protector, *allowed);
+                spawn_backend_task(&mut tasks, async move {
+                    match backend
+                        .set_protection_permission(&auth, &record.id, planet_id, protector, allowed)
+                        .await
+                    {
+                        Ok(update) => BackendOutput::ProtectionChanged(update),
+                        Err(error) => BackendOutput::Failed(Operation::Protection, error),
+                    }
+                });
+            },
+            MultiplayerRequest::CreateJointAttack(invitation) => {
+                if session.joint_attack_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.joint_attack_update_pending = true;
+                let invitation = invitation.clone();
+                spawn_backend_task(&mut tasks, async move {
+                    match backend.create_joint_attack(&auth, &record.id, invitation).await {
+                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
+                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
+                    }
+                });
+            },
+            MultiplayerRequest::RespondJointAttack {
+                attack_id,
+                response,
+                contribution,
+            } => {
+                if session.joint_attack_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.joint_attack_update_pending = true;
+                let (attack_id, response, contribution) =
+                    (*attack_id, *response, contribution.clone());
+                spawn_backend_task(&mut tasks, async move {
+                    match backend
+                        .respond_joint_attack(&auth, &record.id, attack_id, response, contribution)
+                        .await
+                    {
+                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
+                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
+                    }
+                });
+            },
+            MultiplayerRequest::CancelJointAttack {
+                attack_id,
+            } => {
+                if session.joint_attack_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.joint_attack_update_pending = true;
+                let attack_id = *attack_id;
+                spawn_backend_task(&mut tasks, async move {
+                    match backend.cancel_joint_attack(&auth, &record.id, attack_id).await {
+                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
+                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
+                    }
+                });
+            },
+            MultiplayerRequest::RefreshJointAttacks => {
+                if session.joint_attack_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    continue;
+                };
+                session.joint_attack_update_pending = true;
+                spawn_backend_task(&mut tasks, async move {
+                    match backend.load_joint_attacks(&auth, &record.id).await {
+                        Ok(invitations) => BackendOutput::JointAttacksLoaded(invitations),
+                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
+                    }
+                });
+            },
+            MultiplayerRequest::CreateTrade(invitation) => {
+                if session.trade_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.trade_update_pending = true;
+                let invitation = invitation.clone();
+                spawn_backend_task(&mut tasks, async move {
+                    match backend.create_trade(&auth, &record.id, invitation).await {
+                        Ok(invitation) => BackendOutput::TradeChanged(invitation),
+                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
+                    }
+                });
+            },
+            MultiplayerRequest::RespondTrade {
+                trade_id,
+                resources,
+                response,
+            } => {
+                if session.trade_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    request_error(&mut session, "No active game is selected.");
+                    continue;
+                };
+                session.trade_update_pending = true;
+                let (trade_id, resources, response) = (*trade_id, *resources, *response);
+                spawn_backend_task(&mut tasks, async move {
+                    match backend
+                        .respond_trade(&auth, &record.id, trade_id, resources, response)
+                        .await
+                    {
+                        Ok(invitation) => BackendOutput::TradeChanged(invitation),
+                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
+                    }
+                });
+            },
+            MultiplayerRequest::RefreshTrades => {
+                if session.trade_update_pending {
+                    continue;
+                }
+                let Some(record) = session.active_game.clone() else {
+                    continue;
+                };
+                session.trade_update_pending = true;
+                spawn_backend_task(&mut tasks, async move {
+                    match backend.load_trades(&auth, &record.id).await {
+                        Ok(invitations) => BackendOutput::TradesLoaded(invitations),
+                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
                     }
                 });
             },
@@ -1272,7 +1507,7 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
             "Every player must reconnect before the host can resume this game.".to_string()
         },
         (Operation::Save, BackendError::GameNotFound) => {
-            "This game is no longer available.".to_string()
+            GAME_UNAVAILABLE_NOTICE.to_string()
         },
         (_, BackendError::InvalidGameStatus) => {
             "This action is not available for the game right now. Refresh the game and try again."
@@ -1292,18 +1527,98 @@ fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
             color_notice: Some(notice),
             ..
         } => Some(MessageMsg::warning(notice.clone())),
-        BackendOutput::Saved(_) => {
-            Some(MessageMsg::info("Shared game and your current turn draft saved."))
-        },
+        BackendOutput::Saved(_) => Some(MessageMsg::info(GAME_SAVED_NOTICE)),
         BackendOutput::Failed(Operation::Save, error) => {
             Some(MessageMsg::error(user_facing_backend_error(Operation::Save, error)))
         },
+        BackendOutput::Failed(Operation::Protection, error) => Some(MessageMsg::error(format!(
+            "Could not update protection access: {}",
+            user_facing_backend_error(Operation::Protection, error)
+        ))),
+        BackendOutput::Failed(Operation::JointAttack, error) => Some(MessageMsg::error(format!(
+            "Could not update the joint attack: {}",
+            user_facing_backend_error(Operation::JointAttack, error)
+        ))),
+        BackendOutput::Failed(Operation::Trade, error) => Some(MessageMsg::error(format!(
+            "Could not update the trade: {}",
+            user_facing_backend_error(Operation::Trade, error)
+        ))),
         BackendOutput::Failed(
             Operation::Submit | Operation::Resolve,
             error @ BackendError::InvalidData(_),
         ) => Some(MessageMsg::error(format!("Could not end turn: {error}"))),
         _ => None,
     }
+}
+
+/// Announces protection invitations and revocations to the affected player.
+fn protection_permission_notifications(
+    output: &BackendOutput,
+    session: &MultiplayerSession,
+) -> Vec<MessageMsg> {
+    let BackendOutput::Record(_, next) = output else {
+        return Vec::new();
+    };
+    let (Some(previous), Some(local_player)) = (
+        session.active_game.as_ref().filter(|game| game.id == next.id),
+        session.membership.as_ref().map(|membership| membership.player_id),
+    ) else {
+        return Vec::new();
+    };
+    next.persisted
+        .state
+        .map
+        .planets
+        .iter()
+        .filter_map(|planet| {
+            let before = previous
+                .persisted
+                .state
+                .map
+                .try_get(planet.id)
+                .is_some_and(|planet| planet.protection_permissions.contains(&local_player));
+            let after = planet.protection_permissions.contains(&local_player);
+            (before != after).then(|| {
+                let message = if after {
+                    MessageMsg::info(format!("You can now protect planet {}.", planet.name))
+                } else {
+                    MessageMsg::warning(format!(
+                        "Protection access to planet {} was revoked. Any protecting fleet is returning home.",
+                        planet.name
+                    ))
+                };
+                message.with_action(MessageAction::FocusPlanet(planet.id))
+            })
+        })
+        .collect()
+}
+
+fn revoked_protection_targets(output: &BackendOutput, session: &MultiplayerSession) -> Vec<usize> {
+    let BackendOutput::Record(_, next) = output else {
+        return Vec::new();
+    };
+    let (Some(previous), Some(local_player)) = (
+        session.active_game.as_ref().filter(|game| game.id == next.id),
+        session.membership.as_ref().map(|membership| membership.player_id),
+    ) else {
+        return Vec::new();
+    };
+    previous
+        .persisted
+        .state
+        .map
+        .planets
+        .iter()
+        .filter(|planet| planet.protection_permissions.contains(&local_player))
+        .filter(|planet| {
+            next.persisted
+                .state
+                .map
+                .try_get(planet.id)
+                .is_none_or(|next| !next.protection_permissions.contains(&local_player))
+        })
+        .map(|planet| planet.id)
+        .collect()
 }
 
 /// Treats removal of a waiting lobby as a brief status update, not an actionable failure.
@@ -1377,6 +1692,17 @@ fn poll_backend_tasks(
             let notification = operation_notification(&output);
             let lobby_closed_notification = host_closed_lobby_notification(&output, &session);
             let presence_notifications = disconnected_player_notifications(&output, &session);
+            let protection_notifications = protection_permission_notifications(&output, &session);
+            let revoked_targets = revoked_protection_targets(&output, &session);
+            let refresh_protection = matches!(
+                &output,
+                BackendOutput::ProtectionChanged(_)
+                    | BackendOutput::Failed(Operation::Protection, _)
+            ) || !protection_notifications.is_empty();
+            let refresh_trade = matches!(
+                &output,
+                BackendOutput::TradeChanged(invitation) if invitation.finalized
+            ) || matches!(&output, BackendOutput::Record(Operation::Load, _));
             let gameplay_visible = *app_state.get() == AppState::Game;
             let previous_projection = session
                 .active_game
@@ -1391,7 +1717,27 @@ fn poll_backend_tasks(
                 &mut next_state,
                 gameplay_visible,
             );
+            if !revoked_targets.is_empty() {
+                let revoked = |command: &crate::core::simulation::TurnCommand| {
+                    matches!(
+                        command,
+                        crate::core::simulation::TurnCommand::SendMission {
+                            destination,
+                            objective: crate::core::map::icon::Icon::Protect,
+                            ..
+                        } if revoked_targets.contains(destination)
+                    )
+                };
+                pending.commands.retain(|command| !revoked(command));
+                pending.queued_commands.retain(|command| !revoked(command));
+            }
             if gameplay_visible && restore_draft {
+                refresh_draft.write(RefreshTurnDraft);
+            }
+            if gameplay_visible && refresh_protection {
+                refresh_draft.write(RefreshTurnDraft);
+            }
+            if gameplay_visible && refresh_trade {
                 refresh_draft.write(RefreshTurnDraft);
             }
             if let Some(notification) = notification {
@@ -1401,6 +1747,9 @@ fn poll_backend_tasks(
                 messages.write(notification);
             }
             for notification in presence_notifications {
+                messages.write(notification);
+            }
+            for notification in protection_notifications {
                 messages.write(notification);
             }
             let current_projection = session
@@ -1542,8 +1891,12 @@ fn apply_output(
             let installed_turn = record.persisted.state.turn;
             #[cfg(debug_assertions)]
             if matches!(operation, Operation::PracticeTurn) {
+                let selected_player = session.membership.as_ref().map(|member| member.player_id);
                 for player in &mut runtime.practice_players {
                     player.pending.reset(installed_turn);
+                    if Some(player.membership.player_id) == selected_player {
+                        player.presented_turn = installed_turn;
+                    }
                 }
                 session.submitted_turn = None;
                 session.resolve_needed = false;
@@ -1580,7 +1933,66 @@ fn apply_output(
                 }
             }
             session.connection = ConnectionStatus::Connected;
-            session.notice = Some("Shared game and your current turn draft saved.".to_string());
+            session.notice = Some(GAME_SAVED_NOTICE.to_string());
+        },
+        BackendOutput::ProtectionChanged(update) => {
+            session.protection_update_pending = false;
+            if let Some(record) = session.active_game.as_mut() {
+                if record.persisted.state.turn == update.turn {
+                    match set_protection_permission_immediately(
+                        &mut record.persisted.state,
+                        update.controller,
+                        update.planet_id,
+                        update.protector,
+                        update.allowed,
+                    ) {
+                        Ok(_) => record.revision = update.revision,
+                        Err(_) => session.reload_needed = true,
+                    }
+                } else {
+                    session.reload_needed = true;
+                }
+            }
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
+        },
+        BackendOutput::JointAttackChanged(invitation) => {
+            session.joint_attack_update_pending = false;
+            if let Some(existing) =
+                session.joint_attacks.iter_mut().find(|item| item.id == invitation.id)
+            {
+                *existing = invitation;
+            } else {
+                session.joint_attacks.push(invitation);
+                session.joint_attacks.sort_by_key(|item| item.id);
+            }
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
+        },
+        BackendOutput::JointAttacksLoaded(invitations) => {
+            session.joint_attack_update_pending = false;
+            session.joint_attacks = invitations;
+            session.connection = ConnectionStatus::Connected;
+        },
+        BackendOutput::TradeChanged(invitation) => {
+            session.trade_update_pending = false;
+            let finalized = invitation.finalized;
+            if let Some(existing) = session.trades.iter_mut().find(|item| item.id == invitation.id)
+            {
+                *existing = invitation;
+            } else {
+                session.trades.push(invitation);
+                session.trades.sort_by_key(|item| item.id);
+            }
+            session.trade_reload_needed |= finalized;
+            session.reload_needed |= finalized;
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
+        },
+        BackendOutput::TradesLoaded(invitations) => {
+            session.trade_update_pending = false;
+            session.trades = invitations;
+            session.connection = ConnectionStatus::Connected;
         },
         BackendOutput::Resumed => {
             session.reconnect_lobby = false;
@@ -1598,7 +2010,7 @@ fn apply_output(
             session.notice = Some(if session.local_practice {
                 "Resolving local turn…".to_string()
             } else {
-                "Waiting for other players to finish their turn.".to_string()
+                WAITING_FOR_PLAYERS_NOTICE.to_string()
             });
         },
         BackendOutput::Withdrawn(draft) => {
@@ -1645,6 +2057,7 @@ fn apply_output(
             let mut game_resumed = false;
             let mut state_reload = false;
             let mut roster_refresh = false;
+            let local_player = session.membership.as_ref().map(|member| member.player_id);
             if let Some(record) = &mut session.active_game {
                 let current_turn = record.persisted.state.turn;
                 for event in &batch.events {
@@ -1666,7 +2079,24 @@ fn apply_output(
                         BackendEventKind::TurnWithdrawn if event.turn == Some(current_turn) => {
                             if let Some(player_id) = event.player_id {
                                 record.submitted_players.retain(|id| *id != player_id);
+                                if Some(player_id) == local_player {
+                                    pending.submission = SubmissionState::Draft;
+                                    session.submitted_turn = None;
+                                    session.resolve_needed = false;
+                                }
                             }
+                        },
+                        BackendEventKind::ProtectionChanged => {
+                            state_reload |=
+                                event.revision.is_none_or(|revision| revision > record.revision);
+                        },
+                        BackendEventKind::JointAttackChanged => {
+                            session.joint_attack_reload_needed = true;
+                        },
+                        BackendEventKind::TradeChanged => {
+                            session.trade_reload_needed = true;
+                            state_reload |=
+                                event.revision.is_some_and(|revision| revision > record.revision);
                         },
                         BackendEventKind::StateChanged
                         | BackendEventKind::GameStarted
@@ -1695,7 +2125,7 @@ fn apply_output(
         },
         BackendOutput::ResolutionWaiting => {
             session.resolving = false;
-            session.notice = Some("Waiting for other players to finish their turn.".to_string());
+            session.notice = Some(WAITING_FOR_PLAYERS_NOTICE.to_string());
         },
         BackendOutput::SessionRefreshed(auth) => {
             runtime.profile.session = Some(auth.clone());
@@ -1730,6 +2160,15 @@ fn apply_output(
         },
         BackendOutput::DepartureFinished => {},
         BackendOutput::Failed(operation, error) => {
+            if matches!(operation, Operation::Protection) {
+                session.protection_update_pending = false;
+            }
+            if matches!(operation, Operation::JointAttack) {
+                session.joint_attack_update_pending = false;
+            }
+            if matches!(operation, Operation::Trade) {
+                session.trade_update_pending = false;
+            }
             if matches!(operation, Operation::Withdraw) {
                 pending.resume_requested = false;
                 pending.submission = if matches!(
@@ -1803,6 +2242,8 @@ fn apply_output(
                             | Operation::Events
                             | Operation::Presence
                             | Operation::Color
+                            | Operation::Protection
+                            | Operation::JointAttack
                             | Operation::Start
                             | Operation::Resume
                             | Operation::Save
@@ -1823,7 +2264,7 @@ fn apply_output(
                         session.notice = Some(if was_lobby {
                             HOST_CLOSED_LOBBY_NOTICE.to_string()
                         } else {
-                            "This game is no longer available.".to_string()
+                            GAME_UNAVAILABLE_NOTICE.to_string()
                         });
                         if was_lobby {
                             session.menu_error = None;
@@ -1879,6 +2320,7 @@ fn apply_output(
         },
         #[cfg(not(target_arch = "wasm32"))]
         BackendOutput::TaskFailed(error) => {
+            session.protection_update_pending = false;
             #[cfg(debug_assertions)]
             if session.local_practice {
                 for player in &mut runtime.practice_players {
@@ -2061,6 +2503,8 @@ fn install_record(
     // response (or the initial draft restore) may change the local draft state.
     let status = record.status;
     session.active_game = Some(record);
+    session.joint_attack_reload_needed = true;
+    session.trade_reload_needed = true;
     session.reload_needed = false;
     // Refreshing presence must not immediately schedule another heartbeat/reload pair.
     session.presence_needed |= newly_selected && !session.local_practice;
@@ -2321,6 +2765,61 @@ fn drive_reload(
         match backend.load_game(&auth, &game_id).await {
             Ok(record) => BackendOutput::Record(Operation::Load, record),
             Err(error) => BackendOutput::Failed(Operation::Load, error),
+        }
+    });
+}
+
+/// Loads only private attack invitations after record installation or a durable wake-up.
+fn drive_joint_attack_reload(
+    runtime: Res<ClientRuntime>,
+    mut session: ResMut<MultiplayerSession>,
+    mut tasks: ResMut<BackendTasks>,
+) {
+    if !session.joint_attack_reload_needed
+        || session.joint_attack_update_pending
+        || !tasks.0.is_empty()
+    {
+        return;
+    }
+    let (Some(backend), Some(auth), Some(game_id)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref().map(|record| record.id.clone()),
+    ) else {
+        return;
+    };
+    session.joint_attack_reload_needed = false;
+    session.joint_attack_update_pending = true;
+    spawn_backend_task(&mut tasks, async move {
+        match backend.load_joint_attacks(&auth, &game_id).await {
+            Ok(invitations) => BackendOutput::JointAttacksLoaded(invitations),
+            Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
+        }
+    });
+}
+
+/// Loads only private Trading Post negotiations after record installation or a durable wake-up.
+fn drive_trade_reload(
+    runtime: Res<ClientRuntime>,
+    mut session: ResMut<MultiplayerSession>,
+    mut tasks: ResMut<BackendTasks>,
+) {
+    if !session.trade_reload_needed || session.trade_update_pending || !tasks.0.is_empty() {
+        return;
+    }
+    let (Some(backend), Some(auth), Some(game_id)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref().map(|record| record.id.clone()),
+    ) else {
+        return;
+    };
+    session.trade_reload_needed = false;
+    session.trade_update_pending = true;
+    spawn_backend_task(&mut tasks, async move {
+        match backend.load_trades(&auth, &game_id).await {
+            Ok(invitations) => BackendOutput::TradesLoaded(invitations),
+            Err(error) => BackendOutput::Failed(Operation::Trade, error),
         }
     });
 }

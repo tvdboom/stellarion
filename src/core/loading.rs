@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::core::assets::{GameplayAssetState, WorldAssets};
+use crate::core::assets::{GameplayAssetState, WorldAssets, GAMEPLAY_ASSET_LOAD_FAILURE};
 use crate::core::combat::report::MissionReport;
 use crate::core::identity::PlayerId;
 use crate::core::map::model::Map;
@@ -104,9 +104,7 @@ pub fn finish_gameplay_loading(
         GameplayAssetState::Ready => {},
         GameplayAssetState::Failed => {
             if session.menu_error.is_none() {
-                let failure = assets
-                    .gameplay_error()
-                    .unwrap_or("A gameplay asset or one of its dependencies failed to load.");
+                let failure = assets.gameplay_error().unwrap_or(GAMEPLAY_ASSET_LOAD_FAILURE);
                 let recovery = if cfg!(debug_assertions) {
                     "Run `just assets` and restart Stellarion."
                 } else {
@@ -155,7 +153,13 @@ pub fn refresh_gameplay_projection(
     let Some(refresh_kind) = refresh_kind else {
         return;
     };
-    let present_turn = matches!(refresh_kind, RefreshGameplayProjection::CanonicalTurn);
+    let present_turn = match refresh_kind {
+        RefreshGameplayProjection::CanonicalTurn => true,
+        #[cfg(debug_assertions)]
+        RefreshGameplayProjection::PracticePlayer {
+            present_turn,
+        } => present_turn,
+    };
     let previous_turn = settings.turn as u64;
     let structure_notifications = if present_turn {
         session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
@@ -186,6 +190,21 @@ pub fn refresh_gameplay_projection(
     } else {
         Vec::new()
     };
+    let elimination_notifications = if present_turn {
+        session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
+            Vec::new,
+            |(record, membership)| {
+                player_elimination_notifications(
+                    previous_map.as_deref(),
+                    &record.persisted.state,
+                    &record.members,
+                    membership.player_id,
+                )
+            },
+        )
+    } else {
+        Vec::new()
+    };
     if install_gameplay_projection(
         &mut commands,
         &session,
@@ -197,6 +216,9 @@ pub fn refresh_gameplay_projection(
         !present_turn,
         present_turn,
     ) {
+        for notification in elimination_notifications {
+            messages.write(notification);
+        }
         for notification in railgun_notifications {
             messages.write(notification);
         }
@@ -205,6 +227,35 @@ pub fn refresh_gameplay_projection(
             structure_changes.write(change);
         }
     }
+}
+
+/// Announces opponents who lost their home world during an otherwise continuing match.
+fn player_elimination_notifications(
+    previous: Option<&Map>,
+    current: &crate::core::simulation::GameModel,
+    members: &[crate::multiplayer::model::GameMembership],
+    local_player_id: PlayerId,
+) -> Vec<MessageMsg> {
+    let Some(previous) = previous.filter(|_| {
+        current.status == crate::core::simulation::MatchStatus::Active
+            && current.rules.player_count > 2
+    }) else {
+        return Vec::new();
+    };
+
+    current
+        .players
+        .iter()
+        .filter(|player| player.id != local_player_id && player.spectator)
+        .filter(|player| {
+            previous.try_get(player.home_planet).is_some_and(|home| home.owned == Some(player.id))
+        })
+        .filter_map(|player| {
+            members.iter().find(|member| member.player_id == player.id).map(|member| {
+                MessageMsg::warning(format!("{} has been eliminated.", member.display_name))
+            })
+        })
+        .collect()
 }
 
 /// Warns observers and targets once when a newly resolved public Railgun strike is installed.
@@ -327,7 +378,8 @@ fn gameplay_draft_projection(
     player_id: PlayerId,
     pending: &PendingTurnCommands,
 ) -> Option<crate::core::simulation::GameModel> {
-    (pending.turn == state.turn && !pending.commands.is_empty())
+    (pending.turn == state.turn
+        && (!pending.commands.is_empty() || state.trade_outgoing(player_id).total() > 0))
         .then(|| crate::core::simulation::preview_commands(state, player_id, &pending.commands))
         .and_then(Result::ok)
 }

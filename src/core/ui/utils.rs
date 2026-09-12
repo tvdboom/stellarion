@@ -117,6 +117,8 @@ pub trait CustomUi {
     fn add_custom_button(&mut self, text: impl ToString, images: &ImageIds) -> Response;
     /// Adds image painter to the current UI or asset registry.
     fn add_image_painter(&mut self, image: TextureId, rect: Rect);
+    /// Adds a tinted image painter to the current UI or asset registry.
+    fn add_tinted_image_painter(&mut self, image: TextureId, rect: Rect, tint: Color32);
     /// Adds icon on image to the current UI or asset registry.
     fn add_icon_on_image(&mut self, id: impl Into<TextureId>, rect: Rect) -> Response;
     /// Adds text on image to the current UI or asset registry.
@@ -174,14 +176,14 @@ impl CustomUi for Ui {
 
     /// Adds image painter to the current UI or asset registry.
     fn add_image_painter(&mut self, image: TextureId, rect: Rect) {
+        self.add_tinted_image_painter(image, rect, Color32::WHITE);
+    }
+
+    /// Adds a tinted image painter to the current UI or asset registry.
+    fn add_tinted_image_painter(&mut self, image: TextureId, rect: Rect, tint: Color32) {
         self.painter().rect_filled(rect, 0.0, BG_COLOR.to_color32());
 
-        self.painter().image(
-            image,
-            rect,
-            Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
-            Color32::WHITE,
-        );
+        self.painter().image(image, rect, Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)), tint);
     }
 
     /// Adds icon on image to the current UI or asset registry.

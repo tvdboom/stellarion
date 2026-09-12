@@ -255,8 +255,6 @@ fn detailed_map_artwork_preserves_shading_on_native_and_browser() {
         "mission",
         "mission colonize",
         "mission destroy",
-        "mission destroy jump",
-        "mission jump",
         "mission missile",
         "mission spy",
     ] {
@@ -304,8 +302,6 @@ fn neutral_map_artwork_preserves_alpha_and_value_relief_without_baked_hue() {
         "mission",
         "mission colonize",
         "mission destroy",
-        "mission destroy jump",
-        "mission jump",
         "mission missile",
         "mission spy",
     ] {
@@ -390,8 +386,6 @@ fn tintable_ui_artwork_preserves_transparency_on_native_and_browser() {
         "mission",
         "mission colonize",
         "mission destroy",
-        "mission destroy jump",
-        "mission jump",
         "mission missile",
         "mission spy",
         "dock",

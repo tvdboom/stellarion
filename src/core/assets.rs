@@ -31,6 +31,14 @@ pub(crate) const ASTEROID_IMAGE_NAMES: &[&str] = &[
     "vesta",
 ];
 
+/// Fallback when Bevy reports a failed gameplay handle without a more specific cause.
+pub(crate) const GAMEPLAY_ASSET_LOAD_FAILURE: &str =
+    "A gameplay asset or one of its dependencies failed to load.";
+pub(crate) const PLANET_TERRAFORMER_IMAGE: &str = "planet terraformer";
+pub(crate) const GAS_PLANET_TERRAFORMER_IMAGE: &str = "gas planet terraformer";
+pub(crate) const PLANET_ADMINISTRATION_IMAGE: &str = "planet colonial administration";
+pub(crate) const GAS_PLANET_ADMINISTRATION_IMAGE: &str = "gas planet colonial administration";
+
 /// Image handle plus atlas metadata used by animated sprite systems.
 #[derive(Clone)]
 pub struct TextureInfo {
@@ -195,13 +203,12 @@ impl WorldAssets {
             "recycler marker",
             "solar satellite marker",
             "command relay marker",
+            "trading post marker",
             "sensor phalanx marker",
             "planetary shield marker",
             "mission",
             "mission colonize",
             "mission destroy",
-            "mission destroy jump",
-            "mission jump",
             "mission missile",
             "mission spy",
         ] {
@@ -278,14 +285,14 @@ impl WorldAssets {
             server,
             &mut self.images,
             &mut self.gameplay_handles,
-            "planet terraformer",
+            PLANET_TERRAFORMER_IMAGE,
             "images/planet-buildings/terraformer.basisu.ktx2",
         );
         load_linear_image(
             server,
             &mut self.images,
             &mut self.gameplay_handles,
-            "gas planet terraformer",
+            GAS_PLANET_TERRAFORMER_IMAGE,
             "images/planet-buildings/terraformer gas.basisu.ktx2",
         );
         load_linear_image(
@@ -297,23 +304,23 @@ impl WorldAssets {
         );
         for (name, path) in [
             (
-                "planet colonial administration",
+                PLANET_ADMINISTRATION_IMAGE,
                 "images/planet-buildings/colonial administration.basisu.ktx2",
             ),
             (
-                "gas planet colonial administration",
+                GAS_PLANET_ADMINISTRATION_IMAGE,
                 "images/planet-buildings/colonial administration gas.basisu.ktx2",
             ),
         ] {
             load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
         }
         for name in ASTEROID_IMAGE_NAMES {
-            load_linear_image(
+            load_linear_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "ambient",
                 name,
-                &format!("images/ambient/{name}.basisu.ktx2"),
             );
         }
         load_category(
@@ -365,8 +372,9 @@ impl WorldAssets {
             &[
                 "solar satellite",
                 "recycler",
-                "sensor phalanx",
                 "command relay",
+                "trading post",
+                "sensor phalanx",
                 "jump gate",
                 "space dock",
                 "orbital railgun",
@@ -415,13 +423,16 @@ impl WorldAssets {
             "mission",
             &[
                 "abandon",
-                "attacked",
+                "allied attack",
+                "enemy fleet",
                 "buildings",
                 "orbitals",
                 "fleet",
                 "defenses",
                 "deploy",
                 "deploy cover",
+                "protect",
+                "protect cover",
                 "colonize",
                 "colonize cover",
                 "attack",
@@ -467,12 +478,12 @@ impl WorldAssets {
         );
         for index in 1..=4 {
             let name = format!("solar star {index}");
-            load_linear_image(
+            load_linear_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "ambient",
                 &name,
-                &format!("images/ambient/{name}.basisu.ktx2"),
             );
         }
         load_linear_image(
@@ -485,52 +496,52 @@ impl WorldAssets {
         for kind in CelestialKind::ALL {
             for index in 1..=kind.frame_count() {
                 let name = format!("{} {index}", kind.name());
-                load_linear_image(
+                load_linear_category_image(
                     server,
                     &mut self.images,
                     &mut self.gameplay_handles,
+                    "ambient",
                     &name,
-                    &format!("images/ambient/{name}.basisu.ktx2"),
                 );
             }
         }
 
         for index in 0..65 {
             let name = format!("planet{index}");
-            load_image(
+            load_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "planets",
                 &name,
-                &format!("images/planets/{name}.basisu.ktx2"),
             );
         }
         for index in 0..6 {
             let name = format!("moon{index}");
-            load_image(
+            load_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "planets",
                 &name,
-                &format!("images/planets/{name}.basisu.ktx2"),
             );
         }
         for kind in PlanetKind::iter() {
             let name = kind.to_lowername();
-            load_image(
+            load_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "planets",
                 &name,
-                &format!("images/planets/{name}.basisu.ktx2"),
             );
             let large = format!("{name} large");
-            load_image(
+            load_category_image(
                 server,
                 &mut self.images,
                 &mut self.gameplay_handles,
+                "planets",
                 &large,
-                &format!("images/planets/{large}.basisu.ktx2"),
             );
         }
 
@@ -567,10 +578,8 @@ impl WorldAssets {
                 self.gameplay_handles.iter().map(|handle| handle_status(server, handle)),
             );
             if self.gameplay_state == GameplayAssetState::Failed {
-                let failure =
-                    first_handle_failure(server, &self.gameplay_handles).unwrap_or_else(|| {
-                        "A gameplay asset or one of its dependencies failed to load.".to_string()
-                    });
+                let failure = first_handle_failure(server, &self.gameplay_handles)
+                    .unwrap_or_else(|| GAMEPLAY_ASSET_LOAD_FAILURE.to_string());
                 error!("gameplay asset loading failed: {failure}");
                 self.gameplay_error = Some(failure);
             }
@@ -697,8 +706,24 @@ fn load_category(
     names: &[&str],
 ) {
     for name in names {
-        load_image(server, images, group, name, &format!("images/{category}/{name}.basisu.ktx2"));
+        load_category_image(server, images, group, category, name);
     }
+}
+
+/// Applies the shared generated-image path convention to one registry key.
+fn load_category_image(
+    server: &AssetServer,
+    images: &mut HashMap<String, Handle<Image>>,
+    group: &mut Vec<UntypedHandle>,
+    category: &str,
+    name: &str,
+) {
+    load_image(server, images, group, name, &category_image_path(category, name));
+}
+
+/// Returns the sole runtime path convention for generated image categories.
+fn category_image_path(category: &str, name: &str) -> String {
+    format!("images/{category}/{name}.basisu.ktx2")
 }
 
 /// Loads one deduplicated image and retains its strong handle for the group's lifetime.
@@ -734,6 +759,17 @@ fn load_linear_image(
         .load(path.to_string());
     group.push(handle.clone().untyped());
     images.insert(name.to_string(), handle);
+}
+
+/// Applies the generated-image path convention to smoothly sampled artwork.
+fn load_linear_category_image(
+    server: &AssetServer,
+    images: &mut HashMap<String, Handle<Image>>,
+    group: &mut Vec<UntypedHandle>,
+    category: &str,
+    name: &str,
+) {
+    load_linear_image(server, images, group, name, &category_image_path(category, name));
 }
 
 /// Returns whether every strong handle and recursive dependency has completed loading.

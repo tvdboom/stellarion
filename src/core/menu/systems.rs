@@ -495,7 +495,6 @@ fn local_practice_screen(
     let enter_pressed = menu_submit_pressed(ui);
     menu_form(ui, "local_practice_setup", "Local Practice", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
-            setup_color_picker(ui, &mut form.practice_color);
             choice_row(
                 ui,
                 "Local players",
@@ -519,38 +518,8 @@ fn local_practice_screen(
                 player_count: form.practice_player_count,
                 practice_mode: true,
             },
-            player_color: form.practice_color,
         });
     }
-}
-
-/// Shows every empire color and keeps the selected swatch outlined.
-#[cfg(debug_assertions)]
-fn setup_color_picker(ui: &mut egui::Ui, selected: &mut PlayerColor) {
-    form_option_card(
-        ui,
-        "Player color",
-        "Choose the color used to identify your empire and its worlds on the map.",
-        |ui| {
-            ui.vertical_centered(|ui| {
-                let gap = 6.0;
-                let row_width = (PLAYER_COLOR_PALETTE.len() as f32 * (34.0 + gap) - gap)
-                    .min(ui.available_width());
-                ui.allocate_ui_with_layout(
-                    egui::vec2(row_width, MENU_CONTROL_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        for color in PLAYER_COLOR_PALETTE {
-                            if player_color_swatch(ui, color, color == *selected) {
-                                *selected = color;
-                            }
-                        }
-                    },
-                );
-            });
-        },
-    );
 }
 
 /// Collects creator name, exact 2..=4 capacity, and existing gameplay settings.

@@ -9,10 +9,8 @@ use crate::core::map::model::Map;
 use crate::core::map::systems::PlanetCmp;
 use crate::core::ui::systems::UiState;
 
-/// At a camera limit, the outermost world remains this far inside the matching screen edge.
-const GALAXY_EDGE_SCREEN_FRACTION: f32 = 0.5;
-/// Maximum elastic travel beyond a camera limit while the map is being dragged.
-const OVERSCROLL_SCREEN_FRACTION: f32 = 0.25;
+/// Fraction of the full viewport available as elastic drag travel beyond the planet cluster.
+const OVERSCROLL_SCREEN_FRACTION: f32 = 0.2;
 /// Exponential return speed after input releases the camera outside its limits.
 const BOUNDS_RETURN_RATE: f32 = 14.0;
 /// Distance from the requested scale at which the zoom snaps to its exact destination.
@@ -47,83 +45,89 @@ impl ParallaxCmp {
     }
 }
 
-fn bounds_from_points(points: impl IntoIterator<Item = Vec2>) -> Option<Rect> {
-    let mut points = points.into_iter();
-    let first = points.next()?;
-    let (min, max) =
-        points.fold((first, first), |(min, max), point| (min.min(point), max.max(point)));
-    Some(Rect::from_corners(min, max))
+fn cross(origin: Vec2, left: Vec2, right: Vec2) -> f32 {
+    (left - origin).perp_dot(right - origin)
 }
 
-/// Computes the legal camera-center range for a viewport and collection of world centers.
-///
-/// At either limit, the matching outermost world can reach the viewport midpoint. The calculation
-/// uses the projection's world-space viewport size so the same screen-space limit applies at every
-/// zoom level. If a smaller edge fraction is configured and the galaxy is already narrower than
-/// the resulting visible span on an axis, that axis stays centered instead.
-fn camera_center_bounds(points: impl IntoIterator<Item = Vec2>, view_size: Vec2) -> Option<Rect> {
-    let world_bounds = bounds_from_points(points)?;
-    let center_inset = view_size.abs() * (0.5 - GALAXY_EDGE_SCREEN_FRACTION);
-    let proposed_min = world_bounds.min + center_inset;
-    let proposed_max = world_bounds.max - center_inset;
-    let center = world_bounds.center();
-    let min = Vec2::new(
-        if proposed_min.x <= proposed_max.x {
-            proposed_min.x
-        } else {
-            center.x
-        },
-        if proposed_min.y <= proposed_max.y {
-            proposed_min.y
-        } else {
-            center.y
-        },
-    );
-    let max = Vec2::new(
-        if proposed_min.x <= proposed_max.x {
-            proposed_max.x
-        } else {
-            center.x
-        },
-        if proposed_min.y <= proposed_max.y {
-            proposed_max.y
-        } else {
-            center.y
-        },
-    );
-    Some(Rect::from_corners(min, max))
-}
+/// Returns the convex outline of the planet centers in counter-clockwise order.
+fn planet_hull(points: impl IntoIterator<Item = Vec2>) -> Vec<Vec2> {
+    let mut points = points.into_iter().collect::<Vec<_>>();
+    points
+        .sort_by(|left, right| left.x.total_cmp(&right.x).then_with(|| left.y.total_cmp(&right.y)));
+    points.dedup();
+    if points.len() <= 2 {
+        return points;
+    }
 
-fn map_camera_bounds(map: &Map, view_size: Vec2) -> Option<Rect> {
-    camera_center_bounds(map.planets.iter().map(|planet| planet.position), view_size)
-}
-
-fn rubber_band_axis(value: f32, min: f32, max: f32, limit: f32) -> f32 {
-    let compress = |distance: f32| {
-        if limit > 0.0 {
-            limit * distance / (limit + distance)
-        } else {
-            0.0
+    let mut lower = Vec::with_capacity(points.len());
+    for &point in &points {
+        while lower.len() >= 2
+            && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0.0
+        {
+            lower.pop();
         }
-    };
-    if value < min {
-        min - compress(min - value)
-    } else if value > max {
-        max + compress(value - max)
-    } else {
-        value
+        lower.push(point);
+    }
+
+    let mut upper = Vec::with_capacity(points.len());
+    for &point in points.iter().rev() {
+        while upper.len() >= 2
+            && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+fn closest_point_on_segment(point: Vec2, start: Vec2, end: Vec2) -> Vec2 {
+    let segment = end - start;
+    let length_squared = segment.length_squared();
+    if length_squared <= f32::EPSILON {
+        return start;
+    }
+    start + segment * ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0)
+}
+
+/// Keeps a camera center inside the planets' real outline instead of an empty bounding-box corner.
+fn clamp_to_planet_hull(position: Vec2, hull: &[Vec2]) -> Option<Vec2> {
+    match hull {
+        [] => None,
+        [point] => Some(*point),
+        [start, end] => Some(closest_point_on_segment(position, *start, *end)),
+        _ if hull
+            .iter()
+            .zip(hull.iter().cycle().skip(1))
+            .all(|(&start, &end)| cross(start, end, position) >= -f32::EPSILON) =>
+        {
+            Some(position)
+        },
+        _ => hull
+            .iter()
+            .zip(hull.iter().cycle().skip(1))
+            .map(|(&start, &end)| closest_point_on_segment(position, start, end))
+            .min_by(|left, right| {
+                position.distance_squared(*left).total_cmp(&position.distance_squared(*right))
+            }),
     }
 }
 
-fn rubber_band_position(position: Vec2, bounds: Rect, view_size: Vec2) -> Vec2 {
-    let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
-    Vec2::new(
-        rubber_band_axis(position.x, bounds.min.x, bounds.max.x, limit.x),
-        rubber_band_axis(position.y, bounds.min.y, bounds.max.y, limit.y),
-    )
+fn map_camera_target(map: &Map, position: Vec2) -> Option<Vec2> {
+    let hull = planet_hull(map.planets.iter().map(|planet| planet.position));
+    clamp_to_planet_hull(position, &hull)
 }
 
-/// Applies a map-drag delta with progressively stronger resistance beyond the galaxy boundary.
+fn clamp_overscroll(offset: Vec2, view_size: Vec2) -> Vec2 {
+    let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
+    offset.clamp(-limit, limit)
+}
+
+/// Applies a map-drag delta with a 20%-of-screen limit beyond the planet cluster's outline.
 pub(crate) fn drag_camera_position(
     position: Vec2,
     movement: Vec2,
@@ -131,12 +135,11 @@ pub(crate) fn drag_camera_position(
     map: &Map,
 ) -> Vec2 {
     let proposed = position + movement;
-    map_camera_bounds(map, view_size)
-        .map_or(proposed, |bounds| rubber_band_position(proposed, bounds, view_size))
+    map_camera_target(map, proposed)
+        .map_or(proposed, |target| target + clamp_overscroll(proposed - target, view_size))
 }
 
-fn settle_position(position: Vec2, bounds: Rect, delta_seconds: f32) -> Vec2 {
-    let target = position.clamp(bounds.min, bounds.max);
+fn settle_position(position: Vec2, target: Vec2, delta_seconds: f32) -> Vec2 {
     if position.distance_squared(target) < 0.01 {
         target
     } else {
@@ -212,10 +215,7 @@ pub fn move_camera(
                         advance_focus_zoom(projection.scale, target_scale);
                 }
                 let planet_position = pos.translation.truncate();
-                let target = map_camera_bounds(&map, projection.area.size())
-                    .map_or(planet_position, |bounds| {
-                        planet_position.clamp(bounds.min, bounds.max)
-                    });
+                let target = map_camera_target(&map, planet_position).unwrap_or(planet_position);
                 position = position.lerp(target, LERP_FACTOR);
                 if state.planet_selected.is_none() && state.focus_planet == Some(planet_id) {
                     shortcut_target = Some(target);
@@ -245,8 +245,8 @@ fn advance_focus_zoom(scale: f32, target: f32) -> (f32, bool) {
 
 /// Applies the elastic camera boundary after every movement input for the frame.
 ///
-/// Dragging may travel a short distance beyond the normal range. Releasing the mouse returns the
-/// camera smoothly until the outermost world is no farther than the viewport midpoint.
+/// Dragging may travel up to 20% of the full viewport beyond the planet cluster. Releasing the mouse
+/// returns the camera smoothly to the closest point within the cluster's convex outline.
 pub fn clamp_camera_to_worlds(
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
     map: Res<Map>,
@@ -260,15 +260,16 @@ pub fn clamp_camera_to_worlds(
         return;
     };
     let view_size = projection.area.size();
-    let Some(bounds) = map_camera_bounds(&map, view_size) else {
+    let position = camera_t.translation.truncate();
+    let Some(target) = map_camera_target(&map, position) else {
         return;
     };
-    let position = camera_t.translation.truncate();
+    let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
+    let limited = target + (position - target).clamp(-limit, limit);
     let bounded = if mouse.pressed(MouseButton::Left) {
-        let overscroll = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
-        position.clamp(bounds.min - overscroll, bounds.max + overscroll)
+        limited
     } else {
-        settle_position(position, bounds, time.delta_secs())
+        settle_position(limited, target, time.delta_secs())
     };
     camera_t.translation = bounded.extend(camera_t.translation.z);
 }

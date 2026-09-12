@@ -18,12 +18,13 @@ pub use crate::core::combat::effects::{
 };
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
 use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
-use crate::core::combat::report::Side;
+use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
 use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
     BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, HEALTH_COLOR, PS_WIDTH, SETUP_TIME,
     SHIELD_COLOR, UNIT_SIZE,
 };
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::utils::{
@@ -61,6 +62,17 @@ const SALVAGE_PICKUP_TIME_MS: u64 =
     SALVAGE_PICKUP_REVEAL_TIME_MS * 2 + SALVAGE_PICKUP_DRIFT_TIME_MS;
 const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
+
+/// Resolves the combat report and round selected by the shared presentation state.
+fn selected_combat_round<'a>(
+    state: &UiState,
+    player: &'a Player,
+) -> Option<(&'a MissionReport, &'a CombatReport, &'a RoundReport)> {
+    let report = player.reports.iter().find(|report| Some(report.id) == state.in_combat)?;
+    let combat = report.combat_report.as_ref()?;
+    let round = combat.rounds.get(state.combat_round)?;
+    Some((report, combat, round))
+}
 
 #[derive(Component)]
 /// Bevy component marking combat menu presentation entities.
@@ -143,6 +155,8 @@ pub struct CombatUnitCmp {
     pub hull: usize,
     /// Full hull value used to scale the presentation bar.
     pub max_hull: usize,
+    /// Whether this round's casualties should be reflected by the count presentation.
+    pub outcome_visible: bool,
 }
 
 #[derive(Component)]
@@ -163,9 +177,137 @@ pub struct FleetRetreatPlayback {
     complete: bool,
 }
 
-#[derive(Component)]
-/// Bevy component marking count presentation entities.
-pub struct CountCmp;
+#[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
+/// Identifies the commander represented by one count in a combat unit card.
+pub struct CountCmp {
+    owner: Option<PlayerId>,
+}
+
+/// Splits an initial combat-card count into its primary commander and protection contributions.
+fn combat_unit_counts(
+    report: &MissionReport,
+    side: &Side,
+    unit: &Unit,
+) -> (Option<PlayerId>, usize, Vec<(PlayerId, usize)>) {
+    match side {
+        Side::Attacker => {
+            let support = report
+                .mission
+                .joint_attack
+                .as_ref()
+                .map(|attack| {
+                    attack
+                        .attackers
+                        .iter()
+                        .filter_map(|(player_id, army)| {
+                            let count = army.amount(unit);
+                            (*player_id != report.mission.owner && count > 0)
+                                .then_some((*player_id, count))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let lead = report
+                .mission
+                .joint_attack
+                .as_ref()
+                .and_then(|attack| attack.attackers.get(&report.mission.owner))
+                .map_or_else(|| report.mission.army.amount(unit), |army| army.amount(unit));
+            (Some(report.mission.owner), lead, support)
+        },
+        Side::Defender => {
+            let owner = report.planet.controlled.or(report.planet.owned);
+            let protection = report
+                .planet
+                .army
+                .protectors()
+                .filter_map(|(player_id, army)| {
+                    let count = army.amount(unit);
+                    (count > 0).then_some((player_id, count))
+                })
+                .collect();
+            (owner, report.planet.army.controller().amount(unit), protection)
+        },
+    }
+}
+
+/// Leaves enough room for one large owner count and the smaller protection counts after it.
+fn combat_count_badge_width(
+    size: f32,
+    owner_count: usize,
+    protection: &[(PlayerId, usize)],
+) -> f32 {
+    let owner_chars = owner_count.to_string().len() as f32;
+    let protection_chars = protection
+        .iter()
+        .map(|(_, count)| (count.to_string().len() + 1) as f32 * 0.75)
+        .sum::<f32>();
+    size * (0.22 + 0.1 * (owner_chars + protection_chars)).clamp(0.3, 0.95)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn displayed_combat_unit_count(
+    report: &MissionReport,
+    combat: &CombatReport,
+    round: &RoundReport,
+    combat_state: &CombatState,
+    card: &CombatUnitCmp,
+    fleeing: bool,
+    owner: Option<PlayerId>,
+    antiballistic_fired: bool,
+    interplanetary_fired: bool,
+) -> usize {
+    if card.unit.is_building() {
+        return card.hull;
+    }
+
+    let defender_owner = report.planet.controlled.or(report.planet.owned);
+    if card.side == Side::Defender
+        && card.unit.is_ship()
+        && owner == defender_owner
+        && (fleeing
+            || combat
+                .defender_retreat
+                .as_ref()
+                .is_some_and(|retreat| retreat.after_round.is_none()))
+    {
+        return report.escaped_defenders(&card.unit);
+    }
+
+    let mut count = round
+        .units(&card.side)
+        .iter()
+        .filter(|combatant| {
+            combatant.unit == card.unit
+                && combatant.owner == owner
+                && (!(card.outcome_visible || *combat_state == CombatState::EndCombat)
+                    || combatant.hull > 0
+                    || card.unit.is_missile())
+        })
+        .count();
+
+    if card.unit == Unit::antiballistic_missile() && antiballistic_fired {
+        let fired = round
+            .defender
+            .iter()
+            .filter(|combatant| {
+                combatant.unit == card.unit
+                    && combatant.owner == owner
+                    && !combatant.shots.is_empty()
+            })
+            .count();
+        count = count.saturating_sub(fired);
+    }
+    if card.unit == Unit::interplanetary_missile() {
+        if interplanetary_fired {
+            count = 0;
+        } else if antiballistic_fired {
+            count = count.saturating_sub(round.missiles_shot());
+        }
+    }
+
+    count
+}
 
 #[derive(Component)]
 /// Bevy component marking hull presentation entities.
@@ -523,6 +665,8 @@ pub fn setup_combat(
     // Spawn units =================================================== >>
     let size = UNIT_SIZE * projection.scale;
     let spacing = size * 1.2;
+    let attacker_id = report.mission.owner;
+    let defender_id = report.planet.controlled.or(report.planet.owned);
 
     let spawn_row = |commands: &mut Commands,
                      units: Vec<(Unit, usize)>,
@@ -535,7 +679,8 @@ pub fn setup_combat(
         for (i, (u, c)) in units.iter().enumerate() {
             let x = -total_width * 0.5 + i as f32 * spacing;
 
-            let w = size * (0.3 + 0.2 * (1. - 1. / c.to_string().len() as f32));
+            let (owner, owner_count, protection) = combat_unit_counts(report, &side, u);
+            let w = combat_count_badge_width(size, owner_count, &protection);
             let h = size * 0.3;
             let hull = c * u.hull();
 
@@ -556,26 +701,8 @@ pub fn setup_combat(
                         max_shield: c * u.shield(),
                         hull,
                         max_hull: hull,
+                        outcome_visible: false,
                     },
-                    children![(
-                        Sprite {
-                            color: Color::BLACK.with_alpha(0.5),
-                            custom_size: Some(Vec2::new(w, h)),
-                            ..default()
-                        },
-                        Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + h * 0.5, 0.1),
-                        children![(
-                            Text2d::new(c.to_string()),
-                            TextFont {
-                                font: assets.font("bold").into(),
-                                font_size: (600. * projection.scale).into(),
-                                ..default()
-                            },
-                            TextColor(WHITE.into()),
-                            Transform::from_scale(Vec3::splat(0.05)),
-                            CountCmp,
-                        )]
-                    ),],
                     TweenAnim::new(Tween::new(
                         EaseFunction::QuadraticInOut,
                         Duration::from_secs(SETUP_TIME),
@@ -588,6 +715,48 @@ pub fn setup_combat(
                     CombatCmp,
                 ))
                 .with_children(|parent| {
+                    parent
+                        .spawn((
+                            Sprite {
+                                color: Color::BLACK.with_alpha(0.5),
+                                custom_size: Some(Vec2::new(w, h)),
+                                ..default()
+                            },
+                            Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + h * 0.5, 0.1),
+                        ))
+                        .with_children(|badge| {
+                            badge
+                                .spawn((
+                                    Text2d::new(owner_count.to_string()),
+                                    TextFont {
+                                        font: assets.font("bold").into(),
+                                        font_size: (600. * projection.scale).into(),
+                                        ..default()
+                                    },
+                                    TextColor(WHITE.into()),
+                                    Transform::from_scale(Vec3::splat(0.05)),
+                                    CountCmp {
+                                        owner,
+                                    },
+                                ))
+                                .with_children(|text| {
+                                    for (player_id, count) in &protection {
+                                        text.spawn((
+                                            TextSpan::new(format!(" {count}")),
+                                            TextFont {
+                                                font: assets.font("bold").into(),
+                                                font_size: (450. * projection.scale).into(),
+                                                ..default()
+                                            },
+                                            TextColor(session.player_color(*player_id).color()),
+                                            CountCmp {
+                                                owner: Some(*player_id),
+                                            },
+                                        ));
+                                    }
+                                });
+                        });
+
                     // Unshielded support units keep the same two-slot card layout as shielded
                     // units, using the depleted shield-track color for the empty slot. Missile
                     // cards still omit stats they do not have.
@@ -652,16 +821,22 @@ pub fn setup_combat(
         }
     };
 
-    let attacker_id = report.mission.owner;
-    let defender_id = report.planet.controlled.or(report.planet.owned);
     let attack_c = session.player_color(attacker_id).color();
     let defend_c =
         defender_id.map_or(Color::srgb_u8(150, 158, 170), |id| session.player_color(id).color());
-    let attacker_name = session
-        .player_name(attacker_id)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let attackers = vec![(attacker_name, attack_c)];
+    let attackers = report
+        .attacker_players()
+        .into_iter()
+        .map(|id| {
+            (
+                session
+                    .player_name(id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {id}")),
+                session.player_color(id).color(),
+            )
+        })
+        .collect::<Vec<_>>();
     let defenders = report
         .defender_players()
         .into_iter()
@@ -868,6 +1043,7 @@ pub fn setup_combat(
                 max_shield,
                 hull: ps,
                 max_hull: ps,
+                outcome_visible: false,
             },
             children![
                 (
@@ -953,6 +1129,7 @@ pub fn setup_combat(
                     max_shield: 0,
                     hull: *c,
                     max_hull: *c,
+                    outcome_visible: false,
                 },
                 children![(
                     Sprite {
@@ -970,7 +1147,9 @@ pub fn setup_combat(
                         },
                         TextColor(WHITE.into()),
                         Transform::from_scale(Vec3::splat(0.05)),
-                        CountCmp,
+                        CountCmp {
+                            owner: defender_id,
+                        },
                     )]
                 )],
                 TweenAnim::new(Tween::new(
@@ -1142,12 +1321,7 @@ pub fn animate_combat(
 
     let units: Vec<_> = Unit::all_firing_order();
 
-    let Some((report, combat, round)) = state.in_combat.and_then(|report_id| {
-        let report = player.reports.iter().find(|report| report.id == report_id)?;
-        let combat = report.combat_report.as_ref()?;
-        let round = combat.rounds.get(state.combat_round)?;
-        Some((report, combat, round))
-    }) else {
+    let Some((report, combat, round)) = selected_combat_round(&state, &player) else {
         return;
     };
 
@@ -1278,6 +1452,31 @@ pub fn animate_combat(
         }
         if destroying {
             return;
+        }
+
+        // Reveal the completed exchange as one between-round beat. Counts and health capacity
+        // now describe only the survivors, while ordinary shields recharge for the next round.
+        // The shared planetary shield deliberately remains depleted. Doing this before selecting
+        // a Repair Truck lets its healing animate alongside the other round refreshes.
+        if *combat_state.get() == CombatState::Fire {
+            let has_next_round = state.combat_round + 1 < combat.rounds.len();
+            for (_, _, mut cu) in &mut unit_q {
+                cu.outcome_visible = true;
+                if cu.unit.is_building() || cu.unit == Unit::planetary_shield() {
+                    continue;
+                }
+
+                let count = round
+                    .units(&cu.side)
+                    .iter()
+                    .filter(|combatant| combatant.unit == cu.unit && combatant.hull > 0)
+                    .count();
+                cu.max_shield = count * cu.unit.shield();
+                cu.max_hull = count * cu.unit.hull();
+                if has_next_round {
+                    cu.shield = cu.max_shield;
+                }
+            }
         }
 
         // Scout probes fly away
@@ -1428,6 +1627,7 @@ pub fn animate_combat(
                         cu.max_hull = count * cu.unit.hull();
                         cu.shield = cu.max_shield;
                         cu.fire = FireState::Idle;
+                        cu.outcome_visible = false;
                     }
                 });
 
@@ -1744,7 +1944,7 @@ pub fn animate_combat(
 pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp, Option<&FleetRetreatCmp>)>,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
-    mut count_q: Query<&mut Text2d, With<CountCmp>>,
+    mut count_q: Query<(&CountCmp, Option<&mut Text2d>, Option<&mut TextSpan>)>,
     mut shield_q: Query<
         (&mut Transform, &mut Sprite, Option<&PlanetaryShieldFillCmp>),
         (With<ShieldCmp>, Without<HullCmp>),
@@ -1794,12 +1994,7 @@ pub fn update_combat_stats(
         };
     }
 
-    let Some((report, combat, round)) = state.in_combat.and_then(|report_id| {
-        let report = player.reports.iter().find(|report| report.id == report_id)?;
-        let combat = report.combat_report.as_ref()?;
-        let round = combat.rounds.get(state.combat_round)?;
-        Some((report, combat, round))
-    }) else {
+    let Some((report, combat, round)) = selected_combat_round(&state, &player) else {
         return;
     };
 
@@ -1814,53 +2009,24 @@ pub fn update_combat_stats(
 
     for (unit_e, cu, fleeing) in &unit_q {
         for child in children_q.iter_descendants(unit_e) {
-            if let Ok(mut text) = count_q.get_mut(child) {
-                let count = if cu.unit.is_building() {
-                    cu.hull
-                } else if cu.side == Side::Defender
-                    && cu.unit.is_ship()
-                    && (fleeing.is_some()
-                        || combat
-                            .defender_retreat
-                            .as_ref()
-                            .is_some_and(|retreat| retreat.after_round.is_none()))
-                {
-                    report.escaped_defenders(&cu.unit)
-                } else {
-                    let mut count = round
-                        .units(&cu.side)
-                        .iter()
-                        .filter(|cu2| {
-                            cu2.unit == cu.unit
-                                && (*combat_state.get() != CombatState::EndCombat
-                                    || cu2.hull > 0
-                                    || cu.unit.is_missile())
-                        })
-                        .count();
-
-                    // Update the missile count immediately after antiballistic were fired
-                    if cu.unit == Unit::antiballistic_missile() && antiballistic_fired {
-                        count -= round.antiballistic_fired;
-                    }
-                    if cu.unit == Unit::interplanetary_missile() {
-                        if interplanetary_fired {
-                            count = 0;
-                        } else if antiballistic_fired {
-                            count -= round
-                                .defender
-                                .iter()
-                                .filter(|cu| {
-                                    cu.unit == Unit::antiballistic_missile()
-                                        && cu.shots.iter().any(|s| s.killed)
-                                })
-                                .count();
-                        }
-                    }
-
-                    count
-                };
-
-                text.0 = count.to_string();
+            if let Ok((counter, text, span)) = count_q.get_mut(child) {
+                let count = displayed_combat_unit_count(
+                    report,
+                    combat,
+                    round,
+                    combat_state.get(),
+                    cu,
+                    fleeing.is_some(),
+                    counter.owner,
+                    antiballistic_fired,
+                    interplanetary_fired,
+                );
+                if let Some(mut text) = text {
+                    text.0 = count.to_string();
+                }
+                if let Some(mut span) = span {
+                    span.0 = format!(" {count}");
+                }
             }
 
             if let Ok((mut shield_t, mut shield_s, planetary_fill)) = shield_q.get_mut(child) {

@@ -373,6 +373,7 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
                 | "images/icons/jump gate marker.png"
                 | "images/icons/solar satellite marker.png"
                 | "images/icons/command relay marker.png"
+                | "images/icons/trading post marker.png"
                 | "images/icons/sensor phalanx marker.png"
                 | "images/icons/planetary shield marker.png"
                 | "images/icons/won.png"

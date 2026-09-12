@@ -1,11 +1,12 @@
 //! Persisted fleet missions, movement calculations, visibility, and optional Bevy adapters.
 
+use std::collections::BTreeMap;
 #[cfg(feature = "app")]
 use std::collections::BTreeSet;
 
 #[cfg(feature = "app")]
 pub use super::mission_systems::{
-    recall_mission, send_mission, update_mission_route_arrow, update_missions,
+    recall_mission, recall_protection, send_mission, update_mission_route_arrow, update_missions,
     MissionRecallAnimationMsg, MissionRouteArrowCmp,
 };
 
@@ -90,6 +91,17 @@ impl Missions {
 pub struct SendMissionMsg {
     /// Mission selected for dispatch by the local UI.
     pub mission: Mission,
+    /// Accepted contributions when this launch came from a private invitation.
+    pub joint_attack: Option<JointMissionLaunch>,
+}
+
+/// Final accepted invitation data attached to the inviter's launch command.
+#[derive(Clone)]
+pub struct JointMissionLaunch {
+    /// Stable invitation identifier.
+    pub attack_id: u64,
+    /// Accepted contributions with the inviter first.
+    pub contributions: Vec<crate::core::simulation::JointAttackContribution>,
 }
 
 impl SendMissionMsg {
@@ -97,6 +109,15 @@ impl SendMissionMsg {
     pub fn new(mission: Mission) -> Self {
         Self {
             mission,
+            joint_attack: None,
+        }
+    }
+
+    /// Creates a coordinated launch from the frozen invitation panel.
+    pub fn joint(mission: Mission, joint_attack: JointMissionLaunch) -> Self {
+        Self {
+            mission,
+            joint_attack: Some(joint_attack),
         }
     }
 }
@@ -197,6 +218,46 @@ pub struct Mission {
     pub jump_gate: bool,
     /// Append-only human-readable mission history.
     pub logs: String,
+    /// Shared-assault identity and timing when this is one contingent of a joint mission.
+    #[serde(default)]
+    pub joint_attack: Option<JointAttackMission>,
+}
+
+#[derive(Message)]
+/// Bevy message requesting that a locally stationed protection fleet return home.
+pub struct RecallProtectionMsg {
+    /// World currently defended by the local player's protection fleet.
+    pub planet_id: PlanetId,
+}
+
+impl RecallProtectionMsg {
+    /// Creates a stationed-protection recall request.
+    pub fn new(planet_id: PlanetId) -> Self {
+        Self {
+            planet_id,
+        }
+    }
+}
+
+/// Persisted link that makes independently owned fleets one coordinated attacking force.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointAttackMission {
+    /// Stable invitation identifier shared by every participating fleet.
+    pub id: u64,
+    /// Player whose objective and conquest claim govern the operation.
+    pub leader: PlayerId,
+    /// Absolute turn on which all contingents enter combat together.
+    pub arrival_turn: usize,
+    /// Per-player armies populated on the synthetic mission in the shared battle report.
+    #[serde(default)]
+    pub attackers: BTreeMap<PlayerId, Army>,
+    /// Per-player surviving armies, populated only on the resolved battle report.
+    #[serde(default)]
+    pub survivors: BTreeMap<PlayerId, Army>,
+    /// Original departure world for each participant, used for independent returns.
+    #[serde(default)]
+    pub origins: BTreeMap<PlayerId, PlanetId>,
 }
 
 impl Mission {
@@ -267,6 +328,7 @@ impl Mission {
             combat_probes,
             jump_gate,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
+            joint_attack: None,
         }
     }
 
@@ -297,26 +359,52 @@ impl Mission {
         )
     }
 
-    /// Returns the mission silhouette, keeping jump-gate details private to the owner.
-    pub fn image(&self, player: &Player) -> &str {
+    /// Returns the mission silhouette.
+    ///
+    /// Jump-gate travel is presented by a map-only animated effect instead of alternate artwork.
+    pub fn image(&self, _player: &Player) -> &str {
         let image_objective = self.return_objective.unwrap_or(self.objective);
         if image_objective == Icon::Colonize {
             "mission colonize"
         } else if self.uses_war_sun_image() {
-            if self.owner == player.id && self.jump_gate {
-                "mission destroy jump"
-            } else {
-                "mission destroy"
-            }
+            "mission destroy"
         } else if image_objective == Icon::MissileStrike {
             "mission missile"
         } else if image_objective == Icon::Spy {
             "mission spy"
-        } else if self.owner == player.id && self.jump_gate {
-            "mission jump"
         } else {
             "mission"
         }
+    }
+
+    /// Returns the objective presentation visible to one player.
+    ///
+    /// Hostile objectives stay concealed behind the generic enemy-fleet marker. Allied attackers
+    /// share a coordinated-attack marker, while a protection target sees Protect explicitly.
+    #[cfg(feature = "app")]
+    pub(crate) fn displayed_objective(&self, player_id: PlayerId) -> Icon {
+        if self.joint_attack.is_some() && self.is_joint_attacker(player_id) {
+            Icon::AlliedAttack
+        } else if self.owner == player_id || self.is_incoming_protection_for(player_id) {
+            self.objective
+        } else {
+            Icon::EnemyFleet
+        }
+    }
+
+    /// Returns whether this fleet is travelling to protect the requested player.
+    ///
+    /// The protected player is told about an invited fleet as soon as it launches. That visibility
+    /// is independent of Sensor Phalanx and Orbital Radar coverage and includes its full formation.
+    #[cfg(feature = "app")]
+    pub(crate) fn is_incoming_protection_for(&self, player_id: PlayerId) -> bool {
+        self.objective == Icon::Protect && self.protected_player == Some(player_id)
+    }
+
+    /// Returns whether this player explicitly contributed to the coordinated attacking force.
+    #[cfg(feature = "app")]
+    pub(crate) fn is_joint_attacker(&self, player_id: PlayerId) -> bool {
+        self.joint_attack.as_ref().is_some_and(|attack| attack.attackers.contains_key(&player_id))
     }
 
     /// Returns whether this fleet uses the War Sun silhouette on the strategic map.
@@ -380,6 +468,7 @@ impl Mission {
         self.bombing = BombingRaid::None;
         self.combat_probes = false;
         self.jump_gate = false;
+        self.joint_attack = None;
         self.logs.push_str(&format!(
             "\n- ({turn}) Mission recalled to planet {}.",
             map.get(original_origin).name
@@ -489,12 +578,15 @@ impl Mission {
 
     /// Returns whole turns remaining before this mission arrives.
     pub fn turns_to_destination(&self, map: &Map) -> usize {
+        let coordinated_wait = self.joint_attack.as_ref().map_or(0, |attack| {
+            attack.arrival_turn.saturating_sub(self.send.saturating_add(self.travel_turns))
+        });
         let distance = f64::from(self.distance(map));
         if distance == 0.0 || self.speed() == 0.0 {
-            return 0;
+            return coordinated_wait;
         }
         if self.jump_gate {
-            return 1;
+            return coordinated_wait.max(1);
         }
         // D(t) = s*t*(t+2)/3. Solve D(t+n)-D(t) for remaining turns n.
         // Rationalizing the root avoids cancellation late in long journeys.
@@ -502,7 +594,7 @@ impl Mission {
         let scaled = 3.0 * distance / f64::from(self.speed());
         let remaining = scaled / ((age * age + scaled).sqrt() + age);
         // World positions use f32; absorb only their rounding noise at whole-turn boundaries.
-        (remaining - 1e-6).ceil().max(1.0) as usize
+        coordinated_wait.max((remaining - 1e-6).ceil().max(1.0) as usize)
     }
 
     /// Returns jump-gate capacity consumed by this mission's fleet.
@@ -537,6 +629,7 @@ impl Mission {
             format!("\n- Merged with other mission with objective {}.", other.objective.to_name())
                 .as_str(),
         );
+        self.joint_attack = None;
     }
 
     /// Return the origin planet if still controlled by the player,

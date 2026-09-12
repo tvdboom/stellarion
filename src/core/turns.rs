@@ -100,6 +100,8 @@ pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<
         .iter()
         .filter(|mission| {
             mission.owner == player.id
+                || mission.is_incoming_protection_for(player.id)
+                || mission.is_joint_attacker(player.id)
                 || mission.is_seen_by_phalanx(map, player).is_some()
                 || mission.is_seen_by_radar(map, player).is_some()
         })
@@ -136,6 +138,9 @@ fn report_notification(
     origin: &Planet,
     destination: &Planet,
 ) -> MessageMsg {
+    let local_victory = report.winner().is_some_and(|winner| {
+        winner == player.id || report.is_defender(player.id) && report.is_defender(winner)
+    });
     let notification = match report.mission.objective {
         Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
             let probes_only =
@@ -204,7 +209,7 @@ fn report_notification(
             "Battle at planet {} ended in a draw; the attacking fleet is returning.",
             destination.name
         )),
-        _ if report.winner() == Some(player.id) => {
+        _ if local_victory => {
             MessageMsg::info(format!("Battle won at planet {}.", destination.name))
         },
         _ => MessageMsg::warning(format!("Battle lost at planet {}.", destination.name)),

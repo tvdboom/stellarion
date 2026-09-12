@@ -208,10 +208,25 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         destination.shield_overload.is_overloaded(),
     );
 
+    let joint_attackers = mission
+        .joint_attack
+        .as_ref()
+        .filter(|attack| !attack.attackers.is_empty())
+        .map(|attack| &attack.attackers);
     let mut attack_army = Vec::new();
-    for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
-        for _ in 0..*count {
-            attack_army.push(CombatUnit::new_owned_with_rng(unit, Some(mission.owner), rng));
+    if let Some(attackers) = joint_attackers {
+        for (owner, fleet) in attackers {
+            for (unit, count) in fleet.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
+                for _ in 0..*count {
+                    attack_army.push(CombatUnit::new_owned_with_rng(unit, Some(*owner), rng));
+                }
+            }
+        }
+    } else {
+        for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
+            for _ in 0..*count {
+                attack_army.push(CombatUnit::new_owned_with_rng(unit, Some(mission.owner), rng));
+            }
         }
     }
 
@@ -253,6 +268,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
     let mut round = 1;
     let mut returning_probes = 0;
+    let mut returning_probes_by_owner = BTreeMap::<crate::core::identity::PlayerId, usize>::new();
     let mut used_antiballistic = vec![];
     let mut planet_destroyed = false;
     let mut bombing_resolved = false;
@@ -343,7 +359,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                         shot.unit = Some(Unit::planetary_shield());
                         None
                     } else if let Some(target) =
-                        enemy_army.iter_mut().filter(|cu| !cu.unit.is_missile()).choose(&mut *rng)
+                        choose_combat_target(unit.unit, enemy_army, &mut *rng)
                     {
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense()
@@ -492,12 +508,18 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                 || mission.objective == Icon::Spy)
                 && probes > 0
             {
+                for probe in attack_army.iter().filter(|unit| unit.unit == Unit::probe()) {
+                    if let Some(owner) = probe.owner {
+                        let count = returning_probes_by_owner.entry(owner).or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
                 attack_army.retain(|u| u.unit != Unit::probe());
                 returning_probes = probes;
             }
         }
 
-        // Try to destroy planet
+        // The fleet must break through every defending ship and the Space Dock first.
         if mission.objective == Icon::Destroy
             && !defend_army.iter().any(|u| u.unit.is_ship() || u.unit == Unit::space_dock())
         {
@@ -524,6 +546,14 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         *army.entry(cu.unit).or_insert(0) += 1;
         army
     });
+    let mut surviving_attackers = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
+    for combatant in &attack_army {
+        if let Some(owner) = combatant.owner {
+            let count =
+                surviving_attackers.entry(owner).or_default().entry(combatant.unit).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
 
     let defense_survives = !defend_army.is_empty();
     let mut surviving_controller = Army::new();
@@ -544,6 +574,17 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         // Add the non-combat ships to the attacker
         *surviving_attacker.entry(Unit::colony_ship()).or_insert(0) =
             mission.army.amount(&Unit::colony_ship());
+        if let Some(attackers) = joint_attackers {
+            for (owner, army) in attackers {
+                let colonies = army.amount(&Unit::colony_ship());
+                if colonies > 0 {
+                    surviving_attackers
+                        .entry(*owner)
+                        .or_default()
+                        .insert(Unit::colony_ship(), colonies);
+                }
+            }
+        }
     }
     if defense_survives {
         // Defender support units survive a stalemate as well as a defensive victory.
@@ -570,6 +611,10 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
     // Add the scout probes to the surviving attacker
     *surviving_attacker.entry(Unit::probe()).or_insert(0) += returning_probes;
+    for (owner, probes) in returning_probes_by_owner {
+        let count = surviving_attackers.entry(owner).or_default().entry(Unit::probe()).or_default();
+        *count = count.saturating_add(probes);
+    }
 
     // Add the buildings to the surviving defense
     if !planet_destroyed {
@@ -580,10 +625,14 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     }
     let surviving_defense = Garrison::from_parts(surviving_controller, surviving_protectors);
 
+    let mut resolved_mission = mission.clone();
+    if let Some(attack) = &mut resolved_mission.joint_attack {
+        attack.survivors = surviving_attackers;
+    }
     MissionReport {
         id: rng.random(),
         turn,
-        mission: mission.clone(),
+        mission: resolved_mission,
         planet: destination.clone(),
         scout_probes: returning_probes,
         surviving_attacker,
@@ -691,6 +740,36 @@ fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f3
             >= RAPID_FIRE.get(attacker).and_then(|table| table.get(target)).copied().unwrap_or(0)
                 as f32
                 / 100.0
+}
+
+/// Selects a target from the highest-priority non-missile category available to the shooter.
+fn choose_combat_target<'a, R: Rng + ?Sized>(
+    attacker: Unit,
+    defenders: &'a mut [CombatUnit],
+    rng: &mut R,
+) -> Option<&'a mut CombatUnit> {
+    let priority = defenders
+        .iter()
+        .filter(|defender| !defender.unit.is_missile())
+        .map(|defender| combat_target_priority(attacker, defender.unit))
+        .min()?;
+
+    defenders
+        .iter_mut()
+        .filter(|defender| {
+            !defender.unit.is_missile()
+                && combat_target_priority(attacker, defender.unit) == priority
+        })
+        .choose(rng)
+}
+
+/// Ships engage their preferred battlefield role before falling back to the other category.
+fn combat_target_priority(attacker: Unit, target: Unit) -> u8 {
+    match attacker {
+        Unit::Ship(Ship::Bomber) => u8::from(!target.is_defense()),
+        Unit::Ship(_) => u8::from(!(target.is_ship() || target == Unit::space_dock())),
+        _ => 0,
+    }
 }
 
 /// Fires unused antiballistic missiles sequentially until this incoming missile is destroyed.

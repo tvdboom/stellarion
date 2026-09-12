@@ -106,9 +106,20 @@ fn spawn_unit(app: &mut App, unit: Unit, count: usize, side: Side, fire: FireSta
                 max_hull: hull,
                 shield: count * unit.shield(),
                 max_shield: count * unit.shield(),
+                outcome_visible: false,
             },
         ))
         .id()
+}
+
+fn owner_entity(app: &App, descendants: &[Entity], owner: PlayerId) -> Entity {
+    descendants
+        .iter()
+        .copied()
+        .find(|entity| {
+            app.world().get::<CountCmp>(*entity).is_some_and(|counter| counter.owner == Some(owner))
+        })
+        .unwrap()
 }
 
 #[test]
@@ -209,6 +220,136 @@ fn combat_setup_never_spawns_colony_ship_cards() {
         .query::<&CombatUnitCmp>()
         .iter(app.world())
         .all(|unit| unit.unit != Unit::colony_ship()));
+}
+
+#[test]
+fn defender_cards_show_controller_count_then_smaller_colored_protection_counts() {
+    let mut unresolved = report(5, 0, true, 31);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    unresolved.planet.army.insert(fighter, 6);
+    unresolved.planet.army.dock_protector(3, Army::from([(fighter, 3)]));
+    let mut rng = DeterministicRngState::from_u64(31).next_rng();
+    let report = resolve_combat_with_rng(1, &unresolved.mission, &unresolved.planet, &mut rng);
+    assert_eq!(combat_unit_counts(&report, &Side::Defender, &fighter), (Some(2), 6, vec![(3, 3)]));
+
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let card = app
+        .world_mut()
+        .query::<(Entity, &CombatUnitCmp)>()
+        .iter(app.world())
+        .find_map(|(entity, card)| {
+            (card.side == Side::Defender && card.unit == fighter).then_some(entity)
+        })
+        .unwrap();
+    let descendants = app
+        .world_mut()
+        .run_system_once(move |children: Query<&Children>| {
+            children.iter_descendants(card).collect::<Vec<_>>()
+        })
+        .unwrap();
+    let owner = descendants
+        .iter()
+        .find_map(|entity| {
+            let counter = app.world().get::<CountCmp>(*entity)?;
+            let text = app.world().get::<Text2d>(*entity)?;
+            let font = app.world().get::<TextFont>(*entity)?;
+            let color = app.world().get::<TextColor>(*entity)?;
+            (counter.owner == Some(2)).then_some((text.0.clone(), font.font_size, color.0))
+        })
+        .unwrap();
+    let protector = descendants
+        .iter()
+        .find_map(|entity| {
+            let counter = app.world().get::<CountCmp>(*entity)?;
+            let text = app.world().get::<TextSpan>(*entity)?;
+            let font = app.world().get::<TextFont>(*entity)?;
+            let color = app.world().get::<TextColor>(*entity)?;
+            (counter.owner == Some(3)).then_some((text.0.clone(), font.font_size, color.0))
+        })
+        .unwrap();
+
+    assert_eq!(owner.0, "6");
+    assert_eq!(owner.2, WHITE.into());
+    assert_eq!(protector.0, " 3");
+    assert!(
+        protector.1.eval(Vec2::splat(1_000.0), 16.0) < owner.1.eval(Vec2::splat(1_000.0), 16.0)
+    );
+    assert_eq!(protector.2, app.world().resource::<MultiplayerSession>().player_color(3).color());
+
+    {
+        let mut player = app.world_mut().resource_mut::<Player>();
+        let round =
+            &mut player.reports.first_mut().unwrap().combat_report.as_mut().unwrap().rounds[0];
+        let mut owner_survivors = 0;
+        let mut protector_survivors = 0;
+        for combatant in round.defender.iter_mut().filter(|combatant| combatant.unit == fighter) {
+            let keep = match combatant.owner {
+                Some(2) if owner_survivors < 2 => {
+                    owner_survivors += 1;
+                    true
+                },
+                Some(3) if protector_survivors < 1 => {
+                    protector_survivors += 1;
+                    true
+                },
+                _ => false,
+            };
+            if keep {
+                combatant.hull = combatant.unit.hull();
+            } else {
+                combatant.hull = 0;
+            }
+        }
+    }
+
+    // Recorded casualties stay hidden until the volley has fully resolved.
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    assert_eq!(app.world().get::<Text2d>(owner_entity(&app, &descendants, 2)).unwrap().0, "6");
+    assert_eq!(app.world().get::<TextSpan>(owner_entity(&app, &descendants, 3)).unwrap().0, " 3");
+
+    app.world_mut().get_mut::<CombatUnitCmp>(card).unwrap().outcome_visible = true;
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    assert_eq!(
+        app.world()
+            .get::<Text2d>(
+                descendants
+                    .iter()
+                    .copied()
+                    .find(|entity| app
+                        .world()
+                        .get::<CountCmp>(*entity)
+                        .is_some_and(|c| c.owner == Some(2)))
+                    .unwrap()
+            )
+            .unwrap()
+            .0,
+        "2"
+    );
+    assert_eq!(
+        app.world()
+            .get::<TextSpan>(
+                descendants
+                    .iter()
+                    .copied()
+                    .find(|entity| app
+                        .world()
+                        .get::<CountCmp>(*entity)
+                        .is_some_and(|c| c.owner == Some(3)))
+                    .unwrap()
+            )
+            .unwrap()
+            .0,
+        " 1"
+    );
 }
 
 #[test]
@@ -1099,13 +1240,14 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
             None,
         );
         let report = resolve_combat_with_rng(1, &mission, &target, &mut rng);
-        if let Some(index) = report
-            .combat_report
-            .as_ref()
-            .unwrap()
-            .rounds
-            .iter()
-            .position(|round| round.defender.iter().any(|unit| !unit.repairs.is_empty()))
+        if let Some(index) =
+            report.combat_report.as_ref().unwrap().rounds.iter().enumerate().find_map(
+                |(index, round)| {
+                    (index + 1 < report.combat_report.as_ref().unwrap().rounds.len()
+                        && round.defender.iter().any(|unit| !unit.repairs.is_empty()))
+                    .then_some(index)
+                },
+            )
         {
             selected = Some((report, index));
             break;
@@ -1116,6 +1258,7 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
     let mut app = playback_app(report, index, CombatState::Fire);
     let mut targets = Vec::new();
     for kind in Unit::defenses() {
+        let combatants = round.defender.iter().filter(|u| u.unit == kind).collect::<Vec<_>>();
         let survivors =
             round.defender.iter().filter(|u| u.unit == kind && u.hull > 0).collect::<Vec<_>>();
         if survivors.is_empty() {
@@ -1123,17 +1266,24 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
         }
         let final_hull: usize = survivors.iter().map(|u| u.hull).sum();
         let repaired: usize = survivors.iter().flat_map(|u| &u.repairs).sum();
-        let entity = spawn_unit(&mut app, kind, survivors.len(), Side::Defender, FireState::Fired);
+        let entity = spawn_unit(&mut app, kind, combatants.len(), Side::Defender, FireState::Fired);
         app.world_mut().get_mut::<CombatUnitCmp>(entity).unwrap().hull = final_hull - repaired;
-        targets.push((kind, entity, final_hull, repaired));
+        targets.push((kind, entity, survivors.len(), final_hull, repaired));
     }
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert!(matches!(
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::Repair)
     ));
+    for (kind, entity, survivors, _, _) in &targets {
+        let card = app.world().get::<CombatUnitCmp>(*entity).unwrap();
+        assert!(card.outcome_visible);
+        assert_eq!(card.max_hull, survivors * kind.hull());
+        assert_eq!(card.max_shield, survivors * kind.shield());
+        assert_eq!(card.shield, card.max_shield);
+    }
     let repair_truck =
-        targets.iter().find(|(kind, _, _, _)| *kind == Unit::repair_truck()).unwrap().1;
+        targets.iter().find(|(kind, _, _, _, _)| *kind == Unit::repair_truck()).unwrap().1;
     app.world_mut().insert_resource(State::new(CombatState::Repair));
     app.world_mut().get_mut::<CombatUnitCmp>(repair_truck).unwrap().fire = FireState::Firing;
     app.world_mut().run_system_once(animate_combat).unwrap();
@@ -1147,7 +1297,7 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
     assert!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count() > 0);
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(3));
     app.update();
-    for (_, entity, final_hull, _) in targets {
+    for (_, entity, _, final_hull, _) in targets {
         assert_eq!(app.world().get::<CombatUnitCmp>(entity).unwrap().hull, final_hull);
     }
     assert!(

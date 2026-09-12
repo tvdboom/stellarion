@@ -16,15 +16,17 @@ use crate::core::map::systems::MissionCmp;
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
-    Mission, MissionRouteStyle, Missions, RecallMissionMsg, SendMissionMsg,
-    SuppressedReturningSpies,
+    BombingRaid, Mission, MissionRouteStyle, Missions, RecallMissionMsg, RecallProtectionMsg,
+    SendMissionMsg, SuppressedReturningSpies,
 };
 use crate::core::player::Player;
 use crate::core::settings::Settings;
-use crate::core::simulation::TurnCommand;
+use crate::core::simulation::{TurnCommand, MAX_ACTIVE_MISSIONS};
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::core::units::{Amount, Army};
-use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
+use crate::core::units::{Amount, Army, Unit};
+use crate::multiplayer::client::{
+    MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+};
 
 const MISSION_ROUTE_SPACING: f32 = 52.0;
 // A closed ring is foreshortened along the route: it faces the travelling ship, not the camera.
@@ -37,11 +39,16 @@ const COLONY_SHIP_MISSION_SIZE: f32 = 44.0;
 const COLONY_SHIP_MISSION_HOVER_SIZE: f32 = 53.0;
 pub(crate) const SPY_MISSION_SIZE: f32 = 36.0;
 const SPY_MISSION_HOVER_SIZE: f32 = 43.0;
+const JUMP_GATE_WAVE_COUNT: usize = 4;
+const JUMP_GATE_WAVE_PERIOD_SECONDS: f32 = 1.15;
+const JUMP_GATE_WAVE_TRAVEL: f32 = 76.0;
+const JUMP_GATE_WAVE_HALF_HEIGHT: f32 = 31.0;
 const RECALL_ANIMATION_SECONDS: f32 = 1.25;
 const RECALL_TURN_SECONDS: f32 = 0.65;
 const RECALL_PULSE_COUNT: usize = 3;
 const RECALL_PULSE_INTERVAL_SECONDS: f32 = 0.16;
 const RECALL_PULSE_SECONDS: f32 = 0.85;
+const PROTECTION_NOT_STATIONED_MESSAGE: &str = "This protection fleet is no longer stationed.";
 // The probe artwork's exhaust is diagonal. Rotate only its map presentation so that exhaust
 // aligns with the route's trailing flame without changing the shared source image.
 const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
@@ -125,6 +132,45 @@ pub struct MissionRouteArrowCmp {
     style: MissionRouteStyle,
 }
 
+#[derive(Component)]
+pub(crate) struct JumpGateMissionEffect {
+    mission_id: u64,
+    owner: u64,
+}
+
+#[derive(Component)]
+pub(crate) struct JumpGateMissionWave {
+    index: usize,
+}
+
+fn jump_gate_wave_visual(index: usize, elapsed: f32) -> (Transform, f32) {
+    let phase = (elapsed / JUMP_GATE_WAVE_PERIOD_SECONDS
+        + index as f32 / JUMP_GATE_WAVE_COUNT as f32)
+        .fract();
+    let envelope = (PI * phase).sin().max(0.0);
+    let local_x = JUMP_GATE_WAVE_TRAVEL * (0.5 - phase);
+    (
+        Transform {
+            translation: Vec3::new(
+                local_x,
+                0.0,
+                if local_x >= 0.0 {
+                    0.12
+                } else {
+                    -0.12
+                },
+            ),
+            scale: Vec3::new(
+                3.0 + envelope * 1.5,
+                JUMP_GATE_WAVE_HALF_HEIGHT * (0.72 + envelope * 0.28),
+                1.0,
+            ),
+            ..default()
+        },
+        envelope.powi(2) * 0.78,
+    )
+}
+
 #[derive(Message)]
 #[doc(hidden)]
 pub struct MissionRecallAnimationMsg {
@@ -173,6 +219,8 @@ pub fn update_missions(
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
     suppressed_spies: Option<Res<SuppressedReturningSpies>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let player_id = player.id;
 
@@ -188,42 +236,79 @@ pub fn update_missions(
             let image = mission.image(&player);
 
             let texture = assets.texture("flame");
-            commands
-                .spawn((
-                    Sprite {
-                        image: assets.image(image),
-                        color: session.player_color(owner).color(),
-                        custom_size: Some(Vec2::splat(size)),
-                        flip_x: mission_map_flip_x(mission),
-                        flip_y: mission_map_flip_y(image, direction),
-                        ..default()
-                    },
-                    Transform {
-                        translation: mission.position.extend(MISSION_Z),
-                        rotation: Quat::from_rotation_z(image_rotation),
-                        ..default()
-                    },
-                    Pickable::default(),
-                    if suppressed_spies.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
-                        Visibility::Hidden
-                    } else {
-                        Visibility::Inherited
-                    },
-                    MissionCmp::new(id),
-                    MapCmp,
-                    children![(
-                        Sprite::from_atlas_image(texture.image, texture.atlas),
-                        mission_flame_transform(size, angle, image_rotation),
-                        TweenAnim::new(
-                            Tween::new(
-                                EaseFunction::Linear,
-                                Duration::from_millis(1000),
-                                SpriteFrameLens(texture.last_index),
-                            )
-                            .with_repeat_count(RepeatCount::Infinite),
-                        ),
-                    )],
-                ))
+            let jump_gate_ring = mission.jump_gate.then(|| meshes.add(Annulus::new(0.93, 1.0)));
+            let mut mission_commands = commands.spawn((
+                Sprite {
+                    image: assets.image(image),
+                    color: session.player_color(owner).color(),
+                    custom_size: Some(Vec2::splat(size)),
+                    flip_x: mission_map_flip_x(mission),
+                    flip_y: mission_map_flip_y(image, direction),
+                    ..default()
+                },
+                Transform {
+                    translation: mission.position.extend(MISSION_Z),
+                    rotation: Quat::from_rotation_z(image_rotation),
+                    ..default()
+                },
+                Pickable::default(),
+                if suppressed_spies.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                },
+                MissionCmp::new(id),
+                MapCmp,
+            ));
+            mission_commands.with_children(|parent| {
+                parent.spawn((
+                    Sprite::from_atlas_image(texture.image, texture.atlas),
+                    mission_flame_transform(size, angle, image_rotation),
+                    TweenAnim::new(
+                        Tween::new(
+                            EaseFunction::Linear,
+                            Duration::from_millis(1000),
+                            SpriteFrameLens(texture.last_index),
+                        )
+                        .with_repeat_count(RepeatCount::Infinite),
+                    ),
+                ));
+
+                if let Some(ring) = jump_gate_ring {
+                    parent
+                        .spawn((
+                            Transform::default(),
+                            if owner == player_id {
+                                Visibility::Inherited
+                            } else {
+                                Visibility::Hidden
+                            },
+                            Pickable::IGNORE,
+                            JumpGateMissionEffect {
+                                mission_id: id,
+                                owner,
+                            },
+                        ))
+                        .with_children(|effect| {
+                            for index in 0..JUMP_GATE_WAVE_COUNT {
+                                effect.spawn((
+                                    Mesh2d(ring.clone()),
+                                    MeshMaterial2d(
+                                        materials.add(
+                                            session.player_color(owner).color().with_alpha(0.0),
+                                        ),
+                                    ),
+                                    Transform::default(),
+                                    Pickable::IGNORE,
+                                    JumpGateMissionWave {
+                                        index,
+                                    },
+                                ));
+                            }
+                        });
+                }
+            });
+            mission_commands
                 .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                 .observe(cursor::<Out>(SystemCursorIcon::Default))
                 .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
@@ -281,6 +366,41 @@ pub fn update_missions(
             }
         } else {
             commands.entity(mission_e).despawn();
+        }
+    }
+}
+
+/// Streams foreshortened portal wave fronts across the ordinary mission silhouette.
+///
+/// The effect is owner-only, matching the former jump-gate artwork's information boundary. Each
+/// wave travels against the fleet's heading so the ship appears to repeatedly cross a gate plane.
+pub(crate) fn animate_jump_gate_missions(
+    time: Res<Time>,
+    player: Res<Player>,
+    missions: Res<Missions>,
+    mut effects: Query<(&JumpGateMissionEffect, &mut Visibility)>,
+    mut waves: Query<
+        (&JumpGateMissionWave, &mut Transform, &MeshMaterial2d<ColorMaterial>),
+        Without<MissionCmp>,
+    >,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (effect, mut visibility) in &mut effects {
+        *visibility = if effect.owner == player.id
+            && missions.get(effect.mission_id).is_some_and(|mission| mission.jump_gate)
+        {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    let elapsed = time.elapsed_secs();
+    for (wave, mut transform, material) in &mut waves {
+        let (next_transform, alpha) = jump_gate_wave_visual(wave.index, elapsed);
+        *transform = next_transform;
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.color.set_alpha(alpha);
         }
     }
 }
@@ -450,9 +570,11 @@ pub fn send_mission(
     mut player: ResMut<Player>,
     mut missions: ResMut<Missions>,
     mut pending: ResMut<PendingTurnCommands>,
+    session: Option<Res<crate::multiplayer::client::MultiplayerSession>>,
 ) {
     for SendMissionMsg {
         mission,
+        joint_attack,
     } in send_mission.read()
     {
         let worlds = map
@@ -460,10 +582,31 @@ pub fn send_mission(
             .iter()
             .find(|p| p.id == mission.origin)
             .zip(map.planets.iter().find(|p| p.id == mission.destination));
-        let valid = worlds.is_some_and(|(origin, destination)| {
-            crate::core::orders::validate_mission(&player, &map, origin, destination, mission)
-                .is_ok()
+        let reserved_conflict = session.as_ref().is_some_and(|session| {
+            session
+                .joint_attacks
+                .iter()
+                .filter(|invitation| invitation.inviter != player.id)
+                .flat_map(|invitation| &invitation.participants)
+                .filter(|participant| {
+                    participant.player_id == player.id
+                        && participant.response
+                            == crate::multiplayer::model::JointAttackResponse::Accepted
+                })
+                .filter_map(|participant| participant.contribution.as_ref())
+                .filter(|contribution| contribution.origin == mission.origin)
+                .any(|contribution| {
+                    mission.army.iter().any(|(unit, count)| {
+                        origin_available(&map, mission.origin, player.id, unit)
+                            < count.saturating_add(contribution.army.amount(unit))
+                    })
+                })
         });
+        let valid = !reserved_conflict
+            && worlds.is_some_and(|(origin, destination)| {
+                crate::core::orders::validate_mission(&player, &map, origin, destination, mission)
+                    .is_ok()
+            });
         if !valid
             || !pending.can_accept_commands()
             || mission.fuel_consumption(&map) > player.resources.deuterium
@@ -479,19 +622,30 @@ pub fn send_mission(
             .filter(|(_, count)| **count > 0)
             .map(|(unit, count)| (*unit, *count))
             .collect::<Army>();
-        if !pending.push(TurnCommand::SendMission {
-            mission_id: mission.id,
-            origin: mission.origin,
-            destination: mission.destination,
-            objective: mission.objective,
-            army,
-            bombing: mission.bombing.clone(),
-            combat_probes: mission.combat_probes,
-            jump_gate: mission.jump_gate,
-        }) {
-            message.write(MessageMsg::error(
-                "This turn already contains the maximum number of commands.",
-            ));
+        let command = if let Some(joint_attack) = joint_attack {
+            TurnCommand::SendJointMission {
+                attack_id: joint_attack.attack_id,
+                mission_id: mission.id,
+                destination: mission.destination,
+                objective: mission.objective,
+                bombing: mission.bombing.clone(),
+                combat_probes: mission.combat_probes,
+                contributions: joint_attack.contributions.clone(),
+            }
+        } else {
+            TurnCommand::SendMission {
+                mission_id: mission.id,
+                origin: mission.origin,
+                destination: mission.destination,
+                objective: mission.objective,
+                army,
+                bombing: mission.bombing.clone(),
+                combat_probes: mission.combat_probes,
+                jump_gate: mission.jump_gate,
+            }
+        };
+        if !pending.push(command) {
+            message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
             continue;
         }
         player.resources.deuterium =
@@ -522,14 +676,26 @@ pub fn send_mission(
     }
 }
 
-/// Validates an owned active mission, queues its deterministic recall, and updates the preview.
+fn origin_available(
+    map: &Map,
+    origin: crate::core::map::planet::PlanetId,
+    player_id: crate::core::identity::PlayerId,
+    unit: &Unit,
+) -> usize {
+    map.try_get(origin)
+        .and_then(|planet| planet.mission_origin_army(player_id))
+        .map_or(0, |army| army.amount(unit))
+}
+
+/// Cancels a just-launched mission or queues an older mission's deterministic return trip.
 pub fn recall_mission(
     mut recalls: MessageReader<RecallMissionMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut animations: MessageWriter<MissionRecallAnimationMsg>,
-    map: Res<Map>,
-    player: Res<Player>,
+    mut map: ResMut<Map>,
+    mut player: ResMut<Player>,
     settings: Res<Settings>,
+    session: Option<Res<MultiplayerSession>>,
     mut missions: ResMut<Missions>,
     mut pending: ResMut<PendingTurnCommands>,
 ) {
@@ -537,29 +703,98 @@ pub fn recall_mission(
         mission_id,
     } in recalls.read()
     {
-        let Some(mission) = missions.0.iter_mut().find(|mission| mission.id == *mission_id) else {
+        let Some(mission_index) = missions.0.iter().position(|mission| mission.id == *mission_id)
+        else {
             message.write(MessageMsg::error("This mission is no longer active."));
             continue;
         };
+        let mission = &missions.0[mission_index];
         if mission.owner != player.id || mission.is_returning() || !pending.can_accept_commands() {
             message.write(MessageMsg::error(
                 "This mission cannot be recalled. Continue your turn before changing orders.",
             ));
             continue;
         }
+        if mission.joint_attack.is_some() {
+            message.write(MessageMsg::error("Allied attacks cannot be recalled once launched."));
+            continue;
+        }
         if !mission.objective.is_recallable() {
             message.write(MessageMsg::error("Missile strikes cannot be recalled once launched."));
             continue;
         }
-        if !pending.push(TurnCommand::RecallMission {
-            mission_id: *mission_id,
-        }) {
-            message.write(MessageMsg::error(
-                "This turn already contains the maximum number of commands.",
-            ));
+
+        let command_matches = |command: &TurnCommand| {
+            matches!(
+                command,
+                TurnCommand::SendMission {
+                    mission_id: sent_id,
+                    ..
+                } if sent_id == mission_id
+            )
+        };
+        let draft_launch = pending.commands.iter().position(command_matches);
+        let queued_launch = pending.queued_commands.iter().position(command_matches);
+        let cancel_launch = mission.send == settings.turn
+            && mission.travel_turns == 0
+            && (draft_launch.is_some() || queued_launch.is_some());
+
+        if cancel_launch {
+            let accepted = if pending.is_editable() {
+                draft_launch.is_some_and(|index| {
+                    pending.commands.remove(index);
+                    true
+                })
+            } else if let Some(index) = queued_launch {
+                pending.queued_commands.remove(index);
+                true
+            } else {
+                pending.push(TurnCommand::RecallMission {
+                    mission_id: *mission_id,
+                })
+            };
+            if !accepted {
+                message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+                continue;
+            }
+
+            let canonical_permissions = session
+                .as_deref()
+                .and_then(|session| session.active_game.as_ref())
+                .filter(|record| record.persisted.state.turn == pending.turn)
+                .and_then(|record| record.persisted.state.map.try_get(mission.origin))
+                .map(|origin| origin.protection_permissions.clone());
+            let mission = missions.0.remove(mission_index);
+            let fuel = mission.fuel_consumption(&map);
+            player.resources.deuterium = player.resources.deuterium.saturating_add(fuel);
+            let origin = map.get_mut(mission.origin);
+            if mission.jump_gate {
+                origin.jump_gate = origin.jump_gate.saturating_sub(mission.jump_cost());
+            }
+            origin.owned = mission.origin_owned;
+            origin.controlled = mission.origin_controlled;
+            if let Some(permissions) = canonical_permissions {
+                origin.protection_permissions = permissions;
+            }
+            if mission.origin_owned == Some(player.id)
+                || mission.origin_controlled == Some(player.id)
+            {
+                origin.dock(mission.army);
+            } else {
+                origin.dock_protecting_fleet(player.id, mission.army);
+            }
+            message.write(MessageMsg::info("Mission launch canceled.").silent());
             continue;
         }
 
+        if !pending.push(TurnCommand::RecallMission {
+            mission_id: *mission_id,
+        }) {
+            message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+            continue;
+        }
+
+        let mission = &mut missions.0[mission_index];
         let from_direction = mission_map_direction(mission, &map);
         let image = mission.image(&player).to_owned();
         let from_angle = from_direction.y.atan2(from_direction.x);
@@ -585,6 +820,70 @@ pub fn recall_mission(
             to_flip_y: mission_map_flip_y(&image, to_direction),
         });
         message.write(MessageMsg::info("Mission recalled.").silent());
+    }
+}
+
+/// Queues and immediately projects the return of an entire stationed protection fleet.
+pub fn recall_protection(
+    mut recalls: MessageReader<RecallProtectionMsg>,
+    mut message: MessageWriter<MessageMsg>,
+    mut map: ResMut<Map>,
+    player: Res<Player>,
+    settings: Res<Settings>,
+    mut missions: ResMut<Missions>,
+    mut pending: ResMut<PendingTurnCommands>,
+) {
+    for RecallProtectionMsg {
+        planet_id,
+    } in recalls.read()
+    {
+        let Some(origin) = map.try_get(*planet_id).cloned() else {
+            message.write(MessageMsg::error(PROTECTION_NOT_STATIONED_MESSAGE));
+            continue;
+        };
+        let home = map.get(player.home_planet).clone();
+        if origin.id == home.id
+            || origin.is_destroyed
+            || home.is_destroyed
+            || missions.0.len() >= MAX_ACTIVE_MISSIONS
+            || !pending.can_accept_commands()
+        {
+            message.write(MessageMsg::error(
+                "This protection fleet cannot be recalled until the current orders are resolved.",
+            ));
+            continue;
+        }
+        let Some(army) = origin.army.protector(player.id).cloned() else {
+            message.write(MessageMsg::error(PROTECTION_NOT_STATIONED_MESSAGE));
+            continue;
+        };
+        let mission = Mission::new(
+            settings.turn,
+            player.id,
+            &origin,
+            &home,
+            Icon::Deploy,
+            army,
+            BombingRaid::None,
+            false,
+            false,
+            Some(format!(
+                "- ({}) Protection fleet recalled from {}; returning to home planet {}.",
+                settings.turn, origin.name, home.name
+            )),
+        )
+        .with_return_objective(Icon::Protect);
+        if !pending.push(TurnCommand::RecallProtection {
+            mission_id: mission.id,
+            planet_id: *planet_id,
+        }) {
+            message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+            continue;
+        }
+
+        map.get_mut(*planet_id).army.remove_protector(player.id);
+        missions.0.push(mission);
+        message.write(MessageMsg::info("Protection fleet recalled.").silent());
     }
 }
 

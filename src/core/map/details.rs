@@ -9,7 +9,10 @@ use bevy::window::SystemCursorIcon;
 use super::model::{Map, MapCmp};
 use super::planet::{Planet, PlanetId, PlanetKind};
 use super::utils::cursor;
-use crate::core::assets::WorldAssets;
+use crate::core::assets::{
+    WorldAssets, GAS_PLANET_ADMINISTRATION_IMAGE, GAS_PLANET_TERRAFORMER_IMAGE,
+    PLANET_ADMINISTRATION_IMAGE, PLANET_TERRAFORMER_IMAGE,
+};
 use crate::core::camera::MainCamera;
 #[cfg(test)]
 use crate::core::combat::report::MissionReport;
@@ -33,6 +36,9 @@ const DEBRIS_ANGLE_JITTER: f32 = 0.02;
 pub(crate) const DEBRIS_DEPTH: f32 = 0.26;
 const PLANET_TERRAFORMER_ART_ASPECT: f32 = 1102.0 / 1427.0;
 pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
+/// Time used to cover 95% of a zoom-sensitive debris or orbital opacity change.
+const ZOOM_DETAIL_FADE_SECONDS: f32 = 0.55;
+const ZOOM_DETAIL_FADE_RATE: f32 = 2.995_732;
 
 #[cfg(test)]
 fn destroyed_units(report: &MissionReport) -> usize {
@@ -48,6 +54,25 @@ fn noise(mut seed: u32) -> f32 {
 fn detail_alpha(scale: f32) -> f32 {
     let amount = ((1.05 - scale) / 0.3).clamp(0.0, 1.0);
     amount * amount * (3.0 - 2.0 * amount)
+}
+
+#[derive(Default)]
+/// Local fade progress for details whose target opacity changes continuously with map zoom.
+pub struct ZoomDetailVisibility(f32);
+
+impl ZoomDetailVisibility {
+    pub(crate) fn update(&mut self, scale: f32, delta_secs: f32) -> f32 {
+        let target = detail_alpha(scale);
+        // Exponential settling gives even a small opacity change enough screen time to read,
+        // which avoids a wheel step snapping faint details directly into view.
+        let blend =
+            1.0 - (-ZOOM_DETAIL_FADE_RATE * delta_secs.max(0.0) / ZOOM_DETAIL_FADE_SECONDS).exp();
+        self.0 += (target - self.0) * blend;
+        if (target - self.0).abs() < 0.01 {
+            self.0 = target;
+        }
+        self.0
+    }
 }
 
 #[derive(Default)]
@@ -72,6 +97,7 @@ struct DebrisVisuals {
     pieces: usize,
     angle_step: f32,
     min_radius: f32,
+    radial_step: f32,
     radius_jitter: f32,
     min_diameter: f32,
     diameter_jitter: f32,
@@ -81,25 +107,28 @@ fn debris_visuals(size: DebrisSize) -> DebrisVisuals {
     match size {
         DebrisSize::Small => DebrisVisuals {
             pieces: 2,
-            angle_step: 0.028,
-            min_radius: 1.02,
-            radius_jitter: 0.06,
+            angle_step: 0.012,
+            min_radius: 1.14,
+            radial_step: 0.16,
+            radius_jitter: 0.04,
             min_diameter: 0.22,
             diameter_jitter: 0.06,
         },
         DebrisSize::Medium => DebrisVisuals {
             pieces: 5,
-            angle_step: 0.045,
-            min_radius: 1.04,
-            radius_jitter: 0.10,
+            angle_step: 0.012,
+            min_radius: 1.18,
+            radial_step: 0.10,
+            radius_jitter: 0.04,
             min_diameter: 0.25,
             diameter_jitter: 0.09,
         },
         DebrisSize::Large => DebrisVisuals {
             pieces: 9,
-            angle_step: 0.055,
-            min_radius: 1.08,
-            radius_jitter: 0.12,
+            angle_step: 0.012,
+            min_radius: 1.24,
+            radial_step: 0.07,
+            radius_jitter: 0.03,
             min_diameter: 0.29,
             diameter_jitter: 0.11,
         },
@@ -473,8 +502,12 @@ fn spawn_debris(
         let angle = DEBRIS_CENTER_ANGLE
             + centered_index * visuals.angle_step
             + (noise(seed) - 0.5) * DEBRIS_ANGLE_JITTER;
+        // A radial progression gives the wreckage a long, shallow plume instead of packing every
+        // piece into one compact arc. The small angle step and jitter keep it naturally irregular.
         let radius = planet.size()
-            * (visuals.min_radius + noise(seed.wrapping_add(1)) * visuals.radius_jitter);
+            * (visuals.min_radius
+                + centered_index * visuals.radial_step
+                + noise(seed.wrapping_add(1)) * visuals.radius_jitter);
         let variant = (noise(seed.wrapping_add(2)) * 3.99) as usize;
         let cell = image_size * 0.5;
         let min = Vec2::new((variant % 2) as f32, (variant / 2) as f32) * cell;
@@ -651,21 +684,40 @@ fn structure_sprite(
         if planet.kind == PlanetKind::Gas && depth < 0.14 {
             continue;
         }
-        let mut entity = commands.spawn((
+        spawn_structure_layer(
+            commands,
+            planet,
             sprite,
-            Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
-            Visibility::Hidden,
-            Pickable::IGNORE,
-            Detail {
-                planet: planet.id,
-                opacity: 1.0,
-                debris_turn: None,
-            },
-            MapCmp,
-        ));
-        if planet.kind == PlanetKind::Gas {
-            entity.insert(floating_detail(planet, offset, planet.position + offset));
-        }
+            offset,
+            depth,
+            planet.kind == PlanetKind::Gas,
+        );
+    }
+}
+
+/// Spawns one shared structure/shadow layer and optionally adds gas-planet drift.
+fn spawn_structure_layer(
+    commands: &mut Commands,
+    planet: &Planet,
+    sprite: Sprite,
+    offset: Vec2,
+    depth: f32,
+    floating: bool,
+) {
+    let mut entity = commands.spawn((
+        sprite,
+        Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
+        Visibility::Hidden,
+        Pickable::IGNORE,
+        Detail {
+            planet: planet.id,
+            opacity: 1.0,
+            debris_turn: None,
+        },
+        MapCmp,
+    ));
+    if floating {
+        entity.insert(floating_detail(planet, offset, planet.position + offset));
     }
 }
 
@@ -707,18 +759,7 @@ fn moon_structure_sprite(
             0.14,
         ),
     ] {
-        commands.spawn((
-            sprite,
-            Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
-            Visibility::Hidden,
-            Pickable::IGNORE,
-            Detail {
-                planet: planet.id,
-                opacity: 1.0,
-                debris_turn: None,
-            },
-            MapCmp,
-        ));
+        spawn_structure_layer(commands, planet, sprite, offset, depth, false);
     }
 }
 
@@ -776,21 +817,7 @@ fn planet_structure_sprite(
         if gas && depth < 0.14 {
             continue;
         }
-        let mut entity = commands.spawn((
-            sprite,
-            Transform::from_translation((planet.position + offset).extend(PLANET_Z + depth)),
-            Visibility::Hidden,
-            Pickable::IGNORE,
-            Detail {
-                planet: planet.id,
-                opacity: 1.0,
-                debris_turn: None,
-            },
-            MapCmp,
-        ));
-        if gas {
-            entity.insert(floating_detail(planet, offset, planet.position + offset));
-        }
+        spawn_structure_layer(commands, planet, sprite, offset, depth, gas);
     }
 }
 
@@ -1022,10 +1049,10 @@ fn refresh_details(
     let moon_shipyard = assets.image("moon shipyard");
     let moon_tidal_generator = assets.image("moon tidal generator");
     let moon_orbital_radar = assets.image("moon orbital radar");
-    let planet_terraformer = assets.image("planet terraformer");
-    let gas_planet_terraformer = assets.image("gas planet terraformer");
-    let planet_administration = assets.image("planet colonial administration");
-    let gas_planet_administration = assets.image("gas planet colonial administration");
+    let planet_terraformer = assets.image(PLANET_TERRAFORMER_IMAGE);
+    let gas_planet_terraformer = assets.image(GAS_PLANET_TERRAFORMER_IMAGE);
+    let planet_administration = assets.image(PLANET_ADMINISTRATION_IMAGE);
+    let gas_planet_administration = assets.image(GAS_PLANET_ADMINISTRATION_IMAGE);
     let art = DevelopmentArt {
         base: &development_image,
         base_size: development_size,
@@ -1114,6 +1141,7 @@ fn fade_details(
     camera: Single<&Projection, With<MainCamera>>,
     time: Res<Time<Real>>,
     mut development_visibility: Local<DevelopmentVisibility>,
+    mut zoom_detail_visibility: Local<ZoomDetailVisibility>,
     settings: Res<Settings>,
     game: Res<State<GameState>>,
     mut details: Query<(
@@ -1134,9 +1162,10 @@ fn fade_details(
     };
     let development_alpha =
         development_visibility.update(scale <= DEVELOPMENT_MAX_SCALE, time.delta_secs());
+    let zoom_detail_alpha = zoom_detail_visibility.update(scale, time.delta_secs());
     for (detail, mut sprite, mut visibility, light, platform_light) in &mut details {
         let alpha = if detail.debris_turn.is_some() {
-            detail_alpha(scale)
+            zoom_detail_alpha
         } else {
             development_alpha
         };
@@ -1161,7 +1190,7 @@ fn fade_details(
         };
     }
     for (target, mut visibility, mut pickable) in &mut debris_hit_targets {
-        let alpha = detail_alpha(scale);
+        let alpha = zoom_detail_alpha;
         let lifetime = target.site.size().map_or(0, DebrisSize::lifetime_turns);
         let age_alpha = settings
             .turn

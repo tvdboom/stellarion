@@ -10,8 +10,9 @@ use crate::core::player::PlayerColor;
 use crate::core::simulation::{PersistedGame, TurnSubmission};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, JoinGameRequest,
-    MembershipResult, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
-    SubmissionDisposition,
+    JointAttackInvitation, JointAttackResponse, MembershipResult, ProtectionPermissionUpdate,
+    RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition,
+    TradeInvitation, TradeResponse,
 };
 
 /// A heartbeat lease shared by displayed presence, resume readiness, and recovery protection.
@@ -148,6 +149,88 @@ pub trait MultiplayerBackend: Send + Sync {
         session: &'a AuthSession,
         game_id: &'a GameId,
     ) -> BackendFuture<'a, GameRecord>;
+
+    /// Changes one planet's protection invitation immediately with a compact authenticated write.
+    fn set_protection_permission<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        planet_id: usize,
+        protector: PlayerId,
+        allowed: bool,
+    ) -> BackendFuture<'a, ProtectionPermissionUpdate>;
+
+    /// Creates one private current-turn invitation containing attack information only.
+    fn create_joint_attack<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+        _invitation: JointAttackInvitation,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async { Err(BackendError::Configuration("joint attacks are unavailable".into())) })
+    }
+
+    /// Accepts with an origin/fleet contribution or rejects one received invitation.
+    fn respond_joint_attack<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+        _attack_id: u64,
+        _response: JointAttackResponse,
+        _contribution: Option<crate::core::simulation::JointAttackContribution>,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async { Err(BackendError::Configuration("joint attacks are unavailable".into())) })
+    }
+
+    /// Cancels an unlaunched invitation as its authenticated inviter.
+    fn cancel_joint_attack<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+        _attack_id: u64,
+    ) -> BackendFuture<'a, JointAttackInvitation> {
+        Box::pin(async { Err(BackendError::Configuration("joint attacks are unavailable".into())) })
+    }
+
+    /// Loads private current-turn invitations involving the authenticated player.
+    fn load_joint_attacks<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<JointAttackInvitation>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Creates one private current-turn Trading Post negotiation.
+    fn create_trade<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+        _invitation: TradeInvitation,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async { Err(BackendError::Configuration("trading is unavailable".into())) })
+    }
+
+    /// Updates one participant's offered resources and response.
+    fn respond_trade<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+        _trade_id: u64,
+        _resources: crate::core::resources::Resources,
+        _response: TradeResponse,
+    ) -> BackendFuture<'a, TradeInvitation> {
+        Box::pin(async { Err(BackendError::Configuration("trading is unavailable".into())) })
+    }
+
+    /// Loads current-turn negotiations involving the authenticated player.
+    fn load_trades<'a>(
+        &'a self,
+        _session: &'a AuthSession,
+        _game_id: &'a GameId,
+    ) -> BackendFuture<'a, Vec<TradeInvitation>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 
     /// Atomically claims an unoccupied empire color while the game is in its lobby.
     /// If another member claimed the color first, the current canonical record is returned.

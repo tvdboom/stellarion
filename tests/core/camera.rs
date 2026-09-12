@@ -1,56 +1,67 @@
 use super::*;
 
 #[test]
-fn camera_bounds_let_outermost_worlds_reach_the_viewport_midpoint_at_every_zoom() {
-    let worlds = [Vec2::new(-700.0, 400.0), Vec2::new(700.0, -400.0)];
-    let zoomed_in_view = Vec2::new(500.0, 300.0);
-    let zoomed_out_view = Vec2::new(1_600.0, 960.0);
-    let zoomed_in_bounds =
-        camera_center_bounds(worlds, zoomed_in_view).expect("worlds should produce bounds");
-    let zoomed_out_bounds =
-        camera_center_bounds(worlds, zoomed_out_view).expect("worlds should produce bounds");
+fn camera_hull_excludes_empty_bounding_box_corners() {
+    let hull = planet_hull([Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0)]);
 
-    let world_bounds = Rect::from_corners(Vec2::new(-700.0, -400.0), Vec2::new(700.0, 400.0));
-    assert_eq!(zoomed_in_bounds, world_bounds);
-    assert_eq!(zoomed_out_bounds, world_bounds);
+    assert_eq!(clamp_to_planet_hull(Vec2::new(25.0, 25.0), &hull), Some(Vec2::new(25.0, 25.0)));
+    assert_eq!(clamp_to_planet_hull(Vec2::new(100.0, 100.0), &hull), Some(Vec2::splat(50.0)));
 }
 
 #[test]
-fn empty_and_small_galaxies_produce_stable_camera_bounds() {
-    assert_eq!(bounds_from_points([]), None);
-    assert_eq!(camera_center_bounds([], Vec2::splat(500.0)), None);
-
-    let bounds = camera_center_bounds(
-        [Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0)],
-        Vec2::new(1_000.0, 600.0),
-    )
-    .expect("worlds should produce bounds");
-    assert_eq!(bounds.min, Vec2::new(-100.0, -50.0));
-    assert_eq!(bounds.max, Vec2::new(100.0, 50.0));
+fn empty_and_small_galaxies_produce_stable_camera_hulls() {
+    assert_eq!(clamp_to_planet_hull(Vec2::ZERO, &[]), None);
+    assert_eq!(clamp_to_planet_hull(Vec2::ZERO, &[Vec2::X]), Some(Vec2::X));
+    assert_eq!(
+        clamp_to_planet_hull(Vec2::new(50.0, 100.0), &[Vec2::ZERO, Vec2::new(100.0, 0.0)]),
+        Some(Vec2::new(50.0, 0.0))
+    );
 }
 
 #[test]
-fn map_drag_has_resistance_and_a_finite_overscroll_limit() {
-    let bounds = Rect::from_corners(Vec2::splat(-400.0), Vec2::splat(400.0));
-    let view_size = Vec2::splat(1_000.0);
+fn map_drag_reaches_twenty_percent_of_the_full_screen_beyond_the_hull() {
+    let map = Map {
+        rect: Rect::from_corners(Vec2::splat(-800.0), Vec2::splat(800.0)),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![
+            crate::core::map::planet::Planet::new(
+                0,
+                "Lower bound".to_string(),
+                Vec2::new(-400.0, 0.0),
+                false,
+                1.0,
+            ),
+            crate::core::map::planet::Planet::new(
+                1,
+                "Upper bound".to_string(),
+                Vec2::new(400.0, 0.0),
+                false,
+                1.0,
+            ),
+        ],
+    };
 
-    let near = rubber_band_position(Vec2::new(450.0, 0.0), bounds, view_size);
-    let far = rubber_band_position(Vec2::new(40_000.0, 0.0), bounds, view_size);
-    assert!(near.x > bounds.max.x);
-    assert!(near.x < 450.0);
-    assert_eq!(view_size.x * OVERSCROLL_SCREEN_FRACTION, 250.0);
-    assert!(far.x < bounds.max.x + view_size.x * OVERSCROLL_SCREEN_FRACTION);
+    let near = drag_camera_position(Vec2::ZERO, Vec2::new(450.0, 0.0), Vec2::splat(1_000.0), &map);
+    let far = drag_camera_position(
+        Vec2::ZERO,
+        Vec2::new(40_000.0, -40_000.0),
+        Vec2::splat(1_000.0),
+        &map,
+    );
+
+    assert_eq!(near, Vec2::new(450.0, 0.0));
+    assert_eq!(far, Vec2::new(600.0, -200.0));
 }
 
 #[test]
-fn released_camera_eases_back_to_its_hard_boundary() {
-    let bounds = Rect::from_corners(Vec2::splat(-400.0), Vec2::splat(400.0));
-    let outside = Vec2::new(480.0, -450.0);
-    let settled = settle_position(outside, bounds, 1.0 / 60.0);
+fn released_camera_bounces_back_to_the_midpoint_boundary() {
+    let outside = Vec2::new(560.0, -540.0);
+    let target = Vec2::new(400.0, -400.0);
+    let settled = settle_position(outside, target, 1.0 / 60.0);
 
-    assert!(settled.x < outside.x && settled.x > bounds.max.x);
-    assert!(settled.y > outside.y && settled.y < bounds.min.y);
-    assert_eq!(settle_position(bounds.max + Vec2::splat(0.05), bounds, 1.0), bounds.max);
+    assert!(settled.x < outside.x && settled.x > target.x);
+    assert!(settled.y > outside.y && settled.y < target.y);
+    assert_eq!(settle_position(target + Vec2::splat(0.05), target, 1.0), target);
 }
 
 #[test]

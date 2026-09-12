@@ -174,7 +174,7 @@ pub fn validate_mission(
 ) -> Result<(), OrderError> {
     if player.spectator
         || mission.owner != player.id
-        || origin.mission_origin_army(player.id).is_none()
+        || !(player.owns(origin) || player.controls(origin))
         || origin.is_destroyed
         || destination.is_destroyed
         || mission.origin != origin.id
@@ -186,7 +186,9 @@ pub fn validate_mission(
     if mission.objective == Icon::Spy && mission.army.amount(&Unit::probe()) < MIN_SPY_PROBES {
         return Err(OrderError::SpyProbes);
     }
-    if (mission.objective == Icon::Protect && mission.protected_player != destination.controlled)
+    if (mission.objective == Icon::Protect
+        && (mission.protected_player != destination.controlled
+            || !destination.allows_protection(player.id)))
         || (mission.objective != Icon::Protect && mission.protected_player.is_some())
     {
         return Err(OrderError::Objective);
@@ -197,6 +199,7 @@ pub fn validate_mission(
             player.owns(destination),
             player.controls(destination),
             destination.allows_protection(player.id),
+            destination.is_protected_by(player.id),
         )
         .contains(&mission.objective)
     {
@@ -214,10 +217,14 @@ pub fn validate_mission(
     {
         return Err(OrderError::Bombing);
     }
+    let jump_route_allowed = player.owns(origin)
+        && (player.owns(destination)
+            || (mission.objective == Icon::Protect
+                && mission.protected_player == destination.controlled
+                && destination.allows_protection(player.id)));
     if mission.jump_gate
-        && (mission.objective != Icon::Deploy
-            || !player.owns(origin)
-            || !player.owns(destination)
+        && (!matches!(mission.objective, Icon::Deploy | Icon::Protect)
+            || !jump_route_allowed
             || !origin.has(&Unit::Building(Building::JumpGate))
             || !destination.has(&Unit::Building(Building::JumpGate))
             || mission.jump_cost() > origin.max_jump_capacity().saturating_sub(origin.jump_gate))

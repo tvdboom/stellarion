@@ -214,9 +214,8 @@ impl ShieldOverloadState {
     /// Advances the one-use, one-cooldown-turn lifecycle after a turn resolves.
     pub fn finish_turn(self) -> Self {
         match self {
-            Self::Ready => Self::Ready,
             Self::Overloaded => Self::Cooldown,
-            Self::Cooldown => Self::Ready,
+            Self::Ready | Self::Cooldown => Self::Ready,
         }
     }
 }
@@ -927,10 +926,10 @@ impl Planet {
         self.army.iter().any(|(u, c)| u.is_ship() && *c > 0)
     }
 
-    /// Returns the units this player may dispatch from this world.
+    /// Returns the units associated with this player at this world.
     ///
-    /// A controller uses the ordinary planet army. A foreign protector may dispatch only their
-    /// own separately stationed fleet, while receiving no access to local structures or defenses.
+    /// A controller uses the ordinary planet army. A foreign protector receives their separately
+    /// stationed fleet for defense and dedicated recall handling, but cannot launch new missions.
     pub fn mission_origin_army(&self, player_id: PlayerId) -> Option<&Army> {
         if self.controlled == Some(player_id) || self.owned == Some(player_id) {
             Some(self.army.controller())
@@ -953,6 +952,11 @@ impl Planet {
         self.controlled.is_some()
             && self.controlled != Some(player_id)
             && self.protection_permissions.contains(&player_id)
+    }
+
+    /// Returns whether this player currently has a protection fleet stationed on the world.
+    pub fn is_protected_by(&self, player_id: PlayerId) -> bool {
+        self.army.protector(player_id).is_some()
     }
 
     /// Stations one foreign player's surviving Protect fleet without transferring control.

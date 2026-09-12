@@ -17,6 +17,26 @@ fn combat_details_hide_the_underlying_mission_panel_until_closed() {
     assert!(mission_panel_visible(&state));
 }
 
+#[test]
+fn combat_defender_heading_uses_each_participants_game_color() {
+    let context = egui::Context::default();
+    let controller_color = Color32::from_rgb(88, 112, 255);
+    let protector_color = Color32::from_rgb(42, 214, 156);
+    let participants = [
+        ("Practice P1".to_string(), controller_color),
+        ("Practice P3".to_string(), protector_color),
+    ];
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_colored_combat_heading(ui, "Defender", controller_color, &participants);
+    });
+    output.textures_delta.clear();
+
+    assert_eq!(text_color(&output.shapes, "Defender · "), controller_color);
+    assert_eq!(text_color(&output.shapes, "Practice P1"), controller_color);
+    assert_eq!(text_color(&output.shapes, "Practice P3"), protector_color);
+    assert_eq!(text_color(&output.shapes, " + "), controller_color);
+}
+
 fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egui::Ui)) {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 180.0));
     let mut frame = |events| {
@@ -803,7 +823,7 @@ fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
 }
 
 #[test]
-fn orbital_hover_stats_put_production_before_intelligence() {
+fn orbital_hover_stats_put_production_before_intelligence_in_one_row() {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 300.0));
     let context = egui::Context::default();
     context.set_global_style(NordDark.custom_style());
@@ -832,7 +852,8 @@ fn orbital_hover_stats_put_production_before_intelligence() {
     assert!(has_text(&output.shapes, "---"));
     assert_eq!(images.get("production"), production);
     assert_eq!(images.get("intelligence"), intelligence);
-    assert!(production_box.bottom() < intelligence_box.top());
+    assert!(production_box.right() < intelligence_box.left());
+    assert!((production_box.top() - intelligence_box.top()).abs() < 1.0);
 }
 
 #[test]
@@ -934,6 +955,75 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
 }
 
 #[test]
+fn eliminated_player_shows_zero_progress_and_a_struck_name() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::{GameMembership, GameRecord};
+
+    let mut model = GameModel::new(
+        [24; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    let local_player = model.players[0].clone();
+    let eliminated = model.players[1].id;
+    model.players[1].spectator = true;
+    let target = model.planets_to_win();
+    let game_id = GameId::new("eliminated-player-panel");
+    let members = [(local_player.id, "Local player"), (eliminated, "Fallen empire"), (3, "Rival")]
+        .into_iter()
+        .map(|(player_id, display_name)| GameMembership {
+            game_id: game_id.clone(),
+            player_id,
+            user_id: UserId::new(format!("user-{player_id}")),
+            display_name: display_name.into(),
+            is_creator: player_id == local_player.id,
+            identity_version: 1,
+            connected: true,
+        })
+        .collect();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: game_id,
+        code: GameCode::new("ABCDEF"),
+        revision: 1,
+        saved_at: 0,
+        max_players: 3,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        submitted_players: Vec::new(),
+        members,
+    });
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 420.0));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..default()
+            },
+            |context| {
+                draw_players_widget(context, &session, &local_player, &model.map, &[]);
+            },
+        );
+        output.textures_delta.clear();
+        shapes = output.shapes;
+    }
+
+    assert!(has_text(&shapes, &format!("0/{target}")));
+    let name = text_rect(&shapes, "Fallen empire");
+    assert!(
+        shapes.iter().any(|shape| shape_has_line_through(&shape.shape, name)),
+        "the eliminated player's name should be crossed through its middle"
+    );
+}
+
+#[test]
 fn players_panel_matches_owned_worlds_width_and_left_inset() {
     use crate::core::identity::{GameCode, GameId, UserId};
     use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
@@ -973,6 +1063,7 @@ fn players_panel_matches_owned_worlds_width_and_left_inset() {
             },
         ],
     });
+    session.local_practice = true;
 
     for viewport_size in [egui::vec2(1_280.0, 720.0), egui::vec2(1_920.0, 1_080.0)] {
         let context = egui::Context::default();
@@ -993,6 +1084,7 @@ fn players_panel_matches_owned_worlds_width_and_left_inset() {
                     context,
                     &model.map,
                     &player,
+                    &session,
                     &mut state,
                     &mut settings,
                     &images,
@@ -1004,6 +1096,38 @@ fn players_panel_matches_owned_worlds_width_and_left_inset() {
 
         assert_eq!(players_panel.left(), owned_panel.left());
         assert_eq!(players_panel.width(), owned_panel.width());
+
+        let mut player_output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..default()
+            },
+            |context| {
+                draw_players_widget(context, &session, &player, &model.map, &[]);
+            },
+        );
+        player_output.textures_delta.clear();
+        assert!(
+            player_output.shapes.iter().all(|shape| !shape_has_line_segment(&shape.shape)),
+            "an opponent name should not be underlined before hover"
+        );
+        let enemy_name = text_rect(&player_output.shapes, "Enemy");
+        let mut hover_output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events: vec![egui::Event::PointerMoved(enemy_name.center())],
+                ..default()
+            },
+            |context| {
+                draw_players_widget(context, &session, &player, &model.map, &[]);
+            },
+        );
+        hover_output.textures_delta.clear();
+        assert!(
+            hover_output.shapes.iter().any(|shape| shape_has_line_segment(&shape.shape)),
+            "hovering a switchable player should paint a player-colored underline"
+        );
+        assert!(!has_text(&hover_output.shapes, "Control this empire and edit its turn draft."));
     }
 }
 
@@ -1024,6 +1148,238 @@ fn has_text(shapes: &[egui::epaint::ClippedShape], text: &str) -> bool {
         egui::Shape::Text(label) => label.galley.job.text == text,
         _ => false,
     })
+}
+
+fn count_text(shapes: &[egui::epaint::ClippedShape], text: &str) -> usize {
+    shapes
+        .iter()
+        .filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(label) if label.galley.job.text == text)
+        })
+        .count()
+}
+
+#[test]
+fn protection_access_tooltip_lists_allowed_players_in_their_game_colors() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::{GameMembership, GameRecord};
+
+    let mut model = GameModel::new(
+        [23; 32],
+        GameRules {
+            player_count: 4,
+            ..default()
+        },
+    )
+    .unwrap();
+    let protected = model.players[0].home_planet;
+    let planet_name = model.map.get(protected).name.clone();
+    model.map.get_mut(protected).protection_permissions.extend([2, 3, 4]);
+    let id = GameId::new("protection-tooltip");
+    let local_membership = GameMembership {
+        game_id: id.clone(),
+        player_id: 1,
+        user_id: UserId::new("local"),
+        display_name: "Local player".into(),
+        is_creator: true,
+        identity_version: 1,
+        connected: true,
+    };
+    let mut session = MultiplayerSession::default();
+    session.membership = Some(local_membership.clone());
+    session.active_game = Some(GameRecord {
+        id: id.clone(),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 4,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model),
+        submitted_players: vec![],
+        members: vec![
+            local_membership,
+            GameMembership {
+                game_id: id.clone(),
+                player_id: 2,
+                user_id: UserId::new("protector"),
+                display_name: "Allowed player".into(),
+                is_creator: false,
+                identity_version: 1,
+                connected: true,
+            },
+            GameMembership {
+                game_id: id.clone(),
+                player_id: 3,
+                user_id: UserId::new("opponent-3"),
+                display_name: "Opponent 3".into(),
+                is_creator: false,
+                identity_version: 1,
+                connected: true,
+            },
+            GameMembership {
+                game_id: id,
+                player_id: 4,
+                user_id: UserId::new("opponent-4"),
+                display_name: "Opponent 4".into(),
+                is_creator: false,
+                identity_version: 1,
+                connected: true,
+            },
+        ],
+    });
+    let expected_colors =
+        [2, 3, 4].map(|player_id| session.player_color(player_id).color().to_color32());
+    let context = egui::Context::default();
+    let mut output = context.run_ui(Default::default(), |ui| {
+        let planet = session.active_game.as_ref().unwrap().persisted.state.map.get(protected);
+        draw_protection_access_tooltip(ui, planet, &session);
+    });
+    output.textures_delta.clear();
+
+    assert!(has_text(&output.shapes, "Players currently allowed:"));
+    for (name, color) in
+        ["Allowed player", "Opponent 3", "Opponent 4"].into_iter().zip(expected_colors)
+    {
+        assert_eq!(text_color(&output.shapes, name), color);
+    }
+    assert_eq!(
+        text_font_size(&output.shapes, "Allowed player"),
+        text_font_size(&output.shapes, "Players currently allowed:")
+    );
+    assert_eq!(count_text(&output.shapes, ", "), 2);
+    assert!(
+        (text_rect(&output.shapes, "Players currently allowed:").center().y
+            - text_rect(&output.shapes, "Allowed player").center().y)
+            .abs()
+            < 1.0
+    );
+    assert!(!has_text(&output.shapes, "None"));
+
+    let panel_texture = egui::TextureId::User(90);
+    let protect_texture = egui::TextureId::User(91);
+    let description_text =
+        format!("Choose who may send fleets to {planet_name}. Changes apply immediately.");
+    let images = ImageIds(HashMap::from([
+        ("panel".to_string(), panel_texture),
+        ("protect".to_string(), protect_texture),
+    ]));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 430.0));
+    let input = || egui::RawInput {
+        screen_rect: Some(viewport),
+        ..default()
+    };
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    for _ in 0..2 {
+        context.begin_pass(input());
+        let planet = session.active_game.as_ref().unwrap().persisted.state.map.get(protected);
+        assert_eq!(
+            draw_protection_access_modal(&context, &images, planet, &session),
+            (false, vec![])
+        );
+        output = context.end_pass();
+        output.textures_delta.clear();
+    }
+    let panel = image_rect(&output.shapes, panel_texture).expect("missing protection panel");
+    let icon = image_rect(&output.shapes, protect_texture).expect("missing protection icon");
+    let title_text = "Protection Access";
+    let title = text_rect(&output.shapes, title_text);
+    assert!(viewport.contains_rect(panel));
+    assert!(panel.contains_rect(icon));
+    assert!(icon.right() > panel.center().x && icon.top() < panel.center().y);
+    assert!((icon.top() - panel.top() - MODAL_ICON_TOP_INSET).abs() < 1.0);
+    assert!((panel.right() - icon.right() - MODAL_ICON_RIGHT_INSET).abs() < 1.0);
+    assert!((title.center().x - panel.center().x).abs() < 1.0);
+    let description = text_rect(&output.shapes, &description_text);
+    assert!(description.top() - title.bottom() >= 12.0);
+    assert_eq!(text_color(&output.shapes, title_text), ABANDON_CONFIRMATION_TEXT_COLOR);
+    for text in [title_text, "Allowed player", "Opponent 3", "Opponent 4", "Close"] {
+        assert!(panel.contains_rect(text_rect(&output.shapes, text)), "`{text}` escaped the panel");
+    }
+    assert_eq!(text_color(&output.shapes, "Allowed player"), expected_colors[0]);
+    let mut painted_rects = Vec::new();
+    for shape in &output.shapes {
+        collect_rects(&shape.shape, &mut painted_rects);
+    }
+    let player_rows = painted_rects
+        .iter()
+        .filter(|rect| {
+            (rect.height() - 42.0).abs() < 1.0
+                && rect.width() >= PROTECTION_PLAYER_ROW_MIN_WIDTH - 1.0
+                && rect.width() <= PROTECTION_PLAYER_ROW_MAX_WIDTH + 1.0
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(player_rows.len(), 3);
+    assert!(player_rows.iter().all(|row| row.width() < panel.width() * 0.5));
+    assert!(player_rows.iter().all(|row| (row.center().x - panel.center().x).abs() < 1.0));
+    let first_row_top = player_rows
+        .iter()
+        .map(|row| row.top())
+        .min_by(f32::total_cmp)
+        .expect("missing first protection row");
+    assert!(first_row_top - description.bottom() >= 18.0);
+    let close = painted_rects
+        .iter()
+        .find(|rect| {
+            (rect.width() - 110.0).abs() < 1.0 && (rect.height() - MODAL_BUTTON_HEIGHT).abs() < 1.0
+        })
+        .expect("missing contained Close button");
+    assert!(panel.contains_rect(*close));
+
+    session
+        .active_game
+        .as_mut()
+        .unwrap()
+        .persisted
+        .state
+        .map
+        .get_mut(protected)
+        .protection_permissions
+        .clear();
+    let mut output = egui::Context::default().run_ui(Default::default(), |ui| {
+        let planet = session.active_game.as_ref().unwrap().persisted.state.map.get(protected);
+        draw_protection_access_tooltip(ui, planet, &session);
+    });
+    output.textures_delta.clear();
+    assert!(!has_text(&output.shapes, "Players currently allowed:"));
+    assert!(!has_text(&output.shapes, "None"));
+}
+
+#[test]
+fn protecting_unit_counts_exclude_the_white_controller_total() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut planet = Planet::new(9, "Protected world".into(), Vec2::ZERO, false, 1.0);
+    planet.controlled = Some(1);
+    planet.army.insert(fighter, 6);
+    planet.army.dock_protector(2, Army::from([(fighter, 3)]));
+    planet.army.dock_protector(3, Army::from([(fighter, 4)]));
+
+    let protection = protecting_unit_counts(&planet, &fighter);
+    assert_eq!(protection, vec![(2, 3), (3, 4)]);
+    assert_eq!(protection.iter().map(|(_, count)| count).sum::<usize>(), 7);
+    assert_eq!(planet.army.combined_amount(&fighter), 13);
+}
+
+#[test]
+fn overview_unit_counts_render_protection_smaller_and_in_player_colors() {
+    let context = egui::Context::default();
+    let session = MultiplayerSession::default();
+    let protection = [(2, 3), (3, 4)];
+    let mut image_rect = egui::Rect::NOTHING;
+    let mut output = context.run_ui(Default::default(), |ui| {
+        image_rect = ui.allocate_exact_size(egui::vec2(50.0, 50.0), Sense::hover()).0;
+        draw_overview_unit_counts(ui, image_rect, 6, &protection, &session);
+    });
+    output.textures_delta.clear();
+
+    assert_eq!(text_color(&output.shapes, "6"), Color32::WHITE);
+    assert_eq!(text_color(&output.shapes, "3"), session.player_color(2).color().to_color32());
+    assert_eq!(text_color(&output.shapes, "4"), session.player_color(3).color().to_color32());
+    assert!(text_font_size(&output.shapes, "3") < text_font_size(&output.shapes, "6"));
+    for text in ["6", "3", "4"] {
+        assert!(image_rect.intersects(text_rect(&output.shapes, text)));
+    }
 }
 
 fn text_color(shapes: &[egui::epaint::ClippedShape], text: &str) -> Color32 {
@@ -1076,6 +1432,22 @@ fn shape_has_line_segment(shape: &egui::Shape) -> bool {
             ..
         } => true,
         egui::Shape::Vec(shapes) => shapes.iter().any(shape_has_line_segment),
+        _ => false,
+    }
+}
+
+fn shape_has_line_through(shape: &egui::Shape, rect: egui::Rect) -> bool {
+    match shape {
+        egui::Shape::LineSegment {
+            points,
+            ..
+        } => {
+            (points[0].y - points[1].y).abs() < 0.5
+                && (points[0].y - rect.center().y).abs() < 1.0
+                && points[0].x.min(points[1].x) <= rect.left() + 1.0
+                && points[0].x.max(points[1].x) >= rect.right() - 1.0
+        },
+        egui::Shape::Vec(shapes) => shapes.iter().any(|shape| shape_has_line_through(shape, rect)),
         _ => false,
     }
 }
@@ -1139,16 +1511,16 @@ fn world_shortcut_selects_fleet_silhouettes_from_stationed_ships() {
     let mut planet = Planet::new(1, "Masduk".to_string(), Vec2::ZERO, false, 1.0);
     planet.army.insert(Unit::Building(Building::Shipyard), 1);
     planet.army.insert(Unit::Defense(Defense::RocketLauncher), 2);
-    assert_eq!(world_shortcut_fleet_image(&planet), None);
+    assert_eq!(world_shortcut_fleet_image(planet.army.controller()), None);
 
     planet.army.insert(Unit::probe(), 3);
-    assert_eq!(world_shortcut_fleet_image(&planet), Some("mission spy"));
+    assert_eq!(world_shortcut_fleet_image(planet.army.controller()), Some("mission spy"));
 
     planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
-    assert_eq!(world_shortcut_fleet_image(&planet), Some("mission"));
+    assert_eq!(world_shortcut_fleet_image(planet.army.controller()), Some("mission"));
 
     planet.army.insert(Unit::war_sun(), 1);
-    assert_eq!(world_shortcut_fleet_image(&planet), Some("mission destroy"));
+    assert_eq!(world_shortcut_fleet_image(planet.army.controller()), Some("mission destroy"));
 }
 
 #[test]
@@ -1179,7 +1551,15 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
         },
         |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                draw_world_shortcut(ui, &planet, false, fleet_color, &images, 1.0);
+                draw_world_shortcut(
+                    ui,
+                    &planet,
+                    false,
+                    fleet_color,
+                    &MultiplayerSession::default(),
+                    &images,
+                    1.0,
+                );
             });
         },
     );
@@ -1208,13 +1588,85 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
     let planet = Planet::new(2, "Galix".to_string(), Vec2::ZERO, false, 1.0);
     let mut output = context.run_ui(egui::RawInput::default(), |context| {
         egui::CentralPanel::default().show(context, |ui| {
-            draw_world_shortcut(ui, &planet, false, fleet_color, &images, 1.0);
+            draw_world_shortcut(
+                ui,
+                &planet,
+                false,
+                fleet_color,
+                &MultiplayerSession::default(),
+                &images,
+                1.0,
+            );
         });
     });
     output.textures_delta.clear();
 
     assert!(image_rect(&output.shapes, mission_texture).is_none());
     assert!(!has_text(&output.shapes, "NO FLEET"));
+}
+
+#[test]
+fn world_shortcut_shows_a_protecting_fleet_in_its_players_selected_color() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::player::PlayerColor;
+    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = GameModel::new([31; 32], Default::default()).unwrap();
+    let protector_color = PlayerColor::new(4).unwrap();
+    model.players[1].color = protector_color;
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("world-shortcut-protection"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 2,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model),
+        submitted_players: Vec::new(),
+        members: Vec::new(),
+    });
+
+    let mut planet = Planet::new(1, "Masduk".to_string(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
+    planet.army.dock_protector(2, Army::from([(Unit::probe(), 3)]));
+    let planet_texture = egui::TextureId::User(1);
+    let fleet_texture = egui::TextureId::User(2);
+    let protecting_fleet_texture = egui::TextureId::User(3);
+    let controller_color = Color32::from_rgb(102, 128, 255);
+    let images = ImageIds(HashMap::from([
+        (planet.image(), planet_texture),
+        ("mission".to_string(), fleet_texture),
+        ("mission spy".to_string(), protecting_fleet_texture),
+    ]));
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(260.0, 100.0),
+            )),
+            ..default()
+        },
+        |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                draw_world_shortcut(ui, &planet, false, controller_color, &session, &images, 1.0);
+            });
+        },
+    );
+    output.textures_delta.clear();
+
+    let fleet = image_rect(&output.shapes, fleet_texture).expect("missing controller fleet");
+    let protecting_fleet =
+        image_rect(&output.shapes, protecting_fleet_texture).expect("missing protecting fleet");
+    assert!(fleet.right() < protecting_fleet.left());
+    assert_eq!(image_tint(&output.shapes, fleet_texture), Some(controller_color));
+    assert_eq!(
+        image_tint(&output.shapes, protecting_fleet_texture),
+        Some(protector_color.color().to_color32())
+    );
 }
 
 #[test]
@@ -1240,7 +1692,15 @@ fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
                     top,
                     egui::vec2(ui.available_width(), WORLD_SHORTCUT_HEIGHT * scale),
                 );
-                draw_world_shortcut(ui, &planet, true, Color32::WHITE, &images, scale);
+                draw_world_shortcut(
+                    ui,
+                    &planet,
+                    true,
+                    Color32::WHITE,
+                    &MultiplayerSession::default(),
+                    &images,
+                    scale,
+                );
             });
         });
         output.textures_delta.clear();
@@ -1346,6 +1806,7 @@ fn owned_worlds_panel_grows_with_the_number_of_planets() {
                     context,
                     &map,
                     &player,
+                    &MultiplayerSession::default(),
                     &mut state,
                     &mut settings,
                     &images,
@@ -1393,6 +1854,7 @@ fn owned_worlds_panel_uses_the_compact_screen_edge_inset_below_the_resource_pane
                 context,
                 &map,
                 &player,
+                &MultiplayerSession::default(),
                 &mut state,
                 &mut settings,
                 &images,
@@ -1436,7 +1898,15 @@ fn strategic_hud_panels_scale_with_viewports() {
         };
 
         let mut warmup = context.run_ui(input(), |context| {
-            draw_owned_worlds_widget(context, &map, &player, &mut state, &mut settings, &images);
+            draw_owned_worlds_widget(
+                context,
+                &map,
+                &player,
+                &MultiplayerSession::default(),
+                &mut state,
+                &mut settings,
+                &images,
+            );
             draw_resources_widget(context, &settings, &map, &player, &images, 0);
         });
         warmup.textures_delta.clear();
@@ -1448,6 +1918,7 @@ fn strategic_hud_panels_scale_with_viewports() {
                 context,
                 &map,
                 &player,
+                &MultiplayerSession::default(),
                 &mut state,
                 &mut settings,
                 &images,
@@ -2154,6 +2625,7 @@ fn controlled_world_shortcut_keeps_the_world_selected_as_a_mission_origin() {
                         context,
                         &map,
                         &player,
+                        &MultiplayerSession::default(),
                         &mut state,
                         &mut settings,
                         &images,
@@ -2376,6 +2848,74 @@ fn planet_panel_survives_pointer_transfer_and_stays_open_while_hovered() {
 }
 
 #[test]
+fn full_planet_panel_keeps_its_side_while_crossing_the_screen_midpoint() {
+    let right = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let recomputed_left = PlanetPanelSlideTarget {
+        right_side: false,
+        ..right
+    };
+    let mut hold = PlanetPanelHoverHold::default();
+
+    assert_eq!(hold.update(Some(right), Some(egui::pos2(500.0, 300.0)), 0.0), Some(right));
+    assert_eq!(
+        hold.update(Some(recomputed_left), Some(egui::pos2(700.0, 300.0)), 0.1),
+        Some(right)
+    );
+}
+
+#[test]
+fn quick_planet_crossings_do_not_steal_an_open_hover_panel() {
+    let open = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let crossed = PlanetPanelSlideTarget {
+        id: 2,
+        mode: PlanetPanelMode::Full,
+        right_side: false,
+    };
+    let panel_rect = egui::Rect::from_min_size(egui::pos2(700.0, 100.0), egui::vec2(500.0, 600.0));
+    let mut hold = PlanetPanelHoverHold::default();
+
+    assert_eq!(hold.update(Some(open), Some(egui::pos2(300.0, 300.0)), 0.0), Some(open));
+    hold.set_panel_rects([Some(panel_rect), None]);
+
+    assert_eq!(
+        hold.update(
+            Some(crossed),
+            Some(egui::pos2(550.0, 300.0)),
+            PLANET_PANEL_HOVER_SWITCH_DELAY * 0.5,
+        ),
+        Some(open),
+    );
+    assert_eq!(hold.update(Some(crossed), Some(panel_rect.center()), 0.0), Some(open),);
+}
+
+#[test]
+fn resting_on_another_planet_deliberately_switches_the_hover_panel() {
+    let open = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let next = PlanetPanelSlideTarget {
+        id: 2,
+        mode: PlanetPanelMode::Full,
+        right_side: false,
+    };
+    let mut hold = PlanetPanelHoverHold::default();
+
+    assert_eq!(hold.update(Some(open), None, 0.0), Some(open));
+    assert_eq!(hold.update(Some(next), None, 0.0), Some(open));
+    assert_eq!(hold.update(Some(next), None, PLANET_PANEL_HOVER_SWITCH_DELAY), Some(next),);
+}
+
+#[test]
 fn mission_planet_preview_does_not_latch_the_full_map_panel() {
     let full = PlanetPanelSlideTarget {
         id: 1,
@@ -2426,19 +2966,23 @@ fn abandon_confirmation_is_centered_and_reuses_the_planet_panel_texture() {
     let context = egui::Context::default();
     context.set_global_style(NordDark.custom_style());
     let panel_texture = egui::TextureId::User(9);
-    let images = ImageIds(HashMap::from([("panel".to_string(), panel_texture)]));
-    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 700.0));
+    let abandon_texture = egui::TextureId::User(10);
+    let images = ImageIds(HashMap::from([
+        ("panel".to_string(), panel_texture),
+        ("abandon".to_string(), abandon_texture),
+    ]));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 260.0));
     let input = || egui::RawInput {
         screen_rect: Some(viewport),
         ..default()
     };
     context.begin_pass(input());
-    assert_eq!(draw_abandon_confirmation(&context, &images), None);
+    assert_eq!(draw_abandon_confirmation(&context, &images, "Masduk"), None);
     let mut warmup = context.end_pass();
     warmup.textures_delta.clear();
 
     context.begin_pass(input());
-    assert_eq!(draw_abandon_confirmation(&context, &images), None);
+    assert_eq!(draw_abandon_confirmation(&context, &images, "Masduk"), None);
     let content_center = context.content_rect().center();
     let mut output = context.end_pass();
     output.textures_delta.clear();
@@ -2452,12 +2996,24 @@ fn abandon_confirmation_is_centered_and_reuses_the_planet_panel_texture() {
         (panel.center().y - content_center.y).abs() < 1.0,
         "panel {panel:?}, content center {content_center:?}"
     );
-    assert_eq!(panel.size(), egui::vec2(520.0, 230.0));
-    for text in ["Are you sure you want to abandon this planet?", "Yes", "No"] {
+    assert!(viewport.contains_rect(panel));
+    assert_eq!(panel.size(), egui::vec2(388.0, 228.0));
+    let icon = image_rect(&output.shapes, abandon_texture).expect("missing abandon icon");
+    assert!(panel.contains_rect(icon));
+    assert!(icon.right() > panel.center().x && icon.top() < panel.center().y);
+    assert!((icon.top() - panel.top() - MODAL_ICON_TOP_INSET).abs() < 1.0);
+    assert!((panel.right() - icon.right() - MODAL_ICON_RIGHT_INSET).abs() < 1.0);
+    let title = text_rect(&output.shapes, "ABANDON PLANET");
+    assert!((title.center().x - panel.center().x).abs() < 1.0);
+    assert_eq!(text_color(&output.shapes, "ABANDON PLANET"), ABANDON_CONFIRMATION_TEXT_COLOR);
+    for text in ["ABANDON PLANET", "Are you sure you want to abandon planet Masduk?", "Yes", "No"] {
         let label = text_rect(&output.shapes, text);
         assert!(panel.contains_rect(label), "modal text `{text}` was outside {panel:?}: {label:?}");
-        assert_eq!(text_color(&output.shapes, text), ABANDON_CONFIRMATION_TEXT_COLOR);
     }
+    assert_eq!(
+        text_color(&output.shapes, "Are you sure you want to abandon planet Masduk?",),
+        Color32::WHITE
+    );
 
     let mut painted_rects = Vec::new();
     for shape in &output.shapes {
@@ -2466,7 +3022,8 @@ fn abandon_confirmation_is_centered_and_reuses_the_planet_panel_texture() {
     let buttons = painted_rects
         .iter()
         .filter(|button| {
-            (button.width() - 96.0).abs() < 1.0 && (button.height() - 40.0).abs() < 1.0
+            (button.width() - 96.0).abs() < 1.0
+                && (button.height() - MODAL_BUTTON_HEIGHT).abs() < 1.0
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -2478,13 +3035,47 @@ fn abandon_confirmation_is_centered_and_reuses_the_planet_panel_texture() {
     let button_row = buttons[0].union(*buttons[1]);
     assert!((button_row.center().x - panel.center().x).abs() < 1.0);
 
-    for removed in [
-        "ABANDON PLANET",
-        "The buildings on Masduk will remain, but its defenses will be destroyed.",
-    ] {
+    let removed = "The buildings on Masduk will remain, but its defenses will be destroyed.";
+    assert!(!has_text(&output.shapes, removed), "removed modal text `{removed}` was still shown");
+}
+
+#[test]
+fn colonize_confirmation_matches_the_abandon_confirmation_pattern() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let panel_texture = egui::TextureId::User(11);
+    let colonize_texture = egui::TextureId::User(12);
+    let images = ImageIds(HashMap::from([
+        ("panel".to_string(), panel_texture),
+        ("colonize".to_string(), colonize_texture),
+    ]));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 260.0));
+    let input = || egui::RawInput {
+        screen_rect: Some(viewport),
+        ..default()
+    };
+
+    context.begin_pass(input());
+    assert_eq!(draw_colonize_confirmation(&context, &images, "Falix"), None);
+    let mut warmup = context.end_pass();
+    warmup.textures_delta.clear();
+
+    context.begin_pass(input());
+    assert_eq!(draw_colonize_confirmation(&context, &images, "Falix"), None);
+    let mut output = context.end_pass();
+    output.textures_delta.clear();
+
+    let panel = image_rect(&output.shapes, panel_texture).expect("missing modal panel image");
+    let icon = image_rect(&output.shapes, colonize_texture).expect("missing colonize icon");
+    assert!(viewport.contains_rect(panel));
+    assert!(panel.contains_rect(icon));
+    assert!((icon.top() - panel.top() - MODAL_ICON_TOP_INSET).abs() < 1.0);
+    assert!((panel.right() - icon.right() - MODAL_ICON_RIGHT_INSET).abs() < 1.0);
+    for text in ["COLONIZE PLANET", "Are you sure you want to colonize planet Falix?", "Yes", "No"]
+    {
         assert!(
-            !has_text(&output.shapes, removed),
-            "removed modal text `{removed}` was still shown"
+            panel.contains_rect(text_rect(&output.shapes, text)),
+            "modal text `{text}` escaped the panel"
         );
     }
 }
@@ -2504,12 +3095,14 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
         egui::ColorImage::filled([1, 1], Color32::WHITE),
         default(),
     );
+    let railgun_texture = egui::TextureId::User(10);
     let images = ImageIds(HashMap::from([
         ("panel".to_string(), panel_texture),
         ("deuterium".to_string(), deuterium_texture.id()),
         ("energy".to_string(), energy_texture.id()),
+        ("railgun strike".to_string(), railgun_texture),
     ]));
-    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 430.0));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 340.0));
     let input = || egui::RawInput {
         screen_rect: Some(viewport),
         ..default()
@@ -2535,17 +3128,27 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
     let deuterium =
         image_rect(&output.shapes, deuterium_texture.id()).expect("missing deuterium icon");
     let energy = image_rect(&output.shapes, energy_texture.id()).expect("missing energy icon");
+    let railgun = image_rect(&output.shapes, railgun_texture).expect("missing railgun icon");
     let deuterium_amount = text_rect(&output.shapes, "1.000");
     let energy_amount = text_rect(&output.shapes, "5");
     let cost_row = deuterium.union(deuterium_amount).union(energy).union(energy_amount);
-    let heading = text_rect(&output.shapes, "Are you sure you want to shoot planet Ulmar?");
+    let title = text_rect(&output.shapes, "ORBITAL RAILGUN STRIKE");
+    let heading = text_rect(&output.shapes, "Fire every available Railgun at Ulmar?");
     let railgun_details = text_rect(&output.shapes, "Orbital Railguns firing: 1");
     let chance_details = text_rect(&output.shapes, "Destruction chance: 25%");
 
+    assert!(viewport.contains_rect(panel));
+    assert!(panel.contains_rect(railgun));
+    assert!(railgun.right() > panel.center().x && railgun.top() < panel.center().y);
+    assert!((title.center().x - panel.center().x).abs() < 1.0);
+    assert_eq!(
+        text_color(&output.shapes, "ORBITAL RAILGUN STRIKE"),
+        ABANDON_CONFIRMATION_TEXT_COLOR
+    );
     assert!((cost_row.center().x - panel.center().x).abs() < 1.0);
-    assert!(cost_row.top() - heading.bottom() >= 20.0);
-    assert!(railgun_details.top() - cost_row.bottom() >= 23.0);
-    assert!(chance_details.top() - railgun_details.bottom() >= 7.0);
+    assert!(cost_row.top() - heading.bottom() >= 10.0);
+    assert!(railgun_details.top() - cost_row.bottom() >= 13.0);
+    assert!(chance_details.top() - railgun_details.bottom() >= 4.0);
     assert_eq!(text_color(&output.shapes, "1.000"), Color32::WHITE);
     assert_eq!(text_color(&output.shapes, "5"), Color32::WHITE);
     assert_eq!(text_font_size(&output.shapes, "1.000"), 20.0);
@@ -2553,7 +3156,8 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
     assert!(!has_text(&output.shapes, "Cost"));
 
     for text in [
-        "Are you sure you want to shoot planet Ulmar?",
+        "ORBITAL RAILGUN STRIKE",
+        "Fire every available Railgun at Ulmar?",
         "1.000",
         "5",
         "Orbital Railguns firing: 1",
@@ -2574,12 +3178,12 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
     let buttons = painted_rects
         .iter()
         .filter(|button| {
-            (button.width() - 96.0).abs() < 1.0 && (button.height() - 40.0).abs() < 1.0
+            (button.width() - 96.0).abs() < 1.0
+                && (button.height() - MODAL_BUTTON_HEIGHT).abs() < 1.0
         })
         .collect::<Vec<_>>();
     assert_eq!(buttons.len(), 2, "expected two styled confirmation buttons");
     let button_row = buttons[0].union(*buttons[1]);
     assert!((button_row.center().x - panel.center().x).abs() < 1.0);
-    let bottom_inset = panel.bottom() - button_row.bottom();
-    assert!((bottom_inset - 32.0).abs() < 1.0, "button bottom inset was {bottom_inset}",);
+    assert!(panel.contains_rect(button_row));
 }

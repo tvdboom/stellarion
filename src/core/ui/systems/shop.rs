@@ -108,28 +108,36 @@ pub(super) fn draw_stat_hover(ui: &mut Ui, stat: &CombatStats, images: &ImageIds
     });
 }
 
+/// Draws one unit stat cell at the width used by its containing layout.
+fn draw_unit_stat_cell(
+    ui: &mut Ui,
+    unit: &Unit,
+    stat: &CombatStats,
+    images: &ImageIds,
+    width: f32,
+) -> Response {
+    ui.horizontal(|ui| {
+        ui.set_width(width);
+        ui.style_mut().interaction.selectable_labels = true;
+        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
+        ui.label(unit.get_stat(stat)).on_hover_cursor(CursorIcon::Default);
+    })
+    .response
+    .on_hover_ui(|ui| draw_stat_hover(ui, stat, images))
+}
+
 /// Draws one full-width unit stat row.
 fn draw_unit_stat(ui: &mut Ui, unit: &Unit, stat: CombatStats, images: &ImageIds) -> Response {
     ui.separator();
     ui.add_space(12.);
-    let response = ui.horizontal(|ui| {
-        ui.set_width(180.);
-        ui.style_mut().interaction.selectable_labels = true;
-        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-        ui.label(unit.get_stat(&stat)).on_hover_cursor(CursorIcon::Default);
-    });
+    let response = draw_unit_stat_cell(ui, unit, &stat, images, 180.);
     ui.add_space(12.);
-    response.response.on_hover_ui(|ui| draw_stat_hover(ui, &stat, images))
+    response
 }
 
-/// Draws the building-and-orbital Spy intelligence requirement.
+/// Draws a building's Spy intelligence requirement.
 pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
     draw_unit_stat(ui, unit, CombatStats::Intelligence, images)
-}
-
-/// Draws an orbital's Shipyard production requirement.
-pub(super) fn draw_production_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds) -> Response {
-    draw_unit_stat(ui, unit, CombatStats::Production, images)
 }
 
 /// Draws the production and intelligence boxes in orbital hover-panel order.
@@ -138,9 +146,19 @@ pub(super) fn draw_orbital_stats(
     unit: &Unit,
     images: &ImageIds,
 ) -> (Response, Response) {
-    let production = draw_production_stat(ui, unit, images);
-    let intelligence = draw_intelligence_stat(ui, unit, images);
-    (production, intelligence)
+    ui.separator();
+    ui.add_space(12.);
+    let stats = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 20.;
+            let production = draw_unit_stat_cell(ui, unit, &CombatStats::Production, images, 150.);
+            let intelligence =
+                draw_unit_stat_cell(ui, unit, &CombatStats::Intelligence, images, 150.);
+            (production, intelligence)
+        })
+        .inner;
+    ui.add_space(12.);
+    stats
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
@@ -219,16 +237,7 @@ fn draw_unit_hover(
                             .striped(false)
                             .show(ui, |ui| {
                                 for stat in row {
-                                    ui.horizontal(|ui| {
-                                        ui.set_width(150.);
-                                        ui.style_mut().interaction.selectable_labels = true;
-
-                                        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-                                        ui.label(unit.get_stat(stat))
-                                            .on_hover_cursor(CursorIcon::Default);
-                                    })
-                                    .response
-                                    .on_hover_ui(|ui| draw_stat_hover(ui, stat, images));
+                                    draw_unit_stat_cell(ui, unit, stat, images, 150.);
                                 }
                             });
                     }
