@@ -83,7 +83,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
             trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
         let labels = panel_labels(&output);
         let message =
-            "You need a completed Trading Post of your own within 3 AU of this post to trade.";
+            "You need a completed Trading Post of your own within 4 AU of this post to trade.";
         assert!(labels.contains_key(message));
         assert!(!labels.contains_key("Send offer"));
         assert!(!labels.contains_key("You offer"));
@@ -120,7 +120,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
 }
 
 #[test]
-fn trading_panel_requires_a_completed_owned_post_within_three_au() {
+fn trading_panel_requires_a_completed_owned_post_within_four_au() {
     let mut model = trading_panel_game();
     let home = model.players[0].home_planet;
     let enemy = model.players[1].home_planet;
@@ -133,10 +133,11 @@ fn trading_panel_requires_a_completed_owned_post_within_three_au() {
     world.init_resource::<Messages<MultiplayerRequest>>();
     world.init_resource::<Messages<MessageMsg>>();
     for (distance, completed, owned, can_trade) in [
-        (3.0, false, true, false),
-        (3.01, true, true, false),
-        (3.0, true, false, false),
-        (3.0, true, true, true),
+        (4.0, false, true, false),
+        (4.01, true, true, false),
+        (4.0, true, false, false),
+        (3.5, true, true, true),
+        (4.0, true, true, true),
     ] {
         model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * distance;
         let local = model.map.get_mut(home);
@@ -176,4 +177,79 @@ fn trading_panel_requires_a_completed_owned_post_within_three_au() {
         assert_eq!(state.trading_post_open, Some(enemy));
     }
     assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+}
+
+#[test]
+fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
+    for size in [egui::vec2(542.0, 546.0), egui::vec2(640.0, 480.0), egui::vec2(360.0, 640.0)] {
+        let mut model = trading_panel_game();
+        let home = model.players[0].home_planet;
+        let enemy = model.players[1].home_planet;
+        model.map.get_mut(home).army.insert(Unit::Building(Building::TradingPost), 1);
+        let mut state = UiState {
+            trading_post_open: Some(enemy),
+            ..default()
+        };
+        let context = egui::Context::default();
+        let mut world = World::new();
+        world.init_resource::<Messages<MultiplayerRequest>>();
+        world.init_resource::<Messages<MessageMsg>>();
+        trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
+        let output =
+            trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
+        let labels = panel_labels(&output);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for text in
+            ["Trading Post", "You offer", "Metal", "Crystal", "Deuterium", "Close", "Send offer"]
+        {
+            assert!(screen.contains_rect(labels[text]), "{text} must fit at {size:?}");
+        }
+        assert!(labels["You offer"].bottom() < labels["Metal"].top());
+        assert!(labels["Deuterium"].bottom() < labels["Close"].top());
+        assert!(labels["Deuterium"].bottom() < labels["Send offer"].top());
+        let panel_bottom = (size.y + 540.0_f32.min(size.y - 32.0)) * 0.5;
+        assert!(labels["Close"].bottom() < panel_bottom - 12.0);
+        assert!(labels["Send offer"].bottom() < panel_bottom - 12.0);
+        for pressed in [true, false] {
+            let position = labels["Send offer"].center();
+            trading_panel_frame(
+                &context,
+                &mut world,
+                &mut state,
+                &model,
+                size,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    },
+                ],
+            );
+        }
+        assert_eq!(state.trading_post_open, Some(enemy));
+        for pressed in [true, false] {
+            let position = labels["Close"].center();
+            trading_panel_frame(
+                &context,
+                &mut world,
+                &mut state,
+                &model,
+                size,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    },
+                ],
+            );
+        }
+        assert_eq!(state.trading_post_open, None);
+        assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+    }
 }

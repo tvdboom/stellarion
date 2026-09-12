@@ -1611,11 +1611,15 @@ fn protection_permission_notifications(
                 return None;
             }
             (before != after).then(|| {
+                let world = if planet.is_moon() { "moon" } else { "planet" };
                 let message = if after {
-                    MessageMsg::info(format!("You can now protect planet {}.", planet.name))
+                    MessageMsg::info(format!(
+                        "You now have protection rights on {world} {}.",
+                        planet.name
+                    ))
                 } else {
                     MessageMsg::warning(format!(
-                        "Protection access to planet {} was revoked. Any protecting fleet is returning home.",
+                        "Protection access to {world} {} was revoked. Any protecting fleet is returning home.",
                         planet.name
                     ))
                 };

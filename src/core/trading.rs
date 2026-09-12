@@ -12,7 +12,7 @@ use crate::core::units::{Amount, Unit};
 /// Tradable resources one completed Trading Post level can send in a turn.
 pub const TRADE_RESOURCES_PER_LEVEL: usize = 500;
 /// Maximum center-to-center distance of an adjacent Trading Post route, in AU.
-pub const TRADING_POST_ADJACENCY_AU: f32 = 3.0;
+pub const TRADING_POST_ADJACENCY_AU: f32 = 4.0;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

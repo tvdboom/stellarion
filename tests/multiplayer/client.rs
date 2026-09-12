@@ -270,36 +270,44 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
 
 #[test]
 fn protection_changes_notify_the_affected_player_and_focus_the_world() {
-    let current = record("protection", 4, 7, MatchStatus::Active);
-    let protected = current.persisted.state.players[0].home_planet;
-    let mut granted = current.clone();
-    granted.persisted.state.map.get_mut(protected).protection_permissions.insert(2);
-    let mut session = MultiplayerSession {
-        membership: Some(membership(&current.id, 2, "Protector", true)),
-        active_game: Some(current),
-        ..default()
-    };
+    use crate::core::map::planet::PlanetKind;
 
-    let notices = protection_permission_notifications(
-        &BackendOutput::Record(Operation::Load, granted.clone()),
-        &session,
-    );
-    assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
-    assert!(notices[0].message.starts_with("You can now protect planet "));
-    assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+    for (kind, world) in [(PlanetKind::Dry, "planet"), (PlanetKind::Gray, "moon")] {
+        let mut current = record("protection", 4, 7, MatchStatus::Active);
+        let protected = current.persisted.state.players[0].home_planet;
+        current.persisted.state.map.get_mut(protected).kind = kind;
+        let name = current.persisted.state.map.get(protected).name.clone();
+        let mut granted = current.clone();
+        granted.persisted.state.map.get_mut(protected).protection_permissions.insert(2);
+        let mut session = MultiplayerSession {
+            membership: Some(membership(&current.id, 2, "Protector", true)),
+            active_game: Some(current),
+            ..default()
+        };
 
-    session.active_game = Some(granted.clone());
-    let mut revoked = granted;
-    revoked.persisted.state.map.get_mut(protected).protection_permissions.remove(&2);
-    let notices = protection_permission_notifications(
-        &BackendOutput::Record(Operation::Load, revoked),
-        &session,
-    );
-    assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Warning);
-    assert!(notices[0].message.contains("was revoked"));
-    assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+        let output = BackendOutput::Record(Operation::Load, granted.clone());
+        let notices = protection_permission_notifications(&output, &session);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
+        assert_eq!(
+            notices[0].message,
+            format!("You now have protection rights on {world} {name}.")
+        );
+        assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+
+        session.active_game = Some(granted.clone());
+        assert!(protection_permission_notifications(&output, &session).is_empty());
+        let mut revoked = granted;
+        revoked.persisted.state.map.get_mut(protected).protection_permissions.remove(&2);
+        let notices = protection_permission_notifications(
+            &BackendOutput::Record(Operation::Load, revoked),
+            &session,
+        );
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Warning);
+        assert!(notices[0].message.contains(&format!("{world} {name} was revoked")));
+        assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+    }
 }
 
 #[test]

@@ -349,25 +349,29 @@ fn space_dock_notification_fits_on_one_line_at_normal_game_width() {
 }
 
 #[test]
-fn public_planet_toast_centers_without_opening_hidden_information() {
+fn public_world_toast_centers_planets_and_moons_without_opening_hidden_information() {
     let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let player = &model.players[0];
     let planet = model.players[1].home_planet;
-    let mut state = UiState {
-        planet_selected: Some(player.home_planet),
-        mission: true,
-        combat_report: Some(3),
-        ..default()
-    };
+    let moon = model.map.planets.iter().find(|world| world.is_moon()).unwrap().id;
+    for world in [planet, moon] {
+        let mut state = UiState {
+            planet_selected: Some(player.home_planet),
+            mission: true,
+            combat_report: Some(3),
+            ..default()
+        };
 
-    assert!(focus_planet(planet, &model.map, &mut state));
-    assert_eq!(state.planet_selected, None);
-    assert_eq!(state.focus_planet, Some(planet));
-    assert!(state.to_selected);
-    assert!(!state.mission);
-    assert_eq!(state.combat_report, None);
+        assert!(focus_planet(world, &model.map, &mut state));
+        assert_eq!(state.planet_selected, None);
+        assert_eq!(state.focus_planet, Some(world));
+        assert!(state.to_selected);
+        assert!(!state.mission);
+        assert_eq!(state.combat_report, None);
+    }
 
+    let mut state = UiState::default();
     state.to_selected = false;
     assert!(!focus_planet(usize::MAX, &model.map, &mut state));
     assert!(!state.to_selected);

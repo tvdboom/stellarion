@@ -109,6 +109,17 @@ fn each_post_level_supplies_its_owners_independent_capacity() {
 }
 
 #[test]
+fn trading_posts_reach_four_au_inclusively() {
+    let mut model = trading_game();
+    let first = model.players[0].home_planet;
+    let second = model.players[1].home_planet;
+    for (distance, expected) in [(3.5, true), (4.0, true), (4.01, false)] {
+        model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * distance;
+        assert_eq!(trading_posts_are_adjacent(&model.map, 1, first, 2, second), expected);
+    }
+}
+
+#[test]
 fn finalized_trade_reserves_now_and_delivers_only_at_resolution() {
     let mut model = trading_game();
     let first = model.players[0].home_planet;

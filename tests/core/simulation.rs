@@ -2381,6 +2381,106 @@ fn territorial_victory_waits_for_all_arriving_attacks() {
     }
 }
 
+fn resolve_mutual_home_attacks(player_count: u8, objectives: [Icon; 2]) -> (GameModel, TurnResult) {
+    let mut model = started_model(player_count);
+    let homes = model.players.iter().take(2).map(|player| player.home_planet).collect::<Vec<_>>();
+    for home in &homes {
+        let planet = model.map.get_mut(*home);
+        planet.army.clear();
+        planet.diameter = 1_000;
+    }
+    for (index, attacker) in model.players.iter().take(2).enumerate() {
+        let destination = model.map.get(homes[1 - index]);
+        let objective = objectives[index];
+        let army = if objective == Icon::Destroy {
+            Army::from([(Unit::war_sun(), 100)])
+        } else {
+            Army::from([(Unit::Ship(Ship::LightFighter), 1)])
+        };
+        let mut mission = Mission::new_with_id(
+            index as u64 + 1,
+            model.turn as usize,
+            attacker.id,
+            model.map.get(attacker.home_planet),
+            destination,
+            objective,
+            army,
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = destination.position;
+        model.missions.push(mission);
+    }
+    let result = empty_turn(&mut model);
+    (model, result)
+}
+
+#[test]
+fn simultaneous_home_conquests_and_destructions_finish_in_a_draw() {
+    for objectives in [
+        [Icon::Attack, Icon::Attack],
+        [Icon::Destroy, Icon::Destroy],
+        [Icon::Attack, Icon::Destroy],
+    ] {
+        let (model, result) = resolve_mutual_home_attacks(2, objectives);
+        let homes = model.players.iter().map(|player| player.home_planet).collect::<Vec<_>>();
+        assert!(result.finished, "{objectives:?}");
+        assert_eq!(result.winner, None, "{objectives:?}");
+        assert_eq!(model.status, MatchStatus::Finished);
+        for (index, objective) in objectives.into_iter().enumerate() {
+            let destination = model.map.get(homes[1 - index]);
+            assert_eq!(destination.is_destroyed, objective == Icon::Destroy);
+            assert_eq!(destination.owned, None);
+        }
+        assert!(model.players.iter().all(|player| player.spectator));
+
+        let loaded =
+            PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
+        assert_eq!(loaded.state.winner(), None);
+    }
+}
+
+#[test]
+fn mutual_home_losses_leave_other_players_in_control_of_the_result() {
+    for player_count in [3, 4] {
+        for objectives in [
+            [Icon::Attack, Icon::Attack],
+            [Icon::Destroy, Icon::Destroy],
+            [Icon::Attack, Icon::Destroy],
+        ] {
+            let (model, result) = resolve_mutual_home_attacks(player_count, objectives);
+            assert!(model.players[0].spectator && model.players[1].spectator);
+            if player_count == 3 {
+                assert!(result.finished, "{objectives:?}");
+                assert_eq!(result.winner, Some(model.players[2].id));
+                assert_eq!(model.status, MatchStatus::Finished);
+                assert_eq!(model.winner(), Some(model.players[2].id));
+            } else {
+                assert!(!result.finished, "{objectives:?}");
+                assert_eq!(result.winner, None);
+                assert_eq!(model.status, MatchStatus::Active);
+                assert!(model.players[2..].iter().all(|player| !player.spectator));
+            }
+        }
+    }
+}
+
+#[test]
+fn destroyed_home_planets_finish_in_a_draw() {
+    let mut model = started_model(2);
+    let homes = model.players.iter().map(|player| player.home_planet).collect::<Vec<_>>();
+    for home in homes {
+        model.map.get_mut(home).destroy();
+    }
+
+    advance_simulation(&mut model).unwrap();
+    model.validate().unwrap();
+    assert_eq!(model.status, MatchStatus::Finished);
+    assert_eq!(model.winner(), None);
+}
+
 #[test]
 fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
     let mut model = started_model(2);

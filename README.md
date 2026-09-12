@@ -156,22 +156,6 @@ additional cost.
 
 ### Combat
 
-Colonial Administration enables a **Fleet withdrawal** setting in the colony's Buildings shop.
-It defaults to Off. Level 1 unlocks withdrawal after 75% fleet losses; levels 2 and 3 add 50%
-and 25%; level 4 adds immediate withdrawal. Losses are destroyed ship production points relative
-to the starting fleet, checked after each round. Once withdrawal begins, the enemy fires one
-additional round while withdrawing ships cannot fire back. Stationary defenses keep fighting.
-Level 5 removes the final enemy volley, including a clean departure before any shots when set
-to Immediately. Only surviving ships leave; a final volley can destroy the entire withdrawing
-fleet. Noncombat Colony Ships accompany the evacuation.
-
-Escaped ships form an ordinary **Deploy** mission to the defender's homeworld, using normal
-fleet speed, acceleration, and visibility rules. The mission is dated to the preceding turn
-and receives one movement step before the post-battle map: a three-turn voyage has two turns
-remaining. A one-turn voyage docks that same turn. The homeworld must still belong to the
-defender; homeworlds and moons cannot use Colonial Administration. Retreat does not generate
-orbital wreckage, and escaped ships are recorded separately from combat casualties.
-
 In combat, there are two sides: the attacker and the defender. There is the possibility that 
 the attacker has launched his fleets against a planet with no defense or ships, in which case 
 he automatically wins the combat. But otherwise, if the defender has ships or defense on his 
@@ -215,6 +199,7 @@ For each shooting unit:
 Things to keep in mind:
 
 - Buildings are build before any combat takes place.
+- Protection fleets arriving on the same turn as an attack defend first.
 - Missions are resolved in arbitrary player order each turn. This means that you cannot know if
   reinforcements will arrive before or after an attack when they both arrive at the destination
   planet the same turn. If reinforcements arrive after the planet has been conquered, the objective
@@ -228,7 +213,6 @@ Things to keep in mind:
   are scout probes, he can only see the number of enemy units prior to combat.
 - A defender player receives no enemy unit information if all its units are destroyed and he
   doesn't own the planet.
-- Protection fleets arriving on the same turn as an attack defend first.
 
 <br>
 

@@ -111,6 +111,15 @@ assert.equal(
 console.log(
   "Second reset removed app data, obsolete objects/jobs/history, and recreated current RLS and schedule; managed auth and unrelated jobs survived.",
 );
+for (const [distance, expected] of [[350, true], [400, true], [401, false]]) {
+  const result = await db.query(`
+    select public.stellarion_trade_route_valid(
+      jsonb_build_object('id', 1, 'position', jsonb_build_array(0, 0)),
+      jsonb_build_object('id', 2, 'position', jsonb_build_array($1::int, 0))
+    ) as valid
+  `, [distance]);
+  assert.equal(result.rows[0].valid, expected, `trade route at ${distance} world units`);
+}
 await db.exec(`
   insert into public.stellarion_games
     (id, code, created_by, max_players, status, state, current_turn, finished_at)

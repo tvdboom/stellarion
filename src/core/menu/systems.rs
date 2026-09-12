@@ -60,11 +60,12 @@ fn end_game_overlay_alpha(elapsed: f32) -> f32 {
 
 fn local_end_game_heading(session: &MultiplayerSession) -> &'static str {
     let local_player = session.membership.as_ref().map(|member| member.player_id);
-    let winner = session.active_game.as_ref().and_then(|game| game.persisted.state.winner());
-    if winner.is_some() && winner == local_player {
-        "You won"
-    } else {
-        "You lost"
+    let state = session.active_game.as_ref().map(|game| &game.persisted.state);
+    match state.and_then(|state| state.winner()) {
+        Some(winner) if Some(winner) == local_player => "You won",
+        Some(_) => "You lost",
+        None if state.is_some_and(|state| state.status == MatchStatus::Finished) => "Draw",
+        None => "You lost",
     }
 }
 

@@ -265,7 +265,8 @@ const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
 const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
 const CELESTIAL_DEPTH: f32 = BACKGROUND_Z + 0.16;
-// Distant landmarks retain only 6% of planet motion and barely change apparent size on zoom.
+// Compact landmarks stay near their map corners; the magnetar remains distant scenery.
+const CORNER_CELESTIAL_PARALLAX_FOLLOW: f32 = 0.08;
 const CELESTIAL_PARALLAX_FOLLOW: f32 = 0.94;
 const CELESTIAL_ZOOM_POWER: f32 = 0.94;
 const CELESTIAL_MAP_MARGIN: f32 = 32.0;
@@ -934,7 +935,7 @@ fn range_marker_pose(anchor: Vec2, elapsed: f32, phase: f32) -> (Vec2, f32) {
     (anchor + offset, tilt)
 }
 
-/// Gives fixed Relay markers a restrained idle drift.
+/// Gives fixed Relay and Trading Post markers a restrained idle drift.
 pub(crate) fn animate_range_markers(
     time: Res<Time>,
     mut markers: Query<(&mut Transform, &mut RangeMarkerMotionCmp, &Visibility)>,
@@ -1471,7 +1472,7 @@ const ASTEROID_MAX_RENDER_SCALE: f32 = 1.45;
 const ASTEROID_REFERENCE_CAMERA_SCALE: f32 = 0.8;
 // Mute the photographed highlights with a darker warm tint so the belt stays subordinate to
 // interactive pieces. Retain opacity to keep the rocks solid against the star field.
-const ASTEROID_TINT: Color = Color::srgba(0.76, 0.71, 0.62, 0.98);
+const ASTEROID_TINT: Color = Color::srgba(0.65, 0.61, 0.54, 0.98);
 
 fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Image>]) {
     if images.is_empty() {
@@ -1576,8 +1577,25 @@ fn solar_star_position(map: &Map) -> Vec2 {
     map.solar_star_position()
 }
 
-fn celestial_position(map: &Map) -> Vec2 {
+fn celestial_camera_follow(kind: CelestialKind) -> f32 {
+    if kind != CelestialKind::Magnetar {
+        CORNER_CELESTIAL_PARALLAX_FOLLOW
+    } else {
+        CELESTIAL_PARALLAX_FOLLOW
+    }
+}
+
+fn celestial_zoom_power(kind: CelestialKind) -> f32 {
+    if kind != CelestialKind::Magnetar {
+        0.0
+    } else {
+        CELESTIAL_ZOOM_POWER
+    }
+}
+
+fn celestial_position(map: &Map, kind: CelestialKind) -> Vec2 {
     let sun_corner = map_scenery_corner(map);
+    let size = CELESTIAL_SIZE * kind.size_scale();
     let edge_direction = Vec2::new(-sun_corner.x, 0.0);
     let edge_x = if edge_direction.x < 0.0 {
         map.rect.min.x
@@ -1586,11 +1604,29 @@ fn celestial_position(map: &Map) -> Vec2 {
     };
     // Keep the complete landmark on the map opposite the large sun. Very small synthetic maps
     // cannot contain the full sprite, so clamp their center to the inner tenth of the bounds.
-    let horizontal_inset =
-        (CELESTIAL_SIZE.x * 0.5 + CELESTIAL_MAP_MARGIN).min(map.rect.half_size().x * 0.9);
+    let horizontal_inset = (size.x * 0.5 + CELESTIAL_MAP_MARGIN).min(map.rect.half_size().x * 0.9);
     let x = edge_x - edge_direction.x * horizontal_inset;
     let usable_half_height =
-        (map.rect.half_size().y - CELESTIAL_SIZE.y * 0.5 - CELESTIAL_MAP_MARGIN).max(0.0);
+        (map.rect.half_size().y - size.y * 0.5 - CELESTIAL_MAP_MARGIN).max(0.0);
+    if kind != CelestialKind::Magnetar {
+        let corner = |side: f32| Vec2::new(x, map.rect.center().y + usable_half_height * side);
+        let clearance = |candidate: Vec2| {
+            map.planets
+                .iter()
+                .map(|planet| {
+                    let gap = (planet.position - candidate).abs() - size * 0.5;
+                    gap.max(Vec2::ZERO).length() - planet.size() * 0.5
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        let first = corner(sun_corner.y);
+        let second = corner(-sun_corner.y);
+        return if clearance(first) >= clearance(second) {
+            first
+        } else {
+            second
+        };
+    }
     let preferred_y = -sun_corner.y * usable_half_height * 0.48;
     if map.planets.is_empty() {
         return Vec2::new(x, map.rect.center().y + preferred_y);
@@ -1646,18 +1682,19 @@ fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map
             ));
         });
 
-    // Project the map anchor into the distant plane as well, so a landmark remains reachable
-    // when exploring its side of even a large map instead of being stranded off-screen.
-    let celestial_anchor = celestial_position(map) * (1.0 - CELESTIAL_PARALLAX_FOLLOW);
+    // Offset the map anchor for camera follow so each landmark appears at its selected map
+    // position when the camera reaches that position.
+    let celestial_follow = celestial_camera_follow(kind);
+    let celestial_anchor = celestial_position(map, kind) * (1.0 - celestial_follow);
     let celestial_frames = (1..=kind.frame_count())
         .map(|index| assets.image(format!("{} {index}", kind.name())))
         .collect::<Vec<_>>();
     commands
         .spawn((
-            Name::new(format!("Decorative {} distant parallax", kind.name())),
+            Name::new(format!("Decorative {} parallax", kind.name())),
             Transform::from_xyz(0.0, 0.0, CELESTIAL_DEPTH),
             Visibility::Inherited,
-            ParallaxCmp::new(CELESTIAL_PARALLAX_FOLLOW, 1.0, CELESTIAL_ZOOM_POWER, Vec2::ZERO),
+            ParallaxCmp::new(celestial_follow, 1.0, celestial_zoom_power(kind), Vec2::ZERO),
             Pickable::IGNORE,
             MapCmp,
         ))
@@ -2276,9 +2313,9 @@ pub fn draw_map(
                         })
                         .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
 
-                    // Reserve the upper-right station for the gate, clear of the Trading Post
-                    // below it and the range markers on the left. Only the gate itself spins,
-                    // so its full rotation stays clear of the other fixed structures.
+                    // Reserve the upper-right station for the gate, clear of the drifting
+                    // Trading Post below it and the range markers on the left. Its full
+                    // rotation stays clear of the other structures.
                     let gate_angle = PI * 0.25;
                     let gate_radius = planet.size() * 0.9;
                     parent
@@ -2506,6 +2543,11 @@ pub fn draw_map(
 
                     let trading_angle = PI * 1.72;
                     let trading_radius = planet.size() * 0.86;
+                    let trading_anchor = Vec2::new(trading_angle.cos(), trading_angle.sin())
+                        * trading_radius;
+                    let trading_phase = visual_noise(planet.id as u32 + 3_271) * TAU;
+                    let (trading_position, trading_tilt) =
+                        range_marker_pose(trading_anchor, 0.0, trading_phase);
                     parent
                         .spawn((
                             Sprite {
@@ -2513,15 +2555,20 @@ pub fn draw_map(
                                 custom_size: Some(Vec2::splat(planet.size() * 0.38)),
                                 ..default()
                             },
-                            Transform::from_xyz(
-                                trading_angle.cos() * trading_radius,
-                                trading_angle.sin() * trading_radius,
-                                TRADING_POST_DEPTH,
-                            ),
+                            Transform {
+                                translation: trading_position.extend(TRADING_POST_DEPTH),
+                                rotation: Quat::from_rotation_z(trading_tilt),
+                                ..default()
+                            },
                             Pickable::IGNORE,
                             Visibility::Hidden,
                             TradingPostCmp {
                                 planet: planet_id,
+                            },
+                            RangeMarkerMotionCmp {
+                                anchor: trading_anchor,
+                                elapsed: 0.0,
+                                phase: trading_phase,
                             },
                         ))
                         .observe(
@@ -3601,6 +3648,17 @@ fn celestial_frame_state(kind: CelestialKind, slot: usize, elapsed: f32) -> (usi
     }
 }
 
+fn corner_celestial_overlaps_planet(map: &Map, kind: CelestialKind, camera_position: Vec2) -> bool {
+    let center = celestial_position(map, kind) * (1.0 - CORNER_CELESTIAL_PARALLAX_FOLLOW)
+        + camera_position * CORNER_CELESTIAL_PARALLAX_FOLLOW;
+    let half_size = CELESTIAL_SIZE * kind.size_scale() * 0.5;
+    map.planets.iter().any(|planet| {
+        let gap = (planet.position - center).abs() - half_size;
+        let radius = planet.size() * 0.5 + CELESTIAL_MAP_MARGIN;
+        gap.max(Vec2::ZERO).length_squared() <= radius * radius
+    })
+}
+
 fn comet_visibility(progress: f32) -> f32 {
     let fade_in = smoothstep(progress / 0.12);
     let fade_out = smoothstep((1.0 - progress) / 0.34);
@@ -3625,7 +3683,13 @@ fn pulsar_anchor(seed: u32, cycle: u32) -> Vec2 {
 pub(crate) fn animate_space_scenery(
     mut star_q: Query<
         &mut Transform,
-        (With<SolarStarCmp>, Without<SolarStarFrameCmp>, Without<NebulaCmp>, Without<CelestialCmp>),
+        (
+            With<SolarStarCmp>,
+            Without<SolarStarFrameCmp>,
+            Without<NebulaCmp>,
+            Without<CelestialCmp>,
+            Without<MainCamera>,
+        ),
     >,
     mut solar_frame_q: Query<
         (&SolarStarFrameCmp, &mut Sprite),
@@ -3633,13 +3697,15 @@ pub(crate) fn animate_space_scenery(
     >,
     mut nebula_q: Query<
         (&NebulaCmp, &mut Transform),
-        (Without<SolarStarCmp>, Without<CelestialCmp>),
+        (Without<SolarStarCmp>, Without<CelestialCmp>, Without<MainCamera>),
     >,
-    celestial_q: Query<(&CelestialCmp, &Children)>,
+    mut celestial_q: Query<(&CelestialCmp, &Children, &mut Visibility)>,
     mut celestial_frame_q: Query<
         (&CelestialFrameCmp, &mut Sprite),
         (Without<SolarStarFrameCmp>, Without<MainCamera>),
     >,
+    camera_q: Single<&Transform, With<MainCamera>>,
+    map: Res<Map>,
     time: Res<Time>,
 ) {
     let elapsed = time.elapsed_secs_f64() as f32;
@@ -3655,7 +3721,18 @@ pub(crate) fn animate_space_scenery(
         transform.rotation = Quat::from_rotation_z((phase * 0.41).sin() * 0.018);
         transform.scale = Vec3::splat(1.0 + (phase * 0.62).sin() * 0.018);
     }
-    for (celestial, children) in &celestial_q {
+    for (celestial, children, mut visibility) in &mut celestial_q {
+        if celestial.kind != CelestialKind::Magnetar {
+            *visibility = if corner_celestial_overlaps_planet(
+                &map,
+                celestial.kind,
+                camera_q.translation.truncate(),
+            ) {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
+        }
         for child in children.iter() {
             let Ok((frame, mut sprite)) = celestial_frame_q.get_mut(child) else {
                 continue;

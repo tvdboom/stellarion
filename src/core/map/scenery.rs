@@ -34,10 +34,13 @@ impl CelestialKind {
         }
     }
 
-    /// Keeps every selected landmark large enough to recognize at the widest map zoom.
+    /// Keeps corner landmarks compact enough to sit clear of nearby planets.
     pub(crate) fn size_scale(self) -> f32 {
-        let _ = self;
-        1.0
+        match self {
+            Self::BlackHole => 0.55,
+            Self::NeutronStar => 0.6,
+            Self::Magnetar => 1.0,
+        }
     }
 
     pub(crate) fn opacity(self) -> f32 {

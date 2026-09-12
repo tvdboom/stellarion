@@ -225,14 +225,15 @@ fn scenery_keeps_the_sun_at_the_arc_origin_and_the_landmark_inside_the_opposite_
     assert!(outside.x < radius && outside.y < radius);
     assert!(outside.x < radius * 0.25 && outside.y < radius * 0.25);
 
-    let celestial = celestial_position(&map);
+    let celestial = celestial_position(&map, CelestialKind::BlackHole);
     let opposite_edge_x = if corner.x > 0.0 {
         map.rect.min.x
     } else {
         map.rect.max.x
     };
-    assert!((celestial.x - opposite_edge_x).abs() >= CELESTIAL_SIZE.x * 0.5);
-    assert!((celestial.x - opposite_edge_x).abs() <= CELESTIAL_SIZE.x * 0.5 + CELESTIAL_MAP_MARGIN);
+    let black_hole_width = CELESTIAL_SIZE.x * CelestialKind::BlackHole.size_scale();
+    assert!((celestial.x - opposite_edge_x).abs() >= black_hole_width * 0.5);
+    assert!((celestial.x - opposite_edge_x).abs() <= black_hole_width * 0.5 + CELESTIAL_MAP_MARGIN);
     assert!((celestial.x - map.rect.center().x) * corner.x < 0.0);
     assert!(map.rect.contains(celestial));
     const { assert!(CELESTIAL_SIZE.x < SOLAR_STAR_SIZE * 0.5) };
@@ -1367,8 +1368,9 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             .map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map)
             .find(|map| map_scenery_selection(map) == expected_kind)
             .unwrap();
+        let follow = celestial_camera_follow(expected_kind);
         let anchor =
-            (celestial_position(&map) * (1.0 - CELESTIAL_PARALLAX_FOLLOW)).extend(CELESTIAL_DEPTH);
+            (celestial_position(&map, expected_kind) * (1.0 - follow)).extend(CELESTIAL_DEPTH);
         let sun_anchor = solar_star_position(&map).extend(SOLAR_STAR_DEPTH);
         assert!(anchor.z > BACKGROUND_Z && anchor.z < VORONOI_Z);
         let mut app = App::new();
@@ -1437,16 +1439,17 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         }
 
         assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
-        assert_eq!(celestial_follow, Some(CELESTIAL_PARALLAX_FOLLOW));
+        assert_eq!(celestial_follow, Some(follow));
         let mut landmarks = world.query::<(&CelestialCmp, &GlobalTransform)>();
         let (celestial, transform) = landmarks.single(world).unwrap();
         assert_eq!(celestial.kind, expected_kind);
         assert_eq!(celestial.frames.len(), kind.frame_count());
         assert_eq!(transform.translation(), anchor);
-        assert!(anchor.truncate().abs().cmplt(Vec2::new(400.0, 225.0)).all());
+        if kind == CelestialKind::Magnetar {
+            assert!(anchor.truncate().abs().cmplt(Vec2::new(400.0, 225.0)).all());
+        }
 
-        // Distant landmarks move in the same screen direction as planets, at a fraction of
-        // their speed. This exercises the actual spawned hierarchy and camera update system.
+        // Each landmark follows the camera by its own depth factor.
         let camera_position = Vec3::new(-2_000.0, 700.0, 1.0);
         world.get_mut::<Transform>(camera).unwrap().translation = camera_position;
         app.update();
@@ -1454,10 +1457,10 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         let pan_position = landmarks.single(world).unwrap().1.translation();
         let relative_motion =
             pan_position.truncate() - anchor.truncate() - camera_position.truncate();
-        assert!(relative_motion.abs_diff_eq(-camera_position.truncate() * 0.06, 1e-3));
+        assert!(relative_motion.abs_diff_eq(camera_position.truncate() * (follow - 1.0), 1e-3));
 
-        // Across the complete zoom range the apparent size changes by less than 10%,
-        // while every crossfade frame remains behind the gameplay plane.
+        // Corner landmarks scale like foreground map objects; the distant magnetar retains
+        // almost the same apparent size. Every frame remains behind the gameplay plane.
         let mut apparent_widths = Vec::new();
         for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
             if let Projection::Orthographic(projection) =
@@ -1478,7 +1481,11 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         }
         let smallest = apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
         let largest = apparent_widths.iter().copied().fold(0.0, f32::max);
-        assert!(largest / smallest < 1.1);
+        if kind != CelestialKind::Magnetar {
+            assert!((largest / smallest - MAX_ZOOM / MIN_ZOOM).abs() < 1e-3);
+        } else {
+            assert!(largest / smallest < 1.1);
+        }
         assert!(largest > smallest);
 
         // Elapsed time must preserve the depth response without adding drift.
@@ -1496,6 +1503,22 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
         let expected_rotation = Quat::from_rotation_z(36_000.0 * SOLAR_STAR_ANGULAR_SPEED);
         assert!(sun_roots.single(world).unwrap().rotation.angle_between(expected_rotation) < 1e-4);
+        if kind != CelestialKind::Magnetar {
+            let world = app.world_mut();
+            let planet_position = world.resource::<Map>().planets[0].position;
+            let forced_overlap =
+                (planet_position - anchor.truncate()) / CORNER_CELESTIAL_PARALLAX_FOLLOW;
+            world.get_mut::<Transform>(camera).unwrap().translation = forced_overlap.extend(1.0);
+            app.update();
+            let world = app.world_mut();
+            let mut landmark = world.query_filtered::<&Visibility, With<CelestialCmp>>();
+            assert_eq!(*landmark.single(world).unwrap(), Visibility::Hidden);
+            let safe_camera = celestial_position(world.resource::<Map>(), kind).extend(1.0);
+            world.get_mut::<Transform>(camera).unwrap().translation = safe_camera;
+            app.update();
+            let world = app.world_mut();
+            assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
+        }
     }
 }
 
@@ -1514,23 +1537,41 @@ fn celestial_landmarks_stay_visible_inside_normal_small_and_offset_maps() {
         planets: Vec::new(),
     });
     for map in generated.chain(unusual) {
-        let position = celestial_position(&map);
+        let kind = map_scenery_selection(&map);
+        let size = CELESTIAL_SIZE * kind.size_scale();
+        let position = celestial_position(&map, kind);
         let normalized = (position - map.rect.center()) / map.rect.half_size();
         assert!(normalized.x.abs() <= 1.0);
         assert!(normalized.y.abs() <= 1.0);
         assert!(normalized.x * map_scenery_corner(&map).x < 0.0);
-        if map.rect.width() >= CELESTIAL_SIZE.x + CELESTIAL_MAP_MARGIN * 2.0 {
-            assert!(
-                position.x - CELESTIAL_SIZE.x * 0.5 >= map.rect.min.x + CELESTIAL_MAP_MARGIN - 1e-3
-            );
-            assert!(
-                position.x + CELESTIAL_SIZE.x * 0.5 <= map.rect.max.x - CELESTIAL_MAP_MARGIN + 1e-3
-            );
+        if map.rect.width() >= size.x + CELESTIAL_MAP_MARGIN * 2.0 {
+            assert!(position.x - size.x * 0.5 >= map.rect.min.x + CELESTIAL_MAP_MARGIN - 1e-3);
+            assert!(position.x + size.x * 0.5 <= map.rect.max.x - CELESTIAL_MAP_MARGIN + 1e-3);
         }
-        if map.rect.height() >= CELESTIAL_SIZE.y + CELESTIAL_MAP_MARGIN * 2.0 {
-            assert!(position.y - CELESTIAL_SIZE.y * 0.5 >= map.rect.min.y - 1e-3);
-            assert!(position.y + CELESTIAL_SIZE.y * 0.5 <= map.rect.max.y + 1e-3);
+        if map.rect.height() >= size.y + CELESTIAL_MAP_MARGIN * 2.0 {
+            assert!(position.y - size.y * 0.5 >= map.rect.min.y - 1e-3);
+            assert!(position.y + size.y * 0.5 <= map.rect.max.y + 1e-3);
         }
+    }
+}
+
+#[test]
+fn compact_landmarks_choose_a_clear_map_corner() {
+    for seed in 0..128 {
+        let map = GameModel::new([seed; 32], GameRules::default()).unwrap().map;
+        let kind = map_scenery_selection(&map);
+        if kind == CelestialKind::Magnetar {
+            continue;
+        }
+        let position = celestial_position(&map, kind);
+        let size = CELESTIAL_SIZE * kind.size_scale();
+        let vertical_inset = size.y * 0.5 + CELESTIAL_MAP_MARGIN;
+        assert!(
+            ((position.y - map.rect.center().y).abs() - (map.rect.half_size().y - vertical_inset))
+                .abs()
+                < 1e-3
+        );
+        assert!(!corner_celestial_overlaps_planet(&map, kind, position));
     }
 }
 
@@ -1627,23 +1668,27 @@ fn jump_gates_stay_clear_of_trading_posts_throughout_their_rotation() {
 
     let trading_posts = app
         .world_mut()
-        .query::<(&TradingPostCmp, &Sprite, &Transform)>()
+        .query::<(&TradingPostCmp, &Sprite, &RangeMarkerMotionCmp)>()
         .iter(app.world())
-        .map(|(post, sprite, transform)| {
-            (post.planet, (sprite.custom_size.unwrap(), transform.translation.truncate()))
+        .map(|(post, sprite, motion)| {
+            (post.planet, (sprite.custom_size.unwrap(), motion.anchor, motion.phase))
         })
         .collect::<BTreeMap<_, _>>();
     assert!(!trading_posts.is_empty());
     let mut gates = app.world_mut().query::<(&JumpGateCmp, &Sprite, &Transform)>();
     assert_eq!(gates.iter(app.world()).count(), trading_posts.len());
     for (gate, sprite, transform) in gates.iter(app.world()) {
-        let (trading_size, trading_position) = trading_posts[&gate.planet];
+        let (trading_size, trading_anchor, trading_phase) = trading_posts[&gate.planet];
         // Circumscribed sprite bounds include every orientation of the spinning gate.
         let clearance = (sprite.custom_size.unwrap().length() + trading_size.length()) * 0.5;
-        assert!(
-            transform.translation.truncate().distance(trading_position) > clearance,
-            "the Jump Gate must stay clear of the Trading Post throughout its full rotation"
-        );
+        for step in 0..=240 {
+            let elapsed = RANGE_MARKER_CYCLE_SECONDS * step as f32 / 240.0;
+            let trading_position = range_marker_pose(trading_anchor, elapsed, trading_phase).0;
+            assert!(
+                transform.translation.truncate().distance(trading_position) > clearance,
+                "the Jump Gate must stay clear of the Trading Post throughout its idle drift and full rotation"
+            );
+        }
     }
 }
 
@@ -1805,7 +1850,7 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
     let home = model.players[0].home_planet;
     let enemy = model.players[1].home_planet;
     model.map.get_mut(home).position = Vec2::ZERO;
-    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.0;
+    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.5;
     for id in [home, enemy] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 1);
     }
@@ -1928,7 +1973,7 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
         );
     }
 
-    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.01;
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 4.01;
     app.insert_resource(UiState::default());
     app.update();
     assert!(!app.world().get::<Pickable>(posts[&enemy]).unwrap().is_hoverable);
@@ -2892,7 +2937,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     let enemy = model.players[1].home_planet;
     let enemy_color = model.players[1].color().color();
     model.map.get_mut(home).position = Vec2::ZERO;
-    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.0;
+    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.5;
     let moons = model.map.moons().iter().map(|moon| moon.id).collect::<Vec<_>>();
     let moon = moons[0];
     let enemy_moon = moons[1];
@@ -2942,8 +2987,8 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         (Some(home), None, None, None),
         (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
         (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
-        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 300.0))),
-        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 300.0))),
+        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 400.0))),
+        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 400.0))),
         (Some(moon), None, Some(home), Some((moon, 395.0))),
         (None, None, Some(moon), None),
         (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),
@@ -3030,7 +3075,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         .get_mut(home)
         .army
         .remove(&Unit::Building(Building::TradingPost));
-    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.01;
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 4.01;
     for (hover, preview) in [
         (None, Some(MapRangePreview::SensorPhalanx(home))),
         (None, Some(MapRangePreview::OrbitalRailgun(home))),

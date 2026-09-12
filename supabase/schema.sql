@@ -1442,8 +1442,8 @@ begin
         - (p_second #>> '{position,0}')::double precision;
     v_dy := (p_first #>> '{position,1}')::double precision
         - (p_second #>> '{position,1}')::double precision;
-    -- Planet::SIZE is 100 world units, so three AU is a 300-unit center distance.
-    return v_dx * v_dx + v_dy * v_dy <= 90000.0;
+    -- Planet::SIZE is 100 world units, so four AU is a 400-unit center distance.
+    return v_dx * v_dx + v_dy * v_dy <= 160000.0;
 exception
     when invalid_text_representation or numeric_value_out_of_range then
         return false;

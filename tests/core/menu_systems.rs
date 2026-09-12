@@ -1005,6 +1005,86 @@ fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
 }
 
 #[test]
+fn finished_overlay_shows_draw_for_both_players_after_mutual_home_destruction() {
+    let mut session = test_lobby();
+    let members = {
+        let game = session.active_game.as_mut().unwrap();
+        game.status = MatchStatus::Finished;
+        game.persisted.state.status = MatchStatus::Finished;
+        let homes = game
+            .persisted
+            .state
+            .players
+            .iter()
+            .map(|player| player.home_planet)
+            .collect::<Vec<_>>();
+        for home in homes {
+            game.persisted.state.map.get_mut(home).destroy();
+        }
+        for player in &mut game.persisted.state.players {
+            player.spectator = true;
+        }
+        game.persisted.state.validate().unwrap();
+        assert_eq!(game.persisted.state.winner(), None);
+        game.members.clone()
+    };
+    for member in members {
+        session.membership = Some(member);
+        assert_eq!(local_end_game_heading(&session), "Draw");
+    }
+
+    let mut app = App::new();
+    app.init_resource::<EguiUserTextures>()
+        .init_resource::<Settings>()
+        .init_resource::<Time>()
+        .init_resource::<EndGamePresentation>()
+        .init_resource::<EndGameOverlayFade>()
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<NextState<GameState>>()
+        .insert_resource(State::new(GameState::EndGame))
+        .insert_resource(session)
+        .add_message::<MultiplayerRequest>()
+        .add_message::<ChangeAudioMsg>()
+        .add_systems(Update, (crate::core::ui::systems::set_ui_style, draw_game_overlay).chain());
+    app.world_mut().spawn((Window::default(), PrimaryWindow));
+    let mut context = EguiContext::default();
+    let egui = context.get_mut().clone();
+    app.world_mut().spawn((context, PrimaryEguiContext));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        shapes = menu_app_frame(&mut app, &egui, egui::vec2(640.0, 480.0), AppState::Game, vec![]);
+    }
+    assert!(visible_menu_label(&shapes, "Draw").is_some());
+    assert!(visible_menu_label(&shapes, "You won").is_none());
+    assert!(visible_menu_label(&shapes, "You lost").is_none());
+}
+
+#[test]
+fn eliminated_player_in_a_continuing_four_player_match_sees_loss() {
+    let mut session = test_lobby();
+    let mut model = GameModel::new(
+        [4; 32],
+        GameRules {
+            player_count: 4,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    for player in model.players.iter_mut().take(2) {
+        player.spectator = true;
+        model.map.get_mut(player.home_planet).destroy();
+    }
+    model.validate().unwrap();
+    let game = session.active_game.as_mut().unwrap();
+    game.status = MatchStatus::Active;
+    game.max_players = 4;
+    game.persisted = PersistedGame::new(model);
+
+    assert_eq!(local_end_game_heading(&session), "You lost");
+}
+
+#[test]
 fn end_game_overlay_fades_in_smoothly() {
     assert_eq!(end_game_overlay_alpha(0.0), 0.0);
     assert!((end_game_overlay_alpha(END_GAME_OVERLAY_FADE_SECONDS * 0.5) - 0.5).abs() < 0.001);

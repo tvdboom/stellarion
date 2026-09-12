@@ -262,7 +262,7 @@ impl Plugin for GamePlugin {
                             .after(update_planet_defenses)
                             .after(animate_asteroid_belts),
                         animate_map_ambience,
-                        animate_space_scenery,
+                        animate_space_scenery.after(update_parallax),
                         update_voronoi.after(animate_public_structure_changes),
                     )
                         .in_set(InGameSet),

@@ -1640,6 +1640,7 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
                     ui,
                     &planet,
                     false,
+                    false,
                     fleet_color,
                     &MultiplayerSession::default(),
                     &images,
@@ -1676,6 +1677,7 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
             draw_world_shortcut(
                 ui,
                 &planet,
+                false,
                 false,
                 fleet_color,
                 &MultiplayerSession::default(),
@@ -1737,7 +1739,16 @@ fn world_shortcut_shows_a_protecting_fleet_in_its_players_selected_color() {
         },
         |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                draw_world_shortcut(ui, &planet, false, controller_color, &session, &images, 1.0);
+                draw_world_shortcut(
+                    ui,
+                    &planet,
+                    false,
+                    false,
+                    controller_color,
+                    &session,
+                    &images,
+                    1.0,
+                );
             });
         },
     );
@@ -1781,6 +1792,7 @@ fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
                     ui,
                     &planet,
                     true,
+                    false,
                     Color32::WHITE,
                     &MultiplayerSession::default(),
                     &images,
@@ -1852,6 +1864,73 @@ fn world_groups_use_separate_headings_with_prominent_counts() {
         }),
         "the removed aggregate heading was still painted"
     );
+}
+
+#[test]
+fn owned_worlds_highlight_the_selected_planet_or_moon() {
+    let mut planet = Planet::new(1, "Solar".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(1);
+    let mut moon = Planet::new(2, "Selene".into(), Vec2::ZERO, true, 1.0);
+    moon.controlled = Some(1);
+    let images = ImageIds(
+        [&planet, &moon]
+            .into_iter()
+            .map(|world| (world.image(), egui::TextureId::User(1)))
+            .collect(),
+    );
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet, moon],
+    };
+
+    for (selected, selected_name, other_name) in [(1, "Solar", "Selene"), (2, "Selene", "Solar")] {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let mut state = UiState {
+            planet_selected: Some(selected),
+            ..default()
+        };
+        let mut settings = Settings::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1_280.0, 720.0),
+            )),
+            ..default()
+        };
+        let mut draw = |ui: &mut egui::Ui| {
+            draw_owned_worlds_widget(
+                ui.ctx(),
+                &map,
+                &Player::new(1, 1),
+                &MultiplayerSession::default(),
+                &mut state,
+                &mut settings,
+                &images,
+            );
+        };
+        let mut warmup = context.run_ui(input(), &mut draw);
+        warmup.textures_delta.clear();
+        let mut output = context.run_ui(input(), &mut draw);
+        output.textures_delta.clear();
+
+        let mut rects = Vec::new();
+        for shape in &output.shapes {
+            collect_rects(&shape.shape, &mut rects);
+        }
+        let selected_rows = rects
+            .iter()
+            .copied()
+            .filter(|rect| (rect.height() - WORLD_SHORTCUT_HEIGHT).abs() < 0.5)
+            .collect::<Vec<_>>();
+        assert_eq!(selected_rows.len(), 1);
+        assert!(selected_rows[0].contains(text_rect(&output.shapes, selected_name).center()));
+        assert!(!selected_rows[0].contains(text_rect(&output.shapes, other_name).center()));
+        assert!(rects.iter().any(|rect| {
+            (rect.width() - 3.0).abs() < 0.5 && selected_rows[0].contains_rect(*rect)
+        }));
+    }
 }
 
 #[test]

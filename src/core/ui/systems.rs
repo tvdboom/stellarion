@@ -1112,7 +1112,7 @@ fn draw_railgun_confirmation(
                             .strong()
                             .color(Color32::WHITE),
                         );
-                        ui.add_space(12.0);
+                        ui.add_space(24.0);
                         let deuterium_amount = RichText::new(format_thousands(deuterium_cost))
                             .size(20.0)
                             .strong()
@@ -1229,6 +1229,7 @@ fn draw_world_shortcut(
     ui: &mut Ui,
     planet: &Planet,
     is_home: bool,
+    is_selected: bool,
     controller_fleet_color: Color32,
     session: &MultiplayerSession,
     images: &ImageIds,
@@ -1265,7 +1266,30 @@ fn draw_world_shortcut(
     );
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
-    if response.hovered() {
+    if is_selected {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same((4.0 * scale).round() as u8),
+            Color32::from_rgba_unmultiplied(
+                42,
+                100,
+                136,
+                if response.hovered() {
+                    160
+                } else {
+                    125
+                },
+            ),
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top() + 5.0 * scale),
+                egui::pos2(rect.left() + 3.0 * scale, rect.bottom() - 5.0 * scale),
+            ),
+            1.0 * scale,
+            Color32::from_rgb(107, 185, 226),
+        );
+    } else if response.hovered() {
         ui.painter().rect_filled(
             rect,
             egui::CornerRadius::same((4.0 * scale).round() as u8),
@@ -1412,6 +1436,7 @@ fn draw_owned_worlds_widget(
                             ui,
                             planet,
                             planet.id == player.home_planet,
+                            state.planet_selected == Some(planet.id),
                             fleet_color,
                             session,
                             images,
@@ -1440,6 +1465,7 @@ fn draw_owned_worlds_widget(
                             ui,
                             planet,
                             planet.id == player.home_planet,
+                            state.planet_selected == Some(planet.id),
                             fleet_color,
                             session,
                             images,

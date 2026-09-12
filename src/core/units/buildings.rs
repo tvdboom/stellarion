@@ -211,9 +211,9 @@ impl Description for Building {
             },
             Building::TradingPost => {
                 "A Trading Post establishes a commerce route with another player's Trading Post \
-                within 3 AU. A completed post immediately reveals itself and its owner's color \
-                to players owning or controlling a world within 3 AU, even without their own \
-                Trading Post. Hover a visible post to see its 3 AU range; click a foreign post \
+                within 4 AU. A completed post immediately reveals itself and its owner's color \
+                to players owning or controlling a world within 4 AU, even without their own \
+                Trading Post. Hover a visible post to see its 4 AU range; click a foreign post \
                 to open trade or see which Trading Post requirement is missing. \
                 Each completed level lets its owner send up to 500 Metal, Crystal, \
                 and Deuterium combined in one bilateral trade per player pair each turn. Outgoing \

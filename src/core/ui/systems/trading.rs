@@ -82,22 +82,37 @@ fn route_from_enemy_post(
 }
 
 fn resource_controls(ui: &mut Ui, resources: &mut Resources, available: Resources, enabled: bool) {
-    egui::Grid::new("trade resource controls").num_columns(2).spacing([12.0, 7.0]).show(ui, |ui| {
-        for resource in ResourceName::iter() {
-            ui.label(resource.to_name());
-            let amount = resources.get_mut(&resource);
-            *amount = (*amount).min(available.get(&resource));
-            ui.add_enabled(
-                enabled,
-                egui::DragValue::new(amount).range(0..=available.get(&resource)).speed(10),
-            );
-            ui.end_row();
-        }
-    });
+    egui::Frame::new()
+        .fill(Color32::from_rgb(20, 29, 35))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(69, 88, 101)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(12, 7))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            for resource in ResourceName::iter() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(resource.to_name())
+                            .size(16.0)
+                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let amount = resources.get_mut(&resource);
+                        *amount = (*amount).min(available.get(&resource));
+                        ui.add_enabled(
+                            enabled,
+                            egui::DragValue::new(amount)
+                                .range(0..=available.get(&resource))
+                                .speed(10),
+                        );
+                    });
+                });
+            }
+        });
 }
 
 fn draw_bundle(ui: &mut Ui, label: &str, resources: Resources) {
-    ui.label(RichText::new(label).strong());
+    ui.label(RichText::new(label).size(17.0).strong());
     ui.small(format!(
         "Metal {}   Crystal {}   Deuterium {}   ({} total)",
         resources.metal,
@@ -105,6 +120,69 @@ fn draw_bundle(ui: &mut Ui, label: &str, resources: Resources) {
         resources.deuterium,
         resources.total()
     ));
+}
+
+fn trade_modal_button(ui: &mut Ui, rect: egui::Rect, label: &str, enabled: bool) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.put(
+            rect,
+            egui::Button::new(
+                RichText::new(label).size(17.0).strong().color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            ),
+        )
+    })
+    .inner
+    .on_hover_cursor(CursorIcon::PointingHand)
+}
+
+fn trade_footer_buttons(
+    ui: &mut Ui,
+    footer: egui::Rect,
+    invitation: bool,
+    editable: bool,
+    valid: bool,
+    finished: bool,
+) -> (bool, Option<TradeResponse>) {
+    let count = if finished {
+        1
+    } else if invitation {
+        3
+    } else {
+        2
+    };
+    let gap = 10.0_f32.min(footer.width() * 0.025);
+    let width =
+        112.0_f32.min(((footer.width() - gap * (count - 1) as f32) / count as f32).max(1.0));
+    let row_width = width * count as f32 + gap * (count - 1) as f32;
+    let mut left = footer.center().x - row_width * 0.5;
+    let mut button_rect = || {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(left, footer.center().y - MODAL_BUTTON_HEIGHT * 0.5),
+            egui::vec2(width, MODAL_BUTTON_HEIGHT),
+        );
+        left += width + gap;
+        rect
+    };
+    let mut close = false;
+    let mut action = None;
+    ui.scope(|ui| {
+        style_modal_buttons(ui);
+        close = trade_modal_button(ui, button_rect(), "Close", true).clicked();
+        if !finished {
+            if invitation && trade_modal_button(ui, button_rect(), "Reject", editable).clicked() {
+                action = Some(TradeResponse::Rejected);
+            }
+            let label = if invitation {
+                "Accept"
+            } else {
+                "Send offer"
+            };
+            if trade_modal_button(ui, button_rect(), label, editable && valid).clicked() {
+                action = Some(TradeResponse::Accepted);
+            }
+        }
+    });
+    (close, action)
 }
 
 fn draw_trade_panel(
@@ -159,29 +237,50 @@ fn draw_trade_panel(
                     ui,
                     panel,
                     content,
-                    RichText::new("Trading Post").strong(),
+                    RichText::new("Trading Post")
+                        .size(21.0)
+                        .strong()
+                        .color(ABANDON_CONFIRMATION_TEXT_COLOR),
                     images.get("trading post"),
                 );
                 let body = egui::Rect::from_min_max(
                     egui::pos2(content.left(), header.bottom() + 8.0),
-                    content.max,
+                    egui::pos2(
+                        content.right(),
+                        (content.bottom() - MODAL_BUTTON_HEIGHT - 12.0).max(header.bottom() + 8.0),
+                    ),
                 );
                 ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
-                    ui.vertical_centered(|ui| {
-                        if let Some(owner) = planet.owned {
-                            ui.colored_label(
-                                session.player_color(owner).color().to_color32(),
-                                format!("{} · {}", planet.name, player_name(session, owner)),
-                            );
-                        }
-                        ui.add_space(16.0);
-                        ui.add(egui::Label::new(
-                            "You need a completed Trading Post of your own within 3 AU of this post to trade.",
-                        ).wrap());
-                        ui.add_space(16.0);
-                        ui.button("Close").clicked()
-                    }).inner
-                }).inner
+                    ui.set_clip_rect(body);
+                    egui::ScrollArea::vertical()
+                        .id_salt("trading post requirement")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_width(body.width());
+                            ui.vertical_centered(|ui| {
+                                if let Some(owner) = planet.owned {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} · {}",
+                                            planet.name,
+                                            player_name(session, owner)
+                                        ))
+                                        .size(17.0)
+                                        .color(session.player_color(owner).color().to_color32()),
+                                    );
+                                }
+                                ui.add_space(12.0);
+                                ui.add(egui::Label::new(
+                                    "You need a completed Trading Post of your own within 4 AU of this post to trade.",
+                                ).wrap());
+                            });
+                        });
+                });
+                let footer = egui::Rect::from_min_size(
+                    egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+                    egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+                );
+                trade_footer_buttons(ui, footer, false, false, false, true).0
             },
         );
         if response.inner || response.should_close() {
@@ -225,93 +324,94 @@ fn draw_trade_panel(
         context,
         images,
         egui::Id::new("trading post panel"),
-        egui::vec2(560.0, 430.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
+        egui::vec2(560.0, 540.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
         |ui, panel, content| {
             let header = draw_modal_header(
                 ui,
                 panel,
                 content,
-                RichText::new("Trading Post").strong(),
+                RichText::new("Trading Post")
+                    .size(21.0)
+                    .strong()
+                    .color(ABANDON_CONFIRMATION_TEXT_COLOR),
                 images.get("trading post"),
+            );
+            let footer = egui::Rect::from_min_size(
+                egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+                egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
             );
             let body = egui::Rect::from_min_max(
                 egui::pos2(content.left(), header.bottom() + 8.0),
-                content.max,
+                egui::pos2(content.right(), (footer.top() - 12.0).max(header.bottom() + 8.0)),
             );
-            let mut close = false;
-            let mut action = None;
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
-                ui.vertical_centered(|ui| {
-                    let own_name = map.try_get(own_planet).map_or("your post", |p| p.name.as_str());
-                    let foreign_name =
-                        map.try_get(other_planet).map_or("foreign post", |p| p.name.as_str());
-                    ui.label(format!("{own_name} ↔ {foreign_name} · {other_name}"));
-                    ui.small(format!("Your outgoing limit: {capacity} resources per turn"));
-                });
-                ui.add_space(10.0);
+                ui.set_clip_rect(body);
+                egui::ScrollArea::vertical()
+                    .id_salt(("trading post offer", draft_id))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(body.width());
+                        ui.vertical_centered(|ui| {
+                            let own_name =
+                                map.try_get(own_planet).map_or("your post", |p| p.name.as_str());
+                            let foreign_name =
+                                map.try_get(other_planet).map_or("foreign post", |p| p.name.as_str());
+                            ui.label(
+                                RichText::new(format!("{own_name} ↔ {foreign_name} · {other_name}"))
+                                    .size(17.0)
+                                    .strong(),
+                            );
+                            ui.small(format!("Your outgoing limit: {capacity} resources per turn"));
+                        });
+                        ui.add_space(12.0);
 
-                if let Some(trade) = invitation {
-                    if let Some(other) = other_participant(trade, player.id) {
-                        draw_bundle(ui, &format!("{other_name} offers"), other.resources);
-                        ui.small(format!("Status: {:?}", other.response));
-                    }
-                    ui.separator();
-                }
-
-                ui.label(RichText::new("You offer").strong());
-                resource_controls(ui, &mut state.trade_resources, player.resources, editable);
-                let total = state.trade_resources.total();
-                let valid = total > 0
-                    && total <= capacity
-                    && player.resources.contains(state.trade_resources);
-                let color = if total <= capacity { Color32::GRAY } else { Color32::RED };
-                ui.colored_label(color, format!("{total} / {capacity} selected"));
-                ui.add_space(8.0);
-
-                if finalized {
-                    ui.colored_label(
-                        TRADE_ACCENT,
-                        "Trade accepted. Your offer is reserved now; incoming resources arrive when the turn resolves.",
-                    );
-                } else if canceled {
-                    ui.colored_label(Color32::LIGHT_RED, "This trade was rejected.");
-                } else if let Some(trade) = invitation {
-                    let own = trade.participant(player.id);
-                    let status = own.map_or(TradeResponse::Pending, |entry| entry.response);
-                    ui.small(match status {
-                        TradeResponse::Accepted => "You accepted these amounts. Changes require confirmation again.",
-                        TradeResponse::Pending => "Review both offers, then accept the latest amounts.",
-                        TradeResponse::Rejected => "You rejected this trade.",
-                    });
-                } else {
-                    ui.small("The other player can set their return offer after you send this proposal.");
-                }
-
-                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("Close").clicked() {
-                            close = true;
+                        if let Some(trade) = invitation {
+                            if let Some(other) = other_participant(trade, player.id) {
+                                draw_bundle(ui, &format!("{other_name} offers"), other.resources);
+                                ui.small(format!("Status: {:?}", other.response));
+                            }
+                            ui.separator();
                         }
-                        if !finalized && !canceled {
-                            if invitation.is_some()
-                                && ui
-                                    .add_enabled(editable, egui::Button::new("Reject"))
-                                    .clicked()
-                            {
-                                action = Some(TradeResponse::Rejected);
-                            }
-                            let label = if invitation.is_some() { "Accept" } else { "Send offer" };
-                            if ui
-                                .add_enabled(editable && valid, egui::Button::new(label))
-                                .clicked()
-                            {
-                                action = Some(TradeResponse::Accepted);
-                            }
+
+                        ui.label(RichText::new("You offer").size(18.0).strong());
+                        ui.add_space(4.0);
+                        resource_controls(ui, &mut state.trade_resources, player.resources, editable);
+                        let total = state.trade_resources.total();
+                        let color = if total <= capacity { Color32::GRAY } else { Color32::LIGHT_RED };
+                        ui.label(RichText::new(format!("{total} / {capacity} selected")).size(15.0).color(color));
+                        ui.add_space(8.0);
+
+                        if finalized {
+                            ui.colored_label(
+                                TRADE_ACCENT,
+                                "Trade accepted. Your offer is reserved now; incoming resources arrive when the turn resolves.",
+                            );
+                        } else if canceled {
+                            ui.colored_label(Color32::LIGHT_RED, "This trade was rejected.");
+                        } else if let Some(trade) = invitation {
+                            let own = trade.participant(player.id);
+                            let status = own.map_or(TradeResponse::Pending, |entry| entry.response);
+                            ui.small(match status {
+                                TradeResponse::Accepted => "You accepted these amounts. Changes require confirmation again.",
+                                TradeResponse::Pending => "Review both offers, then accept the latest amounts.",
+                                TradeResponse::Rejected => "You rejected this trade.",
+                            });
+                        } else {
+                            ui.small("The other player can set their return offer after you send this proposal.");
                         }
                     });
-                });
             });
-            (close, action)
+            let total = state.trade_resources.total();
+            let valid =
+                total > 0 && total <= capacity && player.resources.contains(state.trade_resources);
+            trade_footer_buttons(
+                ui,
+                footer,
+                invitation.is_some(),
+                editable,
+                valid,
+                finalized || canceled,
+            )
         },
     );
 
