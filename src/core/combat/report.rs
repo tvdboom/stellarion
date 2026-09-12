@@ -28,7 +28,7 @@ pub struct MissionReport {
     /// Planet as it was before the mission resolution
     pub planet: Planet,
 
-    /// Number of attacking probes that left after one round of combat
+    /// Probes returning with intelligence after reconnaissance, with or without combat.
     pub scout_probes: usize,
 
     /// Surviving units from the attacker

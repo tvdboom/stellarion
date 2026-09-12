@@ -302,6 +302,31 @@ fn protection_changes_notify_the_affected_player_and_focus_the_world() {
     assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
 }
 
+#[test]
+fn conquered_worlds_reset_protection_without_a_revocation_toast() {
+    use crate::core::map::planet::PlanetKind;
+
+    for kind in [PlanetKind::Dry, PlanetKind::Gray] {
+        let mut current = record("protection", 4, 7, MatchStatus::Active);
+        let protected = current.persisted.state.players[0].home_planet;
+        let planet = current.persisted.state.map.get_mut(protected);
+        planet.kind = kind;
+        planet.protection_permissions.insert(2);
+        let mut conquered = current.clone();
+        conquered.persisted.state.map.get_mut(protected).control(2);
+        assert!(conquered.persisted.state.map.get(protected).protection_permissions.is_empty());
+        let session = MultiplayerSession {
+            membership: Some(membership(&current.id, 2, "Conqueror", true)),
+            active_game: Some(current),
+            ..default()
+        };
+        let output = BackendOutput::Record(Operation::Load, conquered);
+
+        assert!(protection_permission_notifications(&output, &session).is_empty());
+        assert_eq!(revoked_protection_targets(&output, &session), vec![protected]);
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn host_and_guest_disconnects_refresh_before_due_event_polls() {

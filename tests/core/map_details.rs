@@ -885,7 +885,6 @@ fn zoom_and_age_disable_invisible_hit_targets() {
         .world_mut()
         .spawn((
             DebrisHitTarget {
-                planet: 1,
                 site: DebrisSite {
                     losses: 16,
                     latest_turn: 2,
@@ -954,15 +953,99 @@ fn debris_art_is_not_the_hover_target() {
         .collect::<Vec<_>>();
     assert_eq!(debris.len(), debris_visuals(DebrisSize::Large).pieces);
     assert!(debris.iter().all(|(_, pickable)| !pickable.is_hoverable));
+    let piece_count = debris.len();
 
     let targets = app
         .world_mut()
         .query_filtered::<(&Sprite, &Pickable), With<DebrisHitTarget>>()
         .iter(app.world())
         .collect::<Vec<_>>();
-    assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].0.color.alpha(), 0.0);
-    assert!(!targets[0].1.is_hoverable);
+    assert_eq!(targets.len(), piece_count);
+    assert!(targets
+        .iter()
+        .all(|(sprite, pickable)| { sprite.color.alpha() == 0.0 && !pickable.is_hoverable }));
+}
+
+#[test]
+fn debris_hit_targets_follow_the_art_and_reject_empty_space() {
+    let planet = model().map.planets[0].clone();
+    let images = Assets::<Image>::default();
+    let atlases = Assets::<TextureAtlasLayout>::default();
+    // Use the same bounds calculation as Bevy's sprite picking backend.
+    let contains = |sprite: &Sprite, transform: &GlobalTransform, point: Vec2| {
+        let local = transform.affine().inverse().transform_point3(point.extend(0.0));
+        sprite.compute_pixel_space_point(local.truncate(), default(), &images, &atlases).is_ok()
+    };
+    for losses in [3, 4, 16] {
+        for seed in [0, 71, 73] {
+            let mut app = App::new();
+            app.add_plugins(TransformPlugin)
+                .init_resource::<DetailAnimationTime>()
+                .add_systems(Update, animate_debris);
+            spawn_debris(
+                &mut app.world_mut().commands(),
+                &planet,
+                &DebrisSite {
+                    losses,
+                    latest_turn: 2,
+                    seed,
+                },
+                Handle::default(),
+                Vec2::splat(512.0),
+            );
+            app.world_mut().flush();
+            for elapsed in [0.0, 7.0, 30.0, 120.0] {
+                app.world_mut().resource_mut::<DetailAnimationTime>().0 = elapsed;
+                app.update();
+                let targets = app
+                    .world_mut()
+                    .query_filtered::<(&Sprite, &GlobalTransform, &ChildOf), With<DebrisHitTarget>>(
+                    )
+                    .iter(app.world())
+                    .map(|(sprite, transform, parent)| {
+                        (sprite.clone(), *transform, parent.parent())
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    targets.len(),
+                    debris_visuals(DebrisSize::from_losses(losses).unwrap()).pieces
+                );
+                for (sprite, transform, parent) in &targets {
+                    let art = app.world().get::<Sprite>(*parent).unwrap();
+                    let art_transform = app.world().get::<GlobalTransform>(*parent).unwrap();
+                    assert!(contains(sprite, transform, art_transform.translation().truncate()));
+                    // Transparent atlas padding must not be a hit, even after rotation and drift.
+                    let margin = art_transform.transform_point(Vec3::new(
+                        art.custom_size.unwrap().x * 0.49,
+                        0.0,
+                        0.0,
+                    ));
+                    assert!(!contains(sprite, transform, margin.truncate()));
+                }
+                let art = app
+                    .world_mut()
+                    .query_filtered::<(&Sprite, &GlobalTransform), With<Debris>>()
+                    .iter(app.world())
+                    .map(|(sprite, transform)| (sprite.clone(), *transform))
+                    .collect::<Vec<_>>();
+                // Scan the plume and its surroundings: no target may select empty space
+                // outside every rendered piece, including the old field rectangle's corners.
+                for x in 0..32 {
+                    for y in 0..24 {
+                        let point = planet.position
+                            + Vec2::new(-2.1 + x as f32 * 0.05, -0.6 + y as f32 * 0.05)
+                                * planet.size();
+                        if !art.iter().any(|(sprite, transform)| contains(sprite, transform, point))
+                        {
+                            assert!(targets.iter().all(|(sprite, transform, _)| {
+                                !contains(sprite, transform, point)
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -1103,7 +1186,7 @@ fn projection_reuses_entities_and_removes_expired_debris() {
     let original = debris(&mut app);
     assert_eq!(original.len(), debris_visuals(DebrisSize::Large).pieces);
     let original_target = debris_targets(&mut app);
-    assert_eq!(original_target.len(), 1);
+    assert_eq!(original_target.len(), original.len());
     app.update();
     assert_eq!(debris(&mut app), original);
     assert_eq!(debris_targets(&mut app), original_target);

@@ -378,6 +378,11 @@ begin
     v_missions := p_persisted #> '{state,missions}';
     v_orbital_strikes := p_persisted #> '{state,orbital_strikes}';
     v_trades := p_persisted #> '{state,trades}';
+    if jsonb_typeof(v_trades) is distinct from 'array'
+       or jsonb_array_length(v_trades) > 6 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trades';
+    end if;
+
 
     if p_max_players is null
        or p_max_players not between 2 and 4
@@ -972,8 +977,12 @@ begin
 end;
 $$;
 
--- Creates one immutable inviter draft plus a private list of invited player slots. Responses are
--- updated separately so every participant sees the same live panel without exposing other state.
+-- Creates an inviter fleet plus a private list of invited player slots. Pending responses publish
+-- live fleet drafts and their own bombing/probe orders. Accept can be undone until launch.
+-- Owner edits advance the proposal revision and return accepted guests to pending; stale acceptances
+-- are rejected. Both editors can close without canceling this current-turn planning record.
+-- A launch needs the inviter and at least one accepted guest; unanswered guests are excluded.
+-- Saving that launch freezes the roster and closes the invitation to further responses.
 create function public.stellarion_create_joint_attack(
     p_game_id uuid,
     p_invitation jsonb
@@ -985,6 +994,9 @@ set search_path = pg_catalog, public, auth
 as $$
 declare
     v_game public.stellarion_games%rowtype;
+    v_previous jsonb;
+    v_old_participant jsonb;
+    v_revision bigint;
     v_player bigint;
     v_attack_id bigint;
     v_participants jsonb;
@@ -995,10 +1007,6 @@ declare
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
-    end if;
-    if jsonb_typeof(v_trades) is distinct from 'array'
-       or jsonb_array_length(v_trades) > 6 then
-        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trades';
     end if;
     select * into v_game from public.stellarion_games where id = p_game_id for update;
     if not found then
@@ -1012,18 +1020,19 @@ begin
     if p_invitation is null
        or jsonb_typeof(p_invitation) is distinct from 'object'
        or not (p_invitation ?& array[
-           'id', 'turn', 'inviter', 'destination', 'objective', 'bombing',
-           'combat_probes', 'canceled', 'participants'
+           'id', 'revision', 'turn', 'inviter', 'destination', 'objective', 'bombing',
+           'combat_probes', 'canceled', 'launched', 'participants'
        ])
        or p_invitation - array[
-           'id', 'turn', 'inviter', 'destination', 'objective', 'bombing',
-           'combat_probes', 'canceled', 'participants'
+           'id', 'revision', 'turn', 'inviter', 'destination', 'objective', 'bombing',
+           'combat_probes', 'canceled', 'launched', 'participants'
        ] <> '{}'::jsonb
     then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
     end if;
     begin
         v_attack_id := (p_invitation ->> 'id')::bigint;
+        v_revision := (p_invitation ->> 'revision')::bigint;
     exception
         when invalid_text_representation or numeric_value_out_of_range then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
@@ -1041,6 +1050,7 @@ begin
        or (p_invitation ->> 'turn')::bigint <> v_game.current_turn
        or (p_invitation ->> 'inviter')::bigint <> v_player
        or coalesce((p_invitation ->> 'canceled')::boolean, true)
+       or coalesce((p_invitation ->> 'launched')::boolean, true)
        or (p_invitation ->> 'objective') not in ('Colonize', 'Attack', 'Destroy')
        or v_attack_id <= 0
        or jsonb_typeof(v_participants) is distinct from 'array'
@@ -1055,13 +1065,11 @@ begin
        or (v_participants -> 0 ->> 'response') <> 'accepted'
        or jsonb_typeof(v_participants -> 0 -> 'contribution' -> 'army') is distinct from 'object'
        or (v_participants -> 0 -> 'contribution' ->> 'player_id')::bigint <> v_player
-       or v_participants -> 0 -> 'contribution' -> 'army' = '{}'::jsonb
-       or ((p_invitation ->> 'objective') = 'Colonize'
-           and coalesce((v_participants -> 0 -> 'contribution' -> 'army'
-                         ->> 'Ship(ColonyShip)')::bigint, 0) < 1)
-       or ((p_invitation ->> 'objective') = 'Destroy'
-           and coalesce((v_participants -> 0 -> 'contribution' -> 'army'
-                         ->> 'Ship(WarSun)')::bigint, 0) < 1)
+       or v_revision is null or v_revision < 0
+       or (v_participants -> 0 -> 'contribution' -> 'bombing') is distinct from (p_invitation -> 'bombing')
+       or (v_participants -> 0 -> 'contribution' -> 'combat_probes') is distinct from (p_invitation -> 'combat_probes')
+       or jsonb_typeof(p_invitation -> 'combat_probes') is distinct from 'boolean'
+       or (p_invitation ->> 'bombing') not in ('None', 'Economic', 'Industrial')
        or exists (
            select 1
              from jsonb_array_elements(v_participants) with ordinality
@@ -1086,11 +1094,56 @@ begin
     then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
     end if;
-    insert into public.stellarion_joint_attacks(
-        game_id, attack_id, turn, inviter, invitation
-    ) values (
-        p_game_id, v_attack_id, v_game.current_turn, v_player, p_invitation
-    );
+    select invitation into v_previous from public.stellarion_joint_attacks
+     where game_id = p_game_id and attack_id = v_attack_id;
+    if found then
+        if (v_previous ->> 'inviter')::bigint <> v_player
+           or (v_previous ->> 'revision')::bigint <> v_revision
+           or (v_previous ->> 'canceled')::boolean
+           or (v_previous ->> 'launched')::boolean then
+            raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+        end if;
+        -- Duplicate publication leaves acceptance intact.
+        if v_previous -> 'destination' = p_invitation -> 'destination'
+           and v_previous -> 'objective' = p_invitation -> 'objective'
+           and v_previous #> '{participants,0,contribution}' = p_invitation #> '{participants,0,contribution}'
+           and (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_previous -> 'participants') item)
+             = (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_participants) item) then
+            return v_previous;
+        end if;
+        p_invitation := jsonb_set(p_invitation, '{revision}', to_jsonb(v_revision + 1));
+        select jsonb_agg(
+            case when ordinal = 1 then entries.item
+                 when old.item is not null then jsonb_build_object(
+                     'player_id', entries.item -> 'player_id',
+                     'response', case when old.item ->> 'response' = 'rejected' then 'rejected' else 'pending' end,
+                     'contribution', old.item -> 'contribution'
+                 ) else entries.item end order by ordinal
+        ) into v_participants
+        from jsonb_array_elements(v_participants) with ordinality entries(item, ordinal)
+        left join lateral (
+            select prior as item from jsonb_array_elements(v_previous -> 'participants') prior
+             where prior -> 'player_id' = entries.item -> 'player_id'
+        ) old on true;
+        p_invitation := jsonb_set(p_invitation, '{participants}', v_participants);
+        update public.stellarion_joint_attacks
+           set invitation = p_invitation, updated_at = clock_timestamp()
+         where game_id = p_game_id and attack_id = v_attack_id;
+        for v_old_participant in select value from jsonb_array_elements(v_previous -> 'participants')
+        loop
+            if not exists (select 1 from jsonb_array_elements(v_participants) item
+                where item -> 'player_id' = v_old_participant -> 'player_id') then
+                perform public.stellarion_emit_event(p_game_id, 'joint_attack_changed',
+                    v_game.current_turn, (v_old_participant ->> 'player_id')::bigint);
+            end if;
+        end loop;
+    else
+        if v_revision <> 0 then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_revision';
+        end if;
+        insert into public.stellarion_joint_attacks(game_id, attack_id, turn, inviter, invitation)
+        values (p_game_id, v_attack_id, v_game.current_turn, v_player, p_invitation);
+    end if;
     for v_participant in select value from jsonb_array_elements(v_participants)
     loop
         perform public.stellarion_emit_event(
@@ -1108,6 +1161,7 @@ $$;
 create function public.stellarion_respond_joint_attack(
     p_game_id uuid,
     p_attack_id bigint,
+    p_expected_revision bigint,
     p_response text,
     p_contribution jsonb
 )
@@ -1131,21 +1185,41 @@ begin
     if v_player is null then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
+    -- Serialize draft responses with launch saves under the same game lock.
+    perform 1 from public.stellarion_games where id = p_game_id for update;
     select * into v_row from public.stellarion_joint_attacks
      where game_id = p_game_id and attack_id = p_attack_id for update;
     if not found then
         raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
     end if;
-    if v_player = v_row.inviter
+    if not exists (select 1 from public.stellarion_games
+        where id = p_game_id and status = 'active' and current_turn = v_row.turn)
+       or v_player = v_row.inviter
        or coalesce((v_row.invitation ->> 'canceled')::boolean, false)
-       or p_response not in ('accepted', 'rejected')
+       or coalesce((v_row.invitation ->> 'launched')::boolean, false)
+       or (v_row.invitation ->> 'revision')::bigint is distinct from p_expected_revision
+       or p_response not in ('pending', 'accepted', 'rejected')
        or not exists (
            select 1 from jsonb_array_elements(v_row.invitation -> 'participants') participant
             where (participant ->> 'player_id')::bigint = v_player
-              and (participant ->> 'response') = 'pending'
+              and (participant ->> 'response') in ('pending', 'accepted')
        )
     then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    if p_response in ('pending', 'accepted') then
+        if p_contribution is null
+           or jsonb_typeof(p_contribution) is distinct from 'object'
+           or not (p_contribution ?& array['player_id', 'origin', 'army', 'bombing', 'combat_probes'])
+           or p_contribution - array['player_id', 'origin', 'army', 'bombing', 'combat_probes'] <> '{}'::jsonb
+           or (p_contribution ->> 'player_id')::bigint <> v_player
+           or jsonb_typeof(p_contribution -> 'army') is distinct from 'object'
+           or jsonb_typeof(p_contribution -> 'combat_probes') is distinct from 'boolean'
+           or jsonb_typeof(p_contribution -> 'bombing') is distinct from 'string'
+           or (p_contribution ->> 'bombing') not in ('None', 'Economic', 'Industrial')
+        then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_contribution';
+        end if;
     end if;
     if p_response = 'accepted' then
         select planet into v_planet
@@ -1156,6 +1230,8 @@ begin
         if v_planet is null
            or (v_planet ->> 'owned')::bigint = v_player
            or (v_planet ->> 'controlled')::bigint = v_player
+           or coalesce(v_planet #> array['army', 'protectors', v_player::text], '{}'::jsonb) <> '{}'::jsonb
+           or p_contribution -> 'army' = '{}'::jsonb
            or p_contribution is null
            or (p_contribution ->> 'player_id')::bigint <> v_player
            or jsonb_typeof(p_contribution -> 'army') is distinct from 'object'
@@ -1168,7 +1244,7 @@ begin
                     then jsonb_build_object(
                         'player_id', v_player,
                         'response', p_response,
-                        'contribution', case when p_response = 'accepted'
+                        'contribution', case when p_response in ('pending', 'accepted')
                                              then p_contribution else 'null'::jsonb end
                     )
                     else participant end
@@ -1216,6 +1292,7 @@ begin
     if v_player is null then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
+    perform 1 from public.stellarion_games where id = p_game_id for update;
     select * into v_row from public.stellarion_joint_attacks
      where game_id = p_game_id and attack_id = p_attack_id for update;
     if not found then
@@ -1223,6 +1300,7 @@ begin
     end if;
     if v_player <> v_row.inviter
        or coalesce((v_row.invitation ->> 'canceled')::boolean, false)
+       or coalesce((v_row.invitation ->> 'launched')::boolean, false)
        or v_row.turn <> (
            select current_turn from public.stellarion_games where id = p_game_id
        )
@@ -1430,6 +1508,7 @@ begin
        or (p_invitation ->> 'turn')::bigint <> v_game.current_turn
        or (p_invitation ->> 'proposer')::bigint <> v_player
        or coalesce((p_invitation ->> 'canceled')::boolean, true)
+       or coalesce((p_invitation ->> 'launched')::boolean, true)
        or coalesce((p_invitation ->> 'finalized')::boolean, true)
        or (v_first ->> 'player_id')::bigint >= (v_second ->> 'player_id')::bigint
        or not exists (
@@ -1884,6 +1963,8 @@ begin
                                'return_objective', 'Protect',
                                'bombing', 'None',
                                'combat_probes', false,
+                               -- Return fleets never attempt the outgoing Spy-only cover option.
+                               'deep_cover', false,
                                'jump_gate', false,
                                'logs', (mission ->> 'logs') || E'\n- (' || v_game.current_turn::text
                                    || ') Protection access canceled; returning to home planet '
@@ -1957,6 +2038,7 @@ begin
                     'army', v_stationed,
                     'bombing', 'None',
                     'combat_probes', false,
+                    'deep_cover', false,
                     'jump_gate', false,
                     'logs', '- (' || v_game.current_turn::text || ') Protection access at '
                         || (v_planet ->> 'name') || ' canceled; returning to home planet '
@@ -2285,14 +2367,19 @@ begin
            or v_invitation -> 'objective' <> v_command -> 'objective'
            or v_invitation -> 'bombing' <> v_command -> 'bombing'
            or v_invitation -> 'combat_probes' <> v_command -> 'combat_probes'
-           or exists (
-               select 1 from jsonb_array_elements(v_invitation -> 'participants') participant
-                where participant ->> 'response' = 'pending'
-           )
            or jsonb_array_length(v_expected_contributions) < 2
            or v_expected_contributions <> v_command -> 'contributions'
         then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
+        end if;
+        if not coalesce((v_invitation ->> 'launched')::boolean, false) then
+            update public.stellarion_joint_attacks
+               set invitation = jsonb_set(invitation, '{launched}', 'true'::jsonb),
+                   updated_at = clock_timestamp()
+             where game_id = p_game_id and attack_id = (v_command ->> 'attack_id')::bigint;
+            perform public.stellarion_emit_event(
+                p_game_id, 'joint_attack_changed', v_turn, (participant ->> 'player_id')::bigint
+            ) from jsonb_array_elements(v_invitation -> 'participants') participant;
         end if;
     end loop;
 
@@ -2449,16 +2536,31 @@ begin
            or v_invitation -> 'objective' <> v_command -> 'objective'
            or v_invitation -> 'bombing' <> v_command -> 'bombing'
            or v_invitation -> 'combat_probes' <> v_command -> 'combat_probes'
-           or exists (
-               select 1 from jsonb_array_elements(v_invitation -> 'participants') participant
-                where participant ->> 'response' = 'pending'
-           )
            or jsonb_array_length(v_expected_contributions) < 2
            or v_expected_contributions <> v_command -> 'contributions'
         then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
         end if;
+        if not coalesce((v_invitation ->> 'launched')::boolean, false) then
+            update public.stellarion_joint_attacks
+               set invitation = jsonb_set(invitation, '{launched}', 'true'::jsonb),
+                   updated_at = clock_timestamp()
+             where game_id = p_game_id and attack_id = (v_command ->> 'attack_id')::bigint;
+            perform public.stellarion_emit_event(
+                p_game_id, 'joint_attack_changed', v_turn, (participant ->> 'player_id')::bigint
+            ) from jsonb_array_elements(v_invitation -> 'participants') participant;
+        end if;
     end loop;
+
+    if exists (
+        select 1 from public.stellarion_joint_attacks
+         where game_id = p_game_id and inviter = v_player_id and turn = v_turn
+           and not (invitation ->> 'canceled')::boolean
+           and not (invitation ->> 'launched')::boolean
+    ) then
+        raise exception using errcode = 'P0001',
+            message = 'STLR_INVALID_DATA:Send or cancel your allied mission before ending the turn.';
+    end if;
 
     p_submission := jsonb_set(p_submission, '{generation}', to_jsonb(v_generation));
     v_digest := encode(
@@ -2956,9 +3058,9 @@ revoke all on function public.stellarion_create_joint_attack(uuid, jsonb)
     from public, anon;
 grant execute on function public.stellarion_create_joint_attack(uuid, jsonb)
     to authenticated;
-revoke all on function public.stellarion_respond_joint_attack(uuid, bigint, text, jsonb)
+revoke all on function public.stellarion_respond_joint_attack(uuid, bigint, bigint, text, jsonb)
     from public, anon;
-grant execute on function public.stellarion_respond_joint_attack(uuid, bigint, text, jsonb)
+grant execute on function public.stellarion_respond_joint_attack(uuid, bigint, bigint, text, jsonb)
     to authenticated;
 revoke all on function public.stellarion_cancel_joint_attack(uuid, bigint)
     from public, anon;

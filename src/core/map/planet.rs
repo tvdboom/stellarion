@@ -928,8 +928,8 @@ impl Planet {
 
     /// Returns the units associated with this player at this world.
     ///
-    /// A controller uses the ordinary planet army. A foreign protector receives their separately
-    /// stationed fleet for defense and dedicated recall handling, but cannot launch new missions.
+    /// A controller uses the ordinary planet army. A foreign protector can dispatch only their
+    /// separately stationed fleet, without gaining access to the controller's units.
     pub fn mission_origin_army(&self, player_id: PlayerId) -> Option<&Army> {
         if self.controlled == Some(player_id) || self.owned == Some(player_id) {
             Some(self.army.controller())
@@ -945,6 +945,14 @@ impl Planet {
         } else {
             self.army.protector_mut(player_id)
         }
+    }
+
+    /// Returns whether this player can select the world as a mission origin.
+    pub fn can_launch_mission(&self, player_id: PlayerId) -> bool {
+        !self.is_destroyed
+            && (self.owned == Some(player_id)
+                || self.controlled == Some(player_id)
+                || self.army.protector(player_id).is_some_and(|army| army.has_army()))
     }
 
     /// Returns whether the current controller has invited this player to protect the world.

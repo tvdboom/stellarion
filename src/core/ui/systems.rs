@@ -46,6 +46,7 @@ use crate::core::simulation::{
     TurnCommand,
 };
 use crate::core::states::GameState;
+use crate::core::trading::visible_trading_post_owner;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
@@ -164,14 +165,18 @@ pub struct UiState {
     pub mission_info: Mission,
     /// Player slots selected for the current joint-attack invitation.
     pub(crate) joint_attack_invitees: std::collections::BTreeSet<PlayerId>,
-    /// Whether the compact new-mission control has opened the co-attacker picker.
-    pub(crate) joint_attack_invite_picker_open: bool,
-    /// Invitation created from the current frozen mission draft.
+    /// Whether the current mission is being coordinated with invited players.
+    pub(crate) allied_mission: bool,
+    /// Invitation linked to the current editable mission draft.
     pub(crate) joint_attack_draft_id: Option<u64>,
+    /// Preserved owner draft, independent of planet selection while looking around the map.
+    pub(crate) joint_attack_owner_draft: Option<Mission>,
     /// Invitation currently opened from its persistent notification.
     pub(crate) joint_attack_open: Option<u64>,
     /// Origin and units being prepared in the invitation response modal.
     pub(crate) joint_attack_contribution: Mission,
+    /// Invitation whose draft has been restored into the response editor.
+    pub(crate) joint_attack_loaded: Option<u64>,
     /// Rejections already forwarded into the ordinary transient notification queue.
     pub(crate) joint_attack_rejections_notified: std::collections::BTreeSet<(u64, PlayerId)>,
     /// Canceled invitations already forwarded into the ordinary transient notification queue.
@@ -195,6 +200,7 @@ pub struct UiState {
 pub(crate) enum MapRangePreview {
     SensorPhalanx(PlanetId),
     OrbitalRailgun(PlanetId),
+    TradingPost(PlanetId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1452,7 +1458,7 @@ fn draw_owned_worlds_widget(
         .rect
 }
 
-/// Counts only controller intelligence already visible through the map and mission reports.
+/// Counts only ownership and controller intelligence visible through the map and reports.
 pub(crate) fn known_planet_counts(
     map: &Map,
     player: &Player,
@@ -1462,9 +1468,10 @@ pub(crate) fn known_planet_counts(
     for planet in map.planets.iter().filter(|planet| !planet.is_moon() && !planet.is_destroyed) {
         let controller = if planet.owned.is_some()
             && (planet.army.amount(&Unit::space_dock()) > 0
-                || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0)
+                || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0
+                || visible_trading_post_owner(map, player.id, planet).is_some())
         {
-            // Public strategic orbitals identify their planet's owner. This is ownership
+            // Visible public orbitals identify their planet's owner. This is ownership
             // intelligence even when another player temporarily controls the world.
             planet.owned
         } else if player.controls(planet) {
@@ -3039,9 +3046,10 @@ fn draw_planet_overview(
                 .on_disabled_hover_small_ext(
                     "Continue your turn before changing protection orders.",
                 );
-            ui.add_tinted_image_painter(
+            ui.painter().image(
                 images.get("recall"),
                 action_rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 planet_action_icon_tint(&response),
             );
             if response.clicked() {
@@ -4531,7 +4539,13 @@ pub fn draw_ui(
     let mission_hover_from_ui = std::mem::take(&mut state.mission_hover_from_ui);
 
     if mission_panel_visible(&state) {
-        let (window_w, window_h) = (850., 640.);
+        let participants = if state.allied_mission {
+            state.joint_attack_invitees.len() + 1
+        } else {
+            0
+        };
+        let size = missions::mission_panel_size(egui::vec2(width, height), participants);
+        let (window_w, window_h) = (size.x, size.y);
 
         let is_hovered = contexts.ctx_mut().is_ok_and(|ctx| ctx.is_pointer_over_egui());
         draw_panel(

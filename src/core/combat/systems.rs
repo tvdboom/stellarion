@@ -922,28 +922,26 @@ pub fn setup_combat(
         Vec::new()
     };
 
-    let buildings = match report.mission.bombing {
-        BombingRaid::Economic => Unit::resource_buildings()
-            .into_iter()
-            .filter_map(|u| {
-                let amount = report.planet.army.amount(&u);
-                (amount > 0).then_some((u, amount))
-            })
-            .collect::<Vec<_>>(),
-        BombingRaid::Industrial => Unit::industrial_buildings()
-            .into_iter()
-            .filter_map(|u| {
-                let amount = report.planet.army.amount(&u);
-                (amount > 0).then_some((u, amount))
-            })
-            .collect::<Vec<_>>(),
-        BombingRaid::None => Vec::new(),
-    };
+    let buildings = Unit::resource_buildings()
+        .into_iter()
+        .filter(|_| report.mission.includes_bombing(&BombingRaid::Economic))
+        .chain(
+            Unit::industrial_buildings()
+                .into_iter()
+                .filter(|_| report.mission.includes_bombing(&BombingRaid::Industrial)),
+        )
+        .filter_map(|unit| {
+            let amount = report.planet.army.amount(&unit);
+            (amount > 0).then_some((unit, amount))
+        })
+        .collect::<Vec<_>>();
 
     let ps = report.planet.army.amount(&Unit::planetary_shield());
     let draw_ps = ps > 0
         && report.mission.objective != Icon::MissileStrike
-        && (!defending_def.is_empty() || report.mission.bombing != BombingRaid::None);
+        && (!defending_def.is_empty()
+            || (report.mission.includes_bombing(&BombingRaid::Economic)
+                || report.mission.includes_bombing(&BombingRaid::Industrial)));
 
     // Reserve the fixed controls' complete vertical band, including the card stat bars.
     // This works for both the Exit combat button and its adjacent speed readout.
@@ -1518,7 +1516,8 @@ pub fn animate_combat(
 
         // Replay only a recorded building raid. Weapon shots at the planetary shield
         // belong to Fire and must not trigger a second Bomber animation.
-        if report.mission.bombing != BombingRaid::None
+        if (report.mission.includes_bombing(&BombingRaid::Economic)
+            || report.mission.includes_bombing(&BombingRaid::Industrial))
             && round
                 .units(&Side::Attacker)
                 .iter()

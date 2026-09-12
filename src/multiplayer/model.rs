@@ -95,7 +95,7 @@ pub struct JointAttackParticipant {
     pub player_id: PlayerId,
     /// Current decision shown in the shared invitation panel.
     pub response: JointAttackResponse,
-    /// Accepted origin and army; absent while pending or rejected.
+    /// Latest draft or accepted fleet; absent before choosing and after rejection.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub contribution: Option<JointAttackContribution>,
 }
@@ -104,6 +104,8 @@ pub struct JointAttackParticipant {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JointAttackInvitation {
+    /// Owner's proposal version; an acceptance must refer to this exact version.
+    pub revision: u64,
     /// Stable operation identifier.
     pub id: u64,
     /// Turn on which the invitation and eventual launch were prepared.
@@ -114,12 +116,14 @@ pub struct JointAttackInvitation {
     pub destination: usize,
     /// Shared Colonize, Attack, or Destroy objective.
     pub objective: Icon,
-    /// Inviter-selected bombing policy.
+    /// Inviter fleet bombing policy.
     pub bombing: BombingRaid,
-    /// Inviter-selected probe combat policy.
+    /// Inviter fleet probe combat policy.
     pub combat_probes: bool,
     /// Whether the inviter canceled this draft before launching the mission.
     pub canceled: bool,
+    /// Whether a saved launch has frozen the accepted participants.
+    pub launched: bool,
     /// Inviter contribution followed by every invited player in stable slot order.
     pub participants: Vec<JointAttackParticipant>,
 }

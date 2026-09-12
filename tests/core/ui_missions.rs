@@ -1,6 +1,240 @@
 use super::*;
 
 #[test]
+fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
+    use crate::core::simulation::{GameModel, GameRules};
+
+    for width in [840.0, 1_200.0] {
+        for has_relay in [false, true] {
+            let mut model = GameModel::new([75; 32], GameRules::default()).unwrap();
+            model.start().unwrap();
+            let mut player = model.players[0].clone();
+            player.resources.deuterium = 100_000;
+            let origin = player.home_planet;
+            let destination = model.players[1].home_planet;
+            model.map.get_mut(origin).army.insert(Unit::probe(), 5);
+            let relay = Unit::Building(Building::CommandRelay);
+            if has_relay {
+                model.map.get_mut(origin).army.insert(relay, 1);
+            } else {
+                // A queued relay must not enable the option or preserve a stale selection.
+                model.map.get_mut(origin).buy.push(relay);
+            }
+            // A stronger hidden target must not prevent selecting the attempt.
+            model.map.get_mut(destination).army.insert(relay, 5);
+            let mut state = UiState {
+                mission_info: Mission {
+                    origin,
+                    destination,
+                    objective: Icon::Spy,
+                    army: Army::from([(Unit::probe(), 5)]),
+                    deep_cover: !has_relay,
+                    ..default()
+                },
+                ..default()
+            };
+            let context = egui::Context::default();
+            let mut world = World::new();
+            world.init_resource::<Messages<SendMissionMsg>>();
+            world.init_resource::<Messages<MultiplayerRequest>>();
+            let mut params = bevy::ecs::system::SystemState::<(
+                MessageWriter<SendMissionMsg>,
+                MessageWriter<MultiplayerRequest>,
+            )>::new(&mut world);
+            let mut option = egui::Rect::NOTHING;
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.0));
+            let mut final_text = Vec::new();
+            for step in 0..5 {
+                let mut events = Vec::new();
+                if step >= 2 {
+                    assert!(option.is_positive());
+                    let point = egui::pos2(option.right() + 20.0, option.center().y);
+                    events.push(egui::Event::PointerMoved(point));
+                    if step <= 3 {
+                        events.push(egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 2,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events,
+                        ..default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            let (mut sends, mut requests) = params.get_mut(&mut world).unwrap();
+                            draw_new_mission(
+                                ui,
+                                &mut sends,
+                                &[],
+                                &Settings::default(),
+                                &mut state,
+                                &mut model.map,
+                                &mut player,
+                                &MultiplayerSession::default(),
+                                &mut requests,
+                                true,
+                                &ButtonInput::default(),
+                                &ImageIds::default(),
+                            );
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                final_text.clear();
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        final_text.push(text.galley.text().to_owned());
+                        if text.galley.text() == "Deep Cover:" {
+                            option = egui::Rect::from_min_size(text.pos, text.galley.size());
+                            assert!(
+                                screen.contains_rect(option),
+                                "cover option must fit at {width}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!(state.mission_info.deep_cover, has_relay);
+            assert_eq!(
+                final_text.iter().any(|text| text == "Includes 50 deuterium for Deep Cover."),
+                has_relay
+            );
+            let fuel = state.mission_info.fuel_consumption(&model.map);
+            assert!(final_text.iter().any(|text| text == &format!("⛽ Fuel consumption: {fuel}")));
+            state.mission_info.objective = Icon::Attack;
+            let mut output = context.run_ui(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    draw_deep_cover_option(ui, &mut state.mission_info, model.map.get(origin));
+                });
+            });
+            output.textures_delta.clear();
+            assert!(!state.mission_info.deep_cover);
+        }
+    }
+}
+
+#[test]
+fn new_mission_origin_picker_selects_and_keeps_stationed_protection() {
+    use crate::core::simulation::{GameModel, GameRules};
+
+    let mut model = GameModel::new(
+        [75; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let mut player = model.players[0].clone();
+    let home = player.home_planet;
+    let protected = model.players[1].home_planet;
+    let target = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(home).name = "Home port".into();
+    model.map.get_mut(home).army.insert(fighter, 20);
+    model.map.get_mut(protected).name = "Protected port".into();
+    model.map.get_mut(protected).army.insert(fighter, 17);
+    model.map.get_mut(protected).protection_permissions.insert(player.id);
+    model.map.get_mut(protected).dock_protecting_fleet(player.id, Army::from([(fighter, 3)]));
+
+    for width in [840.0, 1_200.0] {
+        let context = egui::Context::default();
+        let mut state = UiState::default();
+        state.mission_info.origin = home;
+        state.mission_info.destination = target;
+        state.mission_info.objective = Icon::Attack;
+        state.mission_info.army = Army::from([(fighter, 20)]);
+        let mut world = World::new();
+        world.init_resource::<Messages<SendMissionMsg>>();
+        world.init_resource::<Messages<MultiplayerRequest>>();
+        let mut params = bevy::ecs::system::SystemState::<(
+            MessageWriter<SendMissionMsg>,
+            MessageWriter<MultiplayerRequest>,
+        )>::new(&mut world);
+        let mut home_rect = egui::Rect::NOTHING;
+        let mut protected_rect = egui::Rect::NOTHING;
+
+        for step in 0..10 {
+            let mut events = Vec::new();
+            if step >= 3 {
+                let rect = if step <= 5 {
+                    home_rect
+                } else {
+                    protected_rect
+                };
+                assert!(rect.is_positive(), "the origin option must be visible at step {step}");
+                events.push(egui::Event::PointerMoved(rect.center()));
+                if matches!(step, 3 | 4 | 6 | 7) {
+                    events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: matches!(step, 3 | 6),
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 800.0),
+                    )),
+                    events,
+                    ..default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        let (mut sends, mut requests) = params.get_mut(&mut world).unwrap();
+                        draw_new_mission(
+                            ui,
+                            &mut sends,
+                            &[],
+                            &Settings::default(),
+                            &mut state,
+                            &mut model.map,
+                            &mut player,
+                            &MultiplayerSession::default(),
+                            &mut requests,
+                            true,
+                            &ButtonInput::default(),
+                            &ImageIds::default(),
+                        );
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    match text.galley.text() {
+                        "Home port" => home_rect = rect,
+                        "Protected port" => protected_rect = rect,
+                        _ => {},
+                    }
+                }
+            }
+        }
+        assert_eq!(state.mission_info.origin, protected);
+        assert_eq!(state.mission_info.army.amount(&fighter), 3);
+        assert!(validate_mission(
+            &player,
+            &model.map,
+            model.map.get(protected),
+            model.map.get(target),
+            &state.mission_info
+        )
+        .is_ok());
+    }
+}
+
+#[test]
 fn incoming_protection_reveals_its_objective_only_to_the_protected_player() {
     let mission = Mission {
         owner: 2,
@@ -407,6 +641,146 @@ fn compact_recall_action_sits_between_eta_and_destination() {
 }
 
 #[test]
+fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
+    let mission = Mission::new_with_id(
+        7,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, destination],
+    };
+    let player = Player::new(1, 0);
+    let images = ImageIds(
+        [
+            ("recall".to_owned(), egui::TextureId::User(76)),
+            ("recall hover".to_owned(), egui::TextureId::User(77)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    for width in [700.0, 1_200.0] {
+        for editable in [true, false] {
+            let context = egui::Context::default();
+            let mut state = UiState::default();
+            let mut world = World::new();
+            world.init_resource::<Messages<RecallMissionMsg>>();
+            let mut params =
+                bevy::ecs::system::SystemState::<MessageWriter<RecallMissionMsg>>::new(&mut world);
+            let mut recall_rect = egui::Rect::NOTHING;
+
+            // Settle the grid, then move from the arrows onto recall, click, and leave the row.
+            for step in 0..9 {
+                let mut events = Vec::new();
+                if step >= 3 {
+                    let position = match step {
+                        3 => recall_rect.center() - egui::vec2(80.0, 0.0),
+                        8 => egui::pos2(10.0, 390.0),
+                        _ => recall_rect.center(),
+                    };
+                    events.push(egui::Event::PointerMoved(position));
+                    if matches!(step, 6 | 7) {
+                        events.push(egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 6,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                state.mission_hover_from_ui = false;
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 400.0),
+                        )),
+                        events,
+                        ..default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            draw_active_missions(
+                                ui,
+                                vec![&mission],
+                                &mut params.get_mut(&mut world).unwrap(),
+                                &mut state,
+                                &map,
+                                &player,
+                                &MultiplayerSession::default(),
+                                true,
+                                &images,
+                                editable,
+                            );
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                for shape in &output.shapes {
+                    if let egui::Shape::Mesh(mesh) = &shape.shape {
+                        if matches!(mesh.texture_id, egui::TextureId::User(76 | 77)) {
+                            recall_rect = mesh.calc_bounds();
+                            if matches!(step, 4 | 5) {
+                                assert_eq!(
+                                    mesh.texture_id,
+                                    egui::TextureId::User(if editable {
+                                        77
+                                    } else {
+                                        76
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+                assert!(recall_rect.is_positive(), "the recall button must be visible");
+                assert!(
+                    !output.shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(rect)
+                        if rect.rect == recall_rect && rect.fill != Color32::TRANSPARENT)
+                    }),
+                    "the recall icon must preserve its transparent exterior"
+                );
+                // Pressing a non-interactive icon can start dragging the surrounding scroll area.
+                if (3..=5).contains(&step) || (editable && matches!(step, 6 | 7)) {
+                    assert_eq!(
+                        state.mission_hover,
+                        Some(mission.id),
+                        "width {width}, editable {editable}, step {step}, recall {recall_rect:?}",
+                    );
+                    assert!(
+                        state.mission_hover_from_ui,
+                        "width {width}, editable {editable}, step {step}"
+                    );
+                } else if step == 8 {
+                    assert_eq!(state.mission_hover, None);
+                    assert!(!state.mission_hover_from_ui);
+                }
+            }
+            let recalls =
+                world.resource_mut::<Messages<RecallMissionMsg>>().drain().collect::<Vec<_>>();
+            assert_eq!(recalls.len(), usize::from(editable));
+            if editable {
+                assert_eq!(recalls[0].mission_id, mission.id);
+            }
+        }
+    }
+}
+
+#[test]
 fn mission_planet_names_share_the_same_centered_planet_relative_position() {
     for left in [0.0, 640.0] {
         let cell = egui::Rect::from_min_size(
@@ -571,6 +945,7 @@ fn returning_routes_keep_the_outbound_planet_layout() {
         origin_controlled: Some(2),
         destination: 3,
         objective: Icon::Deploy,
+        return_objective: Some(Icon::Attack),
         ..default()
     };
     let marked_returning = Mission {

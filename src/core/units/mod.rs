@@ -393,10 +393,11 @@ impl Unit {
         }
     }
 
-    /// Returns the minimum Spy intelligence level needed to reveal this unit.
+    /// Returns the minimum Spy intelligence level needed to reveal this unit's level or count.
     ///
     /// Orbitals have category-specific requirements. Other buildings, ships, and defenses use
-    /// their production level. `None` marks the Space Dock and Orbital Railgun as public.
+    /// their production level. `None` marks the Space Dock's count as public. The Orbital
+    /// Railgun's existence is public independently of its intelligence requirement.
     pub fn intelligence_level(&self) -> Option<usize> {
         if self.is_orbital() {
             return orbitals::intelligence_level(*self);
@@ -409,7 +410,7 @@ impl Unit {
         }
     }
 
-    /// Returns whether the supplied number of returning Probes reveals this unit.
+    /// Returns whether the supplied number of returning Probes reveals this unit's level or count.
     pub fn revealed_by_probes(&self, returning_probes: usize) -> bool {
         self.intelligence_level().is_none_or(|level| {
             returning_probes

@@ -50,12 +50,12 @@ fn other_participant(
     invitation.participants.iter().find(|participant| participant.player_id != player_id)
 }
 
-fn invitation_for_route<'a>(
-    session: &'a MultiplayerSession,
+fn invitation_for_route(
+    session: &MultiplayerSession,
     turn: u64,
     player_id: PlayerId,
     other_player: PlayerId,
-) -> Option<&'a TradeInvitation> {
+) -> Option<&TradeInvitation> {
     session.trades.iter().find(|invitation| {
         invitation.turn == turn
             && invitation.participant(player_id).is_some()
@@ -138,6 +138,56 @@ fn draw_trade_panel(
         state.trade_open.and_then(|id| session.trades.iter().find(|trade| trade.id == id));
     if invitation.is_none() && new_route.is_none() {
         state.trade_open = None;
+        let Some(planet) =
+            state.trading_post_open.and_then(|id| map.try_get(id)).filter(|planet| {
+                planet.owned.is_some_and(|owner| {
+                    owner != player.id && trading_post_capacity(planet, owner) > 0
+                })
+            })
+        else {
+            state.trading_post_open = None;
+            state.trade_draft_id = None;
+            return;
+        };
+        let response = show_panel_modal(
+            context,
+            images,
+            egui::Id::new("trading post panel"),
+            egui::vec2(560.0, 280.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
+            |ui, panel, content| {
+                let header = draw_modal_header(
+                    ui,
+                    panel,
+                    content,
+                    RichText::new("Trading Post").strong(),
+                    images.get("trading post"),
+                );
+                let body = egui::Rect::from_min_max(
+                    egui::pos2(content.left(), header.bottom() + 8.0),
+                    content.max,
+                );
+                ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+                    ui.vertical_centered(|ui| {
+                        if let Some(owner) = planet.owned {
+                            ui.colored_label(
+                                session.player_color(owner).color().to_color32(),
+                                format!("{} · {}", planet.name, player_name(session, owner)),
+                            );
+                        }
+                        ui.add_space(16.0);
+                        ui.add(egui::Label::new(
+                            "You need a completed Trading Post of your own within 3 AU of this post to trade.",
+                        ).wrap());
+                        ui.add_space(16.0);
+                        ui.button("Close").clicked()
+                    }).inner
+                }).inner
+            },
+        );
+        if response.inner || response.should_close() {
+            state.trading_post_open = None;
+            state.trade_draft_id = None;
+        }
         return;
     }
 
@@ -175,14 +225,18 @@ fn draw_trade_panel(
         context,
         images,
         egui::Id::new("trading post panel"),
-        egui::vec2(560.0, 430.0),
+        egui::vec2(560.0, 430.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
         |ui, panel, content| {
-            let body = draw_modal_header(
+            let header = draw_modal_header(
                 ui,
                 panel,
                 content,
                 RichText::new("Trading Post").strong(),
                 images.get("trading post"),
+            );
+            let body = egui::Rect::from_min_max(
+                egui::pos2(content.left(), header.bottom() + 8.0),
+                content.max,
             );
             let mut close = false;
             let mut action = None;
@@ -309,6 +363,10 @@ fn draw_trade_panel(
         state.trade_draft_id = None;
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/core/ui_trading.rs"]
+mod tests;
 
 /// Draws persistent trade invitations and the panel opened from a Trading Post marker or notice.
 pub(super) fn draw_trade_notifications(

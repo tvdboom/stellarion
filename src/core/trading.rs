@@ -66,6 +66,25 @@ pub fn trading_post_capacity(planet: &Planet, player_id: PlayerId) -> usize {
         .saturating_mul(TRADE_RESOURCES_PER_LEVEL)
 }
 
+/// Returns the owner broadcast by a completed post to its owner and adjacent players.
+///
+/// Owning or controlling an adjacent world is enough; the viewer needs neither a post nor
+/// mission intelligence. This reveals ownership only, not the controller or their army.
+pub fn visible_trading_post_owner(
+    map: &Map,
+    viewer: PlayerId,
+    planet: &Planet,
+) -> Option<PlayerId> {
+    let owner = planet.owned?;
+    (trading_post_capacity(planet, owner) > 0
+        && (owner == viewer
+            || map.planets.iter().any(|adjacent| {
+                (adjacent.owned == Some(viewer) || adjacent.controlled == Some(viewer))
+                    && planets_are_adjacent(adjacent, planet)
+            })))
+    .then_some(owner)
+}
+
 /// Returns whether two owned posts form a direct commerce route.
 pub fn trading_posts_are_adjacent(
     map: &Map,

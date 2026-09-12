@@ -170,7 +170,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             combat_report: None,
-            hidden: mission.origin_controlled != Some(mission.owner), // Hide returning probes or fleets
+            hidden: mission.is_returning(), // Hide returning probes or fleets.
         };
     }
 
@@ -351,7 +351,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                     } else if unit.unit == Unit::Ship(Ship::Bomber)
                         && planetary_shield > 0
                         && side == Side::Attacker
-                        && mission.bombing != BombingRaid::None
+                        && *mission.bombing_for(unit.owner) != BombingRaid::None
                     {
                         // Bombers always target the planetary shield first when bombing
                         shot.planetary_shield_damage = damage.min(planetary_shield);
@@ -440,9 +440,9 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
         // One raid at the end of the first unshielded round. Surviving longer must not
         // multiply building damage; Bombers destroyed during this round cannot take part.
-        if !bombing_resolved && mission.bombing != BombingRaid::None && planetary_shield == 0 {
+        if !bombing_resolved && planetary_shield == 0 {
             bombing_resolved = true;
-            resolve_bombing_raid(&mission.bombing, &mut attack_army, &mut buildings, rng);
+            resolve_bombing_raid(mission, &mut attack_army, &mut buildings, rng);
         }
 
         // Save snapshot of the state of the armies this turn
@@ -503,20 +503,19 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
         if round == 1 {
             // Send probes back if there are still remaining enemies or objective is spying
-            let probes = attack_army.iter().filter(|u| u.unit == Unit::probe()).count();
-            if ((!mission.combat_probes && !defend_army.is_empty())
-                || mission.objective == Icon::Spy)
-                && probes > 0
-            {
-                for probe in attack_army.iter().filter(|unit| unit.unit == Unit::probe()) {
+            attack_army.retain(|probe| {
+                let returning = probe.unit == Unit::probe()
+                    && ((!mission.combat_probes_for(probe.owner) && !defend_army.is_empty())
+                        || mission.objective == Icon::Spy);
+                if returning {
+                    returning_probes += 1;
                     if let Some(owner) = probe.owner {
                         let count = returning_probes_by_owner.entry(owner).or_default();
                         *count = count.saturating_add(1);
                     }
                 }
-                attack_army.retain(|u| u.unit != Unit::probe());
-                returning_probes = probes;
-            }
+                !returning
+            });
         }
 
         // The fleet must break through every defending ship and the Space Dock first.
@@ -611,9 +610,10 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
     // Add the scout probes to the surviving attacker
     *surviving_attacker.entry(Unit::probe()).or_insert(0) += returning_probes;
-    for (owner, probes) in returning_probes_by_owner {
-        let count = surviving_attackers.entry(owner).or_default().entry(Unit::probe()).or_default();
-        *count = count.saturating_add(probes);
+    for (owner, probes) in &returning_probes_by_owner {
+        let count =
+            surviving_attackers.entry(*owner).or_default().entry(Unit::probe()).or_default();
+        *count = count.saturating_add(*probes);
     }
 
     // Add the buildings to the surviving defense
@@ -628,6 +628,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     let mut resolved_mission = mission.clone();
     if let Some(attack) = &mut resolved_mission.joint_attack {
         attack.survivors = surviving_attackers;
+        attack.scouts = returning_probes_by_owner;
     }
     MissionReport {
         id: rng.random(),
@@ -693,7 +694,7 @@ fn record_defender_retreat(
 
 /// Records one bounded raid using the same deterministic stream as fleet combat.
 fn resolve_bombing_raid<R: Rng + ?Sized>(
-    raid: &BombingRaid,
+    mission: &Mission,
     attackers: &mut [CombatUnit],
     buildings: &mut Army,
     rng: &mut R,
@@ -709,7 +710,7 @@ fn resolve_bombing_raid<R: Rng + ?Sized>(
             .filter(|(unit, count)| {
                 **count > 0
                     && losses.amount(unit) < MAX_BOMBING_LEVELS_PER_BUILDING
-                    && match raid {
+                    && match mission.bombing_for(bomber.owner) {
                         BombingRaid::Economic => unit.is_economic_building(),
                         BombingRaid::Industrial => unit.is_industrial_building(),
                         BombingRaid::None => false,
@@ -717,7 +718,8 @@ fn resolve_bombing_raid<R: Rng + ?Sized>(
             })
             .choose(&mut *rng)
         else {
-            break;
+            // A later commander's Bombers may have a different eligible target category.
+            continue;
         };
         let hit = rng.random::<f32>() < BOMBING_HIT_CHANCE;
         if hit {

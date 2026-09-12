@@ -268,6 +268,7 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         attack_id: u64,
+        expected_revision: u64,
         response: JointAttackResponse,
         contribution: Option<crate::core::simulation::JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {
@@ -278,6 +279,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 &RespondJointAttackRpc {
                     game_id: &game_id.0,
                     attack_id,
+                    expected_revision,
                     response,
                     contribution,
                 },
@@ -716,6 +718,8 @@ struct CreateJointAttackRpc<'a> {
 
 #[derive(Serialize)]
 struct RespondJointAttackRpc<'a> {
+    #[serde(rename = "p_expected_revision")]
+    expected_revision: u64,
     #[serde(rename = "p_game_id")]
     game_id: &'a str,
     #[serde(rename = "p_attack_id")]

@@ -653,6 +653,28 @@ fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
 }
 
 #[test]
+fn adjacent_trading_posts_reveal_enemy_owner_counts_without_mission_intelligence() {
+    let mut model = crate::core::simulation::GameModel::new([13; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let enemy = model.players[1].home_planet;
+    let home_position = model.map.get(player.home_planet).position;
+    model.map.get_mut(enemy).position = home_position + Vec2::X * Planet::SIZE * 2.5;
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
+
+    model.map.get_mut(enemy).army.insert(Unit::Building(Building::TradingPost), 1);
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), Some(&1));
+    model.map.get_mut(enemy).controlled = Some(player.id);
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), Some(&1));
+
+    model.map.get_mut(enemy).controlled = Some(2);
+    model.map.get_mut(enemy).position = home_position + Vec2::X * Planet::SIZE * 3.01;
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
+    model.map.get_mut(enemy).position = home_position;
+    model.map.get_mut(enemy).is_destroyed = true;
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
+}
+
+#[test]
 fn public_strategic_structures_reveal_and_extend_known_enemy_owner_counts() {
     let mut model = crate::core::simulation::GameModel::new([13; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
@@ -730,11 +752,12 @@ fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
         (Building::CommandRelay, 2),
         (Building::SensorPhalanx, 3),
         (Building::JumpGate, 4),
+        (Building::OrbitalRailgun, 5),
     ];
     target.army = tiers
         .iter()
         .map(|(building, _)| (Unit::Building(*building), 1))
-        .chain([(Unit::Building(Building::OrbitalRailgun), 1), (Unit::space_dock(), 1)])
+        .chain([(Unit::space_dock(), 1)])
         .collect();
 
     for (returning_probes, visible_tier) in [(5, 1), (6, 2), (11, 3), (16, 4), (21, 5)] {
@@ -776,12 +799,77 @@ fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
                 "{building:?} visibility with {returning_probes} returning Probes"
             );
         }
-        for public in [Unit::Building(Building::OrbitalRailgun), Unit::space_dock()] {
+        assert_eq!(known.army.amount(&Unit::space_dock()), 1);
+    }
+}
+
+#[test]
+fn spy_railgun_level_requires_twenty_one_returning_probes() {
+    let railgun = Unit::Building(Building::OrbitalRailgun);
+    let mut target = Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
+    target.owned = Some(2);
+    target.controlled = Some(2);
+    let images = ImageIds(HashMap::from([(railgun.to_lowername(), egui::TextureId::User(1))]));
+
+    for level in [0, 1, 3, 5] {
+        target.army.insert(railgun, level);
+        for returning_probes in [0, 1, 5, 6, 11, 16, 20, 21, 26] {
+            let mut player = Player::new(1, 0);
+            let report = MissionReport {
+                id: 1,
+                turn: 2,
+                mission: Mission {
+                    owner: player.id,
+                    origin: player.home_planet,
+                    destination: target.id,
+                    objective: Icon::Spy,
+                    army: Army::from([(Unit::probe(), 78)]),
+                    ..default()
+                },
+                planet: target.clone(),
+                scout_probes: returning_probes,
+                surviving_attacker: Army::from([(Unit::probe(), returning_probes)]),
+                surviving_defender: target.army.clone(),
+                planet_colonized: false,
+                planet_destroyed: false,
+                destination_owned: target.owned,
+                destination_controlled: target.controlled,
+                combat_report: None,
+                hidden: false,
+            };
+            let revealed = returning_probes >= 21;
             assert_eq!(
-                known.army.amount(&public),
-                1,
-                "{public:?} should remain public with {returning_probes} returning Probes"
+                mission_report_unit_is_visible(&report, player.id, &Side::Defender, &railgun),
+                revealed
             );
+            assert!(mission_report_unit_is_visible(&report, 2, &Side::Defender, &railgun));
+
+            let context = egui::Context::default();
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                draw_mission_report_unit(
+                    ui,
+                    &railgun,
+                    &report,
+                    &player,
+                    Side::Defender,
+                    (40.0, TextStyle::Small),
+                    &images,
+                );
+            });
+            output.textures_delta.clear();
+            assert!(has_text(
+                &output.shapes,
+                &if revealed {
+                    level.to_string()
+                } else {
+                    "?".to_string()
+                }
+            ));
+            assert_eq!(has_text(&output.shapes, "?"), !revealed);
+
+            player.push_report(report);
+            let known = player.last_info(&target, &[]).unwrap();
+            assert_eq!(known.army.get(&railgun).copied(), revealed.then_some(level));
         }
     }
 }
@@ -793,7 +881,7 @@ fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
     context.set_global_style(NordDark.custom_style());
     let intelligence = egui::TextureId::User(1);
     let images = ImageIds(HashMap::from([("intelligence".into(), intelligence)]));
-    let unit = Unit::Building(Building::SensorPhalanx);
+    let unit = Unit::Building(Building::OrbitalRailgun);
     let input = egui::RawInput {
         screen_rect: Some(viewport),
         ..default()
@@ -807,18 +895,15 @@ fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
         });
     });
     output.textures_delta.clear();
-    assert!(has_text(&output.shapes, "2"));
+    assert!(has_text(&output.shapes, "5"));
     assert_eq!(images.get("intelligence"), intelligence);
     assert!(target.width() >= 180.0 && target.height() >= 45.0);
     assert!(has_text(&output.shapes, "Intelligence"));
     assert!(has_text(
         &output.shapes,
-        "The minimum intelligence level required for an enemy Spy mission to see this structure."
+        "The minimum intelligence level required for an enemy Spy mission to reveal a structure's level or count."
     ));
-    assert_eq!(
-        Unit::Building(Building::OrbitalRailgun).get_stat(&CombatStats::Intelligence),
-        "---"
-    );
+    assert_eq!(Unit::Building(Building::OrbitalRailgun).get_stat(&CombatStats::Intelligence), "5");
     assert_eq!(Unit::space_dock().get_stat(&CombatStats::Intelligence), "---");
 }
 

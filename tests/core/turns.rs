@@ -190,7 +190,8 @@ fn returning_probes_create_a_reports_panel_toast() {
         false,
         false,
         None,
-    );
+    )
+    .with_return_objective(Icon::Spy);
     let mut rng = rand_chacha::ChaCha8Rng::from_seed([4; 32]);
     let report = resolve_combat_with_rng(turn, &mission, &destination, &mut rng);
     assert!(report.hidden, "return arrivals stay out of the visible report list");
@@ -535,4 +536,28 @@ fn terminal_overlay_waits_until_planet_destruction_finishes() {
         *app.world().resource::<NextState<GameState>>(),
         NextState::Pending(GameState::EndGame)
     ));
+}
+
+#[test]
+fn allied_owner_must_send_or_cancel_before_ending_the_turn() {
+    let mut app = App::new();
+    app.insert_resource(UiState {
+        allied_mission: true,
+        end_turn: true,
+        ..default()
+    })
+    .init_resource::<PendingTurnCommands>()
+    .add_message::<MultiplayerRequest>()
+    .add_systems(Update, check_turn_ended);
+    app.update();
+    assert!(app.world().resource::<Messages<MultiplayerRequest>>().is_empty());
+    assert!(app.world().resource::<UiState>().mission);
+    assert_eq!(app.world().resource::<UiState>().mission_tab, MissionTab::NewMission);
+    {
+        let mut state = app.world_mut().resource_mut::<UiState>();
+        state.allied_mission = false;
+        state.end_turn = true;
+    }
+    app.update();
+    assert_eq!(app.world().resource::<Messages<MultiplayerRequest>>().len(), 1);
 }

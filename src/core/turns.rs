@@ -120,6 +120,15 @@ pub fn check_turn_ended(
     let _ = &session;
     if std::mem::take(&mut state.end_turn) {
         if matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
+            if state.allied_mission
+                || session
+                    .as_deref()
+                    .is_some_and(|session| session.has_open_allied_mission(&pending))
+            {
+                state.mission = true;
+                state.mission_tab = MissionTab::NewMission;
+                return;
+            }
             #[cfg(debug_assertions)]
             if session.as_deref().is_some_and(|session| session.local_practice) {
                 requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
@@ -142,7 +151,7 @@ fn report_notification(
         winner == player.id || report.is_defender(player.id) && report.is_defender(winner)
     });
     let notification = match report.mission.objective {
-        Icon::Deploy if report.mission.origin_controlled != Some(player.id) => {
+        Icon::Deploy if report.mission.is_returning() => {
             let probes_only =
                 report.mission.army.len() == 1 && report.mission.army.contains_key(&Unit::probe());
             MessageMsg::info(format!(
@@ -306,7 +315,7 @@ pub fn start_turn(
                 && report.hidden
                 && report.mission.owner == player.id
                 && report.mission.objective == Icon::Deploy
-                && report.mission.origin_controlled != Some(player.id)
+                && report.mission.is_returning()
         });
 
         if !request.skip_battle

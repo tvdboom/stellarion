@@ -62,7 +62,7 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
-use crate::core::trading::{adjacent_trading_posts, planets_are_adjacent};
+use crate::core::trading::{visible_trading_post_owner, TRADING_POST_ADJACENCY_AU};
 use crate::core::ui::systems::{MapRangePreview, MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -264,7 +264,10 @@ const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
 const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
 const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
-const CELESTIAL_DEPTH: f32 = VORONOI_Z + 0.15;
+const CELESTIAL_DEPTH: f32 = BACKGROUND_Z + 0.16;
+// Distant landmarks retain only 6% of planet motion and barely change apparent size on zoom.
+const CELESTIAL_PARALLAX_FOLLOW: f32 = 0.94;
+const CELESTIAL_ZOOM_POWER: f32 = 0.94;
 const CELESTIAL_MAP_MARGIN: f32 = 32.0;
 const CELESTIAL_TINT: f32 = 0.92;
 
@@ -416,6 +419,13 @@ pub struct JumpGateCmp {
 /// Public close-zoom Trading Post marker that opens bilateral commerce.
 pub struct TradingPostCmp {
     planet: PlanetId,
+}
+
+/// Visible foreign posts open the trade panel even when the player has no eligible route.
+fn can_open_trading_post(map: &Map, player: &Player, planet_id: PlanetId) -> bool {
+    map.try_get(planet_id).is_some_and(|planet| {
+        visible_trading_post_owner(map, player.id, planet).is_some_and(|owner| owner != player.id)
+    })
 }
 
 /// Returns whether this world contributes one usable endpoint to the player's gate network.
@@ -714,14 +724,13 @@ fn assigned_recycler_asteroid_target(
         .map(|placement| asteroid_position_at_elapsed(map, placement, elapsed))
 }
 
-/// Animates known Recycler craft, preferring fresh local debris over a reachable asteroid field.
+/// Animates locally observed Recycler craft, preferring debris over a reachable asteroid field.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn animate_recyclers(
     time: Res<Time>,
     mut zoom_detail_visibility: Local<ZoomDetailVisibility>,
     map: Res<Map>,
     player: Res<Player>,
-    missions: Res<Missions>,
     session: Res<MultiplayerSession>,
     settings: Res<Settings>,
     camera: Single<&Projection, With<MainCamera>>,
@@ -777,16 +786,17 @@ pub(crate) fn animate_recyclers(
 
     for (recycler, mut transform, mut visibility, mut sprite) in &mut recyclers {
         let planet = map.get(recycler.planet);
-        let info =
-            (!player.controls(planet)).then(|| player.last_info(planet, &missions.0)).flatten();
-        let (army, controller) = if player.controls(planet) {
-            (Some(planet.army.controller()), planet.controlled.or(planet.owned))
+        // Remembered building levels do not grant live sight of salvage activity.
+        let observed = !planet.is_destroyed
+            && (player.owns(planet)
+                || (player.controls(planet) && planet.has_fleet())
+                || has_stationed_protection_fleet(planet, player.id));
+        let level = if observed {
+            planet.army.amount(&Unit::Building(Building::Recycler)).min(Building::MAX_LEVEL)
         } else {
-            (info.as_ref().map(|info| &info.army), player.known_controller(planet, &missions.0))
+            0
         };
-        let level = army.map_or(0, |army| {
-            army.amount(&Unit::Building(Building::Recycler)).min(Building::MAX_LEVEL)
-        });
+        let controller = planet.controlled.or(planet.owned);
         let cycle_time = elapsed / RECYCLER_CYCLE_SECONDS + recycler.phase;
         let trip = cycle_time.floor() as u64;
         let cycle = cycle_time.fract();
@@ -1457,11 +1467,11 @@ const ASTEROID_BELT_DEPTH: f32 = VORONOI_Z + 0.2;
 // The source canvases retain transparent framing around their irregular NASA cutouts. Scale only
 // the presentation so their visible bodies survive maximum zoom-out without changing placement,
 // collision clearance, or Recycler reach.
-const ASTEROID_MAX_RENDER_SCALE: f32 = 1.65;
+const ASTEROID_MAX_RENDER_SCALE: f32 = 1.45;
 const ASTEROID_REFERENCE_CAMERA_SCALE: f32 = 0.8;
-// Preserve enough of the cutouts' photographed highlights and opacity to separate the belt from
-// the detailed star field. The slight warm cast keeps it behind the brighter interactive pieces.
-const ASTEROID_TINT: Color = Color::srgba(0.96, 0.90, 0.78, 0.98);
+// Mute the photographed highlights with a darker warm tint so the belt stays subordinate to
+// interactive pieces. Retain opacity to keep the rocks solid against the star field.
+const ASTEROID_TINT: Color = Color::srgba(0.76, 0.71, 0.62, 0.98);
 
 fn spawn_asteroid_belt(commands: &mut Commands, map: &Map, images: &[Handle<Image>]) {
     if images.is_empty() {
@@ -1636,15 +1646,18 @@ fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map
             ));
         });
 
-    let celestial_anchor = celestial_position(map);
+    // Project the map anchor into the distant plane as well, so a landmark remains reachable
+    // when exploring its side of even a large map instead of being stranded off-screen.
+    let celestial_anchor = celestial_position(map) * (1.0 - CELESTIAL_PARALLAX_FOLLOW);
     let celestial_frames = (1..=kind.frame_count())
         .map(|index| assets.image(format!("{} {index}", kind.name())))
         .collect::<Vec<_>>();
     commands
         .spawn((
-            Name::new(format!("Decorative {} map edge", kind.name())),
+            Name::new(format!("Decorative {} distant parallax", kind.name())),
             Transform::from_xyz(0.0, 0.0, CELESTIAL_DEPTH),
             Visibility::Inherited,
+            ParallaxCmp::new(CELESTIAL_PARALLAX_FOLLOW, 1.0, CELESTIAL_ZOOM_POWER, Vec2::ZERO),
             Pickable::IGNORE,
             MapCmp,
         ))
@@ -1724,7 +1737,7 @@ fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
         });
 }
 
-/// Selects a planet without moving the camera and updates controlled worlds' mission origin.
+/// Selects a planet without moving the camera and updates eligible worlds' mission origin.
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
     state.focus_planet = None;
@@ -1732,7 +1745,7 @@ pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Playe
     state.to_selected = false;
     state.mission = false;
     state.combat_report = None;
-    if player.owns(planet) || player.controls(planet) {
+    if planet.can_launch_mission(player.id) {
         state.mission_info.origin = planet.id;
     }
 }
@@ -2263,15 +2276,10 @@ pub fn draw_map(
                         })
                         .observe(|mut event: On<Pointer<Click>>| event.propagate(false));
 
-                    // Keep the fixed gate in the right-hand half of the orbit, safely opposite the
-                    // two range markers on the left. Only the gate itself spins, so it stays
-                    // visually active without circling the planet.
-                    let gate_candidate = (angle + PI).rem_euclid(TAU);
-                    let gate_angle = if gate_candidate.cos() < 0.0 {
-                        PI - gate_candidate
-                    } else {
-                        gate_candidate
-                    };
+                    // Reserve the upper-right station for the gate, clear of the Trading Post
+                    // below it and the range markers on the left. Only the gate itself spins,
+                    // so its full rotation stays clear of the other fixed structures.
+                    let gate_angle = PI * 0.25;
                     let gate_radius = planet.size() * 0.9;
                     parent
                         .spawn((
@@ -2516,13 +2524,49 @@ pub fn draw_map(
                                 planet: planet_id,
                             },
                         ))
-                        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                        .observe(
+                            move |mut event: On<Pointer<Over>>,
+                                  mut state: ResMut<UiState>,
+                                  map: Res<Map>,
+                                  player: Res<Player>,
+                                  mut commands: Commands,
+                                  window: Single<Entity, With<Window>>| {
+                                event.propagate(false);
+                                state.range_preview = Some(MapRangePreview::TradingPost(planet_id));
+                                let cursor = if can_open_trading_post(&map, &player, planet_id) {
+                                    SystemCursorIcon::Pointer
+                                } else {
+                                    SystemCursorIcon::Default
+                                };
+                                commands.entity(*window).insert(CursorIcon::from(cursor));
+                            },
+                        )
+                        .observe(
+                            move |mut event: On<Pointer<Out>>, mut state: ResMut<UiState>| {
+                                event.propagate(false);
+                                if state.range_preview == Some(MapRangePreview::TradingPost(planet_id)) {
+                                    state.range_preview = None;
+                                }
+                            },
+                        )
                         .observe(cursor::<Out>(SystemCursorIcon::Default))
                         .observe(
-                            move |mut event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
+                            |mut event: On<Pointer<Click>>,
+                                  mut state: ResMut<UiState>,
+                                  map: Res<Map>,
+                                  player: Res<Player>,
+                                  posts: Query<&TradingPostCmp>| {
                                 event.propagate(false);
-                                if event.button == PointerButton::Primary {
+                                let Ok(post) = posts.get(event.entity) else {
+                                    return;
+                                };
+                                let planet_id = post.planet;
+                                if event.button == PointerButton::Primary
+                                    && can_open_trading_post(&map, &player, planet_id)
+                                {
                                     state.trading_post_open = Some(planet_id);
+                                    state.trade_open = None;
+                                    state.trade_draft_id = None;
                                     state.planet_selected = None;
                                 }
                             },
@@ -2642,6 +2686,20 @@ fn railgun_action_available(
         && !orbital_railgun_origins(map, player.id, target).is_empty()
 }
 
+/// Uses recorded enemy intelligence so the public marker cannot disclose Railgun upgrades.
+fn railgun_preview_radius(planet: &Planet, player: &Player, missions: &[Mission]) -> f32 {
+    let railgun = Unit::Building(Building::OrbitalRailgun);
+    if planet.is_destroyed || planet.is_moon() || !planet.has(&railgun) {
+        return 0.0;
+    }
+    let level = if player.owns(planet) || player.controls(planet) {
+        planet.army.amount(&railgun)
+    } else {
+        player.last_info(planet, missions).map_or(0, |info| info.army.amount(&railgun))
+    };
+    ORBITAL_RAILGUN_RANGE_PER_LEVEL * Planet::SIZE * level.min(Building::MAX_LEVEL) as f32
+}
+
 /// Updates planet info from the current canonical ECS projection.
 pub fn update_planet_info(
     mut planet_q: Query<(Entity, &mut Sprite, &PlanetCmp)>,
@@ -2711,6 +2769,12 @@ pub fn update_planet_info(
         planet_s.image = assets.image(map_planet_image(planet, destruction_active));
 
         let hovered = state.planet_hover == Some(planet.id);
+        let railgun_radius =
+            if state.range_preview == Some(MapRangePreview::OrbitalRailgun(planet.id)) {
+                railgun_preview_radius(planet, player, &world.missions.0)
+            } else {
+                0.0
+            };
 
         // Show/hide planet icons
         let mut count = 0;
@@ -2763,7 +2827,7 @@ pub fn update_planet_info(
                             continue;
                         }
                         // Existing missions stay visible; hover or the info toggle also shows
-                        // available objectives from worlds under the player's control.
+                        // available objectives from worlds with a dispatchable local fleet.
                         let has_mission = world.missions.iter().any(|m| {
                             m.owner == player.id
                                 && m.objective == *icon
@@ -2773,7 +2837,7 @@ pub fn update_planet_info(
                         let has_condition = {
                             map.planets.iter().any(|p| {
                                 p.id != planet.id
-                                    && (player.owns(p) || player.controls(p))
+                                    && p.can_launch_mission(player.id)
                                     && p.mission_origin_army(player.id)
                                         .is_some_and(|army| icon.condition_for_army(army))
                                     && match icon {
@@ -2828,20 +2892,14 @@ pub fn update_planet_info(
                 scanner_q.get_mut(child)
             {
                 // Planet hover still previews a moon's Orbital Radar because moons have no
-                // dedicated marker. Planetary Phalanx coverage belongs exclusively to its
-                // stationary marker hover.
+                // dedicated marker. Planetary infrastructure previews use marker hover.
                 let radius = match state.range_preview {
-                    Some(MapRangePreview::OrbitalRailgun(id))
+                    Some(MapRangePreview::OrbitalRailgun(id)) if id == planet.id => railgun_radius,
+                    Some(MapRangePreview::TradingPost(id))
                         if id == planet.id
-                            && !planet.is_moon()
-                            && planet.has(&Unit::Building(Building::OrbitalRailgun)) =>
+                            && visible_trading_post_owner(map, player.id, planet).is_some() =>
                     {
-                        ORBITAL_RAILGUN_RANGE_PER_LEVEL
-                            * Planet::SIZE
-                            * planet
-                                .army
-                                .amount(&Unit::Building(Building::OrbitalRailgun))
-                                .min(Building::MAX_LEVEL) as f32
+                        Planet::SIZE * TRADING_POST_ADJACENCY_AU
                     },
                     Some(MapRangePreview::SensorPhalanx(id))
                         if id == planet.id
@@ -2870,7 +2928,10 @@ pub fn update_planet_info(
                 if radius > 0. && !planet.is_destroyed {
                     if let Some(mut material) = materials.get_mut(&material.0) {
                         material.color = match state.range_preview {
-                            Some(MapRangePreview::OrbitalRailgun(id)) if id == planet.id => planet
+                            Some(
+                                MapRangePreview::OrbitalRailgun(id)
+                                | MapRangePreview::TradingPost(id),
+                            ) if id == planet.id => planet
                                 .owned
                                 .map(|owner| world.session.player_color(owner).color())
                                 .unwrap_or(Color::srgb_u8(190, 198, 210)),
@@ -2984,8 +3045,9 @@ pub fn update_planet_defenses(
         ),
     >,
     mut trading_q: Query<
-        (&mut Visibility, &mut Sprite, &mut Pickable, &TradingPostCmp),
+        (&mut Visibility, &mut Sprite, &mut Pickable),
         (
+            With<TradingPostCmp>,
             Without<CommandRelayCmp>,
             Without<SensorPhalanxCmp>,
             Without<SolarSatelliteCmp>,
@@ -3061,10 +3123,7 @@ pub fn update_planet_defenses(
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::CommandRelay)) > 0);
         let has_phalanx = !planet.is_destroyed
             && army.is_some_and(|army| army.amount(&Unit::Building(Building::SensorPhalanx)) > 0);
-        let trading_owner = (!planet.is_destroyed
-            && planet.army.amount(&Unit::Building(Building::TradingPost)) > 0)
-            .then_some(planet.owned)
-            .flatten();
+        let trading_owner = visible_trading_post_owner(map, player.id, planet);
         // Defenses left on an unclaimed world have no player color.
         let color = controller
             .map(|id| session.player_color(id).color())
@@ -3221,30 +3280,13 @@ pub fn update_planet_defenses(
                     sprite.color = color;
                 }
             }
-            if let Ok((mut visibility, mut sprite, mut pickable, trading)) =
-                trading_q.get_mut(child)
-            {
-                let enemy_visible = trading_owner.is_some_and(|owner| {
-                    owner != player.id
-                        && map.planets.iter().any(|adjacent| {
-                            player.controls(adjacent) && planets_are_adjacent(adjacent, planet)
-                        })
-                });
-                let has_route = trading_owner.is_some_and(|owner| {
-                    owner != player.id
-                        && map.planets.iter().any(|own| {
-                            own.owned == Some(player.id)
-                                && adjacent_trading_posts(map, player.id, own.id)
-                                    .contains(&(owner, trading.planet))
-                        })
-                });
-                let visible_to_player = trading_owner == Some(player.id) || enemy_visible;
-                *visibility = if visible_to_player && detail_alpha > 0.01 {
+            if let Ok((mut visibility, mut sprite, mut pickable)) = trading_q.get_mut(child) {
+                *visibility = if trading_owner.is_some() && detail_alpha > 0.01 {
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
                 };
-                *pickable = if has_route && detail_alpha > 0.01 {
+                *pickable = if trading_owner.is_some() && detail_alpha > 0.01 {
                     Pickable::default()
                 } else {
                     Pickable::IGNORE
@@ -3376,6 +3418,7 @@ pub(crate) fn update_voronoi(
                     || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0))
                 .then_some(planet.owned)
                 .flatten()
+                .or_else(|| visible_trading_post_owner(&map, player.id, planet))
                 .or_else(|| fading_public_owners.get(&planet.id).copied());
             let controller = public_owner.or_else(|| {
                 if player.controls(planet) {
@@ -3449,6 +3492,8 @@ pub fn update_end_turn(
     mut button_c: Query<&mut Visibility, With<EndTurnButtonCmp>>,
     mut spectator_q: Query<&mut Visibility, (With<SpectatorLabelCmp>, Without<EndTurnButtonCmp>)>,
     mut button_q: Query<&mut Text, With<MainButtonLabelCmp>>,
+    state: Option<Res<UiState>>,
+    session: Option<Res<crate::multiplayer::client::MultiplayerSession>>,
     mut label_q: Query<
         &mut Visibility,
         (With<EndTurnLabelCmp>, Without<SpectatorLabelCmp>, Without<EndTurnButtonCmp>),
@@ -3476,7 +3521,15 @@ pub fn update_end_turn(
 
     if playing {
         for mut button_t in &mut button_q {
-            button_t.0 = pending.button_label().to_string();
+            button_t.0 = if state.as_ref().is_some_and(|state| state.allied_mission)
+                || session
+                    .as_deref()
+                    .is_some_and(|session| session.has_open_allied_mission(&pending))
+            {
+                "Finish allied mission".to_owned()
+            } else {
+                pending.button_label().to_string()
+            };
         }
     }
 

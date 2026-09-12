@@ -22,7 +22,7 @@ use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Garrison, Planet, PlanetId, ShieldOverloadState};
-use crate::core::missions::{BombingRaid, JointAttackMission, Mission};
+use crate::core::missions::{BombingRaid, FleetCombatOrders, JointAttackMission, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
@@ -498,6 +498,7 @@ impl GameModel {
                     || report.planet.id != mission.destination
                     || !mission.objective.is_mission()
                     || !mission.has_valid_return_objective()
+                    || (mission.deep_cover && mission.objective != Icon::Spy)
                     || !mission.position.is_finite()
                     || mission.send > report.turn
                     || !u64::try_from(report.turn).is_ok_and(|turn| turn <= self.turn)
@@ -581,6 +582,7 @@ impl GameModel {
                 || mission.origin == mission.destination
                 || !mission.objective.is_mission()
                 || !mission.has_valid_return_objective()
+                || (mission.deep_cover && mission.objective != Icon::Spy)
                 || mission.id == 0
                 || !mission_ids.insert(mission.id)
                 || !mission.position.is_finite()
@@ -620,6 +622,7 @@ fn valid_joint_attack(
         && attack.attackers.contains_key(&attack.leader)
         && attack.attackers.contains_key(&mission.owner)
         && attack.attackers.keys().eq(attack.origins.keys())
+        && attack.attackers.keys().eq(attack.combat_orders.keys())
         && attack.attackers.iter().all(|(player, army)| {
             player_ids.contains(player)
                 && valid_army(army)
@@ -629,7 +632,12 @@ fn valid_joint_attack(
             .survivors
             .iter()
             .all(|(player, army)| attack.attackers.contains_key(player) && valid_army(army))
-        && (resolved || attack.survivors.is_empty())
+        && attack.scouts.iter().all(|(owner, count)| {
+            *count > 0
+                && *count
+                    <= attack.survivors.get(owner).map_or(0, |army| army.amount(&Unit::probe()))
+        })
+        && (resolved || (attack.survivors.is_empty() && attack.scouts.is_empty()))
 }
 
 fn valid_protection_fleets(
@@ -771,6 +779,8 @@ pub enum TurnCommand {
         bombing: BombingRaid,
         /// Whether probes remain in combat after round one.
         combat_probes: bool,
+        /// Whether the Spy mission attempts to avoid combat using the origin's Command Relay.
+        deep_cover: bool,
         /// Whether to use a jump gate.
         jump_gate: bool,
     },
@@ -806,7 +816,7 @@ pub enum TurnCommand {
 }
 
 /// One player's accepted fleet in a coordinated hostile mission.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JointAttackContribution {
     /// Commander retaining ownership of these ships.
@@ -815,6 +825,10 @@ pub struct JointAttackContribution {
     pub origin: PlanetId,
     /// Ships committed by this commander.
     pub army: Army,
+    /// Bombing policy selected by this commander for their own Bombers.
+    pub bombing: BombingRaid,
+    /// Whether this commander's Probes remain in combat.
+    pub combat_probes: bool,
 }
 
 /// All commands one player commits for one simultaneous turn.
@@ -1235,6 +1249,7 @@ fn apply_command(
             army,
             bombing,
             combat_probes,
+            deep_cover,
             jump_gate,
         } => apply_mission(
             model,
@@ -1246,6 +1261,7 @@ fn apply_command(
             army,
             bombing.clone(),
             *combat_probes,
+            *deep_cover,
             *jump_gate,
         ),
         TurnCommand::SendJointMission {
@@ -1345,7 +1361,7 @@ fn protection_return_mission(
     .with_return_objective(Icon::Protect)
 }
 
-/// Recalls one player's entire stationed protection fleet without exposing it as a new mission.
+/// Recalls one player's entire stationed protection fleet directly to their home planet.
 fn apply_protection_recall(
     model: &mut GameModel,
     player_id: PlayerId,
@@ -2025,6 +2041,7 @@ fn apply_mission(
     army: &Army,
     bombing: BombingRaid,
     combat_probes: bool,
+    deep_cover: bool,
     jump_gate: bool,
 ) -> Result<(), GameError> {
     ensure_mission_capacity(model, player_id, 1)?;
@@ -2065,7 +2082,8 @@ fn apply_mission(
         combat_probes,
         jump_gate,
         None,
-    );
+    )
+    .with_deep_cover(deep_cover);
     validate_mission(model.player(player_id)?, &model.map, origin, destination, &mission)
         .map_err(|error| invalid_error(player_id, error.to_string()))?;
     let fuel = mission.fuel_consumption(&model.map);
@@ -2154,13 +2172,11 @@ fn apply_joint_mission(
             .map
             .try_get(contribution.origin)
             .ok_or_else(|| invalid_error(leader, "joint attack origin does not exist"))?;
-        if origin.owned != Some(contribution.player_id)
-            && origin.controlled != Some(contribution.player_id)
-        {
-            return invalid(leader, "a protection fleet cannot launch a joint mission");
+        if !origin.can_launch_mission(contribution.player_id) {
+            return invalid(leader, "joint attack origin is not available to its participant");
         }
         let available = origin.mission_origin_army(contribution.player_id).ok_or_else(|| {
-            invalid_error(leader, "joint attack origin is not controlled by its participant")
+            invalid_error(leader, "joint attack origin is not available to its participant")
         })?;
         if contribution
             .army
@@ -2169,7 +2185,11 @@ fn apply_joint_mission(
         {
             return invalid(leader, "joint attack contribution contains unavailable units");
         }
-        if index == 0 && !objective.condition_for_army(&contribution.army) {
+        if index == 0
+            && (!objective.condition_for_army(&contribution.army)
+                || contribution.bombing != bombing
+                || contribution.combat_probes != combat_probes)
+        {
             return invalid(leader, "the inviter's fleet does not meet the selected objective");
         }
         let contingent = Mission::new_with_id(
@@ -2180,8 +2200,8 @@ fn apply_joint_mission(
             &destination,
             objective,
             contribution.army.clone(),
-            bombing.clone(),
-            combat_probes,
+            contribution.bombing.clone(),
+            contribution.combat_probes,
             false,
             Some(format!("- ({turn}) Joined coordinated mission to {}.", destination.name)),
         );
@@ -2219,13 +2239,27 @@ fn apply_joint_mission(
             }
         }
         source.retain(|_, count| *count > 0);
+        model.map.get_mut(contingent.origin).army.retain_protectors(|_, army| army.has_army());
         contingent.joint_attack = Some(JointAttackMission {
             id: attack_id,
             leader,
             arrival_turn,
             attackers: attackers.clone(),
             survivors: BTreeMap::new(),
+            scouts: BTreeMap::new(),
             origins: origins.clone(),
+            combat_orders: contributions
+                .iter()
+                .map(|item| {
+                    (
+                        item.player_id,
+                        FleetCombatOrders {
+                            bombing: item.bombing.clone(),
+                            combat_probes: item.combat_probes,
+                        },
+                    )
+                })
+                .collect(),
         });
         model.map.get_mut(contingent.origin).release_control_if_vacant();
         model.missions.push(contingent);
@@ -2373,8 +2407,20 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 .collect::<BTreeMap<_, _>>()
                         })
                         .unwrap_or_default();
+                    // Use the actual departure world, not the fallback return destination.
+                    // Completed levels at arrival govern cover even if relay deception is off.
+                    let origin_relay = model
+                        .map
+                        .get(mission.origin)
+                        .army
+                        .amount(&Unit::Building(Building::CommandRelay));
                     let destination = model.map.get_mut(mission.destination);
+                    let deep_cover_succeeds = mission.objective == Icon::Spy
+                        && mission.deep_cover
+                        && origin_relay
+                            > destination.army.amount(&Unit::Building(Building::CommandRelay));
                     let relay_diverts_spy = mission.objective == Icon::Spy
+                        && !mission.deep_cover
                         && destination.command_relay_diverts(mission.army.amount(&Unit::probe()));
                     let energy = destination
                         .controlled
@@ -2382,8 +2428,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         .and_then(|owner| energy_grids.get(&owner))
                         .copied()
                         .unwrap_or_default();
-                    let mut report = if relay_diverts_spy {
-                        resolve_command_relay_diversion(turn, &mission, destination, &mut rng)
+                    let mut report = if deep_cover_succeeds || relay_diverts_spy {
+                        resolve_spy_without_combat(turn, &mission, destination, &mut rng)
                     } else {
                         resolve_combat_with_retreat_with_rng(
                             turn,
@@ -2422,9 +2468,44 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         "\n- ({turn}) Mission arrived in {}.",
                         destination.name
                     ));
+                    if mission.deep_cover {
+                        report.mission.logs.push_str(&format!(
+                            "\n- ({turn}) {}",
+                            if deep_cover_succeeds {
+                                "Deep Cover succeeded; scanned undetected without combat."
+                            } else {
+                                "Deep Cover failed; normal Spy combat initiated."
+                            }
+                        ));
+                    }
 
                     if report.scout_probes > 0 {
-                        if mission.objective == Icon::Spy {
+                        if let Some(attack) = report.mission.joint_attack.as_ref() {
+                            if mission.objective != Icon::Destroy
+                                || report.winner() != Some(mission.owner)
+                            {
+                                for (owner, count) in &attack.scouts {
+                                    if let Some(origin) = joint_origins
+                                        .get(owner)
+                                        .filter(|origin| !origin.is_destroyed)
+                                    {
+                                        new_missions.push(objective_return_mission(
+                                            next_unique_mission_id(
+                                                &mut rng,
+                                                &mut used_mission_ids,
+                                            )?,
+                                            turn,
+                                            *owner,
+                                            destination,
+                                            origin,
+                                            Army::from([(Unit::probe(), *count)]),
+                                            &report.mission.logs,
+                                            mission.objective,
+                                        ));
+                                    }
+                                }
+                            }
+                        } else if mission.objective == Icon::Spy {
                             report.mission.logs.push_str(&format!(
                                 "\n- ({turn}) Spied on planet {}.",
                                 destination.name
@@ -2442,18 +2523,15 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         } else if report.mission.objective != Icon::Destroy
                             || report.winner() != Some(mission.owner)
                         {
-                            new_missions.push(Mission::new_with_id(
+                            new_missions.push(objective_return_mission(
                                 next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
                                 turn,
                                 mission.owner,
                                 destination,
                                 &new_origin,
-                                Icon::Deploy,
                                 Army::from([(Unit::probe(), report.scout_probes)]),
-                                BombingRaid::None,
-                                false,
-                                false,
-                                None,
+                                &report.mission.logs,
+                                mission.objective,
                             ));
                         }
                     }
@@ -2487,6 +2565,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             .collect::<Army>();
                         if let Some(joint_attack) = report.mission.joint_attack.as_ref() {
                             for (owner, army) in &joint_attack.survivors {
+                                let army = joint_attack.fleet_without_scouts(*owner, army);
                                 let Some(origin) = joint_origins.get(owner) else {
                                     continue;
                                 };
@@ -2506,7 +2585,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                             "{}\n- ({turn}) Joint combat stalemate; returning to {}.",
                                             report.mission.logs, origin.name
                                         )),
-                                    ));
+                                    ).with_return_objective(mission.objective));
                                 }
                             }
                         } else if retreat.has_army() {
@@ -2526,11 +2605,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     report.mission.logs, new_origin.name
                                 )),
                             );
-                            new_missions.push(if mission.objective == Icon::Destroy {
-                                return_mission.with_return_objective(Icon::Destroy)
-                            } else {
-                                return_mission
-                            });
+                            new_missions
+                                .push(return_mission.with_return_objective(mission.objective));
                         }
                     }
 
@@ -2617,12 +2693,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             destination.control(mission.owner);
                             if let Some(joint_attack) = report.mission.joint_attack.as_ref() {
                                 for (owner, army) in &joint_attack.survivors {
-                                    let stationed = army
-                                        .iter()
-                                        .filter_map(|(unit, count)| {
-                                            (*count > 0).then_some((*unit, *count))
-                                        })
-                                        .collect::<Army>();
+                                    let stationed = joint_attack.fleet_without_scouts(*owner, army);
                                     if !stationed.has_army() {
                                         continue;
                                     }
@@ -2675,7 +2746,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         if player.controls(destination) {
                             player.record_world_acquisition(destination.id);
                         }
-                        if report.is_defender(player.id) || report.is_attacker(player.id) {
+                        if report.is_attacker(player.id)
+                            || (!deep_cover_succeeds && report.is_defender(player.id))
+                        {
                             let mut player_report = report.clone();
                             if relay_diverts_spy && report.mission.owner == player.id {
                                 spoof_spy_report_as_empty(&mut player_report);
@@ -2995,8 +3068,8 @@ fn check_missions(model: &mut GameModel, turn: usize) -> Result<(), GameError> {
     Ok(())
 }
 
-/// Resolves a Relay diversion without exposing the probes to the defending garrison.
-fn resolve_command_relay_diversion<R: Rng + ?Sized>(
+/// Records a scan or Relay diversion without exposing probes to the defending garrison.
+fn resolve_spy_without_combat<R: Rng + ?Sized>(
     turn: usize,
     mission: &Mission,
     destination: &Planet,
@@ -3043,8 +3116,14 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
     let mut deploy: Option<Mission> = None;
     let mut missile: Option<Mission> = None;
     let mut spy: Option<Mission> = None;
+    // Each cover attempt must retain its own origin relay and secrecy outcome.
+    let mut deep_cover = Vec::new();
     let mut rest: Option<Mission> = None;
     for mission in missions {
+        if mission.objective == Icon::Spy && mission.deep_cover {
+            deep_cover.push(mission.clone());
+            continue;
+        }
         let target = match mission.objective {
             Icon::MissileStrike => &mut missile,
             Icon::Spy => &mut spy,
@@ -3058,7 +3137,7 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
             *target = Some(mission.clone());
         }
     }
-    [protect, deploy, missile, spy, rest].into_iter().flatten().collect()
+    [protect, deploy, missile, spy].into_iter().flatten().chain(deep_cover).chain(rest).collect()
 }
 
 /// Allocates a nonzero mission identifier with finite randomized and sequential fallbacks.
@@ -3159,6 +3238,7 @@ fn check_mission(
         mission.travel_turns = 0;
         mission.objective = Icon::Deploy;
         mission.bombing = BombingRaid::None;
+        mission.return_objective.get_or_insert(old_objective);
         mission.combat_probes = false;
         mission.jump_gate = false;
         mission.logs.push_str(&format!(
@@ -3167,6 +3247,7 @@ fn check_mission(
         ));
     }
     if old_objective != mission.objective {
+        mission.deep_cover = false;
         if mission.objective != Icon::Deploy && !mission.is_returning() {
             mission.return_objective = None;
         }

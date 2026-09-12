@@ -559,6 +559,7 @@ fn colonization_requires_a_colony_ship_in_the_dispatched_fleet() {
             army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
             bombing: BombingRaid::None,
             combat_probes: false,
+            deep_cover: false,
             jump_gate: false,
         }]
     )

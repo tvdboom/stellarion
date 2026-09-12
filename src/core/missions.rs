@@ -70,6 +70,10 @@ pub(crate) enum MissionRouteStyle {
 #[path = "../../tests/core/missions_movement.rs"]
 mod movement_tests;
 
+#[cfg(test)]
+#[path = "../../tests/core/missions_visibility.rs"]
+mod visibility_tests;
+
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 /// Bevy resource containing the selected player's currently visible missions.
 pub struct Missions(pub Vec<Mission>);
@@ -138,7 +142,7 @@ impl RecallMissionMsg {
     }
 }
 
-#[derive(EnumIter, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(EnumIter, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Optional building category targeted by bombers after combat.
 pub enum BombingRaid {
     #[default]
@@ -214,6 +218,8 @@ pub struct Mission {
     pub bombing: BombingRaid,
     /// Whether probes remain in fleet combat beyond reconnaissance.
     pub combat_probes: bool,
+    /// Whether this Spy mission attempts to bypass combat using the origin's Command Relay.
+    pub deep_cover: bool,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: bool,
     /// Append-only human-readable mission history.
@@ -258,9 +264,60 @@ pub struct JointAttackMission {
     /// Original departure world for each participant, used for independent returns.
     #[serde(default)]
     pub origins: BTreeMap<PlayerId, PlanetId>,
+    /// Independently chosen combat orders, retained when the fleets combine.
+    pub combat_orders: BTreeMap<PlayerId, FleetCombatOrders>,
+    /// Surviving Probes that left combat early and return to their own departure world.
+    pub scouts: BTreeMap<PlayerId, usize>,
+}
+
+impl JointAttackMission {
+    /// Removes separately returning scouts before docking or retreating the rest of a fleet.
+    pub(crate) fn fleet_without_scouts(&self, owner: PlayerId, army: &Army) -> Army {
+        army.iter()
+            .filter_map(|(unit, count)| {
+                let remaining = if *unit == Unit::probe() {
+                    count.saturating_sub(self.scouts.get(&owner).copied().unwrap_or(0))
+                } else {
+                    *count
+                };
+                (remaining > 0).then_some((*unit, remaining))
+            })
+            .collect()
+    }
+}
+
+/// Combat choices belonging to one commander in a coordinated attack.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FleetCombatOrders {
+    /// Buildings this commander's Bombers may target.
+    pub bombing: BombingRaid,
+    /// Whether this commander's Probes stay after the first combat round.
+    pub combat_probes: bool,
 }
 
 impl Mission {
+    /// Returns the bombing order for the owner of an individual combat unit.
+    pub(crate) fn bombing_for(&self, owner: Option<PlayerId>) -> &BombingRaid {
+        owner
+            .and_then(|owner| self.joint_attack.as_ref()?.combat_orders.get(&owner))
+            .map_or(&self.bombing, |orders| &orders.bombing)
+    }
+
+    /// Returns the probe order for the owner of an individual combat unit.
+    pub(crate) fn combat_probes_for(&self, owner: Option<PlayerId>) -> bool {
+        owner
+            .and_then(|owner| self.joint_attack.as_ref()?.combat_orders.get(&owner))
+            .map_or(self.combat_probes, |orders| orders.combat_probes)
+    }
+
+    /// Includes every participant's bombing policy when displaying a shared battle.
+    pub(crate) fn includes_bombing(&self, raid: &BombingRaid) -> bool {
+        self.joint_attack.as_ref().map_or(self.bombing == *raid, |attack| {
+            attack.combat_orders.values().any(|orders| orders.bombing == *raid)
+        })
+    }
+
     /// Creates a new value from the supplied state.
     pub fn new(
         turn: usize,
@@ -328,6 +385,7 @@ impl Mission {
             combat_probes,
             jump_gate,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
+            deep_cover: false,
             joint_attack: None,
         }
     }
@@ -357,6 +415,13 @@ impl Mission {
             mission.jump_gate,
             None,
         )
+        .with_deep_cover(mission.deep_cover)
+    }
+
+    /// Selects Deep Cover; launch validation requires a Spy mission and an origin Command Relay.
+    pub fn with_deep_cover(mut self, enabled: bool) -> Self {
+        self.deep_cover = enabled;
+        self
     }
 
     /// Returns the mission silhouette.
@@ -434,7 +499,7 @@ impl Mission {
 
     /// Retains an outbound objective's silhouette while this mission resolves as a safe deploy.
     pub(crate) fn with_return_objective(mut self, objective: Icon) -> Self {
-        debug_assert!(matches!(objective, Icon::Spy | Icon::Destroy | Icon::Protect));
+        debug_assert!(objective.is_mission());
         debug_assert_eq!(self.objective, Icon::Deploy);
         self.return_objective = Some(objective);
         self
@@ -442,8 +507,9 @@ impl Mission {
 
     /// Returns whether this fleet is already travelling back from an outbound mission.
     pub(crate) fn is_returning(&self) -> bool {
+        // A fresh deployment can originate from a foreign world with our protection fleet.
+        // Only explicit return metadata distinguishes it from a homeward leg.
         self.return_objective.is_some()
-            || (self.objective == Icon::Deploy && self.origin_controlled != Some(self.owner))
     }
 
     /// Starts a free return leg from the fleet's exact current position to its original world.
@@ -467,6 +533,7 @@ impl Mission {
         self.return_objective = Some(original_objective);
         self.bombing = BombingRaid::None;
         self.combat_probes = false;
+        self.deep_cover = false;
         self.jump_gate = false;
         self.joint_attack = None;
         self.logs.push_str(&format!(
@@ -525,9 +592,20 @@ impl Mission {
         self.turns_to_destination(map)
     }
 
-    /// Returns the fleet's remaining-route fuel cost after the origin reactor discount.
+    /// Returns the Deep Cover surcharge paid at launch, including on unsuccessful attempts.
+    pub fn deep_cover_cost(&self) -> usize {
+        if self.deep_cover && self.objective == Icon::Spy {
+            self.army
+                .amount(&Unit::probe())
+                .saturating_mul(crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE)
+        } else {
+            0
+        }
+    }
+
+    /// Returns travel fuel after the reactor discount plus any undiscounted Deep Cover cost.
     pub fn fuel_consumption(&self, map: &Map) -> usize {
-        if self.jump_gate {
+        let travel_fuel = if self.jump_gate {
             0
         } else {
             let origin = map.get(self.origin);
@@ -541,7 +619,8 @@ impl Mission {
                 .sum::<f32>();
 
             (fuel * (1. - REACTOR_FUEL_REDUCTION_FACTOR * reactor)).ceil() as usize
-        }
+        };
+        travel_fuel.saturating_add(self.deep_cover_cost())
     }
 
     /// Returns the total number of units, saturating if their counts exceed the platform limit.
@@ -652,15 +731,28 @@ impl Mission {
         }
     }
 
-    /// If a player can see this mission by Sensor Phalanx, return the level of the radar
+    /// Returns the strongest in-range Sensor Phalanx on an owned endpoint of this mission.
     pub fn is_seen_by_phalanx(&self, map: &Map, player: &Player) -> Option<usize> {
-        let destination = map.get(self.destination);
-        let phalanx = destination.army.amount(&Unit::Building(Building::SensorPhalanx));
-        (player.owns(destination)
-            && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + destination.size() * 0.5
-                >= destination.position.distance(self.position)
-            && !self.objective.is_hidden())
-        .then_some(phalanx)
+        // Return legs resolve as Deploy, but spies and missiles retain their concealment.
+        if self.objective.is_hidden() || self.return_objective.is_some_and(|icon| icon.is_hidden())
+        {
+            return None;
+        }
+
+        // Recall swaps the endpoints without moving the fleet. Both inbound and departing
+        // missions remain detectable while their actual position is within endpoint coverage.
+        [self.origin, self.destination]
+            .into_iter()
+            .filter_map(|id| {
+                let planet = map.get(id);
+                let phalanx = planet.army.amount(&Unit::Building(Building::SensorPhalanx));
+                (player.owns(planet)
+                    && phalanx > 0
+                    && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + planet.size() * 0.5
+                        >= planet.position.distance(self.position))
+                .then_some(phalanx)
+            })
+            .max()
     }
 
     /// If a player can see this mission by Orbital Radar, return the level of the radar

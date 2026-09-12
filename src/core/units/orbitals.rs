@@ -33,12 +33,13 @@ pub const fn production_level(unit: Unit) -> Option<usize> {
     }
 }
 
-/// Returns the Spy intelligence level needed to reveal this orbital.
+/// Returns the Spy intelligence level needed to reveal this orbital's level or count.
 ///
-/// Strategic superstructures remain public even though they require a level-five Shipyard.
+/// A Railgun's existence is public, but its level requires tier-five intelligence.
+/// Space Docks have no upgrade levels and remain fully public.
 pub const fn intelligence_level(unit: Unit) -> Option<usize> {
     match unit {
-        Unit::Building(Building::OrbitalRailgun) | Unit::Defense(Defense::SpaceDock) => None,
+        Unit::Defense(Defense::SpaceDock) => None,
         _ => production_level(unit),
     }
 }

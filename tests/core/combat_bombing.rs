@@ -214,3 +214,123 @@ fn bombing_reports_preserve_misses_and_replay_deterministically() {
     }
     assert!(misses > hits && hits > 0);
 }
+
+#[test]
+fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
+    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
+    let mut rng = DeterministicRngState::from_u64(43).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);
+    target.colonize(4);
+    target.army = buildings(5).into();
+    let fleet = Army::from([(Unit::Ship(Ship::Bomber), 80)]);
+    let mut mission = Mission::new_with_id(
+        43,
+        1,
+        1,
+        &origin,
+        &target,
+        Icon::Attack,
+        fleet.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.joint_attack = Some(JointAttackMission {
+        attackers: BTreeMap::from([(1, fleet.clone()), (2, fleet.clone()), (3, fleet)]),
+        combat_orders: BTreeMap::from([
+            (
+                1,
+                FleetCombatOrders {
+                    bombing: BombingRaid::None,
+                    combat_probes: false,
+                },
+            ),
+            (
+                2,
+                FleetCombatOrders {
+                    bombing: BombingRaid::Economic,
+                    combat_probes: false,
+                },
+            ),
+            (
+                3,
+                FleetCombatOrders {
+                    bombing: BombingRaid::Industrial,
+                    combat_probes: false,
+                },
+            ),
+        ]),
+        ..Default::default()
+    });
+    let report = resolve_combat_with_rng(1, &mission, &target, &mut rng);
+    let mut raiders = BTreeMap::<u64, usize>::new();
+    for round in &report.combat_report.as_ref().unwrap().rounds {
+        for bomber in &round.attacker {
+            for shot in bomber.shots.iter().filter(|shot| shot.is_bombing()) {
+                let owner = bomber.owner.unwrap();
+                let unit = shot.unit.unwrap();
+                assert!(match owner {
+                    2 => unit.is_economic_building(),
+                    3 => unit.is_industrial_building(),
+                    _ => false,
+                });
+                *raiders.entry(owner).or_default() += 1;
+            }
+        }
+    }
+    assert!(raiders[&2] > 0 && raiders[&3] > 0);
+    for (unit, count) in buildings(5) {
+        assert!(count - report.surviving_defender.amount(&unit) <= MAX_BOMBING_LEVELS_PER_BUILDING);
+    }
+}
+
+#[test]
+fn joint_probes_only_withdraw_for_commanders_who_disable_combat_probes() {
+    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
+    let mut rng = DeterministicRngState::from_u64(44).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);
+    target.colonize(3);
+    target.army = Army::from([(Unit::Defense(Defense::RocketLauncher), 1)]).into();
+    let fleet = Army::from([(Unit::probe(), 200)]);
+    let mut mission = Mission::new_with_id(
+        44,
+        1,
+        1,
+        &origin,
+        &target,
+        Icon::Attack,
+        fleet.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.joint_attack = Some(JointAttackMission {
+        attackers: BTreeMap::from([(1, fleet.clone()), (2, fleet)]),
+        combat_orders: BTreeMap::from([
+            (
+                1,
+                FleetCombatOrders {
+                    combat_probes: false,
+                    ..Default::default()
+                },
+            ),
+            (
+                2,
+                FleetCombatOrders {
+                    combat_probes: true,
+                    ..Default::default()
+                },
+            ),
+        ]),
+        ..Default::default()
+    });
+    let report = resolve_combat_with_rng(1, &mission, &target, &mut rng);
+    assert!(report.scout_probes > 0 && report.scout_probes <= 200);
+    let combat = report.combat_report.as_ref().unwrap();
+    assert!(combat.rounds.len() > 1);
+    assert!(combat.rounds[1].attacker.iter().all(|unit| unit.owner == Some(2)));
+}

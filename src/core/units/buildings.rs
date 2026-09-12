@@ -204,20 +204,29 @@ impl Description for Building {
                 "An active Command Relay diverts undersized enemy Spy missions before combat and \
                 feeds their Probes false telemetry. It safely returns groups of up to 5 Probes \
                 per completed level with a report of an empty planet. Larger groups gather \
-                intelligence normally."
+                intelligence normally. A Command Relay also enables Deep Cover for outgoing Spy \
+                missions. If its completed level exceeds the target's relay level on arrival, \
+                the Probes scan undetected without combat. Otherwise, they face one round of combat. \
+                Relay levels count for Deep Cover even when deception is switched off."
             },
             Building::TradingPost => {
                 "A Trading Post establishes a commerce route with another player's Trading Post \
-                within 3 AU. Each completed level lets its owner send up to 500 Metal, Crystal, \
+                within 3 AU. A completed post immediately reveals itself and its owner's color \
+                to players owning or controlling a world within 3 AU, even without their own \
+                Trading Post. Hover a visible post to see its 3 AU range; click a foreign post \
+                to open trade or see which Trading Post requirement is missing. \
+                Each completed level lets its owner send up to 500 Metal, Crystal, \
                 and Deuterium combined in one bilateral trade per player pair each turn. Outgoing \
                 resources are reserved when both players accept; incoming resources arrive when \
                 the turn resolves."
             },
             Building::SensorPhalanx => {
-                "The Sensor Phalanx scans the space around a planet to detect enemy attacks. \
+                "The Sensor Phalanx detects enemy missions approaching or leaving its planet, \
+                including recalled fleets while they remain in range. \
                 A Phalanx of level N scans the space at 1.0 * N AU from the planet, and it only \
                 sees units with production <= N. The objective of the enemy mission is not \
-                revealed. Spying missions are not detected by the Phalanx."
+                revealed. Spy and Missile Strike missions are not detected by the Phalanx, \
+                including their return legs."
             },
             Building::JumpGate => {
                 "The Jump Gate enables rapid travel between two owned planets with jump gates \
@@ -232,8 +241,9 @@ impl Description for Building {
                 +2% depending on the target's size. Each Planetary Shield level removes 1%, or 2% \
                 while overloaded. A \
                 synchronized strike costs 1,000 Deuterium and 5 Energy per firing Railgun. Each \
-                level extends the firing range by 2 AU. The Orbital Railgun is always visible by \
-                all players in the galaxy."
+                level extends the firing range by 2 AU. Once built, its existence is visible to \
+                all players in the galaxy. Its level requires intelligence level 5: at least 21 \
+                returning Probes."
             },
             Building::Laboratory => {
                 "The Laboratory allows to convert resources of one type to another. The higher \
@@ -244,7 +254,7 @@ impl Description for Building {
                 "The Orbital Radar scans the universe for enemy fleets. A Radar of level N reveals \
                 missions at 1.2 * N AU from the moon, and it only sees units with production <= N. It \
                 works similar to the Sensor Phalanx, but has longer reach and detects any mission \
-                in range (including Spy and Missile Strike), and not only those targeting the moon. \
+                in range (including Spy and Missile Strike), even on routes between other worlds. \
                 The Orbital radar can only be build on a moon."
             },
             Building::Senate => {

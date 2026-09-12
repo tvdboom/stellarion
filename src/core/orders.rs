@@ -50,6 +50,9 @@ pub enum OrderError {
     /// Dedicated espionage requires a meaningful probe group.
     #[error("A Spy mission requires at least 5 Probes.")]
     SpyProbes,
+    /// Deep Cover needs a dedicated Spy mission and a completed relay at its origin.
+    #[error("Deep Cover requires a Spy mission and a Command Relay at the origin.")]
+    DeepCover,
     /// The fleet contains units not available at the origin.
     #[error("The selected units are not available at the origin.")]
     Fleet,
@@ -174,8 +177,7 @@ pub fn validate_mission(
 ) -> Result<(), OrderError> {
     if player.spectator
         || mission.owner != player.id
-        || !(player.owns(origin) || player.controls(origin))
-        || origin.is_destroyed
+        || !origin.can_launch_mission(player.id)
         || destination.is_destroyed
         || mission.origin != origin.id
         || mission.destination != destination.id
@@ -185,6 +187,11 @@ pub fn validate_mission(
     }
     if mission.objective == Icon::Spy && mission.army.amount(&Unit::probe()) < MIN_SPY_PROBES {
         return Err(OrderError::SpyProbes);
+    }
+    if mission.deep_cover
+        && (mission.objective != Icon::Spy || !origin.has(&Unit::Building(Building::CommandRelay)))
+    {
+        return Err(OrderError::DeepCover);
     }
     if (mission.objective == Icon::Protect
         && (mission.protected_player != destination.controlled

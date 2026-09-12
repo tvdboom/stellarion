@@ -17,7 +17,7 @@ use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     resolved_turn, set_protection_permission_immediately, GameModel, GameRules, MatchStatus,
-    PersistedGame, TurnSubmission,
+    PersistedGame, TurnCommand, TurnSubmission,
 };
 use crate::core::states::AppState;
 use crate::multiplayer::authority::started_snapshot_for_members;
@@ -203,6 +203,18 @@ pub struct MultiplayerSession {
 }
 
 impl MultiplayerSession {
+    /// An owner must finish or cancel allied planning before becoming ready.
+    pub(crate) fn has_open_allied_mission(&self, pending: &PendingTurnCommands) -> bool {
+        self.membership.as_ref().is_some_and(|membership| {
+            self.joint_attacks.iter().any(|invitation| {
+                invitation.inviter == membership.player_id && !invitation.canceled
+                    && !invitation.launched
+                    && !pending.commands.iter().any(|command| matches!(command,
+                        TurnCommand::SendJointMission { attack_id, .. } if *attack_id == invitation.id))
+            })
+        })
+    }
+
     /// Returns whether a selected game is an active Supabase/mock multiplayer match.
     pub fn has_active_game(&self) -> bool {
         self.active_game.is_some() && self.membership.is_some()
@@ -314,15 +326,17 @@ pub enum MultiplayerRequest {
         /// Whether access is enabled.
         allowed: bool,
     },
-    /// Creates a private invitation from a completed hostile mission draft.
+    /// Creates or revises a private allied mission in the open mission editor.
     CreateJointAttack(crate::multiplayer::model::JointAttackInvitation),
-    /// Accepts with the selected fleet or rejects an invitation.
+    /// Publishes a pending fleet, accepts it, or rejects an invitation.
     RespondJointAttack {
+        /// Owner's proposal version currently displayed to the responding player.
+        expected_revision: u64,
         /// Stable invitation identifier.
         attack_id: u64,
         /// New response state.
         response: crate::multiplayer::model::JointAttackResponse,
-        /// Origin and army supplied only for acceptance.
+        /// Fleet and independent combat orders supplied for drafts and acceptance.
         contribution: Option<crate::core::simulation::JointAttackContribution>,
     },
     /// Cancels an invitation before its inviter launches the allied mission.
@@ -1290,6 +1304,7 @@ fn process_requests(
                 });
             },
             MultiplayerRequest::RespondJointAttack {
+                expected_revision,
                 attack_id,
                 response,
                 contribution,
@@ -1302,11 +1317,18 @@ fn process_requests(
                     continue;
                 };
                 session.joint_attack_update_pending = true;
-                let (attack_id, response, contribution) =
-                    (*attack_id, *response, contribution.clone());
+                let (attack_id, expected_revision, response, contribution) =
+                    (*attack_id, *expected_revision, *response, contribution.clone());
                 spawn_backend_task(&mut tasks, async move {
                     match backend
-                        .respond_joint_attack(&auth, &record.id, attack_id, response, contribution)
+                        .respond_joint_attack(
+                            &auth,
+                            &record.id,
+                            attack_id,
+                            expected_revision,
+                            response,
+                            contribution,
+                        )
                         .await
                     {
                         Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
@@ -1439,6 +1461,13 @@ fn process_requests(
                 });
             },
             MultiplayerRequest::SubmitTurn => {
+                if session.has_open_allied_mission(&pending) {
+                    request_error(
+                        &mut session,
+                        "Send or cancel your allied mission before ending the turn.",
+                    );
+                    continue;
+                }
                 let (Some(record), Some(membership)) =
                     (session.active_game.clone(), session.membership.clone())
                 else {
@@ -1551,7 +1580,7 @@ fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
     }
 }
 
-/// Announces protection invitations and revocations to the affected player.
+/// Announces protection invitations and manual revocations to the affected player.
 fn protection_permission_notifications(
     output: &BackendOutput,
     session: &MultiplayerSession,
@@ -1571,13 +1600,16 @@ fn protection_permission_notifications(
         .planets
         .iter()
         .filter_map(|planet| {
-            let before = previous
-                .persisted
-                .state
-                .map
-                .try_get(planet.id)
+            let previous_planet = previous.persisted.state.map.try_get(planet.id);
+            let before = previous_planet
                 .is_some_and(|planet| planet.protection_permissions.contains(&local_player));
             let after = planet.protection_permissions.contains(&local_player);
+            // Changing controllers automatically clears access; that reset needs no toast.
+            if !after
+                && previous_planet.is_some_and(|previous| previous.controlled != planet.controlled)
+            {
+                return None;
+            }
             (before != after).then(|| {
                 let message = if after {
                     MessageMsg::info(format!("You can now protect planet {}.", planet.name))
@@ -1698,7 +1730,8 @@ fn poll_backend_tasks(
                 &output,
                 BackendOutput::ProtectionChanged(_)
                     | BackendOutput::Failed(Operation::Protection, _)
-            ) || !protection_notifications.is_empty();
+            ) || !protection_notifications.is_empty()
+                || !revoked_targets.is_empty();
             let refresh_trade = matches!(
                 &output,
                 BackendOutput::TradeChanged(invitation) if invitation.finalized
@@ -2165,6 +2198,7 @@ fn apply_output(
             }
             if matches!(operation, Operation::JointAttack) {
                 session.joint_attack_update_pending = false;
+                session.joint_attack_reload_needed |= matches!(error, BackendError::Forbidden);
             }
             if matches!(operation, Operation::Trade) {
                 session.trade_update_pending = false;

@@ -86,9 +86,10 @@ defenses.
   The invitation is applied immediately and adds Protect alongside the mission choices. A
   protecting fleet joins that world's defense but remains separately owned. Revoking protection
   access applies immediately, and sends both traveling and stationed protection fleets to their
-  owner's homeworld. A player cannot launch missions from a stationed protection fleet or target
-  the protected world with hostile missions or Orbital Railguns. They may send more protection or
-  recall the entire stationed fleet home first.
+  owner's homeworld. A player can select a protected world as a mission origin and send some or
+  all of their own stationed units elsewhere, or recall the entire fleet home. They cannot use
+  the controller's units or target a world they currently protect with hostile missions or
+  Orbital Railguns.
 - **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
   The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
   planet.
@@ -98,6 +99,12 @@ defenses.
 - **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
   probes is required for a spy mission. The more Probes that return, the more intelligence is
   revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin.
+  **Deep Cover** requires a completed Command Relay at the origin and adds 10 deuterium per Probe
+  to the launch cost, without a Reactor discount. If the origin's completed relay level is higher
+  than the destination's on arrival, all Probes scan and return without combat, and the defender
+  receives no report or notification. Equal or lower levels trigger normal one-round Spy combat;
+  the extra fuel is still spent. Both relay levels count even with deception disabled. Relay
+  deception continues to divert small groups sent without Deep Cover.
 - **Missile Strike:** Launch Interplanetary Missiles against a planet. They bypass ships and the
   Planetary Shield to hit defenses directly. Surviving missiles are consumed. A strike always
   hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
@@ -107,6 +114,14 @@ defenses.
   planet (the chance falls in later rounds). The fleet returns whether destruction succeeds. A
   destroyed planet can never be colonized again.
 
+
+Allied missions use the normal mission editor: enable **Allied mission** and choose players
+from **Invite players**. Everyone sees each invited player's current fleet strength, and each
+commander chooses their own Combat Probes and Bombing raid settings. The owner can revise the
+fleet or mission type; changes clear earlier acceptances for review. Players can undo Accept
+until launch. The owner can send once at least one invitee accepts, using only accepted fleets.
+Closing the panel keeps the draft: the owner returns through Missions and invitees through their
+persistent notification. The owner must send or cancel the allied mission before ending the turn.
 
 ### Units
 
@@ -120,7 +135,8 @@ You can build four types of units on an owned planet:
   costly, publicly visible Orbital Railgun can fire once per turn at a planet within its
   level-scaled range; Railguns aimed at one world combine their small, size-dependent destruction
   chances into a synchronized strike. Each Planetary Shield level reduces that chance, with twice
-  the reduction while the shield is overloaded.
+  the reduction while the shield is overloaded. Building a Railgun reveals its existence to
+  everyone; learning its level requires intelligence level 5 (at least 21 returning Probes).
 - **Ships:** Ships are the backbone of your army. Ship often have unique characteristics that make
   them better or worse suited for certain strategies. Some ships are also stronger or weaker against
   other specific ship types, so try to build your fleet according to your enemy's composition.

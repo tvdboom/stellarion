@@ -303,9 +303,9 @@ impl Description for Icon {
             Icon::Deploy => "Send a fleet to another planet you control.",
             Icon::Protect => {
                 "Send your fleet to a world whose controller has granted you protection access. \
-                The fleet remains yours and joins that world's defense. While any of your fleet \
-                remains stationed there, you cannot attack that world or launch new missions from \
-                it. Recall the protection fleet to your home planet before attacking."
+                The fleet remains yours and joins that world's defense. Select that world as a \
+                mission origin to send your stationed units elsewhere, or recall the entire fleet \
+                home. You cannot attack that world while any of your fleet remains stationed there."
             },
             _ => "This icon selects a local map or shop category.",
         }

@@ -83,6 +83,8 @@ pub const SILO_CAPACITY_FACTOR: usize = 10;
 pub const PROBES_PER_PRODUCTION_LEVEL: usize = 5;
 /// Smallest probe group capable of performing a dedicated Spy mission.
 pub const MIN_SPY_PROBES: usize = 5;
+/// Additional launch deuterium per Probe attempting Deep Cover, without reactor discounts.
+pub const DEEP_COVER_DEUTERIUM_PER_PROBE: usize = 10;
 /// Fleet-fuel reduction granted by each Reactor level.
 pub const REACTOR_FUEL_REDUCTION_FACTOR: f32 = 0.1;
 /// Sensor-phalanx range granted per building level, measured in AU (planet-size units).

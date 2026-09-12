@@ -44,7 +44,7 @@ fn orbital_production_levels_follow_shop_order_and_match_non_public_intelligence
         (Unit::Building(Building::TradingPost), 3, Some(3)),
         (Unit::Building(Building::SensorPhalanx), 3, Some(3)),
         (Unit::Building(Building::JumpGate), 4, Some(4)),
-        (Unit::Building(Building::OrbitalRailgun), 5, None),
+        (Unit::Building(Building::OrbitalRailgun), 5, Some(5)),
         (Unit::space_dock(), 5, None),
     ];
 

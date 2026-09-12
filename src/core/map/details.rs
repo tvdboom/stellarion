@@ -224,7 +224,6 @@ struct Debris {
 
 #[derive(Component)]
 struct DebrisHitTarget {
-    planet: PlanetId,
     site: DebrisSite,
 }
 
@@ -491,8 +490,6 @@ fn spawn_debris(
         return;
     };
     let visuals = debris_visuals(size_class);
-    let mut field_min = Vec2::splat(f32::INFINITY);
-    let mut field_max = Vec2::splat(f32::NEG_INFINITY);
     for index in 0..visuals.pieces {
         let seed = site.seed.wrapping_add(index as u32 * 19);
         // Keep wreckage in the open corridor directly left of the planet, beyond the ordinary
@@ -516,12 +513,7 @@ fn spawn_debris(
         let origin = planet.position + Vec2::from_angle(angle) * radius;
         let rotation = noise(seed.wrapping_add(4)) * TAU;
         let amplitude = planet.size() * 0.018;
-        // A rotated square is widest at 45 degrees. Include its full possible idle drift so the
-        // stable interaction target covers the art without making the art itself hover-sensitive.
-        let half_extent = Vec2::splat(size * std::f32::consts::FRAC_1_SQRT_2 + amplitude);
-        field_min = field_min.min(origin - half_extent);
-        field_max = field_max.max(origin + half_extent);
-        commands.spawn((
+        let mut piece = commands.spawn((
             Sprite {
                 image: image.clone(),
                 rect: Some(Rect::from_corners(min, min + cell)),
@@ -549,36 +541,37 @@ fn spawn_debris(
             },
             MapCmp,
         ));
+        // Compressed art cannot provide alpha-aware picking. Inset each transparent target
+        // over the atlas cell's outer padding, and inherit the piece's rotation and drift so
+        // empty space around the plume never becomes one large selectable rectangle.
+        piece.with_children(|parent| {
+            parent
+                .spawn((
+                    Sprite::from_color(Color::NONE, Vec2::splat(size * 0.8)),
+                    Transform::from_xyz(0.0, 0.0, 0.001),
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                    DebrisHitTarget {
+                        site: site.clone(),
+                    },
+                    MapCmp,
+                ))
+                .observe(cursor::<Over>(SystemCursorIcon::Pointer))
+                .observe(cursor::<Out>(SystemCursorIcon::Default))
+                .observe(
+                    move |event: On<Pointer<Click>>,
+                          player: Res<Player>,
+                          mut state: ResMut<UiState>,
+                          game: Res<State<GameState>>| {
+                        if event.button == PointerButton::Primary
+                            && *game.get() == GameState::Playing
+                        {
+                            open_latest_battle(&player, planet_id, &mut state);
+                        }
+                    },
+                );
+        });
     }
-    // Runtime art is compressed, so it cannot provide alpha-aware sprite picking. A separate,
-    // permanently transparent rectangle keeps hover/click behavior stable and prevents pointer
-    // state from ever changing the visible debris sprites.
-    commands
-        .spawn((
-            Sprite::from_color(Color::NONE, field_max - field_min),
-            Transform::from_translation(
-                ((field_min + field_max) * 0.5).extend(PLANET_Z + DEBRIS_DEPTH + 0.001),
-            ),
-            Visibility::Hidden,
-            Pickable::IGNORE,
-            DebrisHitTarget {
-                planet: planet.id,
-                site: site.clone(),
-            },
-            MapCmp,
-        ))
-        .observe(cursor::<Over>(SystemCursorIcon::Pointer))
-        .observe(cursor::<Out>(SystemCursorIcon::Default))
-        .observe(
-            move |event: On<Pointer<Click>>,
-                  player: Res<Player>,
-                  mut state: ResMut<UiState>,
-                  game: Res<State<GameState>>| {
-                if event.button == PointerButton::Primary && *game.get() == GameState::Playing {
-                    open_latest_battle(&player, planet_id, &mut state);
-                }
-            },
-        );
 }
 
 fn spawn_light(
@@ -1012,7 +1005,6 @@ fn refresh_details(
     mut commands: Commands,
     mut cache: ResMut<DetailCache>,
     details: Query<(Entity, &Detail)>,
-    debris_hit_targets: Query<(Entity, &DebrisHitTarget)>,
     map: Res<Map>,
     player: Res<Player>,
     missions: Res<Missions>,
@@ -1101,11 +1093,6 @@ fn refresh_details(
             cache.development.get(&detail.planet) != development.get(&detail.planet)
         };
         if changed {
-            commands.entity(entity).despawn();
-        }
-    }
-    for (entity, target) in &debris_hit_targets {
-        if cache.debris.get(&target.planet) != sites.get(&target.planet) {
             commands.entity(entity).despawn();
         }
     }

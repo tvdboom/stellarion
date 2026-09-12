@@ -160,7 +160,7 @@ pub trait MultiplayerBackend: Send + Sync {
         allowed: bool,
     ) -> BackendFuture<'a, ProtectionPermissionUpdate>;
 
-    /// Creates one private current-turn invitation containing attack information only.
+    /// Creates or revises a private current-turn allied mission proposal as its owner.
     fn create_joint_attack<'a>(
         &'a self,
         _session: &'a AuthSession,
@@ -170,12 +170,13 @@ pub trait MultiplayerBackend: Send + Sync {
         Box::pin(async { Err(BackendError::Configuration("joint attacks are unavailable".into())) })
     }
 
-    /// Accepts with an origin/fleet contribution or rejects one received invitation.
+    /// Publishes a fleet draft, accepts the displayed proposal, undoes acceptance, or rejects it.
     fn respond_joint_attack<'a>(
         &'a self,
         _session: &'a AuthSession,
         _game_id: &'a GameId,
         _attack_id: u64,
+        _expected_revision: u64,
         _response: JointAttackResponse,
         _contribution: Option<crate::core::simulation::JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {

@@ -126,6 +126,8 @@ pub fn check_keys_menu(
                                 state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
                                 state.protection_access = None;
+                            } else if state.joint_attack_open.is_some() {
+                                state.joint_attack_open = None;
                             } else if state.planet_selected.is_some() || state.mission {
                                 state.planet_selected = None;
                                 state.mission = false;
@@ -231,6 +233,9 @@ pub fn check_keys(
     if keyboard.just_pressed(KeyCode::KeyM) {
         state.planet_selected = None;
         state.mission = !state.mission;
+        if state.mission && state.joint_attack_draft_id.is_some() {
+            state.mission_tab = MissionTab::NewMission;
+        }
         state.combat_report = None;
     }
 

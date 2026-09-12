@@ -25,6 +25,80 @@ fn trading_game() -> GameModel {
 }
 
 #[test]
+fn completed_trading_posts_broadcast_to_every_adjacent_owner_and_controller() {
+    let mut model = GameModel::new(
+        [31; 32],
+        GameRules {
+            player_count: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let adjacent = model.players[0].home_planet;
+    let distant = model.players[2].home_planet;
+    let post = model.players[3].home_planet;
+    for planet in &mut model.map.planets {
+        planet.owned = None;
+        planet.controlled = None;
+    }
+    model.map.get_mut(adjacent).owned = Some(1);
+    model.map.get_mut(adjacent).controlled = Some(2);
+    model.map.get_mut(adjacent).position =
+        bevy::math::Vec2::X * Planet::SIZE * TRADING_POST_ADJACENCY_AU;
+    model.map.get_mut(distant).owned = Some(3);
+    model.map.get_mut(distant).controlled = Some(3);
+    model.map.get_mut(distant).position =
+        bevy::math::Vec2::Y * Planet::SIZE * (TRADING_POST_ADJACENCY_AU + 0.01);
+    let target = model.map.get_mut(post);
+    target.position = bevy::math::Vec2::ZERO;
+    target.owned = Some(4);
+    target.controlled = Some(3);
+    target.buy.push(Unit::Building(Building::TradingPost));
+
+    for viewer in 1..=4 {
+        assert_eq!(visible_trading_post_owner(&model.map, viewer, model.map.get(post)), None);
+    }
+    model.map.get_mut(post).buy.clear();
+    model.map.get_mut(post).army.insert(Unit::Building(Building::TradingPost), 1);
+
+    for viewer in [1, 2, 4] {
+        assert_eq!(
+            visible_trading_post_owner(&model.map, viewer, model.map.get(post)),
+            Some(4),
+            "the completed post broadcasts its owner without requiring scouting or a local post"
+        );
+    }
+    assert_eq!(visible_trading_post_owner(&model.map, 3, model.map.get(post)), None);
+    assert!(!trading_posts_are_adjacent(&model.map, 1, adjacent, 4, post));
+
+    model.map.get_mut(adjacent).is_destroyed = true;
+    for viewer in [1, 2] {
+        assert_eq!(visible_trading_post_owner(&model.map, viewer, model.map.get(post)), None);
+    }
+    assert_eq!(visible_trading_post_owner(&model.map, 4, model.map.get(post)), Some(4));
+}
+
+#[test]
+fn trading_post_broadcast_tracks_current_ownership_and_destruction() {
+    let mut model = trading_game();
+    let post = model.players[1].home_planet;
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), Some(2));
+
+    model.map.get_mut(post).controlled = Some(1);
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), Some(2));
+    model.map.get_mut(post).owned = Some(1);
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), Some(1));
+    model.map.get_mut(post).owned = None;
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), None);
+    model.map.get_mut(post).owned = Some(2);
+    model.map.get_mut(post).army.remove(&Unit::Building(Building::TradingPost));
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), None);
+    model.map.get_mut(post).army.insert(Unit::Building(Building::TradingPost), 1);
+    model.map.get_mut(post).is_destroyed = true;
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(post)), None);
+}
+
+#[test]
 fn each_post_level_supplies_its_owners_independent_capacity() {
     let model = trading_game();
     let first = model.players[0].home_planet;

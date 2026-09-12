@@ -5,6 +5,9 @@ use crate::core::units::ships::Ship;
 use crate::core::units::Combat;
 use bevy::math::Vec2;
 
+#[path = "spy_missions.rs"]
+mod spy_missions;
+
 #[test]
 fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
     let mut model = started_model(2);
@@ -365,7 +368,7 @@ fn immediate_revocation_recalls_protection_and_preserves_controller_intelligence
 }
 
 #[test]
-fn stationed_protection_can_only_be_recalled_home() {
+fn stationed_protection_can_launch_missions_or_recall_home_without_using_host_units() {
     let mut model = started_model(3);
     let protected = model.players[0].home_planet;
     let protector_home = model.players[1].home_planet;
@@ -384,11 +387,19 @@ fn stationed_protection_can_only_be_recalled_home() {
         army: Army::from([(fighter, 3)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        deep_cover: false,
         jump_gate: false,
     };
 
     assert!(preview_commands(&model, 1, std::slice::from_ref(&attack)).is_err());
-    assert!(preview_commands(&model, 2, &[attack]).is_err());
+    let dispatched = preview_commands(&model, 2, &[attack]).unwrap();
+    assert_eq!(dispatched.map.get(protected).army.controller(), &host_army);
+    assert_eq!(dispatched.map.get(protected).army.protector(2).unwrap().amount(&fighter), 2);
+    assert_eq!(dispatched.missions[0].army.amount(&fighter), 3);
+    assert_eq!(dispatched.missions[0].destination, target);
+    assert!(
+        dispatched.player(2).unwrap().resources.deuterium < model.players[1].resources.deuterium
+    );
 
     let preview = preview_commands(
         &model,
@@ -423,9 +434,166 @@ fn stationed_protection_can_only_be_recalled_home() {
         army: Army::from([(fighter, 1)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        deep_cover: false,
         jump_gate: false,
     };
     assert!(preview_commands(&model, 2, &[attack_protected_world]).is_err());
+}
+
+#[test]
+fn protection_departures_use_only_the_commanders_fleet_and_can_be_canceled() {
+    let mut model = started_model(3);
+    let protected = model.players[0].home_planet;
+    let home = model.players[1].home_planet;
+    let target = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.players[1].resources = Resources::new(1_000_000, 1_000_000, 1_000_000);
+    model.map.get_mut(protected).army.insert(fighter, 17);
+    model.map.get_mut(protected).protection_permissions.extend([2, 3]);
+    model.map.get_mut(protected).dock_protecting_fleet(2, Army::from([(fighter, 5)]));
+    model.map.get_mut(protected).dock_protecting_fleet(3, Army::from([(fighter, 11)]));
+    model.map.get_mut(target).protection_permissions.insert(2);
+    let initial = model.map.get(protected).clone();
+
+    for (objective, destination) in
+        [(Icon::Attack, target), (Icon::Deploy, home), (Icon::Protect, target)]
+    {
+        for count in [3, 5, 6] {
+            let command = TurnCommand::SendMission {
+                mission_id: 703,
+                origin: protected,
+                destination,
+                objective,
+                army: Army::from([(fighter, count)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+                deep_cover: false,
+                jump_gate: false,
+            };
+            let result = preview_commands(&model, 2, std::slice::from_ref(&command));
+            if count > 5 {
+                assert!(result.is_err(), "host and other protector units must stay unavailable");
+                continue;
+            }
+            let dispatched = result.unwrap();
+            let origin = dispatched.map.get(protected);
+            assert_eq!(origin.army.controller(), initial.army.controller());
+            assert_eq!(origin.army.protector(3), initial.army.protector(3));
+            assert_eq!(origin.army.protector(2).map_or(0, |army| army.amount(&fighter)), 5 - count);
+            assert_eq!(origin.can_launch_mission(2), count < 5);
+            assert_eq!(origin.controlled, initial.controlled);
+            assert_eq!(origin.protection_permissions, initial.protection_permissions);
+            assert!(!dispatched.missions[0].is_returning());
+            let mut loaded =
+                PersistedGame::from_json(PersistedGame::new(dispatched).to_json().unwrap())
+                    .unwrap();
+            assert!(!loaded.state.missions[0].is_returning());
+            if matches!(objective, Icon::Deploy | Icon::Protect) {
+                loaded.state.missions[0].position = loaded.state.map.get(destination).position;
+                empty_turn(&mut loaded.state);
+                let report = loaded.state.player(2).unwrap().reports.last().unwrap();
+                assert_eq!(report.mission.objective, objective);
+                assert!(!report.hidden, "a new deployment must produce a visible arrival report");
+                assert_eq!(
+                    loaded
+                        .state
+                        .map
+                        .get(destination)
+                        .mission_origin_army(2)
+                        .unwrap()
+                        .amount(&fighter),
+                    model
+                        .map
+                        .get(destination)
+                        .mission_origin_army(2)
+                        .map_or(0, |army| army.amount(&fighter))
+                        + count,
+                );
+            }
+
+            let canceled = preview_commands(
+                &model,
+                2,
+                &[
+                    command,
+                    TurnCommand::RecallMission {
+                        mission_id: 703,
+                    },
+                ],
+            )
+            .unwrap();
+            assert!(canceled.missions.is_empty());
+            assert_eq!(canceled.map.get(protected).army, initial.army);
+            assert_eq!(canceled.player(2).unwrap().resources, model.players[1].resources);
+        }
+    }
+
+    model.map.get_mut(protected).army.remove_protector(2);
+    assert!(
+        !model.map.get(protected).can_launch_mission(2),
+        "permission alone is not a dispatch pool"
+    );
+}
+
+#[test]
+fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_world() {
+    let mut model = started_model(3);
+    let origin = model.players[0].home_planet;
+    let target = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(origin).army.insert(fighter, 7);
+    model.map.get_mut(origin).protection_permissions.insert(2);
+    model.map.get_mut(origin).dock_protecting_fleet(2, Army::from([(fighter, 5)]));
+    for player in &mut model.players {
+        player.resources.deuterium = 1_000_000;
+    }
+    for leader in [1, 2] {
+        for protector_count in [5, 6] {
+            let mut contributions = vec![
+                JointAttackContribution {
+                    player_id: 1,
+                    origin,
+                    army: Army::from([(fighter, 3)]),
+                    bombing: crate::core::missions::BombingRaid::None,
+                    combat_probes: false,
+                },
+                JointAttackContribution {
+                    player_id: 2,
+                    origin,
+                    army: Army::from([(fighter, protector_count)]),
+                    bombing: crate::core::missions::BombingRaid::None,
+                    combat_probes: false,
+                },
+            ];
+            if leader == 2 {
+                contributions.reverse();
+            }
+            let result = preview_commands(
+                &model,
+                leader,
+                &[TurnCommand::SendJointMission {
+                    attack_id: 704,
+                    mission_id: 705,
+                    destination: target,
+                    objective: Icon::Attack,
+                    bombing: BombingRaid::None,
+                    combat_probes: false,
+                    contributions,
+                }],
+            );
+            if protector_count > 5 {
+                assert!(result.is_err());
+                continue;
+            }
+            let dispatched = result.unwrap();
+            assert_eq!(dispatched.missions.len(), 2);
+            assert_eq!(dispatched.map.get(origin).army.amount(&fighter), 4);
+            assert!(dispatched.map.get(origin).army.protector(2).is_none());
+            assert_eq!(dispatched.map.get(origin).controlled, Some(1));
+            assert!(!dispatched.map.get(origin).can_launch_mission(2));
+            PersistedGame::new(dispatched).validate().unwrap();
+        }
+    }
 }
 
 #[test]
@@ -904,6 +1072,7 @@ fn mission_commands_ignore_zero_count_units() {
         BombingRaid::None,
         false,
         false,
+        false,
     )
     .unwrap();
 
@@ -940,6 +1109,7 @@ fn recalling_a_mission_launched_in_the_same_turn_restores_the_exact_prelaunch_st
             army: Army::from([(fighter, 3)]),
             bombing: BombingRaid::None,
             combat_probes: false,
+            deep_cover: false,
             jump_gate: false,
         },
         TurnCommand::RecallMission {
@@ -1194,6 +1364,7 @@ fn departing_planets_and_moons_release_control_only_when_vacant() {
                 Icon::Deploy,
                 &Army::from([(fighter, 1)]),
                 BombingRaid::None,
+                false,
                 false,
                 false,
             )
@@ -1908,11 +2079,15 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 player_id: 1,
                 origin: leader_origin,
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
+                bombing: crate::core::missions::BombingRaid::None,
+                combat_probes: false,
             },
             JointAttackContribution {
                 player_id: 2,
                 origin: supporter_origin,
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
+                bombing: crate::core::missions::BombingRaid::None,
+                combat_probes: false,
             },
         ],
     };
@@ -2505,4 +2680,96 @@ proptest::proptest! {
             }
         }
     }
+}
+
+#[test]
+fn joint_scouts_return_to_their_own_commander_without_duplicate_survivors() {
+    let mut model = started_model(3);
+    let first = model.players[0].home_planet;
+    let second = model.players[1].home_planet;
+    let target = model.players[2].home_planet;
+    model.map.get_mut(target).army =
+        Army::from([(Unit::Defense(Defense::RocketLauncher), 10)]).into();
+    model.map.get_mut(first).army.insert(Unit::probe(), 200);
+    model.map.get_mut(first).army.insert(Unit::Ship(Ship::LightFighter), 1);
+    model.map.get_mut(second).army.insert(Unit::probe(), 200);
+    for player in &mut model.players {
+        player.resources.deuterium = 1_000_000;
+    }
+    let command = TurnCommand::SendJointMission {
+        attack_id: 901,
+        mission_id: 9010,
+        destination: target,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: true,
+        contributions: vec![
+            JointAttackContribution {
+                player_id: 1,
+                origin: first,
+                army: Army::from([(Unit::probe(), 200), (Unit::Ship(Ship::LightFighter), 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: true,
+            },
+            JointAttackContribution {
+                player_id: 2,
+                origin: second,
+                army: Army::from([(Unit::probe(), 200)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+        ],
+    };
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[
+            TurnSubmission::new(1, turn, vec![command]),
+            TurnSubmission::new(2, turn, vec![]),
+            TurnSubmission::new(3, turn, vec![]),
+        ],
+    )
+    .unwrap();
+    for _ in 0..40 {
+        if model.player(1).unwrap().reports.iter().any(|report| {
+            report.mission.joint_attack.as_ref().is_some_and(|attack| attack.id == 901)
+        }) {
+            break;
+        }
+        empty_turn(&mut model);
+    }
+    let report = model
+        .player(1)
+        .unwrap()
+        .reports
+        .iter()
+        .find(|report| report.mission.joint_attack.as_ref().is_some_and(|attack| attack.id == 901))
+        .unwrap();
+    let attack = report.mission.joint_attack.as_ref().unwrap();
+    assert!(!attack.scouts.contains_key(&1));
+    let scouts = attack.scouts[&2];
+    assert!(scouts > 0);
+    assert_eq!(
+        model
+            .missions
+            .iter()
+            .filter(|mission| mission.owner == 2)
+            .map(|mission| mission.army.amount(&Unit::probe()))
+            .sum::<usize>(),
+        scouts
+    );
+    assert!(model
+        .missions
+        .iter()
+        .filter(|mission| mission.owner == 2)
+        .all(|mission| mission.destination == second));
+    assert_eq!(
+        model
+            .missions
+            .iter()
+            .filter(|mission| mission.owner == 1)
+            .map(|mission| mission.army.amount(&Unit::probe()))
+            .sum::<usize>(),
+        attack.survivors.get(&1).map_or(0, |army| army.amount(&Unit::probe()))
+    );
 }

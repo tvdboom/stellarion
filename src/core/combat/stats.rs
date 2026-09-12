@@ -37,7 +37,7 @@ impl Description for CombatStats {
                 capacity cost."
             },
             CombatStats::Intelligence => {
-                "The minimum intelligence level required for an enemy Spy mission to see this structure."
+                "The minimum intelligence level required for an enemy Spy mission to reveal a structure's level or count."
             },
             CombatStats::Hull => "The amount of damage a unit can take before being destroyed.",
             CombatStats::Shield => {

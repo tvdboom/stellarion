@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::combat::report::MissionReport;
+use crate::core::constants::MIN_ZOOM;
 use crate::core::identity::{GameCode, GameId};
 use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
@@ -356,7 +357,8 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 );
                 assert_eq!(sprite.color, ASTEROID_TINT);
                 let tint = sprite.color.to_srgba();
-                assert!(tint.red >= 0.8 && tint.green >= 0.78 && tint.blue >= 0.74);
+                assert!((0.6..=0.8).contains(&tint.red));
+                assert!(tint.red > tint.green && tint.green > tint.blue);
                 assert!(tint.alpha >= 0.9);
                 for (planet_position, planet_radius) in &planets {
                     let asteroid_radius = sprite.custom_size.unwrap().x * 0.5;
@@ -586,6 +588,168 @@ fn render_asteroid_belt_preview() {
         app.update();
     }
     assert!(std::path::Path::new(output).exists());
+}
+
+#[test]
+fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
+    let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let planet_id = *crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map)
+        .keys()
+        .find(|id| **id != player.home_planet)
+        .expect("map should have a world near an asteroid");
+    let local = player.id;
+    let enemy = model.players[1].id;
+    let recycler_unit = Unit::Building(Building::Recycler);
+    let planet = model.map.get_mut(planet_id);
+    planet.owned = Some(enemy);
+    planet.controlled = Some(enemy);
+    planet.army = Army::from([(recycler_unit, 2)]).into();
+    let report = MissionReport {
+        id: 1,
+        turn: 1,
+        mission: Mission {
+            owner: local,
+            origin: player.home_planet,
+            destination: planet_id,
+            objective: Icon::Spy,
+            ..default()
+        },
+        planet: planet.clone(),
+        scout_probes: 1_000_000,
+        surviving_attacker: Army::new(),
+        surviving_defender: planet.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: planet.owned,
+        destination_controlled: planet.controlled,
+        combat_report: None,
+        hidden: false,
+    };
+    // Live observation must also show upgrades made since the spy report.
+    planet.army.insert(recycler_unit, 3);
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<Settings>()
+        .init_resource::<MultiplayerSession>()
+        .init_resource::<Missions>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .add_systems(Update, animate_recyclers);
+    app.world_mut().spawn((
+        MainCamera,
+        Projection::Orthographic(OrthographicProjection {
+            scale: 0.5,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+    let mut markers = Vec::new();
+    for level in 1..=Building::MAX_LEVEL {
+        let craft = app
+            .world_mut()
+            .spawn((
+                RecyclerCmp {
+                    planet: planet_id,
+                    level,
+                    phase: 0.4,
+                    gate_angle: PI * 0.25,
+                },
+                Sprite::default(),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id();
+        let material = app.world_mut().resource_mut::<Assets<ColorMaterial>>().add(Color::WHITE);
+        let scan = app
+            .world_mut()
+            .spawn((
+                RecyclerScanCmp {
+                    planet: planet_id,
+                    recycler_level: level,
+                    pulse_offset: 0.0,
+                },
+                MeshMaterial2d(material),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id();
+        markers.push((level, craft, scan));
+    }
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    let assert_visible_levels = |app: &mut App, count: usize| {
+        app.update();
+        for (level, craft, scan) in &markers {
+            let expected = if *level <= count {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            assert_eq!(app.world().get::<Visibility>(*craft), Some(&expected));
+            assert_eq!(app.world().get::<Visibility>(*scan), Some(&expected));
+        }
+    };
+    assert_visible_levels(&mut app, 0);
+    app.world_mut().resource_mut::<Player>().push_report(report);
+    assert_visible_levels(&mut app, 0);
+
+    // An invitation or a fleet still travelling there does not grant local observation.
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).protection_permissions.insert(local);
+    app.world_mut().resource_mut::<Missions>().0.push(Mission {
+        owner: local,
+        destination: planet_id,
+        objective: Icon::Protect,
+        army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        ..default()
+    });
+    assert_visible_levels(&mut app, 0);
+
+    for (owner, controller, stationed_player, controller_ships, expected) in [
+        (enemy, enemy, Some(enemy), 0, 0),
+        (enemy, enemy, Some(local), 0, 3),
+        (enemy, enemy, None, 0, 0),
+        (local, enemy, None, 0, 3),
+        (enemy, local, None, 1, 3),
+        (enemy, local, None, 0, 0),
+    ] {
+        {
+            let mut map = app.world_mut().resource_mut::<Map>();
+            let planet = map.get_mut(planet_id);
+            planet.owned = Some(owner);
+            planet.controlled = Some(controller);
+            planet.army.clear_protectors();
+            planet.army.insert(Unit::Ship(Ship::LightFighter), controller_ships);
+            if let Some(protector) = stationed_player {
+                planet.dock_protecting_fleet(
+                    protector,
+                    Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+                );
+            }
+        }
+        assert_visible_levels(&mut app, expected);
+    }
+    let world = app.world();
+    assert_eq!(
+        world
+            .resource::<Player>()
+            .last_info(world.resource::<Map>().get(planet_id), &[])
+            .unwrap()
+            .army
+            .amount(&recycler_unit),
+        2,
+        "hiding craft must preserve the recycler level learned by spying"
+    );
+    app.world_mut().resource_mut::<Player>().reports.clear();
+    {
+        let mut map = app.world_mut().resource_mut::<Map>();
+        let planet = map.get_mut(planet_id);
+        planet.controlled = Some(enemy);
+        planet.dock_protecting_fleet(local, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
+    }
+    assert_visible_levels(&mut app, 3);
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).destroy();
+    assert_visible_levels(&mut app, 0);
 }
 
 #[test]
@@ -1203,9 +1367,10 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             .map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map)
             .find(|map| map_scenery_selection(map) == expected_kind)
             .unwrap();
-        let anchor = celestial_position(&map).extend(CELESTIAL_DEPTH);
+        let anchor =
+            (celestial_position(&map) * (1.0 - CELESTIAL_PARALLAX_FOLLOW)).extend(CELESTIAL_DEPTH);
         let sun_anchor = solar_star_position(&map).extend(SOLAR_STAR_DEPTH);
-        assert!(anchor.z > VORONOI_Z && anchor.z < PLANET_Z);
+        assert!(anchor.z > BACKGROUND_Z && anchor.z < VORONOI_Z);
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), TransformPlugin))
             .init_asset::<Image>()
@@ -1240,12 +1405,15 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         let kind = map_scenery_selection(world.resource::<Map>());
         let mut layers = world.query::<(&ParallaxCmp, &Children)>();
         let mut nebula_follow = None;
+        let mut celestial_follow = None;
         for (parallax, children) in layers.iter(world) {
             for child in children.iter() {
                 if world.get::<NebulaCmp>(child).is_some() {
                     nebula_follow = Some(parallax.camera_follow);
                 }
-                assert!(world.get::<CelestialCmp>(child).is_none());
+                if world.get::<CelestialCmp>(child).is_some() {
+                    celestial_follow = Some(parallax.camera_follow);
+                }
             }
         }
 
@@ -1269,13 +1437,16 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         }
 
         assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
+        assert_eq!(celestial_follow, Some(CELESTIAL_PARALLAX_FOLLOW));
         let mut landmarks = world.query::<(&CelestialCmp, &GlobalTransform)>();
         let (celestial, transform) = landmarks.single(world).unwrap();
         assert_eq!(celestial.kind, expected_kind);
         assert_eq!(celestial.frames.len(), kind.frame_count());
         assert_eq!(transform.translation(), anchor);
+        assert!(anchor.truncate().abs().cmplt(Vec2::new(400.0, 225.0)).all());
 
-        // Every landmark has a stable map position, so scanning to its edge always reveals it.
+        // Distant landmarks move in the same screen direction as planets, at a fraction of
+        // their speed. This exercises the actual spawned hierarchy and camera update system.
         let camera_position = Vec3::new(-2_000.0, 700.0, 1.0);
         world.get_mut::<Transform>(camera).unwrap().translation = camera_position;
         app.update();
@@ -1283,21 +1454,43 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         let pan_position = landmarks.single(world).unwrap().1.translation();
         let relative_motion =
             pan_position.truncate() - anchor.truncate() - camera_position.truncate();
-        assert!(relative_motion.abs_diff_eq(-camera_position.truncate(), 1e-3));
+        assert!(relative_motion.abs_diff_eq(-camera_position.truncate() * 0.06, 1e-3));
 
-        // Zoom and elapsed time must preserve the depth response without adding drift.
-        if let Projection::Orthographic(projection) =
-            &mut *world.get_mut::<Projection>(camera).unwrap()
-        {
-            projection.scale = 0.5;
+        // Across the complete zoom range the apparent size changes by less than 10%,
+        // while every crossfade frame remains behind the gameplay plane.
+        let mut apparent_widths = Vec::new();
+        for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
+            if let Projection::Orthographic(projection) =
+                &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
+            {
+                projection.scale = zoom;
+            }
+            app.update();
+            let world = app.world_mut();
+            let mut frames =
+                world.query_filtered::<(&Sprite, &GlobalTransform), With<CelestialFrameCmp>>();
+            for (sprite, transform) in frames.iter(world) {
+                assert!(transform.translation().z > BACKGROUND_Z);
+                assert!(transform.translation().z < VORONOI_Z);
+                let scale = transform.to_scale_rotation_translation().0;
+                apparent_widths.push(sprite.custom_size.unwrap().x * scale.x / zoom);
+            }
         }
+        let smallest = apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
+        let largest = apparent_widths.iter().copied().fold(0.0, f32::max);
+        assert!(largest / smallest < 1.1);
+        assert!(largest > smallest);
+
+        // Elapsed time must preserve the depth response without adding drift.
+        let world = app.world_mut();
+        let before_drift = *landmarks.single(world).unwrap().1;
         world
             .resource_mut::<Time<bevy::time::Virtual>>()
             .advance_by(std::time::Duration::from_secs(36_000));
         app.update();
         let world = app.world_mut();
         let transform = landmarks.single(world).unwrap().1;
-        assert_eq!(transform.translation(), anchor);
+        assert_eq!(*transform, before_drift);
         let mut suns = world.query_filtered::<&GlobalTransform, With<SolarStarCmp>>();
         assert_eq!(suns.single(world).unwrap().translation(), sun_anchor);
         let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
@@ -1412,6 +1605,338 @@ fn comet_system_spawns_thin_half_screen_streaks_and_cleans_them_up() {
     app.update();
     assert!(app.world().get_entity(comet).is_err());
     assert!(children.iter().all(|child| app.world().get_entity(*child).is_err()));
+}
+
+#[test]
+fn jump_gates_stay_clear_of_trading_posts_throughout_their_rotation() {
+    let model = GameModel::new([17; 32], GameRules::default()).unwrap();
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .insert_resource(model.players[0].clone())
+        .insert_resource(model.map)
+        .add_systems(Startup, draw_map);
+    app.world_mut().spawn((Camera2d, MainCamera));
+    app.update();
+
+    let trading_posts = app
+        .world_mut()
+        .query::<(&TradingPostCmp, &Sprite, &Transform)>()
+        .iter(app.world())
+        .map(|(post, sprite, transform)| {
+            (post.planet, (sprite.custom_size.unwrap(), transform.translation.truncate()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert!(!trading_posts.is_empty());
+    let mut gates = app.world_mut().query::<(&JumpGateCmp, &Sprite, &Transform)>();
+    assert_eq!(gates.iter(app.world()).count(), trading_posts.len());
+    for (gate, sprite, transform) in gates.iter(app.world()) {
+        let (trading_size, trading_position) = trading_posts[&gate.planet];
+        // Circumscribed sprite bounds include every orientation of the spinning gate.
+        let clearance = (sprite.custom_size.unwrap().length() + trading_size.length()) * 0.5;
+        assert!(
+            transform.translation.truncate().distance(trading_position) > clearance,
+            "the Jump Gate must stay clear of the Trading Post throughout its full rotation"
+        );
+    }
+}
+
+#[test]
+fn adjacent_trading_post_reveals_its_marker_and_owner_territory_when_completed() {
+    let mut model = GameModel::new(
+        [31; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let enemy = model.players[1].home_planet;
+    model.players[1].color = PlayerColor::new(4).unwrap();
+    let owner_color = model.players[1].color().color();
+    model.map.get_mut(home).position = Vec2::X * Planet::SIZE * 2.5;
+    let target = model.map.get_mut(enemy);
+    target.position = Vec2::ZERO;
+    target.controlled = Some(3);
+    target.army.insert(Unit::Building(Building::JumpGate), 1);
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        submitted_players: Vec::new(),
+        id: GameId::new("trading-post-visibility-test"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 1_700_000_000,
+        max_players: 3,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: vec![],
+    });
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<Missions>()
+        .init_resource::<Settings>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(session)
+        .add_systems(Update, (update_planet_defenses, update_voronoi));
+    app.world_mut().spawn((
+        MainCamera,
+        Projection::Orthographic(OrthographicProjection {
+            scale: 0.5,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+    let planet = app.world_mut().spawn(PlanetCmp::new(enemy)).id();
+    let post = app
+        .world_mut()
+        .spawn((
+            TradingPostCmp {
+                planet: enemy,
+            },
+            Sprite::default(),
+            Pickable::IGNORE,
+        ))
+        .id();
+    let private_gate = app
+        .world_mut()
+        .spawn((
+            JumpGateCmp {
+                planet: enemy,
+            },
+            Sprite::default(),
+            Pickable::IGNORE,
+        ))
+        .id();
+    app.world_mut().entity_mut(planet).add_children(&[post, private_gate]);
+    let mut territory = Vec::new();
+    for is_border in [false, true] {
+        let material = app.world_mut().resource_mut::<Assets<ColorMaterial>>().add(Color::WHITE);
+        let mut entity = app.world_mut().spawn((
+            Visibility::Hidden,
+            MeshMaterial2d(material.clone()),
+            TerritoryTransitionCmp::default(),
+        ));
+        if is_border {
+            entity.insert(VoronoiEdgeCmp {
+                planet: enemy,
+                key: (0, 0, 1, 0),
+            });
+        } else {
+            entity.insert(VoronoiCmp(enemy));
+        }
+        territory.push((
+            entity.id(),
+            material,
+            if is_border {
+                0.58
+            } else {
+                0.01
+            },
+        ));
+    }
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(2));
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Hidden));
+    for (entity, _, _) in &territory {
+        assert_eq!(app.world().get::<Visibility>(*entity), Some(&Visibility::Hidden));
+    }
+
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(enemy)
+        .army
+        .insert(Unit::Building(Building::TradingPost), 1);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Inherited));
+    assert_eq!(app.world().get::<Sprite>(post).unwrap().color, owner_color);
+    assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
+    assert!(can_open_trading_post(
+        app.world().resource::<Map>(),
+        app.world().resource::<Player>(),
+        enemy,
+    ));
+    assert_eq!(app.world().get::<Visibility>(private_gate), Some(&Visibility::Hidden));
+    app.update(); // Finish the normal territory color transition without advancing the game turn.
+    for (entity, material, alpha) in &territory {
+        assert_eq!(app.world().get::<Visibility>(*entity), Some(&Visibility::Inherited));
+        assert_eq!(
+            app.world().resource::<Assets<ColorMaterial>>().get(material).unwrap().color,
+            owner_color.with_alpha(*alpha)
+        );
+    }
+
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(home)
+        .army
+        .insert(Unit::Building(Building::TradingPost), 1);
+    app.update();
+    assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
+
+    app.world_mut().resource_mut::<Map>().get_mut(home).position = Vec2::X * Planet::SIZE * 3.01;
+    app.update();
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Hidden));
+    assert!(!app.world().get::<Pickable>(post).unwrap().is_hoverable);
+    for (entity, _, _) in &territory {
+        assert_eq!(app.world().get::<Visibility>(*entity), Some(&Visibility::Hidden));
+    }
+}
+
+#[test]
+fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_without_a_route() {
+    use bevy::camera::RenderTarget;
+    use bevy::picking::{
+        backend::HitData,
+        pointer::{Location, PointerId},
+    };
+    use bevy::window::WindowRef;
+
+    let mut model = GameModel::new([31; 32], GameRules::default()).unwrap();
+    let home = model.players[0].home_planet;
+    let enemy = model.players[1].home_planet;
+    model.map.get_mut(home).position = Vec2::ZERO;
+    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.0;
+    for id in [home, enemy] {
+        model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 1);
+    }
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Time>()
+        .init_resource::<UiState>()
+        .init_resource::<Missions>()
+        .init_resource::<MultiplayerSession>()
+        .insert_resource(model.players[0].clone())
+        .insert_resource(model.map)
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, update_planet_defenses);
+    let window = app.world_mut().spawn(Window::default()).id();
+    let camera = app
+        .world_mut()
+        .spawn((
+            Camera2d,
+            MainCamera,
+            Projection::Orthographic(OrthographicProjection {
+                scale: 0.5,
+                ..OrthographicProjection::default_2d()
+            }),
+        ))
+        .id();
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(2));
+    app.update();
+    let posts = app
+        .world_mut()
+        .query::<(Entity, &TradingPostCmp)>()
+        .iter(app.world())
+        .map(|(entity, post)| (post.planet, entity))
+        .collect::<BTreeMap<_, _>>();
+    let location = Location {
+        target: RenderTarget::Window(WindowRef::Entity(window)).normalize(Some(window)).unwrap(),
+        position: Vec2::ZERO,
+    };
+    let hit = HitData::new(camera, 0.0, None, None);
+    for (planet, button, has_own_post, expected_open) in [
+        (home, PointerButton::Primary, true, None),
+        (enemy, PointerButton::Secondary, true, None),
+        (enemy, PointerButton::Primary, true, Some(enemy)),
+        (enemy, PointerButton::Primary, false, Some(enemy)),
+    ] {
+        if !has_own_post {
+            app.world_mut()
+                .resource_mut::<Map>()
+                .get_mut(home)
+                .army
+                .remove(&Unit::Building(Building::TradingPost));
+        }
+        app.insert_resource(UiState {
+            planet_selected: Some(home),
+            ..default()
+        });
+        app.update();
+        let post = posts[&planet];
+        assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Over {
+                hit: hit.clone(),
+            },
+            post,
+        ));
+        app.world_mut().flush();
+        assert_eq!(
+            app.world().resource::<UiState>().range_preview,
+            Some(MapRangePreview::TradingPost(planet))
+        );
+        assert_eq!(
+            app.world().get::<CursorIcon>(window),
+            Some(&CursorIcon::from(if planet == home {
+                SystemCursorIcon::Default
+            } else {
+                SystemCursorIcon::Pointer
+            }))
+        );
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button,
+                hit: hit.clone(),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            post,
+        ));
+        assert_eq!(app.world().resource::<UiState>().trading_post_open, expected_open);
+        assert_eq!(
+            app.world().resource::<UiState>().planet_selected,
+            if expected_open.is_some() {
+                None
+            } else {
+                Some(home)
+            }
+        );
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Out {
+                hit: hit.clone(),
+            },
+            post,
+        ));
+        app.world_mut().flush();
+        assert_eq!(app.world().resource::<UiState>().range_preview, None);
+        assert_eq!(
+            app.world().get::<CursorIcon>(window),
+            Some(&CursorIcon::from(SystemCursorIcon::Default))
+        );
+    }
+
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.01;
+    app.insert_resource(UiState::default());
+    app.update();
+    assert!(!app.world().get::<Pickable>(posts[&enemy]).unwrap().is_hoverable);
+    assert!(!can_open_trading_post(
+        app.world().resource::<Map>(),
+        app.world().resource::<Player>(),
+        enemy
+    ));
 }
 
 #[test]
@@ -2076,7 +2601,7 @@ fn planet_selection_stops_camera_focus_and_preserves_the_origin_for_other_owners
 }
 
 #[test]
-fn stationed_protection_world_cannot_become_a_new_mission_origin() {
+fn stationed_protection_world_can_become_a_new_mission_origin() {
     let mut model = GameModel::new([74; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let player = model.players[0].clone();
@@ -2112,7 +2637,7 @@ fn stationed_protection_world_cannot_become_a_new_mission_origin() {
     state.mission_info.origin = player.home_planet;
     select_planet(model.map.get(protected_world), &mut state, &player);
     assert_eq!(state.planet_selected, Some(protected_world));
-    assert_eq!(state.mission_info.origin, player.home_planet);
+    assert_eq!(state.mission_info.origin, protected_world);
 }
 
 #[test]
@@ -2303,15 +2828,71 @@ fn jump_gate_shortcut_needs_two_owned_gates_and_opens_an_enabled_deploy_draft() 
 }
 
 #[test]
+fn railgun_range_requires_intelligence_and_keeps_unseen_upgrades_private() {
+    let railgun = Unit::Building(Building::OrbitalRailgun);
+    let mut planet = Planet::new(1, "Enemy".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(2);
+    planet.controlled = Some(2);
+    planet.army.insert(railgun, 2);
+    let mut player = Player::new(1, 0);
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
+
+    let mut report = MissionReport {
+        id: 1,
+        turn: 2,
+        mission: Mission {
+            owner: player.id,
+            origin: player.home_planet,
+            destination: planet.id,
+            objective: Icon::Spy,
+            army: Army::from([(Unit::probe(), 78)]),
+            ..default()
+        },
+        planet: planet.clone(),
+        scout_probes: 20,
+        surviving_attacker: Army::from([(Unit::probe(), 20)]),
+        surviving_defender: planet.army.clone(),
+        planet_colonized: false,
+        planet_destroyed: false,
+        destination_owned: planet.owned,
+        destination_controlled: planet.controlled,
+        combat_report: None,
+        hidden: false,
+    };
+    player.push_report(report.clone());
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
+
+    report.id = 2;
+    report.turn = 3;
+    report.scout_probes = 21;
+    report.surviving_attacker.insert(Unit::probe(), 21);
+    player.push_report(report);
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 400.0);
+    planet.army.insert(railgun, 5);
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 400.0);
+    assert_eq!(railgun_preview_radius(&planet, &Player::new(2, planet.id), &[]), 1_000.0);
+
+    planet.controlled = Some(player.id);
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 1_000.0);
+    planet.army.remove(&railgun);
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
+    planet.army.insert(railgun, 5);
+    planet.is_destroyed = true;
+    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
+}
+
+#[test]
 fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover() {
     let mut model = GameModel::new([31; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     model.players[0].color = PlayerColor::new(4).unwrap();
     let player = model.players[0].clone();
     let scanner_color = player.color().color();
-    let enemy_scanner_color = model.players[1].color().color();
     let home = player.home_planet;
     let enemy = model.players[1].home_planet;
+    let enemy_color = model.players[1].color().color();
+    model.map.get_mut(home).position = Vec2::ZERO;
+    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.0;
     let moons = model.map.moons().iter().map(|moon| moon.id).collect::<Vec<_>>();
     let moon = moons[0];
     let enemy_moon = moons[1];
@@ -2320,6 +2901,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     for id in [home, enemy] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::SensorPhalanx), 2);
         model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRailgun), 2);
+        model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 5);
     }
     for id in [moon, enemy_moon] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRadar), 3);
@@ -2360,10 +2942,12 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         (Some(home), None, None, None),
         (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
         (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
+        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 300.0))),
+        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 300.0))),
         (Some(moon), None, Some(home), Some((moon, 395.0))),
         (None, None, Some(moon), None),
         (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),
-        (None, Some(MapRangePreview::OrbitalRailgun(enemy)), None, Some((enemy, 400.0))),
+        (None, Some(MapRangePreview::OrbitalRailgun(enemy)), None, None),
         (Some(enemy_moon), None, None, None),
     ] {
         app.insert_resource(UiState {
@@ -2391,14 +2975,13 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
                 continue;
             }
             visible += 1;
-            let expected_color = if preview == Some(MapRangePreview::OrbitalRailgun(enemy)) {
-                enemy_scanner_color
-            } else {
-                scanner_color
-            };
             assert_eq!(
                 world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-                expected_color
+                if preview == Some(MapRangePreview::TradingPost(enemy)) {
+                    enemy_color
+                } else {
+                    scanner_color
+                }
             );
             let positions = world
                 .resource::<Assets<Mesh>>()
@@ -2425,7 +3008,7 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         if let Some((_, expected_radius)) = expected {
             assert!(
                 (outer_radius - expected_radius).abs() < 0.01,
-                "scanner uses its installed level"
+                "scanner reaches the infrastructure's exact range"
             );
         }
     }
@@ -2442,9 +3025,17 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         .army
         .remove(&Unit::Building(Building::OrbitalRailgun));
     app.world_mut().resource_mut::<Map>().get_mut(moon).is_destroyed = true;
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(home)
+        .army
+        .remove(&Unit::Building(Building::TradingPost));
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.01;
     for (hover, preview) in [
         (None, Some(MapRangePreview::SensorPhalanx(home))),
         (None, Some(MapRangePreview::OrbitalRailgun(home))),
+        (None, Some(MapRangePreview::TradingPost(home))),
+        (None, Some(MapRangePreview::TradingPost(enemy))),
         (Some(moon), None),
     ] {
         {
