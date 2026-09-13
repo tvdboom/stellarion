@@ -37,11 +37,10 @@ pub(crate) struct AsteroidBeltPlacement {
 
 pub(crate) const ASTEROID_PLANET_CLEARANCE: f32 = 12.0;
 pub(crate) const ASTEROID_BELT_RADIUS_SAMPLES: usize = 12;
-pub(crate) const ASTEROID_BELT_TARGET_SPACING: f32 = 34.0;
-pub(crate) const ASTEROID_BELT_MINIMUM_COUNT: usize = 96;
+// Leave room for the cutouts' enlarged presentation as well as their physical diameters.
+pub(crate) const ASTEROID_BELT_TARGET_SPACING: f32 = 64.0;
+pub(crate) const ASTEROID_BELT_MINIMUM_COUNT: usize = 32;
 pub(crate) const ASTEROID_BELT_MAXIMUM_COUNT: usize = 420;
-pub(crate) const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 32;
-pub(crate) const ASTEROID_BELT_VISIBLE_SUBDIVISIONS: usize = 8;
 /// Smallest physical rock diameter used by placement and Recycler reach calculations.
 pub(crate) const ASTEROID_MINIMUM_DIAMETER: f32 = 18.0;
 pub(crate) const ASTEROID_MAXIMUM_RADIUS: f32 = 15.0;
@@ -171,11 +170,11 @@ pub(crate) fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
         })
         .enumerate()
         .max_by_key(|(candidate, layout)| {
-            let placements = asteroid_belt_base_placements(map, *layout);
+            let placements = asteroid_belt_placements(map, *layout);
             let complete = placements.len() == asteroid_belt_asteroid_count(layout.radius);
             (
-                visible_asteroid_count(map, &placements),
                 complete,
+                visible_asteroid_count(map, &placements),
                 visual_noise(seed.wrapping_add(*candidate as u32 + 2)).to_bits(),
             )
         })
@@ -194,7 +193,6 @@ struct AsteroidBeltPlacementGenerator {
     count: usize,
     belt_seed: u32,
     starting_angle: f32,
-    search_increment: f32,
 }
 
 impl AsteroidBeltPlacementGenerator {
@@ -215,40 +213,45 @@ impl AsteroidBeltPlacementGenerator {
             count,
             belt_seed,
             starting_angle: visual_noise(belt_seed) * TAU,
-            search_increment: TAU / count as f32 * 0.25,
         }
     }
 
-    fn placement(&self, sequence: usize, angular_index: f32) -> Option<AsteroidBeltPlacement> {
-        let seed = self.belt_seed.wrapping_add((sequence as u32).wrapping_mul(31));
-        let base_phase = self.starting_angle
-            + angular_index / self.count as f32 * TAU
-            + (visual_noise(seed) - 0.5) * TAU / self.count as f32 * 0.7;
-        let radius = self.layout.radius
+    fn placement(&self, index: usize) -> Option<AsteroidBeltPlacement> {
+        let seed = self.belt_seed.wrapping_add((index as u32).wrapping_mul(31));
+        let angular_spacing = TAU / self.count as f32;
+        let slot_phase = self.starting_angle + index as f32 * angular_spacing;
+        // Vary neighboring gaps noticeably while keeping rocks inside separate angular slots.
+        let phase_jitter = (visual_noise(seed) - 0.5) * angular_spacing * 0.6;
+        let preferred_radius = self.layout.radius
             + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
         let minimum_diameter = ASTEROID_MINIMUM_DIAMETER.min(self.layout.maximum_asteroid_diameter);
         let diameter = minimum_diameter
             + visual_noise(seed.wrapping_add(2))
                 * (self.layout.maximum_asteroid_diameter - minimum_diameter);
-        let phase = (0..=self.count * 4).find_map(|search| {
-            let offset = match search {
-                0 => 0.0,
-                value if value % 2 == 1 => (value / 2 + 1) as f32,
-                value => -((value / 2) as f32),
-            };
-            let phase = base_phase + offset * self.search_increment;
-            let position = self.center + Vec2::from_angle(phase) * radius;
-            self.planets
-                .iter()
-                .all(|(planet_position, planet_radius)| {
-                    position.distance(*planet_position)
-                        > planet_radius
-                            + diameter * 0.5
-                            + ASTEROID_PLANET_CLEARANCE
-                            + ASTEROID_MAXIMUM_WOBBLE
-                })
-                .then_some(phase)
-        })?;
+        // Keep each rock in its own angular slot. Search across the band's width before
+        // adjusting its angle, so clearing a planet cannot pile rocks into neighboring slots.
+        let (phase, radius) =
+            [phase_jitter, 0.0, -phase_jitter].into_iter().find_map(|jitter| {
+                let phase = slot_phase + jitter;
+                let direction = Vec2::from_angle(phase);
+                std::iter::once(preferred_radius)
+                    .chain(
+                        [0.0, -0.5, 0.5, -1.0, 1.0].map(|offset| {
+                            self.layout.radius + offset * self.layout.radial_half_width
+                        }),
+                    )
+                    .find(|radius| {
+                        let position = self.center + direction * *radius;
+                        self.planets.iter().all(|(planet_position, planet_radius)| {
+                            position.distance(*planet_position)
+                                > planet_radius
+                                    + diameter * 0.5
+                                    + ASTEROID_PLANET_CLEARANCE
+                                    + ASTEROID_MAXIMUM_WOBBLE
+                        })
+                    })
+                    .map(|radius| (phase, radius))
+            })?;
         Some(AsteroidBeltPlacement {
             #[cfg(feature = "app")]
             seed,
@@ -257,17 +260,6 @@ impl AsteroidBeltPlacementGenerator {
             diameter,
         })
     }
-
-    fn base_placements(&self) -> Vec<AsteroidBeltPlacement> {
-        (0..self.count).filter_map(|index| self.placement(index, index as f32)).collect()
-    }
-}
-
-pub(crate) fn asteroid_belt_base_placements(
-    map: &Map,
-    layout: AsteroidBeltLayout,
-) -> Vec<AsteroidBeltPlacement> {
-    AsteroidBeltPlacementGenerator::new(map, layout).base_placements()
 }
 
 pub(crate) fn asteroid_belt_placements(
@@ -275,30 +267,9 @@ pub(crate) fn asteroid_belt_placements(
     layout: AsteroidBeltLayout,
 ) -> Vec<AsteroidBeltPlacement> {
     let generator = AsteroidBeltPlacementGenerator::new(map, layout);
-    let mut placements = generator.base_placements();
-    let mut visible = visible_asteroid_count(map, &placements);
-    if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
-        return placements;
-    }
-
-    'supplements: for subdivision in 1..ASTEROID_BELT_VISIBLE_SUBDIVISIONS {
-        for index in 0..generator.count {
-            let sequence = generator.count + (subdivision - 1) * generator.count + index;
-            let angular_index =
-                index as f32 + subdivision as f32 / ASTEROID_BELT_VISIBLE_SUBDIVISIONS as f32;
-            let Some(placement) = generator.placement(sequence, angular_index) else {
-                continue;
-            };
-            if asteroid_is_visible_on_map(map, &placement) {
-                placements.push(placement);
-                visible += 1;
-                if visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT {
-                    break 'supplements;
-                }
-            }
-        }
-    }
-    placements
+    // The circumference determines density, including where only a short arc is on the map.
+    // Adding rocks to meet a visible-count quota would crowd those short arcs.
+    (0..generator.count).filter_map(|index| generator.placement(index)).collect()
 }
 
 fn recycler_targets_from_positions(
@@ -396,3 +367,7 @@ pub(crate) fn recycler_asteroid_targets(map: &Map) -> BTreeMap<PlanetId, Vec2> {
         .filter_map(|(planet, targets)| targets.first().copied().map(|target| (planet, target)))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/core/map_asteroids.rs"]
+mod tests;

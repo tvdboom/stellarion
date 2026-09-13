@@ -156,8 +156,6 @@ pub struct UiState {
     pub(crate) trade_draft_id: Option<u64>,
     /// Resources selected for the local side of a Trading Post negotiation.
     pub(crate) trade_resources: Resources,
-    /// Confirmed or rejected trades already queued as timed notifications this session.
-    pub(crate) trade_notices_dismissed: std::collections::BTreeSet<u64>,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
@@ -187,10 +185,6 @@ pub struct UiState {
     pub(crate) joint_attack_contribution: Mission,
     /// Invitation whose draft has been restored into the response editor.
     pub(crate) joint_attack_loaded: Option<u64>,
-    /// Rejections already forwarded into the ordinary transient notification queue.
-    pub(crate) joint_attack_rejections_notified: std::collections::BTreeSet<(u64, PlayerId)>,
-    /// Canceled invitations already forwarded into the ordinary transient notification queue.
-    pub(crate) joint_attack_cancellations_notified: std::collections::BTreeSet<u64>,
     pub jump_gate_history: bool,
     pub mission_hover: Option<MissionId>,
     /// UI hover expires each pass; map hover persists until a picking event changes it.
@@ -205,6 +199,40 @@ pub struct UiState {
     pub end_turn: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum NegotiationNotice {
+    MissionCanceled(u64),
+    MissionRejected(u64, PlayerId),
+    TradeClosed(u64),
+}
+
+#[derive(Clone, Default)]
+struct NegotiationNoticeHistory {
+    game: Option<crate::core::identity::GameId>,
+    seen: HashSet<(PlayerId, NegotiationNotice)>,
+}
+
+/// Notification history outlives UiState, which is rebuilt when changing practice players.
+/// Scope it to the current game so each recipient sees each outcome once, even during reloads.
+fn first_negotiation_notice(
+    context: &egui::Context,
+    session: &MultiplayerSession,
+    player: PlayerId,
+    notice: NegotiationNotice,
+) -> bool {
+    context.data_mut(|data| {
+        let history = data.get_temp_mut_or_default::<NegotiationNoticeHistory>(egui::Id::new(
+            "negotiation_notice_history",
+        ));
+        let game = session.active_game.as_ref().map(|game| &game.id);
+        if history.game.as_ref() != game {
+            history.game = game.cloned();
+            history.seen.clear();
+        }
+        history.seen.insert((player, notice))
+    })
+}
+
 impl UiState {
     /// Uses the world-list row under the pointer for the same preview as a map planet.
     pub(crate) fn hovered_planet(&self) -> Option<PlanetId> {
@@ -217,6 +245,10 @@ impl UiState {
         session: Option<&MultiplayerSession>,
         pending: &PendingTurnCommands,
     ) -> bool {
+        // Practice resolves all local empires together and declines unfinished proposals.
+        if session.is_some_and(|session| session.local_practice) {
+            return false;
+        }
         if !matches!(
             pending.submission,
             crate::multiplayer::client::SubmissionState::Draft
@@ -342,6 +374,32 @@ fn draw_modal_header(
         });
     });
     header
+}
+
+/// Draws a modal action inside a measured rectangle, including compact footers.
+fn draw_modal_button(ui: &mut Ui, rect: egui::Rect, label: &str, enabled: bool) -> Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.put(
+            rect,
+            egui::Button::new(
+                RichText::new(label).size(17.0).strong().color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            ),
+        )
+    })
+    .inner
+    .on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Compact response badge shared by trade offers and joint attack contributions.
+fn draw_status_badge(ui: &mut Ui, status: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.12))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.65)))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(status).size(13.0).strong().color(color));
+        });
 }
 
 /// Applies the restrained dark button treatment shared by confirmation modal footers.
@@ -1400,13 +1458,13 @@ fn draw_world_shortcut(
     response
 }
 
-/// Draws a world-group label and its prominent item count using the shared panel heading style.
+/// Draws a world-group label and its item count using the same panel heading style.
 fn draw_world_group_header(ui: &mut Ui, title: &str, count: &str, scale: f32) {
     let heading_color = Color32::from_rgb(166, 188, 211);
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(11.0 * scale).strong().color(heading_color));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(count).size(16.0 * scale).strong().color(heading_color));
+            ui.label(RichText::new(count).size(11.0 * scale).strong().color(heading_color));
         });
     });
 }
@@ -1689,6 +1747,7 @@ fn draw_players_widget_with_controls(
                                 TextStyle::Body,
                             );
                             // Keep progress and connection status visible even with long names.
+                            let progress_spacing = 12.0 * scale;
                             let status_width = status.as_ref().map_or(0.0, |galley| {
                                 galley.size().x
                                     + 12.0 * scale
@@ -1708,7 +1767,7 @@ fn draw_players_widget_with_controls(
                             .into_galley(
                                 ui,
                                 Some(egui::TextWrapMode::Truncate),
-                                (ui.available_width() - status_width - progress.size().x
+                                (ui.available_width() - status_width - progress.size().x - progress_spacing
                                     - ui.spacing().item_spacing.x).max(0.0),
                                 TextStyle::Body,
                             );
@@ -1757,6 +1816,7 @@ fn draw_players_widget_with_controls(
                                     Stroke::new(1.4 * scale, Color32::from_rgb(190, 82, 82)),
                                 );
                             }
+                            ui.add_space(progress_spacing);
                             let progress = ui.add(egui::Label::new(progress));
                             if is_eliminated {
                                 progress.on_hover_small("This player has been eliminated.");

@@ -180,3 +180,37 @@ fn recalled_leg_keeps_the_current_position_and_accelerates_toward_home() {
     mission.advance(&map);
     assert!(mission.position.distance(map.planets[0].position) < distance_home);
 }
+
+#[test]
+fn allied_fleets_move_every_turn_and_share_arrival_after_reload() {
+    for distance in [0.0, 1.0, 5.0, 20.0] {
+        let (map, mut mission) = journey(distance, Army::from([(Unit::probe(), 10)]));
+        let natural_duration = mission.duration(&map);
+        let duration = natural_duration.max(7);
+        let fuel = mission.fuel_consumption(&map);
+        mission.joint_attack = Some(JointAttackMission {
+            arrival_turn: mission.send + duration,
+            ..default()
+        });
+        assert_eq!(mission.fuel_consumption(&map), fuel);
+        let mut last_movement = 0.0;
+        for elapsed in 0..duration {
+            assert_eq!(mission.duration(&map), duration - elapsed);
+            let before = mission.position;
+            let movement = mission.next_turn_movement(&map);
+            assert!(movement > 0.0, "distance={distance}, elapsed={elapsed}");
+            if distance > 0.0 {
+                assert!(movement >= last_movement - 1e-5);
+            }
+            last_movement = movement;
+            mission.advance(&map);
+            assert!((before.distance(mission.position) / Planet::SIZE - movement).abs() < 1e-5);
+            if elapsed + 1 < duration {
+                assert_ne!(mission.position, map.get(mission.destination).position);
+            }
+            mission = serde_json::from_slice(&serde_json::to_vec(&mission).unwrap()).unwrap();
+        }
+        assert_eq!(mission.position, map.get(mission.destination).position);
+        assert_eq!(mission.duration(&map), 0);
+    }
+}

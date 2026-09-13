@@ -984,9 +984,9 @@ end;
 $$;
 
 -- Creates an inviter fleet plus a private list of invited player slots. Pending responses publish
--- live fleet drafts and their own bombing/probe orders. Accept can be undone until launch.
--- Owner edits advance the proposal revision and return accepted guests to pending; stale acceptances
--- are rejected. Both editors can close without canceling this current-turn planning record.
+-- live fleet drafts and their own bombing/probe orders. Accepted players can keep editing.
+-- Offer edits advance the shared revision and reset the other players' consent, except for
+-- origin-only routing changes. Stale acceptances are rejected. Editors can close independently.
 -- A launch needs the inviter and at least one accepted guest; unanswered guests are excluded.
 -- Saving that launch freezes the roster and closes the invitation to further responses.
 create function public.stellarion_create_joint_attack(
@@ -1002,6 +1002,7 @@ declare
     v_game public.stellarion_games%rowtype;
     v_previous jsonb;
     v_old_participant jsonb;
+    v_reset_acceptance boolean;
     v_revision bigint;
     v_player bigint;
     v_attack_id bigint;
@@ -1117,12 +1118,21 @@ begin
              = (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_participants) item) then
             return v_previous;
         end if;
+        -- Origin-only routing edits preserve consent. Shared target/roster changes and
+        -- changes to ships or combat orders require the other players to accept again.
+        v_reset_acceptance := v_previous -> 'destination' <> p_invitation -> 'destination'
+            or v_previous -> 'objective' <> p_invitation -> 'objective'
+            or (v_previous #> '{participants,0,contribution}') - 'origin'
+                is distinct from (p_invitation #> '{participants,0,contribution}') - 'origin'
+            or (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_previous -> 'participants') item)
+                <> (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_participants) item);
         p_invitation := jsonb_set(p_invitation, '{revision}', to_jsonb(v_revision + 1));
         select jsonb_agg(
-            case when ordinal = 1 then entries.item
+            case when ordinal = 1 then entries.item || jsonb_build_object('response', old.item -> 'response')
                  when old.item is not null then jsonb_build_object(
                      'player_id', entries.item -> 'player_id',
-                     'response', case when old.item ->> 'response' = 'rejected' then 'rejected' else 'pending' end,
+                     'response', case when not v_reset_acceptance or old.item ->> 'response' = 'rejected'
+                         then old.item ->> 'response' else 'pending' end,
                      'contribution', old.item -> 'contribution'
                  ) else entries.item end order by ordinal
         ) into v_participants
@@ -1164,6 +1174,9 @@ exception
 end;
 $$;
 
+-- Each contribution edit advances the shared revision so concurrent stale approvals fail.
+-- Players may edit accepted contributions. An edit resets the other players' consent,
+-- except when only the local origin changes; a response alone never resets their decisions.
 create function public.stellarion_respond_joint_attack(
     p_game_id uuid,
     p_attack_id bigint,
@@ -1182,6 +1195,9 @@ declare
     v_planet jsonb;
     v_participants jsonb;
     v_participant jsonb;
+    v_previous_contribution jsonb;
+    v_changed boolean;
+    v_reset_acceptance boolean;
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
@@ -1245,6 +1261,16 @@ begin
             raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
         end if;
     end if;
+    select participant -> 'contribution' into v_previous_contribution
+      from jsonb_array_elements(v_row.invitation -> 'participants') participant
+     where (participant ->> 'player_id')::bigint = v_player;
+    v_changed := p_response <> 'rejected' and v_previous_contribution is distinct from p_contribution;
+    v_reset_acceptance := v_changed and (coalesce(nullif(v_previous_contribution, 'null'::jsonb), '{}'::jsonb) - 'origin')
+        is distinct from (p_contribution - 'origin');
+    if v_changed then
+        v_row.invitation := jsonb_set(v_row.invitation, '{revision}',
+            to_jsonb((v_row.invitation ->> 'revision')::bigint + 1));
+    end if;
     select jsonb_agg(
                case when (participant ->> 'player_id')::bigint = v_player
                     then jsonb_build_object(
@@ -1253,6 +1279,8 @@ begin
                         'contribution', case when p_response in ('pending', 'accepted')
                                              then p_contribution else 'null'::jsonb end
                     )
+                    when v_reset_acceptance and participant ->> 'response' <> 'rejected'
+                    then participant || jsonb_build_object('response', 'pending')
                     else participant end
                order by ordinal
            )
@@ -1420,7 +1448,8 @@ begin
         return 0;
     end if;
     v_level := coalesce((p_planet #>> '{army,controller,Building(TradingPost)}')::bigint, 0);
-    return least(v_level, 3) * 500;
+    -- Match Building::MAX_LEVEL and Rust's 500 resources per completed post level.
+    return least(v_level, 5) * 500;
 exception
     when invalid_text_representation or numeric_value_out_of_range then
         return 0;
@@ -1436,8 +1465,15 @@ as $$
 declare
     v_dx double precision;
     v_dy double precision;
+    v_range double precision;
+    v_first_player bigint;
+    v_second_player bigint;
 begin
-    if (p_first ->> 'id')::bigint = (p_second ->> 'id')::bigint
+    v_first_player := (p_first ->> 'owned')::bigint;
+    v_second_player := (p_second ->> 'owned')::bigint;
+    if v_first_player is null or v_second_player is null
+       or v_first_player = v_second_player
+       or (p_first ->> 'id')::bigint = (p_second ->> 'id')::bigint
        or jsonb_typeof(p_first -> 'position') is distinct from 'array'
        or jsonb_typeof(p_second -> 'position') is distinct from 'array'
        or jsonb_array_length(p_first -> 'position') <> 2
@@ -1448,8 +1484,14 @@ begin
         - (p_second #>> '{position,0}')::double precision;
     v_dy := (p_first #>> '{position,1}')::double precision
         - (p_second #>> '{position,1}')::double precision;
-    -- Planet::SIZE is 100 world units, so four AU is a 400-unit center distance.
-    return v_dx * v_dx + v_dy * v_dy <= 160000.0;
+    -- Match Rust trading_posts_are_adjacent: both completed posts must reach each other.
+    -- Each level grants 1.5 AU (150 world units), up to 7.5 AU at level five.
+    -- Capacity supplies the validated level: 500 resources per completed level.
+    v_range := least(
+        public.stellarion_trade_capacity(p_first, v_first_player),
+        public.stellarion_trade_capacity(p_second, v_second_player)
+    ) / 500 * 150;
+    return v_range > 0 and v_dx * v_dx + v_dy * v_dy <= v_range * v_range;
 exception
     when invalid_text_representation or numeric_value_out_of_range then
         return false;
@@ -2285,7 +2327,8 @@ begin
           into v_expected_contributions
           from jsonb_array_elements(v_invitation -> 'participants')
                with ordinality as entries(participant, ordinal)
-         where participant ->> 'response' = 'accepted';
+         where participant ->> 'response' = 'accepted'
+            or (participant ->> 'player_id')::bigint = p_player_id;
         if coalesce((v_invitation ->> 'canceled')::boolean, false)
            or (v_invitation ->> 'turn')::bigint <> p_turn
            or (v_invitation ->> 'inviter')::bigint <> p_player_id
@@ -2300,7 +2343,9 @@ begin
         end if;
         if not coalesce((v_invitation ->> 'launched')::boolean, false) then
             update public.stellarion_joint_attacks
-               set invitation = jsonb_set(invitation, '{launched}', 'true'::jsonb),
+               -- Sending is the host's final acceptance of the current guest contributions.
+               set invitation = jsonb_set(jsonb_set(invitation, '{launched}', 'true'::jsonb),
+                   '{participants,0,response}', '"accepted"'::jsonb),
                    updated_at = clock_timestamp()
              where game_id = p_game_id and attack_id = (v_command ->> 'attack_id')::bigint;
             perform public.stellarion_emit_event(

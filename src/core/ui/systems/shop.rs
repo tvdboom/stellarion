@@ -43,7 +43,17 @@ pub(super) fn shop_capacity_summary(
 
 /// Draws one compact image tile used by building-specific controls.
 fn image_tile_button(ui: &mut Ui, image: egui::TextureId, selected: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(74.0, 50.0), Sense::click());
+    sized_image_tile_button(ui, image, selected, egui::vec2(74.0, 50.0))
+}
+
+/// Shares the building-control tile style with resource controls that fit smaller viewports.
+pub(super) fn sized_image_tile_button(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    selected: bool,
+    size: egui::Vec2,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
     let border = if selected {
         Color32::from_rgb(116, 211, 245)

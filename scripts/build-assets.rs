@@ -18,13 +18,8 @@ const PIPELINE_VERSION: &str =
 const MANIFEST_NAME: &str = ".stellarion-assets";
 const MAX_JOBS: usize = 12;
 
-// Files from the original repository that are not referenced by gameplay or
-// packaging. They remain available as sources/screenshots but are omitted from
-// runtime downloads.
-const UNUSED_IMAGES: &[&str] = &[
-    "images/bg/cover.png",
-    "images/buildings/small_shield.png",
-    "images/planets/planets.png",
+// Screenshots embedded in README.md are documentation, not runtime textures.
+const DOCUMENTATION_IMAGES: &[&str] = &[
     "images/scenery/active-missions.png",
     "images/scenery/battle-report.png",
     "images/scenery/combat.png",
@@ -100,7 +95,7 @@ fn run() -> Result<(), String> {
         let relative_path =
             source.strip_prefix(&source_root).map_err(|error| error.to_string())?.to_path_buf();
         let relative = normalized(&relative_path)?;
-        if UNUSED_IMAGES.contains(&relative.as_str()) {
+        if DOCUMENTATION_IMAGES.contains(&relative.as_str()) {
             continue;
         }
         let source_hash = file_hash(&source)?;
@@ -348,11 +343,19 @@ fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
         || source_relative.ends_with(" large.png")
         || source_relative.starts_with("images/ambient/")
-        || source_relative.starts_with("images/moon-buildings/")
-        || source_relative.starts_with("images/planet-buildings/")
         || matches!(
             source_relative,
-            "images/icons/convert.png"
+            "images/buildings/moon shipyard.png"
+                | "images/buildings/moon tidal generator.png"
+                | "images/buildings/moon orbital radar.png"
+                | "images/buildings/development.png"
+                | "images/buildings/facilities.png"
+                | "images/buildings/gas-development.png"
+                | "images/buildings/planet colonial administration.png"
+                | "images/buildings/gas planet colonial administration.png"
+                | "images/buildings/planet terraformer.png"
+                | "images/buildings/gas planet terraformer.png"
+                | "images/icons/convert.png"
                 | "images/icons/convert hover.png"
                 | "images/icons/recall.png"
                 | "images/icons/recall hover.png"

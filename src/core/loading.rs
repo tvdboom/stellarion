@@ -401,11 +401,17 @@ fn gameplay_draft_projection(
     state: &crate::core::simulation::GameModel,
     player_id: PlayerId,
     pending: &PendingTurnCommands,
+    session: &MultiplayerSession,
 ) -> Option<crate::core::simulation::GameModel> {
     (pending.turn == state.turn
-        && (!pending.commands.is_empty() || state.trade_outgoing(player_id).total() > 0))
-        .then(|| crate::core::simulation::preview_commands(state, player_id, &pending.commands))
-        .and_then(Result::ok)
+        && (!pending.commands.is_empty()
+            || state.trade_outgoing(player_id).total() > 0
+            || session
+                .joint_attacks
+                .iter()
+                .any(|invitation| invitation.launched && invitation.turn == state.turn)))
+    .then(|| session.preview_commands(state, player_id, &pending.commands))
+    .and_then(Result::ok)
 }
 
 /// Rebuilds recovered orders while preserving the planet/mission the player just opened.
@@ -425,11 +431,9 @@ pub(crate) fn refresh_turn_draft(
     if pending.turn != record.persisted.state.turn {
         return;
     }
-    match crate::core::simulation::preview_commands(
-        &record.persisted.state,
-        member.player_id,
-        &pending.commands,
-    ) {
+    let draft =
+        pending.commands.iter().chain(&pending.queued_commands).cloned().collect::<Vec<_>>();
+    match session.preview_commands(&record.persisted.state, member.player_id, &draft) {
         Ok(model) => {
             if let Ok(player) = model.player(member.player_id) {
                 commands.insert_resource(model.map.clone());
@@ -468,7 +472,8 @@ fn install_gameplay_projection(
     // A newly advanced canonical turn carries the public Railgun outcome that must be animated.
     // Previewing an empty draft clears that history, so only build a draft projection when the
     // local commands actually belong to the canonical turn being installed.
-    let preview = gameplay_draft_projection(&record.persisted.state, membership.player_id, pending);
+    let preview =
+        gameplay_draft_projection(&record.persisted.state, membership.player_id, pending, session);
     let model = preview.as_ref().unwrap_or(&record.persisted.state);
     let Ok(player) = model.player(membership.player_id) else {
         return false;

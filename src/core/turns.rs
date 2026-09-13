@@ -109,29 +109,27 @@ pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<
         .collect()
 }
 
-/// Toggles readiness; orders become final only when every player has finished.
+/// Ends the turn; further gameplay actions can still withdraw multiplayer readiness.
 pub fn check_turn_ended(
     mut state: ResMut<UiState>,
-    mut pending: ResMut<PendingTurnCommands>,
+    pending: Res<PendingTurnCommands>,
     session: Option<Res<MultiplayerSession>>,
     mut requests: MessageWriter<MultiplayerRequest>,
 ) {
     #[cfg(not(debug_assertions))]
     let _ = &session;
-    if std::mem::take(&mut state.end_turn) {
-        if matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
-            if state.end_turn_blocked(session.as_deref(), &pending) {
-                return;
-            }
-            #[cfg(debug_assertions)]
-            if session.as_deref().is_some_and(|session| session.local_practice) {
-                requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
-                return;
-            }
-            requests.write(MultiplayerRequest::SubmitTurn);
-        } else {
-            pending.request_resume();
+    if std::mem::take(&mut state.end_turn)
+        && matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry)
+    {
+        if state.end_turn_blocked(session.as_deref(), &pending) {
+            return;
         }
+        #[cfg(debug_assertions)]
+        if session.as_deref().is_some_and(|session| session.local_practice) {
+            requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
+            return;
+        }
+        requests.write(MultiplayerRequest::SubmitTurn);
     }
 }
 

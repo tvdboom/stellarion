@@ -1848,7 +1848,7 @@ fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
 }
 
 #[test]
-fn world_groups_use_separate_headings_with_prominent_counts() {
+fn world_groups_use_separate_headings_with_matching_count_sizes() {
     let context = egui::Context::default();
     context.set_global_style(NordDark.custom_style());
     let mut output = context.run_ui(
@@ -1876,9 +1876,9 @@ fn world_groups_use_separate_headings_with_prominent_counts() {
     let own_count = text_rect(&output.shapes, "7/10");
     let controlled_heading = text_rect(&output.shapes, "CONTROLLED PLANETS AND MOONS");
     let controlled_count = text_rect(&output.shapes, "3");
-    assert!(own_count.height() > own_heading.height());
+    assert_eq!(own_count.height(), own_heading.height());
     assert!(own_count.left() - own_heading.right() >= 8.0);
-    assert!(controlled_count.height() > controlled_heading.height());
+    assert_eq!(controlled_count.height(), controlled_heading.height());
     assert!(controlled_count.left() - controlled_heading.right() >= 8.0);
     assert!(
         output.shapes.iter().all(|shape| match &shape.shape {

@@ -1084,10 +1084,47 @@ pub fn preview_commands(
     player_id: PlayerId,
     commands: &[TurnCommand],
 ) -> Result<GameModel, GameError> {
+    preview_commands_with_allied_launches(state, player_id, commands, &[])
+}
+
+/// Projects published allied launches alongside the local draft, before ordinary orders.
+/// Invitations carry only shared launch orders; opponents' private drafts remain invisible.
+pub(crate) fn preview_commands_with_allied_launches(
+    state: &GameModel,
+    player_id: PlayerId,
+    commands: &[TurnCommand],
+    allied_launches: &[(PlayerId, TurnCommand)],
+) -> Result<GameModel, GameError> {
     let mut preview = state.clone();
     preview.orbital_strikes.clear();
     reserve_trade_resources(&mut preview)?;
-    apply_commands(&mut preview, player_id, commands)?;
+    let mut launched = BTreeSet::new();
+    for command in commands {
+        if let TurnCommand::SendJointMission {
+            attack_id,
+            ..
+        } = command
+        {
+            apply_command(&mut preview, player_id, command)?;
+            launched.insert(*attack_id);
+        }
+    }
+    for (owner, command) in allied_launches {
+        if let TurnCommand::SendJointMission {
+            attack_id,
+            ..
+        } = command
+        {
+            if launched.insert(*attack_id) {
+                apply_command(&mut preview, *owner, command)?;
+            }
+        }
+    }
+    apply_commands(
+        &mut preview,
+        player_id,
+        commands.iter().filter(|command| !matches!(command, TurnCommand::SendJointMission { .. })),
+    )?;
     Ok(preview)
 }
 

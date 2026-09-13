@@ -83,7 +83,7 @@ pub enum JointAttackResponse {
     /// The invited player has not made a decision yet.
     #[default]
     Pending,
-    /// The invited player accepted with the stored contribution.
+    /// The player accepted the other participants' current offers.
     Accepted,
     /// The invited player declined this operation.
     Rejected,
@@ -106,7 +106,7 @@ pub struct JointAttackParticipant {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JointAttackInvitation {
-    /// Owner's proposal version; an acceptance must refer to this exact version.
+    /// Shared proposal version; an acceptance must refer to this exact version.
     pub revision: u64,
     /// Stable operation identifier.
     pub id: u64,

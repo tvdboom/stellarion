@@ -2145,6 +2145,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
         ],
     };
     let turn = model.turn;
+    assert!(preview_commands(&model, 1, &[joint.clone(), joint.clone()]).is_err());
     resolve_turn(
         &mut model,
         &[
@@ -2165,13 +2166,22 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
         joint_fleets[0].joint_attack.as_ref().unwrap().arrival_turn,
         joint_fleets[1].joint_attack.as_ref().unwrap().arrival_turn
     );
+    let arrival_turn = joint_fleets[0].joint_attack.as_ref().unwrap().arrival_turn;
+    for mission in &joint_fleets {
+        assert_eq!(mission.send, turn as usize);
+        assert_eq!(mission.travel_turns, 1);
+        assert_ne!(mission.position, model.map.get(target).position);
+        assert!(mission.next_turn_movement(&model.map) > 0.0);
+    }
 
     for _ in 0..16 {
         if model.map.get(target).controlled == Some(1) {
             break;
         }
+        assert!(model.turn < arrival_turn as u64);
         empty_turn(&mut model);
     }
+    assert_eq!(model.turn, arrival_turn as u64);
     let conquered = model.map.get(target);
     assert_eq!(conquered.controlled, Some(1));
     assert!(conquered.allows_protection(2));

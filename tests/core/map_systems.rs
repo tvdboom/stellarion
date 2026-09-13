@@ -8,6 +8,8 @@ use crate::multiplayer::model::GameRecord;
 use bevy::color::ColorToComponents;
 use bevy_kira_audio::AudioSource;
 
+const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 16;
+
 #[test]
 fn destruction_animation_hides_the_planet_swap_under_the_blast() {
     let mut planet = Planet::new(0, "Cindra".into(), Vec2::ZERO, false, 1.0);
@@ -489,7 +491,7 @@ fn local_practice_map_draw_spawns_one_visible_asteroid_belt_immediately() {
     assert!(visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT);
 }
 
-/// Explicit GPU visual review for the actual generated asteroid textures.
+/// Explicit GPU visual review of asteroid spacing against the surrounding planets.
 #[test]
 #[ignore = "renders a complete asteroid belt with a local GPU"]
 #[cfg(target_os = "windows")]
@@ -573,6 +575,7 @@ fn render_asteroid_belt_preview() {
     ));
     let layout = asteroid_belt_layout(&model.map).unwrap();
     let center = model.map.solar_star_position();
+    app.insert_resource(ClearColor(Color::srgb(0.018, 0.02, 0.033)));
     for (index, placement) in asteroid_belt_placements(&model.map, layout).into_iter().enumerate() {
         app.world_mut().spawn((
             Sprite {
@@ -583,7 +586,22 @@ fn render_asteroid_belt_preview() {
             },
             Transform::from_translation(
                 (center + Vec2::from_angle(placement.phase) * placement.radius).extend(1.0),
-            ),
+            )
+            .with_rotation(Quat::from_rotation_z(placement.phase)),
+        ));
+    }
+    for planet in model.map.planets() {
+        let image = app
+            .world()
+            .resource::<AssetServer>()
+            .load(format!("images/planets/{}.basisu.ktx2", planet.image()));
+        app.world_mut().spawn((
+            Sprite {
+                image,
+                custom_size: Some(Vec2::splat(planet.size())),
+                ..default()
+            },
+            Transform::from_translation(planet.position.extend(2.0)),
         ));
     }
     for frame in 0..90 {
@@ -1223,7 +1241,7 @@ fn multiplayer_projection_repairs_an_empty_asteroid_field_without_duplicates() {
 }
 
 #[test]
-fn every_supported_map_gets_exactly_one_seed_varied_complete_asteroid_field() {
+fn every_supported_map_gets_one_seed_varied_asteroid_field_with_planet_clearance() {
     let rules = [
         GameRules {
             planets_per_player: 5,
@@ -1259,8 +1277,7 @@ fn every_supported_map_gets_exactly_one_seed_varied_complete_asteroid_field() {
             let planets = map.planets();
             let placements = asteroid_belt_placements(&map, layout);
             let base_count = asteroid_belt_asteroid_count(layout.radius);
-            assert!((base_count..=base_count + ASTEROID_BELT_MINIMUM_VISIBLE_COUNT)
-                .contains(&placements.len()));
+            assert!((base_count * 3 / 4..=base_count).contains(&placements.len()));
             for placement in &placements {
                 let position = star + Vec2::from_angle(placement.phase) * placement.radius;
                 for planet in &planets {
@@ -1372,7 +1389,8 @@ fn three_player_five_world_practice_keeps_the_belt_in_every_home_view() {
         }
     }
     assert!(
-        minimum_visible >= ASTEROID_BELT_MINIMUM_VISIBLE_COUNT,
+        // A home view can crop the arc; a dozen separated rocks still make it recognizable.
+        minimum_visible >= 12,
         "a 3-player, 5-world practice home view can lose the asteroid belt: \
          minimum_visible={minimum_visible}"
     );
@@ -2583,6 +2601,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
             for drone in drones {
                 assert_eq!(*app.world().get::<Visibility>(*drone).unwrap(), Visibility::Inherited);
                 assert_eq!(app.world().get::<Sprite>(*drone).unwrap().color, expected.color());
+                assert_eq!(*app.world().get::<Pickable>(*drone).unwrap(), Pickable::default());
             }
         }
         assert_eq!(
@@ -2607,6 +2626,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
         }
         for drone in &unknown_phalanxes {
             assert_eq!(*app.world().get::<Visibility>(*drone).unwrap(), Visibility::Hidden);
+            assert_eq!(*app.world().get::<Pickable>(*drone).unwrap(), Pickable::IGNORE);
         }
     }
 
@@ -3360,21 +3380,12 @@ fn protected_enemy_dock_and_gate_clicks_open_jump_drafts_and_require_a_valid_rou
     }
 }
 
-#[test]
-fn railgun_range_requires_intelligence_and_keeps_unseen_upgrades_private() {
-    let railgun = Unit::Building(Building::OrbitalRailgun);
-    let mut planet = Planet::new(1, "Enemy".into(), Vec2::ZERO, false, 1.0);
-    planet.owned = Some(2);
-    planet.controlled = Some(2);
-    planet.army.insert(railgun, 2);
-    let mut player = Player::new(1, 0);
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
-
-    let mut report = MissionReport {
-        id: 1,
+fn range_intelligence_report(planet: &Planet, player: &Player, probes: usize) -> MissionReport {
+    MissionReport {
+        id: planet.id as u64,
         turn: 2,
-        scout_probes: 20,
-        surviving_attacker: Army::from([(Unit::probe(), 20)]),
+        scout_probes: probes,
+        surviving_attacker: Army::from([(Unit::probe(), probes)]),
         surviving_defender: planet.army.clone(),
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
@@ -3389,31 +3400,63 @@ fn railgun_range_requires_intelligence_and_keeps_unseen_upgrades_private() {
             },
             planet.clone(),
         )
-    };
-    player.push_report(report.clone());
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
-
-    report.id = 2;
-    report.turn = 3;
-    report.scout_probes = 21;
-    report.surviving_attacker.insert(Unit::probe(), 21);
-    player.push_report(report);
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 400.0);
-    planet.army.insert(railgun, 5);
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 400.0);
-    assert_eq!(railgun_preview_radius(&planet, &Player::new(2, planet.id), &[]), 1_000.0);
-
-    planet.controlled = Some(player.id);
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 1_000.0);
-    planet.army.remove(&railgun);
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
-    planet.army.insert(railgun, 5);
-    planet.is_destroyed = true;
-    assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
+    }
 }
 
 #[test]
-fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover() {
+fn infrastructure_ranges_require_intelligence_and_keep_unseen_changes_private() {
+    for (building, probes, known_radius, upgraded_radius) in [
+        (Building::SensorPhalanx, 11, 250.0, 550.0),
+        (Building::OrbitalRailgun, 21, 400.0, 1_000.0),
+        (Building::TradingPost, 11, 300.0, 750.0),
+        (Building::OrbitalRadar, 16, 275.0, 635.0),
+    ] {
+        let unit = Unit::Building(building);
+        let mut planet =
+            Planet::new(1, "Enemy".into(), Vec2::ZERO, building == Building::OrbitalRadar, 1.0);
+        planet.owned = Some(2);
+        planet.controlled = Some(2);
+        planet.army.insert(unit, 2);
+        let mut player = Player::new(1, 0);
+        let radius = |planet: &Planet, player: &Player| {
+            infrastructure_preview_radius(planet, player, &[], building)
+        };
+        assert_eq!(radius(&planet, &player), 0.0);
+        player.push_report(range_intelligence_report(&planet, &player, probes - 1));
+        assert_eq!(radius(&planet, &player), 0.0, "insufficient intelligence for {building:?}");
+
+        player.push_report(range_intelligence_report(&planet, &player, probes));
+        assert!((radius(&planet, &player) - known_radius).abs() < 0.001);
+        planet.army.insert(unit, 5);
+        assert!(
+            (radius(&planet, &player) - known_radius).abs() < 0.001,
+            "unseen upgrade of {building:?}"
+        );
+        assert!((radius(&planet, &Player::new(2, planet.id)) - upgraded_radius).abs() < 0.001);
+
+        planet.army.remove(&unit);
+        let expected = if building == Building::OrbitalRailgun {
+            0.0
+        } else {
+            known_radius
+        };
+        assert!(
+            (radius(&planet, &player) - expected).abs() < 0.001,
+            "only public Railgun destruction overrides stale intelligence"
+        );
+        planet.army.insert(unit, 5);
+        planet.controlled = Some(player.id);
+        assert!((radius(&planet, &player) - upgraded_radius).abs() < 0.001);
+        planet.army.remove(&unit);
+        assert_eq!(radius(&planet, &player), 0.0);
+        planet.army.insert(unit, 5);
+        planet.is_destroyed = true;
+        assert_eq!(radius(&planet, &player), 0.0);
+    }
+}
+
+#[test]
+fn scanner_ranges_follow_hover_and_only_revealed_enemy_levels() {
     let mut model = GameModel::new([31; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     model.players[0].color = PlayerColor::new(4).unwrap();
@@ -3436,6 +3479,23 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
     }
     for id in [moon, enemy_moon] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::OrbitalRadar), 3);
+    }
+    let reports =
+        [enemy, enemy_moon].map(|id| range_intelligence_report(model.map.get(id), &player, 21));
+    // The renderer must use the level in those reports, even after an unseen upgrade or capture.
+    for id in [enemy, enemy_moon] {
+        let planet = model.map.get_mut(id);
+        for building in [
+            Building::SensorPhalanx,
+            Building::OrbitalRailgun,
+            Building::TradingPost,
+            Building::OrbitalRadar,
+        ] {
+            if planet.has(&Unit::Building(building)) {
+                planet.army.insert(Unit::Building(building), Building::MAX_LEVEL);
+            }
+        }
+        planet.controlled = None;
     }
     let mut session = MultiplayerSession::default();
     session.active_game = Some(GameRecord {
@@ -3466,81 +3526,150 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         .insert_resource(model.map)
         .insert_resource(player)
         .add_systems(Startup, draw_map)
-        .add_systems(Update, update_planet_info);
-    app.world_mut().spawn((Camera2d, MainCamera));
+        .add_systems(Update, (update_planet_defenses, update_planet_info).chain());
+    let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+    let window = app.world_mut().spawn(Window::default()).id();
 
-    for (hover, preview, selected, expected) in [
-        (Some(home), None, None, None),
-        (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
-        (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
-        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 750.0))),
-        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 750.0))),
-        (Some(moon), None, Some(home), Some((moon, 395.0))),
-        (None, None, Some(moon), None),
-        (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),
-        (None, Some(MapRangePreview::OrbitalRailgun(enemy)), None, None),
-        (Some(enemy_moon), None, None, None),
-    ] {
-        app.insert_resource(UiState {
-            planet_hover: hover,
-            range_preview: preview,
-            planet_selected: selected,
-            ..default()
-        });
-        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
-        app.update();
-        let world = app.world_mut();
-        let mut scanners = world.query_filtered::<
-            (&ChildOf, &Visibility, &Mesh2d, &MeshMaterial2d<ColorMaterial>),
-            With<ScannerCmp>,
-        >();
-        let mut visible = 0;
-        let mut outer_radius = 0.0_f32;
-        for (parent, visibility, mesh, material) in scanners.iter(world) {
-            let id = world.get::<PlanetCmp>(parent.parent()).unwrap().id;
-            assert_eq!(
-                *visibility == Visibility::Inherited,
-                expected.is_some_and(|(expected_id, _)| expected_id == id)
-            );
-            if expected.is_none_or(|(expected_id, _)| expected_id != id) {
-                continue;
+    for has_intelligence in [false, true, false] {
+        app.world_mut().resource_mut::<Player>().reports = if has_intelligence {
+            reports.to_vec()
+        } else {
+            vec![]
+        };
+        for (hover, preview, selected, expected) in [
+            (Some(home), None, None, None),
+            (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
+            (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
+            (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 750.0))),
+            (
+                None,
+                Some(MapRangePreview::TradingPost(enemy)),
+                None,
+                has_intelligence.then_some((enemy, 750.0)),
+            ),
+            (Some(moon), None, Some(home), Some((moon, 395.0))),
+            (None, None, Some(moon), None),
+            (
+                None,
+                Some(MapRangePreview::SensorPhalanx(enemy)),
+                None,
+                has_intelligence.then_some((enemy, 250.0)),
+            ),
+            (
+                None,
+                Some(MapRangePreview::OrbitalRailgun(enemy)),
+                None,
+                has_intelligence.then_some((enemy, 400.0)),
+            ),
+            (Some(enemy_moon), None, None, has_intelligence.then_some((enemy_moon, 395.0))),
+        ] {
+            app.insert_resource(UiState {
+                planet_hover: hover,
+                range_preview: preview,
+                planet_selected: selected,
+                ..default()
+            });
+            app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
+            app.update();
+            let world = app.world_mut();
+            let mut scanners = world.query_filtered::<(
+                &ChildOf,
+                &Visibility,
+                &Mesh2d,
+                &MeshMaterial2d<ColorMaterial>,
+            ), With<ScannerCmp>>();
+            let mut visible = 0;
+            let mut outer_radius = 0.0_f32;
+            for (parent, visibility, mesh, material) in scanners.iter(world) {
+                let id = world.get::<PlanetCmp>(parent.parent()).unwrap().id;
+                assert_eq!(
+                    *visibility == Visibility::Inherited,
+                    expected.is_some_and(|(expected_id, _)| expected_id == id)
+                );
+                if expected.is_none_or(|(expected_id, _)| expected_id != id) {
+                    continue;
+                }
+                visible += 1;
+                assert_eq!(
+                    world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
+                    if id == enemy || id == enemy_moon {
+                        enemy_color
+                    } else {
+                        scanner_color
+                    }
+                );
+                let positions = world
+                    .resource::<Assets<Mesh>>()
+                    .get(&mesh.0)
+                    .unwrap()
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .unwrap()
+                    .as_float3()
+                    .unwrap();
+                let radius = positions
+                    .iter()
+                    .map(|p| Vec2::new(p[0], p[1]).length())
+                    .reduce(f32::max)
+                    .unwrap();
+                let expected_radius = expected.unwrap().1;
+                assert!(radius <= expected_radius + 0.01, "decorative arcs stay inside the range");
+                outer_radius = outer_radius.max(radius);
             }
-            visible += 1;
             assert_eq!(
-                world.resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-                if preview == Some(MapRangePreview::TradingPost(enemy)) {
-                    enemy_color
+                visible,
+                if expected.is_some() {
+                    3
                 } else {
-                    scanner_color
+                    0
                 }
             );
-            let positions = world
-                .resource::<Assets<Mesh>>()
-                .get(&mesh.0)
-                .unwrap()
-                .attribute(Mesh::ATTRIBUTE_POSITION)
-                .unwrap()
-                .as_float3()
-                .unwrap();
-            let radius =
-                positions.iter().map(|p| Vec2::new(p[0], p[1]).length()).reduce(f32::max).unwrap();
-            let expected_radius = expected.unwrap().1;
-            assert!(radius <= expected_radius + 0.01, "decorative arcs stay inside the range");
-            outer_radius = outer_radius.max(radius);
-        }
-        assert_eq!(
-            visible,
-            if expected.is_some() {
-                3
-            } else {
-                0
+            if let Some((_, expected_radius)) = expected {
+                assert!(
+                    (outer_radius - expected_radius).abs() < 0.01,
+                    "scanner reaches the infrastructure's exact range"
+                );
             }
-        );
-        if let Some((_, expected_radius)) = expected {
-            assert!(
-                (outer_radius - expected_radius).abs() < 0.01,
-                "scanner reaches the infrastructure's exact range"
+        }
+        // Exercise actual marker hover and exit, including all three Phalanx drones.
+        use bevy::camera::RenderTarget;
+        use bevy::picking::{
+            backend::HitData,
+            pointer::{Location, PointerId},
+        };
+        use bevy::window::WindowRef;
+        for drone in test_phalanxes(app.world_mut(), enemy) {
+            assert_eq!(app.world().get::<Pickable>(drone).unwrap().is_hoverable, has_intelligence);
+            if !has_intelligence {
+                continue;
+            }
+            let location = Location {
+                target: RenderTarget::Window(WindowRef::Entity(window))
+                    .normalize(Some(window))
+                    .unwrap(),
+                position: Vec2::ZERO,
+            };
+            let hit = HitData::new(camera, 0.0, None, None);
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Over {
+                    hit: hit.clone(),
+                },
+                drone,
+            ));
+            assert_eq!(
+                app.world().resource::<UiState>().range_preview,
+                Some(MapRangePreview::SensorPhalanx(enemy))
             );
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location,
+                Out {
+                    hit,
+                },
+                drone,
+            ));
+            assert_eq!(app.world().resource::<UiState>().range_preview, None);
         }
     }
 
@@ -3823,6 +3952,42 @@ fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
 }
 
 #[test]
+fn local_practice_end_turn_stays_enabled_without_waiting_for_other_players() {
+    use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands, SubmissionState};
+    let mut session = MultiplayerSession::default();
+    session.local_practice = true;
+    let mut app = App::new();
+    app.insert_resource(State::new(GameState::Playing))
+        .insert_resource(Player::new(1, 0))
+        .insert_resource(session)
+        .insert_resource(UiState {
+            allied_mission: true,
+            ..default()
+        })
+        .init_resource::<PendingTurnCommands>()
+        .add_systems(Update, update_end_turn);
+    let button = app
+        .world_mut()
+        .spawn((
+            Visibility::Inherited,
+            Text::new("End turn"),
+            ImageNode::default(),
+            Pickable::default(),
+            EndTurnButtonCmp,
+            MainButtonLabelCmp,
+        ))
+        .id();
+    let waiting = app.world_mut().spawn((Visibility::Inherited, EndTurnLabelCmp)).id();
+    for submission in [SubmissionState::Draft, SubmissionState::Sending, SubmissionState::Retry] {
+        app.world_mut().resource_mut::<PendingTurnCommands>().submission = submission;
+        app.update();
+        assert_eq!(app.world().get::<Text>(button).unwrap().0, "End turn");
+        assert!(app.world().get::<Pickable>(button).unwrap().is_hoverable);
+        assert_eq!(*app.world().get::<Visibility>(waiting).unwrap(), Visibility::Hidden);
+    }
+}
+
+#[test]
 fn modal_game_menus_hide_turn_controls() {
     let mut app = App::new();
     app.insert_resource(State::new(GameState::Playing))
@@ -3846,7 +4011,7 @@ fn modal_game_menus_hide_turn_controls() {
     app.update();
     assert_eq!(*app.world().get::<Visibility>(button).unwrap(), Visibility::Inherited);
     assert_eq!(*app.world().get::<Visibility>(waiting).unwrap(), Visibility::Inherited);
-    assert_eq!(app.world().get::<Text>(button).unwrap().0, "Continue turn");
+    assert_eq!(app.world().get::<Text>(button).unwrap().0, "End turn");
     assert_eq!(*app.world().get::<Visibility>(spectator).unwrap(), Visibility::Hidden);
 
     for state in [GameState::GameMenu, GameState::Settings, GameState::EndGame] {

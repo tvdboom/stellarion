@@ -624,6 +624,237 @@ fn local_practice_next_turn_resolves_every_players_draft_at_once() {
 }
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
+    use crate::core::map::icon::Icon;
+    use crate::core::missions::BombingRaid;
+    use crate::core::simulation::JointAttackContribution;
+    use crate::core::units::{Amount, Army, Unit};
+    use crate::multiplayer::model::{
+        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+    };
+    let mut app = local_practice_app_with_players(3);
+    settle_local_practice(&mut app);
+    for player in [1, 2] {
+        if player == 2 {
+            app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+            app.update();
+        }
+        app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost {
+            owned_worlds_only: true,
+        });
+    }
+    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    settle_local_practice(&mut app);
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
+    app.update();
+    let model = app
+        .world()
+        .resource::<MultiplayerSession>()
+        .active_game
+        .as_ref()
+        .unwrap()
+        .persisted
+        .state
+        .clone();
+    let contributions = [1, 2].map(|player_id| JointAttackContribution {
+        player_id,
+        origin: model.player(player_id).unwrap().home_planet,
+        army: Army::from([(Unit::war_sun(), 1)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+    });
+    let mut invitation = JointAttackInvitation {
+        id: 91,
+        revision: 0,
+        turn: model.turn,
+        inviter: 1,
+        destination: model.player(3).unwrap().home_planet,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        canceled: false,
+        launched: false,
+        participants: contributions
+            .iter()
+            .map(|contribution| JointAttackParticipant {
+                player_id: contribution.player_id,
+                response: if contribution.player_id == 1 {
+                    JointAttackResponse::Accepted
+                } else {
+                    JointAttackResponse::Pending
+                },
+                contribution: (contribution.player_id == 1).then(|| contribution.clone()),
+            })
+            .collect(),
+    };
+    let runtime = app.world().resource::<ClientRuntime>();
+    let backend = runtime.backend.clone().unwrap();
+    let host = runtime.practice_players[0].auth.clone();
+    let guest = runtime.practice_players[1].auth.clone();
+    let game_id =
+        app.world().resource::<MultiplayerSession>().active_game.as_ref().unwrap().id.clone();
+    invitation = block_on(backend.create_joint_attack(&host, &game_id, invitation)).unwrap();
+    invitation = block_on(backend.respond_joint_attack(
+        &guest,
+        &game_id,
+        invitation.id,
+        invitation.revision,
+        JointAttackResponse::Accepted,
+        Some(contributions[1].clone()),
+    ))
+    .unwrap();
+    let command = TurnCommand::SendJointMission {
+        attack_id: invitation.id,
+        mission_id: invitation.id,
+        destination: invitation.destination,
+        objective: invitation.objective,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        contributions: contributions.to_vec(),
+    };
+    app.world_mut().resource_mut::<MultiplayerSession>().joint_attacks = vec![invitation];
+    app.world_mut().resource_mut::<PendingTurnCommands>().push(command.clone());
+    let expected = crate::core::simulation::preview_commands(&model, 1, &[command]).unwrap();
+    app.world_mut().write_message(MultiplayerRequest::PublishJointMission);
+    settle_local_practice(&mut app);
+    assert!(app.world().resource::<MultiplayerSession>().joint_attacks[0].launched);
+    assert_eq!(
+        app.world()
+            .resource::<MultiplayerSession>()
+            .active_game
+            .as_ref()
+            .unwrap()
+            .persisted
+            .state
+            .turn,
+        model.turn
+    );
+    let saved = block_on(backend.load_turn_submissions(
+        &host,
+        &game_id,
+        model.turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].ready, "Send must not end the player's turn");
+    assert!(block_on(backend.load_joint_attacks(&guest, &game_id)).unwrap()[0].launched);
+    app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
+    app.update();
+    let session = app.world().resource::<MultiplayerSession>();
+    let pending = app.world().resource::<PendingTurnCommands>();
+    assert!(pending.commands.is_empty());
+    let preview = session.preview_commands(&model, 2, &pending.commands).unwrap();
+    assert_eq!(
+        serde_json::to_value(&preview.missions).unwrap(),
+        serde_json::to_value(&expected.missions).unwrap()
+    );
+    for contribution in contributions {
+        assert_eq!(
+            preview.map.get(contribution.origin).army.amount(&Unit::war_sun()),
+            model.map.get(contribution.origin).army.amount(&Unit::war_sun()) - 1
+        );
+    }
+    assert_eq!(
+        session.preview_commands(&model, 1, &saved[0].submission.commands).unwrap().missions.len(),
+        2
+    );
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_end_turn_closes_other_players_missions_even_after_a_failed_attempt() {
+    use crate::core::map::icon::Icon;
+    use crate::core::simulation::JointAttackContribution;
+    use crate::multiplayer::model::{
+        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+    };
+
+    let mut app = local_practice_app_with_players(3);
+    settle_local_practice(&mut app);
+    let runtime = app.world().resource::<ClientRuntime>();
+    let backend = runtime.backend.clone().unwrap();
+    let auth = runtime.practice_players[1].auth.clone();
+    let record = app.world().resource::<MultiplayerSession>().active_game.clone().unwrap();
+    let invitation = JointAttackInvitation {
+        id: 901,
+        revision: 0,
+        turn: record.persisted.state.turn,
+        inviter: 2,
+        destination: record.persisted.state.players[0].home_planet,
+        objective: Icon::Attack,
+        bombing: Default::default(),
+        combat_probes: false,
+        canceled: false,
+        launched: false,
+        participants: vec![
+            JointAttackParticipant {
+                player_id: 2,
+                response: JointAttackResponse::Accepted,
+                contribution: Some(JointAttackContribution {
+                    player_id: 2,
+                    origin: record.persisted.state.players[1].home_planet,
+                    army: Default::default(),
+                    bombing: Default::default(),
+                    combat_probes: false,
+                }),
+            },
+            JointAttackParticipant {
+                player_id: 3,
+                response: JointAttackResponse::Pending,
+                contribution: None,
+            },
+        ],
+    };
+    block_on(backend.create_joint_attack(&auth, &record.id, invitation)).unwrap();
+    // Reproduce a partial attempt: P1 is already ready, while P2's proposal blocked its write.
+    let submissions = local_practice_submissions(&record, &runtime.practice_players).unwrap();
+    block_on(backend.submit_turn(&submissions[0].0, &record.id, submissions[0].1.clone())).unwrap();
+    assert!(block_on(backend.submit_turn(&submissions[1].0, &record.id, submissions[1].1.clone()))
+        .is_err());
+    for player in &mut app.world_mut().resource_mut::<ClientRuntime>().practice_players {
+        player.pending.submission = SubmissionState::Retry;
+    }
+    app.world_mut().resource_mut::<PendingTurnCommands>().submission = SubmissionState::Retry;
+    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    settle_local_practice(&mut app);
+    let session = app.world().resource::<MultiplayerSession>();
+    assert_eq!(session.active_game.as_ref().unwrap().persisted.state.turn, 2);
+    assert_eq!(session.membership.as_ref().unwrap().player_id, 1);
+    assert!(session.menu_error.is_none());
+    assert!(app.world().resource::<PendingTurnCommands>().is_editable());
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_end_turn_waits_for_an_in_flight_update_without_another_click() {
+    let mut app = local_practice_app();
+    settle_local_practice(&mut app);
+    let (send, receive) = tokio::sync::oneshot::channel();
+    spawn_backend_task(&mut app.world_mut().resource_mut::<BackendTasks>(), async move {
+        receive.await.unwrap();
+        BackendOutput::JointAttacksLoaded(Vec::new())
+    });
+    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    app.update();
+    assert!(app.world().resource::<MultiplayerSession>().practice_turn_requested);
+    send.send(()).unwrap();
+    settle_local_practice(&mut app);
+    assert_eq!(
+        app.world()
+            .resource::<MultiplayerSession>()
+            .active_game
+            .as_ref()
+            .unwrap()
+            .persisted
+            .state
+            .turn,
+        2
+    );
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 pub(crate) fn local_practice_app() -> App {
     local_practice_app_with_players(1)
 }
@@ -663,6 +894,10 @@ pub(crate) fn local_practice_app_with_players(player_count: u8) -> App {
                 poll_backend_tasks,
                 drive_turn_draft,
                 drive_reload,
+                drive_joint_attack_reload,
+                drive_joint_mission_publication,
+                drive_trade_reload,
+                drive_local_practice_turn,
                 drive_resolution,
             )
                 .chain(),
@@ -687,6 +922,8 @@ pub(crate) fn settle_local_practice(app: &mut App) {
             && !session.restore_draft_needed
             && !session.resolving
             && !session.resolve_needed
+            && !session.practice_turn_requested
+            && app.world().resource::<Messages<MultiplayerRequest>>().is_empty()
         {
             // Presentation may consume the final backend message in the following frame.
             app.update();

@@ -100,17 +100,7 @@ impl PendingTurnCommands {
 
     /// Text displayed by the end-turn control.
     pub fn button_label(&self) -> &'static str {
-        if self.resume_requested {
-            return "Continuing…";
-        }
-        match self.submission {
-            SubmissionState::Draft => "End turn",
-            SubmissionState::Loading => "Loading turn…",
-            SubmissionState::Sending | SubmissionState::Accepted => "Continue turn",
-            SubmissionState::Retry => "Retry end turn",
-            SubmissionState::Resuming => "Continuing…",
-            SubmissionState::ResumeRetry => "Retry continue",
-        }
+        "End turn"
     }
 }
 

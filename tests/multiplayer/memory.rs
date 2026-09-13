@@ -1630,17 +1630,66 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             Some(fleet),
         ))
     };
-    respond(0, JointAttackResponse::Pending, guest_fleet.clone()).unwrap();
+    let published = respond(0, JointAttackResponse::Pending, guest_fleet.clone()).unwrap();
+    invitation.revision = published.revision;
     for viewer in [&host, &guests[1]] {
         let live = block_on(backend.load_joint_attacks(viewer, &active.id)).unwrap();
         assert_eq!(live[0].participants[1].contribution.as_ref(), Some(&guest_fleet));
         assert_eq!(live[0].participants[1].response, JointAttackResponse::Pending);
     }
-    respond(0, JointAttackResponse::Accepted, guest_fleet.clone()).unwrap();
-    let undone = respond(0, JointAttackResponse::Pending, guest_fleet.clone()).unwrap();
+    respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone()).unwrap();
+    let undone =
+        respond(invitation.revision, JointAttackResponse::Pending, guest_fleet.clone()).unwrap();
     assert_eq!(undone.participants[1].response, JointAttackResponse::Pending);
-    respond(0, JointAttackResponse::Accepted, guest_fleet.clone()).unwrap();
-    // Every owner choice invalidates consent; identical publications preserve it.
+    respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone()).unwrap();
+    let peer = block_on(backend.respond_joint_attack(
+        &guests[1],
+        &active.id,
+        invitation.id,
+        invitation.revision,
+        JointAttackResponse::Accepted,
+        Some(contribution(3)),
+    ))
+    .unwrap();
+    assert_eq!(peer.participants[0].response, JointAttackResponse::Pending);
+    assert_eq!(peer.participants[1].response, JointAttackResponse::Pending);
+    invitation.revision = peer.revision;
+    respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone()).unwrap();
+    let mut edited_fleet = guest_fleet.clone();
+    edited_fleet.army.insert(fighter, 2);
+    let edited =
+        respond(invitation.revision, JointAttackResponse::Accepted, edited_fleet.clone()).unwrap();
+    assert_eq!(edited.participants[1].response, JointAttackResponse::Accepted);
+    assert_eq!(edited.participants[2].response, JointAttackResponse::Pending);
+    assert!(block_on(backend.respond_joint_attack(
+        &guests[1],
+        &active.id,
+        invitation.id,
+        invitation.revision,
+        JointAttackResponse::Accepted,
+        Some(contribution(3))
+    ))
+    .is_err());
+    invitation.revision = edited.revision;
+    block_on(backend.respond_joint_attack(
+        &guests[1],
+        &active.id,
+        invitation.id,
+        invitation.revision,
+        JointAttackResponse::Accepted,
+        Some(contribution(3)),
+    ))
+    .unwrap();
+    edited_fleet.origin = contribution(3).origin;
+    let routed = respond(invitation.revision, JointAttackResponse::Accepted, edited_fleet).unwrap();
+    assert_eq!(routed.participants[1].response, JointAttackResponse::Accepted);
+    assert_eq!(routed.participants[2].response, JointAttackResponse::Accepted);
+    invitation.revision = routed.revision;
+    invitation.revision =
+        respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
+            .unwrap()
+            .revision;
+    // Other owner choices invalidate consent; origin-only and identical publications preserve it.
     for change in 0..6 {
         let mut proposal = invitation.clone();
         match change {
@@ -1665,7 +1714,14 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             _ => unreachable!(),
         }
         let revised = block_on(backend.create_joint_attack(&host, &active.id, proposal)).unwrap();
-        assert_eq!(revised.participants[1].response, JointAttackResponse::Pending);
+        assert_eq!(
+            revised.participants[1].response,
+            if change == 3 {
+                JointAttackResponse::Accepted
+            } else {
+                JointAttackResponse::Pending
+            }
+        );
         assert!(respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
             .is_err());
         let live = block_on(backend.load_joint_attacks(&guests[0], &active.id)).unwrap();
@@ -1710,7 +1766,9 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             contributions: accepted
                 .participants
                 .iter()
-                .filter(|item| item.response == JointAttackResponse::Accepted)
+                .filter(|item| {
+                    item.player_id == 1 || item.response == JointAttackResponse::Accepted
+                })
                 .filter_map(|item| item.contribution.clone())
                 .collect(),
         }],
@@ -1728,6 +1786,177 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     .is_err());
     assert!(block_on(backend.create_joint_attack(&host, &active.id, invitation)).is_err());
     assert!(block_on(backend.load_joint_attacks(&host, &active.id)).unwrap()[0].launched);
+}
+
+#[cfg(all(feature = "app", debug_assertions))]
+#[test]
+fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orders() {
+    use crate::core::missions::BombingRaid;
+    use crate::core::resources::Resources;
+    use crate::core::simulation::JointAttackContribution;
+    use crate::core::units::buildings::Building;
+    use crate::multiplayer::client::close_local_practice_negotiations;
+    use crate::multiplayer::model::TradeParticipant;
+
+    let backend = InMemoryBackend::new();
+    let (host, recovery) = identity(&backend);
+    let mut game = create(&backend, &host, &recovery, 4).game;
+    let mut players = vec![(host.clone(), 1)];
+    for id in 2..=4 {
+        let (auth, recovery) = identity(&backend);
+        game = block_on(backend.join_game(
+            &auth,
+            JoinGameRequest {
+                code: game.code.clone(),
+                display_name: format!("Practice {id}"),
+                recovery_code: recovery.expose().to_owned(),
+            },
+        ))
+        .unwrap()
+        .game;
+        players.push((auth, id));
+    }
+    game.persisted.state.start().unwrap();
+    let game =
+        block_on(backend.start_game(&host, &game.id, game.revision, game.persisted)).unwrap();
+    let homes =
+        game.persisted.state.players.iter().map(|player| player.home_planet).collect::<Vec<_>>();
+    {
+        let mut storage = backend.lock().unwrap();
+        let model = &mut storage.games.get_mut(&game.id).unwrap().record.persisted.state;
+        for (i, home) in homes.iter().enumerate() {
+            model.map.get_mut(*home).position = bevy::math::Vec2::new(i as f32 * 100.0, 0.0);
+            model.map.get_mut(*home).army.insert(Unit::Building(Building::TradingPost), 3);
+            model.map.get_mut(*home).army.insert(Unit::Ship(Ship::LightFighter), 10);
+            model.players[i].resources = Resources::new(10_000, 10_000, 10_000);
+        }
+    }
+    for (id, first, second) in [(881, 1, 2), (882, 3, 4)] {
+        block_on(backend.create_trade(
+            &players[first - 1].0,
+            &game.id,
+            TradeInvitation {
+                id,
+                revision: 0,
+                turn: game.persisted.state.turn,
+                proposer: first as u64,
+                canceled: false,
+                finalized: false,
+                participants: [first, second].map(|player| TradeParticipant {
+                    player_id: player as u64,
+                    planet_id: homes[player - 1],
+                    resources: if player == first {
+                        Resources::new(100, 0, 0)
+                    } else {
+                        Resources::default()
+                    },
+                    response: if player == first {
+                        TradeResponse::Accepted
+                    } else {
+                        TradeResponse::Pending
+                    },
+                }),
+            },
+        ))
+        .unwrap();
+    }
+    let accepted = block_on(backend.respond_trade(
+        &players[3].0,
+        &game.id,
+        882,
+        0,
+        Resources::new(0, 100, 0),
+        TradeResponse::Accepted,
+    ))
+    .unwrap();
+    let finalized = block_on(backend.respond_trade(
+        &players[2].0,
+        &game.id,
+        882,
+        accepted.revision,
+        Resources::new(100, 0, 0),
+        TradeResponse::Accepted,
+    ))
+    .unwrap();
+    assert!(finalized.finalized);
+
+    let contribution = |player_id: u64| JointAttackContribution {
+        player_id,
+        origin: homes[player_id as usize - 1],
+        army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+    };
+    for (id, owner, guest) in [(901, 1, 2), (902, 2, 3)] {
+        block_on(backend.create_joint_attack(
+            &players[owner as usize - 1].0,
+            &game.id,
+            JointAttackInvitation {
+                id,
+                revision: 0,
+                turn: game.persisted.state.turn,
+                inviter: owner,
+                destination: homes[3],
+                objective: Icon::Attack,
+                bombing: BombingRaid::None,
+                combat_probes: false,
+                canceled: false,
+                launched: false,
+                participants: vec![
+                    JointAttackParticipant {
+                        player_id: owner,
+                        response: JointAttackResponse::Accepted,
+                        contribution: Some(contribution(owner)),
+                    },
+                    JointAttackParticipant {
+                        player_id: guest,
+                        response: JointAttackResponse::Pending,
+                        contribution: None,
+                    },
+                ],
+            },
+        ))
+        .unwrap();
+    }
+    block_on(backend.respond_joint_attack(
+        &players[1].0,
+        &game.id,
+        901,
+        0,
+        JointAttackResponse::Accepted,
+        Some(contribution(2)),
+    ))
+    .unwrap();
+    let draft = TurnSubmission::new(
+        1,
+        game.persisted.state.turn,
+        vec![TurnCommand::SendJointMission {
+            attack_id: 901,
+            mission_id: 901,
+            destination: homes[3],
+            objective: Icon::Attack,
+            bombing: BombingRaid::None,
+            combat_probes: false,
+            contributions: vec![contribution(1), contribution(2)],
+        }],
+    );
+    let submissions = vec![(host.clone(), draft.clone())];
+    block_on(close_local_practice_negotiations(&backend, &game.id, &players, &submissions))
+        .unwrap();
+    let attacks = block_on(backend.load_joint_attacks(&players[1].0, &game.id)).unwrap();
+    assert!(!attacks.iter().find(|attack| attack.id == 901).unwrap().canceled);
+    assert!(attacks.iter().find(|attack| attack.id == 902).unwrap().canceled);
+    let trades = block_on(backend.load_trades(&host, &game.id)).unwrap();
+    assert!(trades[0].canceled);
+    assert_eq!(trades[0].participant(2).unwrap().response, TradeResponse::Rejected);
+    assert_eq!(block_on(backend.load_trades(&players[2].0, &game.id)).unwrap(), vec![finalized]);
+
+    let current = block_on(backend.load_game(&host, &game.id)).unwrap();
+    block_on(backend.save_game(&host, &game.id, current.revision, draft)).unwrap();
+    block_on(close_local_practice_negotiations(&backend, &game.id, &players, &submissions))
+        .unwrap();
+    let launched = block_on(backend.load_joint_attacks(&host, &game.id)).unwrap();
+    assert!(launched[0].launched && !launched[0].canceled);
 }
 
 #[test]

@@ -140,15 +140,20 @@ assert.equal(
 console.log(
   "Second reset removed app data, obsolete objects/jobs/history, and recreated current RLS and schedule; managed auth and unrelated jobs survived.",
 );
-for (const [distance, expected] of [[350, true], [400, true], [401, false]]) {
-  const result = await db.query(`
-    select public.stellarion_trade_route_valid(
-      jsonb_build_object('id', 1, 'position', jsonb_build_array(0, 0)),
-      jsonb_build_object('id', 2, 'position', jsonb_build_array($1::int, 0))
-    ) as valid
-  `, [distance]);
-  assert.equal(result.rows[0].valid, expected, `trade route at ${distance} world units`);
+for (const route of fixtures.trade_routes) {
+  const result = await db.query(
+    `select public.stellarion_trade_route_valid($1, $2) as valid,
+      public.stellarion_trade_capacity($1, ($1::jsonb ->> 'owned')::bigint)::int as first_capacity,
+      public.stellarion_trade_capacity($2, ($2::jsonb ->> 'owned')::bigint)::int as second_capacity`,
+    [route.first, route.second],
+  );
+  assert.deepEqual(result.rows[0], {
+    valid: route.valid, first_capacity: route.first_capacity, second_capacity: route.second_capacity,
+  },
+    `trade route must match Rust: levels ${route.first.army.controller["Building(TradingPost)"]}/` +
+    `${route.second.army.controller["Building(TradingPost)"]} at ${route.second.position[0]} world units`);
 }
+console.log("SQL trade range and capacity match Rust for both post levels, missing posts, and range boundaries.");
 await db.exec(`
   insert into public.stellarion_games
     (id, code, created_by, max_players, status, state, current_turn, finished_at)
@@ -551,8 +556,9 @@ const tradeSnapshot = structuredClone(fixtures.active);
 const tradeHomes = tradeSnapshot.state.players.map(player => player.home_planet);
 for (const [index, home] of tradeHomes.entries()) {
   const planet = tradeSnapshot.state.map.planets.find(planet => planet.id === home);
-  planet.position = [index * 100, 0];
-  planet.army.controller["Building(TradingPost)"] = 3;
+  // Level-five posts must negotiate and finalize across their full 7.5 AU range.
+  planet.position = [index * 750, 0];
+  planet.army.controller["Building(TradingPost)"] = 5;
   tradeSnapshot.state.players[index].resources = { metal: 10000, crystal: 10000, deuterium: 10000 };
 }
 const tradeGame = await snapshotWrite(host,
@@ -562,7 +568,7 @@ const tradeResources = (metal = 0, crystal = 0, deuterium = 0) => ({ metal, crys
 let tradeDraft = {
   id: 9901, revision: 0, turn: 1, proposer: 1, canceled: false, finalized: false,
   participants: [
-    { player_id: 1, planet_id: tradeHomes[0], resources: tradeResources(100), response: "accepted" },
+    { player_id: 1, planet_id: tradeHomes[0], resources: tradeResources(2000), response: "accepted" },
     { player_id: 2, planet_id: tradeHomes[1], resources: tradeResources(), response: "pending" },
   ],
 };
@@ -572,7 +578,7 @@ const respondTrade = (actor, revision, resources, response) => rpc(actor,
   [tradeGame.id, tradeDraft.id, revision, resources, response]);
 for (const [actor, playerId, resources] of [
   [guest, 2, tradeResources(0, 200)],
-  [host, 1, tradeResources(150)],
+  [host, 1, tradeResources(2250)],
   [guest, 2, tradeResources()],
   [guest, 2, tradeResources(0, 250)],
 ]) {
@@ -591,15 +597,15 @@ for (const [actor, playerId, resources] of [
   await assert.rejects(respondTrade(other, previousRevision, otherResources, "accepted"), /STLR_FORBIDDEN/);
 }
 await assert.rejects(respondTrade(outsider, tradeDraft.revision, tradeResources(1), "pending"), /STLR_FORBIDDEN/);
-await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(1600), "accepted"), /STLR_INVALID_DATA:trade_resources/);
-tradeDraft = await respondTrade(host, tradeDraft.revision, tradeResources(150), "accepted");
+await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(2600), "accepted"), /STLR_INVALID_DATA:trade_resources/);
+tradeDraft = await respondTrade(host, tradeDraft.revision, tradeResources(2250), "accepted");
 assert.equal(tradeDraft.finalized, false);
 tradeDraft = await respondTrade(guest, tradeDraft.revision, tradeResources(0, 250), "accepted");
 assert.equal(tradeDraft.finalized, true);
 const tradedGame = await rpc(host, "select public.stellarion_load_game($1) as result", [tradeGame.id]);
 assert.equal(tradedGame.persisted.state.trades.length, 1);
 assert.deepEqual(tradedGame.persisted.state.trades[0].parties.map(party => party.resources),
-  [tradeResources(150), tradeResources(0, 250)], "both current offers are reserved for settlement");
+  [tradeResources(2250), tradeResources(0, 250)], "both current offers are reserved for settlement");
 await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(), "pending"), /STLR_FORBIDDEN/);
 console.log("Live bilateral trade offers, consent resets, stale acceptance, and finalization passed.");
 
@@ -748,42 +754,79 @@ const planningAttack = structuredClone(jointAttack);
 planningAttack.id = 7010;
 planningAttack.participants.push({ player_id: 3, response: "pending", contribution: null });
 await createJointAttack(host, planningAttack);
-await respondJointAttack(guest, planningAttack.id, "pending", guestContribution);
+let livePlanning = await respondJointAttack(guest, planningAttack.id, "pending", guestContribution);
+planningAttack.revision = livePlanning.revision;
 for (const viewer of [host, outsider]) {
   const live = (await loadJointAttacks(viewer)).find(item => item.id === planningAttack.id);
   assert.deepEqual(live.participants[1].contribution, guestContribution);
   assert.equal(live.participants[1].response, "pending");
 }
-await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution);
-assert.equal((await respondJointAttack(guest, planningAttack.id, "pending", guestContribution))
+await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, planningAttack.revision);
+assert.equal((await respondJointAttack(guest, planningAttack.id, "pending", guestContribution, planningAttack.revision))
   .participants[1].response, "pending", "acceptance can be undone before launch");
-await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution);
+await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, planningAttack.revision);
 planningAttack.objective = "Destroy";
 const revisedPlanning = await createJointAttack(host, planningAttack);
-assert.equal(revisedPlanning.revision, 1);
+assert.equal(revisedPlanning.revision, planningAttack.revision + 1);
 assert.equal(revisedPlanning.participants[1].response, "pending");
 assert.deepEqual(revisedPlanning.participants[1].contribution, guestContribution);
 await assert.rejects(respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, 0),
   /STLR_FORBIDDEN/, "a stale screen cannot accept a changed mission");
-planningAttack.revision = 1;
+planningAttack.revision = revisedPlanning.revision;
 planningAttack.objective = "Attack";
-await createJointAttack(host, planningAttack);
-const finalPlanning = await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, 2);
+livePlanning = await createJointAttack(host, planningAttack);
+const finalPlanning = await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, livePlanning.revision);
 assert.equal(finalPlanning.participants[2].response, "pending");
 const plannedLaunch = { ...jointCommand, attack_id: planningAttack.id, mission_id: 8010,
-  contributions: finalPlanning.participants.filter(item => item.response === "accepted")
+  contributions: finalPlanning.participants.filter(item => item.player_id === 1 || item.response === "accepted")
     .map(item => item.contribution) };
 const tamperedOrders = structuredClone(plannedLaunch);
 tamperedOrders.contributions[1].combat_probes = false;
 await assert.rejects(saveJointDraft([tamperedOrders]), /STLR_INVALID_DATA:joint_attack/);
 await saveJointDraft([plannedLaunch]);
 assert((await loadJointAttacks(guest)).find(item => item.id === planningAttack.id).launched);
-await assert.rejects(respondJointAttack(guest, planningAttack.id, "pending", guestContribution, 2),
+await assert.rejects(respondJointAttack(guest, planningAttack.id, "pending", guestContribution, finalPlanning.revision),
   /STLR_FORBIDDEN/, "launch freezes the accepted roster");
 await assert.rejects(respondJointAttack(outsider, planningAttack.id, "accepted",
-  { ...guestContribution, player_id: 3, origin: thirdHome }, 2), /STLR_FORBIDDEN/);
-await assert.rejects(createJointAttack(host, { ...planningAttack, revision: 2 }), /STLR_FORBIDDEN/);
+  { ...guestContribution, player_id: 3, origin: thirdHome }, finalPlanning.revision), /STLR_FORBIDDEN/);
+await assert.rejects(createJointAttack(host, { ...planningAttack, revision: finalPlanning.revision }), /STLR_FORBIDDEN/);
 console.log("Live allied planning, per-fleet orders, proposal revisions, undo acceptance, and early launch passed.");
+
+// All participants may revise an accepted offer; consent belongs to the other offers.
+const editableAttack = structuredClone(jointAttack);
+editableAttack.id = 7011;
+editableAttack.destination = protectionGame.persisted.state.map.planets.find(planet =>
+  planet.owned == null && planet.controlled == null && !planet.is_destroyed).id;
+editableAttack.participants.push({ player_id: 3, response: "pending", contribution: null });
+let editable = await createJointAttack(host, editableAttack);
+editable = await respondJointAttack(guest, editable.id, "accepted", guestContribution, editable.revision);
+assert.equal(editable.participants[0].response, "pending", "guest edits invalidate host consent");
+const thirdContribution = { ...guestContribution, player_id: 3, origin: thirdHome };
+editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
+assert.equal(editable.participants[1].response, "pending");
+editable = await respondJointAttack(guest, editable.id, "accepted", guestContribution, editable.revision);
+const staleRevision = editable.revision;
+const largerFleet = { ...guestContribution, army: { "Ship(LightFighter)": 2 } };
+editable = await respondJointAttack(guest, editable.id, "accepted", largerFleet, editable.revision);
+assert.equal(editable.participants[1].response, "accepted", "own edit preserves consent to other offers");
+assert.equal(editable.participants[2].response, "pending");
+await assert.rejects(respondJointAttack(outsider, editable.id, "accepted", thirdContribution, staleRevision), /STLR_FORBIDDEN/);
+editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
+editable = await respondJointAttack(guest, editable.id, "accepted",
+  { ...largerFleet, origin: protectedPlanet }, editable.revision);
+assert.equal(editable.participants[2].response, "accepted", "origin-only changes keep consent");
+const originEdit = structuredClone(editableAttack);
+originEdit.revision = editable.revision;
+originEdit.participants[0].contribution.origin = protectorHome;
+editable = await createJointAttack(host, originEdit);
+assert.equal(editable.participants[0].response, "pending", "host edits do not approve guest offers");
+assert.equal(editable.participants[1].response, "accepted");
+assert.equal(editable.participants[2].response, "accepted");
+editable = await respondJointAttack(outsider, editable.id, "rejected", null, editable.revision);
+editable = await respondJointAttack(guest, editable.id, "accepted", guestContribution, editable.revision);
+assert.equal(editable.participants[2].response, "rejected", "edits never revive a rejected participant");
+await cancelJointAttack(host, editable.id);
+console.log("Editable accepted fleets, shared consent revisions, origin-only changes, and permanent rejection passed.");
 
 await assert.rejects(rpc(host,
   "select public.stellarion_submit_turn($1, $2) as result",

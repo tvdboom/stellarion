@@ -162,17 +162,15 @@ impl Description for BombingRaid {
             BombingRaid::Economic => {
                 "Bombers target resource production buildings: Metal Mine, Crystal Mine and \
                 Deuterium Synthesizer. Once per battle, after the first round ending with the \
-                Planetary Shield down, each surviving Bomber has one 25% chance to destroy a \
-                level. Targets are chosen randomly, with at most 3 levels lost per building \
-                and 9 in total."
+                Planetary Shield down, each surviving Bomber has a 25% chance to destroy a \
+                level. Targets are chosen randomly, with at most 3 levels lost per building."
             },
             BombingRaid::Industrial => {
                 "Bombers target unit production buildings: Shipyard, Factory and Missile Silo. \
                 Reducing a Silo's level does not destroy the enemy's missiles that surpass the \
                 new capacity limit. Once per battle, after the first round ending with the \
-                Planetary Shield down, each surviving Bomber has one 25% chance to destroy a \
-                level. Targets are chosen randomly, with at most 3 levels lost per building \
-                and 9 in total."
+                Planetary Shield down, each surviving Bomber has a 25% chance to destroy a \
+                level. Targets are chosen randomly, with at most 3 levels lost per building."
             },
         }
     }
@@ -253,7 +251,8 @@ pub struct JointAttackMission {
     pub id: u64,
     /// Player whose objective and conquest claim govern the operation.
     pub leader: PlayerId,
-    /// Absolute turn on which all contingents enter combat together.
+    /// Absolute turn on which all contingents enter combat together. Each fleet stretches its
+    /// movement over this shared duration, chosen from the slowest uncoordinated arrival.
     pub arrival_turn: usize,
     /// Per-player armies populated on the synthetic mission in the shared battle report.
     #[serde(default)]
@@ -587,7 +586,7 @@ impl Mission {
             .unwrap_or(0.)
     }
 
-    /// Returns remaining travel duration, including acceleration and jump-gate rules.
+    /// Returns remaining travel duration, including acceleration, allied timing and jump gates.
     pub fn duration(&self, map: &Map) -> usize {
         self.turns_to_destination(map)
     }
@@ -642,6 +641,30 @@ impl Mission {
     fn next_turn_position(&self, map: &Map) -> Vec2 {
         let destination = map.get(self.destination);
 
+        if self.joint_attack.is_some() {
+            let remaining = self.turns_to_destination(map);
+            if remaining <= 1 {
+                return destination.position;
+            }
+            // Stretch each fleet's acceleration curve over the shared journey. With t elapsed
+            // turns and n remaining, the remaining acceleration weights sum to n*(2*t+n+2).
+            // This keeps short/fast routes in flight instead of parking them at the target.
+            let elapsed = self.travel_turns as f64;
+            let turns = remaining as f64;
+            let fraction = (2.0 * elapsed + 3.0) / (turns * (2.0 * elapsed + turns + 2.0));
+            let distance = self.distance(map);
+            // Adjacent worlds can put the launch point inside the arrival margin already.
+            // Still animate their short approach throughout the coordinated journey.
+            let distance = if distance > 0.0 {
+                distance * Planet::SIZE
+            } else {
+                self.position.distance(destination.position)
+            };
+            let step = distance * fraction as f32;
+            return self.position
+                + (destination.position - self.position).normalize_or_zero() * step;
+        }
+
         if self.jump_gate || (self.speed() > 0.0 && self.turns_to_destination(map) <= 1) {
             destination.position
         } else {
@@ -657,15 +680,15 @@ impl Mission {
 
     /// Returns whole turns remaining before this mission arrives.
     pub fn turns_to_destination(&self, map: &Map) -> usize {
-        let coordinated_wait = self.joint_attack.as_ref().map_or(0, |attack| {
-            attack.arrival_turn.saturating_sub(self.send.saturating_add(self.travel_turns))
-        });
+        if let Some(attack) = &self.joint_attack {
+            return attack.arrival_turn.saturating_sub(self.send.saturating_add(self.travel_turns));
+        }
         let distance = f64::from(self.distance(map));
         if distance == 0.0 || self.speed() == 0.0 {
-            return coordinated_wait;
+            return 0;
         }
         if self.jump_gate {
-            return coordinated_wait.max(1);
+            return 1;
         }
         // D(t) = s*t*(t+2)/3. Solve D(t+n)-D(t) for remaining turns n.
         // Rationalizing the root avoids cancellation late in long journeys.
@@ -673,7 +696,7 @@ impl Mission {
         let scaled = 3.0 * distance / f64::from(self.speed());
         let remaining = scaled / ((age * age + scaled).sqrt() + age);
         // World positions use f32; absorb only their rounding noise at whole-turn boundaries.
-        coordinated_wait.max((remaining - 1e-6).ceil().max(1.0) as usize)
+        (remaining - 1e-6).ceil().max(1.0) as usize
     }
 
     /// Returns jump-gate capacity consumed by this mission's fleet.

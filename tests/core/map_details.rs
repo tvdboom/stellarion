@@ -127,7 +127,7 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
 fn gas_development_tiles_have_transparent_gutters() {
     let source = ::image::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/assets/images/planet-buildings/gas-development.png"
+        "/assets/images/buildings/gas-development.png"
     ))
     .unwrap()
     .into_rgba8();
@@ -1188,7 +1188,7 @@ fn render_development_and_wreckage() {
                                 settings.linear_filtering = true;
                             },
                         )
-                        .load("images/planet-buildings/development.basisu.ktx2")
+                        .load("images/buildings/development.basisu.ktx2")
                 });
                 let Some(development_texture) = images.get(&*development_image) else {
                     return;
@@ -1201,7 +1201,7 @@ fn render_development_and_wreckage() {
                                 settings.linear_filtering = true;
                             },
                         )
-                        .load("images/planet-buildings/facilities.basisu.ktx2")
+                        .load("images/buildings/facilities.basisu.ktx2")
                 });
                 let Some(facilities_texture) = images.get(&*facilities_image) else {
                     return;
@@ -1212,20 +1212,20 @@ fn render_development_and_wreckage() {
                         |settings: &mut crate::core::basis_texture::BasisTextureSettings| {
                             settings.linear_filtering = true;
                         },
-                    ).load("images/planet-buildings/gas-development.basisu.ktx2")
+                    ).load("images/buildings/gas-development.basisu.ktx2")
                     });
                 let Some(gas_texture) = images.get(&*gas_image) else {
                     return;
                 };
-                let moon_shipyard = server.load("images/moon-buildings/shipyard.basisu.ktx2");
+                let moon_shipyard = server.load("images/buildings/moon shipyard.basisu.ktx2");
                 let moon_tidal_generator =
-                    server.load("images/moon-buildings/tidal generator.basisu.ktx2");
+                    server.load("images/buildings/moon tidal generator.basisu.ktx2");
                 let moon_orbital_radar =
-                    server.load("images/moon-buildings/orbital radar.basisu.ktx2");
+                    server.load("images/buildings/moon orbital radar.basisu.ktx2");
                 let planet_robotics =
-                    server.load("images/planet-buildings/terraformer.basisu.ktx2");
+                    server.load("images/buildings/planet terraformer.basisu.ktx2");
                 let gas_planet_robotics =
-                    server.load("images/planet-buildings/terraformer gas.basisu.ktx2");
+                    server.load("images/buildings/gas planet terraformer.basisu.ktx2");
                 let art = DevelopmentArt {
                     base: development_image,
                     base_size: development_texture.size().as_vec2(),

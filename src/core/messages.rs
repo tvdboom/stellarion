@@ -55,6 +55,7 @@ pub(crate) fn show_notification_area(
         .layout(egui::Layout::top_down(egui::Align::Max))
         .show(context, |ui| {
             ui.set_max_width(max_width.min((viewport.width() - 24.0).max(0.0)));
+            ui.spacing_mut().item_spacing.x = 12.0;
             ui.spacing_mut().item_spacing.y = NOTIFICATION_SPACING;
             contents(ui);
         })

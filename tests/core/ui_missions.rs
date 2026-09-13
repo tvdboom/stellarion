@@ -42,6 +42,7 @@ fn destroy_draft_shows_first_volley_chance_for_selected_war_suns() {
                         &player,
                         1,
                         &ImageIds::default(),
+                        None,
                     );
                 });
             },

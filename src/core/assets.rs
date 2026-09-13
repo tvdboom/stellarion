@@ -231,7 +231,7 @@ impl WorldAssets {
             self.gameplay_handles.push(handle.clone().untyped());
             self.images.insert(name.to_string(), handle);
         }
-        self.load_gameplay_images(server, "bg", &["bg", "combat", "defeat bg", "victory bg"]);
+        self.load_gameplay_images(server, "bg", &["bg", "combat"]);
         // Result lettering scales throughout its entrance animation; nearest sampling aliases
         // the gold outlines even though the source artwork has enough resolution.
         for name in ["victory", "defeat", "draw"] {
@@ -243,7 +243,7 @@ impl WorldAssets {
             self.load_gameplay_linear_image(
                 server,
                 name,
-                &format!("images/planet-buildings/{name}.basisu.ktx2"),
+                &format!("images/buildings/{name}.basisu.ktx2"),
             );
         }
         // Dedicated lunar silhouettes mirror their shop art instead of borrowing generic atlas
@@ -252,18 +252,18 @@ impl WorldAssets {
             self.load_gameplay_linear_image(
                 server,
                 &format!("moon {name}"),
-                &format!("images/moon-buildings/{name}.basisu.ktx2"),
+                &format!("images/buildings/moon {name}.basisu.ktx2"),
             );
         }
         self.load_gameplay_linear_image(
             server,
             PLANET_TERRAFORMER_IMAGE,
-            "images/planet-buildings/terraformer.basisu.ktx2",
+            "images/buildings/planet terraformer.basisu.ktx2",
         );
         self.load_gameplay_linear_image(
             server,
             GAS_PLANET_TERRAFORMER_IMAGE,
-            "images/planet-buildings/terraformer gas.basisu.ktx2",
+            "images/buildings/gas planet terraformer.basisu.ktx2",
         );
         self.load_gameplay_linear_image(
             server,
@@ -273,11 +273,11 @@ impl WorldAssets {
         for (name, path) in [
             (
                 PLANET_ADMINISTRATION_IMAGE,
-                "images/planet-buildings/colonial administration.basisu.ktx2",
+                "images/buildings/planet colonial administration.basisu.ktx2",
             ),
             (
                 GAS_PLANET_ADMINISTRATION_IMAGE,
-                "images/planet-buildings/colonial administration gas.basisu.ktx2",
+                "images/buildings/gas planet colonial administration.basisu.ktx2",
             ),
         ] {
             self.load_gameplay_linear_image(server, name, path);
@@ -296,7 +296,6 @@ impl WorldAssets {
             "resources",
             &[
                 "turn",
-                "owned",
                 "no focus",
                 "metal",
                 "crystal",
@@ -424,12 +423,12 @@ impl WorldAssets {
                 "rapid fire",
             ],
         );
-        self.load_gameplay_images(server, "planets", &["unknown", "destroyed bg"]);
         self.load_gameplay_images(
             server,
-            "animations",
-            &["explosion", "short explosion", "flame", "death ray"],
+            "planets",
+            &["unknown", "destroyed bg", "planet0", "moon0"],
         );
+        self.load_gameplay_images(server, "animations", &["explosion", "flame"]);
         for index in 1..=4 {
             let name = format!("solar star {index}");
             load_linear_category_image(
@@ -454,27 +453,22 @@ impl WorldAssets {
             }
         }
 
-        for index in 0..65 {
-            let name = format!("planet{index}");
-            load_category_image(
-                server,
-                &mut self.images,
-                &mut self.gameplay_handles,
-                "planets",
-                &name,
-            );
-        }
-        for index in 0..6 {
-            let name = format!("moon{index}");
-            load_category_image(
-                server,
-                &mut self.images,
-                &mut self.gameplay_handles,
-                "planets",
-                &name,
-            );
-        }
         for kind in PlanetKind::iter() {
+            // Match map generation's available artwork; index zero is loaded above for wrecks.
+            let prefix = if PlanetKind::moons().contains(&kind) {
+                "moon"
+            } else {
+                "planet"
+            };
+            for index in kind.indices() {
+                load_category_image(
+                    server,
+                    &mut self.images,
+                    &mut self.gameplay_handles,
+                    "planets",
+                    &format!("{prefix}{index}"),
+                );
+            }
             let name = kind.to_lowername();
             load_category_image(
                 server,
@@ -500,21 +494,9 @@ impl WorldAssets {
             layouts,
         );
         self.add_texture(
-            "short explosion",
-            TextureAtlasLayout::from_grid(UVec2::new(256, 251), 8, 4, None, None),
-            31,
-            layouts,
-        );
-        self.add_texture(
             "flame",
             TextureAtlasLayout::from_grid(UVec2::new(124, 54), 1, 12, None, None),
             11,
-            layouts,
-        );
-        self.add_texture(
-            "death ray",
-            TextureAtlasLayout::from_grid(UVec2::new(190, 474), 9, 1, Some(UVec2::splat(2)), None),
-            8,
             layouts,
         );
     }

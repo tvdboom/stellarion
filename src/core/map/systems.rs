@@ -23,8 +23,7 @@ use crate::core::assets::{WorldAssets, ASTEROID_IMAGE_NAMES};
 use crate::core::camera::{drag_camera_position, MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    MAX_ZOOM, MISSION_Z, ORBITAL_RAILGUN_RANGE_PER_LEVEL, OWN_COLOR, PHALANX_DISTANCE, PLANET_Z,
-    RADAR_DISTANCE, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
+    MAX_ZOOM, MISSION_Z, OWN_COLOR, PLANET_Z, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
 use crate::core::loading::{PublicStructure, PublicStructureChange};
@@ -32,8 +31,8 @@ use crate::core::loading::{PublicStructure, PublicStructureChange};
 use crate::core::map::asteroids::{
     asteroid_belt_asteroid_count, asteroid_belt_layout, asteroid_belt_placements, solar_band_gaps,
     visible_asteroid_count, ASTEROID_BELT_ANGULAR_SPEED, ASTEROID_BELT_MAXIMUM_COUNT,
-    ASTEROID_BELT_MINIMUM_COUNT, ASTEROID_BELT_MINIMUM_VISIBLE_COUNT, ASTEROID_MAXIMUM_RADIUS,
-    ASTEROID_MAXIMUM_WOBBLE, ASTEROID_MINIMUM_DIAMETER, ASTEROID_PLANET_CLEARANCE,
+    ASTEROID_BELT_MINIMUM_COUNT, ASTEROID_MAXIMUM_RADIUS, ASTEROID_MAXIMUM_WOBBLE,
+    ASTEROID_MINIMUM_DIAMETER, ASTEROID_PLANET_CLEARANCE,
 };
 use crate::core::map::asteroids::{
     asteroid_belt_layout as shared_asteroid_belt_layout,
@@ -61,7 +60,7 @@ use crate::core::resources::ResourceName;
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
-use crate::core::trading::{trading_post_range, visible_trading_post_owner};
+use crate::core::trading::visible_trading_post_owner;
 use crate::core::ui::systems::{MapRangePreview, MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -2836,18 +2835,38 @@ fn railgun_action_available(
         && !orbital_railgun_origins(map, player.id, target).is_empty()
 }
 
-/// Uses recorded enemy intelligence so the public marker cannot disclose Railgun upgrades.
-fn railgun_preview_radius(planet: &Planet, player: &Player, missions: &[Mission]) -> f32 {
-    let railgun = Unit::Building(Building::OrbitalRailgun);
-    if planet.is_destroyed || planet.is_moon() || !planet.has(&railgun) {
+/// Uses only revealed enemy levels, including when a public marker discloses a building's presence.
+fn infrastructure_preview_radius(
+    planet: &Planet,
+    player: &Player,
+    missions: &[Mission],
+    building: Building,
+) -> f32 {
+    let unit = Unit::Building(building);
+    if planet.is_destroyed
+        || planet.is_moon() != (building == Building::OrbitalRadar)
+        // Railgun destruction is public; hidden infrastructure keeps its recorded intelligence.
+        || (building == Building::OrbitalRailgun && !planet.has(&unit))
+    {
         return 0.0;
     }
-    let level = if player.owns(planet) || player.controls(planet) {
-        planet.army.amount(&railgun)
-    } else {
-        player.last_info(planet, missions).map_or(0, |info| info.army.amount(&railgun))
+    let Some(range_per_level) = unit.range_per_level() else {
+        return 0.0;
     };
-    ORBITAL_RAILGUN_RANGE_PER_LEVEL * Planet::SIZE * level.min(Building::MAX_LEVEL) as f32
+    let level = if player.owns(planet) || player.controls(planet) {
+        planet.army.amount(&unit)
+    } else {
+        player.last_info(planet, missions).map_or(0, |info| info.army.amount(&unit))
+    };
+    if level == 0 {
+        return 0.0;
+    }
+    let radius = range_per_level * Planet::SIZE * level.min(Building::MAX_LEVEL) as f32;
+    if matches!(building, Building::SensorPhalanx | Building::OrbitalRadar) {
+        radius + planet.size() * 0.5
+    } else {
+        radius
+    }
 }
 
 /// Updates planet info from the current canonical ECS projection.
@@ -2919,12 +2938,35 @@ pub fn update_planet_info(
         planet_s.image = assets.image(map_planet_image(planet, destruction_active));
 
         let hovered = state.hovered_planet() == Some(planet.id);
-        let railgun_radius =
-            if state.range_preview == Some(MapRangePreview::OrbitalRailgun(planet.id)) {
-                railgun_preview_radius(planet, player, &world.missions.0)
-            } else {
-                0.0
+        // Moons have no separate radar marker, so hovering the moon previews its known radar.
+        let range_building = match state.range_preview {
+            Some(MapRangePreview::OrbitalRailgun(id)) if id == planet.id => {
+                Some(Building::OrbitalRailgun)
+            },
+            Some(MapRangePreview::TradingPost(id))
+                if id == planet.id
+                    && visible_trading_post_owner(map, player.id, planet).is_some() =>
+            {
+                Some(Building::TradingPost)
+            },
+            Some(MapRangePreview::SensorPhalanx(id)) if id == planet.id => {
+                Some(Building::SensorPhalanx)
+            },
+            _ if hovered && planet.is_moon() => Some(Building::OrbitalRadar),
+            _ => None,
+        };
+        let radius = range_building.map_or(0.0, |building| {
+            infrastructure_preview_radius(planet, player, &world.missions.0, building)
+        });
+        let range_color = (radius > 0.0).then(|| {
+            let owner = match range_building {
+                Some(Building::OrbitalRailgun | Building::TradingPost) => planet.owned,
+                _ => player.known_controller(planet, &world.missions.0),
             };
+            owner
+                .map(|id| world.session.player_color(id).color())
+                .unwrap_or(Color::srgb_u8(190, 198, 210))
+        });
 
         // Show/hide planet icons
         let mut count = 0;
@@ -3041,53 +3083,9 @@ pub fn update_planet_info(
             if let Ok((mut visibility, mut mesh, mut transform, mut scanner, material)) =
                 scanner_q.get_mut(child)
             {
-                // Planet hover still previews a moon's Orbital Radar because moons have no
-                // dedicated marker. Planetary infrastructure previews use marker hover.
-                let radius = match state.range_preview {
-                    Some(MapRangePreview::OrbitalRailgun(id)) if id == planet.id => railgun_radius,
-                    Some(MapRangePreview::TradingPost(id))
-                        if id == planet.id
-                            && visible_trading_post_owner(map, player.id, planet).is_some() =>
-                    {
-                        Planet::SIZE
-                            * planet.owned.map_or(0.0, |owner| trading_post_range(planet, owner))
-                    },
-                    Some(MapRangePreview::SensorPhalanx(id))
-                        if id == planet.id
-                            && !planet.is_moon()
-                            && player.owns(planet)
-                            && planet.has(&Unit::Building(Building::SensorPhalanx)) =>
-                    {
-                        PHALANX_DISTANCE
-                            * Planet::SIZE
-                            * planet.army.amount(&Unit::Building(Building::SensorPhalanx)) as f32
-                            + planet.size() * 0.5
-                    },
-                    _ if hovered
-                        && planet.is_moon()
-                        && player.controls(planet)
-                        && planet.has(&Unit::Building(Building::OrbitalRadar)) =>
-                    {
-                        RADAR_DISTANCE
-                            * Planet::SIZE
-                            * planet.army.amount(&Unit::Building(Building::OrbitalRadar)) as f32
-                            + planet.size() * 0.5
-                    },
-                    _ => 0.,
-                };
-
-                if radius > 0. && !planet.is_destroyed {
+                if let Some(color) = range_color {
                     if let Some(mut material) = materials.get_mut(&material.0) {
-                        material.color = match state.range_preview {
-                            Some(
-                                MapRangePreview::OrbitalRailgun(id)
-                                | MapRangePreview::TradingPost(id),
-                            ) if id == planet.id => planet
-                                .owned
-                                .map(|owner| world.session.player_color(owner).color())
-                                .unwrap_or(Color::srgb_u8(190, 198, 210)),
-                            _ => player.color().color(),
-                        };
+                        material.color = color;
                     }
                     *visibility = Visibility::Inherited;
                     scanner.update(
@@ -3447,7 +3445,7 @@ pub fn update_planet_defenses(
                 } else {
                     Visibility::Hidden
                 };
-                *pickable = if has_phalanx && player.owns(planet) {
+                *pickable = if has_phalanx {
                     Pickable::default()
                 } else {
                     Pickable::IGNORE
@@ -3727,6 +3725,7 @@ pub fn update_end_turn(
 
     for mut label_v in &mut label_q {
         *label_v = if playing
+            && !session.as_deref().is_some_and(|session| session.local_practice)
             && !pending.resume_requested
             && matches!(
                 pending.submission,

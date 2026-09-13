@@ -569,6 +569,7 @@ pub fn send_mission(
     mut send_mission: MessageReader<SendMissionMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut play_audio: MessageWriter<PlayAudioMsg>,
+    mut requests: MessageWriter<crate::multiplayer::client::MultiplayerRequest>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut missions: ResMut<Missions>,
@@ -628,7 +629,8 @@ pub fn send_mission(
         let command = if let Some(joint_attack) = joint_attack {
             TurnCommand::SendJointMission {
                 attack_id: joint_attack.attack_id,
-                mission_id: mission.id,
+                // Participants reconstruct this published fleet from the invitation itself.
+                mission_id: joint_attack.attack_id,
                 destination: mission.destination,
                 objective: mission.objective,
                 bombing: mission.bombing.clone(),
@@ -648,8 +650,53 @@ pub fn send_mission(
                 jump_gate: mission.jump_gate,
             }
         };
+        // A joint launch changes several empires at once. Use the same deterministic preview
+        // as draft restoration so every accepted contingent appears immediately, with its own
+        // origin, identity, fleet deduction and the canonical shared arrival turn.
+        let joint_projection = if joint_attack.is_some() {
+            let Some((session, game)) = session
+                .as_ref()
+                .and_then(|session| session.active_game.as_ref().map(|game| (session, game)))
+                .filter(|(_, game)| game.persisted.state.turn == pending.turn)
+            else {
+                message.write(MessageMsg::error("The allied mission is no longer available."));
+                continue;
+            };
+            let commands = pending
+                .commands
+                .iter()
+                .chain(&pending.queued_commands)
+                .chain(std::iter::once(&command))
+                .cloned()
+                .collect::<Vec<_>>();
+            match session.preview_commands(&game.persisted.state, player.id, &commands) {
+                Ok(model) => match model.player(player.id) {
+                    Ok(projected_player) => Some((projected_player.clone(), model)),
+                    Err(error) => {
+                        message.write(MessageMsg::error(error.to_string()));
+                        continue;
+                    },
+                },
+                Err(error) => {
+                    message.write(MessageMsg::error(error.to_string()));
+                    continue;
+                },
+            }
+        } else {
+            None
+        };
         if !pending.push(command) {
             message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+            continue;
+        }
+        if let Some((projected_player, model)) = joint_projection {
+            missions.0 =
+                crate::core::turns::filter_missions(&model.missions, &model.map, &projected_player);
+            *map = model.map;
+            *player = projected_player;
+            requests.write(crate::multiplayer::client::MultiplayerRequest::PublishJointMission);
+            play_audio.write(SoundEffect::MissionLaunched.request());
+            message.write(MessageMsg::info("Mission sent.").silent());
             continue;
         }
         player.resources.deuterium =

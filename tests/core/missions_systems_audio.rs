@@ -54,6 +54,7 @@ fn launch_mission(draft_full: bool) -> App {
         .add_message::<MissionRecallAnimationMsg>()
         .add_message::<MessageMsg>()
         .add_message::<PlayAudioMsg>()
+        .add_message::<crate::multiplayer::client::MultiplayerRequest>()
         .add_systems(Update, (send_mission, recall_mission));
     app.world_mut().write_message(SendMissionMsg::new(mission));
     app.update();
@@ -82,6 +83,119 @@ fn rejected_mission_keeps_error_feedback_without_an_action_cue() {
     let notices: Vec<_> = app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect();
     assert_eq!(notices.len(), 1);
     assert!(!notices[0].silent);
+}
+
+#[test]
+fn sending_allied_mission_projects_every_contingent_and_requests_publication() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::missions::JointMissionLaunch;
+    use crate::core::simulation::{GameModel, GameRules, JointAttackContribution, PersistedGame};
+    use crate::multiplayer::client::MultiplayerRequest;
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = GameModel::new(
+        [71; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let fleet = Army::from([(Unit::war_sun(), 1)]);
+    for player in model.players.iter_mut().take(2) {
+        player.resources.deuterium = 100_000;
+        model.map.get_mut(player.home_planet).army.extend(fleet.clone());
+    }
+    let contributions = model
+        .players
+        .iter()
+        .take(2)
+        .map(|player| JointAttackContribution {
+            player_id: player.id,
+            origin: player.home_planet,
+            army: fleet.clone(),
+            bombing: BombingRaid::None,
+            combat_probes: false,
+        })
+        .collect::<Vec<_>>();
+    let mission = Mission::new_with_id(
+        77,
+        model.turn as usize,
+        1,
+        model.map.get(contributions[0].origin),
+        model.map.get(model.players[2].home_planet),
+        Icon::Attack,
+        fleet,
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("allied-launch"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 1_700_000_000,
+        max_players: 3,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: vec![],
+        submitted_players: vec![],
+    });
+    let mut app = App::new();
+    app.insert_resource(model.map.clone())
+        .insert_resource(model.players[0].clone())
+        .insert_resource(session)
+        .insert_resource(PendingTurnCommands {
+            turn: model.turn,
+            ..default()
+        })
+        .init_resource::<Missions>()
+        .add_message::<SendMissionMsg>()
+        .add_message::<MessageMsg>()
+        .add_message::<PlayAudioMsg>()
+        .add_message::<MultiplayerRequest>()
+        .add_systems(Update, send_mission);
+    app.world_mut().write_message(SendMissionMsg::joint(
+        mission,
+        JointMissionLaunch {
+            attack_id: 77,
+            contributions,
+        },
+    ));
+    app.update();
+    let pending = app.world().resource::<PendingTurnCommands>();
+    let expected = crate::core::simulation::preview_commands(&model, 1, &pending.commands).unwrap();
+    let missions = app.world().resource::<Missions>();
+    assert_eq!(missions.0.len(), 2);
+    assert_eq!(
+        missions.0.iter().map(|mission| (mission.id, mission.owner)).collect::<Vec<_>>(),
+        vec![(77, 1), (78, 2)]
+    );
+    assert_eq!(
+        serde_json::to_value(&missions.0).unwrap(),
+        serde_json::to_value(&expected.missions).unwrap()
+    );
+    for player in &model.players[..2] {
+        assert_eq!(
+            app.world().resource::<Map>().get(player.home_planet).army.amount(&Unit::war_sun()),
+            0
+        );
+        assert_eq!(
+            crate::core::turns::filter_missions(&missions.0, &expected.map, player).len(),
+            2
+        );
+    }
+    assert_eq!(
+        app.world().resource::<Player>().resources.deuterium,
+        expected.players[0].resources.deuterium
+    );
+    assert_eq!(app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().count(), 1);
+    let requests =
+        app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
+    assert!(matches!(requests.as_slice(), [MultiplayerRequest::PublishJointMission]));
 }
 
 #[test]

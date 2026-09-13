@@ -158,16 +158,16 @@ fn asteroid_cutouts_keep_photographic_shading_transparency_and_smooth_mips() {
 #[test]
 fn world_structure_cutouts_have_smooth_mips_for_small_map_sprites() {
     for path in [
-        "images/moon-buildings/shipyard.basisu.ktx2",
-        "images/moon-buildings/tidal generator.basisu.ktx2",
-        "images/moon-buildings/orbital radar.basisu.ktx2",
-        "images/planet-buildings/development.basisu.ktx2",
-        "images/planet-buildings/facilities.basisu.ktx2",
-        "images/planet-buildings/gas-development.basisu.ktx2",
-        "images/planet-buildings/colonial administration.basisu.ktx2",
-        "images/planet-buildings/colonial administration gas.basisu.ktx2",
-        "images/planet-buildings/terraformer.basisu.ktx2",
-        "images/planet-buildings/terraformer gas.basisu.ktx2",
+        "images/buildings/moon shipyard.basisu.ktx2",
+        "images/buildings/moon tidal generator.basisu.ktx2",
+        "images/buildings/moon orbital radar.basisu.ktx2",
+        "images/buildings/development.basisu.ktx2",
+        "images/buildings/facilities.basisu.ktx2",
+        "images/buildings/gas-development.basisu.ktx2",
+        "images/buildings/planet colonial administration.basisu.ktx2",
+        "images/buildings/gas planet colonial administration.basisu.ktx2",
+        "images/buildings/planet terraformer.basisu.ktx2",
+        "images/buildings/gas planet terraformer.basisu.ktx2",
     ] {
         let bytes = runtime_asset(path);
         let image = transcode_basis_texture(

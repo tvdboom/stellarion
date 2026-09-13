@@ -179,6 +179,8 @@ pub struct MultiplayerSession {
     pub mock_backend: bool,
     /// Whether the selected record is an isolated debug-only locally controlled match.
     pub local_practice: bool,
+    #[cfg(debug_assertions)]
+    practice_turn_requested: bool,
     /// Whether a foreground menu operation is still running.
     pub busy: bool,
     /// Whether one compact protection patch is still in flight.
@@ -194,6 +196,7 @@ pub struct MultiplayerSession {
     resolving: bool,
     restore_draft_needed: bool,
     joint_attack_reload_needed: bool,
+    joint_launch_save_needed: bool,
     trade_reload_needed: bool,
     event_poll_needed: bool,
     submitted_turn: Option<u64>,
@@ -204,6 +207,47 @@ pub struct MultiplayerSession {
 }
 
 impl MultiplayerSession {
+    /// Includes frozen allied launches in every participant's current-turn projection.
+    pub(crate) fn preview_commands(
+        &self,
+        state: &crate::core::simulation::GameModel,
+        player_id: crate::core::identity::PlayerId,
+        commands: &[TurnCommand],
+    ) -> Result<crate::core::simulation::GameModel, crate::core::simulation::GameError> {
+        let launches = self
+            .joint_attacks
+            .iter()
+            .filter(|invitation| {
+                invitation.launched && !invitation.canceled && invitation.turn == state.turn
+            })
+            .map(|invitation| {
+                (
+                    invitation.inviter,
+                    TurnCommand::SendJointMission {
+                        attack_id: invitation.id,
+                        mission_id: invitation.id,
+                        destination: invitation.destination,
+                        objective: invitation.objective,
+                        bombing: invitation.bombing.clone(),
+                        combat_probes: invitation.combat_probes,
+                        contributions: invitation
+                            .participants
+                            .iter()
+                            .filter(|participant| {
+                                participant.response
+                                    == crate::multiplayer::model::JointAttackResponse::Accepted
+                            })
+                            .filter_map(|participant| participant.contribution.clone())
+                            .collect(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        crate::core::simulation::preview_commands_with_allied_launches(
+            state, player_id, commands, &launches,
+        )
+    }
+
     /// Shared mission and trade proposals must be completed or declined before readiness.
     pub(crate) fn has_open_negotiation(&self, pending: &PendingTurnCommands) -> bool {
         self.has_open_allied_mission(pending)
@@ -273,6 +317,7 @@ impl MultiplayerSession {
         self.resolving = false;
         self.restore_draft_needed = false;
         self.joint_attack_reload_needed = false;
+        self.joint_launch_save_needed = false;
         self.trade_reload_needed = false;
         self.event_poll_needed = false;
         self.submitted_turn = None;
@@ -286,6 +331,10 @@ impl MultiplayerSession {
         self.reconnect_lobby = false;
         self.reauthentication_needed = false;
         self.local_practice = false;
+        #[cfg(debug_assertions)]
+        {
+            self.practice_turn_requested = false;
+        }
     }
 }
 
@@ -369,6 +418,8 @@ pub enum MultiplayerRequest {
     },
     /// Reloads private invitations after a durable wake-up.
     RefreshJointAttacks,
+    /// Saves the launch draft and freezes its shared roster without ending the turn.
+    PublishJointMission,
     /// Creates a private bilateral Trading Post negotiation.
     CreateTrade(TradeInvitation),
     /// Updates this player's resources and response in one trade.
@@ -519,6 +570,10 @@ enum BackendOutput {
     ProtectionChanged(ProtectionPermissionUpdate),
     JointAttackChanged(crate::multiplayer::model::JointAttackInvitation),
     JointAttacksLoaded(Vec<crate::multiplayer::model::JointAttackInvitation>),
+    JointMissionPublished(
+        SaveAcknowledgement,
+        Vec<crate::multiplayer::model::JointAttackInvitation>,
+    ),
     TradeChanged(TradeInvitation),
     TradesLoaded(Vec<TradeInvitation>),
     Resumed,
@@ -585,7 +640,10 @@ impl Plugin for MultiplayerClientPlugin {
                     drive_realtime,
                     drive_reload,
                     drive_joint_attack_reload,
+                    drive_joint_mission_publication,
                     drive_trade_reload,
+                    #[cfg(debug_assertions)]
+                    drive_local_practice_turn,
                     drive_presence,
                     poll_durable_events,
                     drive_resolution,
@@ -819,6 +877,78 @@ fn local_practice_submissions(
         .collect()
 }
 
+/// Closes unfinished proposals for every locally controlled empire before anyone becomes ready.
+/// A launch already ordered in a draft and a finalized trade remain part of the turn.
+#[cfg(debug_assertions)]
+pub(crate) async fn close_local_practice_negotiations(
+    backend: &dyn MultiplayerBackend,
+    game_id: &GameId,
+    players: &[(AuthSession, crate::core::identity::PlayerId)],
+    submissions: &[(AuthSession, TurnSubmission)],
+) -> Result<(), BackendError> {
+    for (auth, player_id) in players {
+        for invitation in backend.load_joint_attacks(auth, game_id).await? {
+            if invitation.inviter == *player_id
+                && !invitation.canceled
+                && !invitation.launched
+                && !submissions.iter().any(|(_, submission)| {
+                    submission.player_id == *player_id
+                        && submission.commands.iter().any(|command| {
+                            matches!(command,
+                            TurnCommand::SendJointMission { attack_id, .. }
+                                if *attack_id == invitation.id)
+                        })
+                })
+            {
+                backend.cancel_joint_attack(auth, game_id, invitation.id).await?;
+            }
+        }
+        for trade in backend.load_trades(auth, game_id).await? {
+            if !trade.canceled && !trade.finalized {
+                // Let the recipient decline even when the proposer is visited first.
+                let recipient = players
+                    .iter()
+                    .find(|(_, other_id)| {
+                        *other_id != trade.proposer && trade.participant(*other_id).is_some()
+                    })
+                    .ok_or(BackendError::PlayerNoLongerInGame)?;
+                backend
+                    .respond_trade(
+                        &recipient.0,
+                        game_id,
+                        trade.id,
+                        trade.revision,
+                        Default::default(),
+                        TradeResponse::Rejected,
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Retains an End turn click while a local proposal, draft, or snapshot write finishes.
+#[cfg(debug_assertions)]
+fn drive_local_practice_turn(
+    mut session: ResMut<MultiplayerSession>,
+    pending: Res<PendingTurnCommands>,
+    tasks: Res<BackendTasks>,
+    mut requests: MessageWriter<MultiplayerRequest>,
+) {
+    if session.local_practice
+        && session.practice_turn_requested
+        && tasks.0.is_empty()
+        && !session.joint_launch_save_needed
+        && !session.restore_draft_needed
+        && !pending.resume_requested
+        && pending.queued_commands.is_empty()
+    {
+        session.practice_turn_requested = false;
+        requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    }
+}
+
 /// Returns whether local development explicitly selected the mock backend.
 fn mock_requested() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
@@ -950,7 +1080,7 @@ fn process_requests(
         }
         #[cfg(debug_assertions)]
         if let MultiplayerRequest::SwitchLocalPracticePlayer(player_id) = request {
-            if !session.local_practice || !tasks.0.is_empty() {
+            if !session.local_practice || !tasks.0.is_empty() || session.joint_launch_save_needed {
                 continue;
             }
             store_selected_practice_draft(&mut runtime, &session, &pending);
@@ -990,9 +1120,18 @@ fn process_requests(
         }
         #[cfg(debug_assertions)]
         if matches!(request, MultiplayerRequest::AdvanceLocalPracticeTurn) {
-            if !session.local_practice || !tasks.0.is_empty() {
+            if !session.local_practice {
                 continue;
             }
+            if !tasks.0.is_empty()
+                || session.joint_launch_save_needed
+                || session.restore_draft_needed
+                || pending.resume_requested
+            {
+                session.practice_turn_requested = true;
+                continue;
+            }
+            session.practice_turn_requested = false;
             store_selected_practice_draft(&mut runtime, &session, &pending);
             let Some(record) = session.active_game.clone() else {
                 request_error(&mut session, "No local practice game is selected.");
@@ -1042,8 +1181,24 @@ fn process_requests(
                 continue;
             };
             session.busy = true;
+            session.menu_error = None;
             session.notice = Some("Resolving every local player's turn…".to_string());
+            let players = runtime
+                .practice_players
+                .iter()
+                .map(|player| (player.auth.clone(), player.membership.player_id))
+                .collect::<Vec<_>>();
             spawn_backend_task(&mut tasks, async move {
+                if let Err(error) = close_local_practice_negotiations(
+                    backend.as_ref(),
+                    &record.id,
+                    &players,
+                    &submissions,
+                )
+                .await
+                {
+                    return BackendOutput::Failed(Operation::PracticeTurn, error);
+                }
                 for (auth, submission) in submissions {
                     if let Err(error) = backend.submit_turn(&auth, &record.id, submission).await {
                         return BackendOutput::Failed(Operation::PracticeTurn, error);
@@ -1407,6 +1562,9 @@ fn process_requests(
                         BackendOutput::JointAttacksLoaded,
                     )
                 });
+            },
+            MultiplayerRequest::PublishJointMission => {
+                session.joint_launch_save_needed = true;
             },
             MultiplayerRequest::CreateTrade(invitation) => {
                 if session.trade_update_pending {
@@ -1810,6 +1968,10 @@ fn poll_backend_tasks(
                 &output,
                 BackendOutput::TradeChanged(invitation) if invitation.finalized
             ) || matches!(&output, BackendOutput::Record(Operation::Load, _));
+            let refresh_allied = matches!(
+                &output,
+                BackendOutput::JointMissionPublished(..) | BackendOutput::JointAttacksLoaded(_)
+            );
             let gameplay_visible = *app_state.get() == AppState::Game;
             let previous_projection = session
                 .active_game
@@ -1844,7 +2006,7 @@ fn poll_backend_tasks(
             if gameplay_visible && refresh_protection {
                 refresh_draft.write(RefreshTurnDraft);
             }
-            if gameplay_visible && refresh_trade {
+            if gameplay_visible && (refresh_trade || refresh_allied) {
                 refresh_draft.write(RefreshTurnDraft);
             }
             if let Some(notification) = notification {
@@ -2080,6 +2242,16 @@ fn apply_output(
             session.joint_attack_update_pending = false;
             session.joint_attacks = invitations;
             session.connection = ConnectionStatus::Connected;
+        },
+        BackendOutput::JointMissionPublished(acknowledgement, invitations) => {
+            if let Some(record) = session.active_game.as_mut() {
+                record.revision = acknowledgement.revision;
+                record.saved_at = acknowledgement.saved_at;
+            }
+            session.joint_attack_update_pending = false;
+            session.joint_attacks = invitations;
+            session.connection = ConnectionStatus::Connected;
+            session.notice = None;
         },
         BackendOutput::TradeChanged(invitation) => {
             session.trade_update_pending = false;
@@ -2709,7 +2881,7 @@ fn record_requires_gameplay_install(previous: Option<&GameRecord>, next: &GameRe
     })
 }
 
-/// Recovers saved orders or clears readiness after a gameplay action or Continue turn interaction.
+/// Recovers saved orders or clears readiness after a gameplay action.
 /// Serialize this with ready writes so their payload stays fixed until delivery completes.
 fn drive_turn_draft(
     runtime: Res<ClientRuntime>,
@@ -2898,6 +3070,50 @@ fn drive_joint_attack_reload(
             backend.load_joint_attacks(&auth, &game_id).await,
             BackendOutput::JointAttacksLoaded,
         )
+    });
+}
+
+/// Publishes Send immediately, waiting for any readiness withdrawal before saving its draft.
+fn drive_joint_mission_publication(
+    runtime: Res<ClientRuntime>,
+    mut session: ResMut<MultiplayerSession>,
+    pending: Res<PendingTurnCommands>,
+    mut tasks: ResMut<BackendTasks>,
+) {
+    if !session.joint_launch_save_needed
+        || !tasks.0.is_empty()
+        || pending.resume_requested
+        || !pending.queued_commands.is_empty()
+    {
+        return;
+    }
+    let (Some(backend), Some(auth), Some(record), Some(member)) = (
+        runtime.backend.clone(),
+        session.auth.clone(),
+        session.active_game.as_ref(),
+        session.membership.as_ref(),
+    ) else {
+        return;
+    };
+    if pending.turn != record.persisted.state.turn {
+        session.joint_launch_save_needed = false;
+        return;
+    }
+    let (game_id, revision) = (record.id.clone(), record.revision);
+    let mut draft = TurnSubmission::new(member.player_id, pending.turn, pending.commands.clone());
+    draft.generation = pending.generation;
+    session.joint_launch_save_needed = false;
+    session.joint_attack_update_pending = true;
+    spawn_backend_task(&mut tasks, async move {
+        let result = async {
+            let acknowledgement = backend.save_game(&auth, &game_id, revision, draft).await?;
+            let invitations = backend.load_joint_attacks(&auth, &game_id).await?;
+            Ok((acknowledgement, invitations))
+        }
+        .await;
+        Operation::JointAttack.complete(result, |(acknowledgement, invitations)| {
+            BackendOutput::JointMissionPublished(acknowledgement, invitations)
+        })
     });
 }
 

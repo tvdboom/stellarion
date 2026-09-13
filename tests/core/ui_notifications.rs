@@ -6,6 +6,95 @@ use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse
 use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
 
 #[test]
+fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
+    let (model, _, _, mut invitation) = fixture();
+    invitation.canceled = true;
+    invitation.participants.push(JointAttackParticipant {
+        player_id: 3,
+        response: JointAttackResponse::Pending,
+        contribution: None,
+    });
+    let mut session = session_for_model(&model);
+    session.local_practice = true;
+    session.joint_attacks.push(invitation.clone());
+    invitation.id = 93;
+    invitation.canceled = false;
+    invitation.inviter = 1;
+    invitation.participants[0].response = JointAttackResponse::Rejected;
+    session.joint_attacks.push(invitation);
+    session.trades.push(TradeInvitation {
+        id: 92,
+        revision: 0,
+        turn: model.turn,
+        proposer: 1,
+        canceled: true,
+        finalized: false,
+        participants: [1, 3].map(|player_id| TradeParticipant {
+            player_id,
+            planet_id: model.player(player_id).unwrap().home_planet,
+            resources: Resources::default(),
+            response: TradeResponse::Rejected,
+        }),
+    });
+    let context = egui::Context::default();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let mut params = bevy::ecs::system::SystemState::<(
+        MessageWriter<MultiplayerRequest>,
+        MessageWriter<MessageMsg>,
+    )>::new(&mut world);
+    for (player_id, expected) in [(1, 3), (2, 0), (3, 2), (1, 0), (3, 0), (1, 0)] {
+        let player = model.player(player_id).unwrap();
+        let mut state = UiState::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ctx| {
+            let (mut requests, mut messages) = params.get_mut(&mut world).unwrap();
+            draw_joint_attack_notifications(
+                ctx,
+                &mut state,
+                &model.map,
+                player,
+                &session,
+                &mut requests,
+                &mut messages,
+                &ImageIds::default(),
+            );
+            draw_trade_notifications(
+                ctx,
+                &mut state,
+                &model.map,
+                player,
+                &session,
+                &mut requests,
+                &mut messages,
+                &ImageIds::default(),
+            );
+        });
+        output.textures_delta.clear();
+        let notices = world.resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
+        assert_eq!(notices.len(), expected, "player {player_id}");
+        if expected > 0 {
+            assert!(notices[0].message.contains("canceled the allied attack"));
+            assert!(notices.last().unwrap().message.contains("was rejected"));
+        }
+    }
+    session.active_game.as_mut().unwrap().persisted.state.turn += 1;
+    assert!(!first_negotiation_notice(
+        &context,
+        &session,
+        1,
+        NegotiationNotice::MissionCanceled(91)
+    ));
+    session.active_game.as_mut().unwrap().id = crate::core::identity::GameId::new("another-game");
+    assert!(first_negotiation_notice(
+        &context,
+        &session,
+        1,
+        NegotiationNotice::MissionCanceled(91)
+    ));
+}
+
+#[test]
 fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
     for size in [egui::vec2(1600.0, 900.0), egui::vec2(560.0, 460.0), egui::vec2(320.0, 640.0)] {
         let (mut model, player, mut state, mut invitation) = fixture();

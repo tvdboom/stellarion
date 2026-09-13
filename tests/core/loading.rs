@@ -123,7 +123,12 @@ fn a_new_turn_keeps_its_public_railgun_strike_for_playback() {
 
     let mut pending = PendingTurnCommands::default();
     pending.reset(model.turn);
-    let preview = gameplay_draft_projection(&model, model.players[0].id, &pending);
+    let preview = gameplay_draft_projection(
+        &model,
+        model.players[0].id,
+        &pending,
+        &MultiplayerSession::default(),
+    );
 
     assert!(preview.is_none(), "an empty new-turn draft must not clear a resolved strike");
     assert_eq!(preview.as_ref().unwrap_or(&model).orbital_strikes, model.orbital_strikes);

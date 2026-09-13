@@ -89,12 +89,43 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
 }
 
 #[test]
-fn end_turn_control_continues_a_ready_or_in_flight_turn() {
+#[cfg(debug_assertions)]
+fn local_practice_end_turn_bypasses_unfinished_negotiation_panels() {
+    let mut session = MultiplayerSession::default();
+    session.local_practice = true;
+    let mut app = App::new();
+    app.insert_resource(UiState {
+        end_turn: true,
+        allied_mission: true,
+        joint_attack_open: Some(9),
+        trading_post_open: Some(0),
+        ..default()
+    })
+    .insert_resource(session)
+    .init_resource::<PendingTurnCommands>()
+    .add_message::<MultiplayerRequest>()
+    .add_systems(Update, check_turn_ended);
+    app.update();
+    assert!(matches!(
+        app.world_mut()
+            .resource_mut::<Messages<MultiplayerRequest>>()
+            .drain()
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [MultiplayerRequest::AdvanceLocalPracticeTurn]
+    ));
+}
+
+#[test]
+fn end_turn_control_never_withdraws_a_ready_or_in_flight_turn() {
     for submission in [
         SubmissionState::Draft,
+        SubmissionState::Retry,
+        SubmissionState::Loading,
         SubmissionState::Sending,
         SubmissionState::Accepted,
         SubmissionState::ResumeRetry,
+        SubmissionState::Resuming,
     ] {
         let mut app = App::new();
         app.insert_resource(UiState {
@@ -109,10 +140,13 @@ fn end_turn_control_continues_a_ready_or_in_flight_turn() {
         .add_systems(Update, check_turn_ended);
         app.update();
         let pending = app.world().resource::<PendingTurnCommands>();
-        assert_eq!(pending.resume_requested, submission != SubmissionState::Draft);
+        assert!(!pending.resume_requested);
         assert!(!app.world().resource::<UiState>().end_turn);
         let requests = app.world().resource::<Messages<MultiplayerRequest>>();
-        assert_eq!(requests.len(), usize::from(submission == SubmissionState::Draft));
+        assert_eq!(
+            requests.len(),
+            usize::from(matches!(submission, SubmissionState::Draft | SubmissionState::Retry))
+        );
     }
 }
 

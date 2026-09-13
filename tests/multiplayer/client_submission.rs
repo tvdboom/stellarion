@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn end_turn_label_is_stable_during_delivery_and_recovery() {
+    for submission in [
+        SubmissionState::Draft,
+        SubmissionState::Loading,
+        SubmissionState::Sending,
+        SubmissionState::Retry,
+        SubmissionState::Accepted,
+        SubmissionState::Resuming,
+        SubmissionState::ResumeRetry,
+    ] {
+        for resume_requested in [false, true] {
+            let pending = PendingTurnCommands {
+                submission,
+                resume_requested,
+                ..Default::default()
+            };
+            assert_eq!(pending.button_label(), "End turn");
+        }
+    }
+}
+
+#[test]
 fn ambiguous_delivery_freezes_and_retries_the_original_draft() {
     let mut pending = PendingTurnCommands::default();
     pending.reset(7);
