@@ -17,7 +17,7 @@ pub enum MineMode {
     /// Normal output at one Energy per completed level.
     #[default]
     Normal,
-    /// One boosted turn at three Energy per level, followed by compulsory suspension.
+    /// One boosted turn at three Energy per level, then one suspended turn before Normal resumes.
     Intensive,
     /// No production or Energy demand.
     Suspended,
@@ -70,16 +70,19 @@ impl MineMode {
 pub struct MineOperation {
     /// Current operating mode.
     pub mode: MineMode,
-    /// Prevents leaving Suspended until one full recovery turn has resolved.
+    /// Locks Suspended for one full recovery turn, then automatically resumes Normal.
     pub recovering: bool,
 }
 
 impl MineOperation {
     /// Advances only after production and every battle have resolved.
     pub fn finish_turn(&mut self) {
-        self.recovering = self.mode == MineMode::Intensive;
         if self.recovering {
+            self.mode = MineMode::Normal;
+            self.recovering = false;
+        } else if self.mode == MineMode::Intensive {
             self.mode = MineMode::Suspended;
+            self.recovering = true;
         }
     }
 }

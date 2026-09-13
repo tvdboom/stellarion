@@ -1379,19 +1379,18 @@ fn three_player_five_world_practice_keeps_the_belt_in_every_home_view() {
 }
 
 #[test]
-fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() {
+fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and_time() {
     for expected_kind in CelestialKind::ALL {
         let map = (0..64)
             .map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map)
             .find(|map| map_scenery_selection(map) == expected_kind)
             .unwrap();
-        let follow = CELESTIAL_PARALLAX_FOLLOW;
-        let anchor =
-            (celestial_position(&map, expected_kind) * (1.0 - follow)).extend(CELESTIAL_DEPTH);
+        let anchor = celestial_position(&map, expected_kind).extend(FIRST_STAR_DEPTH);
         let sun_anchor = solar_star_position(&map).extend(SOLAR_STAR_DEPTH);
         assert!(anchor.z > BACKGROUND_Z && anchor.z < VORONOI_Z);
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default(), TransformPlugin))
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::ZERO))
             .init_asset::<Image>()
             .init_asset::<Font>()
             .init_asset::<TextureAtlasLayout>()
@@ -1401,6 +1400,7 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             .add_systems(
                 Startup,
                 |mut commands: Commands, assets: Res<WorldAssets>, map: Res<Map>| {
+                    spawn_ambient_stars(&mut commands);
                     spawn_background_landmarks(&mut commands, &assets, &map);
                 },
             )
@@ -1456,29 +1456,35 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         }
 
         assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
-        assert_eq!(celestial_follow, Some(follow));
+        assert_eq!(celestial_follow, None);
+        let first_star_layer = world
+            .query::<(Entity, &Transform, &Children)>()
+            .iter(world)
+            .filter(|(_, _, children)| {
+                children.iter().any(|child| world.get::<AmbientStarCmp>(child).is_some())
+            })
+            .min_by(|(_, left, _), (_, right, _)| {
+                left.translation.z.total_cmp(&right.translation.z)
+            })
+            .unwrap()
+            .0;
+        let celestial_layer =
+            world.query_filtered::<&ChildOf, With<CelestialCmp>>().single(world).unwrap().parent();
         let mut landmarks = world.query::<(&CelestialCmp, &GlobalTransform)>();
         let (celestial, transform) = landmarks.single(world).unwrap();
         assert_eq!(celestial.kind, expected_kind);
         assert_eq!(celestial.frames.len(), kind.frame_count());
         assert_eq!(transform.translation(), anchor);
-        assert!(!celestial_overlaps_planet(
-            world.resource::<Map>(),
-            kind,
-            celestial_position(world.resource::<Map>(), kind),
-        ));
 
-        // Each landmark follows the camera by its own depth factor.
+        // Panning cannot pull the landmark away from its selected map edge.
         let camera_position = Vec3::new(-2_000.0, 700.0, 1.0);
         world.get_mut::<Transform>(camera).unwrap().translation = camera_position;
         app.update();
         let world = app.world_mut();
         let pan_position = landmarks.single(world).unwrap().1.translation();
-        let relative_motion =
-            pan_position.truncate() - anchor.truncate() - camera_position.truncate();
-        assert!(relative_motion.abs_diff_eq(camera_position.truncate() * (follow - 1.0), 1e-3));
+        assert_eq!(pan_position, anchor);
 
-        // Landmarks scale with the map, preserving their clearance at every zoom level.
+        // Both cross-faded frames remain behind planets throughout the zoom range.
         let mut apparent_widths = Vec::new();
         for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
             if let Projection::Orthographic(projection) =
@@ -1488,21 +1494,28 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             }
             app.update();
             let world = app.world_mut();
+            assert_eq!(
+                world.get::<Transform>(celestial_layer).unwrap().translation.z,
+                world.get::<Transform>(first_star_layer).unwrap().translation.z,
+            );
             let mut frames =
                 world.query_filtered::<(&Sprite, &GlobalTransform), With<CelestialFrameCmp>>();
             for (sprite, transform) in frames.iter(world) {
                 assert!(transform.translation().z > BACKGROUND_Z);
                 assert!(transform.translation().z < VORONOI_Z);
+                assert!(transform.translation().z < PLANET_Z);
+                assert_eq!(transform.translation().truncate(), anchor.truncate());
                 let scale = transform.to_scale_rotation_translation().0;
                 apparent_widths.push(sprite.custom_size.unwrap().x * scale.x / zoom);
             }
         }
         let smallest = apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
         let largest = apparent_widths.iter().copied().fold(0.0, f32::max);
-        assert!((largest / smallest - MAX_ZOOM / MIN_ZOOM).abs() < 1e-3);
+        let expected_ratio = MAX_ZOOM / MIN_ZOOM;
+        assert!((largest / smallest - expected_ratio).abs() < 1e-3);
         assert!(largest > smallest);
 
-        // Elapsed time must preserve the depth response without adding drift.
+        // Even a long session cannot drift the landmark off its edge.
         let world = app.world_mut();
         let before_drift = *landmarks.single(world).unwrap().1;
         world
@@ -1511,7 +1524,8 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         app.update();
         let world = app.world_mut();
         let transform = landmarks.single(world).unwrap().1;
-        assert_eq!(*transform, before_drift);
+        assert_eq!(transform, &before_drift);
+        assert_eq!(transform.translation(), anchor);
         let mut suns = world.query_filtered::<&GlobalTransform, With<SolarStarCmp>>();
         assert_eq!(suns.single(world).unwrap().translation(), sun_anchor);
         let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
@@ -1519,25 +1533,34 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         assert!(sun_roots.single(world).unwrap().rotation.angle_between(expected_rotation) < 1e-4);
         let world = app.world_mut();
         let planet_position = world.resource::<Map>().planets[0].position;
-        let forced_overlap = (planet_position - anchor.truncate()) / follow;
-        world.get_mut::<Transform>(camera).unwrap().translation = forced_overlap.extend(1.0);
-        app.update();
-        let world = app.world_mut();
-        let mut landmark = world.query_filtered::<&Visibility, With<CelestialCmp>>();
-        assert_eq!(*landmark.single(world).unwrap(), Visibility::Hidden);
-        let safe_camera = celestial_position(world.resource::<Map>(), kind).extend(1.0);
-        world.get_mut::<Transform>(camera).unwrap().translation = safe_camera;
-        app.update();
-        let world = app.world_mut();
-        assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
+        // Looking at a planet at any zoom leaves the landmark fixed and visible.
+        for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
+            let world = app.world_mut();
+            world.get_mut::<Transform>(camera).unwrap().translation = planet_position.extend(1.0);
+            if let Projection::Orthographic(projection) =
+                &mut *world.get_mut::<Projection>(camera).unwrap()
+            {
+                projection.scale = zoom;
+            }
+            app.update();
+            let world = app.world_mut();
+            let mut landmark = world.query_filtered::<&Visibility, With<CelestialCmp>>();
+            assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
+            let mut frames = world.query_filtered::<&GlobalTransform, With<CelestialFrameCmp>>();
+            for frame in frames.iter(world) {
+                assert_eq!(frame.translation().truncate(), anchor.truncate());
+                assert!(frame.translation().z < PLANET_Z);
+            }
+        }
     }
 }
 
 #[test]
-fn celestial_landmarks_stay_visible_inside_normal_small_and_offset_maps() {
+fn celestial_landmarks_stay_on_the_outer_edge_of_normal_small_and_offset_maps() {
     let generated =
         (0..64).map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map);
     let unusual = [
+        Rect::new(1_000.0, -700.0, 4_200.0, 1_100.0),
         Rect::new(-50.0, -50.0, 50.0, 50.0),
         Rect::new(1_000.0, -700.0, 1_050.0, 900.0),
         Rect::new(-4_000.0, 2_000.0, 4_000.0, 2_040.0),
@@ -1548,26 +1571,30 @@ fn celestial_landmarks_stay_visible_inside_normal_small_and_offset_maps() {
         planets: Vec::new(),
     });
     for map in generated.chain(unusual) {
-        let kind = map_scenery_selection(&map);
-        let size = CELESTIAL_SIZE * kind.size_scale();
-        let position = celestial_position(&map, kind);
-        let normalized = (position - map.rect.center()) / map.rect.half_size();
-        assert!(normalized.x.abs() <= 1.0);
-        assert!(normalized.y.abs() <= 1.0);
-        assert!(normalized.x * map_scenery_corner(&map).x < 0.0);
-        if map.rect.width() >= size.x + CELESTIAL_MAP_MARGIN * 2.0 {
-            assert!(position.x - size.x * 0.5 >= map.rect.min.x + CELESTIAL_MAP_MARGIN - 1e-3);
-            assert!(position.x + size.x * 0.5 <= map.rect.max.x - CELESTIAL_MAP_MARGIN + 1e-3);
-        }
-        if map.rect.height() >= size.y + CELESTIAL_MAP_MARGIN * 2.0 {
-            assert!(position.y - size.y * 0.5 >= map.rect.min.y - 1e-3);
-            assert!(position.y + size.y * 0.5 <= map.rect.max.y + 1e-3);
+        for kind in CelestialKind::ALL {
+            let size = CELESTIAL_SIZE * kind.size_scale();
+            let position = celestial_position(&map, kind);
+            let normalized = (position - map.rect.center()) / map.rect.half_size();
+            assert!(normalized.x.abs() <= 1.0);
+            assert!(normalized.y.abs() <= 1.0);
+            assert!(normalized.x * map_scenery_corner(&map).x < 0.0);
+            if map.rect.width() >= size.x + CELESTIAL_MAP_MARGIN * 2.0 {
+                assert!(position.x - size.x * 0.5 >= map.rect.min.x + CELESTIAL_MAP_MARGIN - 1e-3);
+                assert!(position.x + size.x * 0.5 <= map.rect.max.x - CELESTIAL_MAP_MARGIN + 1e-3);
+                let edge_gap =
+                    (position.x - map.rect.min.x).min(map.rect.max.x - position.x) - size.x * 0.5;
+                assert!((edge_gap - CELESTIAL_MAP_MARGIN).abs() < 1e-3);
+            }
+            if map.rect.height() >= size.y + CELESTIAL_MAP_MARGIN * 2.0 {
+                assert!(position.y - size.y * 0.5 >= map.rect.min.y - 1e-3);
+                assert!(position.y + size.y * 0.5 <= map.rect.max.y + 1e-3);
+            }
         }
     }
 }
 
 #[test]
-fn celestial_landmarks_keep_clear_of_planets_while_panning() {
+fn compact_celestial_landmarks_start_at_a_map_corner() {
     for seed in 0..128 {
         let map = GameModel::new([seed; 32], GameRules::default()).unwrap().map;
         let kind = map_scenery_selection(&map);
@@ -1580,12 +1607,6 @@ fn celestial_landmarks_keep_clear_of_planets_while_panning() {
                     - (map.rect.half_size().y - vertical_inset))
                     .abs()
                     < 1e-3
-            );
-        }
-        for camera_position in map.planets.iter().map(|planet| planet.position) {
-            assert!(
-                !celestial_overlaps_planet(&map, kind, camera_position),
-                "seed {seed}, {kind:?}, camera {camera_position:?}"
             );
         }
     }
@@ -2902,11 +2923,20 @@ fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
         .find(|planet| !planet.is_moon() && planet.id != home && planet.id != enemy)
         .unwrap()
         .id;
-    for id in [home, other, enemy] {
+    let foreign = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && ![home, other, enemy].contains(&planet.id))
+        .unwrap()
+        .id;
+    for id in [home, other, enemy, foreign] {
         model.map.get_mut(id).army.insert(Unit::Building(Building::JumpGate), 1);
     }
     model.map.get_mut(other).owned = Some(player.id);
     model.map.get_mut(other).controlled = Some(player.id);
+    model.map.get_mut(foreign).owned = model.map.get(enemy).owned;
+    model.map.get_mut(foreign).controlled = model.map.get(enemy).controlled;
 
     let gate_offset = Vec2::new(70.0, -30.0);
     let expected = jump_gate_link_particles(
@@ -2922,6 +2952,8 @@ fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
 
     let mut app = App::new();
     app.init_resource::<Time>()
+        .init_resource::<Missions>()
+        .init_resource::<Settings>()
         .insert_resource(model.map)
         .insert_resource(player)
         .insert_resource(MultiplayerSession::default())
@@ -2929,19 +2961,30 @@ fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
             jump_gate_hover: Some(home),
             ..default()
         })
-        .add_systems(Update, update_jump_gate_links);
-    for planet in [home, other, enemy] {
-        app.world_mut().spawn((
-            Transform::from_translation(gate_offset.extend(0.72)),
-            JumpGateCmp {
-                planet,
-            },
-        ));
+        .add_systems(Update, (update_planet_defenses, update_jump_gate_links).chain());
+    app.world_mut()
+        .spawn((MainCamera, Projection::Orthographic(OrthographicProjection::default_2d())));
+    let mut markers = BTreeMap::new();
+    for planet in [home, other, enemy, foreign] {
+        let marker = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(gate_offset.extend(0.72)),
+                Sprite::default(),
+                Pickable::IGNORE,
+                JumpGateCmp {
+                    planet,
+                },
+            ))
+            .id();
+        app.world_mut().spawn(PlanetCmp::new(planet)).add_child(marker);
+        markers.insert(planet, marker);
     }
 
     app.update();
     let visible_links = app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count();
     assert_eq!(visible_links, expected, "the enemy gate must not receive a preview link");
+    assert!(!app.world().get::<Pickable>(markers[&enemy]).unwrap().is_hoverable);
 
     let enemy_expected = jump_gate_link_particles(
         app.world().resource::<Map>().get(home).position + gate_offset,
@@ -2958,10 +3001,38 @@ fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
         app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count(),
         expected + enemy_expected
     );
+    assert!(app.world().get::<Pickable>(markers[&enemy]).unwrap().is_hoverable);
+    assert_eq!(app.world().get::<Visibility>(markers[&enemy]), Some(&Visibility::Inherited));
 
+    // Hovering an invited gate shows links to both owned gates, even when another
+    // foreign gate also grants access. Foreign destinations cannot link to one another.
+    app.world_mut().resource_mut::<Map>().get_mut(foreign).protection_permissions.insert(player_id);
     app.world_mut().resource_mut::<UiState>().jump_gate_hover = Some(enemy);
+    let expected_from_enemy = [home, other]
+        .into_iter()
+        .map(|owned| {
+            let map = app.world().resource::<Map>();
+            jump_gate_link_particles(
+                map.get(enemy).position + gate_offset,
+                map.get(owned).position + gate_offset,
+                PlayerColor::for_player(player_id).color(),
+                0.0,
+                visual_noise(enemy as u32 ^ (owned as u32).rotate_left(13)) * TAU,
+                JumpGateHelixStyle::GateLink,
+            )
+            .len()
+        })
+        .sum::<usize>();
+    app.update();
+    assert_eq!(
+        app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count(),
+        expected_from_enemy
+    );
+
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).protection_permissions.remove(&player_id);
     app.update();
     assert_eq!(app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count(), 0);
+    assert!(!app.world().get::<Pickable>(markers[&enemy]).unwrap().is_hoverable);
 }
 
 #[test]
@@ -3042,6 +3113,251 @@ fn jump_gate_shortcut_opens_protect_draft_for_permitted_enemy_gate() {
 
     model.map.get_mut(enemy).protection_permissions.remove(&player.id);
     assert!(!jump_gate_network_available(&model.map, &player));
+}
+
+#[test]
+fn foreign_jump_gate_shortcut_prefers_current_then_home_then_another_owned_gate() {
+    let mut model = GameModel::new([74; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let enemy = model.players[1].home_planet;
+    let others = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon() && ![home, enemy].contains(&planet.id))
+        .take(2)
+        .map(|planet| planet.id)
+        .collect::<Vec<_>>();
+    let (current, fallback) = (others[0], others[1]);
+    let gate = Unit::Building(Building::JumpGate);
+    for id in [home, current, fallback, enemy] {
+        let planet = model.map.get_mut(id);
+        planet.army.insert(gate, 1);
+        if id != enemy {
+            planet.owned = Some(player.id);
+            planet.controlled = Some(player.id);
+        }
+    }
+    model.map.get_mut(enemy).protection_permissions.insert(player.id);
+    let settings = Settings {
+        turn: 9,
+        ..default()
+    };
+    for (preferred, expected) in [(current, current), (enemy, home), (usize::MAX, home)] {
+        let mut state = UiState::default();
+        state.mission_info.origin = preferred;
+        assert!(open_jump_gate_mission(&mut state, &settings, &model.map, &player, enemy));
+        assert_eq!(state.mission_info.origin, expected);
+        assert_eq!(state.mission_info.destination, enemy);
+    }
+    // Keyboard planet selection can differ from the previous draft's origin.
+    let mut state = UiState {
+        planet_selected: Some(current),
+        ..default()
+    };
+    state.mission_info.origin = home;
+    assert!(open_jump_gate_mission(&mut state, &settings, &model.map, &player, enemy));
+    assert_eq!(state.mission_info.origin, current);
+
+    for (remove_gate, expected) in [(current, home), (home, fallback)] {
+        model.map.get_mut(remove_gate).army.remove(&gate);
+        let mut state = UiState {
+            planet_selected: Some(current),
+            mission_report: Some(123),
+            mission_hover: Some(456),
+            mission_hover_from_ui: true,
+            jump_gate_hover: Some(enemy),
+            ..default()
+        };
+        state.mission_info.origin = current;
+        state.mission_info.destination = home;
+        state.mission_info.army.insert(Unit::probe(), 3);
+        assert!(open_jump_gate_mission(&mut state, &settings, &model.map, &player, enemy));
+        assert!(state.mission);
+        assert_eq!(state.mission_tab, MissionTab::NewMission);
+        assert_eq!(state.mission_info.origin, expected);
+        assert_eq!(state.mission_info.destination, enemy);
+        assert_eq!(state.mission_info.objective, Icon::Protect);
+        assert_eq!(state.mission_info.protected_player, model.map.get(enemy).controlled);
+        assert!(state.mission_info.jump_gate);
+        assert!(state.jump_gate_history);
+        assert!(state.mission_info.army.is_empty());
+        assert_eq!(state.planet_selected, None);
+        assert_eq!(state.mission_report, None);
+        assert_eq!(state.mission_hover, None);
+        assert!(!state.mission_hover_from_ui);
+        assert_eq!(state.jump_gate_hover, None);
+    }
+
+    // A destroyed gate or a foreign gate with our stationed fleet cannot serve as the origin.
+    let mut state = UiState::default();
+    state.mission_info.origin = fallback;
+    model.map.get_mut(fallback).is_destroyed = true;
+    assert!(!open_jump_gate_mission(&mut state, &settings, &model.map, &player, enemy));
+    model.map.get_mut(fallback).is_destroyed = false;
+    model.map.get_mut(fallback).owned = Some(2);
+    model.map.get_mut(fallback).controlled = Some(2);
+    model.map.get_mut(fallback).dock_protecting_fleet(player.id, Army::from([(Unit::probe(), 1)]));
+    assert!(!open_jump_gate_mission(&mut state, &settings, &model.map, &player, enemy));
+    assert!(!state.mission);
+    assert!(!state.jump_gate_history);
+    assert_eq!(state.mission_info.origin, fallback);
+}
+
+#[test]
+fn protected_enemy_dock_and_gate_clicks_open_jump_drafts_and_require_a_valid_route() {
+    use bevy::camera::RenderTarget;
+    use bevy::picking::{
+        backend::HitData,
+        pointer::{Location, PointerId},
+    };
+    use bevy::window::WindowRef;
+
+    let mut model = GameModel::new([75; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let enemy = model.players[1].home_planet;
+    let gate = Unit::Building(Building::JumpGate);
+    for id in [home, enemy] {
+        model.map.get_mut(id).army.insert(gate, 1);
+        model.map.get_mut(id).army.insert(Unit::space_dock(), 1);
+    }
+    model.map.get_mut(enemy).protection_permissions.insert(player.id);
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Time>()
+        .init_resource::<UiState>()
+        .init_resource::<Settings>()
+        .init_resource::<Missions>()
+        .init_resource::<MultiplayerSession>()
+        .insert_resource(player.clone())
+        .insert_resource(model.map.clone())
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, update_planet_defenses);
+    let window = app.world_mut().spawn(Window::default()).id();
+    let camera = app
+        .world_mut()
+        .spawn((
+            Camera2d,
+            MainCamera,
+            Projection::Orthographic(OrthographicProjection::default_2d()),
+        ))
+        .id();
+    app.update();
+    let enemy_entity = app
+        .world_mut()
+        .query::<(Entity, &PlanetCmp)>()
+        .iter(app.world())
+        .find(|(_, planet)| planet.id == enemy)
+        .unwrap()
+        .0;
+    let markers = app
+        .world()
+        .get::<Children>(enemy_entity)
+        .unwrap()
+        .iter()
+        .filter(|&entity| {
+            app.world().get::<SpaceDockCmp>(entity).is_some()
+                || app.world().get::<JumpGateCmp>(entity).is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(markers.len(), 2);
+    let location = Location {
+        target: RenderTarget::Window(WindowRef::Entity(window)).normalize(Some(window)).unwrap(),
+        position: Vec2::ZERO,
+    };
+    let hit = HitData::new(camera, 0.0, None, None);
+    for zoom in [MIN_ZOOM, MAX_ZOOM] {
+        if let Projection::Orthographic(projection) =
+            &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
+        {
+            projection.scale = zoom;
+        }
+        app.update();
+        for &marker in &markers {
+            assert_eq!(app.world().get::<Visibility>(marker), Some(&Visibility::Inherited));
+            assert!(app.world().get::<Pickable>(marker).unwrap().is_hoverable);
+            for button in [PointerButton::Secondary, PointerButton::Primary] {
+                let mut state = UiState {
+                    planet_selected: Some(home),
+                    ..default()
+                };
+                state.mission_info.origin = home;
+                app.insert_resource(state);
+                app.world_mut().trigger(Pointer::new(
+                    PointerId::Mouse,
+                    location.clone(),
+                    Click {
+                        button,
+                        hit: hit.clone(),
+                        duration: Duration::from_millis(50),
+                        count: 1,
+                    },
+                    marker,
+                ));
+                let state = app.world().resource::<UiState>();
+                assert_eq!(state.mission, button == PointerButton::Primary);
+                if button == PointerButton::Primary {
+                    assert_eq!(state.mission_tab, MissionTab::NewMission);
+                    assert_eq!(state.mission_info.origin, home);
+                    assert_eq!(state.mission_info.destination, enemy);
+                    assert_eq!(state.mission_info.objective, Icon::Protect);
+                    assert!(state.mission_info.jump_gate);
+                    assert!(state.jump_gate_history);
+                    assert_eq!(state.planet_selected, None);
+                } else {
+                    assert_eq!(state.planet_selected, Some(home));
+                }
+            }
+        }
+    }
+
+    for invalid_route in 0..4 {
+        let mut map = model.map.clone();
+        match invalid_route {
+            0 => {
+                map.get_mut(enemy).protection_permissions.clear();
+            },
+            1 => {
+                map.get_mut(enemy).army.remove(&gate);
+            },
+            2 => {
+                map.get_mut(home).army.remove(&gate);
+            },
+            _ => {
+                map.get_mut(enemy).is_destroyed = true;
+            },
+        }
+        app.insert_resource(map);
+        app.insert_resource(UiState::default());
+        app.update();
+        for &marker in &markers {
+            assert!(!app.world().get::<Pickable>(marker).unwrap().is_hoverable);
+            // Recheck live access even if a stale pointer event arrives after permission changes.
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Click {
+                    button: PointerButton::Primary,
+                    hit: hit.clone(),
+                    duration: Duration::from_millis(50),
+                    count: 1,
+                },
+                marker,
+            ));
+            assert!(!app.world().resource::<UiState>().mission);
+        }
+    }
 }
 
 #[test]
@@ -3400,6 +3716,14 @@ fn empty_orbitals_shortcut_only_appears_while_inspecting_an_owned_planet() {
     assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Inherited));
 
     app.world_mut().resource_mut::<UiState>().planet_hover = None;
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Hidden));
+
+    app.world_mut().resource_mut::<UiState>().world_shortcut_hover = Some(home);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Inherited));
+
+    app.world_mut().resource_mut::<UiState>().world_shortcut_hover = None;
     app.world_mut()
         .resource_mut::<Map>()
         .get_mut(home)
@@ -3452,6 +3776,49 @@ fn modal_game_menus_hide_planet_details_even_with_selection_and_show_info() {
         }
         assert_eq!(app.world().resource::<UiState>().planet_selected, Some(1));
         assert!(app.world().resource::<Settings>().show_info);
+    }
+}
+
+#[test]
+fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
+    let mut app = App::new();
+    app.insert_resource(State::new(GameState::Playing))
+        .insert_resource(Player::new(1, 0))
+        .init_resource::<UiState>()
+        .init_resource::<crate::multiplayer::client::PendingTurnCommands>()
+        .add_systems(Update, update_end_turn);
+    let button = app
+        .world_mut()
+        .spawn((
+            Visibility::Inherited,
+            Text::new("End turn"),
+            TextColor::WHITE,
+            ImageNode::default(),
+            Pickable::default(),
+            EndTurnButtonCmp,
+            MainButtonLabelCmp,
+        ))
+        .id();
+    for kind in 0..4 {
+        *app.world_mut().resource_mut::<UiState>() = match kind {
+            0 => UiState {
+                allied_mission: true,
+                ..default()
+            },
+            1 => UiState {
+                joint_attack_invite_selection: Some([2].into()),
+                ..default()
+            },
+            2 => UiState {
+                trading_post_open: Some(2),
+                ..default()
+            },
+            _ => UiState::default(),
+        };
+        app.update();
+        assert_eq!(app.world().get::<Text>(button).unwrap().0, "End turn");
+        assert_eq!(app.world().get::<Pickable>(button).unwrap().is_hoverable, kind == 3);
+        assert_eq!(app.world().get::<ImageNode>(button).unwrap().color == Color::WHITE, kind == 3);
     }
 }
 

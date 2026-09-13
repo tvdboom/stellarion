@@ -22,6 +22,47 @@ use crate::core::units::Amount;
 const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
 const MAX_NOTIFICATION_WIDTH: f32 = 440.0;
+const NOTIFICATION_SPACING: f32 = 6.0;
+
+/// Appends a notification group below those already measured in this egui pass.
+pub(crate) fn show_notification_area(
+    context: &egui::Context,
+    id: &'static str,
+    playing: bool,
+    max_width: f32,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    let stack_id = egui::Id::new("notification_stack_bottom");
+    let pass = context.cumulative_pass_nr();
+    let viewport = context.content_rect();
+    let top = if playing {
+        DEFAULT_NOTIFICATION_TOP
+            .max(resource_bar_bottom(viewport.size()) + RESOURCE_BAR_NOTIFICATION_GAP)
+    } else {
+        DEFAULT_NOTIFICATION_TOP
+    };
+    let top = context.data(|data| {
+        data.get_temp::<(u64, f32)>(stack_id)
+            .filter(|(last_pass, _)| *last_pass == pass)
+            .map_or(top, |(_, bottom)| top.max(bottom - viewport.top() + NOTIFICATION_SPACING))
+    });
+    let response = egui::Area::new(id.into())
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, top))
+        .order(egui::Order::Tooltip)
+        .interactable(true)
+        // Overflow stays clipped below the viewport instead of moving over earlier toasts.
+        .constrain(false)
+        .layout(egui::Layout::top_down(egui::Align::Max))
+        .show(context, |ui| {
+            ui.set_max_width(max_width.min((viewport.width() - 24.0).max(0.0)));
+            ui.spacing_mut().item_spacing.y = NOTIFICATION_SPACING;
+            contents(ui);
+        })
+        .response;
+    if response.rect.height() > 0.0 {
+        context.data_mut(|data| data.insert_temp(stack_id, (pass, response.rect.bottom())));
+    }
+}
 
 /// Severity used for notification color and sound selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,23 +436,16 @@ fn draw_notifications(
     }
 
     let mut clicked_message = None;
-    let notification_top = if playing {
-        DEFAULT_NOTIFICATION_TOP
-            .max(resource_bar_bottom(context.content_rect().size()) + RESOURCE_BAR_NOTIFICATION_GAP)
-    } else {
-        DEFAULT_NOTIFICATION_TOP
-    };
-    egui::Area::new("stellarion_notifications".into())
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, notification_top))
-        .order(egui::Order::Tooltip)
-        .interactable(true)
-        .layout(egui::Layout::top_down(egui::Align::Max))
-        .show(context, |ui| {
+    show_notification_area(
+        context,
+        "stellarion_notifications",
+        playing,
+        MAX_NOTIFICATION_WIDTH,
+        |ui| {
             // Leave space for the outer anchor, frame margins, and border on narrow windows.
             ui.set_max_width(
                 MAX_NOTIFICATION_WIDTH.min((context.content_rect().width() - 50.0).max(0.0)),
             );
-            ui.spacing_mut().item_spacing.y = 6.0;
             // Each frame measures only its own label; the stack shares a right edge, not a width.
             for (index, message) in messages.0.iter().enumerate() {
                 if !playing
@@ -465,7 +499,8 @@ fn draw_notifications(
                     }
                 }
             }
-        });
+        },
+    );
     clicked_message
 }
 
@@ -533,7 +568,10 @@ pub struct MessagesPlugin;
 impl Plugin for MessagesPlugin {
     /// Registers this plugin's resources, messages, and ordered systems.
     fn build(&self, app: &mut App) {
-        app.init_resource::<Messages>().add_systems(EguiPrimaryContextPass, check_messages);
+        app.init_resource::<Messages>().add_systems(
+            EguiPrimaryContextPass,
+            check_messages.after(crate::core::ui::systems::draw_ui),
+        );
     }
 }
 

@@ -80,7 +80,6 @@ fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egu
 #[test]
 fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
     let mut planet = Planet::new(1, "Climate world".into(), Vec2::ZERO, false, 1.0);
-    planet.diameter = 1_500;
 
     for (kind, band, climate, energy) in [
         (PlanetKind::Dry, SolarBand::Inner, "High temperatures", 3),
@@ -90,8 +89,7 @@ fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
         planet.kind = kind;
         let tooltip = planet_temperature_tooltip(&planet, Some(band));
         assert!(tooltip.starts_with(climate), "{tooltip}");
-        assert!(tooltip.contains("Death Ray size modifier: +2%"));
-        assert!(tooltip.contains("War Suns and Orbital Railguns"));
+        assert!(!tooltip.contains("Death Ray"));
         assert!(!tooltip.contains('\n'));
         assert!(
             tooltip.ends_with(&format!("Solar Satellites produce {energy} Energy per level here."))
@@ -100,11 +98,10 @@ fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
 
     planet.kind = PlanetKind::Gray;
     planet.temperature = (-240, -80);
-    planet.diameter = 120_000;
     let tooltip = planet_temperature_tooltip(&planet, None);
     assert!(tooltip.starts_with("Frigid temperatures"));
     assert!(!tooltip.contains("Solar Satellites"));
-    assert!(tooltip.contains("Death Ray size modifier: -2%"));
+    assert!(!tooltip.contains("Death Ray"));
 }
 
 #[test]
@@ -121,9 +118,9 @@ fn planetary_shield_label_toggles_overload_but_not_cooldown() {
         });
     });
     output.textures_delta.clear();
-    assert!(has_text(&output.shapes, "Overload shield:"));
+    assert!(has_text(&output.shapes, "Overload:"));
 
-    click_text(&context, "Overload shield:", |ui| {
+    click_text(&context, "Overload:", |ui| {
         shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
     });
     assert!(planet.shield_overload.is_overloaded());
@@ -158,7 +155,7 @@ fn command_relay_label_toggles_the_relay_without_changing_its_text() {
     let mut planet = Planet::new(1, "Relay world".into(), Vec2::ZERO, false, 1.0);
     let mut pending = PendingTurnCommands::default();
 
-    click_text(&context, "Relay active:", |ui| {
+    click_text(&context, "Enable deception:", |ui| {
         shop::draw_command_relay_toggle(ui, &mut planet, &mut pending);
     });
 
@@ -933,7 +930,14 @@ fn orbital_hover_stats_put_production_intelligence_and_range_in_one_row() {
     assert_eq!(images.get("range"), range);
     assert!(production_box.right() < intelligence_box.left());
     assert!(intelligence_box.right() < range_box.left());
-    assert!(has_text(&output.shapes, "2 AU"));
+    assert_eq!(production_box.center().y, intelligence_box.center().y);
+    assert_eq!(intelligence_box.center().y, range_box.center().y);
+    assert!(has_text(&output.shapes, "2"));
+    assert_eq!(text_font_size(&output.shapes, "2"), text_font_size(&output.shapes, "5"));
+    assert_eq!(
+        text_rect(&output.shapes, "2").center().y,
+        text_rect(&output.shapes, "5").center().y
+    );
 }
 
 #[test]
@@ -948,7 +952,7 @@ fn moon_building_hover_shows_world_specific_intelligence_and_radar_range() {
         (Building::TidalGenerator, "2", "---"),
         (Building::Shipyard, "2", "---"),
         (Building::Laboratory, "3", "---"),
-        (Building::OrbitalRadar, "4", "1.2 AU"),
+        (Building::OrbitalRadar, "4", "1.2"),
     ] {
         let mut output = context.run_ui(Default::default(), |ui| {
             shop::draw_moon_building_stats(ui, &Unit::Building(building), &images);
@@ -1858,21 +1862,22 @@ fn world_groups_use_separate_headings_with_prominent_counts() {
         |context| {
             egui::CentralPanel::default().show(context, |ui| {
                 ui.set_width(OWNED_WORLDS_WIDTH);
-                draw_world_group_header(ui, "OWNED PLANETS", 7, 1.0);
-                draw_world_group_header(ui, "CONTROLLED PLANETS AND MOONS", 3, 1.0);
+                draw_world_group_header(ui, "OWNED PLANETS", "7/10", 1.0);
+                draw_world_group_header(ui, "CONTROLLED PLANETS AND MOONS", "3", 1.0);
             });
         },
     );
     output.textures_delta.clear();
 
-    for label in ["OWNED PLANETS", "7", "CONTROLLED PLANETS AND MOONS", "3"] {
+    for label in ["OWNED PLANETS", "7/10", "CONTROLLED PLANETS AND MOONS", "3"] {
         text_rect(&output.shapes, label);
     }
     let own_heading = text_rect(&output.shapes, "OWNED PLANETS");
-    let own_count = text_rect(&output.shapes, "7");
+    let own_count = text_rect(&output.shapes, "7/10");
     let controlled_heading = text_rect(&output.shapes, "CONTROLLED PLANETS AND MOONS");
     let controlled_count = text_rect(&output.shapes, "3");
     assert!(own_count.height() > own_heading.height());
+    assert!(own_count.left() - own_heading.right() >= 8.0);
     assert!(controlled_count.height() > controlled_heading.height());
     assert!(controlled_count.left() - controlled_heading.right() >= 8.0);
     assert!(
@@ -1882,6 +1887,96 @@ fn world_groups_use_separate_headings_with_prominent_counts() {
         }),
         "the removed aggregate heading was still painted"
     );
+}
+
+#[test]
+fn world_list_shows_ownership_limit_and_previews_hovered_worlds_without_selecting_them() {
+    let mut planets = (0..20)
+        .map(|id| {
+            let mut planet = Planet::new(id, format!("Planet {id}"), Vec2::ZERO, false, 1.0);
+            planet.owned = (id < 3).then_some(1);
+            planet.controlled = planet.owned;
+            planet
+        })
+        .collect::<Vec<_>>();
+    let mut moon = Planet::new(20, "Controlled moon".into(), Vec2::ZERO, true, 1.0);
+    moon.controlled = Some(1);
+    planets.push(moon);
+    let images =
+        ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets,
+    };
+    let player = Player::new(1, 0);
+    let session = MultiplayerSession::default();
+
+    for viewport in
+        [egui::vec2(800.0, 600.0), egui::vec2(1280.0, 720.0), egui::vec2(2560.0, 1440.0)]
+    {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let mut settings = Settings::default();
+        let mut state = UiState {
+            planet_selected: Some(0),
+            ..default()
+        };
+        let mut panel = egui::Rect::NOTHING;
+        let mut frame = |state: &mut UiState, events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                    events,
+                    ..default()
+                },
+                |context| {
+                    panel = draw_owned_worlds_widget(
+                        context,
+                        &map,
+                        &player,
+                        &session,
+                        state,
+                        &mut settings,
+                        &images,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut state, Vec::new());
+        let output = frame(&mut state, Vec::new());
+        let count = text_rect(&output.shapes, "3/5");
+        let heading = text_rect(&output.shapes, "OWNED PLANETS");
+        assert!(heading.right() < count.left());
+
+        for (id, name) in [(0, "Planet 0"), (1, "Planet 1"), (20, "Controlled moon")] {
+            state.mission_planet_hover = Some(2);
+            let position = text_rect(&output.shapes, name).center();
+            frame(&mut state, vec![egui::Event::PointerMoved(position)]);
+            assert_eq!(state.hovered_planet(), Some(id));
+            assert_eq!(visible_planet_panel(&state), Some((id, PlanetPanelMode::Full)));
+            assert_eq!(state.planet_selected, Some(0));
+            assert!(!state.to_selected);
+        }
+
+        frame(&mut state, vec![egui::Event::PointerMoved(heading.center())]);
+        assert_eq!(visible_planet_panel(&state), None, "headings must not retain row hover");
+
+        // A map picking event arriving as the pointer leaves the list must survive UI cleanup.
+        state.planet_hover = Some(2);
+        frame(
+            &mut state,
+            vec![egui::Event::PointerMoved(viewport.to_pos2() - egui::vec2(5.0, 5.0))],
+        );
+        assert_eq!(state.world_shortcut_hover, None);
+        assert_eq!(visible_planet_panel(&state), Some((2, PlanetPanelMode::Full)));
+        state.planet_hover = None;
+        frame(&mut state, vec![egui::Event::PointerGone]);
+        assert_eq!(visible_planet_panel(&state), None);
+        assert!(panel.contains_rect(count));
+    }
 }
 
 #[test]
@@ -2209,14 +2304,16 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
         "resource bar was not centered: {panel:?} in {viewport:?}"
     );
     assert!(
-        (780.0..1_000.0).contains(&panel.width()),
-        "resource bar did not use the intended larger content width: {panel:?}"
+        (650.0..850.0).contains(&panel.width()),
+        "resource bar did not shrink after removing the planet summary: {panel:?}"
     );
     assert_eq!(hud_panel_frame().fill, HUD_PANEL_FILL);
     assert_eq!(hud_panel_frame().stroke.color, HUD_PANEL_STROKE);
-    for label in ["TURN", "PLANETS", "METAL", "CRYSTAL", "DEUTERIUM", "ENERGY"] {
+    for label in ["TURN", "METAL", "CRYSTAL", "DEUTERIUM", "ENERGY"] {
         text_rect(&output.shapes, label);
     }
+    assert!(!has_text(&output.shapes, "PLANETS"));
+    assert!(image_rect(&output.shapes, images.get("owned")).is_none());
     let turn_image = image_rect(&output.shapes, images.get("turn")).expect("missing turn image");
     assert_eq!(turn_image.size(), egui::vec2(64.0, 40.0));
     assert!((turn_image.center().y - panel.center().y).abs() < 1.0);
@@ -2232,15 +2329,15 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
         value_bottom_padding < 10.0,
         "resource value retained too much bottom padding: {value_bottom_padding}"
     );
-    let planets_to_metal =
+    let turn_to_metal =
         image_rect(&output.shapes, images.get("metal")).expect("missing metal image").left()
-            - text_rect(&output.shapes, "PLANETS").right();
+            - turn_label.right().max(turn_value.right());
     let metal_to_crystal =
         image_rect(&output.shapes, images.get("crystal")).expect("missing crystal image").left()
             - text_rect(&output.shapes, "1500").right();
     assert!(
-        (planets_to_metal - metal_to_crystal).abs() < 1.0,
-        "resource blocks used unequal gaps: planets→metal={planets_to_metal}, metal→crystal={metal_to_crystal}"
+        (turn_to_metal - metal_to_crystal).abs() < 1.0,
+        "resource blocks used unequal gaps: turn→metal={turn_to_metal}, metal→crystal={metal_to_crystal}"
     );
     assert_eq!(text_font_size(&output.shapes, "1500"), 28.0);
     assert!(text_rect(&output.shapes, "1500").height() > 28.0);

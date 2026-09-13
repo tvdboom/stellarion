@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 
 use crate::core::assets::{GameplayAssetState, WorldAssets, GAMEPLAY_ASSET_LOAD_FAILURE};
+use crate::core::camera::MainCamera;
 use crate::core::combat::report::MissionReport;
 use crate::core::identity::PlayerId;
 use crate::core::map::model::Map;
@@ -143,9 +144,18 @@ pub fn refresh_gameplay_projection(
     mut start_turn: MessageWriter<StartTurnMsg>,
     mut messages: MessageWriter<MessageMsg>,
     mut structure_changes: MessageWriter<PublicStructureChangeMsg>,
+    mut camera: Query<&mut Transform, With<MainCamera>>,
 ) {
     let mut refresh_kind = None;
+    let mut center_home_world = false;
     for request in refresh.read() {
+        center_home_world |= match request {
+            RefreshGameplayProjection::CanonicalTurn => false,
+            #[cfg(debug_assertions)]
+            RefreshGameplayProjection::PracticePlayer {
+                ..
+            } => true,
+        };
         if matches!(request, RefreshGameplayProjection::CanonicalTurn) || refresh_kind.is_none() {
             refresh_kind = Some(*request);
         }
@@ -216,6 +226,20 @@ pub fn refresh_gameplay_projection(
         !present_turn,
         present_turn,
     ) {
+        if center_home_world {
+            let home = session.active_game.as_ref().zip(session.membership.as_ref()).and_then(
+                |(record, membership)| {
+                    let model = &record.persisted.state;
+                    let player = model.player(membership.player_id).ok()?;
+                    model.map.try_get(player.home_planet)
+                },
+            );
+            if let (Some(home), Ok(mut camera)) = (home, camera.single_mut()) {
+                // Center immediately: first-view turn presentation clears UiState camera focus.
+                camera.translation.x = home.position.x;
+                camera.translation.y = home.position.y;
+            }
+        }
         for notification in elimination_notifications {
             messages.write(notification);
         }

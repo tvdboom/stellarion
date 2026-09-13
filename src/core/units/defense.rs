@@ -107,14 +107,10 @@ impl Description for Defense {
                 against enemy attacks. The bomber is the only ship with Rapid Fire against it."
             },
             Defense::SpaceDock => {
-                "The Space Dock is a colossal orbital-support facility. The Space Dock is always \
-                visible by all players in the galaxy. It partakes in combat and in Industrial mode \
-                adds 5 fleet-production capacity to the planet. Bastion mode gives no production \
-                and increases its Hull, Shield, and Damage by 50%. Industrial is the default. \
-                You can revise a mode change throughout the turn; the final selection becomes \
-                fixed for the next 3 turns when the turn ends. It is the most powerful combat unit \
-                and the only one with Rapid Fire against the War Sun. Only one can be built per \
-                planet."
+                "The Space Dock is a colossal orbital-support facility. It partakes in combat, \
+                being the most powerful combat unit and the only one with Rapid Fire against the \
+                War Sun. Only one can be built per planet. The Space Dock is always visible by \
+                all players in the galaxy."
             }
             Defense::AntiballisticMissile => {
                 "The purpose of Antiballistic Missiles is to intercept Interplanetary Missiles and \

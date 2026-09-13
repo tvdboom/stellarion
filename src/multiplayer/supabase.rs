@@ -350,6 +350,7 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         trade_id: u64,
+        expected_revision: u64,
         resources: crate::core::resources::Resources,
         response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
@@ -360,6 +361,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 &RespondTradeRpc {
                     game_id: &game_id.0,
                     trade_id,
+                    expected_revision,
                     resources,
                     response,
                 },
@@ -768,6 +770,8 @@ struct RespondTradeRpc<'a> {
     game_id: &'a str,
     #[serde(rename = "p_trade_id")]
     trade_id: u64,
+    #[serde(rename = "p_expected_revision")]
+    expected_revision: u64,
     #[serde(rename = "p_resources")]
     resources: crate::core::resources::Resources,
     #[serde(rename = "p_response")]

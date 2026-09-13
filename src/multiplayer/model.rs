@@ -55,6 +55,8 @@ impl TradeParticipant {
 pub struct TradeInvitation {
     /// Stable negotiation and eventual settlement identifier.
     pub id: u64,
+    /// Version of the two resource offers; acceptance must reference this exact version.
+    pub revision: u64,
     /// Turn during which this trade may be completed.
     pub turn: u64,
     /// Player who opened the other participant's Trading Post.

@@ -537,7 +537,7 @@ fn allied_owner_must_send_or_cancel_before_ending_the_turn() {
     .add_systems(Update, check_turn_ended);
     app.update();
     assert!(app.world().resource::<Messages<MultiplayerRequest>>().is_empty());
-    assert!(app.world().resource::<UiState>().mission);
+    assert!(!app.world().resource::<UiState>().mission);
     assert_eq!(app.world().resource::<UiState>().mission_tab, MissionTab::NewMission);
     {
         let mut state = app.world_mut().resource_mut::<UiState>();

@@ -230,6 +230,7 @@ pub trait MultiplayerBackend: Send + Sync {
         _session: &'a AuthSession,
         _game_id: &'a GameId,
         _trade_id: u64,
+        _expected_revision: u64,
         _resources: crate::core::resources::Resources,
         _response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {

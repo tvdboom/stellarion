@@ -120,13 +120,7 @@ pub fn check_turn_ended(
     let _ = &session;
     if std::mem::take(&mut state.end_turn) {
         if matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
-            if state.allied_mission
-                || session
-                    .as_deref()
-                    .is_some_and(|session| session.has_open_allied_mission(&pending))
-            {
-                state.mission = true;
-                state.mission_tab = MissionTab::NewMission;
+            if state.end_turn_blocked(session.as_deref(), &pending) {
                 return;
             }
             #[cfg(debug_assertions)]

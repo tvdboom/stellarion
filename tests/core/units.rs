@@ -61,11 +61,11 @@ fn orbital_and_lunar_stats_follow_actual_range_and_spy_rules() {
         (Building::SolarSatellite, "---"),
         (Building::Recycler, "---"),
         (Building::CommandRelay, "---"),
-        (Building::TradingPost, "1.5 AU"),
-        (Building::SensorPhalanx, "1 AU"),
+        (Building::TradingPost, "1.5"),
+        (Building::SensorPhalanx, "1"),
         (Building::JumpGate, "---"),
-        (Building::OrbitalRailgun, "2 AU"),
-        (Building::OrbitalRadar, "1.2 AU"),
+        (Building::OrbitalRailgun, "2"),
+        (Building::OrbitalRadar, "1.2"),
     ] {
         assert_eq!(Unit::Building(building).get_stat(&CombatStats::Range), expected);
     }

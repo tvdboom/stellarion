@@ -113,10 +113,11 @@ fn jump_energy_display_tracks_the_toggle_and_selected_fleet() {
             missions::draw_jump_energy_cost(ui, &mission, &ImageIds::default())
         });
         output.textures_delta.clear();
+        assert!(!has_text_fragment(&output.shapes, "Jump Energy:"));
         if enabled {
-            assert!(has_text(&output.shapes, &format!("Jump Energy: {cost}")));
+            assert!(has_text(&output.shapes, &cost.to_string()));
         } else {
-            assert!(!has_text_fragment(&output.shapes, "Jump Energy:"));
+            assert!(!has_text(&output.shapes, &cost.to_string()));
         }
     }
 }
@@ -218,8 +219,15 @@ fn senate_tiles_enforce_empire_queues_and_commitment_without_locking_a_draft() {
 #[test]
 fn operating_details_appear_only_on_hover_including_disabled_choices() {
     for (texture, recovering, locked, queued_ship, detail, state) in [
-        (1, false, false, false, "Normal: 100% output", "3 Energy for 3 level(s)"),
-        (2, false, false, false, "Intensive: 150% output", "9 Energy for 3 level(s)"),
+        (1, false, false, false, "Normal: 100% output", "1 energy per level."),
+        (
+            2,
+            false,
+            false,
+            false,
+            "Intensive: 150% output at 3 energy per level.",
+            "Automatically suspended next turn.",
+        ),
         (
             2,
             true,
@@ -233,45 +241,45 @@ fn operating_details_appear_only_on_hover_including_disabled_choices() {
             true,
             false,
             false,
-            "Suspended: no output",
+            "Suspended: 0% output at no energy cost.",
             "Recovery: suspended for this entire turn.",
         ),
         (4, false, false, false, "Bulk: recover the normal mixture", "all three resources"),
         (6, false, false, false, "Selective Crystal: recover 150%", "no other resources"),
-        (9, false, false, false, "Bastion: no fleet production", "fixed for the next 3 turns"),
-        (10, false, false, false, "Expansion: +2 ship production", "Level 3: +6 ship production"),
+        (9, false, false, false, "Bastion: +50% combat strength.", "fixed for the next 3 turns"),
+        (
+            10,
+            false,
+            false,
+            false,
+            "Expansion: +2 fleet production",
+            "per completed Senate level on every planet.",
+        ),
         (
             11,
             false,
             false,
             false,
             "Consolidation: +2 defense production",
-            "fixed for the next 3 turns",
+            "The final selection becomes fixed for the next 3 turns.",
         ),
-        (10, false, true, false, "Expansion: +2 ship production", "Committed for 3 more turn(s)."),
+        (10, false, true, false, "Expansion: +2 fleet production", "Committed for 3 more turns."),
         (
             11,
             false,
             false,
             true,
             "Consolidation: +2 defense production",
-            "Queued units on an owned planet",
+            "Queued units on a planet require the current Senate production bonus.",
         ),
-        (
-            9,
-            false,
-            true,
-            false,
-            "Hull 3,000; Shield 165; Damage 225",
-            "Committed for 3 more turn(s).",
-        ),
+        (9, false, true, false, "Bastion: +50% combat strength.", "Committed for 3 more turn(s)."),
         (8, false, true, false, "Industrial: +5 fleet production", "Committed for 3 more turn(s)."),
         (
             9,
             false,
             false,
             true,
-            "Bastion: no fleet production",
+            "Bastion: +50% combat strength.",
             "Queued ships require Industrial production.",
         ),
     ] {
@@ -348,8 +356,16 @@ fn operating_details_appear_only_on_hover_including_disabled_choices() {
             output
         };
         let resting = frame(vec![]);
-        for text in ["Energy", "Hull", "Selective", "Committed", "Recovery:", "Level", "production"]
-        {
+        for text in [
+            detail,
+            state,
+            "energy",
+            "combat strength",
+            "Selective",
+            "Committed",
+            "Recovery:",
+            "production",
+        ] {
             assert!(
                 !has_text_fragment(&resting.shapes, text),
                 "details displayed without hover: {text}"
@@ -360,11 +376,11 @@ fn operating_details_appear_only_on_hover_including_disabled_choices() {
         let hovered = frame(vec![]);
         assert!(
             has_text_fragment(&hovered.shapes, detail),
-            "missing mode detail for texture {texture}"
+            "missing mode detail for texture {texture}: {detail}"
         );
         assert!(
             has_text_fragment(&hovered.shapes, state),
-            "missing mode state for texture {texture}"
+            "missing mode state for texture {texture}: {state}"
         );
     }
 }

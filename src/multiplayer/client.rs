@@ -204,6 +204,28 @@ pub struct MultiplayerSession {
 }
 
 impl MultiplayerSession {
+    /// Shared mission and trade proposals must be completed or declined before readiness.
+    pub(crate) fn has_open_negotiation(&self, pending: &PendingTurnCommands) -> bool {
+        self.has_open_allied_mission(pending)
+            || self.membership.as_ref().is_some_and(|member| {
+                self.joint_attacks.iter().any(|invitation| {
+                    !invitation.canceled
+                        && !invitation.launched
+                        && invitation.inviter != member.player_id
+                        && invitation.participants.iter().any(|participant| {
+                            participant.player_id == member.player_id
+                                && participant.response
+                                    != crate::multiplayer::model::JointAttackResponse::Rejected
+                        })
+                }) || self.trades.iter().any(|trade| {
+                    !trade.canceled
+                        && !trade.finalized
+                        && trade.participant(member.player_id).is_some()
+                }) || self.trade_update_pending
+                    || self.joint_attack_update_pending
+            })
+    }
+
     /// An owner must finish or cancel allied planning before becoming ready.
     pub(crate) fn has_open_allied_mission(&self, pending: &PendingTurnCommands) -> bool {
         self.membership.as_ref().is_some_and(|membership| {
@@ -353,9 +375,11 @@ pub enum MultiplayerRequest {
     RespondTrade {
         /// Stable trade identifier.
         trade_id: u64,
+        /// Offer version shown when the local player made this choice.
+        expected_revision: u64,
         /// Resources offered by the current player.
         resources: crate::core::resources::Resources,
-        /// Acceptance or rejection of the latest draft.
+        /// Pending resource edit, acceptance, or rejection of the latest draft.
         response: TradeResponse,
     },
     /// Reloads private trade negotiations after a durable wake-up.
@@ -1404,6 +1428,7 @@ fn process_requests(
             },
             MultiplayerRequest::RespondTrade {
                 trade_id,
+                expected_revision,
                 resources,
                 response,
             } => {
@@ -1416,10 +1441,20 @@ fn process_requests(
                     continue;
                 };
                 session.trade_update_pending = true;
-                let (trade_id, resources, response) = (*trade_id, *resources, *response);
+                let (trade_id, expected_revision, resources, response) =
+                    (*trade_id, *expected_revision, *resources, *response);
                 spawn_backend_task(&mut tasks, async move {
                     Operation::Trade.complete(
-                        backend.respond_trade(&auth, &game_id, trade_id, resources, response).await,
+                        backend
+                            .respond_trade(
+                                &auth,
+                                &game_id,
+                                trade_id,
+                                expected_revision,
+                                resources,
+                                response,
+                            )
+                            .await,
                         BackendOutput::TradeChanged,
                     )
                 });
@@ -1476,10 +1511,10 @@ fn process_requests(
                 });
             },
             MultiplayerRequest::SubmitTurn => {
-                if session.has_open_allied_mission(&pending) {
+                if session.has_open_negotiation(&pending) {
                     request_error(
                         &mut session,
-                        "Send or cancel your allied mission before ending the turn.",
+                        "Finish your allied mission or trade choices before ending the turn.",
                     );
                     continue;
                 }
@@ -1557,6 +1592,12 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
         (_, BackendError::InvalidGameStatus) => {
             "This action is not available for the game right now. Refresh the game and try again."
                 .to_string()
+        },
+        (Operation::Trade, BackendError::Forbidden) => {
+            "The trade changed. Review the latest offers before accepting again.".to_string()
+        },
+        (Operation::JointAttack, BackendError::Forbidden) => {
+            "The allied mission changed. Review the latest choices before accepting again.".to_string()
         },
         (_, BackendError::Forbidden) => {
             "You don't have access to this action in this game. Return to Resume Game and reconnect as your own player.".to_string()
@@ -2235,6 +2276,7 @@ fn apply_output(
             }
             if matches!(operation, Operation::Trade) {
                 session.trade_update_pending = false;
+                session.trade_reload_needed |= matches!(error, BackendError::Forbidden);
             }
             if matches!(operation, Operation::Withdraw) {
                 pending.resume_requested = false;

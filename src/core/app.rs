@@ -149,6 +149,7 @@ impl Plugin for GamePlugin {
                 Update,
                 (move_camera, move_camera_keyboard, clamp_camera_to_worlds, update_parallax)
                     .chain()
+                    .after(refresh_gameplay_projection)
                     .run_if(end_game_presentation_inactive)
                     .in_set(InPlayingGameSet),
             )

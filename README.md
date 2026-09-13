@@ -31,12 +31,6 @@ home planet, you are eliminated.
 - **Territorial control:** Control at least `50% + 50% / n_players` of all surviving planets.
   Destroyed planets lower the threshold.
 
-Victory is checked after all battles and ownership changes for the turn resolve, with no holding
-period or countdown. A player who loses their home planet that turn cannot win by territory.
-Local Practice has no territorial victory condition. Debug builds can place one to four locally
-controlled empires in the same match: select an empire's name in the Players panel to edit its
-independent orders. The standard **End turn** control resolves every local player's draft at once.
-
 
 ### Resources
 
@@ -50,27 +44,6 @@ The game presents three resource types:
   operating infrastructure and Jump Gate launches. Each jump uses 1 Energy per 5 fleet production
   sent, rounded up separately per mission; unused gates consume no Energy. An energy deficit
   reduces resource income and Planetary Shield strength.
-
-Each Metal Mine, Crystal Mine, and Deuterium Synthesizer has an independent operating mode:
-Normal produces its usual output at 1 Energy per level; Intensive produces 150% at 3 Energy per
-level and automatically suspends the building for the next full turn. Suspended buildings use no
-Energy and produce nothing. After the compulsory recovery turn, resume production manually.
-Terraformer modifiers apply before extraction modes; fractional resource output rounds down.
-
-Recyclers can recover the normal bulk haul or selectively recover Metal, Crystal, or Deuterium.
-Selective recovery returns 150% of the chosen resource's normal haul and none of the others.
-
-Space Docks default to Industrial mode: +5 fleet production, 2,000 Hull, 110 Shield, and 150 Damage.
-Bastion provides no fleet production and raises those combat values to 3,000 / 165 / 225. Each
-mode change can be revised throughout the current turn. Its final selection becomes fixed for the
-next three turns when the turn ends. Queued ships must fit the selected mode's production capacity.
-
-The home-world Senate also sets an empire-wide policy: Expansion (default) adds 2 ship production
-per owned planet per completed Senate level; Consolidation adds the same amount of defense
-production. The existing colony-limit bonus applies in both policies. Moons do not receive Senate
-production, and unit unlocks still require the appropriate local infrastructure levels. Policies
-apply during the current turn, so a switch is allowed only when every owned planet's queued units
-fit the new limits. The final policy locks for the next three turns when the selection turn ends.
 
 Planets produce a varying amount of each of these resources. Be aware of your home planet's 
 resource production! It should influence the type of strategy you might want to consider for the
@@ -93,9 +66,7 @@ If losing combat on a controlled planet, no intelligence is gained.
 
 There is a limit to the amount of planets that can be owned by a player. Spots are only freed 
 if a planet is abandoned, conquered or destroyed. A Senate on the home planet raises this limit
-by one planet per level. The base ownership allowance set by the galaxy size and colonizable
-planet percentage permits one Senate level per four planets, rounded down, with a minimum of one
-and a maximum of five levels.
+by one planet per level.
 
 Moons cannot be colonized (and thus not owned), but they can be controlled. Contrary to planets, 
 players can build on a controlled moon. Moons only have a limited number of fields on which to 
@@ -139,14 +110,6 @@ defenses.
   returns whether destruction succeeds. A destroyed planet can never be colonized again.
 
 
-Allied missions use the normal mission editor: enable **Allied mission** and choose players
-from **Invite players**. Everyone sees each invited player's current fleet strength, and each
-commander chooses their own Combat Probes and Bombing raid settings. The owner can revise the
-fleet or mission type; changes clear earlier acceptances for review. Players can undo Accept
-until launch. The owner can send once at least one invitee accepts, using only accepted fleets.
-Closing the panel keeps the draft: the owner returns through Missions and invitees through their
-persistent notification. The owner must send or cancel the allied mission before ending the turn.
-
 ### Units
 
 You can build four types of units on an owned planet:
@@ -173,9 +136,9 @@ You can build four types of units on an owned planet:
 
 Ships and missiles accelerate throughout each journey. For movement rating `s`, distance covered
 after `t` turns is `s * t * (t + 2) / 3` AU. The first turn covers the same distance as before;
-each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating. Any
-owned mission (except a Missile Strike) that is not already returning can be recalled for no
-additional cost.
+each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating. 
+Owned missions (except a Missile Strike) that are not already returning and not part of an allied
+attack can be recalled for no additional cost.
 
 
 ### Combat

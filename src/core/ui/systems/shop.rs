@@ -132,23 +132,43 @@ fn draw_unit_stat_cell_on_world(
     width: f32,
     is_moon: bool,
 ) -> Response {
-    ui.horizontal(|ui| {
-        ui.set_width(width);
-        ui.style_mut().interaction.selectable_labels = true;
-        ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-        ui.label(unit.get_stat_on_world(stat, is_moon)).on_hover_cursor(CursorIcon::Default);
-    })
+    // Reserve the icon height before layout so later cells keep the same vertical center.
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 45.),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(width);
+            ui.style_mut().interaction.selectable_labels = true;
+            ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
+            ui.label(
+                RichText::new(unit.get_stat_on_world(stat, is_moon)).text_style(TextStyle::Body),
+            )
+            .on_hover_cursor(CursorIcon::Default);
+        },
+    )
     .response
     .on_hover_ui(|ui| draw_stat_hover(ui, stat, images))
 }
 
+/// Keeps stat rows and special choices equally inset from their section separators.
+fn draw_unit_hover_section<R>(ui: &mut Ui, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.;
+        ui.separator();
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(0, 12))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.;
+                contents(ui)
+            })
+            .inner
+    })
+    .inner
+}
+
 /// Draws one full-width unit stat row.
 fn draw_unit_stat(ui: &mut Ui, unit: &Unit, stat: CombatStats, images: &ImageIds) -> Response {
-    ui.separator();
-    ui.add_space(12.);
-    let response = draw_unit_stat_cell(ui, unit, &stat, images, 180.);
-    ui.add_space(12.);
-    response
+    draw_unit_hover_section(ui, |ui| draw_unit_stat_cell(ui, unit, &stat, images, 180.))
 }
 
 /// Draws a building's Spy intelligence requirement.
@@ -162,10 +182,8 @@ pub(super) fn draw_orbital_stats(
     unit: &Unit,
     images: &ImageIds,
 ) -> (Response, Response, Response) {
-    ui.separator();
-    ui.add_space(12.);
-    let stats = ui
-        .horizontal(|ui| {
+    draw_unit_hover_section(ui, |ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 20.;
             let production = draw_unit_stat_cell(ui, unit, &CombatStats::Production, images, 150.);
             let intelligence =
@@ -173,9 +191,8 @@ pub(super) fn draw_orbital_stats(
             let range = draw_unit_stat_cell(ui, unit, &CombatStats::Range, images, 150.);
             (production, intelligence, range)
         })
-        .inner;
-    ui.add_space(12.);
-    stats
+        .inner
+    })
 }
 
 /// Draws intelligence and per-level range for a lunar building.
@@ -184,10 +201,8 @@ pub(super) fn draw_moon_building_stats(
     unit: &Unit,
     images: &ImageIds,
 ) -> (Response, Response) {
-    ui.separator();
-    ui.add_space(12.);
-    let stats = ui
-        .horizontal(|ui| {
+    draw_unit_hover_section(ui, |ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 20.;
             let intelligence = draw_unit_stat_cell_on_world(
                 ui,
@@ -201,9 +216,8 @@ pub(super) fn draw_moon_building_stats(
                 draw_unit_stat_cell_on_world(ui, unit, &CombatStats::Range, images, 180., true);
             (intelligence, range)
         })
-        .inner;
-    ui.add_space(12.);
-    stats
+        .inner
+    })
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
@@ -295,28 +309,8 @@ fn draw_unit_hover(
                 }
             }
 
-            if count > 0 {
-                if let Unit::Building(building) = unit {
-                    if let Some(resource) = building.mined_resource() {
-                        ui.separator();
-                        ui.add_space(12.);
-                        draw_mine_mode(ui, planet, resource, pending, images);
-                    }
-                }
-                if *unit == Unit::Building(Building::Recycler) {
-                    ui.separator();
-                    ui.add_space(12.);
-                    draw_recycler_focus(ui, planet, pending, images);
-                } else if *unit == Unit::space_dock() {
-                    ui.separator();
-                    ui.add_space(12.);
-                    draw_space_dock_mode(ui, planet, pending, images, *senate);
-                } else if *unit == Unit::Building(Building::Senate) {
-                    ui.separator();
-                    ui.add_space(12.);
-                    draw_senate_policy(ui, planet, pending, images, senate, senate_queues_fit);
-                }
-            }
+            let section_spacing = ui.spacing().item_spacing.y;
+            ui.spacing_mut().item_spacing.y = 0.;
 
             if unit.is_orbital() {
                 let _ = draw_orbital_stats(ui, unit, images);
@@ -326,138 +320,158 @@ fn draw_unit_hover(
                 let _ = draw_intelligence_stat(ui, unit, images);
             }
 
-            if *unit == Unit::Building(Building::Laboratory) && count > 0 {
-                let (from, to) = &mut state.lab;
-
-                if from == to {
-                    *to = from.next(None);
+            if count > 0 {
+                if let Unit::Building(building) = unit {
+                    if let Some(resource) = building.mined_resource() {
+                        draw_unit_hover_section(ui, |ui| {
+                            draw_mine_mode(ui, planet, resource, pending, images);
+                        });
+                    }
                 }
+                if *unit == Unit::Building(Building::Recycler) {
+                    draw_unit_hover_section(ui, |ui| {
+                        draw_recycler_focus(ui, planet, pending, images);
+                    });
+                } else if *unit == Unit::Building(Building::Senate) {
+                    draw_unit_hover_section(ui, |ui| {
+                        draw_senate_policy(ui, planet, pending, images, senate, senate_queues_fit);
+                    });
+                }
+            }
 
-                ui.separator();
+            if *unit == Unit::Building(Building::Laboratory) && count > 0 {
+                draw_unit_hover_section(ui, |ui| {
+                    let (from, to) = &mut state.lab;
 
-                ui.add_space(12.);
-                ui.small("Convert resources");
-                ui.add_space(9.);
-
-                ui.horizontal(|ui| {
-                    let response = resource_tile_button(ui, images, Some(*from), false)
-                        .on_hover_small_ext("Click to cycle over resources.");
-
-                    if response.clicked() {
-                        *from = from.next(Some(*to));
-                    } else if response.secondary_clicked() {
-                        *from = from.prev(Some(*to));
+                    if from == to {
+                        *to = from.next(None);
                     }
 
-                    ui.style_mut().drag_value_text_style = TextStyle::Body;
-                    ui.spacing_mut().interact_size.x = 60.;
-                    ui.spacing_mut().button_padding = egui::Vec2::new(6., 6.);
-                    ui.add(
-                        egui::DragValue::new(&mut state.lab_amount)
-                            .speed(100)
-                            .range(0..=player.resources.get(from)),
-                    );
-                    let gain = conversion_output(state.lab_amount, count);
+                    ui.small("Convert resources");
+                    ui.add_space(6.);
 
-                    let (rect, mut response) =
-                        ui.allocate_exact_size([32.; 2].into(), Sense::click());
+                    ui.horizontal(|ui| {
+                        let response = resource_tile_button(ui, images, Some(*from), false)
+                            .on_hover_small_ext("Click to cycle over resources.");
 
-                    let image = if response.hovered() && !response.is_pointer_button_down_on() {
-                        images.get("convert hover")
-                    } else {
-                        images.get("convert")
-                    };
+                        if response.clicked() {
+                            *from = from.next(Some(*to));
+                        } else if response.secondary_clicked() {
+                            *from = from.prev(Some(*to));
+                        }
 
-                    ui.add_image_painter(image, rect);
+                        ui.style_mut().drag_value_text_style = TextStyle::Body;
+                        ui.spacing_mut().interact_size.x = 60.;
+                        ui.spacing_mut().button_padding = egui::Vec2::new(6., 6.);
+                        ui.add(
+                            egui::DragValue::new(&mut state.lab_amount)
+                                .speed(100)
+                                .range(0..=player.resources.get(from)),
+                        );
+                        let gain = conversion_output(state.lab_amount, count);
 
-                    response = response
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_small_ext(format!(
-                            "Convert {} {} into {} {}.",
-                            state.lab_amount,
-                            from.to_name(),
-                            gain,
-                            to.to_name()
-                        ));
+                        let (rect, mut response) =
+                            ui.allocate_exact_size([32.; 2].into(), Sense::click());
 
-                    if response.clicked()
-                        && state.lab_amount > 0
-                        && state.lab_amount <= player.resources.get(from)
-                        && pending.push(TurnCommand::ConvertResources {
-                            planet_id: planet.id,
-                            from: *from,
-                            to: *to,
-                            amount: state.lab_amount,
-                        })
-                    {
-                        // Confirm the control immediately; the informational toast adds its
-                        // separate notification cue when it reports the gained resource.
-                        set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-                        let source = player.resources.get_mut(from);
-                        *source = source.saturating_sub(state.lab_amount);
-                        let destination = player.resources.get_mut(to);
-                        *destination = destination.saturating_add(gain);
-                        message.write(conversion_success_message(gain, *to));
-                    }
+                        let image = if response.hovered() && !response.is_pointer_button_down_on() {
+                            images.get("convert hover")
+                        } else {
+                            images.get("convert")
+                        };
 
-                    ui.label(gain.to_string());
+                        ui.add_image_painter(image, rect);
 
-                    let response = resource_tile_button(ui, images, Some(*to), false)
-                        .on_hover_small_ext("Click to cycle over resources.");
+                        response = response
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_small_ext(format!(
+                                "Convert {} {} into {} {}.",
+                                state.lab_amount,
+                                from.to_name(),
+                                gain,
+                                to.to_name()
+                            ));
 
-                    if response.clicked() {
-                        *to = to.next(Some(*from));
-                    } else if response.secondary_clicked() {
-                        *to = to.prev(Some(*from));
-                    }
+                        if response.clicked()
+                            && state.lab_amount > 0
+                            && state.lab_amount <= player.resources.get(from)
+                            && pending.push(TurnCommand::ConvertResources {
+                                planet_id: planet.id,
+                                from: *from,
+                                to: *to,
+                                amount: state.lab_amount,
+                            })
+                        {
+                            // Confirm the control immediately; the informational toast adds its
+                            // separate notification cue when it reports the gained resource.
+                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                            let source = player.resources.get_mut(from);
+                            *source = source.saturating_sub(state.lab_amount);
+                            let destination = player.resources.get_mut(to);
+                            *destination = destination.saturating_add(gain);
+                            message.write(conversion_success_message(gain, *to));
+                        }
+
+                        ui.label(gain.to_string());
+
+                        let response = resource_tile_button(ui, images, Some(*to), false)
+                            .on_hover_small_ext("Click to cycle over resources.");
+
+                        if response.clicked() {
+                            *to = to.next(Some(*from));
+                        } else if response.secondary_clicked() {
+                            *to = to.prev(Some(*from));
+                        }
+                    });
                 });
             } else if *unit == Unit::Building(Building::Terraformer)
                 && (count > 0 || planet.buy.contains(unit))
             {
-                ui.separator();
-                ui.add_space(12.);
-                ui.small("Resource focus");
-                ui.add_space(9.);
-                ui.horizontal(|ui| {
-                    for focus in [
-                        None,
-                        Some(ResourceName::Metal),
-                        Some(ResourceName::Crystal),
-                        Some(ResourceName::Deuterium),
-                    ] {
-                        let selected = planet.terraformer_focus == focus;
-                        let response = resource_tile_button(ui, images, focus, selected);
-                        if !selected
-                            && response.clicked()
-                            && pending.push(TurnCommand::SetTerraformerFocus {
-                                planet_id: planet.id,
-                                resource: focus,
-                            })
-                        {
-                            planet.terraformer_focus = focus;
-                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                draw_unit_hover_section(ui, |ui| {
+                    ui.small("Resource focus");
+                    ui.add_space(6.);
+                    ui.horizontal(|ui| {
+                        for focus in [
+                            None,
+                            Some(ResourceName::Metal),
+                            Some(ResourceName::Crystal),
+                            Some(ResourceName::Deuterium),
+                        ] {
+                            let selected = planet.terraformer_focus == focus;
+                            let response = resource_tile_button(ui, images, focus, selected);
+                            if !selected
+                                && response.clicked()
+                                && pending.push(TurnCommand::SetTerraformerFocus {
+                                    planet_id: planet.id,
+                                    resource: focus,
+                                })
+                            {
+                                planet.terraformer_focus = focus;
+                                set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                            }
                         }
-                    }
+                    });
                 });
             } else if *unit == Unit::Building(Building::ColonialAdministration)
                 && count > 0
                 && player.owns(planet)
                 && player.home_planet != planet.id
             {
-                ui.separator();
-                ui.add_space(12.);
-                draw_fleet_withdrawal(ui, planet, pending, images);
+                draw_unit_hover_section(ui, |ui| {
+                    draw_fleet_withdrawal(ui, planet, pending, images);
+                });
             } else if *unit == Unit::Building(Building::PlanetaryShield) && count > 0 {
-                ui.separator();
-                ui.add_space(12.);
-                draw_planetary_shield_overload(ui, planet, pending, count);
+                draw_unit_hover_section(ui, |ui| {
+                    draw_planetary_shield_overload(ui, planet, pending, count);
+                });
             } else if *unit == Unit::Building(Building::CommandRelay)
                 && (count > 0 || planet.buy.contains(unit))
             {
-                ui.separator();
-                ui.add_space(12.);
-                draw_command_relay_toggle(ui, planet, pending);
+                draw_unit_hover_section(ui, |ui| {
+                    draw_command_relay_toggle(ui, planet, pending);
+                });
             }
+
+            ui.spacing_mut().item_spacing.y = section_spacing;
 
             if !unit.rapid_fire().is_empty() {
                 ui.separator();
@@ -484,6 +498,12 @@ fn draw_unit_hover(
                             }
                         }
                     }
+                });
+            }
+
+            if *unit == Unit::space_dock() && count > 0 {
+                draw_unit_hover_section(ui, |ui| {
+                    draw_space_dock_mode(ui, planet, pending, images, *senate);
                 });
             }
         });
@@ -534,9 +554,6 @@ pub(super) fn draw_mine_mode(
         return;
     }
     let recovering = planet.operations.mine(resource).recovering;
-    let next_level = level.saturating_add(
-        planet.buy.iter().filter(|unit| **unit == Unit::Building(mine_building(resource))).count(),
-    );
     let can_accept_commands = pending.can_accept_commands();
     ui.small("Extraction mode");
     ui.add_space(6.);
@@ -548,11 +565,10 @@ pub(super) fn draw_mine_mode(
                 response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, mode.label()));
                 let hover = |ui: &mut Ui| {
                     ui.small(match mode {
-                        MineMode::Normal => "Normal: 100% output; 1 Energy per level.",
-                        MineMode::Intensive => "Intensive: 150% output; 3 Energy per level. Automatically suspended next turn, with one compulsory recovery turn.",
-                        MineMode::Suspended => "Suspended: no output or Energy demand. Stays suspended until you choose another mode.",
+                        MineMode::Normal => "Normal: 100% output at 1 energy per level.",
+                        MineMode::Intensive => "Intensive: 150% output at 3 energy per level. Automatically suspended next turn.",
+                        MineMode::Suspended => "Suspended: 0% output at no energy cost.",
                     });
-                    ui.small(format!("{} Energy for {next_level} level(s), including queued upgrades.", mode.energy().saturating_mul(next_level)));
                     if recovering {
                         ui.small("Recovery: suspended for this entire turn.");
                     } else if !can_accept_commands {
@@ -618,36 +634,59 @@ pub(super) fn draw_space_dock_mode(
     ui.add_space(6.);
     ui.horizontal_wrapped(|ui| {
         for (mode, label, image, tooltip) in [
-            (SpaceDockMode::Industrial, "Industrial", "dock industrial", "Industrial: +5 fleet production. Hull 2,000; Shield 110; Damage 150."),
-            (SpaceDockMode::Bastion, "Bastion", "dock bastion", "Bastion: no fleet production. Hull 3,000; Shield 165; Damage 225."),
+            (
+                SpaceDockMode::Industrial,
+                "Industrial",
+                "dock industrial",
+                "Industrial: +5 fleet production.",
+            ),
+            (SpaceDockMode::Bastion, "Bastion", "dock bastion", "Bastion: +50% combat strength."),
         ] {
             let selected = planet.operations.space_dock == mode;
-            let production_fits = planet.fleet_production() <= planet.max_fleet_production_in_mode(mode)
-                .saturating_add(senate.bonus(planet, SenatePolicy::Expansion));
-            ui.add_enabled_ui(can_accept_commands && (selected || remaining == 0 && production_fits), |ui| {
-                let response = image_tile_button(ui, images.get(image), selected);
-                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, label));
-                let hover = |ui: &mut Ui| {
-                    ui.small(tooltip);
-                    if remaining > 0 {
-                        ui.small(format!("Committed for {remaining} more turn(s)."));
-                    } else {
-                        ui.small("You can revise a mode change throughout this turn. The final selection becomes fixed for the next 3 turns when the turn ends.");
+            let production_fits = planet.fleet_production()
+                <= planet
+                    .max_fleet_production_in_mode(mode)
+                    .saturating_add(senate.bonus(planet, SenatePolicy::Expansion));
+            ui.add_enabled_ui(
+                can_accept_commands && (selected || remaining == 0 && production_fits),
+                |ui| {
+                    let response = image_tile_button(ui, images.get(image), selected);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            selected,
+                            label,
+                        )
+                    });
+                    let hover = |ui: &mut Ui| {
+                        ui.small(tooltip);
+                        if remaining > 0 {
+                            ui.small(format!("Committed for {remaining} more turn(s)."));
+                        } else {
+                            ui.small("The final selection becomes fixed for the next 3 turns.");
+                        }
+                        if !production_fits {
+                            ui.small("Queued ships require Industrial production.");
+                        }
+                        if !can_accept_commands {
+                            ui.small("Loading turn orders; wait before changing this choice.");
+                        }
+                    };
+                    let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
+                    if response.clicked()
+                        && !selected
+                        && pending.push(TurnCommand::SetSpaceDockMode {
+                            planet_id: planet.id,
+                            mode,
+                        })
+                    {
+                        planet.operations.space_dock = mode;
+                        planet.operations.space_dock_selection_pending = true;
+                        set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
                     }
-                    if !production_fits {
-                        ui.small("Queued ships require Industrial production.");
-                    }
-                    if !can_accept_commands {
-                        ui.small("Loading turn orders; wait before changing this choice.");
-                    }
-                };
-                let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
-                if response.clicked() && !selected && pending.push(TurnCommand::SetSpaceDockMode { planet_id: planet.id, mode }) {
-                    planet.operations.space_dock = mode;
-                    planet.operations.space_dock_selection_pending = true;
-                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-                }
-            });
+                },
+            );
         }
     });
 }
@@ -682,21 +721,21 @@ pub(super) fn draw_senate_policy(
                 ));
                 let hover = |ui: &mut Ui| {
                     let category = match policy {
-                        SenatePolicy::Expansion => "ship",
+                        SenatePolicy::Expansion => "fleet",
                         SenatePolicy::Consolidation => "defense",
                     };
-                    ui.small(format!("{}: +2 {category} production per owned planet per Senate level.", policy.label()));
-                    ui.small(format!("Level {}: +{} {category} production on each owned planet. Completed levels only; moons do not receive the bonus.", senate.level, senate.level.saturating_mul(2)));
+                    ui.small(format!("{}: +2 {category} production per completed Senate level on every planet.", policy.label()));
                     if remaining > 0 {
-                        ui.small(format!("Committed for {remaining} more turn(s)."));
+                        let turns = if remaining == 1 { "turn" } else { "turns" };
+                        ui.small(format!("Committed for {remaining} more {turns}."));
                     } else {
-                        ui.small("You can revise the policy throughout this turn. The final selection becomes fixed for the next 3 turns when the turn ends.");
+                        ui.small("The final selection becomes fixed for the next 3 turns.");
                     }
                     if !production_fits {
-                        ui.small("Queued units on an owned planet require the current Senate production bonus.");
+                        ui.small("Queued units on a planet require the current Senate production bonus.");
                     }
                     if !can_accept {
-                        ui.small("Loading turn orders; wait before changing this choice.");
+                        ui.small("Loading turn orders. Wait before changing this choice.");
                     }
                 };
                 let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
@@ -732,16 +771,7 @@ pub(super) fn draw_command_relay_toggle(
     pending: &mut PendingTurnCommands,
 ) {
     let mut active = planet.command_relay_active;
-    labeled_toggle(
-        ui,
-        if active {
-            "Relay active:"
-        } else {
-            "Relay inactive:"
-        },
-        &mut active,
-    )
-    .on_hover_small(
+    labeled_toggle(ui, "Enable deception:", &mut active).on_hover_small(
         "When active, the Relay diverts undersized enemy Spy missions before combat, returning \
         their Probes safely with a false report of an empty planet. When inactive, Spy missions \
         gather intelligence normally.",
@@ -770,8 +800,7 @@ pub(super) fn draw_planetary_shield_overload(
         labeled_toggle(
             ui,
             match planet.shield_overload {
-                ShieldOverloadState::Ready => "Overload shield:",
-                ShieldOverloadState::Overloaded => "Shield overloaded:",
+                ShieldOverloadState::Ready | ShieldOverloadState::Overloaded => "Overload:",
                 ShieldOverloadState::Cooldown => "Shield cooling down:",
             },
             &mut active,

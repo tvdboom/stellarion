@@ -39,6 +39,7 @@ pub(crate) fn suspend_gameplay_interactions(
     }
     if let Some(state) = state.as_mut() {
         state.planet_hover = None;
+        state.world_shortcut_hover = None;
         state.jump_gate_hover = None;
         state.mission_planet_hover = None;
         state.range_preview = None;
@@ -119,6 +120,9 @@ pub fn check_keys_menu(
                                 || state.colonize_confirmation.is_some()
                                 || state.railgun_confirmation.is_some()
                                 || state.protection_access.is_some()
+                                || state.joint_attack_invite_selection.is_some()
+                                || state.trade_open.is_some()
+                                || state.trading_post_open.is_some()
                             {
                                 // Confirmation prompts consume Escape before their underlying
                                 // planet selection or the in-game menu can react to the same key.
@@ -126,6 +130,9 @@ pub fn check_keys_menu(
                                 state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
                                 state.protection_access = None;
+                                state.joint_attack_invite_selection = None;
+                                state.trade_open = None;
+                                state.trading_post_open = None;
                             } else if state.joint_attack_open.is_some() {
                                 state.joint_attack_open = None;
                             } else if state.planet_selected.is_some() || state.mission {

@@ -55,8 +55,10 @@ fn destroy_draft_shows_first_volley_chance_for_selected_war_suns() {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(text.contains(&format!("☀ Initial chance per War Sun: {per_sun}")));
-        assert!(text.contains(&format!("☀ Combined for {suns} War Suns: {combined}")));
+        assert!(text.windows(2).any(|rows| {
+            rows[0].starts_with("⛽ Fuel consumption:")
+                && rows[1] == format!("💥 Chance of destruction: {per_sun} / {combined}")
+        }));
     }
 }
 
@@ -161,10 +163,6 @@ fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
                 }
             }
             assert_eq!(state.mission_info.deep_cover, has_relay);
-            assert_eq!(
-                final_text.iter().any(|text| text == "Includes 50 deuterium for Deep Cover."),
-                has_relay
-            );
             let fuel = state.mission_info.fuel_consumption(&model.map);
             assert!(final_text.iter().any(|text| text == &format!("⛽ Fuel consumption: {fuel}")));
             state.mission_info.objective = Icon::Attack;
@@ -177,6 +175,81 @@ fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
             assert!(!state.mission_info.deep_cover);
         }
     }
+}
+
+#[test]
+fn protect_jump_draft_stays_selected_when_the_origin_has_no_ships() {
+    use crate::core::simulation::{GameModel, GameRules};
+
+    let mut model = GameModel::new([76; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let mut player = model.players[0].clone();
+    let origin = player.home_planet;
+    let destination = model.players[1].home_planet;
+    let gate = Unit::Building(Building::JumpGate);
+    model.map.get_mut(origin).army.retain(|unit, _| !unit.is_ship());
+    model.map.get_mut(origin).army.insert(Unit::interplanetary_missile(), 1);
+    model.map.get_mut(origin).army.insert(gate, 1);
+    model.map.get_mut(destination).army.insert(gate, 1);
+    model.map.get_mut(destination).protection_permissions.insert(player.id);
+    let mut world = World::new();
+    world.init_resource::<Messages<SendMissionMsg>>();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    let mut params = bevy::ecs::system::SystemState::<(
+        MessageWriter<SendMissionMsg>,
+        MessageWriter<MultiplayerRequest>,
+    )>::new(&mut world);
+
+    for width in [840.0, 1_200.0] {
+        let context = egui::Context::default();
+        let mut state = UiState {
+            mission_info: Mission {
+                origin,
+                destination,
+                objective: Icon::Protect,
+                protected_player: model.map.get(destination).controlled,
+                jump_gate: true,
+                ..default()
+            },
+            jump_gate_history: true,
+            ..default()
+        };
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 800.0),
+                )),
+                ..default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let (mut sends, mut requests) = params.get_mut(&mut world).unwrap();
+                    draw_new_mission(
+                        ui,
+                        &mut sends,
+                        &[],
+                        &Settings::default(),
+                        &mut state,
+                        &mut model.map,
+                        &mut player,
+                        &MultiplayerSession::default(),
+                        &mut requests,
+                        true,
+                        &ButtonInput::default(),
+                        &ImageIds::default(),
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(state.mission_info.origin, origin);
+        assert_eq!(state.mission_info.destination, destination);
+        assert_eq!(state.mission_info.objective, Icon::Protect);
+        assert!(state.mission_info.jump_gate);
+        assert!(!state.mission_info.army.has_army());
+    }
+    assert!(world.resource::<Messages<SendMissionMsg>>().is_empty());
 }
 
 #[test]
@@ -351,7 +424,7 @@ fn mission_timing_copy_explains_acceleration_and_the_arrival_turn() {
     assert!(movement_tooltip.contains("accelerate each travel turn"));
     assert!(mission_movement_tooltip(true).contains("Jump Gate"));
     assert_eq!(mission_arrival_turn(1, 6), 7);
-    assert_eq!(mission_arrival_tooltip(1, 6), "The fleet will arrive during turn 7.");
+    assert_eq!(mission_arrival_tooltip(1, 6), "The fleet will arrive at turn 7.");
 }
 
 #[test]
@@ -1023,17 +1096,41 @@ fn route_chevrons_face_the_displayed_travel_direction() {
 }
 
 #[test]
-fn jump_gate_rings_span_both_sides_of_the_route_with_foreshortened_depth() {
-    let center = egui::pos2(20.0, 30.0);
-    let points = jump_gate_wave_front(center, 8.0, 4.0);
-    for (index, offset) in [(0, (4.0, 0.0)), (8, (0.0, 8.0)), (16, (-4.0, 0.0)), (24, (0.0, -8.0))]
-    {
-        assert!(points[index].distance(center + egui::vec2(offset.0, offset.1)) < 0.0001);
+fn jump_gate_preview_has_opposite_strands_with_constant_turn_spacing() {
+    for width in [0.0, 8.0, 180.0, 480.0] {
+        for returning in [false, true] {
+            let [first, second] =
+                jump_gate_preview_strands(12.0, 12.0 + width, 30.0, 0.7, returning);
+            assert_eq!(first.len(), second.len());
+            for (a, b) in first.iter().zip(&second) {
+                assert_eq!(a.x, b.x);
+                assert!((a.y + b.y - 60.0).abs() < 0.0001);
+                assert!((12.0..=12.0 + width).contains(&a.x));
+                assert!((22.5..=37.5).contains(&a.y));
+            }
+            for (a, b) in first.iter().zip(first.iter().skip(30)) {
+                if a.x >= 22.0 && b.x <= 2.0 + width {
+                    assert!((b.x - a.x - 60.0).abs() < 0.0001);
+                    assert!((a.y - b.y).abs() < 0.0001);
+                }
+            }
+        }
     }
-    assert!(points.iter().all(|point| {
-        let relative = *point - center;
-        ((relative.x / 4.0).powi(2) + (relative.y / 8.0).powi(2) - 1.0).abs() < 0.0001
-    }));
+    let short = jump_gate_preview_strands(12.0, 192.0, 30.0, 0.7, false);
+    let long = jump_gate_preview_strands(12.0, 492.0, 30.0, 0.7, false);
+    assert!(long[0].len() > short[0].len());
+    for (a, b) in short[0].iter().zip(&long[0]).filter(|(a, _)| a.x < 182.0) {
+        assert!(a.distance(*b) < 0.0001, "extending the route must not stretch its turns");
+    }
+}
+
+#[test]
+fn jump_gate_preview_reverses_motion_on_the_return_leg() {
+    let outbound = jump_gate_preview_strands(0.0, 180.0, 30.0, 0.4, false);
+    let returning = jump_gate_preview_strands(0.0, 180.0, 30.0, 0.4, true);
+    let previous = jump_gate_preview_strands(0.0, 180.0, 30.0, -0.4, false);
+    assert_eq!(returning, previous);
+    assert_ne!(outbound, returning);
 }
 
 #[test]

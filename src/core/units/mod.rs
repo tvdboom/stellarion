@@ -471,7 +471,7 @@ impl Unit {
         if *stat == CombatStats::Range {
             return self
                 .range_per_level()
-                .map_or_else(|| "---".to_string(), |range| format!("{range} AU"));
+                .map_or_else(|| "---".to_string(), |range| range.to_string());
         }
 
         let n = match stat {

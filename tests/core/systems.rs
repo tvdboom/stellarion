@@ -103,6 +103,57 @@ fn escape_closes_mission_and_combat_details_without_opening_the_menu() {
 }
 
 #[test]
+fn escape_discards_attack_invitee_choices_but_keeps_the_mission_open() {
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::Escape);
+    let mut app = App::new();
+    app.insert_resource(State::new(AppState::Game))
+        .insert_resource(State::new(GameState::Playing))
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<NextState<GameState>>()
+        .insert_resource(keyboard)
+        .insert_resource(UiState {
+            mission: true,
+            joint_attack_invitees: [2].into(),
+            joint_attack_invite_selection: Some([3].into()),
+            ..default()
+        })
+        .add_message::<StartTurnMsg>()
+        .add_message::<MultiplayerRequest>();
+    app.world_mut().run_system_once(check_keys_menu).unwrap();
+    let state = app.world().resource::<UiState>();
+    assert!(state.mission);
+    assert!(state.joint_attack_invite_selection.is_none());
+    assert_eq!(state.joint_attack_invitees, [2].into());
+}
+
+#[test]
+fn escape_closes_trade_without_discarding_an_unpublished_offer() {
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::Escape);
+    let mut app = App::new();
+    app.insert_resource(State::new(AppState::Game))
+        .insert_resource(State::new(GameState::Playing))
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<NextState<GameState>>()
+        .insert_resource(keyboard)
+        .insert_resource(UiState {
+            trade_open: Some(11),
+            trade_draft_id: Some(11),
+            trade_resources: crate::core::resources::Resources::new(123, 0, 0),
+            ..default()
+        })
+        .add_message::<StartTurnMsg>()
+        .add_message::<MultiplayerRequest>();
+    app.world_mut().run_system_once(check_keys_menu).unwrap();
+    let state = app.world().resource::<UiState>();
+    assert!(state.trade_open.is_none());
+    assert_eq!(state.trade_draft_id, Some(11));
+    assert_eq!(state.trade_resources.metal, 123);
+    assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));
+}
+
+#[test]
 fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
     for (abandon_confirmation, colonize_confirmation, railgun_confirmation) in
         [(Some(2), None, None), (None, Some(4), None), (None, None, Some(3))]
@@ -142,6 +193,7 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     let mut app = App::new();
     app.insert_resource(UiState {
         planet_hover: Some(1),
+        world_shortcut_hover: Some(4),
         mission_planet_hover: Some(3),
         range_preview: Some(MapRangePreview::SensorPhalanx(1)),
         planet_selected: Some(2),
@@ -165,6 +217,7 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     assert!(!pickable.is_hoverable);
     let state = app.world().resource::<UiState>();
     assert_eq!(state.planet_hover, None);
+    assert_eq!(state.world_shortcut_hover, None);
     assert_eq!(state.mission_planet_hover, None);
     assert_eq!(state.range_preview, None);
     assert_eq!(state.planet_selected, Some(2), "persistent selection is preserved");

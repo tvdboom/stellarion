@@ -296,6 +296,9 @@ for (const signature of [
   "stellarion_respond_joint_attack(uuid,bigint,bigint,text,jsonb)",
   "stellarion_cancel_joint_attack(uuid,bigint)",
   "stellarion_load_joint_attacks(uuid)",
+  "stellarion_create_trade(uuid,jsonb)",
+  "stellarion_respond_trade(uuid,bigint,bigint,jsonb,text)",
+  "stellarion_load_trades(uuid)",
   "stellarion_set_protection_permission(uuid,bigint,bigint,boolean)",
   "stellarion_set_player_color(uuid,smallint)",
   "stellarion_save_game(uuid,bigint,jsonb)",
@@ -538,6 +541,67 @@ const recoveredAgain = await rpc(
 );
 assert.equal(recoveredAgain.membership.user_id, guest);
 assert.equal(recoveredAgain.recovery_code, guestRecovery);
+
+// Trade drafts publish both offers immediately and bind acceptance to their current revision.
+const tradeLobby = await create(host, "TRADE1");
+const joinedTrade = (await rpc(guest,
+  "select public.stellarion_join_game($1, $2, $3) as result",
+  ["TRADE1", "Trader", "4444-4444-4444-4444"])).game;
+const tradeSnapshot = structuredClone(fixtures.active);
+const tradeHomes = tradeSnapshot.state.players.map(player => player.home_planet);
+for (const [index, home] of tradeHomes.entries()) {
+  const planet = tradeSnapshot.state.map.planets.find(planet => planet.id === home);
+  planet.position = [index * 100, 0];
+  planet.army.controller["Building(TradingPost)"] = 3;
+  tradeSnapshot.state.players[index].resources = { metal: 10000, crystal: 10000, deuterium: 10000 };
+}
+const tradeGame = await snapshotWrite(host,
+  "select public.stellarion_start_game($1, $2, $3) as result",
+  [tradeLobby.game.id, joinedTrade.revision, tradeSnapshot]);
+const tradeResources = (metal = 0, crystal = 0, deuterium = 0) => ({ metal, crystal, deuterium });
+let tradeDraft = {
+  id: 9901, revision: 0, turn: 1, proposer: 1, canceled: false, finalized: false,
+  participants: [
+    { player_id: 1, planet_id: tradeHomes[0], resources: tradeResources(100), response: "accepted" },
+    { player_id: 2, planet_id: tradeHomes[1], resources: tradeResources(), response: "pending" },
+  ],
+};
+tradeDraft = await rpc(host, "select public.stellarion_create_trade($1, $2) as result", [tradeGame.id, tradeDraft]);
+const respondTrade = (actor, revision, resources, response) => rpc(actor,
+  "select public.stellarion_respond_trade($1, $2, $3, $4, $5) as result",
+  [tradeGame.id, tradeDraft.id, revision, resources, response]);
+for (const [actor, playerId, resources] of [
+  [guest, 2, tradeResources(0, 200)],
+  [host, 1, tradeResources(150)],
+  [guest, 2, tradeResources()],
+  [guest, 2, tradeResources(0, 250)],
+]) {
+  const otherId = playerId === 1 ? 2 : 1;
+  const other = playerId === 1 ? guest : host;
+  const otherResources = tradeDraft.participants.find(item => item.player_id === otherId).resources;
+  tradeDraft = await respondTrade(other, tradeDraft.revision, otherResources, "accepted");
+  assert.equal(tradeDraft.finalized, false);
+  const previousRevision = tradeDraft.revision;
+  tradeDraft = await respondTrade(actor, previousRevision, resources, "pending");
+  assert.equal(tradeDraft.revision, previousRevision + 1);
+  assert(tradeDraft.participants.every(item => item.response === "pending"));
+  for (const viewer of [host, guest]) {
+    assert.deepEqual(await rpc(viewer, "select public.stellarion_load_trades($1) as result", [tradeGame.id]), [tradeDraft]);
+  }
+  await assert.rejects(respondTrade(other, previousRevision, otherResources, "accepted"), /STLR_FORBIDDEN/);
+}
+await assert.rejects(respondTrade(outsider, tradeDraft.revision, tradeResources(1), "pending"), /STLR_FORBIDDEN/);
+await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(1600), "accepted"), /STLR_INVALID_DATA:trade_resources/);
+tradeDraft = await respondTrade(host, tradeDraft.revision, tradeResources(150), "accepted");
+assert.equal(tradeDraft.finalized, false);
+tradeDraft = await respondTrade(guest, tradeDraft.revision, tradeResources(0, 250), "accepted");
+assert.equal(tradeDraft.finalized, true);
+const tradedGame = await rpc(host, "select public.stellarion_load_game($1) as result", [tradeGame.id]);
+assert.equal(tradedGame.persisted.state.trades.length, 1);
+assert.deepEqual(tradedGame.persisted.state.trades[0].parties.map(party => party.resources),
+  [tradeResources(150), tradeResources(0, 250)], "both current offers are reserved for settlement");
+await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(), "pending"), /STLR_FORBIDDEN/);
+console.log("Live bilateral trade offers, consent resets, stale acceptance, and finalization passed.");
 
 // Protection access is an immediate compact patch in matches with at least three active players.
 const protectionLobby = await create(host, "PRTCT1");

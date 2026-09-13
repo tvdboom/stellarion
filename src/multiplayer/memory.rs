@@ -793,6 +793,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 || invitation.turn != stored.record.persisted.state.turn
                 || invitation.id == 0
                 || invitation.proposer != proposer
+                || invitation.revision != 0
                 || invitation.canceled
                 || invitation.finalized
                 || first.player_id >= second.player_id
@@ -844,6 +845,7 @@ impl MultiplayerBackend for InMemoryBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         trade_id: u64,
+        expected_revision: u64,
         resources: crate::core::resources::Resources,
         response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
@@ -858,7 +860,7 @@ impl MultiplayerBackend for InMemoryBackend {
             if invitation.turn != current_turn
                 || invitation.canceled
                 || invitation.finalized
-                || !matches!(response, TradeResponse::Accepted | TradeResponse::Rejected)
+                || invitation.revision != expected_revision
                 || invitation.participant(player_id).is_none()
                 || invitation.participants.iter().any(|participant| {
                     stored.record.submitted_players.contains(&participant.player_id)
@@ -884,14 +886,20 @@ impl MultiplayerBackend for InMemoryBackend {
                     .map
                     .try_get(participant.planet_id)
                     .map_or(0, |planet| trading_post_capacity(planet, player_id));
-                if resources.is_empty() || resources.total() > capacity {
+                if response == TradeResponse::Accepted
+                    && (resources.is_empty() || resources.total() > capacity)
+                {
                     return Err(BackendError::InvalidData("trade_resources".into()));
                 }
                 if resources != participant.resources {
                     invitation.participants[1 - index].response = TradeResponse::Pending;
+                    invitation.revision = invitation
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| BackendError::InvalidData("trade_revision".into()))?;
                 }
                 invitation.participants[index].resources = resources;
-                invitation.participants[index].response = TradeResponse::Accepted;
+                invitation.participants[index].response = response;
             }
 
             if invitation

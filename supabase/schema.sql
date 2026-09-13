@@ -1488,10 +1488,10 @@ begin
     if p_invitation is null
        or jsonb_typeof(p_invitation) is distinct from 'object'
        or not (p_invitation ?& array[
-           'id', 'turn', 'proposer', 'canceled', 'finalized', 'participants'
+           'id', 'revision', 'turn', 'proposer', 'canceled', 'finalized', 'participants'
        ])
        or p_invitation - array[
-           'id', 'turn', 'proposer', 'canceled', 'finalized', 'participants'
+           'id', 'revision', 'turn', 'proposer', 'canceled', 'finalized', 'participants'
        ] <> '{}'::jsonb then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trade';
     end if;
@@ -1513,8 +1513,8 @@ begin
        or v_trade_id <= 0
        or (p_invitation ->> 'turn')::bigint <> v_game.current_turn
        or (p_invitation ->> 'proposer')::bigint <> v_player
+       or (p_invitation ->> 'revision')::bigint is distinct from 0
        or coalesce((p_invitation ->> 'canceled')::boolean, true)
-       or coalesce((p_invitation ->> 'launched')::boolean, true)
        or coalesce((p_invitation ->> 'finalized')::boolean, true)
        or (v_first ->> 'player_id')::bigint >= (v_second ->> 'player_id')::bigint
        or not exists (
@@ -1600,6 +1600,7 @@ $$;
 create function public.stellarion_respond_trade(
     p_game_id uuid,
     p_trade_id bigint,
+    p_expected_revision bigint,
     p_resources jsonb,
     p_response text
 )
@@ -1649,7 +1650,8 @@ begin
        or v_row.turn <> v_game.current_turn
        or coalesce((v_row.invitation ->> 'canceled')::boolean, false)
        or coalesce((v_row.invitation ->> 'finalized')::boolean, false)
-       or p_response not in ('accepted', 'rejected')
+       or p_response is null or p_response not in ('pending', 'accepted', 'rejected')
+       or (v_row.invitation ->> 'revision')::bigint is distinct from p_expected_revision
        or v_old_resources is null
        or exists (
            select 1 from public.stellarion_turn_submissions submission
@@ -1660,19 +1662,37 @@ begin
        ) then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
-    if p_response = 'accepted' and not public.stellarion_trade_resources_valid(p_resources, false) then
+    if p_response <> 'rejected' and (
+        not public.stellarion_trade_resources_valid(p_resources, p_response = 'pending')
+        or (p_response = 'accepted' and (p_resources ->> 'metal')::bigint + (p_resources ->> 'crystal')::bigint
+             + (p_resources ->> 'deuterium')::bigint > coalesce((
+            select public.stellarion_trade_capacity(planet, v_player)
+              from jsonb_array_elements(v_game.state #> '{state,map,planets}') planet
+             where (planet ->> 'id')::bigint = (
+                 select (participant ->> 'planet_id')::bigint
+                   from jsonb_array_elements(v_row.invitation -> 'participants') participant
+                  where (participant ->> 'player_id')::bigint = v_player
+             )
+        ), 0))
+    ) then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trade_resources';
     end if;
 
+    -- Every resource edit is a live draft. Both sides must consent to the resulting version;
+    -- an acceptance from an older screen cannot finalize a concurrently changed offer.
+    if p_response <> 'rejected' and v_old_resources is distinct from p_resources then
+        v_row.invitation := jsonb_set(v_row.invitation, '{revision}',
+            to_jsonb((v_row.invitation ->> 'revision')::bigint + 1));
+    end if;
     select jsonb_agg(
                case
                    when (participant ->> 'player_id')::bigint = v_player then
                        participant || jsonb_build_object(
-                           'resources', case when p_response = 'accepted'
+                           'resources', case when p_response <> 'rejected'
                                              then p_resources else participant -> 'resources' end,
                            'response', p_response
                        )
-                   when p_response = 'accepted' and v_old_resources is distinct from p_resources then
+                   when p_response <> 'rejected' and v_old_resources is distinct from p_resources then
                        participant || jsonb_build_object('response', 'pending')
                    else participant
                end order by ordinal
@@ -3024,9 +3044,9 @@ revoke all on function public.stellarion_create_trade(uuid, jsonb)
     from public, anon;
 grant execute on function public.stellarion_create_trade(uuid, jsonb)
     to authenticated;
-revoke all on function public.stellarion_respond_trade(uuid, bigint, jsonb, text)
+revoke all on function public.stellarion_respond_trade(uuid, bigint, bigint, jsonb, text)
     from public, anon;
-grant execute on function public.stellarion_respond_trade(uuid, bigint, jsonb, text)
+grant execute on function public.stellarion_respond_trade(uuid, bigint, bigint, jsonb, text)
     to authenticated;
 revoke all on function public.stellarion_load_trades(uuid)
     from public, anon;

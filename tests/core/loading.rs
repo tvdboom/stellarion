@@ -8,6 +8,97 @@ use crate::core::simulation::{GameModel, GameRules, OrbitalStrike};
 use crate::core::units::buildings::Building;
 use crate::multiplayer::client::PendingTurnCommands;
 
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[test]
+fn local_practice_switches_center_home_world_even_on_first_view_of_a_turn() {
+    use crate::core::audio::PlayAudioMsg;
+    use crate::core::player::Player;
+    use crate::core::turns::start_turn;
+    use crate::multiplayer::client::tests::{
+        local_practice_app_with_players, settle_local_practice,
+    };
+    use crate::multiplayer::client::MultiplayerRequest;
+
+    let mut app = local_practice_app_with_players(2);
+    app.add_plugins(AssetPlugin::default())
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .init_resource::<Settings>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<UiState>()
+        .init_resource::<NextState<GameState>>()
+        .add_message::<StartTurnMsg>()
+        .add_message::<PublicStructureChangeMsg>()
+        .add_message::<PlayAudioMsg>()
+        .add_systems(First, start_turn.run_if(resource_exists::<Map>))
+        .add_systems(Update, (refresh_gameplay_projection, refresh_turn_draft).chain());
+    let camera = app
+        .world_mut()
+        .spawn((
+            MainCamera,
+            Transform::from_xyz(125., -375., 7.),
+            Projection::Orthographic(OrthographicProjection {
+                scale: 0.6,
+                ..OrthographicProjection::default_2d()
+            }),
+        ))
+        .id();
+    settle_local_practice(&mut app);
+
+    for turn in 1..=2 {
+        // The first switch after advancing presents a new turn; repeated switches do not.
+        for _ in 0..3 {
+            let player_id = if app.world().resource::<Player>().id == 1 {
+                2
+            } else {
+                1
+            };
+            let old_home = app.world().resource::<Player>().home_planet;
+            app.world_mut().insert_resource(UiState {
+                planet_selected: Some(old_home),
+                to_selected: true,
+                ..default()
+            });
+            app.world_mut().get_mut::<Transform>(camera).unwrap().translation =
+                Vec3::new(125., -375., 7.);
+            app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(player_id));
+            settle_local_practice(&mut app);
+            app.update();
+
+            let player = app.world().resource::<Player>();
+            assert_eq!(player.id, player_id);
+            let home = app.world().resource::<Map>().get(player.home_planet);
+            assert_eq!(
+                app.world().get::<Transform>(camera).unwrap().translation,
+                home.position.extend(7.),
+                "player {player_id} must be centered on turn {turn}"
+            );
+            assert!(app.world().resource::<UiState>().planet_selected.is_none());
+            let Projection::Orthographic(projection) =
+                app.world().get::<Projection>(camera).unwrap()
+            else {
+                panic!("the strategic camera must remain orthographic");
+            };
+            assert_eq!(projection.scale, 0.6);
+        }
+        if turn == 1 {
+            let position = Vec3::new(125., -375., 7.);
+            app.world_mut().get_mut::<Transform>(camera).unwrap().translation = position;
+            app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+            settle_local_practice(&mut app);
+            app.update();
+            assert_eq!(app.world().resource::<Settings>().turn, 2);
+            assert_eq!(
+                app.world().get::<Transform>(camera).unwrap().translation,
+                position,
+                "advancing a turn without switching players must preserve the camera"
+            );
+        }
+    }
+}
+
 #[test]
 /// The loading lifecycle distinguishes deferred, in-flight, and ready groups.
 fn loading_state_has_explicit_transitions() {

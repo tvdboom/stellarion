@@ -133,6 +133,8 @@ pub enum MissionTab {
 /// Local-only panel, selection, hover, and report navigation state.
 pub struct UiState {
     pub planet_hover: Option<PlanetId>,
+    /// World-list hover, refreshed each UI pass independently of map picking events.
+    pub(crate) world_shortcut_hover: Option<PlanetId>,
     /// Owned Jump Gate whose live network is currently being previewed.
     pub(crate) jump_gate_hover: Option<PlanetId>,
     /// Infrastructure marker whose strategic-map range is currently being previewed.
@@ -154,7 +156,7 @@ pub struct UiState {
     pub(crate) trade_draft_id: Option<u64>,
     /// Resources selected for the local side of a Trading Post negotiation.
     pub(crate) trade_resources: Resources,
-    /// Completed or canceled trade notices dismissed during the current local session.
+    /// Confirmed or rejected trades already queued as timed notifications this session.
     pub(crate) trade_notices_dismissed: std::collections::BTreeSet<u64>,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
@@ -171,6 +173,8 @@ pub struct UiState {
     pub mission_info: Mission,
     /// Player slots selected for the current joint-attack invitation.
     pub(crate) joint_attack_invitees: std::collections::BTreeSet<PlayerId>,
+    /// Unconfirmed player choices in the invitation picker; closing it discards these changes.
+    pub(crate) joint_attack_invite_selection: Option<std::collections::BTreeSet<PlayerId>>,
     /// Whether the current mission is being coordinated with invited players.
     pub(crate) allied_mission: bool,
     /// Invitation linked to the current editable mission draft.
@@ -199,6 +203,33 @@ pub struct UiState {
     pub in_combat: Option<ReportId>,
     pub combat_round: usize,
     pub end_turn: bool,
+}
+
+impl UiState {
+    /// Uses the world-list row under the pointer for the same preview as a map planet.
+    pub(crate) fn hovered_planet(&self) -> Option<PlanetId> {
+        self.world_shortcut_hover.or(self.planet_hover)
+    }
+
+    /// Prevents readiness while shared choices still require agreement or a local picker is open.
+    pub(crate) fn end_turn_blocked(
+        &self,
+        session: Option<&MultiplayerSession>,
+        pending: &PendingTurnCommands,
+    ) -> bool {
+        if !matches!(
+            pending.submission,
+            crate::multiplayer::client::SubmissionState::Draft
+                | crate::multiplayer::client::SubmissionState::Retry
+        ) {
+            return false;
+        }
+        self.allied_mission
+            || self.joint_attack_invite_selection.is_some()
+            || self.joint_attack_open.is_some()
+            || self.trading_post_open.is_some()
+            || session.is_some_and(|session| session.has_open_negotiation(pending))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,9 +355,16 @@ fn style_modal_buttons(ui: &mut Ui) {
         visuals.bg_fill = fill;
         visuals.weak_bg_fill = fill;
         visuals.bg_stroke = Stroke::new(1.0, stroke);
+        visuals.fg_stroke.width = 1.0;
         visuals.corner_radius = egui::CornerRadius::same(6);
         visuals.expansion = 0.0;
     }
+}
+
+/// Keeps selectors and their keyboard-edit fields in the same dark modal palette.
+fn style_selection_boxes(ui: &mut Ui) {
+    style_modal_buttons(ui);
+    ui.visuals_mut().text_edit_bg_color = Some(ABANDON_CONFIRMATION_BUTTON_FILL);
 }
 
 /// Draws a centered Yes/No footer entirely inside the supplied modal region.
@@ -368,7 +406,7 @@ fn visible_planet_panel(state: &UiState) -> Option<(PlanetId, PlanetPanelMode)> 
     state
         .mission_planet_hover
         .map(|id| (id, PlanetPanelMode::UnitsOnly))
-        .or_else(|| state.planet_hover.map(|id| (id, PlanetPanelMode::Full)))
+        .or_else(|| state.hovered_planet().map(|id| (id, PlanetPanelMode::Full)))
 }
 
 /// Combat details replace the mission panel while retaining its state for the close action.
@@ -841,8 +879,8 @@ fn draw_protection_access_tooltip(ui: &mut Ui, planet: &Planet, session: &Multip
     });
 }
 
-/// Draws a compact protection-access choice without egui's oversized selected-button fill.
-fn protection_player_row(
+/// Draws a compact player choice shared by protection and attack invitation modals.
+fn modal_player_row(
     ui: &mut Ui,
     width: f32,
     height: f32,
@@ -1017,7 +1055,7 @@ fn draw_protection_access_modal(
                         let response = ui
                             .horizontal(|ui| {
                                 ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                                protection_player_row(
+                                modal_player_row(
                                     ui,
                                     row_width,
                                     42.0,
@@ -1240,7 +1278,7 @@ fn draw_world_shortcut(
     session: &MultiplayerSession,
     images: &ImageIds,
     scale: f32,
-) -> bool {
+) -> egui::Response {
     let available_width = ui.available_width();
     const FLEET_ICON_GAP: f32 = 6.0;
     const FLEET_ICON_SIZE: f32 = 20.0;
@@ -1260,7 +1298,7 @@ fn draw_world_shortcut(
     } else {
         0.0
     };
-    let text_width = (available_width - 46.0 * scale - fleet_icon_width - crown_width).max(0.0);
+    let text_width = (available_width - 51.0 * scale - fleet_icon_width - crown_width).max(0.0);
     let name = egui::WidgetText::from(
         RichText::new(&planet.name).size(14.0 * scale).strong().color(Color32::WHITE),
     )
@@ -1304,7 +1342,7 @@ fn draw_world_shortcut(
     }
 
     let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 19.0 * scale, rect.center().y),
+        egui::pos2(rect.left() + 24.0 * scale, rect.center().y),
         egui::Vec2::splat(30.0 * scale),
     );
     ui.painter().image(
@@ -1359,18 +1397,16 @@ fn draw_world_shortcut(
         );
     }
 
-    response.clicked()
+    response
 }
 
 /// Draws a world-group label and its prominent item count using the shared panel heading style.
-fn draw_world_group_header(ui: &mut Ui, title: &str, count: usize, scale: f32) {
+fn draw_world_group_header(ui: &mut Ui, title: &str, count: &str, scale: f32) {
     let heading_color = Color32::from_rgb(166, 188, 211);
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(11.0 * scale).strong().color(heading_color));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(count.to_string()).size(16.0 * scale).strong().color(heading_color),
-            );
+            ui.label(RichText::new(count).size(16.0 * scale).strong().color(heading_color));
         });
     });
 }
@@ -1400,6 +1436,7 @@ fn draw_owned_worlds_widget(
     settings: &mut Settings,
     images: &ImageIds,
 ) -> egui::Rect {
+    state.world_shortcut_hover = None;
     let scale = owned_worlds_hud_scale(context.content_rect().size());
     let mut owned = map
         .planets
@@ -1436,9 +1473,15 @@ fn draw_owned_worlds_widget(
                 }
 
                 if !owned.is_empty() {
-                    draw_world_group_header(ui, "OWNED PLANETS", owned.len(), scale);
+                    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
+                    draw_world_group_header(
+                        ui,
+                        "OWNED PLANETS",
+                        &format!("{n_owned}/{n_max_owned}"),
+                        scale,
+                    );
                     for planet in &owned {
-                        if draw_world_shortcut(
+                        let response = draw_world_shortcut(
                             ui,
                             planet,
                             planet.id == player.home_planet,
@@ -1447,7 +1490,12 @@ fn draw_owned_worlds_widget(
                             session,
                             images,
                             scale,
-                        ) {
+                        );
+                        if response.hovered() {
+                            state.world_shortcut_hover = Some(planet.id);
+                            state.mission_planet_hover = None;
+                        }
+                        if response.clicked() {
                             select_planet(planet, state, player);
                             state.to_selected = true;
                             state.planet_hover = None;
@@ -1463,11 +1511,11 @@ fn draw_owned_worlds_widget(
                     draw_world_group_header(
                         ui,
                         "CONTROLLED PLANETS AND MOONS",
-                        controlled.len(),
+                        &controlled.len().to_string(),
                         scale,
                     );
                     for planet in &controlled {
-                        if draw_world_shortcut(
+                        let response = draw_world_shortcut(
                             ui,
                             planet,
                             planet.id == player.home_planet,
@@ -1476,7 +1524,12 @@ fn draw_owned_worlds_widget(
                             session,
                             images,
                             scale,
-                        ) {
+                        );
+                        if response.hovered() {
+                            state.world_shortcut_hover = Some(planet.id);
+                            state.mission_planet_hover = None;
+                        }
+                        if response.clicked() {
                             select_planet(planet, state, player);
                             state.to_selected = true;
                             state.planet_hover = None;
@@ -2612,15 +2665,7 @@ fn resource_bar_content_width(
     scale: f32,
     action_demand: usize,
 ) -> f32 {
-    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
-    let mut width = resource_summary_width(ui, "TURN", &settings.turn.to_string(), compact, scale)
-        + resource_summary_width(
-            ui,
-            "PLANETS",
-            &format!("{n_owned}/{n_max_owned}"),
-            compact,
-            scale,
-        );
+    let mut width = resource_summary_width(ui, "TURN", &settings.turn.to_string(), compact, scale);
     for resource in ResourceName::iter() {
         width += resource_summary_width(
             ui,
@@ -2633,7 +2678,7 @@ fn resource_bar_content_width(
     let energy = projected_energy(map, player, action_demand);
     width += resource_summary_width(ui, "ENERGY", &energy_balance_text(energy), compact, scale);
 
-    width + resource_bar_gap(compact, scale) * 5.0
+    width + resource_bar_gap(compact, scale) * 4.0
 }
 
 fn draw_resource_tooltip_with_trade(
@@ -2701,7 +2746,6 @@ fn draw_resources_with_trade(
     trade_incoming: Resources,
 ) {
     let gap = resource_bar_gap(compact, scale);
-    let (n_owned, n_max_owned) = player.planets_owned(map, settings);
     let resource_count = ResourceName::iter().count();
 
     ui.horizontal(|ui| {
@@ -2723,34 +2767,6 @@ fn draw_resources_with_trade(
                         ui.label(RichText::new("Turn").strong());
                         ui.separator();
                         ui.small("Current turn in the game.");
-                    });
-                });
-            });
-        }
-
-        draw_resource_gap(ui, gap, scale);
-
-        let response = draw_resource_summary(
-            ui,
-            images.get("owned"),
-            "PLANETS",
-            &format!("{n_owned}/{n_max_owned}"),
-            compact,
-            scale,
-        );
-        if settings.show_hover {
-            response.on_hover_ui(|ui| {
-                ui.horizontal(|ui| {
-                    ui.add_image(images.get("owned"), [130.0, 90.0]);
-                    ui.vertical(|ui| {
-                        ui.set_max_width(320.0);
-                        ui.label(RichText::new("Planets owned / Max. owned").strong());
-                        ui.separator();
-                        ui.small(
-                            "The current number of planets owned and the maximum number of \
-                            planets that can be owned this game. A spot becomes available if an \
-                            owned planet is abandoned, conquered, or destroyed.",
-                        );
                     });
                 });
             });
@@ -2830,7 +2846,7 @@ fn draw_resources(
     );
 }
 
-/// Shows turn, ownership, and stockpile totals in the same framed style as the world list.
+/// Shows turn and resource totals in the same framed style as the world list.
 fn draw_resources_widget_with_trade(
     context: &egui::Context,
     settings: &Settings,
@@ -2904,7 +2920,7 @@ fn draw_resources_widget(
     )
 }
 
-/// Explains climate, the shared Death Ray size modifier, and Solar Satellite output.
+/// Explains climate and Solar Satellite output.
 fn planet_temperature_tooltip(planet: &Planet, solar_band: Option<SolarBand>) -> String {
     let climate = if planet.is_moon() {
         match planet.temperature_emoji() {
@@ -2934,17 +2950,13 @@ fn planet_temperature_tooltip(planet: &Planet, solar_band: Option<SolarBand>) ->
             | PlanetKind::Yellow => unreachable!("lunar kind used by a planet"),
         }
     };
-    let modifier = f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0;
-    let tooltip = format!(
-        "{climate} Death Ray size modifier: {modifier:+}%. Applies to War Suns and Orbital Railguns."
-    );
     if let Some(band) = solar_band {
         format!(
-            "{tooltip} Solar Satellites produce {} Energy per level here.",
+            "{climate} Solar Satellites produce {} Energy per level here.",
             band.satellite_energy()
         )
     } else {
-        tooltip
+        climate.to_string()
     }
 }
 
@@ -3008,11 +3020,11 @@ fn draw_planet_overview(
                 detail_line_progress[1],
                 right_side,
             )
-            .on_hover_small(
-                "Diameter determines this planet's Death Ray size modifier. Smaller planets \
-                are easier to destroy with War Suns and Orbital Railguns. Hover over Temperature \
-                to see the modifier.",
-            );
+            .on_hover_small(format!(
+                "Smaller worlds are easier to destroy with War Suns and Orbital Railguns. \
+                Size modifier: {:+}%.",
+                f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0,
+            ));
             draw_sliding_text(
                 ui,
                 RichText::new(format!(
@@ -4253,6 +4265,7 @@ pub fn draw_ui(
         Local<PlanetPanelHoverHold>,
     ),
 ) {
+    state.world_shortcut_hover = None;
     if end_game_presentation.is_pending() {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
@@ -4587,7 +4600,7 @@ pub fn draw_ui(
     } else if let Some(id) = state.planet_selected {
         if settings.show_menu && !player.spectator {
             // Hide shop if hovering another planet
-            if state.planet_hover.is_none_or(|planet_id| planet_id == id) {
+            if state.hovered_planet().is_none_or(|planet_id| planet_id == id) {
                 let solar_band = map.solar_band(id);
                 let next_turn_energy = projected_energy(&map, &player, action_energy_demand);
                 let senate_level_limit = Player::senate_level_limit(&map, settings.p_colonizable);

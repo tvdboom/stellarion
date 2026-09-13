@@ -42,7 +42,7 @@ impl Description for CombatStats {
                 "The minimum intelligence level required for an enemy Spy mission to reveal a structure's level or count."
             },
             CombatStats::Range => {
-                "The reach added by each completed level of a structure, measured in AU."
+                "The reach added by each level of the structure, measured in AU."
             },
             CombatStats::Hull => "The amount of damage a unit can take before being destroyed.",
             CombatStats::Shield => {
@@ -52,7 +52,7 @@ impl Description for CombatStats {
             },
             CombatStats::Damage => "The amount of damage a unit deals per round.",
             CombatStats::Speed => "Movement rating: AU covered on the first turn. Each later turn \
-                adds two thirds of this rating to the distance covered. Fleets use their slowest unit.",
+                adds two thirds of this rating to the distance covered.",
             CombatStats::FuelConsumption => {
                 "The amount of deuterium a unit requires to travel 1 AU."
             },

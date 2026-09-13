@@ -31,34 +31,67 @@ fn extraction_modes_scale_each_resource_and_queued_levels_independently() {
 
 #[test]
 fn intensive_extraction_pays_now_and_forces_exactly_one_complete_recovery_turn() {
-    let mut model = started_model(2);
-    let home = model.players[0].home_planet;
-    model.map.get_mut(home).army.insert(Unit::Building(Building::Reactor), 5);
-    let before = model.players[0].resources;
-    let normal = model.map.get(home).resource_production();
-    let command = TurnCommand::SetMineMode {
-        planet_id: home,
-        resource: ResourceName::Metal,
-        mode: MineMode::Intensive,
-    };
-    resolve_turn(
-        &mut model,
-        &[TurnSubmission::new(1, 1, vec![command.clone()]), TurnSubmission::new(2, 1, vec![])],
-    )
-    .unwrap();
-    assert_eq!(model.players[0].resources.metal - before.metal, normal.metal + normal.metal / 2);
-    assert_eq!(model.map.get(home).operations.mine(ResourceName::Metal).mode, MineMode::Suspended);
-    assert!(model.map.get(home).operations.mine(ResourceName::Metal).recovering);
-    assert!(preview_commands(&model, 1, std::slice::from_ref(&command)).is_err());
-    assert!(apply_mine_mode(&mut model, 1, home, ResourceName::Metal, MineMode::Normal).is_err());
-    // A save/reload cannot discard the compulsory recovery.
-    model = PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap().state;
-    let before = model.players[0].resources.metal;
-    empty_turn(&mut model);
-    assert_eq!(model.players[0].resources.metal, before);
-    assert!(!model.map.get(home).operations.mine(ResourceName::Metal).recovering);
-    assert_eq!(model.map.get(home).operations.mine(ResourceName::Metal).mode, MineMode::Suspended);
-    assert!(preview_commands(&model, 1, &[command]).is_ok());
+    for resource in [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium] {
+        let mut model = started_model(2);
+        let home = model.players[0].home_planet;
+        model.map.get_mut(home).army.insert(Unit::Building(Building::Reactor), 5);
+        let before = model.players[0].resources;
+        let normal = model.map.get(home).resource_production();
+        let command = TurnCommand::SetMineMode {
+            planet_id: home,
+            resource,
+            mode: MineMode::Intensive,
+        };
+        resolve_turn(
+            &mut model,
+            &[TurnSubmission::new(1, 1, vec![command.clone()]), TurnSubmission::new(2, 1, vec![])],
+        )
+        .unwrap();
+        assert_eq!(
+            model.players[0].resources.get(&resource) - before.get(&resource),
+            normal.get(&resource) + normal.get(&resource) / 2
+        );
+        assert_eq!(model.map.get(home).operations.mine(resource).mode, MineMode::Suspended);
+        assert!(model.map.get(home).operations.mine(resource).recovering);
+        assert!(preview_commands(&model, 1, std::slice::from_ref(&command)).is_err());
+        assert!(apply_mine_mode(&mut model, 1, home, resource, MineMode::Normal).is_err());
+        // A save/reload cannot discard the compulsory recovery.
+        model =
+            PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap().state;
+        let before = model.players[0].resources.get(&resource);
+        empty_turn(&mut model);
+        assert_eq!(model.players[0].resources.get(&resource), before);
+        assert!(!model.map.get(home).operations.mine(resource).recovering);
+        assert_eq!(model.map.get(home).operations.mine(resource).mode, MineMode::Normal);
+        assert!(preview_commands(&model, 1, &[command]).is_ok());
+        empty_turn(&mut model);
+        assert_eq!(model.players[0].resources.get(&resource) - before, normal.get(&resource));
+        assert_eq!(model.map.get(home).operations.mine(resource).mode, MineMode::Normal);
+        assert!(!model.map.get(home).operations.mine(resource).recovering);
+    }
+}
+
+#[test]
+fn manual_extraction_suspension_persists_across_turns_and_reload_until_changed() {
+    for resource in [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium] {
+        let mut model = started_model(2);
+        let home = model.players[0].home_planet;
+        model.map.get_mut(home).army.insert(Unit::Building(Building::Reactor), 5);
+        let normal = model.map.get(home).resource_production().get(&resource);
+        let before = model.players[0].resources.get(&resource);
+        apply_mine_mode(&mut model, 1, home, resource, MineMode::Suspended).unwrap();
+        model =
+            PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap().state;
+        for _ in 0..3 {
+            empty_turn(&mut model);
+            assert_eq!(model.players[0].resources.get(&resource), before);
+            assert_eq!(model.map.get(home).operations.mine(resource).mode, MineMode::Suspended);
+            assert!(!model.map.get(home).operations.mine(resource).recovering);
+        }
+        apply_mine_mode(&mut model, 1, home, resource, MineMode::Normal).unwrap();
+        empty_turn(&mut model);
+        assert_eq!(model.players[0].resources.get(&resource) - before, normal);
+    }
 }
 
 #[test]

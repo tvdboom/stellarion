@@ -266,6 +266,41 @@ fn jump_gate_route_is_thinner_than_gate_hover_and_flows_toward_destination() {
 }
 
 #[test]
+fn jump_gate_route_adds_turns_with_distance_without_stretching_the_pitch() {
+    for direction in [Vec2::X, Vec2::Y, Vec2::new(0.6, 0.8)] {
+        let normal = Vec2::new(-direction.y, direction.x);
+        let mut previous_turns = 0;
+        for length in [480.0, 960.0, 1_920.0] {
+            let particles = jump_gate_link_particles(
+                Vec2::ZERO,
+                direction * (length + 32.0),
+                Color::WHITE,
+                0.0,
+                0.4,
+                JumpGateHelixStyle::MissionRoute,
+            );
+            let strand = &particles[..particles.len() / 2];
+            let crossings = strand
+                .windows(2)
+                .filter_map(|pair| {
+                    let a = pair[0].transform.translation.truncate();
+                    let b = pair[1].transform.translation.truncate();
+                    let ay = a.dot(normal);
+                    let by = b.dot(normal);
+                    (ay < 0.0 && by >= 0.0).then(|| a.lerp(b, -ay / (by - ay)).dot(direction))
+                })
+                .collect::<Vec<_>>();
+            assert!(crossings.len() >= 3);
+            assert!(crossings.len() >= previous_turns * 2);
+            previous_turns = crossings.len();
+            for pair in crossings.windows(2) {
+                assert!((pair[1] - pair[0] - 120.0).abs() < 1.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn spy_map_rotation_keeps_the_flame_behind_the_route() {
     let spy = Mission {
         objective: Icon::Spy,
