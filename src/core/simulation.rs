@@ -13,7 +13,7 @@ use crate::core::combat::resolution::{
 };
 use crate::core::constants::{
     ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST,
-    ORBITAL_RAILGUN_FIRE_ENERGY_COST, ORBITAL_RAILGUN_MAX_SIZE_MODIFIER_BASIS_POINTS,
+    ORBITAL_RAILGUN_FIRE_ENERGY_COST,
     ORBITAL_RAILGUN_OVERLOADED_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
     ORBITAL_RAILGUN_RANGE_PER_LEVEL, ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
 };
@@ -30,6 +30,7 @@ use crate::core::recycling::recycler_production;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent, TradeAgreement};
 use crate::core::units::buildings::{Building, FleetWithdrawal};
+use crate::core::units::operations::{mine_building, MineMode, SenatePolicy, SpaceDockMode};
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
 
@@ -517,6 +518,25 @@ impl GameModel {
         let protection_enabled =
             self.players.iter().filter(|player| !player.spectator).count() >= 3;
         for planet in &self.map.planets {
+            if planet
+                .operations
+                .mines
+                .iter()
+                .any(|mine| mine.recovering && mine.mode != MineMode::Suspended)
+                || planet.operations.space_dock_locked_until
+                    > self.turn.saturating_add(SpaceDockMode::COMMITMENT_TURNS)
+                || (planet.operations.space_dock_selection_pending
+                    && self.turn < planet.operations.space_dock_locked_until)
+                || planet.operations.senate_locked_until
+                    > self.turn.saturating_add(SenatePolicy::COMMITMENT_TURNS)
+                || (planet.operations.senate_selection_pending
+                    && self.turn < planet.operations.senate_locked_until)
+            {
+                return Err(GameError::MalformedState(format!(
+                    "planet {} contains invalid operating state",
+                    planet.id
+                )));
+            }
             for owner in [planet.owned, planet.controlled].into_iter().flatten() {
                 if !player_ids.contains(&owner) {
                     return Err(GameError::MalformedState(format!(
@@ -695,6 +715,36 @@ impl PersistedGame {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnCommand {
+    /// Selects the operating mode of a completed mine or synthesizer.
+    SetMineMode {
+        /// Owned planet containing the extraction building.
+        planet_id: PlanetId,
+        /// Resource whose extraction setting changes.
+        resource: ResourceName,
+        /// Normal, Intensive, or Suspended operation.
+        mode: MineMode,
+    },
+    /// Chooses bulk or selective recovery for a completed Recycler.
+    SetRecyclerFocus {
+        /// Owned planet containing the Recycler.
+        planet_id: PlanetId,
+        /// Selected resource, or `None` for bulk recovery.
+        resource: Option<ResourceName>,
+    },
+    /// Commits a completed Space Dock to a specialization for three turns.
+    SetSpaceDockMode {
+        /// Owned planet containing the Space Dock.
+        planet_id: PlanetId,
+        /// Industrial production or Bastion defense.
+        mode: SpaceDockMode,
+    },
+    /// Selects the home-world Senate's empire-wide production policy.
+    SetSenatePolicy {
+        /// Owned home planet containing a completed Senate.
+        planet_id: PlanetId,
+        /// Ship production or defense production across the empire.
+        policy: SenatePolicy,
+    },
     /// Adds debug-only testing resources and units to a local turn draft.
     PracticeBoost {
         /// Limits the boost to the player's owned or controlled worlds when true.
@@ -995,10 +1045,8 @@ pub(crate) fn resolved_turn(
         let ordinary = submission
             .commands
             .iter()
-            .filter(|command| !matches!(command, TurnCommand::SendJointMission { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        apply_commands(&mut working, submission.player_id, &ordinary)?;
+            .filter(|command| !matches!(command, TurnCommand::SendJointMission { .. }));
+        apply_commands(&mut working, submission.player_id, ordinary)?;
     }
 
     deliver_trade_resources(&mut working)?;
@@ -1048,10 +1096,11 @@ pub fn add_trade_agreement_immediately(
     model: &mut GameModel,
     agreement: TradeAgreement,
 ) -> Result<(), GameError> {
-    let mut candidate = model.clone();
-    candidate.trades.push(agreement);
-    candidate.validate()?;
-    *model = candidate;
+    model.trades.push(agreement);
+    if let Err(error) = model.validate() {
+        model.trades.pop();
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -1096,10 +1145,10 @@ fn deliver_trade_resources(model: &mut GameModel) -> Result<(), GameError> {
 }
 
 /// Applies one player's ordered draft while retaining transient state needed to undo a launch.
-fn apply_commands(
+fn apply_commands<'a>(
     model: &mut GameModel,
     player_id: PlayerId,
-    commands: &[TurnCommand],
+    commands: impl IntoIterator<Item = &'a TurnCommand>,
 ) -> Result<(), GameError> {
     let mut launch_permissions = BTreeMap::<u64, BTreeSet<PlayerId>>::new();
     for command in commands {
@@ -1220,6 +1269,23 @@ fn apply_command(
             planet_id,
             resource,
         } => apply_terraformer_focus(model, player_id, *planet_id, *resource),
+        TurnCommand::SetMineMode {
+            planet_id,
+            resource,
+            mode,
+        } => apply_mine_mode(model, player_id, *planet_id, *resource, *mode),
+        TurnCommand::SetRecyclerFocus {
+            planet_id,
+            resource,
+        } => apply_recycler_focus(model, player_id, *planet_id, *resource),
+        TurnCommand::SetSpaceDockMode {
+            planet_id,
+            mode,
+        } => apply_space_dock_mode(model, player_id, *planet_id, *mode),
+        TurnCommand::SetSenatePolicy {
+            planet_id,
+            policy,
+        } => apply_senate_policy(model, player_id, *planet_id, *policy),
         TurnCommand::SetCommandRelay {
             planet_id,
             active,
@@ -1434,11 +1500,11 @@ fn objective_return_mission(
 }
 
 /// Changes a controller-owned, planet-specific invitation for one foreign protection fleet.
-/// Applies one protection invitation immediately, including homeward recalls on revocation.
+/// Applies one protection invitation immediately. Stationed fleets remain until their owner
+/// dispatches them or the next turn sends any remainder home.
 ///
 /// Multiplayer backends call this through their narrow permission operation instead of storing
-/// the choice in a complete turn submission. The deterministic, lowest-free mission identifier
-/// keeps the in-memory backend aligned with the database implementation.
+/// the choice in a complete turn submission. Both backends preserve the same stationed fleet.
 pub fn set_protection_permission_immediately(
     model: &mut GameModel,
     player_id: PlayerId,
@@ -1463,15 +1529,7 @@ pub fn set_protection_permission_immediately(
         return invalid(player_id, "only the current controller can change protection access");
     }
     let changed = planet.protection_permissions.contains(&protector) != allowed;
-    let origin = planet.clone();
     let home_planet = model.player(protector)?.home_planet;
-    let needs_stationed_return = !allowed
-        && origin.army.protector(protector).is_some()
-        && origin.id != home_planet
-        && !model.map.get(home_planet).is_destroyed;
-    if needs_stationed_return && model.missions.len() >= MAX_ACTIVE_MISSIONS {
-        return invalid(player_id, "active mission limit prevents recalling the protection fleet");
-    }
 
     if !changed {
         return Ok(false);
@@ -1495,27 +1553,6 @@ pub fn set_protection_permission_immediately(
         check_mission(mission, map, turn, 0, Some(home_planet));
     }
 
-    let stationed = model.map.get_mut(planet_id).army.remove_protector(protector);
-    if let Some(army) = stationed {
-        if origin.id == home_planet {
-            model.map.get_mut(home_planet).dock(army);
-        } else if !model.map.get(home_planet).is_destroyed {
-            let mission_id = (1..=model.missions.len() as u64 + 1)
-                .find(|candidate| model.missions.iter().all(|mission| mission.id != *candidate))
-                .ok_or_else(|| invalid_error(player_id, NO_UNIQUE_MISSION_ID))?;
-            let home = model.map.get(home_planet);
-            let mission = protection_return_mission(
-                mission_id,
-                turn,
-                protector,
-                &origin,
-                home,
-                army,
-                ProtectionReturnReason::AccessRevoked,
-            );
-            model.missions.push(mission);
-        }
-    }
     Ok(true)
 }
 
@@ -1642,6 +1679,7 @@ fn apply_purchase(
         &model.map.planets[planet_index],
         unit,
         senate_level_limit,
+        model.players[player_index].senate_support(&model.map),
     )
     .map_err(|error| invalid_error(player_id, error.to_string()))?;
     if count > limit {
@@ -1688,6 +1726,122 @@ fn apply_conversion(
     let gain = conversion_output(amount, laboratory);
     *player.resources.get_mut(&from) -= amount;
     *player.resources.get_mut(&to) = player.resources.get(&to).saturating_add(gain);
+    Ok(())
+}
+
+/// Validates ownership and a completed structure before changing its operation.
+fn operating_planet(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    unit: Unit,
+) -> Result<&mut Planet, GameError> {
+    model.player(player_id)?;
+    let planet = model
+        .map
+        .planets
+        .iter_mut()
+        .find(|planet| planet.id == planet_id)
+        .ok_or_else(|| invalid_error(player_id, "operating planet does not exist"))?;
+    if planet.is_destroyed
+        || planet.is_moon()
+        || planet.owned != Some(player_id)
+        || !planet.has(&unit)
+    {
+        return Err(invalid_error(
+            player_id,
+            "an owned planet with the completed structure is required",
+        ));
+    }
+    Ok(planet)
+}
+
+fn apply_mine_mode(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    resource: ResourceName,
+    mode: MineMode,
+) -> Result<(), GameError> {
+    let planet =
+        operating_planet(model, player_id, planet_id, Unit::Building(mine_building(resource)))?;
+    let operation = planet.operations.mine_mut(resource);
+    if operation.recovering && mode != MineMode::Suspended {
+        return invalid(player_id, "intensive extraction requires a full suspended recovery turn");
+    }
+    operation.mode = mode;
+    Ok(())
+}
+
+fn apply_recycler_focus(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    resource: Option<ResourceName>,
+) -> Result<(), GameError> {
+    let planet = operating_planet(model, player_id, planet_id, Unit::Building(Building::Recycler))?;
+    planet.operations.recycler_focus = resource;
+    Ok(())
+}
+
+fn apply_space_dock_mode(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    mode: SpaceDockMode,
+) -> Result<(), GameError> {
+    let turn = model.turn;
+    let senate = model.player(player_id)?.senate_support(&model.map);
+    let planet = operating_planet(model, player_id, planet_id, Unit::space_dock())?;
+    if planet.operations.space_dock == mode {
+        return Ok(());
+    }
+    if turn < planet.operations.space_dock_locked_until {
+        return invalid(player_id, "Space Dock specialization is committed for three turns");
+    }
+    if planet.fleet_production()
+        > planet
+            .max_fleet_production_in_mode(mode)
+            .saturating_add(senate.bonus(planet, SenatePolicy::Expansion))
+    {
+        return invalid(player_id, "queued ships require the Space Dock's Industrial production");
+    }
+    turn.checked_add(1 + SpaceDockMode::COMMITMENT_TURNS)
+        .ok_or_else(|| invalid_error(player_id, "Space Dock commitment exceeds the turn limit"))?;
+    planet.operations.space_dock = mode;
+    planet.operations.space_dock_selection_pending = true;
+    Ok(())
+}
+
+/// Validates every owned world's queue before switching an empire-wide production bonus.
+fn apply_senate_policy(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    policy: SenatePolicy,
+) -> Result<(), GameError> {
+    let player = model.player(player_id)?;
+    if player.home_planet != planet_id {
+        return invalid(player_id, "Senate policy can only be changed on the home planet");
+    }
+    let mut support = player.senate_support(&model.map);
+    support.policy = policy;
+    let turn = model.turn;
+    let planet = operating_planet(model, player_id, planet_id, Unit::Building(Building::Senate))?;
+    if planet.operations.senate == policy {
+        return Ok(());
+    }
+    if turn < planet.operations.senate_locked_until {
+        return invalid(player_id, "Senate policy is committed for three turns");
+    }
+    if !support.supports_queues(&model.map) {
+        return invalid(player_id, "queued units require the current Senate production bonus");
+    }
+    turn.checked_add(1 + SenatePolicy::COMMITMENT_TURNS)
+        .ok_or_else(|| invalid_error(player_id, "Senate commitment exceeds the turn limit"))?;
+    let planet = model.map.get_mut(planet_id);
+    planet.operations.senate = policy;
+    planet.operations.senate_selection_pending = true;
     Ok(())
 }
 
@@ -1849,12 +2003,7 @@ pub fn orbital_railgun_destruction_basis_points(
         return 0;
     }
 
-    const WAR_SUN_LARGE_WORLD_FLOOR_BASIS_POINTS: u16 = 1_000;
-    let scaled_size_modifier = usize::from(
-        target
-            .destroy_probability_basis_points()
-            .saturating_sub(WAR_SUN_LARGE_WORLD_FLOOR_BASIS_POINTS),
-    ) / 2;
+    let size_modifier = target.death_ray_size_modifier_basis_points();
     let shield_levels =
         target.army.amount(&Unit::Building(Building::PlanetaryShield)).min(Building::MAX_LEVEL);
     let shield_reduction_per_level = if target.shield_overload.is_overloaded() {
@@ -1862,12 +2011,15 @@ pub fn orbital_railgun_destruction_basis_points(
     } else {
         ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL
     };
-    let chance = firing_levels
-        .saturating_mul(ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL)
-        .saturating_add(scaled_size_modifier)
-        .saturating_sub(ORBITAL_RAILGUN_MAX_SIZE_MODIFIER_BASIS_POINTS)
-        .saturating_sub(shield_levels.saturating_mul(shield_reduction_per_level))
-        .min(10_000);
+    let base_chance =
+        firing_levels.saturating_mul(ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL);
+    let chance = if size_modifier < 0 {
+        base_chance.saturating_sub(usize::from(size_modifier.unsigned_abs()))
+    } else {
+        base_chance.saturating_add(size_modifier as usize)
+    };
+    let chance =
+        chance.saturating_sub(shield_levels.saturating_mul(shield_reduction_per_level)).min(10_000);
     u16::try_from(chance).unwrap_or(10_000)
 }
 
@@ -2270,10 +2422,10 @@ fn apply_joint_mission(
 fn resolution_energy_grid(
     player: &Player,
     map: &Map,
-    railgun_energy_demand: &BTreeMap<PlayerId, usize>,
+    action_energy_demand: &BTreeMap<PlayerId, usize>,
 ) -> EnergyGrid {
     let grid = player.energy_grid(map);
-    grid.with_action_demand(railgun_energy_demand.get(&player.id).copied().unwrap_or_default())
+    grid.with_action_demand(action_energy_demand.get(&player.id).copied().unwrap_or_default())
 }
 
 /// Advances production, missions, combat, reports, and victory state by one turn.
@@ -2288,7 +2440,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
     // Firing can deepen an energy shortage. Capture the owners before simultaneous impacts can
     // destroy an origin, then apply the one-turn demand to production and combat power below.
-    let railgun_energy_demand = model.orbital_strikes.iter().fold(
+    let action_energy_demand = model.orbital_strikes.iter().fold(
         BTreeMap::<PlayerId, usize>::new(),
         |mut demand, strike| {
             if let Some(player_id) = strike
@@ -2306,6 +2458,15 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
             demand
         },
     );
+    let mut action_energy_demand = action_energy_demand;
+    for player in &model.players {
+        let demand = action_energy_demand.entry(player.id).or_default();
+        *demand = demand.saturating_add(crate::core::energy::jump_gate_energy_demand(
+            &model.missions,
+            player.id,
+            recycling_turn,
+        ));
+    }
 
     // Resolve every paid shot from the same pre-impact state. A railgun destroyed by another
     // simultaneous strike therefore still contributes the shot committed during planning.
@@ -2332,7 +2493,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         })
         .collect::<BTreeMap<_, _>>();
     for player in &mut model.players {
-        let energy = resolution_energy_grid(player, &model.map, &railgun_energy_demand);
+        let energy = resolution_energy_grid(player, &model.map, &action_energy_demand);
         let raw = player.raw_resource_production(&model.map)
             + recycler_output.get(&player.id).copied().unwrap_or_default();
         player.resources += energy.scale_resources(raw);
@@ -2344,7 +2505,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         .players
         .iter()
         .map(|player| {
-            (player.id, resolution_energy_grid(player, &model.map, &railgun_energy_demand))
+            (player.id, resolution_energy_grid(player, &model.map, &action_energy_demand))
         })
         .collect::<std::collections::HashMap<_, _>>();
 
@@ -2813,6 +2974,32 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         } else {
             ShieldOverloadState::Ready
         };
+        for operation in &mut planet.operations.mines {
+            operation.finish_turn();
+        }
+        if !planet.has(&Unit::space_dock()) {
+            planet.operations.space_dock = SpaceDockMode::Industrial;
+            planet.operations.space_dock_locked_until = 0;
+            planet.operations.space_dock_selection_pending = false;
+        } else if planet.operations.space_dock_selection_pending {
+            // This resolution used the final draft mode. Lock the next three planning turns.
+            planet.operations.space_dock_locked_until =
+                model.turn.checked_add(SpaceDockMode::COMMITMENT_TURNS).ok_or_else(|| {
+                    GameError::MalformedState("Space Dock commitment exceeds the turn limit".into())
+                })?;
+            planet.operations.space_dock_selection_pending = false;
+        }
+        if !planet.has(&Unit::Building(Building::Senate)) {
+            planet.operations.senate = SenatePolicy::Expansion;
+            planet.operations.senate_locked_until = 0;
+            planet.operations.senate_selection_pending = false;
+        } else if planet.operations.senate_selection_pending {
+            planet.operations.senate_locked_until =
+                model.turn.checked_add(SenatePolicy::COMMITMENT_TURNS).ok_or_else(|| {
+                    GameError::MalformedState("Senate commitment exceeds the turn limit".into())
+                })?;
+            planet.operations.senate_selection_pending = false;
+        }
     }
 
     let mut playing = Vec::new();
@@ -2880,15 +3067,12 @@ fn consolidate_joint_attack_arrivals(model: &mut GameModel) {
         .collect::<BTreeSet<_>>();
 
     for attack_id in due_ids {
-        let mut contingents = Vec::new();
-        model.missions.retain(|mission| {
-            if mission.joint_attack.as_ref().is_some_and(|attack| attack.id == attack_id) {
-                contingents.push(mission.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let mut contingents = model
+            .missions
+            .extract_if(.., |mission| {
+                mission.joint_attack.as_ref().is_some_and(|attack| attack.id == attack_id)
+            })
+            .collect::<Vec<_>>();
         let Some(leader) = contingents
             .first()
             .and_then(|mission| mission.joint_attack.as_ref())
@@ -3101,6 +3285,8 @@ fn spoof_spy_report_as_empty(report: &mut MissionReport) {
     report.planet.buy.clear();
     report.planet.surface_build_order = [None; 4];
     report.planet.terraformer_focus = None;
+    report.planet.operations = Default::default();
+
     report.planet.command_relay_active = true;
     report.planet.shield_overload = ShieldOverloadState::Ready;
     report.planet.fleet_withdrawal = FleetWithdrawal::Off;

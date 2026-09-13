@@ -681,6 +681,15 @@ impl Mission {
         self.army.total_production()
     }
 
+    /// One Energy per five fleet production, rounded up separately for each jump.
+    pub fn jump_energy_cost(&self) -> usize {
+        if self.jump_gate {
+            self.jump_cost().div_ceil(5)
+        } else {
+            0
+        }
+    }
+
     /// Merges compatible simultaneous arrivals into one deterministic mission.
     pub fn merge(&mut self, other: &Mission) {
         // The planet of origin becomes the one that send the

@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn destroy_draft_shows_first_volley_chance_for_selected_war_suns() {
+    use crate::core::simulation::{GameModel, GameRules};
+
+    let mut model = GameModel::new([91; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let origin = player.home_planet;
+    let destination = model.players[1].home_planet;
+    let context = egui::Context::default();
+
+    for (diameter, suns, per_sun, combined) in [
+        (1_500, 0, "12.0%", "0.0%"),
+        (1_500, 1, "12.0%", "12.0%"),
+        (1_500, 3, "12.0%", "31.9%"),
+        (120_000, 3, "8.0%", "22.1%"),
+    ] {
+        model.map.get_mut(destination).diameter = diameter;
+        let mut mission = Mission {
+            origin,
+            destination,
+            objective: Icon::Destroy,
+            army: Army::from([(Unit::war_sun(), suns)]),
+            ..default()
+        };
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(840.0, 800.0),
+                )),
+                ..default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    draw_mission_details(
+                        ui,
+                        &mut mission,
+                        &model.map,
+                        &player,
+                        1,
+                        &ImageIds::default(),
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(text.contains(&format!("☀ Initial chance per War Sun: {per_sun}")));
+        assert!(text.contains(&format!("☀ Combined for {suns} War Suns: {combined}")));
+    }
+}
+
+#[test]
 fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
     use crate::core::simulation::{GameModel, GameRules};
 
@@ -300,7 +360,7 @@ fn planet_report_layout_contains_every_unit_exactly_once() {
         let (critical, orbitals, buildings) = mission_report_planet_intel(is_home_planet);
 
         assert_eq!(critical, [Unit::planetary_shield(), Unit::space_dock()]);
-        assert_eq!(orbitals.len(), 6);
+        assert_eq!(orbitals.len(), 7);
         assert!(!orbitals.contains(&Unit::space_dock()));
         assert_eq!(buildings.len(), 9);
         assert!(!buildings.contains(&Unit::planetary_shield()));
@@ -330,24 +390,20 @@ fn planet_report_uses_the_recorded_administration_when_it_is_visible() {
     let mut report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            owner: 2,
-            objective: Icon::Protect,
-            destination: home.id,
-            protected_player: Some(1),
-            army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
-            ..default()
-        },
-        planet: home.clone(),
-        scout_probes: 0,
         surviving_attacker: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
         surviving_defender: home.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
-        destination_owned: None,
         destination_controlled: home.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: 2,
+                objective: Icon::Protect,
+                destination: home.id,
+                protected_player: Some(1),
+                army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+                ..default()
+            },
+            home.clone(),
+        )
     };
 
     assert_eq!(mission_report_administration(&report, 2), Unit::Building(Building::Senate));
@@ -368,22 +424,17 @@ fn planet_report_reveals_a_senate_only_with_sufficient_intelligence() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            owner: 2,
-            objective: Icon::Attack,
-            destination: home.id,
-            ..default()
-        },
-        planet: home.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: home.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
-        destination_owned: None,
         destination_controlled: home.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: 2,
+                objective: Icon::Attack,
+                destination: home.id,
+                ..default()
+            },
+            home.clone(),
+        )
     };
 
     assert!(!mission_report_unit_is_visible(
@@ -428,21 +479,16 @@ fn planet_report_compact_intel_fits_the_existing_column() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            owner: 8,
-            destination: planet.id,
-            ..default()
-        },
-        planet: planet.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: planet.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
-        destination_owned: None,
         destination_controlled: planet.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: 8,
+                destination: planet.id,
+                ..default()
+            },
+            planet.clone(),
+        )
     };
     let mut rect = egui::Rect::NOTHING;
 

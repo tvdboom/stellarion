@@ -17,21 +17,6 @@ fn battle_report(id: ReportId, planet: &Planet, outcome: Outcome) -> MissionRepo
     MissionReport {
         id,
         turn: 2,
-        mission: Mission::new_with_id(
-            id,
-            1,
-            1,
-            planet,
-            &defender,
-            Icon::Attack,
-            Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
-            BombingRaid::None,
-            false,
-            false,
-            None,
-        ),
-        planet: defender,
-        scout_probes: 0,
         surviving_attacker: if outcome != Outcome::Defeat {
             Army::from([(Unit::Ship(Ship::LightFighter), 1)])
         } else {
@@ -42,12 +27,25 @@ fn battle_report(id: ReportId, planet: &Planet, outcome: Outcome) -> MissionRepo
         } else {
             Army::new().into()
         },
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission::new_with_id(
+                id,
+                1,
+                1,
+                planet,
+                &defender,
+                Icon::Attack,
+                Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+                BombingRaid::None,
+                false,
+                false,
+                None,
+            ),
+            defender,
+        )
     }
 }
 

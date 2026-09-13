@@ -9,7 +9,7 @@ use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
-use crate::core::units::{defense::Defense, ships::Ship, Army};
+use crate::core::units::{defense::Defense, ships::Ship, Army, Combat};
 use crate::multiplayer::client::MultiplayerSession;
 use bevy_tweening::AnimCompletedEvent;
 

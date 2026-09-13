@@ -12,7 +12,7 @@ use crate::core::audio::{PlayAudioMsg, SoundEffect};
 use crate::core::constants::MISSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
-use crate::core::map::systems::MissionCmp;
+use crate::core::map::systems::{jump_gate_link_particles, JumpGateHelixStyle, MissionCmp};
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
@@ -29,8 +29,6 @@ use crate::multiplayer::client::{
 };
 
 const MISSION_ROUTE_SPACING: f32 = 52.0;
-// A closed ring is foreshortened along the route: it faces the travelling ship, not the camera.
-const JUMP_GATE_ROUTE_GLYPH: &str = "O";
 const MISSION_SIZE: f32 = 50.0;
 const MISSION_HOVER_SIZE: f32 = 60.0;
 const WAR_SUN_MISSION_SIZE: f32 = 50.0;
@@ -39,10 +37,8 @@ const COLONY_SHIP_MISSION_SIZE: f32 = 44.0;
 const COLONY_SHIP_MISSION_HOVER_SIZE: f32 = 53.0;
 pub(crate) const SPY_MISSION_SIZE: f32 = 36.0;
 const SPY_MISSION_HOVER_SIZE: f32 = 43.0;
-const JUMP_GATE_WAVE_COUNT: usize = 4;
-const JUMP_GATE_WAVE_PERIOD_SECONDS: f32 = 1.15;
-const JUMP_GATE_WAVE_TRAVEL: f32 = 76.0;
-const JUMP_GATE_WAVE_HALF_HEIGHT: f32 = 31.0;
+const JUMP_GATE_LOOP_HALF_LENGTH: f32 = 48.0;
+const JUMP_GATE_LOOP_PARTICLES: usize = 24;
 const RECALL_ANIMATION_SECONDS: f32 = 1.25;
 const RECALL_TURN_SECONDS: f32 = 0.65;
 const RECALL_PULSE_COUNT: usize = 3;
@@ -126,10 +122,15 @@ fn mission_flame_transform(size: f32, route_angle: f32, image_rotation: f32) -> 
 }
 
 #[derive(Component)]
-/// One animated chevron or wave front in the hovered mission's route.
+/// One animated chevron in the hovered mission's route.
 pub struct MissionRouteArrowCmp {
     index: usize,
-    style: MissionRouteStyle,
+}
+
+#[derive(Component)]
+/// One narrow strand particle in the hovered Jump Gate mission's route.
+pub struct MissionRouteHelixCmp {
+    index: usize,
 }
 
 #[derive(Component)]
@@ -139,36 +140,8 @@ pub(crate) struct JumpGateMissionEffect {
 }
 
 #[derive(Component)]
-pub(crate) struct JumpGateMissionWave {
+pub(crate) struct JumpGateMissionStrand {
     index: usize,
-}
-
-fn jump_gate_wave_visual(index: usize, elapsed: f32) -> (Transform, f32) {
-    let phase = (elapsed / JUMP_GATE_WAVE_PERIOD_SECONDS
-        + index as f32 / JUMP_GATE_WAVE_COUNT as f32)
-        .fract();
-    let envelope = (PI * phase).sin().max(0.0);
-    let local_x = JUMP_GATE_WAVE_TRAVEL * (0.5 - phase);
-    (
-        Transform {
-            translation: Vec3::new(
-                local_x,
-                0.0,
-                if local_x >= 0.0 {
-                    0.12
-                } else {
-                    -0.12
-                },
-            ),
-            scale: Vec3::new(
-                3.0 + envelope * 1.5,
-                JUMP_GATE_WAVE_HALF_HEIGHT * (0.72 + envelope * 0.28),
-                1.0,
-            ),
-            ..default()
-        },
-        envelope.powi(2) * 0.78,
-    )
 }
 
 #[derive(Message)]
@@ -219,8 +192,6 @@ pub fn update_missions(
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
     suppressed_spies: Option<Res<SuppressedReturningSpies>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let player_id = player.id;
 
@@ -236,7 +207,6 @@ pub fn update_missions(
             let image = mission.image(&player);
 
             let texture = assets.texture("flame");
-            let jump_gate_ring = mission.jump_gate.then(|| meshes.add(Annulus::new(0.93, 1.0)));
             let mut mission_commands = commands.spawn((
                 Sprite {
                     image: assets.image(image),
@@ -274,7 +244,7 @@ pub fn update_missions(
                     ),
                 ));
 
-                if let Some(ring) = jump_gate_ring {
+                if mission.jump_gate {
                     parent
                         .spawn((
                             Transform::default(),
@@ -290,17 +260,16 @@ pub fn update_missions(
                             },
                         ))
                         .with_children(|effect| {
-                            for index in 0..JUMP_GATE_WAVE_COUNT {
+                            for index in 0..JUMP_GATE_LOOP_PARTICLES {
                                 effect.spawn((
-                                    Mesh2d(ring.clone()),
-                                    MeshMaterial2d(
-                                        materials.add(
-                                            session.player_color(owner).color().with_alpha(0.0),
-                                        ),
-                                    ),
+                                    Sprite {
+                                        color: session.player_color(owner).color().with_alpha(0.0),
+                                        ..default()
+                                    },
                                     Transform::default(),
+                                    Visibility::Hidden,
                                     Pickable::IGNORE,
-                                    JumpGateMissionWave {
+                                    JumpGateMissionStrand {
                                         index,
                                     },
                                 ));
@@ -370,22 +339,21 @@ pub fn update_missions(
     }
 }
 
-/// Streams foreshortened portal wave fronts across the ordinary mission silhouette.
+/// Streams a compact double helix through the mission silhouette.
 ///
-/// The effect is owner-only, matching the former jump-gate artwork's information boundary. Each
-/// wave travels against the fleet's heading so the ship appears to repeatedly cross a gate plane.
+/// The effect is owner-only, matching the route's information boundary.
 pub(crate) fn animate_jump_gate_missions(
     time: Res<Time>,
     player: Res<Player>,
     missions: Res<Missions>,
-    mut effects: Query<(&JumpGateMissionEffect, &mut Visibility)>,
+    session: Res<MultiplayerSession>,
+    mut effects: Query<(&JumpGateMissionEffect, &Children, &mut Visibility)>,
     mut waves: Query<
-        (&JumpGateMissionWave, &mut Transform, &MeshMaterial2d<ColorMaterial>),
-        Without<MissionCmp>,
+        (&JumpGateMissionStrand, &mut Transform, &mut Sprite, &mut Visibility),
+        Without<JumpGateMissionEffect>,
     >,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    for (effect, mut visibility) in &mut effects {
+    for (effect, children, mut visibility) in &mut effects {
         *visibility = if effect.owner == player.id
             && missions.get(effect.mission_id).is_some_and(|mission| mission.jump_gate)
         {
@@ -393,14 +361,30 @@ pub(crate) fn animate_jump_gate_missions(
         } else {
             Visibility::Hidden
         };
-    }
-
-    let elapsed = time.elapsed_secs();
-    for (wave, mut transform, material) in &mut waves {
-        let (next_transform, alpha) = jump_gate_wave_visual(wave.index, elapsed);
-        *transform = next_transform;
-        if let Some(mut material) = materials.get_mut(&material.0) {
-            material.color.set_alpha(alpha);
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+        let particles = jump_gate_link_particles(
+            Vec2::new(-JUMP_GATE_LOOP_HALF_LENGTH, 0.0),
+            Vec2::new(JUMP_GATE_LOOP_HALF_LENGTH, 0.0),
+            session.player_color(effect.owner).color(),
+            time.elapsed_secs(),
+            0.0,
+            JumpGateHelixStyle::MissionLoop,
+        );
+        for child in children.iter() {
+            let Ok((wave, mut transform, mut sprite, mut wave_visibility)) = waves.get_mut(child)
+            else {
+                continue;
+            };
+            if let Some(particle) = particles.get(wave.index) {
+                *transform = particle.transform;
+                sprite.color = particle.color;
+                sprite.custom_size = Some(particle.size);
+                *wave_visibility = Visibility::Inherited;
+            } else {
+                *wave_visibility = Visibility::Hidden;
+            }
         }
     }
 }
@@ -413,15 +397,11 @@ fn mission_route_markers(
     end_clearance: f32,
     color: Color,
     offset: f32,
-    style: MissionRouteStyle,
 ) -> Vec<(Transform, TextColor)> {
     let route = to - from;
     let direction = route.normalize_or_zero();
     let start = from + direction * start_clearance;
-    let spacing = match style {
-        MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
-        MissionRouteStyle::JumpGate => 64.0,
-    };
+    let spacing = MISSION_ROUTE_SPACING;
     // Subtract clearances before clamping: overlapping endpoints must never reverse the trail.
     let length = (route.length() - start_clearance - end_clearance).max(0.0);
     let count = (length / spacing).ceil() as usize;
@@ -435,19 +415,12 @@ fn mission_route_markers(
             }
             // Fade whole glyphs at the edges instead of squeezing or clipping them to fit.
             let fade = (distance.min(length - distance) / 18.0).clamp(0.0, 1.0);
-            let (rotation, scale) = match style {
-                MissionRouteStyle::Standard => (route_rotation, Vec3::ONE),
-                MissionRouteStyle::JumpGate => {
-                    let expansion = 0.5 + 2.5 * distance / length;
-                    (route_rotation, Vec3::new(0.4 * expansion, expansion, 1.0))
-                },
-            };
             Some((
                 Transform {
                     // Route trails sit above planets, behind missions and planet icons.
                     translation: (start + direction * distance).extend(MISSION_Z - 0.2),
-                    rotation,
-                    scale,
+                    rotation: route_rotation,
+                    scale: Vec3::ONE,
                 },
                 TextColor(color.with_alpha(color.alpha() * fade)),
             ))
@@ -458,7 +431,14 @@ fn mission_route_markers(
 /// Animates the travelled and remaining route of the hovered mission.
 pub fn update_mission_route_arrow(
     mut commands: Commands,
-    mut arrow_q: Query<(Entity, &mut Transform, &mut TextColor, &MissionRouteArrowCmp)>,
+    mut arrow_q: Query<
+        (Entity, &mut Transform, &mut TextColor, &MissionRouteArrowCmp),
+        Without<MissionRouteHelixCmp>,
+    >,
+    mut helix_q: Query<
+        (Entity, &mut Transform, &mut Sprite, &MissionRouteHelixCmp),
+        Without<MissionRouteArrowCmp>,
+    >,
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
@@ -471,32 +451,21 @@ pub fn update_mission_route_arrow(
         for (entity, _, _, _) in &mut arrow_q {
             commands.entity(entity).despawn();
         }
+        for (entity, _, _, _) in &mut helix_q {
+            commands.entity(entity).despawn();
+        }
         return;
     };
 
     let origin = map.get(mission.origin);
     let destination = map.get(mission.destination);
     let style = mission.route_style(&player);
-    let spacing = match style {
-        MissionRouteStyle::Standard => MISSION_ROUTE_SPACING,
-        MissionRouteStyle::JumpGate => 64.0,
-    };
+    let spacing = MISSION_ROUTE_SPACING;
     let animation_speed = mission.route_animation_speed();
     // Motion is measured in world units, so speed and spacing do not depend on route length.
     let offset =
         |speed: f64| (time.elapsed_secs_f64() * speed).rem_euclid(f64::from(spacing)) as f32;
-    let arrows = if style == MissionRouteStyle::JumpGate {
-        // Keep one continuous wave from origin to destination, including across the fleet.
-        mission_route_markers(
-            origin.position,
-            destination.position,
-            origin.size() * 0.7,
-            destination.size() * 0.7,
-            session.player_color(mission.owner).color(),
-            offset(animation_speed * 0.5),
-            style,
-        )
-    } else {
+    let arrows = if style == MissionRouteStyle::Standard {
         mission_route_markers(
             origin.position,
             mission.position,
@@ -504,7 +473,6 @@ pub fn update_mission_route_arrow(
             48.0,
             Color::srgba(0.72, 0.77, 0.84, 0.55),
             offset(animation_speed * 0.625),
-            style,
         )
         .into_iter()
         .chain(mission_route_markers(
@@ -514,17 +482,28 @@ pub fn update_mission_route_arrow(
             destination.size() * 0.7,
             session.player_color(mission.owner).color(),
             offset(animation_speed),
-            style,
         ))
         .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let helix = if style == MissionRouteStyle::JumpGate {
+        // A narrow braid runs across the whole route and through the fleet toward the destination.
+        let direction = (destination.position - origin.position).normalize_or_zero();
+        jump_gate_link_particles(
+            origin.position + direction * origin.size() * 0.7,
+            destination.position - direction * destination.size() * 0.7,
+            session.player_color(mission.owner).color(),
+            time.elapsed_secs(),
+            0.0,
+            JumpGateHelixStyle::MissionRoute,
+        )
+    } else {
+        Vec::new()
     };
     let mut present = vec![false; arrows.len()];
 
     for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {
-        if arrow.style != style {
-            commands.entity(entity).despawn();
-            continue;
-        }
         let Some((next_transform, next_color)) = arrows.get(arrow.index) else {
             commands.entity(entity).despawn();
             continue;
@@ -538,15 +517,11 @@ pub fn update_mission_route_arrow(
         if present[index] {
             continue;
         }
-        let (glyph, font_size) = match style {
-            MissionRouteStyle::Standard => (">", 28.0),
-            MissionRouteStyle::JumpGate => (JUMP_GATE_ROUTE_GLYPH, 26.0),
-        };
         commands.spawn((
-            Text2d::new(glyph),
+            Text2d::new(">"),
             TextFont {
                 font: assets.font("bold").into(),
-                font_size: font_size.into(),
+                font_size: 28.0.into(),
                 ..default()
             },
             text_color,
@@ -554,7 +529,35 @@ pub fn update_mission_route_arrow(
             Pickable::IGNORE,
             MissionRouteArrowCmp {
                 index,
-                style,
+            },
+            MapCmp,
+        ));
+    }
+    let mut helix_present = vec![false; helix.len()];
+    for (entity, mut transform, mut sprite, particle) in &mut helix_q {
+        let Some(next) = helix.get(particle.index) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        helix_present[particle.index] = true;
+        *transform = next.transform;
+        sprite.color = next.color;
+        sprite.custom_size = Some(next.size);
+    }
+    for (index, particle) in helix.into_iter().enumerate() {
+        if helix_present[index] {
+            continue;
+        }
+        commands.spawn((
+            Sprite {
+                color: particle.color,
+                custom_size: Some(particle.size),
+                ..default()
+            },
+            particle.transform,
+            Pickable::IGNORE,
+            MissionRouteHelixCmp {
+                index,
             },
             MapCmp,
         ));

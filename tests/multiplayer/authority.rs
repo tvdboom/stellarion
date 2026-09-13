@@ -2,7 +2,7 @@ use crate::core::identity::GameCode;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission};
 use crate::core::units::Unit;
 use crate::multiplayer::authority::resolved_snapshot;
-use crate::multiplayer::backend::{BackendError, MultiplayerBackend};
+use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
 use crate::multiplayer::model::{AuthSession, CreateGameRequest, GameRecord, JoinGameRequest};
 use futures_lite::future::block_on;
@@ -60,7 +60,14 @@ fn invalid_orders_cannot_poison_an_immutable_submission_slot() {
         block_on(backend.submit_turn(&host, &active.id, invalid)),
         Err(BackendError::InvalidData(_))
     ));
-    assert!(block_on(backend.load_turn_submissions(&host, &active.id, 1)).unwrap().is_empty());
+    assert!(block_on(backend.load_turn_submissions(
+        &host,
+        &active.id,
+        1,
+        TurnSubmissionScope::All
+    ))
+    .unwrap()
+    .is_empty());
     let submissions = vec![TurnSubmission::new(1, 1, vec![]), TurnSubmission::new(2, 1, vec![])];
     block_on(backend.submit_turn(&host, &active.id, submissions[0].clone())).unwrap();
     block_on(backend.submit_turn(&guest, &active.id, submissions[1].clone())).unwrap();

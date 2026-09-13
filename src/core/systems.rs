@@ -269,6 +269,8 @@ pub fn check_keys(
                     };
 
                     state.planet_selected = Some(planets[new_index]);
+                    // Manual selection and camera input disable following the selected world.
+                    state.to_selected = true;
                 }
             }
         }

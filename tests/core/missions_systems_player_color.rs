@@ -131,8 +131,14 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
             .unwrap();
         // Compare the actual world transforms, including parent offsets on planet icons.
         for transform in world
-            .query_filtered::<&GlobalTransform, Or<(With<MissionCmp>, With<MissionRouteArrowCmp>)>>(
-            )
+            .query_filtered::<
+                &GlobalTransform,
+                Or<(
+                    With<MissionCmp>,
+                    With<MissionRouteArrowCmp>,
+                    With<MissionRouteHelixCmp>,
+                )>,
+            >()
             .iter(world)
         {
             assert!(transform.translation().z > planet_z);
@@ -192,65 +198,71 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         assert!(effects.iter().all(|(effect, visibility)| {
             (**visibility == Visibility::Inherited) == (effect.owner == model.players[viewer].id)
         }));
-        let route_styles = world
-            .query::<&MissionRouteArrowCmp>()
-            .iter(world)
-            .map(|arrow| arrow.style)
-            .collect::<Vec<_>>();
+        let arrow_count = world.query::<&MissionRouteArrowCmp>().iter(world).count();
+        let helix_count = world.query::<&MissionRouteHelixCmp>().iter(world).count();
         let expected_style = match hover {
             Some(4) => Some(MissionRouteStyle::Standard),
             Some(2) if model.players[viewer].id == 2 => Some(MissionRouteStyle::JumpGate),
             Some(2) => Some(MissionRouteStyle::Standard),
             _ => None,
         };
-        assert_eq!(route_styles.first().copied(), expected_style);
-        assert!(route_styles.iter().all(|&style| Some(style) == expected_style));
-        if expected_style == Some(MissionRouteStyle::JumpGate) {
-            let glyphs = world
-                .query_filtered::<&Text2d, With<MissionRouteArrowCmp>>()
-                .iter(world)
-                .map(|text| text.0.as_str())
-                .collect::<Vec<_>>();
-            assert!(!glyphs.is_empty());
-            assert!(glyphs.iter().all(|glyph| *glyph == JUMP_GATE_ROUTE_GLYPH));
-        }
+        assert_eq!(arrow_count > 0, expected_style == Some(MissionRouteStyle::Standard));
+        assert_eq!(helix_count > 0, expected_style == Some(MissionRouteStyle::JumpGate));
     }
 }
 
 #[test]
-fn jump_gate_portal_waves_pass_from_ahead_of_the_fleet_to_behind_it() {
-    let (ahead, ahead_alpha) = jump_gate_wave_visual(0, JUMP_GATE_WAVE_PERIOD_SECONDS * 0.2);
-    let (behind, behind_alpha) = jump_gate_wave_visual(0, JUMP_GATE_WAVE_PERIOD_SECONDS * 0.8);
-
-    assert!(ahead.translation.x > 0.0);
-    assert!(ahead.translation.z > 0.0);
-    assert!(behind.translation.x < 0.0);
-    assert!(behind.translation.z < 0.0);
-    assert!(ahead.scale.x < ahead.scale.y);
-    assert!(behind.scale.x < behind.scale.y);
-    assert!(ahead_alpha > 0.0);
-    assert!(behind_alpha > 0.0);
+fn jump_gate_mission_loop_brackets_the_fleet_with_two_strands() {
+    let particles = jump_gate_link_particles(
+        Vec2::new(-JUMP_GATE_LOOP_HALF_LENGTH, 0.0),
+        Vec2::new(JUMP_GATE_LOOP_HALF_LENGTH, 0.0),
+        Color::WHITE,
+        0.25,
+        0.0,
+        JumpGateHelixStyle::MissionLoop,
+    );
+    assert!(!particles.is_empty());
+    assert!(particles.iter().any(|particle| particle.transform.translation.x < 0.0));
+    assert!(particles.iter().any(|particle| particle.transform.translation.x > 0.0));
+    assert!(particles.iter().any(|particle| particle.transform.translation.z < 0.0));
+    assert!(particles.iter().any(|particle| particle.transform.translation.z > 0.0));
+    assert!(particles.len() <= JUMP_GATE_LOOP_PARTICLES);
+    let strand_length = particles.len() / 2;
+    assert!(particles[..strand_length]
+        .iter()
+        .zip(&particles[strand_length..])
+        .all(|(front, back)| front.transform.translation.z * back.transform.translation.z <= 0.0));
 }
 
 #[test]
-fn jump_gate_wave_fronts_expand_toward_the_route_destination() {
-    let markers = mission_route_markers(
+fn jump_gate_route_is_thinner_than_gate_hover_and_flows_toward_destination() {
+    let route = jump_gate_link_particles(
         Vec2::ZERO,
-        Vec2::new(0.0, 500.0),
-        0.0,
-        0.0,
+        Vec2::new(500.0, 0.0),
         Color::WHITE,
         0.0,
-        MissionRouteStyle::JumpGate,
+        0.0,
+        JumpGateHelixStyle::MissionRoute,
     );
-
-    assert!(!markers.is_empty());
-    assert!(markers.windows(2).all(|pair| pair[1].0.scale.y > pair[0].0.scale.y));
-    assert!(markers.iter().all(|(transform, _)| transform.scale.is_finite()));
-    assert!(markers.iter().all(|(transform, _)| transform.scale.x < transform.scale.y));
-    assert!(markers
-        .iter()
-        .all(|(transform, _)| { transform.rotation.mul_vec3(Vec3::X).dot(Vec3::Y) > 0.999 }));
+    let gate = jump_gate_link_particles(
+        Vec2::ZERO,
+        Vec2::new(500.0, 0.0),
+        Color::WHITE,
+        0.0,
+        0.0,
+        JumpGateHelixStyle::GateLink,
+    );
+    let later = jump_gate_link_particles(
+        Vec2::ZERO,
+        Vec2::new(500.0, 0.0),
+        Color::WHITE,
+        0.1,
+        0.0,
+        JumpGateHelixStyle::MissionRoute,
+    );
+    assert!(!route.is_empty());
+    assert!(route.iter().all(|particle| particle.size.y < gate[0].size.y));
+    assert!(route[0].transform.translation.x < later[0].transform.translation.x);
 }
 
 #[test]

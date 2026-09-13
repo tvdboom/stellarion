@@ -30,7 +30,7 @@ await db.exec(`
   create table cron.job (jobid bigint generated always as identity,
     jobname text primary key, schedule text, command text,
     database text default current_database());
-  create table cron.job_run_details (jobid bigint, status text);
+  create table cron.job_run_details (jobid bigint, status text, end_time timestamptz);
   create function cron.schedule(text, text, text) returns bigint language sql as $$
     insert into cron.job (jobname, schedule, command) values ($1, $2, $3)
     on conflict (jobname) do update set schedule = excluded.schedule, command = excluded.command
@@ -63,7 +63,7 @@ await db.exec(`
   create function public.obsolete_game_rpc() returns int language sql as $$ select 1 $$;
   select cron.schedule('stellarion-stale-cleanup', '0 0 * * *', 'select 1');
   select cron.schedule('external-job', '0 0 * * *', 'select 2');
-  insert into cron.job_run_details select jobid, 'succeeded' from cron.job;
+  insert into cron.job_run_details (jobid, status) select jobid, 'succeeded' from cron.job;
 `);
 await db.exec(schema);
 assert.equal(
@@ -102,6 +102,35 @@ const job = (await db.query(
 )).rows[0];
 assert.equal(job.schedule, "* * * * *");
 assert.equal(job.command, "select public.stellarion_delete_expired_games();");
+// A duplicate B-tree adds storage and write work but cannot improve these scans.
+for (const table of ["stellarion_turn_submissions", "stellarion_game_events"]) {
+  assert.equal((await db.query(
+    "select count(*)::int as n from pg_indexes where schemaname = 'public' and tablename = $1",
+    [table],
+  )).rows[0].n, 1);
+}
+assert.equal((await db.query(
+  "select relreplident from pg_class where oid = 'public.stellarion_game_events'::regclass",
+)).rows[0].relreplident, "d");
+
+await db.exec(`
+  insert into cron.job (jobname, database) values ('stellarion-foreign-job', 'another_database');
+  insert into cron.job_run_details (jobid, status, end_time)
+    select jobid, 'old', now() - interval '49 hours' from cron.job;
+  insert into cron.job_run_details (jobid, status, end_time)
+    select jobid, 'recent', now() - interval '47 hours' from cron.job;
+  insert into cron.job_run_details (jobid, status)
+    select jobid, 'running' from cron.job;
+`);
+await db.query(job.command);
+const logs = (await db.query(`
+  select j.jobname, d.status from cron.job_run_details d
+  join cron.job j using (jobid) where d.status in ('old', 'recent', 'running')
+`)).rows;
+assert(!logs.some(log => log.jobname === job.jobname && log.status === "old"));
+assert.equal(logs.length, 8, "keep recent/running logs and all unrelated or foreign-database logs");
+await db.exec("delete from cron.job where jobname = 'stellarion-foreign-job'");
+console.log("Duplicate indexes removed; default event identity and bounded, isolated scheduler logs verified.");
 assert.equal(
   (await db.query(
     "select count(*)::int as n from pg_class c join pg_namespace s on s.oid = c.relnamespace where s.nspname = 'public' and c.relrowsecurity",
@@ -273,10 +302,20 @@ for (const signature of [
   "stellarion_submit_turn(uuid,jsonb)",
   "stellarion_withdraw_turn(uuid,bigint,bigint)",
   "stellarion_publish_resolution(uuid,bigint,bigint,jsonb)",
+  "stellarion_load_turn_submissions(uuid,bigint,text)",
 ]) {
   for (const role of ["anon", "authenticated"]) {
     assert.equal((await db.query("select has_function_privilege($1, $2, 'execute') as allowed",
       [role, `public.${signature}`])).rows[0].allowed, role === "authenticated", `${role}: ${signature}`);
+  }
+}
+for (const signature of [
+  "stellarion_submission_ids(jsonb)",
+  "stellarion_freeze_joint_attack_launches(uuid,jsonb,bigint,bigint)",
+]) {
+  for (const role of ["anon", "authenticated"]) {
+    assert.equal((await db.query("select has_function_privilege($1, $2, 'execute') as allowed",
+      [role, `public.${signature}`])).rows[0].allowed, false, `${role}: ${signature}`);
   }
 }
 const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
@@ -294,7 +333,20 @@ assert.equal(losingClaim.revision, winningRevision);
 assert.equal(losingClaim.persisted.state.players[0].color, 2);
 assert.equal(losingClaim.persisted.state.players[1].color, 1);
 lobby = await setColor(host, 0);
-const start = (actor, persisted = fixtures.active, revision = lobby.revision) => rpc(actor,
+// Snapshot writes acknowledge server metadata without echoing the uploaded state.
+// Reconstruct as the client does, then compare with an independent canonical load.
+const snapshotWrite = async (actor, query, args) => {
+  const metadata = await rpc(actor, query, args);
+  assert(!("persisted" in metadata), "snapshot uploads must not echo their large payload");
+  const reconstructed = { ...metadata, persisted: args.at(-1) };
+  const loaded = await rpc(actor, "select public.stellarion_load_game($1) as result", [args[0]]);
+  assert.deepEqual(reconstructed, loaded);
+  if (query.includes("publish_resolution")) {
+    console.log(`Resolution acknowledgement: ${Buffer.byteLength(JSON.stringify(metadata))} JSON bytes versus ${Buffer.byteLength(JSON.stringify(loaded))} bytes with the fixture snapshot; excludes HTTP/compression.`);
+  }
+  return reconstructed;
+};
+const start = (actor, persisted = fixtures.active, revision = lobby.revision) => snapshotWrite(actor,
   "select public.stellarion_start_game($1, $2, $3) as result", [id, revision, persisted]);
 await assert.rejects(start(guest), /STLR_INVALID_STATUS/);
 await assert.rejects(start(host, fixtures.active, lobby.revision - 1), /STLR_CONFLICT/);
@@ -311,6 +363,20 @@ await assert.rejects(rpc(host,
   /STLR_INVALID_DATA:protection_player/,
   "two-player games never enable protection");
 const startedSavedAt = active.saved_at;
+// Both draft-saving and readiness must reject the same malformed submission envelopes.
+for (const invalidSubmission of [
+  null,
+  { player_id: 1, turn: 1, generation: 0, commands: [], extra: true },
+  { player_id: 1, turn: 1, generation: 0, commands: {} },
+  { player_id: 1, turn: 1, generation: 0, commands: Array(1025).fill({}) },
+  { player_id: 0, turn: 1, generation: 0, commands: [] },
+  { player_id: 1, turn: 1, generation: -1, commands: [] },
+]) {
+  await assert.rejects(rpc(host, "select public.stellarion_save_game($1, $2, $3) as result",
+    [id, active.revision, invalidSubmission]), /STLR_INVALID_DATA:submission/);
+  await assert.rejects(rpc(host, "select public.stellarion_submit_turn($1, $2) as result",
+    [id, invalidSubmission]), /STLR_INVALID_DATA:submission/);
+}
 const summaries = await rpc(host, "select public.stellarion_list_games() as result");
 assert.equal(summaries.length, 1);
 assert.equal(summaries[0].saved_at, startedSavedAt);
@@ -330,6 +396,15 @@ active = { ...active, ...acknowledgement };
 assert(active.saved_at >= startedSavedAt);
 const savedDrafts = await rpc(host,
   "select public.stellarion_load_turn_submissions($1, $2) as result", [id, 1]);
+const scopedOrders = (actor, scope, turn = 1) => rpc(actor,
+  "select public.stellarion_load_turn_submissions($1, $2, $3) as result", [id, turn, scope]);
+assert.deepEqual(await scopedOrders(host, "mine"), savedDrafts);
+assert.deepEqual(await scopedOrders(guest, "mine"), []);
+assert.deepEqual(await scopedOrders(host, "resolution"), []);
+await assert.rejects(scopedOrders(outsider, "resolution"), /STLR_FORBIDDEN/);
+await assert.rejects(scopedOrders(null, "mine"), /STLR_UNAUTHENTICATED/);
+await assert.rejects(scopedOrders(host, "invalid"), /STLR_INVALID_DATA:submission_scope/);
+await assert.rejects(scopedOrders(host, null), /STLR_INVALID_DATA:submission_scope/);
 assert.equal(savedDrafts.length, 1);
 assert.equal(savedDrafts[0].ready, false);
 assert.deepEqual(savedDrafts[0].submission.commands, []);
@@ -338,7 +413,7 @@ const submit = (actor, player, turn = 1, commands = [], generation = 0) => rpc(a
   [id, { player_id: player, turn, commands, generation }]);
 const withdraw = (actor, turn = 1, generation = 0) => rpc(actor,
   "select public.stellarion_withdraw_turn($1, $2, $3) as result", [id, turn, generation]);
-const publish = (actor, persisted = fixtures.resolved, revision = active.revision) => rpc(actor,
+const publish = (actor, persisted = fixtures.resolved, revision = active.revision) => snapshotWrite(actor,
   "select public.stellarion_publish_resolution($1, $2, $3, $4) as result",
   [id, revision, 1, persisted]);
 await assert.rejects(submit(host, 2), /STLR_FORBIDDEN/);
@@ -350,6 +425,7 @@ await assert.rejects(rpc(host,
 await assert.rejects(publish(host), /STLR_TURN_INCOMPLETE/);
 assert.equal((await submit(host, 1)).disposition, "inserted");
 assert.equal((await submit(host, 1)).disposition, "duplicate");
+assert.deepEqual(await scopedOrders(host, "resolution"), [], "do not resend orders while waiting");
 await assert.rejects(submit(host, 1, 1, [{}]), /STLR_DUPLICATE_SUBMISSION/);
 await assert.rejects(publish(host), /STLR_TURN_INCOMPLETE/);
 await assert.rejects(withdraw(outsider), /STLR_FORBIDDEN/);
@@ -361,6 +437,7 @@ assert.deepEqual(await withdraw(host), draft, "withdrawal retry preserves the dr
 assert.deepEqual((await rpc(host, "select public.stellarion_load_game($1) as result", [id])).submitted_players, []);
 await assert.rejects(submit(host, 1), /STLR_DUPLICATE_SUBMISSION/, "late ready cannot undo Continue turn");
 assert.equal((await submit(guest, 2)).disposition, "inserted");
+assert.deepEqual(await scopedOrders(guest, "resolution"), [], "a withdrawn draft is incomplete");
 await assert.rejects(publish(guest), /STLR_TURN_INCOMPLETE/, "withdrawn orders cannot resolve");
 assert.equal((await submit(host, 1, 1, [], draft.generation)).disposition, "inserted");
 assert.equal((await submit(host, 1, 1, [], draft.generation)).disposition, "duplicate");
@@ -369,6 +446,16 @@ await assert.rejects(withdraw(guest), /STLR_TURN_COMMITTED/);
 await assert.rejects(withdraw(host), /STLR_DUPLICATE_SUBMISSION/, "late withdrawal cannot undo a newer ready");
 const submissions = await rpc(host, "select public.stellarion_load_turn_submissions($1, $2) as result", [id, 1]);
 assert.deepEqual(submissions.map(s => s.submission.player_id), [1, 2]);
+assert.deepEqual(await scopedOrders(host, "resolution"), submissions);
+await db.query(`update public.stellarion_games
+  set state = jsonb_set(state, '{state,players,1,spectator}', 'true') where id = $1`, [id]);
+assert.deepEqual((await scopedOrders(host, "resolution")).map(s => s.submission.player_id), [1],
+  "spectator orders must not enter turn resolution");
+await db.query(`update public.stellarion_games
+  set state = jsonb_set(state, '{state,players,1,spectator}', 'false') where id = $1`, [id]);
+assert.deepEqual((await scopedOrders(guest, "mine")).map(s => s.submission.player_id), [2]);
+const fullOrderBytes = Buffer.byteLength(JSON.stringify(submissions));
+console.log(`Incomplete resolver response: 2 JSON bytes instead of repeated order payloads (${fullOrderBytes} bytes for the two-player empty-order fixture); excludes HTTP/compression.`);
 const reseeded = structuredClone(fixtures.resolved);
 reseeded.state.rng.seed[0] += 1;
 await assert.rejects(publish(host, reseeded), /STLR_FORBIDDEN/);
@@ -378,6 +465,8 @@ assert.equal(resolved.persisted.state.turn, 2);
 assert.equal(resolved.revision, active.revision + 1);
 assert(resolved.saved_at >= active.saved_at);
 assert.deepEqual(resolved.submitted_players, []);
+assert.deepEqual(await scopedOrders(host, "resolution"), [], "do not send already-resolved orders");
+assert.deepEqual(await scopedOrders(host, "all"), submissions, "historical reads remain available");
 await assert.rejects(publish(guest), /STLR_CONFLICT/);
 const events = await rpc(guest, "select public.stellarion_events_since($1, $2) as result", [id, 0]);
 assert(events.events.some(e => e.kind === "turn_resolved"));
@@ -458,13 +547,12 @@ let protectionGame = (await rpc(guest,
 protectionGame = (await rpc(outsider,
   "select public.stellarion_join_game($1, $2, $3) as result",
   ["PRTCT1", "Third", "3333-3333-3333-3333"])).game;
-protectionGame = await rpc(host,
+protectionGame = await snapshotWrite(host,
   "select public.stellarion_start_game($1, $2, $3) as result",
   [protectionLobby.game.id, protectionGame.revision, fixtures.active_three]);
 const protectedPlanet = protectionGame.persisted.state.players[0].home_planet;
 const protectorHome = protectionGame.persisted.state.players[1].home_planet;
 const thirdHome = protectionGame.persisted.state.players[2].home_planet;
-const protectionSavedAt = protectionGame.saved_at;
 
 // Joint-attack coordination stores only the invitation, is visible only to its participants,
 // and targets wake-up events to those participants while advancing every member's cursor.
@@ -650,6 +738,12 @@ console.log("Private joint-attack invitations, live responses, cancellation, rej
 const setProtection = (allowed) => rpc(host,
   "select public.stellarion_set_protection_permission($1, $2, $3, $4) as result",
   [protectionGame.id, protectedPlanet, 2, allowed]);
+// Earlier draft saves deliberately renewed this checkpoint. Give it a distinct
+// timestamp now so the permission assertion cannot pass or fail by wall-clock luck.
+await db.query("update public.stellarion_games set saved_at = now() - interval '1 day' where id = $1",
+  [protectionGame.id]);
+const protectionSavedAt = (await rpc(host,
+  "select public.stellarion_load_game($1) as result", [protectionGame.id])).saved_at;
 const granted = await setProtection(true);
 assert.deepEqual(Object.keys(granted).sort(),
   ["allowed", "controller", "planet_id", "protector", "revision", "turn"]);
@@ -662,29 +756,17 @@ assert(protectionRecord.persisted.state.map.planets
   .find(planet => planet.id === protectedPlanet).protection_permissions.includes(2));
 assert.equal(protectionRecord.persisted.state.players[1].protection_intel[protectedPlanet], 1);
 const protectedUnit = "Ship(LightFighter)";
-protectionRecord.persisted.state.map.planets
-  .find(planet => planet.id === protectorHome).army.controller[protectedUnit] = 1;
 assert.equal((await rpc(guest,
   "select public.stellarion_submit_turn($1, $2) as result",
   [protectionGame.id, {
     player_id: 2,
     turn: protectionRecord.persisted.state.turn,
     generation: 0,
-    commands: [{ SendMission: {
-      mission_id: 91,
-      origin: protectorHome,
-      destination: protectedPlanet,
-      objective: "Protect",
-      army: { [protectedUnit]: 1 },
-      bombing: "None",
-      combat_probes: false,
-      deep_cover: false,
-      jump_gate: false,
-    } }],
+    commands: [],
   }])).disposition, "inserted");
 
-// Seed a stationed protector into the canonical snapshot so revocation exercises the immediate
-// return path without waiting for a turn-resolution snapshot.
+// Seed a stationed protector into the canonical snapshot. Revocation leaves it available for
+// the owner's orders until turn resolution applies the fallback return.
 const protectedState = protectionRecord.persisted.state.map.planets
   .find(planet => planet.id === protectedPlanet);
 protectedState.army.protectors["2"] = { [protectedUnit]: 1 };
@@ -698,15 +780,12 @@ protectionRecord = await rpc(guest,
 const revokedPlanet = protectionRecord.persisted.state.map.planets
   .find(planet => planet.id === protectedPlanet);
 assert(!revokedPlanet.protection_permissions.includes(2));
-assert(!("2" in revokedPlanet.army.protectors));
+assert.equal(revokedPlanet.army.protectors["2"][protectedUnit], 1);
 assert.equal(protectionRecord.persisted.state.players[1].protection_intel[protectedPlanet], 1,
   "revocation preserves controller intelligence");
-const immediateReturn = protectionRecord.persisted.state.missions
-  .find(mission => mission.owner === 2 && mission.origin === protectedPlanet);
-assert.equal(immediateReturn.destination, protectorHome);
-assert.equal(immediateReturn.objective, "Deploy");
-assert.equal(immediateReturn.return_objective, "Protect");
-assert.equal(immediateReturn.deep_cover, false);
+assert(!protectionRecord.persisted.state.missions.some(mission =>
+  mission.owner === 2 && mission.origin === protectedPlanet),
+  "revocation must not create a homeward mission before the next turn");
 assert(!protectionRecord.submitted_players.includes(2));
 const protectionDrafts = await rpc(guest,
   "select public.stellarion_load_turn_submissions($1, $2) as result",

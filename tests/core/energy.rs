@@ -14,7 +14,6 @@ fn every_building_has_one_authoritative_per_level_energy_value() {
         Building::Terraformer,
         Building::SensorPhalanx,
         Building::PlanetaryShield,
-        Building::JumpGate,
         Building::Laboratory,
         Building::OrbitalRadar,
     ];
@@ -138,7 +137,7 @@ fn fully_developed_planet_balance_follows_its_solar_band() {
             EnergyGrid::for_world(&game.map, game.map.get(planet_id)),
             EnergyGrid {
                 supply: expected_supply,
-                demand: 59,
+                demand: 54,
             },
             "{band:?}",
         );

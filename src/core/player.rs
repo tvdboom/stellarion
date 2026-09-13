@@ -243,6 +243,19 @@ impl Player {
         base.saturating_add(senate_levels).min(total)
     }
 
+    /// Derives production support from the completed, still-owned home-world Senate.
+    pub fn senate_support(&self, map: &Map) -> crate::core::units::operations::SenateSupport {
+        use crate::core::units::operations::SenateSupport;
+        let home = map
+            .try_get(self.home_planet)
+            .filter(|planet| planet.owned == Some(self.id) && !planet.is_destroyed);
+        SenateSupport {
+            owner: self.id,
+            level: home.map_or(0, |planet| planet.army.amount(&Unit::Building(Building::Senate))),
+            policy: home.map_or(Default::default(), |planet| planet.operations.senate),
+        }
+    }
+
     /// Returns the Senate level cap derived from the match's base colony allowance.
     pub fn senate_level_limit(map: &Map, colonizable_percent: usize) -> usize {
         let total = map.planets.iter().filter(|planet| !planet.is_moon()).count();
@@ -322,7 +335,7 @@ impl Player {
                                     ))
                                 }
                             } else if r.mission.owner == self.id
-                                && u.revealed_by_probes(r.scout_probes)
+                                && u.revealed_by_probes_on_world(r.scout_probes, r.planet.is_moon())
                             {
                                 Some((*u, r.planet.army.combined_amount(u)))
                             } else {

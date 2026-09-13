@@ -106,7 +106,11 @@ fn run() -> Result<(), String> {
         let source_hash = file_hash(&source)?;
 
         match source.extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
-            Some(extension) if extension == "png" && relative == "images/icons/planet.png" => {
+            Some(extension)
+                if extension == "ogg"
+                    || extension == "ttf"
+                    || (extension == "png" && relative == "images/icons/planet.png") =>
+            {
                 let destination = runtime_root.join(&relative_path);
                 expected.insert(
                     relative.clone(),
@@ -138,18 +142,6 @@ fn run() -> Result<(), String> {
                     relative: destination_name,
                     mipmaps: should_generate_mipmaps(&relative),
                 });
-            },
-            Some(extension) if extension == "ogg" || extension == "ttf" => {
-                let destination = runtime_root.join(&relative_path);
-                expected.insert(
-                    relative.clone(),
-                    ExpectedAsset {
-                        source_relative: relative.clone(),
-                        source_hash,
-                        destination: destination.clone(),
-                    },
-                );
-                copies.push((source, destination, relative.clone(), relative));
             },
             Some(extension) => {
                 return Err(format!("unsupported source asset extension .{extension}: {relative}"));

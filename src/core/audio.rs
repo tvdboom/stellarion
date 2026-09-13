@@ -418,12 +418,14 @@ fn volume_popover(
     response.map(|response| response.inner)
 }
 
-/// Draws the HUD control at its final resolution; fine bitmap bevels blur at this size.
-fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
+const HUD_BUTTON_FOREGROUND: egui::Color32 = egui::Color32::from_rgb(232, 242, 250);
+
+/// Shared circular background and interaction bounds for the adjacent HUD controls.
+fn circular_hud_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
     let painter = ui.painter();
     let center = rect.center();
-    let white = egui::Color32::from_rgb(232, 242, 250);
+    let white = HUD_BUTTON_FOREGROUND;
     let cyan = egui::Color32::from_rgb(101, 202, 231);
     let highlighted = response.hovered() || response.has_focus();
     painter.circle(
@@ -443,6 +445,15 @@ fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
             },
         ),
     );
+    response
+}
+
+/// Draws the HUD control at its final resolution; fine bitmap bevels blur at this size.
+fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
+    let response = circular_hud_button(ui);
+    let painter = ui.painter();
+    let center = response.rect.center();
+    let white = HUD_BUTTON_FOREGROUND;
     let point = |x, y| center + egui::vec2(x, y);
     let stroke = egui::Stroke::new(1.8, white);
     match mode {
@@ -493,29 +504,10 @@ fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
 
 /// Draws a compact gear using the same circular treatment as the adjacent audio control.
 fn combat_settings_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+    let response = circular_hud_button(ui);
     let painter = ui.painter();
-    let center = rect.center();
-    let white = egui::Color32::from_rgb(232, 242, 250);
-    let cyan = egui::Color32::from_rgb(101, 202, 231);
-    let highlighted = response.hovered() || response.has_focus();
-    painter.circle(
-        center,
-        15.0,
-        if highlighted {
-            egui::Color32::from_rgb(27, 49, 66)
-        } else {
-            egui::Color32::from_rgb(14, 28, 42)
-        },
-        egui::Stroke::new(
-            1.5,
-            if highlighted {
-                white
-            } else {
-                cyan
-            },
-        ),
-    );
+    let center = response.rect.center();
+    let white = HUD_BUTTON_FOREGROUND;
     let stroke = egui::Stroke::new(1.8, white);
     painter.circle(center, 4.0, egui::Color32::TRANSPARENT, stroke);
     painter.circle(center, 8.0, egui::Color32::TRANSPARENT, egui::Stroke::new(1.3, white));

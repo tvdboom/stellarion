@@ -33,12 +33,6 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
             gas_planet_robotics.id(),
         ];
         let art = DevelopmentArt {
-            base: &image,
-            base_size: Vec2::splat(512.0),
-            facilities: &image,
-            facilities_size: Vec2::new(768.0, 512.0),
-            gas: &image,
-            gas_size: Vec2::splat(512.0),
             moon_shipyard: &moon_shipyard,
             moon_tidal_generator: &moon_tidal_generator,
             moon_orbital_radar: &moon_orbital_radar,
@@ -46,8 +40,7 @@ fn development_images_respect_world_limits_and_leave_status_icons_clear() {
             planet_administration: &planet_robotics,
             gas_planet_terraformer: &gas_planet_robotics,
             gas_planet_administration: &gas_planet_robotics,
-            surface_lights: &image,
-            shadow: &image,
+            ..development_art(&image)
         };
         spawn_development(
             &mut world.commands(),
@@ -179,21 +172,7 @@ fn gas_building_categories_appear_independently_and_do_not_duplicate() {
     planet.kind = PlanetKind::Gas;
     let image = Handle::<Image>::default();
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
-        moon_shipyard: &image,
-        moon_tidal_generator: &image,
-        moon_orbital_radar: &image,
-        planet_terraformer: &image,
-        planet_administration: &image,
-        gas_planet_terraformer: &image,
-        gas_planet_administration: &image,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
     for (buildings, expected) in [
         (vec![], vec![]),
@@ -246,21 +225,7 @@ fn planetary_senate_replaces_surface_sensor_artwork() {
     planet.kind = PlanetKind::Metallic;
     let image = Handle::<Image>::default();
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
-        moon_shipyard: &image,
-        moon_tidal_generator: &image,
-        moon_orbital_radar: &image,
-        planet_terraformer: &image,
-        planet_administration: &image,
-        gas_planet_terraformer: &image,
-        gas_planet_administration: &image,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
     for (building, expected) in
         [(Building::SensorPhalanx, None), (Building::Senate, Some((256, 0)))]
@@ -288,21 +253,11 @@ fn planetary_terraformer_art_uses_only_an_available_one_of_four_slots() {
     let robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(4), default());
     let gas_robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(5), default());
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
-        moon_shipyard: &image,
-        moon_tidal_generator: &image,
-        moon_orbital_radar: &image,
         planet_terraformer: &robotics,
         planet_administration: &robotics,
         gas_planet_terraformer: &gas_robotics,
         gas_planet_administration: &gas_robotics,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
 
     for kind in [PlanetKind::Metallic, PlanetKind::Gas] {
@@ -362,21 +317,11 @@ fn completed_planetary_building_keeps_its_surface_position() {
     let robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(4), default());
     let gas_robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(5), default());
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
-        moon_shipyard: &image,
-        moon_tidal_generator: &image,
-        moon_orbital_radar: &image,
         planet_terraformer: &robotics,
         planet_administration: &robotics,
         gas_planet_terraformer: &gas_robotics,
         gas_planet_administration: &gas_robotics,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
     let robotics_position = |planet: &Planet| {
         let robotics_image = if planet.kind == PlanetKind::Gas {
@@ -429,21 +374,10 @@ fn moon_artwork_uses_completed_lunar_buildings_with_a_three_image_limit() {
     let moon_tidal_generator = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(2), default());
     let moon_orbital_radar = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(3), default());
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
         moon_shipyard: &moon_shipyard,
         moon_tidal_generator: &moon_tidal_generator,
         moon_orbital_radar: &moon_orbital_radar,
-        planet_terraformer: &image,
-        planet_administration: &image,
-        gas_planet_terraformer: &image,
-        gas_planet_administration: &image,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
     for (buildings, mut expected_atlas, mut expected_dedicated) in [
         (vec![], vec![], vec![]),
@@ -522,29 +456,26 @@ fn report(id: u64, turn: usize, planet: &Planet, losses: usize) -> MissionReport
     MissionReport {
         id,
         turn,
-        mission: Mission::new_with_id(
-            id,
-            1,
-            1,
-            planet,
-            planet,
-            Icon::Attack,
-            Army::from([(Unit::Ship(Ship::LightFighter), losses)]),
-            BombingRaid::None,
-            false,
-            false,
-            None,
-        ),
-        planet: planet.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: planet.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission::new_with_id(
+                id,
+                1,
+                1,
+                planet,
+                planet,
+                Icon::Attack,
+                Army::from([(Unit::Ship(Ship::LightFighter), losses)]),
+                BombingRaid::None,
+                false,
+                false,
+                None,
+            ),
+            planet.clone(),
+        )
     }
 }
 
@@ -690,21 +621,7 @@ fn surface_lights_use_sparse_varied_clusters() {
     planet.kind = PlanetKind::Metallic;
     let image = Handle::<Image>::default();
     let art = DevelopmentArt {
-        base: &image,
-        base_size: Vec2::splat(512.0),
-        facilities: &image,
-        facilities_size: Vec2::new(768.0, 512.0),
-        gas: &image,
-        gas_size: Vec2::splat(512.0),
-        moon_shipyard: &image,
-        moon_tidal_generator: &image,
-        moon_orbital_radar: &image,
-        planet_terraformer: &image,
-        planet_administration: &image,
-        gas_planet_terraformer: &image,
-        gas_planet_administration: &image,
-        surface_lights: &image,
-        shadow: &image,
+        ..development_art(&image)
     };
     let mut world = World::new();
     spawn_development(
@@ -1485,4 +1402,24 @@ fn render_development_and_wreckage() {
             .chain(),
     );
     app.run();
+}
+
+fn development_art(image: &Handle<Image>) -> DevelopmentArt<'_> {
+    DevelopmentArt {
+        base: image,
+        base_size: Vec2::splat(512.0),
+        facilities: image,
+        facilities_size: Vec2::new(768.0, 512.0),
+        gas: image,
+        gas_size: Vec2::splat(512.0),
+        moon_shipyard: image,
+        moon_tidal_generator: image,
+        moon_orbital_radar: image,
+        planet_terraformer: image,
+        planet_administration: image,
+        gas_planet_terraformer: image,
+        gas_planet_administration: image,
+        surface_lights: image,
+        shadow: image,
+    }
 }

@@ -20,8 +20,9 @@ use crate::core::simulation::{
     PersistedGame, TurnCommand, TurnSubmission,
 };
 use crate::core::states::AppState;
+use crate::core::units::Amount;
 use crate::multiplayer::authority::started_snapshot_for_members;
-use crate::multiplayer::backend::{BackendError, MultiplayerBackend};
+use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
 use crate::multiplayer::model::{
     AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GameRecord,
@@ -455,6 +456,17 @@ enum Operation {
     PracticeTurn,
 }
 
+impl Operation {
+    /// Preserves the operation category used by the shared error and retry policy.
+    fn complete<T>(
+        self,
+        result: Result<T, BackendError>,
+        success: impl FnOnce(T) -> BackendOutput,
+    ) -> BackendOutput {
+        result.map_or_else(|error| BackendOutput::Failed(self, error), success)
+    }
+}
+
 /// Values returned by background backend tasks.
 enum BackendOutput {
     Initialized {
@@ -850,8 +862,8 @@ fn process_requests(
                 return;
             }
             let departure = session.active_game.as_ref().map(|record| record.id.clone());
-            if let (Some(backend), Some(auth), Some(record)) =
-                (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
+            if let (Some(backend), Some(auth), Some(game_id)) =
+                (runtime.backend.clone(), session.auth.clone(), departure.clone())
             {
                 spawn_backend_task(&mut tasks, async move {
                     // Finish earlier presence/start requests before disconnecting. Their
@@ -859,7 +871,7 @@ fn process_requests(
                     for task in outstanding {
                         let _ = task.await;
                     }
-                    let _ = backend.set_connected(&auth, &record.id, false).await;
+                    let _ = backend.set_connected(&auth, &game_id, false).await;
                     BackendOutput::DepartureFinished
                 });
             }
@@ -1013,19 +1025,18 @@ fn process_requests(
                         return BackendOutput::Failed(Operation::PracticeTurn, error);
                     }
                 }
-                match backend
-                    .publish_resolution(
-                        &resolver,
-                        &record.id,
-                        record.revision,
-                        record.persisted.state.turn,
-                        next,
-                    )
-                    .await
-                {
-                    Ok(record) => BackendOutput::Record(Operation::PracticeTurn, record),
-                    Err(error) => BackendOutput::Failed(Operation::PracticeTurn, error),
-                }
+                Operation::PracticeTurn.complete(
+                    backend
+                        .publish_resolution(
+                            &resolver,
+                            &record.id,
+                            record.revision,
+                            record.persisted.state.turn,
+                            next,
+                        )
+                        .await,
+                    |record| BackendOutput::Record(Operation::PracticeTurn, record),
+                )
             });
             continue;
         }
@@ -1206,23 +1217,20 @@ fn process_requests(
                 );
             },
             MultiplayerRequest::ResumeActiveGame => {
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No game is selected.");
                     continue;
                 };
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.resume_game(&auth, &record.id).await {
-                        Ok(()) => BackendOutput::Resumed,
-                        Err(error) => BackendOutput::Failed(Operation::Resume, error),
-                    }
+                    Operation::Resume.complete(backend.resume_game(&auth, &game_id).await, |()| {
+                        BackendOutput::Resumed
+                    })
                 });
             },
             MultiplayerRequest::RefreshGames => {
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.list_games(&auth).await {
-                        Ok(games) => BackendOutput::Games(games),
-                        Err(error) => BackendOutput::Failed(Operation::List, error),
-                    }
+                    Operation::List.complete(backend.list_games(&auth).await, BackendOutput::Games)
                 });
             },
             MultiplayerRequest::StartGame => {
@@ -1243,23 +1251,24 @@ fn process_requests(
                     },
                 };
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.start_game(&auth, &record.id, record.revision, persisted).await {
-                        Ok(record) => BackendOutput::Record(Operation::Start, record),
-                        Err(error) => BackendOutput::Failed(Operation::Start, error),
-                    }
+                    Operation::Start.complete(
+                        backend.start_game(&auth, &record.id, record.revision, persisted).await,
+                        |record| BackendOutput::Record(Operation::Start, record),
+                    )
                 });
             },
             MultiplayerRequest::SetPlayerColor(color) => {
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No lobby player is selected.");
                     continue;
                 };
                 let color = *color;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.set_player_color(&auth, &record.id, color).await {
-                        Ok(record) => BackendOutput::Record(Operation::Color, record),
-                        Err(error) => BackendOutput::Failed(Operation::Color, error),
-                    }
+                    Operation::Color.complete(
+                        backend.set_player_color(&auth, &game_id, color).await,
+                        |record| BackendOutput::Record(Operation::Color, record),
+                    )
                 });
             },
             MultiplayerRequest::SetProtectionPermission {
@@ -1270,37 +1279,40 @@ fn process_requests(
                 if session.protection_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
                 session.protection_update_pending = true;
                 let (planet_id, protector, allowed) = (*planet_id, *protector, *allowed);
                 spawn_backend_task(&mut tasks, async move {
-                    match backend
-                        .set_protection_permission(&auth, &record.id, planet_id, protector, allowed)
-                        .await
-                    {
-                        Ok(update) => BackendOutput::ProtectionChanged(update),
-                        Err(error) => BackendOutput::Failed(Operation::Protection, error),
-                    }
+                    Operation::Protection.complete(
+                        backend
+                            .set_protection_permission(
+                                &auth, &game_id, planet_id, protector, allowed,
+                            )
+                            .await,
+                        BackendOutput::ProtectionChanged,
+                    )
                 });
             },
             MultiplayerRequest::CreateJointAttack(invitation) => {
                 if session.joint_attack_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
                 session.joint_attack_update_pending = true;
                 let invitation = invitation.clone();
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.create_joint_attack(&auth, &record.id, invitation).await {
-                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
-                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
-                    }
+                    Operation::JointAttack.complete(
+                        backend.create_joint_attack(&auth, &game_id, invitation).await,
+                        BackendOutput::JointAttackChanged,
+                    )
                 });
             },
             MultiplayerRequest::RespondJointAttack {
@@ -1312,7 +1324,8 @@ fn process_requests(
                 if session.joint_attack_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
@@ -1320,20 +1333,19 @@ fn process_requests(
                 let (attack_id, expected_revision, response, contribution) =
                     (*attack_id, *expected_revision, *response, contribution.clone());
                 spawn_backend_task(&mut tasks, async move {
-                    match backend
-                        .respond_joint_attack(
-                            &auth,
-                            &record.id,
-                            attack_id,
-                            expected_revision,
-                            response,
-                            contribution,
-                        )
-                        .await
-                    {
-                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
-                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
-                    }
+                    Operation::JointAttack.complete(
+                        backend
+                            .respond_joint_attack(
+                                &auth,
+                                &game_id,
+                                attack_id,
+                                expected_revision,
+                                response,
+                                contribution,
+                            )
+                            .await,
+                        BackendOutput::JointAttackChanged,
+                    )
                 });
             },
             MultiplayerRequest::CancelJointAttack {
@@ -1342,49 +1354,52 @@ fn process_requests(
                 if session.joint_attack_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
                 session.joint_attack_update_pending = true;
                 let attack_id = *attack_id;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.cancel_joint_attack(&auth, &record.id, attack_id).await {
-                        Ok(invitation) => BackendOutput::JointAttackChanged(invitation),
-                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
-                    }
+                    Operation::JointAttack.complete(
+                        backend.cancel_joint_attack(&auth, &game_id, attack_id).await,
+                        BackendOutput::JointAttackChanged,
+                    )
                 });
             },
             MultiplayerRequest::RefreshJointAttacks => {
                 if session.joint_attack_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     continue;
                 };
                 session.joint_attack_update_pending = true;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.load_joint_attacks(&auth, &record.id).await {
-                        Ok(invitations) => BackendOutput::JointAttacksLoaded(invitations),
-                        Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
-                    }
+                    Operation::JointAttack.complete(
+                        backend.load_joint_attacks(&auth, &game_id).await,
+                        BackendOutput::JointAttacksLoaded,
+                    )
                 });
             },
             MultiplayerRequest::CreateTrade(invitation) => {
                 if session.trade_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
                 session.trade_update_pending = true;
                 let invitation = invitation.clone();
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.create_trade(&auth, &record.id, invitation).await {
-                        Ok(invitation) => BackendOutput::TradeChanged(invitation),
-                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
-                    }
+                    Operation::Trade.complete(
+                        backend.create_trade(&auth, &game_id, invitation).await,
+                        BackendOutput::TradeChanged,
+                    )
                 });
             },
             MultiplayerRequest::RespondTrade {
@@ -1395,40 +1410,39 @@ fn process_requests(
                 if session.trade_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     request_error(&mut session, "No active game is selected.");
                     continue;
                 };
                 session.trade_update_pending = true;
                 let (trade_id, resources, response) = (*trade_id, *resources, *response);
                 spawn_backend_task(&mut tasks, async move {
-                    match backend
-                        .respond_trade(&auth, &record.id, trade_id, resources, response)
-                        .await
-                    {
-                        Ok(invitation) => BackendOutput::TradeChanged(invitation),
-                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
-                    }
+                    Operation::Trade.complete(
+                        backend.respond_trade(&auth, &game_id, trade_id, resources, response).await,
+                        BackendOutput::TradeChanged,
+                    )
                 });
             },
             MultiplayerRequest::RefreshTrades => {
                 if session.trade_update_pending {
                     continue;
                 }
-                let Some(record) = session.active_game.clone() else {
+                let Some(game_id) = session.active_game.as_ref().map(|record| record.id.clone())
+                else {
                     continue;
                 };
                 session.trade_update_pending = true;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.load_trades(&auth, &record.id).await {
-                        Ok(invitations) => BackendOutput::TradesLoaded(invitations),
-                        Err(error) => BackendOutput::Failed(Operation::Trade, error),
-                    }
+                    Operation::Trade.complete(
+                        backend.load_trades(&auth, &game_id).await,
+                        BackendOutput::TradesLoaded,
+                    )
                 });
             },
             MultiplayerRequest::SaveGame => {
                 let (Some(record), Some(membership)) =
-                    (session.active_game.clone(), session.membership.clone())
+                    (session.active_game.as_ref(), session.membership.as_ref())
                 else {
                     let error = "No game is selected.";
                     request_error(&mut session, error);
@@ -1447,6 +1461,7 @@ fn process_requests(
                     messages.write(MessageMsg::error(error));
                     continue;
                 }
+                let (game_id, revision) = (record.id.clone(), record.revision);
                 let mut draft = TurnSubmission::new(
                     membership.player_id,
                     pending.turn,
@@ -1454,10 +1469,10 @@ fn process_requests(
                 );
                 draft.generation = pending.generation;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.save_game(&auth, &record.id, record.revision, draft).await {
-                        Ok(acknowledgement) => BackendOutput::Saved(acknowledgement),
-                        Err(error) => BackendOutput::Failed(Operation::Save, error),
-                    }
+                    Operation::Save.complete(
+                        backend.save_game(&auth, &game_id, revision, draft).await,
+                        BackendOutput::Saved,
+                    )
                 });
             },
             MultiplayerRequest::SubmitTurn => {
@@ -1469,7 +1484,7 @@ fn process_requests(
                     continue;
                 }
                 let (Some(record), Some(membership)) =
-                    (session.active_game.clone(), session.membership.clone())
+                    (session.active_game.as_ref(), session.membership.as_ref())
                 else {
                     request_error(&mut session, "No active player slot is selected.");
                     continue;
@@ -1481,6 +1496,7 @@ fn process_requests(
                     );
                     continue;
                 }
+                let game_id = record.id.clone();
                 if !pending.begin_submission() {
                     session.busy = !tasks.0.is_empty();
                     continue;
@@ -1493,10 +1509,10 @@ fn process_requests(
                 submission.generation = pending.generation;
                 let submitted_turn = submission.turn;
                 spawn_backend_task(&mut tasks, async move {
-                    match backend.submit_turn(&auth, &record.id, submission).await {
-                        Ok(_) => BackendOutput::Submitted(submitted_turn),
-                        Err(error) => BackendOutput::Failed(Operation::Submit, error),
-                    }
+                    Operation::Submit
+                        .complete(backend.submit_turn(&auth, &game_id, submission).await, |_| {
+                            BackendOutput::Submitted(submitted_turn)
+                        })
                 });
             },
             MultiplayerRequest::LeaveGame | MultiplayerRequest::Retry => {},
@@ -1610,21 +1626,34 @@ fn protection_permission_notifications(
             {
                 return None;
             }
-            (before != after).then(|| {
-                let world = if planet.is_moon() { "moon" } else { "planet" };
-                let message = if after {
-                    MessageMsg::info(format!(
-                        "You now have protection rights on {world} {}.",
-                        planet.name
-                    ))
-                } else {
-                    MessageMsg::warning(format!(
-                        "Protection access to {world} {} was revoked. Any protecting fleet is returning home.",
-                        planet.name
-                    ))
-                };
-                message.with_action(MessageAction::FocusPlanet(planet.id))
-            })
+            (before != after)
+                .then(|| {
+                    let world = if planet.is_moon() {
+                        "moon"
+                    } else {
+                        "planet"
+                    };
+                    // A stationed fleet gets a persistent, state-driven action toast from the map
+                    // projection; the transition toast is only needed when no fleet is present.
+                    if !after
+                        && planet.army.protector(local_player).is_some_and(|army| army.has_army())
+                    {
+                        return None;
+                    }
+                    let message = if after {
+                        MessageMsg::info(format!(
+                            "You now have protection rights on {world} {}.",
+                            planet.name
+                        ))
+                    } else {
+                        MessageMsg::warning(format!(
+                            "Protection access to {world} {} was revoked.",
+                            planet.name
+                        ))
+                    };
+                    Some(message.with_action(MessageAction::FocusPlanet(planet.id)))
+                })
+                .flatten()
         })
         .collect()
 }
@@ -2399,10 +2428,8 @@ fn drive_reauthentication(
     };
     session.reauthentication_needed = false;
     spawn_backend_task(&mut tasks, async move {
-        match backend.authenticate(None).await {
-            Ok(auth) => BackendOutput::Reauthenticated(auth),
-            Err(error) => BackendOutput::Failed(Operation::Reauthenticate, error),
-        }
+        Operation::Reauthenticate
+            .complete(backend.authenticate(None).await, BackendOutput::Reauthenticated)
     });
 }
 
@@ -2431,10 +2458,8 @@ fn drive_auth_refresh(
     }
     session.auth_refresh_needed = false;
     spawn_backend_task(&mut tasks, async move {
-        match backend.refresh_session(&auth).await {
-            Ok(refreshed) => BackendOutput::SessionRefreshed(refreshed),
-            Err(error) => BackendOutput::Failed(Operation::RefreshAuth, error),
-        }
+        Operation::RefreshAuth
+            .complete(backend.refresh_session(&auth).await, BackendOutput::SessionRefreshed)
     });
 }
 
@@ -2678,7 +2703,10 @@ fn drive_turn_draft(
         } else {
             Operation::Withdraw
         };
-        let stored = match backend.load_turn_submissions(&auth, &game_id, turn).await {
+        let stored = match backend
+            .load_turn_submissions(&auth, &game_id, turn, TurnSubmissionScope::Mine)
+            .await
+        {
             Ok(submissions) => {
                 submissions.into_iter().find(|s| s.submission.player_id == player_id)
             },
@@ -2688,10 +2716,10 @@ fn drive_turn_draft(
             return BackendOutput::DraftLoaded(turn, stored);
         }
         let generation = stored.as_ref().map_or(0, |s| s.submission.generation);
-        match backend.withdraw_turn(&auth, &game_id, turn, generation).await {
-            Ok(draft) => BackendOutput::Withdrawn(draft),
-            Err(error) => BackendOutput::Failed(Operation::Withdraw, error),
-        }
+        Operation::Withdraw.complete(
+            backend.withdraw_turn(&auth, &game_id, turn, generation).await,
+            BackendOutput::Withdrawn,
+        )
     });
 }
 
@@ -2741,10 +2769,8 @@ fn poll_durable_events(
     session.event_poll_needed = false;
     timer.0.reset();
     spawn_backend_task(&mut tasks, async move {
-        match backend.subscribe(&auth, &game_id, cursor).await {
-            Ok(batch) => BackendOutput::Events(batch),
-            Err(error) => BackendOutput::Failed(Operation::Events, error),
-        }
+        Operation::Events
+            .complete(backend.subscribe(&auth, &game_id, cursor).await, BackendOutput::Events)
     });
 }
 
@@ -2775,10 +2801,8 @@ fn drive_presence(
     session.presence_needed = false;
     session.presence_elapsed = Duration::ZERO;
     spawn_backend_task(&mut tasks, async move {
-        match backend.set_connected(&auth, &game_id, true).await {
-            Ok(members) => BackendOutput::Presence(members),
-            Err(error) => BackendOutput::Failed(Operation::Presence, error),
-        }
+        Operation::Presence
+            .complete(backend.set_connected(&auth, &game_id, true).await, BackendOutput::Presence)
     });
 }
 
@@ -2800,10 +2824,9 @@ fn drive_reload(
     };
     session.reload_needed = false;
     spawn_backend_task(&mut tasks, async move {
-        match backend.load_game(&auth, &game_id).await {
-            Ok(record) => BackendOutput::Record(Operation::Load, record),
-            Err(error) => BackendOutput::Failed(Operation::Load, error),
-        }
+        Operation::Load.complete(backend.load_game(&auth, &game_id).await, |record| {
+            BackendOutput::Record(Operation::Load, record)
+        })
     });
 }
 
@@ -2829,10 +2852,10 @@ fn drive_joint_attack_reload(
     session.joint_attack_reload_needed = false;
     session.joint_attack_update_pending = true;
     spawn_backend_task(&mut tasks, async move {
-        match backend.load_joint_attacks(&auth, &game_id).await {
-            Ok(invitations) => BackendOutput::JointAttacksLoaded(invitations),
-            Err(error) => BackendOutput::Failed(Operation::JointAttack, error),
-        }
+        Operation::JointAttack.complete(
+            backend.load_joint_attacks(&auth, &game_id).await,
+            BackendOutput::JointAttacksLoaded,
+        )
     });
 }
 
@@ -2855,10 +2878,8 @@ fn drive_trade_reload(
     session.trade_reload_needed = false;
     session.trade_update_pending = true;
     spawn_backend_task(&mut tasks, async move {
-        match backend.load_trades(&auth, &game_id).await {
-            Ok(invitations) => BackendOutput::TradesLoaded(invitations),
-            Err(error) => BackendOutput::Failed(Operation::Trade, error),
-        }
+        Operation::Trade
+            .complete(backend.load_trades(&auth, &game_id).await, BackendOutput::TradesLoaded)
     });
 }
 
@@ -2891,7 +2912,10 @@ fn drive_resolution(
     session.resolving = true;
     spawn_backend_task(&mut tasks, async move {
         let turn = record.persisted.state.turn;
-        let submissions = match backend.load_turn_submissions(&auth, &record.id, turn).await {
+        let submissions = match backend
+            .load_turn_submissions(&auth, &record.id, turn, TurnSubmissionScope::Resolution)
+            .await
+        {
             Ok(submissions) => {
                 submissions.into_iter().filter(|stored| stored.ready).collect::<Vec<_>>()
             },
@@ -2912,13 +2936,18 @@ fn drive_resolution(
                 )
             },
         };
-        match backend
-            .publish_resolution(&auth, &record.id, record.revision, turn, PersistedGame::new(model))
-            .await
-        {
-            Ok(record) => BackendOutput::Record(Operation::Resolve, record),
-            Err(error) => BackendOutput::Failed(Operation::Resolve, error),
-        }
+        Operation::Resolve.complete(
+            backend
+                .publish_resolution(
+                    &auth,
+                    &record.id,
+                    record.revision,
+                    turn,
+                    PersistedGame::new(model),
+                )
+                .await,
+            |record| BackendOutput::Record(Operation::Resolve, record),
+        )
     });
 }
 
@@ -2928,10 +2957,7 @@ fn spawn_list(runtime: &ClientRuntime, session: &MultiplayerSession, tasks: &mut
         return;
     };
     spawn_backend_task(tasks, async move {
-        match backend.list_games(&auth).await {
-            Ok(games) => BackendOutput::Games(games),
-            Err(error) => BackendOutput::Failed(Operation::List, error),
-        }
+        Operation::List.complete(backend.list_games(&auth).await, BackendOutput::Games)
     });
 }
 
@@ -2947,10 +2973,9 @@ async fn load_game_for_resume(
     game_id: GameId,
     recovery_code: String,
 ) -> BackendOutput {
-    match backend.load_game(&auth, &game_id).await {
-        Ok(record) => BackendOutput::ResumeLoaded(record, recovery_code),
-        Err(error) => BackendOutput::Failed(Operation::ResumeLoad, error),
-    }
+    Operation::ResumeLoad.complete(backend.load_game(&auth, &game_id).await, |record| {
+        BackendOutput::ResumeLoaded(record, recovery_code)
+    })
 }
 
 /// Recovers an unlinked slot, or opens the current membership if recovery is redundant.

@@ -5,6 +5,22 @@ use super::*;
 use crate::core::map::planet::PlanetKind;
 
 #[test]
+fn death_ray_size_modifier_is_shared_with_the_initial_war_sun_chance() {
+    let mut planet = Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0);
+    for (diameter, modifier, initial_chance) in [
+        (1_500, 200, 1_200),
+        (4_000, 50, 1_050),
+        (7_000, 0, 1_000),
+        (10_000, -50, 950),
+        (120_000, -200, 800),
+    ] {
+        planet.diameter = diameter;
+        assert_eq!(planet.death_ray_size_modifier_basis_points(), modifier);
+        assert_eq!(planet.destroy_probability_basis_points(), initial_chance);
+    }
+}
+
+#[test]
 fn empty_planet_colonization_starts_with_a_balanced_resource_grid() {
     use crate::core::energy::EnergyGrid;
     use crate::core::units::{buildings::Building, Army, Unit};

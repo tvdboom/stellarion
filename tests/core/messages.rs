@@ -1,5 +1,7 @@
 use super::*;
 use crate::core::simulation::{GameModel, GameRules};
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Unit};
 
 fn notification_frame(
     context: &egui::Context,
@@ -371,12 +373,43 @@ fn public_world_toast_centers_planets_and_moons_without_opening_hidden_informati
         assert_eq!(state.combat_report, None);
     }
 
-    let mut state = UiState::default();
-    state.to_selected = false;
+    let mut state = UiState {
+        to_selected: false,
+        ..default()
+    };
     assert!(!focus_planet(usize::MAX, &model.map, &mut state));
     assert!(!state.to_selected);
     model.map.get_mut(planet).is_destroyed = true;
     assert!(!focus_planet(planet, &model.map, &mut state));
+}
+
+#[test]
+fn revoked_protection_toast_opens_a_home_destination_draft_until_fleet_leaves() {
+    let mut model = GameModel::new([11; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let local = model.players[0].id;
+    let home = model.players[0].home_planet;
+    let protected = model.players[1].home_planet;
+    let controller = model.players[1].id;
+    model.players[0].protection_intel.insert(protected, controller);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(protected).army.dock_protector(local, Army::from([(fighter, 2)]));
+    let player = &model.players[0];
+    let planet = model.map.get(protected);
+    assert!(revoked_protection_fleet(planet, player));
+
+    let mut state = UiState::default();
+    assert!(open_revoked_protection_mission(protected, &model.map, player, &mut state));
+    assert_eq!(state.focus_planet, Some(protected));
+    assert!(state.to_selected);
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::NewMission);
+    assert_eq!((state.mission_info.origin, state.mission_info.destination), (protected, home));
+    assert_eq!(state.mission_info.objective, Icon::Deploy);
+
+    model.map.get_mut(protected).army.remove_protector(local);
+    assert!(!revoked_protection_fleet(model.map.get(protected), &model.players[0]));
+    assert!(!open_revoked_protection_mission(protected, &model.map, &model.players[0], &mut state));
 }
 
 #[test]

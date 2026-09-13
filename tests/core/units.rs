@@ -54,3 +54,34 @@ fn orbital_production_levels_follow_shop_order_and_match_non_public_intelligence
         assert_eq!(unit.intelligence_level(), intelligence, "{unit:?}");
     }
 }
+
+#[test]
+fn orbital_and_lunar_stats_follow_actual_range_and_spy_rules() {
+    for (building, expected) in [
+        (Building::SolarSatellite, "---"),
+        (Building::Recycler, "---"),
+        (Building::CommandRelay, "---"),
+        (Building::TradingPost, "1.5 AU"),
+        (Building::SensorPhalanx, "1 AU"),
+        (Building::JumpGate, "---"),
+        (Building::OrbitalRailgun, "2 AU"),
+        (Building::OrbitalRadar, "1.2 AU"),
+    ] {
+        assert_eq!(Unit::Building(building).get_stat(&CombatStats::Range), expected);
+    }
+    assert_eq!(Unit::space_dock().get_stat(&CombatStats::Range), "---");
+    for (building, intelligence) in [
+        (Building::LunarBase, 1),
+        (Building::TidalGenerator, 2),
+        (Building::Shipyard, 2),
+        (Building::Laboratory, 3),
+        (Building::OrbitalRadar, 4),
+    ] {
+        let unit = Unit::Building(building);
+        assert_eq!(unit.intelligence_level_on_world(true), Some(intelligence));
+    }
+    assert_eq!(Unit::Building(Building::Shipyard).intelligence_level_on_world(false), Some(3));
+    let shipyard = Unit::Building(Building::Shipyard);
+    assert!(shipyard.revealed_by_probes_on_world(6, true));
+    assert!(!shipyard.revealed_by_probes_on_world(6, false));
+}

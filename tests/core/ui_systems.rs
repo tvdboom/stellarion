@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "ui_operations.rs"]
+mod operations;
+
 #[test]
 fn combat_details_hide_the_underlying_mission_panel_until_closed() {
     let mut state = UiState {
@@ -77,6 +80,7 @@ fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egu
 #[test]
 fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
     let mut planet = Planet::new(1, "Climate world".into(), Vec2::ZERO, false, 1.0);
+    planet.diameter = 1_500;
 
     for (kind, band, climate, energy) in [
         (PlanetKind::Dry, SolarBand::Inner, "High temperatures", 3),
@@ -86,6 +90,8 @@ fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
         planet.kind = kind;
         let tooltip = planet_temperature_tooltip(&planet, Some(band));
         assert!(tooltip.starts_with(climate), "{tooltip}");
+        assert!(tooltip.contains("Death Ray size modifier: +2%"));
+        assert!(tooltip.contains("War Suns and Orbital Railguns"));
         assert!(!tooltip.contains('\n'));
         assert!(
             tooltip.ends_with(&format!("Solar Satellites produce {energy} Energy per level here."))
@@ -94,10 +100,11 @@ fn temperature_tooltips_explain_climate_and_stellar_zone_energy() {
 
     planet.kind = PlanetKind::Gray;
     planet.temperature = (-240, -80);
+    planet.diameter = 120_000;
     let tooltip = planet_temperature_tooltip(&planet, None);
     assert!(tooltip.starts_with("Frigid temperatures"));
     assert!(!tooltip.contains("Solar Satellites"));
-    assert_eq!(tooltip, "Frigid temperatures persist because this moon has almost no atmosphere.");
+    assert!(tooltip.contains("Death Ray size modifier: -2%"));
 }
 
 #[test]
@@ -311,10 +318,10 @@ fn moon_shop_shows_fields_only_for_buildings() {
     let moon = Planet::new(1, "Moon".into(), Vec2::ZERO, true, 1.0);
 
     assert_eq!(
-        shop::shop_capacity_summary(Shop::Buildings, &moon),
+        shop::shop_capacity_summary(Shop::Buildings, &moon, Default::default()),
         Some(("Fields", moon.fields_consumed(), moon.max_fields()))
     );
-    assert_eq!(shop::shop_capacity_summary(Shop::Fleet, &moon), None);
+    assert_eq!(shop::shop_capacity_summary(Shop::Fleet, &moon, Default::default()), None);
 }
 
 #[test]
@@ -421,20 +428,14 @@ fn combat_selection_uses_prebattle_planet_artwork() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            destination: destination.id,
-            ..default()
-        },
-        planet: destination.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
-        surviving_defender: Army::new().into(),
-        planet_colonized: false,
         planet_destroyed: true,
-        destination_owned: None,
-        destination_controlled: None,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                destination: destination.id,
+                ..default()
+            },
+            destination.clone(),
+        )
     };
     destination.destroy();
 
@@ -450,21 +451,14 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            destination: planet.id,
-            objective: Icon::Attack,
-            ..default()
-        },
-        planet,
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
-        surviving_defender: Army::new().into(),
-        planet_colonized: false,
-        planet_destroyed: false,
-        destination_owned: None,
-        destination_controlled: None,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                destination: planet.id,
+                objective: Icon::Attack,
+                ..default()
+            },
+            planet,
+        )
     };
     let round = RoundReport {
         defender: vec![CombatUnit {
@@ -481,7 +475,10 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
     };
 
     assert_eq!(
-        combat_defender_structure_column(&report, &round),
+        combat_defender_structure_column(
+            &report,
+            &CombatRoundView::new(std::slice::from_ref(&round)).unwrap()
+        ),
         vec![Unit::space_dock(), Unit::planetary_shield()]
     );
 }
@@ -501,27 +498,24 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            owner: 1,
-            destination: planet.id,
-            objective: Icon::Attack,
-            ..default()
-        },
-        planet,
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: Army::from([
             (Unit::crawler(), 5),
             (Unit::Defense(Defense::RocketLauncher), 4),
             (Unit::Defense(Defense::PlasmaTurret), 1),
         ])
         .into(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(Default::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: 1,
+                destination: planet.id,
+                objective: Icon::Attack,
+                ..default()
+            },
+            planet,
+        )
     };
     let images = ImageIds(HashMap::from([
         ("metal".to_string(), egui::TextureId::User(1)),
@@ -662,6 +656,8 @@ fn adjacent_trading_posts_reveal_enemy_owner_counts_without_mission_intelligence
     assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
 
     model.map.get_mut(enemy).army.insert(Unit::Building(Building::TradingPost), 1);
+    assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), None);
+    model.map.get_mut(player.home_planet).army.insert(Unit::Building(Building::TradingPost), 2);
     assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), Some(&1));
     model.map.get_mut(enemy).controlled = Some(player.id);
     assert_eq!(known_planet_counts(&model.map, &player, &[]).get(&2), Some(&1));
@@ -778,17 +774,12 @@ fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
         player.push_report(MissionReport {
             id: 1,
             turn: 2,
-            mission,
-            planet: target.clone(),
             scout_probes: returning_probes,
             surviving_attacker: Army::from([(Unit::probe(), returning_probes)]),
             surviving_defender: target.army.clone(),
-            planet_colonized: false,
-            planet_destroyed: false,
             destination_owned: target.owned,
             destination_controlled: target.controlled,
-            combat_report: None,
-            hidden: false,
+            ..crate::test_support::empty_report(mission, target.clone())
         });
 
         let known = player.last_info(&target, &[]).expect("Spy report should create intelligence");
@@ -818,24 +809,22 @@ fn spy_railgun_level_requires_twenty_one_returning_probes() {
             let report = MissionReport {
                 id: 1,
                 turn: 2,
-                mission: Mission {
-                    owner: player.id,
-                    origin: player.home_planet,
-                    destination: target.id,
-                    objective: Icon::Spy,
-                    army: Army::from([(Unit::probe(), 78)]),
-                    ..default()
-                },
-                planet: target.clone(),
                 scout_probes: returning_probes,
                 surviving_attacker: Army::from([(Unit::probe(), returning_probes)]),
                 surviving_defender: target.army.clone(),
-                planet_colonized: false,
-                planet_destroyed: false,
                 destination_owned: target.owned,
                 destination_controlled: target.controlled,
-                combat_report: None,
-                hidden: false,
+                ..crate::test_support::empty_report(
+                    Mission {
+                        owner: player.id,
+                        origin: player.home_planet,
+                        destination: target.id,
+                        objective: Icon::Spy,
+                        army: Army::from([(Unit::probe(), 78)]),
+                        ..default()
+                    },
+                    target.clone(),
+                )
             };
             let revealed = returning_probes >= 21;
             assert_eq!(
@@ -908,37 +897,66 @@ fn building_intelligence_stat_uses_its_icon_value_and_explanation() {
 }
 
 #[test]
-fn orbital_hover_stats_put_production_before_intelligence_in_one_row() {
+fn orbital_hover_stats_put_production_intelligence_and_range_in_one_row() {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 300.0));
     let context = egui::Context::default();
     context.set_global_style(NordDark.custom_style());
     let production = egui::TextureId::User(1);
     let intelligence = egui::TextureId::User(2);
+    let range = egui::TextureId::User(3);
     let images = ImageIds(HashMap::from([
         ("production".into(), production),
         ("intelligence".into(), intelligence),
+        ("range".into(), range),
     ]));
     let unit = Unit::Building(Building::OrbitalRailgun);
     let mut production_box = egui::Rect::NOTHING;
     let mut intelligence_box = egui::Rect::NOTHING;
+    let mut range_box = egui::Rect::NOTHING;
 
     let input = egui::RawInput {
         screen_rect: Some(viewport),
         ..default()
     };
     let mut output = context.run_ui(input, |ui| {
-        let (production, intelligence) = shop::draw_orbital_stats(ui, &unit, &images);
+        ui.set_width(700.0);
+        let (production, intelligence, range) = shop::draw_orbital_stats(ui, &unit, &images);
         production_box = production.rect;
         intelligence_box = intelligence.rect;
+        range_box = range.rect;
     });
     output.textures_delta.clear();
 
     assert!(has_text(&output.shapes, "5"));
-    assert!(has_text(&output.shapes, "---"));
     assert_eq!(images.get("production"), production);
     assert_eq!(images.get("intelligence"), intelligence);
+    assert_eq!(images.get("range"), range);
     assert!(production_box.right() < intelligence_box.left());
-    assert!((production_box.top() - intelligence_box.top()).abs() < 1.0);
+    assert!(intelligence_box.right() < range_box.left());
+    assert!(has_text(&output.shapes, "2 AU"));
+}
+
+#[test]
+fn moon_building_hover_shows_world_specific_intelligence_and_radar_range() {
+    let context = egui::Context::default();
+    let images = ImageIds(HashMap::from([
+        ("intelligence".into(), egui::TextureId::User(1)),
+        ("range".into(), egui::TextureId::User(2)),
+    ]));
+    for (building, intelligence, range) in [
+        (Building::LunarBase, "1", "---"),
+        (Building::TidalGenerator, "2", "---"),
+        (Building::Shipyard, "2", "---"),
+        (Building::Laboratory, "3", "---"),
+        (Building::OrbitalRadar, "4", "1.2 AU"),
+    ] {
+        let mut output = context.run_ui(Default::default(), |ui| {
+            shop::draw_moon_building_stats(ui, &Unit::Building(building), &images);
+        });
+        output.textures_delta.clear();
+        assert!(has_text(&output.shapes, intelligence), "{building:?}");
+        assert!(has_text(&output.shapes, range), "{building:?}");
+    }
 }
 
 #[test]
@@ -2491,7 +2509,7 @@ fn hovering_energy_production_lists_planets_before_railgun_fire() {
     let last_planet = text_rect(&output.shapes, "Unpowered: -3");
     let railgun_fire = text_rect(&output.shapes, "Railgun fire: -15");
     assert!(railgun_fire.top() > last_planet.bottom());
-    assert!(!has_text(&output.shapes, "Committed Railgun fire"));
+    assert!(!has_text(&output.shapes, "Jump Gate / Railgun use"));
     assert!(!has_text(&output.shapes, "Production per planet"));
     assert!(!has_text(&output.shapes, "Efficiency:"));
 }
@@ -2504,8 +2522,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
             supply: 3,
             demand: 3,
         },
-        mine,
-        None,
+        EnergyGrid::for_unit(mine, None),
     )
     .unwrap();
     assert_eq!(warning.message, "Next turn: Energy shortage.");
@@ -2516,8 +2533,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
             supply: 1,
             demand: 0,
         },
-        Unit::space_dock(),
-        None,
+        EnergyGrid::for_unit(Unit::space_dock(), None),
     )
     .is_some());
 
@@ -2526,8 +2542,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
             supply: 3,
             demand: 4,
         },
-        mine,
-        None,
+        EnergyGrid::for_unit(mine, None),
     )
     .is_none());
     assert!(shop::energy_shortage_warning(
@@ -2535,8 +2550,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
             supply: 3,
             demand: 3,
         },
-        Unit::Ship(Ship::LightFighter),
-        None,
+        EnergyGrid::for_unit(Unit::Ship(Ship::LightFighter), None),
     )
     .is_none());
 }

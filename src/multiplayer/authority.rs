@@ -97,11 +97,7 @@ pub fn recolored_lobby_snapshot(
     }
 
     let mut persisted = record.persisted.clone();
-    let previous = persisted
-        .state
-        .player(player_id)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?
-        .color();
+    let previous = persisted.state.player(player_id).map_err(invalid)?.color();
     let displaced_player = persisted
         .state
         .players
@@ -109,18 +105,10 @@ pub fn recolored_lobby_snapshot(
         .find(|player| player.id != player_id && player.color() == color)
         .map(|player| player.id);
     if let Some(displaced_player) = displaced_player {
-        persisted
-            .state
-            .player_mut(displaced_player)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = previous;
+        persisted.state.player_mut(displaced_player).map_err(invalid)?.color = previous;
     }
-    persisted
-        .state
-        .player_mut(player_id)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?
-        .color = color;
-    persisted.validate().map_err(|error| BackendError::InvalidData(error.to_string()))?;
+    persisted.state.player_mut(player_id).map_err(invalid)?.color = color;
+    persisted.validate().map_err(invalid)?;
     Ok(persisted)
 }
 
@@ -140,21 +128,12 @@ pub fn started_snapshot_for_members(
 
     let mut rules = record.persisted.state.rules.clone();
     rules.player_count = player_count;
-    let mut model = GameModel::new(seed, rules)
-        .map_err(|error| BackendError::InvalidData(error.to_string()))?;
+    let mut model = GameModel::new(seed, rules).map_err(invalid)?;
     for member in &record.members {
-        let color = record
-            .persisted
-            .state
-            .player(member.player_id)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color();
-        model
-            .player_mut(member.player_id)
-            .map_err(|error| BackendError::InvalidData(error.to_string()))?
-            .color = color;
+        let color = record.persisted.state.player(member.player_id).map_err(invalid)?.color();
+        model.player_mut(member.player_id).map_err(invalid)?.color = color;
     }
-    model.start().map_err(|error| BackendError::InvalidData(error.to_string()))?;
+    model.start().map_err(invalid)?;
     Ok(PersistedGame::new(model))
 }
 

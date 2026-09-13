@@ -15,6 +15,7 @@ use crate::utils::NameFromEnum;
 
 pub mod buildings;
 pub mod defense;
+pub mod operations;
 pub mod orbitals;
 pub mod ships;
 
@@ -146,6 +147,16 @@ impl<'de> Visitor<'de> for UnitVisitor {
 }
 
 impl Unit {
+    const RESOURCE_BUILDINGS: [Self; 3] = [
+        Self::Building(Building::MetalMine),
+        Self::Building(Building::CrystalMine),
+        Self::Building(Building::DeuteriumSynthesizer),
+    ];
+    const INDUSTRIAL_BUILDINGS: [Self; 3] = [
+        Self::Building(Building::Shipyard),
+        Self::Building(Building::Factory),
+        Self::Building(Building::MissileSilo),
+    ];
     const LUNAR_BUILDINGS: [Self; 5] = [
         Self::Building(Building::LunarBase),
         Self::Building(Building::TidalGenerator),
@@ -265,20 +276,12 @@ impl Unit {
 
     /// Computes resource buildings for the current owned worlds.
     pub fn resource_buildings() -> Vec<Self> {
-        vec![
-            Unit::Building(Building::MetalMine),
-            Unit::Building(Building::CrystalMine),
-            Unit::Building(Building::DeuteriumSynthesizer),
-        ]
+        Self::RESOURCE_BUILDINGS.to_vec()
     }
 
     /// Returns buildings that increase unit production capacity.
     pub fn industrial_buildings() -> Vec<Self> {
-        vec![
-            Unit::Building(Building::Shipyard),
-            Unit::Building(Building::Factory),
-            Unit::Building(Building::MissileSilo),
-        ]
+        Self::INDUSTRIAL_BUILDINGS.to_vec()
     }
 
     /// Returns structures that may be constructed on controlled moons.
@@ -367,12 +370,12 @@ impl Unit {
 
     /// Returns whether this value economic building.
     pub fn is_economic_building(&self) -> bool {
-        Self::resource_buildings().contains(self)
+        Self::RESOURCE_BUILDINGS.contains(self)
     }
 
     /// Returns whether this value industrial building.
     pub fn is_industrial_building(&self) -> bool {
-        Self::industrial_buildings().contains(self)
+        Self::INDUSTRIAL_BUILDINGS.contains(self)
     }
 
     /// Returns whether this value combat ship.
@@ -404,15 +407,48 @@ impl Unit {
         }
 
         match self {
+            Unit::Building(Building::TidalGenerator) => Some(2),
+            Unit::Building(Building::Laboratory) => Some(3),
+            Unit::Building(Building::OrbitalRadar) => Some(4),
             Unit::Building(building) => Some(building.production()),
             Unit::Ship(ship) => Some(ship.production()),
             Unit::Defense(defense) => Some(defense.production()),
         }
     }
 
+    /// Returns the Spy requirement for this unit on a planet or moon.
+    pub fn intelligence_level_on_world(&self, is_moon: bool) -> Option<usize> {
+        if is_moon && *self == Unit::Building(Building::Shipyard) {
+            Some(2)
+        } else {
+            self.intelligence_level()
+        }
+    }
+
+    /// Returns the range contributed by one completed building level, in AU.
+    pub fn range_per_level(&self) -> Option<f32> {
+        use crate::core::constants::{
+            ORBITAL_RAILGUN_RANGE_PER_LEVEL, PHALANX_DISTANCE, RADAR_DISTANCE,
+        };
+        match self {
+            Unit::Building(Building::TradingPost) => {
+                Some(crate::core::trading::TRADING_POST_RANGE_PER_LEVEL)
+            },
+            Unit::Building(Building::SensorPhalanx) => Some(PHALANX_DISTANCE),
+            Unit::Building(Building::OrbitalRailgun) => Some(ORBITAL_RAILGUN_RANGE_PER_LEVEL),
+            Unit::Building(Building::OrbitalRadar) => Some(RADAR_DISTANCE),
+            _ => None,
+        }
+    }
+
     /// Returns whether the supplied number of returning Probes reveals this unit's level or count.
     pub fn revealed_by_probes(&self, returning_probes: usize) -> bool {
-        self.intelligence_level().is_none_or(|level| {
+        self.revealed_by_probes_on_world(returning_probes, false)
+    }
+
+    /// Returns whether Spy probes reveal this unit on a planet or moon.
+    pub fn revealed_by_probes_on_world(&self, returning_probes: usize, is_moon: bool) -> bool {
+        self.intelligence_level_on_world(is_moon).is_none_or(|level| {
             returning_probes
                 > level
                     .saturating_sub(1)
@@ -422,10 +458,20 @@ impl Unit {
 
     /// Returns the selected combat statistic as a displayable numeric value.
     pub fn get_stat(&self, stat: &CombatStats) -> String {
+        self.get_stat_on_world(stat, false)
+    }
+
+    /// Returns the selected statistic for a unit on a planet or moon.
+    pub fn get_stat_on_world(&self, stat: &CombatStats, is_moon: bool) -> String {
         if *stat == CombatStats::Intelligence {
             return self
-                .intelligence_level()
+                .intelligence_level_on_world(is_moon)
                 .map_or_else(|| "---".to_string(), |level| level.to_string());
+        }
+        if *stat == CombatStats::Range {
+            return self
+                .range_per_level()
+                .map_or_else(|| "---".to_string(), |range| format!("{range} AU"));
         }
 
         let n = match stat {
@@ -437,6 +483,7 @@ impl Unit {
             CombatStats::FuelConsumption => self.fuel_consumption() as f32,
             CombatStats::RapidFire => self.rapid_fire().values().sum::<usize>() as f32,
             CombatStats::Intelligence => unreachable!("handled above"),
+            CombatStats::Range => unreachable!("handled above"),
         };
 
         if n == 0. {

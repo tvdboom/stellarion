@@ -15,10 +15,9 @@ pub struct ImageIds(pub HashMap<String, TextureId>);
 
 impl ImageIds {
     /// Returns a registered texture, falling back to the unknown image or egui's managed atlas.
-    pub fn get(&self, key: impl Into<String>) -> TextureId {
-        let key = key.into();
+    pub fn get(&self, key: impl AsRef<str>) -> TextureId {
         self.0
-            .get(key.as_str())
+            .get(key.as_ref())
             .or_else(|| self.0.get("unknown"))
             .copied()
             .unwrap_or(TextureId::Managed(0))

@@ -21,7 +21,7 @@ use crate::multiplayer::authority::{
     started_snapshot_for_members, validate_incoming,
 };
 use crate::multiplayer::backend::{
-    BackendError, BackendFuture, MultiplayerBackend, PLAYER_CONNECTION_TIMEOUT,
+    BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope, PLAYER_CONNECTION_TIMEOUT,
 };
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
@@ -415,6 +415,15 @@ impl MultiplayerBackend for InMemoryBackend {
                 stored.record.revision = stored.record.revision.saturating_add(1);
                 let turn = stored.record.persisted.state.turn;
                 if !allowed {
+                    let has_stationed_fleet = stored
+                        .record
+                        .persisted
+                        .state
+                        .map
+                        .get(planet_id)
+                        .army
+                        .protector(protector)
+                        .is_some_and(|army| army.has_army());
                     let key = (turn, protector);
                     let withdrew = stored.submissions.get_mut(&key).is_some_and(|submission| {
                         let contains_protect =
@@ -428,7 +437,7 @@ impl MultiplayerBackend for InMemoryBackend {
                                     } if *destination == planet_id
                                 )
                             });
-                        if contains_protect && submission.ready {
+                        if (contains_protect || has_stationed_fleet) && submission.ready {
                             submission.ready = false;
                             true
                         } else {
@@ -1321,15 +1330,33 @@ impl MultiplayerBackend for InMemoryBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         turn: u64,
+        scope: TurnSubmissionScope,
     ) -> BackendFuture<'a, Vec<StoredTurnSubmission>> {
         Box::pin(async move {
             let state = self.lock()?;
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
-            authorize_member(stored, &user_id)?;
+            let member = authorize_member(stored, &user_id)?;
+            let participants =
+                || stored.record.persisted.state.players.iter().filter(|p| !p.spectator);
+            if scope == TurnSubmissionScope::Resolution
+                && (stored.record.status != MatchStatus::Active
+                    || stored.record.persisted.state.turn != turn
+                    || participants()
+                        .any(|p| stored.submissions.get(&(turn, p.id)).is_none_or(|s| !s.ready)))
+            {
+                return Ok(Vec::new());
+            }
             Ok(stored
                 .submissions
                 .range((turn, 0)..=(turn, PlayerId::MAX))
+                .filter(|((_, player_id), submission)| match scope {
+                    TurnSubmissionScope::All => true,
+                    TurnSubmissionScope::Mine => *player_id == member.player_id,
+                    TurnSubmissionScope::Resolution => {
+                        submission.ready && participants().any(|p| p.id == *player_id)
+                    },
+                })
                 .map(|(_, submission)| submission.clone())
                 .collect())
         })

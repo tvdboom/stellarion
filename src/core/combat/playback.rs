@@ -16,7 +16,7 @@ use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::CombatState;
 use crate::core::ui::systems::UiState;
-use crate::core::units::{Amount, Combat, Unit};
+use crate::core::units::{Amount, Unit};
 
 #[derive(Component)]
 pub(crate) struct CombatCardHome(pub Vec3);
@@ -81,11 +81,11 @@ fn snapshot_card(
                 let count = report.planet.army.controller().amount(&unit);
                 return Some(CombatUnitCmp {
                     unit,
-                    side,
-                    hull: count * unit.hull().max(1),
-                    max_hull: count * unit.hull().max(1),
-                    shield: count * unit.shield(),
-                    max_shield: count * unit.shield(),
+                    side: side.clone(),
+                    hull: count * report.unit_hull(unit, &side).max(1),
+                    max_hull: count * report.unit_hull(unit, &side).max(1),
+                    shield: count * report.unit_shield(unit, &side),
+                    max_shield: count * report.unit_shield(unit, &side),
                     fire: FireState::Idle,
                     outcome_visible: false,
                 });
@@ -137,16 +137,21 @@ fn snapshot_card(
                         .and_then(|snapshot| {
                             snapshot.units(&side).iter().find(|old| old.id == record.id)
                         })
-                        .map_or(unit.hull(), |old| old.hull)
+                        .map_or(report.unit_hull(unit, &side), |old| old.hull)
                 }
             })
             .sum();
         let shield = if finished {
             records.iter().filter(|record| record.unit == unit).map(|record| record.shield).sum()
         } else {
-            count * unit.shield()
+            count * report.unit_shield(unit, &side)
         };
-        (hull, count * unit.hull(), shield, count * unit.shield())
+        (
+            hull,
+            count * report.unit_hull(unit, &side),
+            shield,
+            count * report.unit_shield(unit, &side),
+        )
     };
     (hull > 0 || unit.is_missile()).then_some(CombatUnitCmp {
         unit,

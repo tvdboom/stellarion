@@ -682,7 +682,7 @@ pub fn setup_combat(
             let (owner, owner_count, protection) = combat_unit_counts(report, &side, u);
             let w = combat_count_badge_width(size, owner_count, &protection);
             let h = size * 0.3;
-            let hull = c * u.hull();
+            let hull = c * report.unit_hull(*u, &side);
 
             commands
                 .spawn((
@@ -697,8 +697,8 @@ pub fn setup_combat(
                         unit: *u,
                         side: side.clone(),
                         fire: FireState::Idle,
-                        shield: c * u.shield(),
-                        max_shield: c * u.shield(),
+                        shield: c * report.unit_shield(*u, &side),
+                        max_shield: c * report.unit_shield(*u, &side),
                         hull,
                         max_hull: hull,
                         outcome_visible: false,
@@ -1469,8 +1469,8 @@ pub fn animate_combat(
                     .iter()
                     .filter(|combatant| combatant.unit == cu.unit && combatant.hull > 0)
                     .count();
-                cu.max_shield = count * cu.unit.shield();
-                cu.max_hull = count * cu.unit.hull();
+                cu.max_shield = count * report.unit_shield(cu.unit, &cu.side);
+                cu.max_hull = count * report.unit_hull(cu.unit, &cu.side);
                 if has_next_round {
                     cu.shield = cu.max_shield;
                 }
@@ -1622,8 +1622,8 @@ pub fn animate_combat(
                             round.units(&cu.side).iter().filter(|cu2| cu.unit == cu2.unit).count()
                         };
 
-                        cu.max_shield = count * cu.unit.shield();
-                        cu.max_hull = count * cu.unit.hull();
+                        cu.max_shield = count * report.unit_shield(cu.unit, &cu.side);
+                        cu.max_hull = count * report.unit_hull(cu.unit, &cu.side);
                         cu.shield = cu.max_shield;
                         cu.fire = FireState::Idle;
                         cu.outcome_visible = false;

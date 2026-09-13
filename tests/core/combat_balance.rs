@@ -1310,7 +1310,10 @@ fn jump_deployment_moves_production_weighted_fleet_without_fuel_or_combat() {
     }
     game.map.get_mut(origin).army.insert(Unit::war_sun(), 1);
     let before = game.players[0].resources;
-    let income = game.players[0].resource_production(&game.map);
+    let income = game.players[0]
+        .energy_grid(&game.map)
+        .with_action_demand(Unit::war_sun().production().div_ceil(5))
+        .scale_resources(game.players[0].raw_resource_production(&game.map));
     turn(
         &mut game,
         vec![send(
@@ -1353,7 +1356,7 @@ fn undefended_destroy_probability_matches_planet_size_and_sun_count() {
             s.moon = diameter == 1500;
             let (planet, _) = s.fixture();
             let expected =
-                100. * (1. - (1. - (planet.destroy_probability() as f64 - 0.01)).powi(suns as i32));
+                100. * (1. - (1. - planet.destroy_probability() as f64).powi(suns as i32));
             let measured = measure(s, 1024);
             assert!(
                 (measured.objective_success_pct - expected).abs() < 5.,

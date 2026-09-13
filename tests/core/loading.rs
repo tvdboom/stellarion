@@ -257,22 +257,19 @@ fn battle_destruction_notifies_only_nonparticipants_for_each_public_structure() 
     let report = MissionReport {
         id: 91,
         turn: usize::try_from(model.turn).unwrap(),
-        mission: Mission {
-            owner: attacker,
-            destination: target,
-            objective: Icon::Attack,
-            ..default()
-        },
-        planet: previous.get(target).clone(),
-        scout_probes: 0,
-        surviving_attacker: Default::default(),
         surviving_defender: model.map.get(target).army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: model.map.get(target).owned,
         destination_controlled: model.map.get(target).controlled,
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: attacker,
+                destination: target,
+                objective: Icon::Attack,
+                ..default()
+            },
+            previous.get(target).clone(),
+        )
     };
     model.player_mut(attacker).unwrap().push_report(report.clone());
     model.player_mut(defender).unwrap().push_report(report);

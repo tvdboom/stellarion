@@ -4,6 +4,16 @@ use super::*;
 use crate::core::identity::PlayerId;
 use crate::core::missions::MissionRouteStyle;
 
+/// Shows the launch-only Energy charge while the draft uses a Jump Gate.
+pub(super) fn draw_jump_energy_cost(ui: &mut Ui, mission: &Mission, images: &ImageIds) {
+    if mission.jump_gate {
+        ui.horizontal(|ui| {
+            ui.add_image(images.get("energy"), [30., 21.]);
+            ui.small(format!("Jump Energy: {}", mission.jump_energy_cost()));
+        });
+    }
+}
+
 const MISSION_PLANET_COLUMN_WIDTH: f32 = 120.0;
 const MISSION_PLANET_CELL_HEIGHT: f32 = 100.0;
 const MISSION_PLANET_IMAGE_SIZE: f32 = 60.0;
@@ -32,7 +42,7 @@ const MISSION_REPORT_INTEL_IMAGE_SIZE: f32 = (MISSION_REPORT_PLANET_INTEL_WIDTH
     - MISSION_REPORT_INTEL_COLUMN_GAP * (MISSION_REPORT_INTEL_COLUMNS - 1) as f32)
     / MISSION_REPORT_INTEL_COLUMNS as f32;
 const MISSION_REPORT_INTEL_COLUMNS: usize = 3;
-const MISSION_REPORT_INTEL_GROUP_GAP: f32 = 12.0;
+const MISSION_REPORT_INTEL_GROUP_GAP: f32 = 7.0;
 const FLEET_MOVEMENT_TOOLTIP: &str = "Distance the fleet will travel next turn. Fleets accelerate \
     each travel turn, so this is not a fixed per-turn speed.";
 const JUMP_GATE_MOVEMENT_TOOLTIP: &str =
@@ -1067,8 +1077,10 @@ fn draw_new_mission(
                                 .on_hover_small(
                                     "Whether to send this mission through the Jump Gate. Missions \
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
-                                armies total jump cost can't surpass the Gate's limit.",
+                                army's total production can't surpass the Gate's limit. Each jump \
+                                uses 1 Energy per 5 production sent, rounded up. Unused gates consume no Energy.",
                                 );
+                                draw_jump_energy_cost(ui, &state.mission_info, images);
                             } else {
                                 state.mission_info.jump_gate = false;
                             }
@@ -1457,6 +1469,21 @@ fn draw_mission_details(
         ui.add_image(images.get(mission.objective.asset_key()), [20.; 2]);
         ui.small(mission.objective.to_name());
     });
+
+    if mission.objective == Icon::Destroy {
+        let war_suns = mission.army.amount(&Unit::war_sun());
+        let per_sun = f64::from(destination.destroy_probability_basis_points()) / 10_000.0;
+        let combined = 1.0 - (1.0 - per_sun).powf(war_suns as f64);
+        ui.small(format!("☀ Initial chance per War Sun: {:.1}%", per_sun * 100.0)).on_hover_small(
+            "Each surviving War Sun gets one independent chance to destroy the planet \
+                once enemy ships and the Space Dock are gone.",
+        );
+        ui.small(format!("☀ Combined for {war_suns} War Suns: {:.1}%", combined * 100.0))
+            .on_hover_small(
+                "Combined chance if all selected War Suns fire in the first combat round. \
+            Each later round lowers the chance per War Sun by one percentage point.",
+            );
+    }
 
     ui.small(format!("📏 Target distance: {distance:.1} AU")).on_hover_small(
         "AU means astronomical unit, the distance scale used on the galaxy map. \

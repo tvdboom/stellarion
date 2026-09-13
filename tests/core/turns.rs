@@ -384,17 +384,11 @@ fn protection_fleet_receives_a_victory_notification_when_the_defending_team_wins
     let report = MissionReport {
         id: 74,
         turn: 2,
-        mission,
-        planet: destination.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: destination.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: destination.owned,
         destination_controlled: destination.controlled,
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(mission, destination.clone())
     };
 
     let notification = report_notification(&report, &protector, &origin, &destination);
@@ -490,17 +484,9 @@ fn planet_destruction_animation_only_starts_once_for_its_reported_turn() {
     let report = MissionReport {
         id: 91,
         turn: 4,
-        mission,
-        planet: destination.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
-        surviving_defender: Army::new().into(),
-        planet_colonized: false,
         planet_destroyed: true,
-        destination_owned: None,
-        destination_controlled: None,
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(mission, destination.clone())
     };
     let mut destroyed = destination;
     destroyed.destroy();

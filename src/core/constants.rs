@@ -101,8 +101,6 @@ pub const ORBITAL_RAILGUN_FIRE_ENERGY_COST: usize = 5;
 pub const ORBITAL_RAILGUN_ENERGY_PER_LEVEL: usize = 4;
 /// Base destruction chance contributed by each firing Orbital Railgun level.
 pub const ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL: usize = 500;
-/// Greatest amount planet size can add to or remove from an Orbital Railgun strike.
-pub const ORBITAL_RAILGUN_MAX_SIZE_MODIFIER_BASIS_POINTS: usize = 200;
 /// Destruction chance removed by each target Planetary Shield level.
 pub const ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL: usize = 100;
 /// Destruction chance removed per target Shield level while it is overloaded.

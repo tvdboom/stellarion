@@ -175,10 +175,8 @@ impl WorldAssets {
             load_audio_alias(server, &mut self.audio, &mut self.gameplay_handles, name, source);
         }
 
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "icons",
             &[
                 "won",
@@ -233,72 +231,42 @@ impl WorldAssets {
             self.gameplay_handles.push(handle.clone().untyped());
             self.images.insert(name.to_string(), handle);
         }
-        load_category(
-            server,
-            &mut self.images,
-            &mut self.gameplay_handles,
-            "bg",
-            &["bg", "combat", "defeat bg", "victory bg"],
-        );
+        self.load_gameplay_images(server, "bg", &["bg", "combat", "defeat bg", "victory bg"]);
         // Result lettering scales throughout its entrance animation; nearest sampling aliases
         // the gold outlines even though the source artwork has enough resolution.
         for name in ["victory", "defeat", "draw"] {
-            let handle: Handle<Image> = server
-                .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
-                    settings.linear_filtering = true;
-                })
-                .load(format!("images/bg/{name}.basisu.ktx2"));
-            self.gameplay_handles.push(handle.clone().untyped());
-            self.images.insert(name.to_string(), handle);
+            self.load_gameplay_linear_image(server, name, &format!("images/bg/{name}.basisu.ktx2"));
         }
-        load_category(server, &mut self.images, &mut self.gameplay_handles, "ui", &["panel"]);
-        load_category(
-            server,
-            &mut self.images,
-            &mut self.gameplay_handles,
-            "ambient",
-            &["wreckage"],
-        );
+        self.load_gameplay_images(server, "ui", &["panel"]);
+        self.load_gameplay_images(server, "ambient", &["wreckage"]);
         for name in ["development", "facilities", "gas-development"] {
-            let image: Handle<Image> = server
-                .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
-                    settings.linear_filtering = true;
-                })
-                .load(format!("images/planet-buildings/{name}.basisu.ktx2"));
-            self.gameplay_handles.push(image.clone().untyped());
-            self.images.insert(name.to_string(), image);
+            self.load_gameplay_linear_image(
+                server,
+                name,
+                &format!("images/planet-buildings/{name}.basisu.ktx2"),
+            );
         }
         // Dedicated lunar silhouettes mirror their shop art instead of borrowing generic atlas
         // tiles. Unique registry keys avoid colliding with the shop-card image handles.
         for name in ["shipyard", "tidal generator", "orbital radar"] {
-            load_linear_image(
+            self.load_gameplay_linear_image(
                 server,
-                &mut self.images,
-                &mut self.gameplay_handles,
                 &format!("moon {name}"),
                 &format!("images/moon-buildings/{name}.basisu.ktx2"),
             );
         }
-        load_linear_image(
+        self.load_gameplay_linear_image(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             PLANET_TERRAFORMER_IMAGE,
             "images/planet-buildings/terraformer.basisu.ktx2",
         );
-        load_linear_image(
+        self.load_gameplay_linear_image(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             GAS_PLANET_TERRAFORMER_IMAGE,
             "images/planet-buildings/terraformer gas.basisu.ktx2",
         );
-        load_linear_image(
+        self.load_gameplay_linear_image(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "colonial administration",
             "images/buildings/colonial administration.basisu.ktx2",
         );
@@ -312,7 +280,7 @@ impl WorldAssets {
                 "images/planet-buildings/colonial administration gas.basisu.ktx2",
             ),
         ] {
-            load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
+            self.load_gameplay_linear_image(server, name, path);
         }
         for name in ASTEROID_IMAGE_NAMES {
             load_linear_category_image(
@@ -323,10 +291,8 @@ impl WorldAssets {
                 name,
             );
         }
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "resources",
             &[
                 "turn",
@@ -340,12 +306,17 @@ impl WorldAssets {
                 "withdrawal 50",
                 "withdrawal 25",
                 "withdrawal immediate",
+                "mine normal",
+                "mine intensive",
+                "mine suspended",
+                "dock industrial",
+                "dock bastion",
+                "senate expansion",
+                "senate consolidation",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "buildings",
             &[
                 "lunar base",
@@ -364,10 +335,8 @@ impl WorldAssets {
                 "senate",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "orbitals",
             &[
                 "solar satellite",
@@ -380,10 +349,8 @@ impl WorldAssets {
                 "orbital railgun",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "defense",
             &[
                 "crawler",
@@ -398,10 +365,8 @@ impl WorldAssets {
                 "interplanetary missile",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "ships",
             &[
                 "probe",
@@ -416,10 +381,8 @@ impl WorldAssets {
                 "war sun",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "mission",
             &[
                 "abandon",
@@ -446,10 +409,8 @@ impl WorldAssets {
                 "railgun strike",
             ],
         );
-        load_category(
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "combat",
             &[
                 "hull",
@@ -457,22 +418,15 @@ impl WorldAssets {
                 "damage",
                 "production",
                 "intelligence",
+                "range",
                 "speed",
                 "fuel consumption",
                 "rapid fire",
             ],
         );
-        load_category(
+        self.load_gameplay_images(server, "planets", &["unknown", "destroyed bg"]);
+        self.load_gameplay_images(
             server,
-            &mut self.images,
-            &mut self.gameplay_handles,
-            "planets",
-            &["unknown", "destroyed bg"],
-        );
-        load_category(
-            server,
-            &mut self.images,
-            &mut self.gameplay_handles,
             "animations",
             &["explosion", "short explosion", "flame", "death ray"],
         );
@@ -486,13 +440,7 @@ impl WorldAssets {
                 &name,
             );
         }
-        load_linear_image(
-            server,
-            &mut self.images,
-            &mut self.gameplay_handles,
-            "nebula",
-            "images/ambient/nebula.basisu.ktx2",
-        );
+        self.load_gameplay_linear_image(server, "nebula", "images/ambient/nebula.basisu.ktx2");
         for kind in CelestialKind::ALL {
             for index in 1..=kind.frame_count() {
                 let name = format!("{} {index}", kind.name());
@@ -595,6 +543,14 @@ impl WorldAssets {
     /// Returns the terminal gameplay loading error, when one was observed.
     pub fn gameplay_error(&self) -> Option<&str> {
         self.gameplay_error.as_deref()
+    }
+
+    fn load_gameplay_images(&mut self, server: &AssetServer, category: &str, names: &[&str]) {
+        load_category(server, &mut self.images, &mut self.gameplay_handles, category, names);
+    }
+
+    fn load_gameplay_linear_image(&mut self, server: &AssetServer, name: &str, path: &str) {
+        load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
     }
 
     /// Inserts atlas metadata for an already requested image.

@@ -10,7 +10,9 @@ use crate::core::player::PlayerColor;
 use crate::core::simulation::{
     MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
-use crate::multiplayer::backend::{BackendError, BackendFuture, MultiplayerBackend};
+use crate::multiplayer::backend::{
+    BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope,
+};
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary,
     JoinGameRequest, JointAttackInvitation, JointAttackResponse, MembershipResult,
@@ -428,11 +430,17 @@ impl MultiplayerBackend for SupabaseBackend {
                     &StateWriteRpc {
                         game_id: &game_id.0,
                         expected_revision,
-                        persisted,
+                        persisted: &persisted,
                     },
                 )
                 .await?;
-            validate_game_record(record, Some(game_id), Some(&session.user_id))
+            validate_snapshot_acknowledgement(
+                record,
+                persisted,
+                game_id,
+                &session.user_id,
+                expected_revision,
+            )
         })
     }
 
@@ -540,12 +548,13 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Loads ready submissions and recoverable drafts for this turn.
+    /// Requests only the orders needed for recovery, resolution, or history.
     fn load_turn_submissions<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         turn: u64,
+        scope: TurnSubmissionScope,
     ) -> BackendFuture<'a, Vec<StoredTurnSubmission>> {
         Box::pin(async move {
             let submissions = self
@@ -555,6 +564,7 @@ impl MultiplayerBackend for SupabaseBackend {
                     &TurnRpc {
                         game_id: &game_id.0,
                         turn,
+                        scope,
                     },
                 )
                 .await?;
@@ -586,11 +596,17 @@ impl MultiplayerBackend for SupabaseBackend {
                         game_id: &game_id.0,
                         expected_revision,
                         resolved_turn,
-                        persisted,
+                        persisted: &persisted,
                     },
                 )
                 .await?;
-            validate_game_record(record, Some(game_id), Some(&session.user_id))
+            validate_snapshot_acknowledgement(
+                record,
+                persisted,
+                game_id,
+                &session.user_id,
+                expected_revision,
+            )
         })
     }
 
@@ -766,7 +782,7 @@ struct StateWriteRpc<'a> {
     #[serde(rename = "p_expected_revision")]
     expected_revision: u64,
     #[serde(rename = "p_persisted")]
-    persisted: PersistedGame,
+    persisted: &'a PersistedGame,
 }
 
 #[derive(Serialize)]
@@ -795,6 +811,20 @@ struct SubmissionRpcResponse {
     disposition: SubmissionDisposition,
 }
 
+/// Server-owned metadata for a successful snapshot write; the payload stays with its writer.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotAcknowledgement {
+    id: GameId,
+    code: GameCode,
+    revision: u64,
+    saved_at: u64,
+    max_players: u8,
+    status: MatchStatus,
+    members: Vec<GameMembership>,
+    submitted_players: Vec<PlayerId>,
+}
+
 #[derive(Serialize)]
 /// Borrowed game identifier and turn used to load canonical submissions.
 struct TurnRpc<'a> {
@@ -802,6 +832,8 @@ struct TurnRpc<'a> {
     game_id: &'a str,
     #[serde(rename = "p_turn")]
     turn: u64,
+    #[serde(rename = "p_scope")]
+    scope: TurnSubmissionScope,
 }
 
 #[derive(Serialize)]
@@ -824,7 +856,7 @@ struct ResolutionRpc<'a> {
     #[serde(rename = "p_resolved_turn")]
     resolved_turn: u64,
     #[serde(rename = "p_persisted")]
-    persisted: PersistedGame,
+    persisted: &'a PersistedGame,
 }
 
 #[derive(Serialize)]
@@ -909,6 +941,33 @@ fn validate_protection_update(
         return invalid_protocol("protection update does not match the request");
     }
     Ok(update)
+}
+
+/// Reuses the exact uploaded snapshot only after the server acknowledges its new revision.
+fn validate_snapshot_acknowledgement(
+    response: SnapshotAcknowledgement,
+    persisted: PersistedGame,
+    game_id: &GameId,
+    user_id: &UserId,
+    expected_revision: u64,
+) -> Result<GameRecord, BackendError> {
+    let record = GameRecord {
+        id: response.id,
+        code: response.code,
+        revision: response.revision,
+        saved_at: response.saved_at,
+        max_players: response.max_players,
+        status: response.status,
+        members: response.members,
+        submitted_players: response.submitted_players,
+        persisted,
+    };
+    if Some(record.revision) != expected_revision.checked_add(1)
+        || !record.submitted_players.is_empty()
+    {
+        return invalid_protocol("snapshot acknowledgement has an invalid revision or readiness");
+    }
+    validate_game_record(record, Some(game_id), Some(user_id))
 }
 
 /// Validates a complete RPC game record and its membership cross-references.

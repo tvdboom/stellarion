@@ -25,7 +25,7 @@ fn trading_game() -> GameModel {
 }
 
 #[test]
-fn completed_trading_posts_broadcast_to_every_adjacent_owner_and_controller() {
+fn completed_trading_posts_are_visible_only_through_owned_post_range() {
     let mut model = GameModel::new(
         [31; 32],
         GameRules {
@@ -44,11 +44,11 @@ fn completed_trading_posts_broadcast_to_every_adjacent_owner_and_controller() {
     model.map.get_mut(adjacent).owned = Some(1);
     model.map.get_mut(adjacent).controlled = Some(2);
     model.map.get_mut(adjacent).position =
-        bevy::math::Vec2::X * Planet::SIZE * TRADING_POST_ADJACENCY_AU;
+        bevy::math::Vec2::X * Planet::SIZE * TRADING_POST_RANGE_PER_LEVEL;
     model.map.get_mut(distant).owned = Some(3);
     model.map.get_mut(distant).controlled = Some(3);
     model.map.get_mut(distant).position =
-        bevy::math::Vec2::Y * Planet::SIZE * (TRADING_POST_ADJACENCY_AU + 0.01);
+        bevy::math::Vec2::Y * Planet::SIZE * (TRADING_POST_RANGE_PER_LEVEL + 0.01);
     let target = model.map.get_mut(post);
     target.position = bevy::math::Vec2::ZERO;
     target.owned = Some(4);
@@ -61,15 +61,21 @@ fn completed_trading_posts_broadcast_to_every_adjacent_owner_and_controller() {
     model.map.get_mut(post).buy.clear();
     model.map.get_mut(post).army.insert(Unit::Building(Building::TradingPost), 1);
 
-    for viewer in [1, 2, 4] {
+    assert_eq!(visible_trading_post_owner(&model.map, 4, model.map.get(post)), Some(4));
+    for viewer in [1, 2, 3] {
+        assert_eq!(visible_trading_post_owner(&model.map, viewer, model.map.get(post)), None);
+    }
+    model.map.get_mut(adjacent).army.insert(Unit::Building(Building::TradingPost), 1);
+    for viewer in [1, 4] {
         assert_eq!(
             visible_trading_post_owner(&model.map, viewer, model.map.get(post)),
             Some(4),
-            "the completed post broadcasts its owner without requiring scouting or a local post"
+            "only an owned completed post reveals a foreign post"
         );
     }
+    assert_eq!(visible_trading_post_owner(&model.map, 2, model.map.get(post)), None);
     assert_eq!(visible_trading_post_owner(&model.map, 3, model.map.get(post)), None);
-    assert!(!trading_posts_are_adjacent(&model.map, 1, adjacent, 4, post));
+    assert!(trading_posts_are_adjacent(&model.map, 1, adjacent, 4, post));
 
     model.map.get_mut(adjacent).is_destroyed = true;
     for viewer in [1, 2] {
@@ -109,14 +115,17 @@ fn each_post_level_supplies_its_owners_independent_capacity() {
 }
 
 #[test]
-fn trading_posts_reach_four_au_inclusively() {
+fn trading_posts_require_both_ranges_and_include_the_boundary() {
     let mut model = trading_game();
     let first = model.players[0].home_planet;
     let second = model.players[1].home_planet;
-    for (distance, expected) in [(3.5, true), (4.0, true), (4.01, false)] {
+    for (distance, expected) in [(2.5, true), (3.0, true), (3.01, false)] {
         model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * distance;
         assert_eq!(trading_posts_are_adjacent(&model.map, 1, first, 2, second), expected);
     }
+    model.map.get_mut(second).army.insert(Unit::Building(Building::TradingPost), 3);
+    model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * 4.5;
+    assert!(trading_posts_are_adjacent(&model.map, 1, first, 2, second));
 }
 
 #[test]
@@ -163,6 +172,7 @@ fn finalized_trade_reserves_now_and_delivers_only_at_resolution() {
 #[test]
 fn a_trade_above_either_posts_capacity_is_rejected() {
     let mut model = trading_game();
+    let before = serde_json::to_value(&model).unwrap();
     let first = model.players[0].home_planet;
     let second = model.players[1].home_planet;
     let error = add_trade_agreement_immediately(
@@ -186,4 +196,5 @@ fn a_trade_above_either_posts_capacity_is_rejected() {
     );
     assert!(error.is_err());
     assert!(model.trades.is_empty());
+    assert_eq!(serde_json::to_value(&model).unwrap(), before);
 }

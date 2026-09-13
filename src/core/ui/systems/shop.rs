@@ -4,6 +4,9 @@ use super::*;
 use crate::core::map::planet::ShieldOverloadState;
 use crate::core::orders::conversion_output;
 use crate::core::units::buildings::FleetWithdrawal;
+use crate::core::units::operations::{
+    mine_building, MineMode, SenatePolicy, SenateSupport, SpaceDockMode,
+};
 
 /// Formats the resource output confirmed by a laboratory conversion.
 pub(super) fn conversion_success_message(gain: usize, resource: ResourceName) -> MessageMsg {
@@ -11,12 +14,11 @@ pub(super) fn conversion_success_message(gain: usize, resource: ResourceName) ->
 }
 
 /// Warns only when a proposed unit changes a balanced grid into an energy shortage.
-pub(super) fn energy_shortage_warning(
-    energy: EnergyGrid,
-    unit: Unit,
-    solar_band: Option<SolarBand>,
-) -> Option<MessageMsg> {
-    let after = energy.with_unit(unit, solar_band, 1);
+pub(super) fn energy_shortage_warning(energy: EnergyGrid, added: EnergyGrid) -> Option<MessageMsg> {
+    let after = EnergyGrid {
+        supply: energy.supply.saturating_add(added.supply),
+        demand: energy.demand.saturating_add(added.demand),
+    };
     (after.balance() < energy.balance() && energy.balance() >= 0 && after.balance() < 0)
         .then(|| MessageMsg::warning("Next turn: Energy shortage."))
 }
@@ -25,14 +27,15 @@ pub(super) fn energy_shortage_warning(
 pub(super) fn shop_capacity_summary(
     shop: Shop,
     planet: &Planet,
+    senate: SenateSupport,
 ) -> Option<(&'static str, usize, usize)> {
     match (shop, planet.is_moon()) {
         (Shop::Buildings, true) => Some(("Fields", planet.fields_consumed(), planet.max_fields())),
         (Shop::Fleet, false) => {
-            Some(("Production", planet.fleet_production(), planet.max_fleet_production()))
+            Some(("Production", planet.fleet_production(), senate.fleet_capacity(planet)))
         },
         (Shop::Defenses, false) => {
-            Some(("Production", planet.battery_production(), planet.max_battery_production()))
+            Some(("Production", planet.battery_production(), senate.defense_capacity(planet)))
         },
         (Shop::Buildings | Shop::Orbitals | Shop::Fleet | Shop::Defenses, _) => None,
     }
@@ -50,7 +53,9 @@ fn image_tile_button(ui: &mut Ui, image: egui::TextureId, selected: bool) -> Res
         Color32::from_rgba_unmultiplied(100, 128, 151, 105)
     };
 
-    let tint = if selected {
+    let tint = if !ui.is_enabled() {
+        Color32::from_rgb(70, 80, 90)
+    } else if selected {
         Color32::WHITE
     } else if response.hovered() {
         Color32::from_rgb(210, 218, 225)
@@ -116,11 +121,22 @@ fn draw_unit_stat_cell(
     images: &ImageIds,
     width: f32,
 ) -> Response {
+    draw_unit_stat_cell_on_world(ui, unit, stat, images, width, false)
+}
+
+fn draw_unit_stat_cell_on_world(
+    ui: &mut Ui,
+    unit: &Unit,
+    stat: &CombatStats,
+    images: &ImageIds,
+    width: f32,
+    is_moon: bool,
+) -> Response {
     ui.horizontal(|ui| {
         ui.set_width(width);
         ui.style_mut().interaction.selectable_labels = true;
         ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
-        ui.label(unit.get_stat(stat)).on_hover_cursor(CursorIcon::Default);
+        ui.label(unit.get_stat_on_world(stat, is_moon)).on_hover_cursor(CursorIcon::Default);
     })
     .response
     .on_hover_ui(|ui| draw_stat_hover(ui, stat, images))
@@ -140,8 +156,30 @@ pub(super) fn draw_intelligence_stat(ui: &mut Ui, unit: &Unit, images: &ImageIds
     draw_unit_stat(ui, unit, CombatStats::Intelligence, images)
 }
 
-/// Draws the production and intelligence boxes in orbital hover-panel order.
+/// Draws production, intelligence, and range in orbital hover-panel order.
 pub(super) fn draw_orbital_stats(
+    ui: &mut Ui,
+    unit: &Unit,
+    images: &ImageIds,
+) -> (Response, Response, Response) {
+    ui.separator();
+    ui.add_space(12.);
+    let stats = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 20.;
+            let production = draw_unit_stat_cell(ui, unit, &CombatStats::Production, images, 150.);
+            let intelligence =
+                draw_unit_stat_cell(ui, unit, &CombatStats::Intelligence, images, 150.);
+            let range = draw_unit_stat_cell(ui, unit, &CombatStats::Range, images, 150.);
+            (production, intelligence, range)
+        })
+        .inner;
+    ui.add_space(12.);
+    stats
+}
+
+/// Draws intelligence and per-level range for a lunar building.
+pub(super) fn draw_moon_building_stats(
     ui: &mut Ui,
     unit: &Unit,
     images: &ImageIds,
@@ -151,10 +189,17 @@ pub(super) fn draw_orbital_stats(
     let stats = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 20.;
-            let production = draw_unit_stat_cell(ui, unit, &CombatStats::Production, images, 150.);
-            let intelligence =
-                draw_unit_stat_cell(ui, unit, &CombatStats::Intelligence, images, 150.);
-            (production, intelligence)
+            let intelligence = draw_unit_stat_cell_on_world(
+                ui,
+                unit,
+                &CombatStats::Intelligence,
+                images,
+                180.,
+                true,
+            );
+            let range =
+                draw_unit_stat_cell_on_world(ui, unit, &CombatStats::Range, images, 180., true);
+            (intelligence, range)
         })
         .inner;
     ui.add_space(12.);
@@ -170,6 +215,8 @@ fn draw_unit_hover(
     player: &mut Player,
     planet: &mut Planet,
     solar_band: Option<SolarBand>,
+    senate: &mut SenateSupport,
+    senate_queues_fit: [bool; 2],
     pending: &mut PendingTurnCommands,
     message: &mut MessageWriter<MessageMsg>,
     msg: Option<String>,
@@ -194,7 +241,7 @@ fn draw_unit_hover(
                     ui.add_space(30.);
                 }
 
-                let energy = EnergyGrid::for_unit(*unit, solar_band);
+                let energy = EnergyGrid::for_operating_unit(planet, *unit, solar_band);
                 if unit.is_building() || energy != EnergyGrid::default() {
                     ui.add_image(images.get("energy"), [50., 35.]);
                     ui.label(if energy.supply > 0 {
@@ -224,8 +271,10 @@ fn draw_unit_hover(
             if !unit.is_building() {
                 for (i, row) in CombatStats::iter()
                     .filter(|c| {
-                        !(matches!(c, CombatStats::RapidFire | CombatStats::Intelligence)
-                            || *c == CombatStats::Production && unit.is_orbital())
+                        !(matches!(
+                            c,
+                            CombatStats::RapidFire | CombatStats::Intelligence | CombatStats::Range
+                        ) || *c == CombatStats::Production && unit.is_orbital())
                     })
                     .collect::<Vec<CombatStats>>()
                     .chunks(3)
@@ -237,7 +286,7 @@ fn draw_unit_hover(
                             .striped(false)
                             .show(ui, |ui| {
                                 for stat in row {
-                                    draw_unit_stat_cell(ui, unit, stat, images, 150.);
+                                    draw_operating_unit_stat_cell(ui, unit, stat, images, planet);
                                 }
                             });
                     }
@@ -246,8 +295,33 @@ fn draw_unit_hover(
                 }
             }
 
+            if count > 0 {
+                if let Unit::Building(building) = unit {
+                    if let Some(resource) = building.mined_resource() {
+                        ui.separator();
+                        ui.add_space(12.);
+                        draw_mine_mode(ui, planet, resource, pending, images);
+                    }
+                }
+                if *unit == Unit::Building(Building::Recycler) {
+                    ui.separator();
+                    ui.add_space(12.);
+                    draw_recycler_focus(ui, planet, pending, images);
+                } else if *unit == Unit::space_dock() {
+                    ui.separator();
+                    ui.add_space(12.);
+                    draw_space_dock_mode(ui, planet, pending, images, *senate);
+                } else if *unit == Unit::Building(Building::Senate) {
+                    ui.separator();
+                    ui.add_space(12.);
+                    draw_senate_policy(ui, planet, pending, images, senate, senate_queues_fit);
+                }
+            }
+
             if unit.is_orbital() {
                 let _ = draw_orbital_stats(ui, unit, images);
+            } else if unit.is_building() && planet.is_moon() {
+                let _ = draw_moon_building_stats(ui, unit, images);
             } else if unit.is_building() {
                 let _ = draw_intelligence_stat(ui, unit, images);
             }
@@ -413,6 +487,227 @@ fn draw_unit_hover(
                 });
             }
         });
+    });
+}
+
+/// Displays the selected Dock statistics in its normal unit tooltip.
+fn draw_operating_unit_stat_cell(
+    ui: &mut Ui,
+    unit: &Unit,
+    stat: &CombatStats,
+    images: &ImageIds,
+    planet: &Planet,
+) {
+    let value = if *unit == Unit::space_dock() {
+        match stat {
+            CombatStats::Hull => Some(planet.unit_hull(*unit)),
+            CombatStats::Shield => Some(planet.unit_shield(*unit)),
+            CombatStats::Damage => Some(planet.unit_damage(*unit)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(value) = value {
+        ui.horizontal(|ui| {
+            ui.set_width(150.);
+            ui.add_image(images.get(stat.to_lowername()), [70., 45.]);
+            ui.label(value.to_string());
+        })
+        .response
+        .on_hover_ui(|ui| draw_stat_hover(ui, stat, images));
+    } else {
+        draw_unit_stat_cell(ui, unit, stat, images, 150.);
+    }
+}
+
+/// Draws one mine's independent operation and compulsory recovery state.
+pub(super) fn draw_mine_mode(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    resource: ResourceName,
+    pending: &mut PendingTurnCommands,
+    images: &ImageIds,
+) {
+    let level = planet.army.amount(&Unit::Building(mine_building(resource)));
+    if level == 0 {
+        return;
+    }
+    let recovering = planet.operations.mine(resource).recovering;
+    let next_level = level.saturating_add(
+        planet.buy.iter().filter(|unit| **unit == Unit::Building(mine_building(resource))).count(),
+    );
+    let can_accept_commands = pending.can_accept_commands();
+    ui.small("Extraction mode");
+    ui.add_space(6.);
+    ui.add_enabled_ui(can_accept_commands && !recovering, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for mode in MineMode::ALL {
+                let selected = planet.operations.mine(resource).mode == mode;
+                let response = image_tile_button(ui, images.get(mode.image()), selected);
+                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, mode.label()));
+                let hover = |ui: &mut Ui| {
+                    ui.small(match mode {
+                        MineMode::Normal => "Normal: 100% output; 1 Energy per level.",
+                        MineMode::Intensive => "Intensive: 150% output; 3 Energy per level. Automatically suspended next turn, with one compulsory recovery turn.",
+                        MineMode::Suspended => "Suspended: no output or Energy demand. Stays suspended until you choose another mode.",
+                    });
+                    ui.small(format!("{} Energy for {next_level} level(s), including queued upgrades.", mode.energy().saturating_mul(next_level)));
+                    if recovering {
+                        ui.small("Recovery: suspended for this entire turn.");
+                    } else if !can_accept_commands {
+                        ui.small("Loading turn orders; wait before changing this choice.");
+                    }
+                };
+                let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
+                if response.clicked() && !selected && pending.push(TurnCommand::SetMineMode { planet_id: planet.id, resource, mode }) {
+                    planet.operations.mine_mut(resource).mode = mode;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
+            }
+        });
+    });
+}
+
+/// Uses the Terraformer resource tiles for bulk and selective recovery.
+pub(super) fn draw_recycler_focus(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+    images: &ImageIds,
+) {
+    if !planet.has(&Unit::Building(Building::Recycler)) {
+        return;
+    }
+    ui.small("Recovery focus");
+    ui.add_space(6.);
+    ui.add_enabled_ui(pending.can_accept_commands(), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for resource in [None, Some(ResourceName::Metal), Some(ResourceName::Crystal), Some(ResourceName::Deuterium)] {
+                let selected = planet.operations.recycler_focus == resource;
+                let label = resource.map_or_else(|| "Bulk".to_string(), |resource| format!("Selective {}", resource.to_name()));
+                let response = resource_tile_button(ui, images, resource, selected);
+                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, &label));
+                let hover = |ui: &mut Ui| {
+                    ui.small(resource.map_or_else(|| "Bulk: recover the normal mixture of all three resources.".to_string(), |resource| format!("Selective {}: recover 150% of its normal haul, with no other resources.", resource.to_name())));
+                };
+                let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
+                if response.clicked() && !selected && pending.push(TurnCommand::SetRecyclerFocus { planet_id: planet.id, resource }) {
+                    planet.operations.recycler_focus = resource;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
+            }
+        });
+    });
+}
+
+/// Draws the Space Dock's mutually exclusive modes and remaining commitment.
+pub(super) fn draw_space_dock_mode(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+    images: &ImageIds,
+    senate: SenateSupport,
+) {
+    if !planet.has(&Unit::space_dock()) {
+        return;
+    }
+    let remaining = planet.operations.space_dock_locked_until.saturating_sub(pending.turn);
+    let can_accept_commands = pending.can_accept_commands();
+    ui.small("Space Dock mode");
+    ui.add_space(6.);
+    ui.horizontal_wrapped(|ui| {
+        for (mode, label, image, tooltip) in [
+            (SpaceDockMode::Industrial, "Industrial", "dock industrial", "Industrial: +5 fleet production. Hull 2,000; Shield 110; Damage 150."),
+            (SpaceDockMode::Bastion, "Bastion", "dock bastion", "Bastion: no fleet production. Hull 3,000; Shield 165; Damage 225."),
+        ] {
+            let selected = planet.operations.space_dock == mode;
+            let production_fits = planet.fleet_production() <= planet.max_fleet_production_in_mode(mode)
+                .saturating_add(senate.bonus(planet, SenatePolicy::Expansion));
+            ui.add_enabled_ui(can_accept_commands && (selected || remaining == 0 && production_fits), |ui| {
+                let response = image_tile_button(ui, images.get(image), selected);
+                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, label));
+                let hover = |ui: &mut Ui| {
+                    ui.small(tooltip);
+                    if remaining > 0 {
+                        ui.small(format!("Committed for {remaining} more turn(s)."));
+                    } else {
+                        ui.small("You can revise a mode change throughout this turn. The final selection becomes fixed for the next 3 turns when the turn ends.");
+                    }
+                    if !production_fits {
+                        ui.small("Queued ships require Industrial production.");
+                    }
+                    if !can_accept_commands {
+                        ui.small("Loading turn orders; wait before changing this choice.");
+                    }
+                };
+                let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
+                if response.clicked() && !selected && pending.push(TurnCommand::SetSpaceDockMode { planet_id: planet.id, mode }) {
+                    planet.operations.space_dock = mode;
+                    planet.operations.space_dock_selection_pending = true;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
+            });
+        }
+    });
+}
+
+/// Draws image-only Senate choices; the projected empire queues constrain both policies.
+pub(super) fn draw_senate_policy(
+    ui: &mut Ui,
+    planet: &mut Planet,
+    pending: &mut PendingTurnCommands,
+    images: &ImageIds,
+    senate: &mut SenateSupport,
+    queues_fit: [bool; 2],
+) {
+    if !planet.has(&Unit::Building(Building::Senate)) {
+        return;
+    }
+    let remaining = planet.operations.senate_locked_until.saturating_sub(pending.turn);
+    let can_accept = pending.can_accept_commands();
+    ui.small("Senate policy");
+    ui.add_space(6.);
+    ui.horizontal_wrapped(|ui| {
+        for (index, policy) in SenatePolicy::ALL.into_iter().enumerate() {
+            let selected = planet.operations.senate == policy;
+            let proposed = SenateSupport { policy, ..*senate };
+            let production_fits = queues_fit[index]
+                && planet.fleet_production() <= proposed.fleet_capacity(planet)
+                && planet.battery_production() <= proposed.defense_capacity(planet);
+            ui.add_enabled_ui(can_accept && (selected || remaining == 0 && production_fits), |ui| {
+                let response = image_tile_button(ui, images.get(policy.image()), selected);
+                response.widget_info(|| egui::WidgetInfo::selected(
+                    egui::WidgetType::Button, ui.is_enabled(), selected, policy.label(),
+                ));
+                let hover = |ui: &mut Ui| {
+                    let category = match policy {
+                        SenatePolicy::Expansion => "ship",
+                        SenatePolicy::Consolidation => "defense",
+                    };
+                    ui.small(format!("{}: +2 {category} production per owned planet per Senate level.", policy.label()));
+                    ui.small(format!("Level {}: +{} {category} production on each owned planet. Completed levels only; moons do not receive the bonus.", senate.level, senate.level.saturating_mul(2)));
+                    if remaining > 0 {
+                        ui.small(format!("Committed for {remaining} more turn(s)."));
+                    } else {
+                        ui.small("You can revise the policy throughout this turn. The final selection becomes fixed for the next 3 turns when the turn ends.");
+                    }
+                    if !production_fits {
+                        ui.small("Queued units on an owned planet require the current Senate production bonus.");
+                    }
+                    if !can_accept {
+                        ui.small("Loading turn orders; wait before changing this choice.");
+                    }
+                };
+                let response = response.on_hover_ui(hover).on_disabled_hover_ui(hover);
+                if response.clicked() && !selected && pending.push(TurnCommand::SetSenatePolicy { planet_id: planet.id, policy }) {
+                    planet.operations.senate = policy;
+                    planet.operations.senate_selection_pending = true;
+                    senate.policy = policy;
+                    set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                }
+            });
+        }
     });
 }
 
@@ -585,6 +880,8 @@ pub(super) fn draw_shop(
     solar_band: Option<SolarBand>,
     mut next_turn_energy: EnergyGrid,
     senate_level_limit: usize,
+    mut senate: SenateSupport,
+    senate_queues_fit: [bool; 2],
     pending: &mut PendingTurnCommands,
     message: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
@@ -620,7 +917,7 @@ pub(super) fn draw_shop(
             state.shop = state.shop.next(planet.is_moon());
         }
 
-        if let Some((label, current, max)) = shop_capacity_summary(state.shop, planet) {
+        if let Some((label, current, max)) = shop_capacity_summary(state.shop, planet, senate) {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 ui.add_space(45.);
                 ui.small(format!("{label}: {current}/{max}"));
@@ -649,7 +946,7 @@ pub(super) fn draw_shop(
                 let count = planet.army.amount(unit);
                 let bought = planet.buy.iter().filter(|u| *u == unit).count();
 
-                let purchase = purchase_limit(player, planet, *unit, senate_level_limit);
+                let purchase = purchase_limit(player, planet, *unit, senate_level_limit, senate);
                 let limit = purchase.as_ref().copied().unwrap_or(0);
                 ui.add_enabled_ui(limit > 0 && pending.can_accept_commands(), |ui| {
                     ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
@@ -674,12 +971,17 @@ pub(super) fn draw_shop(
                     {
                         player.resources -= unit.price();
                         planet.buy.push(*unit);
-                        if let Some(warning) =
-                            energy_shortage_warning(next_turn_energy, *unit, solar_band)
-                        {
+                        if let Some(warning) = energy_shortage_warning(
+                            next_turn_energy,
+                            EnergyGrid::for_operating_unit(planet, *unit, solar_band),
+                        ) {
                             message.write(warning);
                         }
-                        next_turn_energy = next_turn_energy.with_unit(*unit, solar_band, 1);
+                        let added = EnergyGrid::for_operating_unit(planet, *unit, solar_band);
+                        next_turn_energy.supply =
+                            next_turn_energy.supply.saturating_add(added.supply);
+                        next_turn_energy.demand =
+                            next_turn_energy.demand.saturating_add(added.demand);
                         set_ui_sound(ui.ctx(), Some(SoundEffect::purchase(*unit)));
                     }
 
@@ -752,8 +1054,19 @@ pub(super) fn draw_shop(
                         response
                             .on_hover_ui(|ui| {
                                 draw_unit_hover(
-                                    ui, unit, count, state, player, planet, solar_band, pending,
-                                    message, None, images,
+                                    ui,
+                                    unit,
+                                    count,
+                                    state,
+                                    player,
+                                    planet,
+                                    solar_band,
+                                    &mut senate,
+                                    senate_queues_fit,
+                                    pending,
+                                    message,
+                                    None,
+                                    images,
                                 );
                             })
                             .on_disabled_hover_ui(|ui| {
@@ -765,6 +1078,8 @@ pub(super) fn draw_shop(
                                     player,
                                     planet,
                                     solar_band,
+                                    &mut senate,
+                                    senate_queues_fit,
                                     pending,
                                     message,
                                     purchase.as_ref().err().map(ToString::to_string),

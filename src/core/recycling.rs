@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::math::Vec2;
 use rand::{Rng, RngExt};
+use strum::IntoEnumIterator;
 
 use crate::core::combat::report::MissionReport;
 use crate::core::identity::PlayerId;
@@ -15,6 +16,7 @@ use crate::core::map::planet::PlanetId;
 use crate::core::player::Player;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 
 /// Minimum per-level haul while harvesting the permanent asteroid field.
@@ -78,21 +80,22 @@ pub(crate) fn destroyed_ships(report: &MissionReport) -> usize {
     if report.combat_report.is_none() {
         return 0;
     }
-    let defending_before = report.planet.army.combined();
-    let defending_after = report.surviving_defender.combined();
-    [(&report.mission.army, &report.surviving_attacker), (&defending_before, &defending_after)]
-        .into_iter()
-        .enumerate()
-        .flat_map(|(side, (before, after))| {
-            before.iter().filter(|(unit, _)| unit.is_ship() && **unit != Unit::colony_ship()).map(
-                move |(unit, count)| {
-                    count.saturating_sub(after.amount(unit)).saturating_sub(if side == 1 {
-                        report.escaped_defenders(unit)
-                    } else {
-                        0
-                    })
-                },
-            )
+    Ship::iter()
+        .filter(|ship| *ship != Ship::ColonyShip)
+        .map(Unit::Ship)
+        .map(|unit| {
+            let attacker = report
+                .mission
+                .army
+                .amount(&unit)
+                .saturating_sub(report.surviving_attacker.amount(&unit));
+            let defender = report
+                .planet
+                .army
+                .combined_amount(&unit)
+                .saturating_sub(report.surviving_defender.combined_amount(&unit))
+                .saturating_sub(report.escaped_defenders(&unit));
+            attacker.saturating_add(defender)
         })
         .fold(0usize, usize::saturating_add)
 }
@@ -106,6 +109,12 @@ pub(crate) fn debris_sites<'a>(
     let mut sites = BTreeMap::<PlanetId, DebrisSite>::new();
     for report in reports {
         if !seen.insert(report.id) {
+            continue;
+        }
+        // No debris survives beyond the largest site's lifetime. Skip old histories before
+        // inspecting their fleets; this path also runs while drawing the strategic map.
+        if turn.checked_sub(report.turn).is_none_or(|age| age >= DebrisSize::Large.lifetime_turns())
+        {
             continue;
         }
         let losses = destroyed_ships(report);
@@ -225,7 +234,10 @@ pub(crate) fn recycler_production<R: Rng + ?Sized>(
     recyclers
         .iter()
         .filter_map(|(planet_id, level)| {
-            sources.get(planet_id).copied().map(|source| source.roll_output(*level, rng))
+            sources.get(planet_id).copied().map(|source| {
+                let bulk = source.roll_output(*level, rng);
+                map.get(*planet_id).operations.recycler_output(bulk)
+            })
         })
         .sum()
 }

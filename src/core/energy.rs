@@ -11,6 +11,20 @@ use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Unit};
 
+/// Energy committed by this player's jumps launched during the current planning turn.
+/// The mission owns the cost even if its origin is later abandoned or destroyed.
+pub fn jump_gate_energy_demand(
+    missions: &[crate::core::missions::Mission],
+    player_id: PlayerId,
+    turn: usize,
+) -> usize {
+    missions
+        .iter()
+        .filter(|mission| mission.owner == player_id && mission.send == turn)
+        .map(crate::core::missions::Mission::jump_energy_cost)
+        .fold(0, usize::saturating_add)
+}
+
 /// Minimum resource output retained during a complete grid collapse.
 const MIN_RESOURCE_EFFICIENCY_PERCENT: usize = 30;
 /// Percentage points lost for each unit of unmet energy demand.
@@ -38,6 +52,7 @@ impl EnergyGrid {
             | Building::Recycler
             | Building::CommandRelay
             | Building::TradingPost
+            | Building::JumpGate
             | Building::ColonialAdministration => Self::default(),
             Building::TidalGenerator => Self {
                 supply: TIDAL_GENERATOR_ENERGY_PER_LEVEL,
@@ -61,7 +76,6 @@ impl EnergyGrid {
             | Building::Terraformer
             | Building::SensorPhalanx
             | Building::PlanetaryShield
-            | Building::JumpGate
             | Building::Laboratory
             | Building::OrbitalRadar => Self {
                 supply: 0,
@@ -107,7 +121,9 @@ impl EnergyGrid {
         }) {
             let solar_band = map.solar_band(planet.id);
             for unit in &planet.buy {
-                grid = grid.with_unit(*unit, solar_band, 1);
+                let added = Self::for_operating_unit(planet, *unit, solar_band);
+                grid.supply = grid.supply.saturating_add(added.supply);
+                grid.demand = grid.demand.saturating_add(added.demand);
             }
         }
         grid
@@ -121,9 +137,9 @@ impl EnergyGrid {
 
         let solar_band = map.solar_band(planet.id);
         let grid = planet.army.iter().fold(Self::default(), |mut grid, (unit, levels)| {
-            let per_level = Self::for_unit(*unit, solar_band);
-            grid.supply = grid.supply.saturating_add(per_level.supply.saturating_mul(*levels));
-            grid.demand = grid.demand.saturating_add(per_level.demand.saturating_mul(*levels));
+            let added = Self::for_operating_unit(planet, *unit, solar_band);
+            grid.supply = grid.supply.saturating_add(added.supply.saturating_mul(*levels));
+            grid.demand = grid.demand.saturating_add(added.demand.saturating_mul(*levels));
             grid
         });
         if planet.shield_overload.is_overloaded()
@@ -141,6 +157,19 @@ impl EnergyGrid {
     /// Returns signed surplus or shortage. Surplus is never stored.
     pub fn balance(self) -> i128 {
         self.supply as i128 - self.demand as i128
+    }
+
+    /// Per-level load including this world's selected extraction mode.
+    pub fn for_operating_unit(planet: &Planet, unit: Unit, solar_band: Option<SolarBand>) -> Self {
+        if let Unit::Building(building) = unit {
+            if let Some(resource) = building.mined_resource() {
+                return Self {
+                    supply: 0,
+                    demand: planet.operations.mine(resource).mode.energy(),
+                };
+            }
+        }
+        Self::for_unit(unit, solar_band)
     }
 
     /// Returns operating efficiency after losing ten percentage points per missing Energy.

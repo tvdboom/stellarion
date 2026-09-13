@@ -92,17 +92,10 @@ fn successful_colony_mission_flies_in_and_lands_before_conquest_celebrates() {
     app.world_mut().resource_mut::<Player>().reports.push(MissionReport {
         id: 41,
         turn: 1,
-        mission,
-        planet: before,
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
-        surviving_defender: Army::new().into(),
         planet_colonized: true,
-        planet_destroyed: false,
         destination_owned: Some(player_id),
         destination_controlled: Some(player_id),
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(mission, before)
     });
     app.world_mut().resource_mut::<Map>().get_mut(planet_id).colonize(player_id);
 

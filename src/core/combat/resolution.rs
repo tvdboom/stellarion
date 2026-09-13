@@ -241,7 +241,10 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             }
     }) {
         for _ in 0..*count {
-            defend_army.push(CombatUnit::new_owned_with_rng(unit, defender_owner, rng));
+            let mut defender = CombatUnit::new_owned_with_rng(unit, defender_owner, rng);
+            defender.hull = destination.unit_hull(*unit);
+            defender.shield = destination.unit_shield(*unit);
+            defend_army.push(defender);
         }
     }
 
@@ -311,7 +314,13 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                 u.repairs.clear();
                 u.shots.clear();
             });
-            enemy_army.iter_mut().for_each(|u| u.shield = u.unit.shield());
+            enemy_army.iter_mut().for_each(|u| {
+                u.shield = if side == Side::Attacker {
+                    destination.unit_shield(u.unit)
+                } else {
+                    u.unit.shield()
+                };
+            });
 
             'unit: for unit in army {
                 if withdrawal_cover && side == Side::Defender && unit.unit.is_ship() {
@@ -334,7 +343,11 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
 
                 let mut shots_fired = 0;
                 'shoot: loop {
-                    let mut damage = unit.unit.damage();
+                    let mut damage = if side == Side::Defender {
+                        destination.unit_damage(unit.unit)
+                    } else {
+                        unit.unit.damage()
+                    };
                     shots_fired += 1;
                     let mut shot = ShotReport::default();
 
@@ -524,7 +537,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         {
             let war_suns = attack_army.iter().filter(|u| u.unit == Unit::war_sun()).count();
             let destroy_probability =
-                (destination.destroy_probability() - 0.01 * round as f32).max(0.);
+                (destination.destroy_probability() - 0.01 * round.saturating_sub(1) as f32).max(0.);
             for _ in 0..war_suns {
                 if rng.random::<f32>() < destroy_probability {
                     defend_army.clear();

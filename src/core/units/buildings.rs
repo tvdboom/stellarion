@@ -115,6 +115,17 @@ impl FleetWithdrawal {
 }
 
 impl Building {
+    /// Resource extracted by this building, when it is a mine or synthesizer.
+    pub const fn mined_resource(self) -> Option<crate::core::resources::ResourceName> {
+        use crate::core::resources::ResourceName;
+        match self {
+            Self::MetalMine => Some(ResourceName::Metal),
+            Self::CrystalMine => Some(ResourceName::Crystal),
+            Self::DeuteriumSynthesizer => Some(ResourceName::Deuterium),
+            _ => None,
+        }
+    }
+
     /// Highest construction level supported for upgradeable buildings.
     pub const MAX_LEVEL: usize = 5;
 
@@ -148,16 +159,16 @@ impl Description for Building {
             },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
-                each turn is equal to the planet's base metal times the mine's level."
+                each turn is equal to the planet's base metal times the mine's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn. Suspended uses no Energy and produces nothing; resume manually after recovery."
             },
             Building::CrystalMine => {
                 "The Crystal Mine is the building that produces crystal. The amount of crystal \
-                produced each turn is equal to the planet's base crystal times the mine's level."
+                produced each turn is equal to the planet's base crystal times the mine's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn. Suspended uses no Energy and produces nothing; resume manually after recovery."
             },
             Building::DeuteriumSynthesizer => {
                 "The Deuterium Synthesizer is the building that produces deuterium. The amount \
                 of deuterium produced each turn is equal to the planet's base deuterium times the \
-                synthesizer's level."
+                synthesizer's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn. Suspended uses no Energy and produces nothing; resume manually after recovery."
             },
             Building::Shipyard => {
                 "The Shipyard constructs ships and orbital structures. At higher levels, more \
@@ -198,7 +209,7 @@ impl Description for Building {
             },
             Building::Recycler => {
                 "Recyclers dispatch small salvage craft from their planet. Each Recycler recovers \
-                a variable haul every turn from a nearby battle debris or asteroid field."
+                a variable haul every turn from a nearby battle debris or asteroid field. Bulk recovery yields all three resources. Selective recovery yields 50% more of the chosen resource and none of the others. Fractional output rounds down."
             },
             Building::CommandRelay => {
                 "An active Command Relay diverts undersized enemy Spy missions before combat and \
@@ -211,9 +222,9 @@ impl Description for Building {
             },
             Building::TradingPost => {
                 "A Trading Post establishes a commerce route with another player's Trading Post \
-                within 4 AU. A completed post immediately reveals itself and its owner's color \
-                to players owning or controlling a world within 4 AU, even without their own \
-                Trading Post. Hover a visible post to see its 4 AU range; click a foreign post \
+                when both posts reach each other. Each completed level adds 1.5 AU of range. \
+                Your completed posts reveal foreign posts and their owners when those posts lie \
+                within your range. Hover a visible post to see its range; click a foreign post \
                 to open trade or see which Trading Post requirement is missing. \
                 Each completed level lets its owner send up to 500 Metal, Crystal, \
                 and Deuterium combined in one bilateral trade per player pair each turn. Outgoing \
@@ -231,7 +242,7 @@ impl Description for Building {
             Building::JumpGate => {
                 "The Jump Gate enables rapid travel between two owned planets with jump gates \
                 (at any distance in space). Thus, having only a single gate is useless. Jumps \
-                always take 1 turn and costs no fuel, independent of the fleet's composition. \
+                always take 1 turn and cost no fuel. Each mission uses 1 Energy per 5 fleet production sent, rounded up. Unused gates consume no Energy. \
                 Upgrading the Jump Gate increases the number of ships it can transport per turn."
             },
             Building::OrbitalRailgun => {
@@ -259,7 +270,13 @@ impl Description for Building {
             },
             Building::Senate => {
                 "The Senate is the political heart of your empire, where delegates chart its \
-                course among the stars. Each Senate level lets you own one extra planet."
+                course among the stars. Each Senate level lets you own one extra planet and \
+                provides +2 production on every owned planet: ship production with Expansion \
+                (the default), or defense production with Consolidation. Completed Senate levels \
+                on your home planet apply; moons receive no bonus. Production does not replace \
+                the Shipyard, Factory, or Silo levels needed to unlock units. You can revise a \
+                policy during the turn if every world's queued units fit its production limits. \
+                The final selection becomes fixed for the next 3 turns when the turn ends."
             },
             Building::ColonialAdministration => {
                 "When attacked. enables the option to coordinate a strategic withdrawal to your \

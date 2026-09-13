@@ -5,6 +5,59 @@ use crate::core::map::planet::PlanetKind;
 use crate::core::resources::Resources;
 
 #[test]
+fn bastion_statistics_apply_to_every_combat_round_and_survive_reports() {
+    use crate::core::units::operations::SpaceDockMode;
+    let mut destination = Planet::new(1, "Bastion".into(), Vec2::X, false, 1.0);
+    destination.colonize(2);
+    destination.army.clear();
+    destination.army.insert(Unit::space_dock(), 1);
+    destination.operations.space_dock = SpaceDockMode::Bastion;
+    let origin = Planet::new(0, "Attacker".into(), Vec2::ZERO, false, 1.0);
+    let mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Battleship), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let report = resolve_combat_with_rng(
+        1,
+        &mission,
+        &destination,
+        &mut rand_chacha::ChaCha8Rng::from_seed([9; 32]),
+    );
+    let report: MissionReport =
+        serde_json::from_value(serde_json::to_value(report).unwrap()).unwrap();
+    assert_eq!(report.unit_hull(Unit::space_dock(), &Side::Defender), 3_000);
+    assert_eq!(report.unit_shield(Unit::space_dock(), &Side::Defender), 165);
+    let rounds = &report.combat_report.as_ref().unwrap().rounds;
+    assert!(rounds.len() > 1);
+    for round in rounds {
+        let dock = round.defender.iter().find(|u| u.unit == Unit::space_dock()).unwrap();
+        let incoming_hull: usize = round
+            .attacker
+            .iter()
+            .flat_map(|u| &u.shots)
+            .filter(|s| s.target_id == Some(dock.id))
+            .map(|s| s.hull_damage)
+            .sum();
+        assert_eq!(incoming_hull, 0, "the Bastion shield absorbs a lone Battleship's volley");
+        assert_eq!(dock.hull, 3_000);
+        for shot in
+            dock.shots.iter().filter(|shot| !shot.missed && !shot.killed && shot.unit.is_some())
+        {
+            assert_eq!(shot.shield_damage + shot.hull_damage, 225);
+        }
+    }
+}
+
+#[test]
 /// Zero-damage armies produce a bounded draw instead of an infinite combat loop.
 fn zero_damage_stalemate_terminates() {
     let destination = Planet {
@@ -17,6 +70,8 @@ fn zero_damage_stalemate_terminates() {
         position: Vec2::X,
         resources: Default::default(),
         jump_gate: 0,
+
+        operations: Default::default(),
         terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
         command_relay_active: true,
         shield_overload: Default::default(),
@@ -98,6 +153,37 @@ fn space_dock_blocks_the_death_ray_while_it_survives() {
         .iter()
         .any(|unit| unit.unit == Unit::space_dock() && unit.hull > 0));
     assert_eq!(first_round.destroy_probability, 0.0);
+}
+
+#[test]
+fn first_war_sun_volley_uses_ten_percent_plus_planet_modifier() {
+    let mut destination = Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    for (diameter, chance) in [(1_500, 0.12_f32), (7_000, 0.10), (120_000, 0.08)] {
+        destination.diameter = diameter;
+        let mut mission = Mission::new_with_id(
+            2,
+            1,
+            1,
+            &origin,
+            &destination,
+            Icon::Destroy,
+            Army::from([(Unit::war_sun(), 1)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = destination.position;
+        let report = resolve_combat_with_rng(
+            1,
+            &mission,
+            &destination,
+            &mut rand_chacha::ChaCha8Rng::from_seed([13; 32]),
+        );
+        let actual = report.combat_report.unwrap().rounds[0].destroy_probability;
+        assert!((actual - chance).abs() < 1e-6, "diameter {diameter}: {actual}");
+    }
 }
 
 #[test]
@@ -414,6 +500,8 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         position: Vec2::X,
         resources: Default::default(),
         jump_gate: 0,
+
+        operations: Default::default(),
         terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
         command_relay_active: true,
         shield_overload: Default::default(),
@@ -454,22 +542,16 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
     MissionReport {
         id: 7,
         turn: 1,
-        mission,
-        planet: destination,
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: Army::from([
             (Unit::crawler(), surviving_crawlers),
             (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 4),
             (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 1),
         ])
         .into(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(CombatReport::default()),
-        hidden: false,
+        ..crate::test_support::empty_report(mission, destination)
     }
 }
 

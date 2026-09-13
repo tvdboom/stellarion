@@ -20,6 +20,18 @@ use crate::multiplayer::model::{
 pub(crate) const PLAYER_CONNECTION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(15);
 
+/// Selects only the orders needed for a backend read, keeping retry payloads small.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnSubmissionScope {
+    /// All retained submissions, including withdrawn drafts and historical turns.
+    All,
+    /// Only the authenticated caller's ready submission or recoverable draft.
+    Mine,
+    /// Ready, non-spectator orders for a complete current turn; otherwise empty.
+    Resolution,
+}
+
 /// Sendable backend future used by native multithreaded task pools.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, BackendError>> + Send + 'a>>;
@@ -286,12 +298,13 @@ pub trait MultiplayerBackend: Send + Sync {
         generation: u64,
     ) -> BackendFuture<'a, TurnSubmission>;
 
-    /// Loads ready submissions and withdrawn drafts for one turn in stable player order.
+    /// Loads scoped submissions for one turn in stable player order.
     fn load_turn_submissions<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         turn: u64,
+        scope: TurnSubmissionScope,
     ) -> BackendFuture<'a, Vec<StoredTurnSubmission>>;
 
     /// Publishes one deterministic resolution only if revision and submissions still match.

@@ -17,6 +17,8 @@ pub enum CombatStats {
     Production,
     /// The Spy intelligence requirement.
     Intelligence,
+    /// The distance covered by each completed structure level.
+    Range,
     /// The speed value.
     Speed,
     /// The fuel consumption value.
@@ -38,6 +40,9 @@ impl Description for CombatStats {
             },
             CombatStats::Intelligence => {
                 "The minimum intelligence level required for an enemy Spy mission to reveal a structure's level or count."
+            },
+            CombatStats::Range => {
+                "The reach added by each completed level of a structure, measured in AU."
             },
             CombatStats::Hull => "The amount of damage a unit can take before being destroyed.",
             CombatStats::Shield => {

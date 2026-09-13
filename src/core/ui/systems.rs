@@ -17,7 +17,10 @@ use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, SoundEffect};
-use crate::core::combat::report::{MissionReport, ReportId, RoundReport, Side};
+#[cfg(test)]
+use crate::core::combat::report::RoundReport;
+use crate::core::combat::report::{MissionReport, ReportId, Side};
+#[cfg(test)]
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
@@ -61,6 +64,9 @@ use crate::multiplayer::model::{
     JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
 };
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
+
+mod combat;
+use combat::{CombatRoundView, CombatStatistics};
 
 mod missions;
 use missions::{
@@ -1846,7 +1852,7 @@ fn mission_report_unit_is_revealed_by_probes(
 ) -> bool {
     report.mission.owner == player_id
         && *side == Side::Defender
-        && unit.revealed_by_probes(report.scout_probes)
+        && unit.revealed_by_probes_on_world(report.scout_probes, report.planet.is_moon())
 }
 
 /// Draws a full-size, two-column unit group in a mission report.
@@ -1949,22 +1955,21 @@ fn draw_combat_army_grid(
     ui: &mut Ui,
     name: &str,
     state: &mut UiState,
-    round: &RoundReport,
+    round: &CombatRoundView<'_>,
     units: Vec<Unit>,
     side: Side,
     planetary_shield_overloaded: bool,
+    dock_mode: crate::core::units::operations::SpaceDockMode,
     images: &ImageIds,
 ) -> bool {
-    let (own, mut enemy) = match side {
-        Side::Attacker => (&round.attacker, round.defender.clone()),
-        Side::Defender => (&round.defender, round.attacker.clone()),
-    };
-
-    if let Some((u, s)) = &state.combat_report_hover {
-        if *s != side {
-            enemy = enemy.into_iter().filter(|cu| cu.unit == *u).collect::<Vec<_>>();
-        }
-    }
+    let own = round.units(&side);
+    let enemy_filter = state
+        .combat_report_hover
+        .as_ref()
+        .and_then(|(unit, hovered_side)| (*hovered_side != side).then_some(*unit));
+    let enemy = round
+        .units(&side.opposite())
+        .filter(|unit| enemy_filter.is_none_or(|filter| unit.unit == filter));
 
     let total_ps = EnergyGrid::default().planetary_shield(
         round.buildings.amount(&Unit::planetary_shield()),
@@ -1986,26 +1991,25 @@ fn draw_combat_army_grid(
                     Some((u, round.buildings.amount(&u)))
                 } else {
                     let mut seen = HashSet::new();
-                    let n = own.iter().filter(|cu| cu.unit == u && seen.insert(cu.id)).count();
+                    let n = own.clone().filter(|cu| cu.unit == u && seen.insert(cu.id)).count();
                     (n > 0).then_some((u, n))
                 }
             })
             .enumerate()
         {
             let n_repaired = own
-                .iter()
+                .clone()
                 .filter_map(|cu| (cu.unit == unit).then_some(cu.repairs.len()))
                 .sum::<usize>();
-            let shots = enemy
-                .iter()
-                .flat_map(|u| &u.shots)
-                .filter(|s| s.unit == Some(unit))
-                .collect::<Vec<_>>();
-            let n_shots = shots.len();
+            let (n_shots, kills) = enemy
+                .clone()
+                .flat_map(|unit| &unit.shots)
+                .filter(|shot| shot.unit == Some(unit))
+                .fold((0, 0), |(shots, kills), shot| (shots + 1, kills + usize::from(shot.killed)));
             let lost = match unit {
                 Unit::Defense(Defense::InterplanetaryMissile) => count,
                 Unit::Defense(Defense::AntiballisticMissile) => round.antiballistic_fired,
-                _ => shots.iter().filter(|s| s.killed).count(),
+                _ => kills,
             };
 
             let hovering_repair_truck =
@@ -2064,14 +2068,16 @@ fn draw_combat_army_grid(
                         Align2::LEFT_BOTTOM,
                     );
 
-                    let all_cu: Vec<_> = own.iter().filter(|cu| cu.unit == unit).collect();
+                    let all_cu = own.clone().filter(|cu| cu.unit == unit);
                     let (hull, shield) = if hovering_repair_truck && side == Side::Defender {
                         (
                             all_cu
-                                .iter()
+                                .clone()
                                 .map(|cu| cu.repairs.iter().sum::<usize>() as f32)
                                 .sum::<f32>()
-                                .safe_div((count * unit.hull()) as f32),
+                                .safe_div(
+                                    (count * dock_mode.combat_stat(unit, unit.hull())) as f32,
+                                ),
                             0.,
                         )
                     } else if unit.is_building() {
@@ -2080,7 +2086,7 @@ fn draw_combat_army_grid(
                             if let Some((hu, hs)) = &state.combat_report_hover {
                                 if *hs != side {
                                     ps = enemy
-                                        .iter()
+                                        .clone()
                                         .filter(|cu| cu.unit == *hu)
                                         .flat_map(|cu| cu.shots.iter())
                                         .filter(|s| s.unit.is_some_and(|u| u == unit))
@@ -2096,7 +2102,7 @@ fn draw_combat_army_grid(
                         }
                     } else {
                         let mut shield = all_cu
-                            .iter()
+                            .clone()
                             .map(|cu| {
                                 if lost == count {
                                     0.
@@ -2105,10 +2111,14 @@ fn draw_combat_army_grid(
                                 }
                             })
                             .sum::<f32>()
-                            .safe_div((all_cu.len() * unit.shield()) as f32);
+                            .safe_div(
+                                (all_cu.clone().count()
+                                    * dock_mode.combat_stat(unit, unit.shield()))
+                                    as f32,
+                            );
 
                         let mut hull = all_cu
-                            .iter()
+                            .clone()
                             .fold(HashMap::<_, f32>::new(), |mut map, cu| {
                                 let val = if lost == count {
                                     0.
@@ -2120,12 +2130,12 @@ fn draw_combat_army_grid(
                             })
                             .values()
                             .sum::<f32>()
-                            .safe_div((count * unit.hull()) as f32);
+                            .safe_div((count * dock_mode.combat_stat(unit, unit.hull())) as f32);
 
                         if let Some((hu, hs)) = &state.combat_report_hover {
                             if *hs != side {
                                 let (s_sum, h_sum) = enemy
-                                    .iter()
+                                    .clone()
                                     .filter(|cu| cu.unit == *hu)
                                     .flat_map(|cu| cu.shots.iter())
                                     .filter(|s| s.unit.is_some_and(|u| u == unit))
@@ -2137,8 +2147,14 @@ fn draw_combat_army_grid(
                                     });
 
                                 // Total shield when hover is not well-defined -> clamp to range for now
-                                shield = s_sum.safe_div((count * unit.shield()) as f32).min(1.);
-                                hull = h_sum.safe_div((count * unit.hull()) as f32);
+                                shield = s_sum
+                                    .safe_div(
+                                        (count * dock_mode.combat_stat(unit, unit.shield())) as f32,
+                                    )
+                                    .min(1.);
+                                hull = h_sum.safe_div(
+                                    (count * dock_mode.combat_stat(unit, unit.hull())) as f32,
+                                );
                             }
                         }
 
@@ -2185,13 +2201,16 @@ fn draw_combat_army_grid(
 }
 
 /// Returns the stationary structures shown in the defender's final combat-details column.
-fn combat_defender_structure_column(report: &MissionReport, round: &RoundReport) -> Vec<Unit> {
+fn combat_defender_structure_column(
+    report: &MissionReport,
+    round: &CombatRoundView<'_>,
+) -> Vec<Unit> {
     if report.mission.objective == Icon::MissileStrike {
         return Vec::new();
     }
 
     let mut units = Vec::with_capacity(2);
-    if round.defender.iter().any(|unit| unit.unit == Unit::space_dock()) {
+    if round.units(&Side::Defender).any(|unit| unit.unit == Unit::space_dock()) {
         units.push(Unit::space_dock());
     }
     if report.planet.army.amount(&Unit::planetary_shield()) > 0 {
@@ -2885,7 +2904,7 @@ fn draw_resources_widget(
     )
 }
 
-/// Explains a world's climate flavor and the Solar Satellite output of its stellar zone.
+/// Explains climate, the shared Death Ray size modifier, and Solar Satellite output.
 fn planet_temperature_tooltip(planet: &Planet, solar_band: Option<SolarBand>) -> String {
     let climate = if planet.is_moon() {
         match planet.temperature_emoji() {
@@ -2915,15 +2934,18 @@ fn planet_temperature_tooltip(planet: &Planet, solar_band: Option<SolarBand>) ->
             | PlanetKind::Yellow => unreachable!("lunar kind used by a planet"),
         }
     };
-    solar_band.map_or_else(
-        || climate.to_string(),
-        |band| {
-            format!(
-                "{climate} Solar Satellites produce {} Energy per level here.",
-                band.satellite_energy()
-            )
-        },
-    )
+    let modifier = f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0;
+    let tooltip = format!(
+        "{climate} Death Ray size modifier: {modifier:+}%. Applies to War Suns and Orbital Railguns."
+    );
+    if let Some(band) = solar_band {
+        format!(
+            "{tooltip} Solar Satellites produce {} Energy per level here.",
+            band.satellite_energy()
+        )
+    } else {
+        tooltip
+    }
 }
 
 /// Draws the planet overview interface and emits any resulting local actions.
@@ -2981,20 +3003,15 @@ fn draw_planet_overview(
             .on_hover_small(planet.kind.description());
             draw_sliding_text(
                 ui,
-                RichText::new(format!(
-                    "📐 Diameter: {}km ({:.0}%)",
-                    format_thousands(planet.diameter),
-                    planet.destroy_probability() * 100.,
-                ))
-                .small(),
+                RichText::new(format!("📐 Diameter: {}km", format_thousands(planet.diameter)))
+                    .small(),
                 detail_line_progress[1],
                 right_side,
             )
             .on_hover_small(
-                "Smaller planets are easier to destroy than larger ones, since it's easier \
-                to reach their core with a Death Ray, the weapon used by War Suns. The percentage \
-                indicates the initial probability a War Sun has of destroying this planet after a \
-                combat round.",
+                "Diameter determines this planet's Death Ray size modifier. Smaller planets \
+                are easier to destroy with War Suns and Orbital Railguns. Hover over Temperature \
+                to see the modifier.",
             );
             draw_sliding_text(
                 ui,
@@ -3560,59 +3577,27 @@ fn draw_combat_report(
         });
     });
 
-    let round = if state.combat_report_total {
-        let mut rr = combat.rounds.iter().fold(RoundReport::default(), |mut rr, r| {
-            rr.attacker.extend(r.attacker.clone());
-            rr.defender.extend(r.defender.clone());
-            rr.planetary_shield = rr.planetary_shield.saturating_add(r.planetary_shield);
-            rr.antiballistic_fired = rr.antiballistic_fired.saturating_add(r.antiballistic_fired);
-            if rr.buildings.is_empty() {
-                rr.buildings = r.buildings.clone()
-            }
-            rr
-        });
-
-        rr.destroy_probability =
-            1. - combat.rounds.iter().fold(1., |acc, p| acc * (1. - p.destroy_probability));
-        rr
+    let rounds = if state.combat_report_total {
+        combat.rounds.as_slice()
     } else {
-        combat.rounds[state.combat_report_round - 1].clone()
+        &combat.rounds[state.combat_report_round - 1..state.combat_report_round]
+    };
+    let Some(round) = CombatRoundView::new(rounds) else {
+        return;
     };
 
-    let draw_stats = |ui: &mut Ui, units: Vec<&CombatUnit>, side: Side| {
-        let shots = units.iter().flat_map(|u| &u.shots).collect::<Vec<_>>();
-
-        let shield_damage = shots.iter().map(|a| a.shield_damage).sum::<usize>();
-        let hull_damage = shots.iter().map(|a| a.hull_damage).sum::<usize>();
-        let ps_damage = shots.iter().map(|a| a.planetary_shield_damage).sum::<usize>();
-
-        let u_shots = shots
-            .iter()
-            .filter(|s| matches!(s.unit, Some(u) if !u.is_building()))
-            .collect::<Vec<_>>();
-        let m_shots = shots
-            .iter()
-            .filter(|s| s.unit == Some(Unit::interplanetary_missile()))
-            .collect::<Vec<_>>();
-        let b_shots = shots
-            .iter()
-            .filter(
-                |s| matches!(s.unit, Some(u) if u.is_building() && u != Unit::planetary_shield()),
-            )
-            .collect::<Vec<_>>();
-        let shots_missed = u_shots.iter().filter(|s| s.missed).count();
-        let total_repaired = units.iter().map(|cu| cu.repairs.iter().sum::<usize>()).sum::<usize>();
-        let missiles_hit = m_shots.iter().filter(|s| s.killed).count();
-        let bombs_hit = b_shots.iter().filter(|s| s.killed).count();
-
-        let rapid_fire = shots.iter().filter(|a| a.rapid_fire).count();
-        let enemies_killed = shots.iter().filter(|a| a.killed).count();
+    let draw_stats = |ui: &mut Ui, side: Side, hover: &Option<(Unit, Side)>| {
+        let stats = CombatStatistics::for_units(round.units(&side).filter(|unit| {
+            hover
+                .as_ref()
+                .is_none_or(|(kind, hovered_side)| *kind == unit.unit && *hovered_side == side)
+        }));
 
         let draw_row = |ui: &mut Ui, icon: &str, val: String, hover: &str| {
             ui.vertical_centered(|ui| {
                 ui.label(icon).on_hover_small(hover);
             });
-            ui.label(if units.is_empty() {
+            ui.label(if stats.units == 0 {
                 "--".to_string()
             } else {
                 val
@@ -3624,36 +3609,47 @@ fn draw_combat_report(
         egui::Grid::new("stats_grid").striped(false).num_columns(2).spacing([2., 6.]).show(
             ui,
             |ui| {
-                draw_row(ui, "🛡", shield_damage.fmt(), "Damage dealt to shields.");
-                draw_row(ui, "🔰", hull_damage.fmt(), "Damage dealt to hulls.");
+                draw_row(ui, "🛡", stats.shield_damage.fmt(), "Damage dealt to shields.");
+                draw_row(ui, "🔰", stats.hull_damage.fmt(), "Damage dealt to hulls.");
                 if side == Side::Attacker {
-                    draw_row(ui, "🌐", ps_damage.fmt(), "Damage dealt to the planetary shield.");
+                    draw_row(
+                        ui,
+                        "🌐",
+                        stats.ps_damage.fmt(),
+                        "Damage dealt to the planetary shield.",
+                    );
                 }
                 draw_row(
                     ui,
                     "⚔",
-                    (shield_damage + hull_damage + ps_damage).fmt(),
+                    (stats.shield_damage + stats.hull_damage + stats.ps_damage).fmt(),
                     "Total damage dealt.",
                 );
                 if side == Side::Defender {
                     draw_row(
                         ui,
                         "❤",
-                        total_repaired.to_string(),
+                        stats.total_repaired.to_string(),
                         "Total hull points repaired by Repair Trucks.",
                     );
                 }
                 draw_row(
                     ui,
                     "❌",
-                    format!("{:.0}%", (shots_missed as f32).safe_div(u_shots.len() as f32) * 100.),
+                    format!(
+                        "{:.0}%",
+                        (stats.shots_missed as f32).safe_div(stats.unit_shots as f32) * 100.
+                    ),
                     "Percentage of shots that missed a target. A shot misses when it \
                     fires on a unit that was already destroyed that round.",
                 );
                 draw_row(
                     ui,
                     "🔥",
-                    format!("{:.0}%", (rapid_fire as f32).safe_div(u_shots.len() as f32) * 100.),
+                    format!(
+                        "{:.0}%",
+                        (stats.rapid_fire as f32).safe_div(stats.unit_shots as f32) * 100.
+                    ),
                     "Percentage of shots that gained rapid fire.",
                 );
                 if report.mission.objective == Icon::MissileStrike && side == Side::Defender {
@@ -3662,7 +3658,7 @@ fn draw_combat_report(
                         "🚀",
                         format!(
                             "{:.0}%",
-                            (missiles_hit as f32).safe_div(m_shots.len() as f32) * 100.
+                            (stats.missiles_hit as f32).safe_div(stats.missile_shots as f32) * 100.
                         ),
                         "Percentage of Antiballistic Missiles that intercepted an \
                         incoming Interplanetary Missile.",
@@ -3672,11 +3668,14 @@ fn draw_combat_report(
                     draw_row(
                         ui,
                         "💣",
-                        format!("{:.0}%", (bombs_hit as f32).safe_div(b_shots.len() as f32) * 100.),
+                        format!(
+                            "{:.0}%",
+                            (stats.bombs_hit as f32).safe_div(stats.building_shots as f32) * 100.
+                        ),
                         "Percentage of bombs that hit enemy buildings.",
                     );
                 }
-                draw_row(ui, "💀", enemies_killed.fmt(), "Number of enemy units destroyed.");
+                draw_row(ui, "💀", stats.enemies_killed.fmt(), "Number of enemy units destroyed.");
                 if report.mission.objective == Icon::Destroy && side == Side::Attacker {
                     draw_row(
                         ui,
@@ -3754,18 +3753,7 @@ fn draw_combat_report(
                 ui.vertical(|ui| {
                     ui.set_width(135.);
 
-                    let units = round
-                        .attacker
-                        .iter()
-                        .filter(|cu| {
-                            state
-                                .combat_report_hover
-                                .as_ref()
-                                .is_none_or(|(u, s)| *u == cu.unit && *s == Side::Attacker)
-                        })
-                        .collect::<Vec<_>>();
-
-                    draw_stats(ui, units, Side::Attacker);
+                    draw_stats(ui, Side::Attacker, &state.combat_report_hover);
                 });
 
                 ui.vertical(|ui| {
@@ -3783,6 +3771,7 @@ fn draw_combat_report(
                         },
                         Side::Attacker,
                         report.planet.shield_overload.is_overloaded(),
+                        report.planet.operations.space_dock,
                         images,
                     );
                     any_hovered = any_hovered || hovered;
@@ -3802,12 +3791,12 @@ fn draw_combat_report(
                 ui.vertical(|ui| {
                     ui.set_width(520.);
 
-                    if round.defender.is_empty() {
+                    if round.units(&Side::Defender).next().is_none() {
                         ui.label("No defending units.");
                     } else {
                         ui.horizontal_top(|ui| {
                             let hovered1 = if report.mission.objective != Icon::MissileStrike {
-                                if round.defender.iter().any(|cu| cu.unit.is_ship()) {
+                                if round.units(&Side::Defender).any(|cu| cu.unit.is_ship()) {
                                     draw_combat_army_grid(
                                         ui,
                                         "combat_defender1",
@@ -3816,6 +3805,7 @@ fn draw_combat_report(
                                         Unit::ships(),
                                         Side::Defender,
                                         report.planet.shield_overload.is_overloaded(),
+                                        report.planet.operations.space_dock,
                                         images,
                                     )
                                 } else {
@@ -3826,8 +3816,7 @@ fn draw_combat_report(
                             };
 
                             let defenses: Vec<Unit> = round
-                                .defender
-                                .iter()
+                                .units(&Side::Defender)
                                 .filter_map(|cu| {
                                     (cu.unit.is_defense()
                                         && (report.mission.objective != Icon::MissileStrike
@@ -3848,6 +3837,7 @@ fn draw_combat_report(
                                         .collect(),
                                     Side::Defender,
                                     report.planet.shield_overload.is_overloaded(),
+                                    report.planet.operations.space_dock,
                                     images,
                                 )
                             } else {
@@ -3866,6 +3856,7 @@ fn draw_combat_report(
                                     structures,
                                     Side::Defender,
                                     report.planet.shield_overload.is_overloaded(),
+                                    report.planet.operations.space_dock,
                                     images,
                                 );
                             }
@@ -3901,6 +3892,7 @@ fn draw_combat_report(
                                     units,
                                     Side::Defender,
                                     report.planet.shield_overload.is_overloaded(),
+                                    report.planet.operations.space_dock,
                                     images,
                                 );
                             }
@@ -3911,18 +3903,7 @@ fn draw_combat_report(
                 ui.horizontal_top(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            let units = round
-                                .defender
-                                .iter()
-                                .filter(|cu| {
-                                    state
-                                        .combat_report_hover
-                                        .as_ref()
-                                        .is_none_or(|(u, s)| *u == cu.unit && *s == Side::Defender)
-                                })
-                                .collect::<Vec<_>>();
-
-                            draw_stats(ui, units, Side::Defender);
+                            draw_stats(ui, Side::Defender, &state.combat_report_hover);
                         });
                     });
                 });
@@ -4284,7 +4265,10 @@ pub fn draw_ui(
     }
 
     let (width, height) = (window.width(), window.height());
-    let railgun_energy_demand = pending_railgun_energy_demand(&map, player.id, &pending);
+    let action_energy_demand =
+        pending_railgun_energy_demand(&map, player.id, &pending).saturating_add(
+            crate::core::energy::jump_gate_energy_demand(&missions.0, player.id, settings.turn),
+        );
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
@@ -4331,7 +4315,7 @@ pub fn draw_ui(
                 &map,
                 &player,
                 &images,
-                railgun_energy_demand,
+                action_energy_demand,
                 session.active_game.as_ref().map_or_else(Resources::default, |game| {
                     game.persisted.state.trade_incoming(player.id)
                 }),
@@ -4605,8 +4589,17 @@ pub fn draw_ui(
             // Hide shop if hovering another planet
             if state.planet_hover.is_none_or(|planet_id| planet_id == id) {
                 let solar_band = map.solar_band(id);
-                let next_turn_energy = projected_energy(&map, &player, railgun_energy_demand);
+                let next_turn_energy = projected_energy(&map, &player, action_energy_demand);
                 let senate_level_limit = Player::senate_level_limit(&map, settings.p_colonizable);
+                let senate = player.senate_support(&map);
+                let senate_queues_fit =
+                    crate::core::units::operations::SenatePolicy::ALL.map(|policy| {
+                        crate::core::units::operations::SenateSupport {
+                            policy,
+                            ..senate
+                        }
+                        .supports_queues(&map)
+                    });
                 let planet = map.get_mut(id);
 
                 if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
@@ -4629,6 +4622,8 @@ pub fn draw_ui(
                                 solar_band,
                                 next_turn_energy,
                                 senate_level_limit,
+                                senate,
+                                senate_queues_fit,
                                 &mut pending,
                                 &mut message,
                                 &images,

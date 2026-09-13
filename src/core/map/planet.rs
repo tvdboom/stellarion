@@ -10,14 +10,15 @@ use strum_macros::EnumIter;
 
 use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, JUMP_GATE_CAPACITY_PER_LEVEL, PROBES_PER_PRODUCTION_LEVEL,
-    SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR, SPACE_DOCK_FLEET_PRODUCTION,
-    TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL, TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
+    SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
+    TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
 };
 use crate::core::identity::PlayerId;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::defense::Defense;
-use crate::core::units::{Amount, Army, Unit};
+use crate::core::units::operations::{BuildingOperations, SpaceDockMode};
+use crate::core::units::{Amount, Army, Combat, Unit};
 
 /// Stable index identifying a planet inside one persisted map.
 pub type PlanetId = usize;
@@ -340,38 +341,16 @@ impl PlanetKind {
 
     /// Generates a temperature range from the supplied deterministic stream.
     pub fn temperature_with_rng<R: Rng + ?Sized>(&self, rng: &mut R) -> (i16, i16) {
-        match self {
-            PlanetKind::Dry => {
-                let low = rng.random_range(80..240);
-                let high = rng.random_range(low..=240);
-                (low, high)
-            },
-            PlanetKind::Gas => {
-                let low = rng.random_range(-110..-60);
-                let high = rng.random_range(low..=-60);
-                (low, high)
-            },
-            PlanetKind::Ice => {
-                let low = rng.random_range(-260..-130);
-                let high = rng.random_range(low..=-130);
-                (low, high)
-            },
-            PlanetKind::Metallic => {
-                let low = rng.random_range(-70..10);
-                let high = rng.random_range(low..=10);
-                (low, high)
-            },
-            PlanetKind::Water => {
-                let low = rng.random_range(-10..40);
-                let high = rng.random_range(low..=40);
-                (low, high)
-            },
-            _ => {
-                let low = rng.random_range(-170..-30);
-                let high = rng.random_range(low..=-30);
-                (low, high)
-            },
-        }
+        let (minimum, maximum) = match self {
+            PlanetKind::Dry => (80, 240),
+            PlanetKind::Gas => (-110, -60),
+            PlanetKind::Ice => (-260, -130),
+            PlanetKind::Metallic => (-70, 10),
+            PlanetKind::Water => (-10, 40),
+            _ => (-170, -30),
+        };
+        let low = rng.random_range(minimum..maximum);
+        (low, rng.random_range(low..=maximum))
     }
 
     /// Returns an icon summarizing the generated surface temperature.
@@ -439,6 +418,9 @@ pub struct Planet {
     pub resources: Resources,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: usize,
+
+    /// Persistent extraction, recovery, and Space Dock choices.
+    pub operations: BuildingOperations,
     /// Resource currently favored by this planet's Terraformer, or `None` while switched off.
     pub terraformer_focus: Option<ResourceName>,
     /// Whether the stationed Command Relay is broadcasting deceptive telemetry.
@@ -572,6 +554,8 @@ impl Planet {
             position,
             resources,
             jump_gate: 0,
+
+            operations: BuildingOperations::default(),
             terraformer_focus: None,
             command_relay_active: true,
             shield_overload: ShieldOverloadState::Ready,
@@ -649,6 +633,8 @@ impl Planet {
     /// Removes invalid or zero-count unit entries from this planet.
     pub fn clean(&mut self) {
         self.shield_overload = ShieldOverloadState::Ready;
+        self.operations = BuildingOperations::default();
+
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.owned = None;
         self.controlled = None;
@@ -689,6 +675,13 @@ impl Planet {
     /// Removes ownership and owner-only infrastructure from this planet.
     pub fn abandon(&mut self) {
         self.shield_overload = ShieldOverloadState::Ready;
+        self.operations.space_dock = Default::default();
+        self.operations.space_dock_locked_until = 0;
+        self.operations.space_dock_selection_pending = false;
+        self.operations.senate = Default::default();
+        self.operations.senate_locked_until = 0;
+        self.operations.senate_selection_pending = false;
+
         self.fleet_withdrawal = FleetWithdrawal::Off;
         let former_owner = self.owned.take();
         self.army.retain(|u, _| !u.is_defense());
@@ -705,22 +698,28 @@ impl Planet {
         }
     }
 
-    /// Returns the diameter-dependent War Sun destruction chance in hundredths of one percent.
-    pub fn destroy_probability_basis_points(&self) -> u16 {
+    /// Returns the diameter-dependent Death Ray modifier in hundredths of one percent.
+    /// War Suns and Orbital Railguns use the same signed adjustment.
+    pub fn death_ray_size_modifier_basis_points(&self) -> i16 {
         match self.diameter {
-            1000..2000 => 1_800,
-            2000..3000 => 1_700,
-            3000..4000 => 1_600,
-            4000..6000 => 1_500,
-            6000..9000 => 1_400,
-            9000..13000 => 1_300,
-            13000..20000 => 1_200,
-            20000..100000 => 1_100,
-            _ => 1_000,
+            1000..2000 => 200,
+            2000..3000 => 150,
+            3000..4000 => 100,
+            4000..6000 => 50,
+            6000..9000 => 0,
+            9000..13000 => -50,
+            13000..20000 => -100,
+            20000..100000 => -150,
+            _ => -200,
         }
     }
 
-    /// Returns the bounded War Sun destruction chance for the current turn.
+    /// Returns one War Sun's initial destruction chance in hundredths of one percent.
+    pub fn destroy_probability_basis_points(&self) -> u16 {
+        (1_000 + self.death_ray_size_modifier_basis_points()) as u16
+    }
+
+    /// Returns one War Sun's initial destruction chance, before later-round reductions.
     pub fn destroy_probability(&self) -> f32 {
         f32::from(self.destroy_probability_basis_points()) / 10_000.0
     }
@@ -805,10 +804,10 @@ impl Planet {
         let terraformer =
             self.army.amount(&Unit::Building(Building::Terraformer)).min(Building::MAX_LEVEL);
         if terraformer == 0 {
-            return production;
+            return self.operations.mine_output(production);
         }
         let Some(focus) = self.terraformer_focus else {
-            return production;
+            return self.operations.mine_output(production);
         };
         for resource in [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium] {
             let percent = if resource == focus {
@@ -824,7 +823,7 @@ impl Planet {
             *production.get_mut(&resource) =
                 ((amount as u128 * percent as u128) / 100).min(usize::MAX as u128) as usize;
         }
-        production
+        self.operations.mine_output(production)
     }
 
     /// Counts lunar/building field slots consumed by constructed units.
@@ -849,12 +848,32 @@ impl Planet {
             .fold(0, usize::saturating_add)
     }
 
-    /// Returns the maximum fleet production allowed by current upgrades.
+    /// Returns local fleet capacity before empire-wide Senate support.
     pub fn max_fleet_production(&self) -> usize {
+        self.max_fleet_production_in_mode(self.operations.space_dock)
+    }
+
+    /// Fleet capacity under a proposed Dock mode, without copying or mutating the world.
+    pub fn max_fleet_production_in_mode(&self, mode: SpaceDockMode) -> usize {
         let shipyard = self.army.amount(&Unit::Building(Building::Shipyard));
-        SHIPYARD_PRODUCTION_FACTOR.saturating_mul(shipyard).saturating_add(
-            SPACE_DOCK_FLEET_PRODUCTION.saturating_mul(self.army.amount(&Unit::space_dock())),
-        )
+        SHIPYARD_PRODUCTION_FACTOR
+            .saturating_mul(shipyard)
+            .saturating_add(mode.production().saturating_mul(self.army.amount(&Unit::space_dock())))
+    }
+
+    /// Initial hull of a unit defending this world, including Space Dock specialization.
+    pub fn unit_hull(&self, unit: Unit) -> usize {
+        self.operations.space_dock.combat_stat(unit, unit.hull())
+    }
+
+    /// Regenerating shield of a unit defending this world.
+    pub fn unit_shield(&self, unit: Unit) -> usize {
+        self.operations.space_dock.combat_stat(unit, unit.shield())
+    }
+
+    /// Weapon damage of a unit defending this world, before Energy scaling.
+    pub fn unit_damage(&self, unit: Unit) -> usize {
+        self.operations.space_dock.combat_stat(unit, unit.damage())
     }
 
     /// Returns current factory production available for defenses.
@@ -867,7 +886,7 @@ impl Planet {
             .fold(0, usize::saturating_add)
     }
 
-    /// Returns the maximum battery production allowed by current upgrades.
+    /// Returns local defense capacity before empire-wide Senate support.
     pub fn max_battery_production(&self) -> usize {
         let factory = self.army.amount(&Unit::Building(Building::Factory));
         FACTORY_PRODUCTION_FACTOR.saturating_mul(factory)
@@ -1006,6 +1025,8 @@ impl Planet {
         self.terraformer_focus = None;
         self.command_relay_active = true;
         self.shield_overload = ShieldOverloadState::Ready;
+        self.operations = BuildingOperations::default();
+
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.surface_build_order = [None; 4];
     }

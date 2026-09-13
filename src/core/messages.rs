@@ -8,13 +8,16 @@ use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::core::audio::PlayAudioMsg;
 use crate::core::constants::{MAX_ZOOM, MESSAGE_DURATION};
+use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
+use crate::core::map::planet::Planet;
 use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::select_planet;
-use crate::core::missions::MissionId;
+use crate::core::missions::{Mission, MissionId};
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{resource_bar_bottom, MissionTab, UiState};
+use crate::core::units::Amount;
 
 const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
@@ -44,6 +47,8 @@ pub enum MessageAction {
     FocusColony(PlanetId),
     /// Centers the strategic map on a public world without opening its information panel.
     FocusPlanet(PlanetId),
+    /// Centers a revoked protection world and opens a mission from its stationed fleet.
+    OpenRevokedProtectionMission(PlanetId),
     /// Centers the strategic map on a Railgun target and zooms out as far as possible.
     FocusRailgunTarget(PlanetId),
 }
@@ -140,6 +145,11 @@ impl Messages {
                         )
                     ) {
                         10.0
+                    } else if matches!(
+                        message.action,
+                        Some(MessageAction::OpenRevokedProtectionMission(_))
+                    ) {
+                        f32::INFINITY
                     } else {
                         MESSAGE_DURATION as f32
                     }
@@ -202,6 +212,24 @@ fn check_messages(
     let current_game_state = game_state.as_ref().map(|state| *state.get());
     let playing = in_game && current_game_state == Some(GameState::Playing);
     let combat_active = notifications_hidden_during_combat(in_game, current_game_state);
+    if playing {
+        if let (Some(map), Some(player)) = (&map, &player) {
+            for planet in &map.planets {
+                if revoked_protection_fleet(planet, player)
+                    && !messages.0.iter().any(|message| {
+                        message.action
+                            == Some(MessageAction::OpenRevokedProtectionMission(planet.id))
+                    })
+                {
+                    messages.push(&MessageMsg::warning(format!(
+                        "Protection access to {} {} was revoked. Send your stationed fleet to another world before the turn ends, or it will return home.",
+                        if planet.is_moon() { "moon" } else { "planet" },
+                        planet.name
+                    )).with_action(MessageAction::OpenRevokedProtectionMission(planet.id)));
+                }
+            }
+        }
+    }
     messages.0.retain_mut(|message| {
         let actionable_planet_is_valid = match message.action {
             Some(MessageAction::FocusColony(id)) => {
@@ -213,6 +241,11 @@ fn check_messages(
             Some(MessageAction::FocusPlanet(id)) => map
                 .as_ref()
                 .is_some_and(|map| map.try_get(id).is_some_and(|planet| !planet.is_destroyed)),
+            Some(MessageAction::OpenRevokedProtectionMission(id)) => {
+                map.as_ref().zip(player.as_ref()).is_some_and(|(map, player)| {
+                    map.try_get(id).is_some_and(|planet| revoked_protection_fleet(planet, player))
+                })
+            },
             Some(MessageAction::FocusRailgunTarget(id)) => {
                 map.as_ref().is_some_and(|map| map.try_get(id).is_some())
             },
@@ -223,6 +256,7 @@ fn check_messages(
             Some(
                 MessageAction::FocusColony(_)
                     | MessageAction::FocusPlanet(_)
+                    | MessageAction::OpenRevokedProtectionMission(_)
                     | MessageAction::FocusRailgunTarget(_)
             )
         ) {
@@ -233,7 +267,11 @@ fn check_messages(
                 return true;
             }
         }
-        advance_message_lifetime(message, elapsed, combat_active)
+        if matches!(message.action, Some(MessageAction::OpenRevokedProtectionMission(_))) {
+            true
+        } else {
+            advance_message_lifetime(message, elapsed, combat_active)
+        }
     });
     if messages.0.is_empty() {
         return;
@@ -243,7 +281,9 @@ fn check_messages(
         return;
     };
     if let Some((index, action)) = draw_notifications(context, &messages, playing, combat_active) {
-        messages.0.remove(index);
+        if !matches!(action, MessageAction::OpenRevokedProtectionMission(_)) {
+            messages.0.remove(index);
+        }
         if let Some(state) = state.as_mut() {
             match action {
                 MessageAction::OpenEnemyMissions => {
@@ -269,6 +309,13 @@ fn check_messages(
                         }
                     }
                 },
+                MessageAction::OpenRevokedProtectionMission(planet_id) => {
+                    if playing {
+                        if let (Some(map), Some(player)) = (&map, &player) {
+                            open_revoked_protection_mission(planet_id, map, player, state);
+                        }
+                    }
+                },
                 MessageAction::FocusRailgunTarget(planet_id) => {
                     if playing {
                         if let Some(map) = &map {
@@ -286,6 +333,45 @@ fn open_enemy_missions(state: &mut UiState) {
     state.mission = true;
     state.mission_tab = MissionTab::EnemyMissions;
     state.combat_report = None;
+}
+
+fn revoked_protection_fleet(planet: &Planet, player: &Player) -> bool {
+    !planet.is_destroyed
+        && planet.controlled.is_some_and(|controller| {
+            controller != player.id && player.protection_intel.get(&planet.id) == Some(&controller)
+        })
+        && !planet.allows_protection(player.id)
+        && planet.army.protector(player.id).is_some_and(|army| army.has_army())
+}
+
+fn open_revoked_protection_mission(
+    planet_id: PlanetId,
+    map: &Map,
+    player: &Player,
+    state: &mut UiState,
+) -> bool {
+    let Some(planet) =
+        map.try_get(planet_id).filter(|planet| revoked_protection_fleet(planet, player))
+    else {
+        return false;
+    };
+    let Some(home) = map.try_get(player.home_planet).filter(|home| !home.is_destroyed) else {
+        return false;
+    };
+    state.planet_selected = None;
+    state.focus_planet = Some(planet.id);
+    state.focus_zoom = None;
+    state.to_selected = true;
+    state.mission = true;
+    state.mission_tab = MissionTab::NewMission;
+    state.mission_info = Mission {
+        origin: planet.id,
+        destination: home.id,
+        objective: Icon::Deploy,
+        ..default()
+    };
+    state.combat_report = None;
+    true
 }
 
 fn open_mission_reports(state: &mut UiState, mission_id: Option<MissionId>) {
@@ -334,6 +420,7 @@ fn draw_notifications(
                         Some(
                             MessageAction::FocusColony(_)
                                 | MessageAction::FocusPlanet(_)
+                                | MessageAction::OpenRevokedProtectionMission(_)
                                 | MessageAction::FocusRailgunTarget(_)
                         )
                     )

@@ -61,6 +61,7 @@ fn trading_panel_game() -> GameModel {
     let enemy = model.players[1].home_planet;
     model.map.get_mut(home).position = Vec2::ZERO;
     model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.0;
+    model.map.get_mut(home).army.insert(Unit::Building(Building::TradingPost), 2);
     model.map.get_mut(enemy).army.insert(Unit::Building(Building::TradingPost), 1);
     model
 }
@@ -83,7 +84,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
             trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
         let labels = panel_labels(&output);
         let message =
-            "You need a completed Trading Post of your own within 4 AU of this post to trade.";
+            "You need a completed Trading Post of your own within range of this post to trade. Both posts must reach each other.";
         assert!(labels.contains_key(message));
         assert!(!labels.contains_key("Send offer"));
         assert!(!labels.contains_key("You offer"));
@@ -120,7 +121,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
 }
 
 #[test]
-fn trading_panel_requires_a_completed_owned_post_within_four_au() {
+fn trading_panel_requires_both_posts_to_reach_each_other() {
     let mut model = trading_panel_game();
     let home = model.players[0].home_planet;
     let enemy = model.players[1].home_planet;
@@ -132,18 +133,20 @@ fn trading_panel_requires_a_completed_owned_post_within_four_au() {
     let mut world = World::new();
     world.init_resource::<Messages<MultiplayerRequest>>();
     world.init_resource::<Messages<MessageMsg>>();
-    for (distance, completed, owned, can_trade) in [
-        (4.0, false, true, false),
-        (4.01, true, true, false),
-        (4.0, true, false, false),
-        (3.5, true, true, true),
-        (4.0, true, true, true),
+    for (distance, level, owned, visible, can_trade) in [
+        (1.5, 0, true, false, false),
+        (1.51, 1, true, false, false),
+        (1.5, 1, false, false, false),
+        (3.0, 2, true, true, false),
+        (1.49, 1, true, true, true),
+        (1.5, 1, true, true, true),
     ] {
+        state.trading_post_open = Some(enemy);
         model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * distance;
         let local = model.map.get_mut(home);
         local.owned = owned.then_some(1);
-        local.army.insert(Unit::Building(Building::TradingPost), usize::from(completed));
-        local.buy = if completed {
+        local.army.insert(Unit::Building(Building::TradingPost), level);
+        local.buy = if level > 0 {
             Vec::new()
         } else {
             vec![Unit::Building(Building::TradingPost)]
@@ -169,12 +172,12 @@ fn trading_panel_requires_a_completed_owned_post_within_four_au() {
         assert_eq!(labels.contains_key("Send offer"), can_trade);
         assert_eq!(
             labels.keys().any(|text| text.starts_with("You need a completed Trading Post")),
-            !can_trade
+            visible && !can_trade
         );
         if can_trade {
             assert!(labels["Trading Post"].bottom() < labels["You offer"].top());
         }
-        assert_eq!(state.trading_post_open, Some(enemy));
+        assert_eq!(state.trading_post_open, visible.then_some(enemy));
     }
     assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
 }
@@ -186,6 +189,7 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
         let home = model.players[0].home_planet;
         let enemy = model.players[1].home_planet;
         model.map.get_mut(home).army.insert(Unit::Building(Building::TradingPost), 1);
+        model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 1.5;
         let mut state = UiState {
             trading_post_open: Some(enemy),
             ..default()

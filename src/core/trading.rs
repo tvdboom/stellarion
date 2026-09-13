@@ -11,8 +11,8 @@ use crate::core::units::{Amount, Unit};
 
 /// Tradable resources one completed Trading Post level can send in a turn.
 pub const TRADE_RESOURCES_PER_LEVEL: usize = 500;
-/// Maximum center-to-center distance of an adjacent Trading Post route, in AU.
-pub const TRADING_POST_ADJACENCY_AU: f32 = 4.0;
+/// Center-to-center reach granted by each completed Trading Post level, in AU.
+pub const TRADING_POST_RANGE_PER_LEVEL: f32 = 1.5;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,10 +66,19 @@ pub fn trading_post_capacity(planet: &Planet, player_id: PlayerId) -> usize {
         .saturating_mul(TRADE_RESOURCES_PER_LEVEL)
 }
 
-/// Returns the owner broadcast by a completed post to its owner and adjacent players.
+/// Returns the center-to-center reach of an owned, completed Trading Post in AU.
+pub fn trading_post_range(planet: &Planet, player_id: PlayerId) -> f32 {
+    if planet.is_destroyed || planet.is_moon() || planet.owned != Some(player_id) {
+        return 0.0;
+    }
+    planet.army.amount(&Unit::Building(Building::TradingPost)).min(Building::MAX_LEVEL) as f32
+        * TRADING_POST_RANGE_PER_LEVEL
+}
+
+/// Returns the owner of a completed post visible through the viewer's own post network.
 ///
-/// Owning or controlling an adjacent world is enough; the viewer needs neither a post nor
-/// mission intelligence. This reveals ownership only, not the controller or their army.
+/// A foreign post is visible when at least one completed post owned by the viewer reaches it.
+/// This reveals ownership only, not the controller or their army.
 pub fn visible_trading_post_owner(
     map: &Map,
     viewer: PlayerId,
@@ -78,9 +87,9 @@ pub fn visible_trading_post_owner(
     let owner = planet.owned?;
     (trading_post_capacity(planet, owner) > 0
         && (owner == viewer
-            || map.planets.iter().any(|adjacent| {
-                (adjacent.owned == Some(viewer) || adjacent.controlled == Some(viewer))
-                    && planets_are_adjacent(adjacent, planet)
+            || map.planets.iter().any(|local| {
+                trading_post_range(local, viewer) > 0.0
+                    && planets_are_adjacent_within(local, planet, trading_post_range(local, viewer))
             })))
     .then_some(owner)
 }
@@ -102,15 +111,19 @@ pub fn trading_posts_are_adjacent(
     };
     trading_post_capacity(first, first_player) > 0
         && trading_post_capacity(second, second_player) > 0
-        && planets_are_adjacent(first, second)
+        && planets_are_adjacent_within(
+            first,
+            second,
+            trading_post_range(first, first_player).min(trading_post_range(second, second_player)),
+        )
 }
 
-/// Returns whether two worlds are close enough to be considered adjacent for commerce.
-pub fn planets_are_adjacent(first: &Planet, second: &Planet) -> bool {
+/// Returns whether distinct, intact worlds lie within the supplied commerce range.
+fn planets_are_adjacent_within(first: &Planet, second: &Planet, range_au: f32) -> bool {
     first.id != second.id
         && !first.is_destroyed
         && !second.is_destroyed
-        && first.position.distance(second.position) <= Planet::SIZE * TRADING_POST_ADJACENCY_AU
+        && first.position.distance(second.position) <= Planet::SIZE * range_au
 }
 
 /// Returns every adjacent foreign post reachable from one owned post.

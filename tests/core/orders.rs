@@ -60,10 +60,16 @@ fn senate_purchase_respects_the_match_level_limit() {
     let senate = Unit::Building(Building::Senate);
 
     planet.army.insert(senate, 1);
-    assert_eq!(purchase_limit(player, planet, senate, 2), Ok(1));
-    assert_eq!(purchase_limit(player, planet, senate, 1), Err(OrderError::Building));
+    assert_eq!(purchase_limit(player, planet, senate, 2, Default::default()), Ok(1));
+    assert_eq!(
+        purchase_limit(player, planet, senate, 1, Default::default()),
+        Err(OrderError::Building)
+    );
     planet.army.insert(senate, 2);
-    assert_eq!(purchase_limit(player, planet, senate, 2), Err(OrderError::Building));
+    assert_eq!(
+        purchase_limit(player, planet, senate, 2, Default::default()),
+        Err(OrderError::Building)
+    );
 }
 
 #[test]
@@ -81,6 +87,7 @@ fn tidal_generators_consume_lunar_fields() {
             game.map.get(moon_id),
             Unit::Building(Building::TidalGenerator),
             Building::MAX_LEVEL,
+            Default::default(),
         ),
         Err(OrderError::Fields)
     );
@@ -93,6 +100,7 @@ fn tidal_generators_consume_lunar_fields() {
             game.map.get(moon_id),
             Unit::Building(Building::TidalGenerator),
             Building::MAX_LEVEL,
+            Default::default(),
         ),
         Ok(1)
     );
@@ -105,6 +113,7 @@ fn tidal_generators_consume_lunar_fields() {
             game.map.get(moon_id),
             Unit::Building(Building::Laboratory),
             Building::MAX_LEVEL,
+            Default::default(),
         ),
         Err(OrderError::Fields)
     );
@@ -203,6 +212,7 @@ fn purchase_limit_includes_queued_missiles_of_both_types() {
             planet,
             Unit::antiballistic_missile(),
             Building::MAX_LEVEL,
+            Default::default(),
         )
         .unwrap(),
         2
@@ -213,6 +223,7 @@ fn purchase_limit_includes_queued_missiles_of_both_types() {
         planet,
         Unit::interplanetary_missile(),
         Building::MAX_LEVEL,
+        Default::default(),
     )
     .is_err());
 }
@@ -239,6 +250,7 @@ fn stationed_space_dock_adds_five_ship_production_slots() {
             planet,
             Unit::Ship(Ship::LightFighter),
             Building::MAX_LEVEL,
+            Default::default(),
         )
         .unwrap(),
         5
@@ -268,7 +280,13 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
     assert_eq!(planet.max_fleet_production(), 5);
     assert_eq!(planet.max_battery_production(), 5);
     assert_eq!(
-        purchase_limit(player, planet, Unit::Ship(Ship::Cruiser), Building::MAX_LEVEL),
+        purchase_limit(
+            player,
+            planet,
+            Unit::Ship(Ship::Cruiser),
+            Building::MAX_LEVEL,
+            Default::default()
+        ),
         Err(crate::core::orders::OrderError::Production),
         "Terraforming must not replace Shipyard unlock levels"
     );
@@ -332,6 +350,7 @@ fn orbitals_require_their_production_level_in_completed_shipyards() {
             Unit::Building(Building::SolarSatellite),
             Unit::Building(Building::Recycler),
             Unit::Building(Building::CommandRelay),
+            Unit::Building(Building::TradingPost),
             Unit::Building(Building::SensorPhalanx),
             Unit::Building(Building::JumpGate),
             Unit::Building(Building::OrbitalRailgun),
@@ -342,12 +361,15 @@ fn orbitals_require_their_production_level_in_completed_shipyards() {
         let required = orbital.production();
         planet.army.insert(Unit::Building(Building::Shipyard), required - 1);
         assert_eq!(
-            purchase_limit(player, planet, orbital, Building::MAX_LEVEL),
+            purchase_limit(player, planet, orbital, Building::MAX_LEVEL, Default::default()),
             Err(OrderError::Production),
             "{orbital:?} should require Shipyard level {required}"
         );
         planet.army.insert(Unit::Building(Building::Shipyard), required);
-        assert_eq!(purchase_limit(player, planet, orbital, Building::MAX_LEVEL), Ok(1));
+        assert_eq!(
+            purchase_limit(player, planet, orbital, Building::MAX_LEVEL, Default::default()),
+            Ok(1)
+        );
     }
 }
 

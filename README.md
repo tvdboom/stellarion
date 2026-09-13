@@ -47,7 +47,30 @@ The game presents three resource types:
 - **Deuterium:** Deuterium is the least frequent resource in the galaxy, primarily used for 
   high-level ships and as fuel.
 - **Energy**: Energy is not a stockpiled resource, but a per-turn capacity. It powers continuously
-  operating infrastructure. An energy deficit reduces resource income and Planetary Shield strength.
+  operating infrastructure and Jump Gate launches. Each jump uses 1 Energy per 5 fleet production
+  sent, rounded up separately per mission; unused gates consume no Energy. An energy deficit
+  reduces resource income and Planetary Shield strength.
+
+Each Metal Mine, Crystal Mine, and Deuterium Synthesizer has an independent operating mode:
+Normal produces its usual output at 1 Energy per level; Intensive produces 150% at 3 Energy per
+level and automatically suspends the building for the next full turn. Suspended buildings use no
+Energy and produce nothing. After the compulsory recovery turn, resume production manually.
+Terraformer modifiers apply before extraction modes; fractional resource output rounds down.
+
+Recyclers can recover the normal bulk haul or selectively recover Metal, Crystal, or Deuterium.
+Selective recovery returns 150% of the chosen resource's normal haul and none of the others.
+
+Space Docks default to Industrial mode: +5 fleet production, 2,000 Hull, 110 Shield, and 150 Damage.
+Bastion provides no fleet production and raises those combat values to 3,000 / 165 / 225. Each
+mode change can be revised throughout the current turn. Its final selection becomes fixed for the
+next three turns when the turn ends. Queued ships must fit the selected mode's production capacity.
+
+The home-world Senate also sets an empire-wide policy: Expansion (default) adds 2 ship production
+per owned planet per completed Senate level; Consolidation adds the same amount of defense
+production. The existing colony-limit bonus applies in both policies. Moons do not receive Senate
+production, and unit unlocks still require the appropriate local infrastructure levels. Policies
+apply during the current turn, so a switch is allowed only when every owned planet's queued units
+fit the new limits. The final policy locks for the next three turns when the selection turn ends.
 
 Planets produce a varying amount of each of these resources. Be aware of your home planet's 
 resource production! It should influence the type of strategy you might want to consider for the
@@ -85,8 +108,9 @@ defenses.
 - **Protect:** A world controller can grant another player planet-specific protection access.
   The invitation is applied immediately and adds Protect alongside the mission choices. A
   protecting fleet joins that world's defense but remains separately owned. Revoking protection
-  access applies immediately, and sends both traveling and stationed protection fleets to their
-  owner's homeworld. A player can select a protected world as a mission origin and send some or
+  access applies immediately. Traveling protection fleets head home; stationed fleets remain
+  available for their owner to move elsewhere before the next turn, when any remainder heads home.
+  A player can select a protected world as a mission origin and send some or
   all of their own stationed units elsewhere, or recall the entire fleet home. They cannot use
   the controller's units or target a world they currently protect with hostile missions or
   Orbital Railguns.
@@ -110,9 +134,9 @@ defenses.
   hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
   intelligence, cannot be detected by a Sensor Phalanx, and do not reveal their origin.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
-  enemy ships or Space Dock remaining, every War Sun has a size-dependent chance to destroy the
-  planet (the chance falls in later rounds). The fleet returns whether destruction succeeds. A
-  destroyed planet can never be colonized again.
+  enemy ships or Space Dock remaining, every War Sun has an initial 10% chance plus the planet's
+  −2% to +2% Death Ray size modifier (the chance falls by 1% in later combat rounds). The fleet
+  returns whether destruction succeeds. A destroyed planet can never be colonized again.
 
 
 Allied missions use the normal mission editor: enable **Allied mission** and choose players
@@ -188,8 +212,8 @@ For each shooting unit:
    another target at random, and repeating the above steps for that new target.
 6. All ships with H=0 (no hull points left) are destroyed.
 7. If the objective is to destroy the planet and there are no enemy ships or Space Dock left, each
-   attacking War Sun fires a shot with a chance of 10 - 1 * n_turn to hit. If it hits, the planet
-   is immediately destroyed and all defenses and buildings with it.
+   attacking War Sun fires a shot with a chance of 10 + size modifier - (n_turn - 1) percent to hit.
+   If it hits, the planet is immediately destroyed and all defenses and buildings with it.
 8. If it's the first round of combat and there are any Probes on the attacker's side, they leave 
    combat and fly back to the origin planet (if `combat probes` option disabled).
 9. If every unit of a side (attacker or defender) is destroyed, the battle ends with the opposite 

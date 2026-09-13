@@ -4,6 +4,76 @@ use super::*;
 use crate::core::ui::systems::MapRangePreview;
 
 #[test]
+fn ctrl_tab_recenters_after_manual_selection_with_the_shop_open() {
+    use crate::core::camera::move_camera;
+    use crate::core::map::systems::{select_planet, PlanetCmp};
+    use crate::core::simulation::{GameModel, GameRules};
+
+    for reverse in [false, true] {
+        let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
+        let player = model.players[0].clone();
+        model.map.planets.truncate(3);
+        for (index, planet) in model.map.planets.iter_mut().enumerate() {
+            planet.name = format!("Planet {index}");
+            planet.owned = Some(player.id);
+            planet.position = Vec2::new(index as f32 * 500.0, 0.0);
+        }
+        let mut state = UiState::default();
+        select_planet(&model.map.planets[0], &mut state, &player);
+        assert!(!state.to_selected);
+        let shop = state.shop;
+        let target = &model.map.planets[if reverse {
+            2
+        } else {
+            1
+        }];
+        let target_id = target.id;
+        let target_position = target.position;
+
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::ControlLeft);
+        keyboard.press(KeyCode::Tab);
+        if reverse {
+            keyboard.press(KeyCode::ShiftLeft);
+        }
+        let mut app = App::new();
+        app.insert_resource(keyboard)
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_message::<bevy::input::mouse::MouseWheel>()
+            .insert_resource(Settings {
+                show_menu: true,
+                ..default()
+            })
+            .insert_resource(state)
+            .insert_resource(player);
+        for planet in &model.map.planets {
+            app.world_mut().spawn((
+                Transform::from_translation(planet.position.extend(0.0)),
+                PlanetCmp {
+                    id: planet.id,
+                },
+            ));
+        }
+        app.insert_resource(model.map);
+        app.world_mut().spawn(Window::default());
+        let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+
+        app.world_mut().run_system_once(check_keys).unwrap();
+        let state = app.world().resource::<UiState>();
+        assert_eq!(state.planet_selected, Some(target_id));
+        assert_eq!(state.shop, shop);
+        assert!(app.world().resource::<Settings>().show_menu);
+        // Exercise the camera consumer too: updating the shop alone is insufficient.
+        for _ in 0..256 {
+            app.world_mut().run_system_once(move_camera).unwrap();
+        }
+        let position = app.world().get::<Transform>(camera).unwrap().translation.truncate();
+        assert!(position.distance(target_position) < 0.75, "camera stayed at {position:?}");
+    }
+}
+
+#[test]
 fn escape_closes_mission_and_combat_details_without_opening_the_menu() {
     let mut keyboard = ButtonInput::default();
     keyboard.press(KeyCode::Escape);

@@ -10,7 +10,7 @@ use crate::core::map::planet::{Garrison, Planet, PlanetId};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
 use crate::core::resources::Resources;
-use crate::core::units::{Amount, Army, Price, Unit};
+use crate::core::units::{Amount, Army, Combat, Price, Unit};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +60,24 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Initial hull used by this report, including the defending Space Dock's mode.
+    pub fn unit_hull(&self, unit: Unit, side: &Side) -> usize {
+        if *side == Side::Defender {
+            self.planet.unit_hull(unit)
+        } else {
+            unit.hull()
+        }
+    }
+
+    /// Full regenerating shield used by this report.
+    pub fn unit_shield(&self, unit: Unit, side: &Side) -> usize {
+        if *side == Side::Defender {
+            self.planet.unit_shield(unit)
+        } else {
+            unit.shield()
+        }
+    }
+
     /// Returns every player whose fleet began this report on the attacking side.
     pub fn attacker_players(&self) -> Vec<PlayerId> {
         if let Some(attack) =
@@ -72,7 +90,13 @@ impl MissionReport {
 
     /// Returns whether this player participated in the attack recorded by the report.
     pub fn is_attacker(&self, player_id: PlayerId) -> bool {
-        self.attacker_players().contains(&player_id)
+        self.mission
+            .joint_attack
+            .as_ref()
+            .filter(|attack| !attack.attackers.is_empty())
+            .map_or(self.mission.owner == player_id, |attack| {
+                attack.attackers.contains_key(&player_id)
+            })
     }
 
     /// Returns every player whose forces began this report on the defending side.

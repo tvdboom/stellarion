@@ -9,6 +9,7 @@ use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::player::Player;
 use crate::core::units::buildings::Building;
+use crate::core::units::operations::SenateSupport;
 use crate::core::units::{orbitals, Amount, Price, Unit};
 
 /// A player-facing reason why an order cannot currently be accepted.
@@ -80,6 +81,7 @@ pub fn purchase_limit(
     planet: &Planet,
     unit: Unit,
     senate_level_limit: usize,
+    senate: SenateSupport,
 ) -> Result<usize, OrderError> {
     if player.spectator
         || planet.is_destroyed
@@ -129,7 +131,7 @@ pub fn purchase_limit(
             if ship.production() > planet.army.amount(&Unit::Building(Building::Shipyard)) {
                 return Err(OrderError::Production);
             }
-            planet.max_fleet_production().saturating_sub(planet.fleet_production())
+            senate.fleet_capacity(planet).saturating_sub(planet.fleet_production())
                 / ship.production()
         },
         Unit::Defense(defense) => {
@@ -148,7 +150,7 @@ pub fn purchase_limit(
                 return Err(OrderError::Production);
             }
             let capacity =
-                planet.max_battery_production().saturating_sub(planet.battery_production())
+                senate.defense_capacity(planet).saturating_sub(planet.battery_production())
                     / defense.production();
             if defense.is_missile() {
                 let remaining = planet.remaining_missile_capacity();

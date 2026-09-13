@@ -289,9 +289,13 @@ fn protection_access_updates_canonical_state_immediately_with_a_compact_revision
         Some(1)
     );
     assert!(!after.submitted_players.contains(&2));
-    let drafts =
-        block_on(backend.load_turn_submissions(&guests[0], &active.id, after.persisted.state.turn))
-            .unwrap();
+    let drafts = block_on(backend.load_turn_submissions(
+        &guests[0],
+        &active.id,
+        after.persisted.state.turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
     assert_eq!(drafts.len(), 1);
     assert!(!drafts[0].ready);
     let replay = block_on(backend.subscribe(&guests[0], &active.id, 0)).unwrap();
@@ -1082,6 +1086,7 @@ fn saves_by_multiple_players_keep_the_world_revision_and_reject_stale_snapshots(
         &creator,
         &created.game.id,
         loaded.persisted.state.turn,
+        TurnSubmissionScope::All,
     ))
     .unwrap();
     assert_eq!(drafts.len(), 2);
@@ -1318,10 +1323,44 @@ fn coordinates_idempotent_submission_and_single_resolution() {
         block_on(backend.submit_turn(&creator, &active.id, first)).unwrap(),
         SubmissionDisposition::Duplicate
     );
+    assert!(block_on(backend.load_turn_submissions(
+        &creator,
+        &active.id,
+        active.persisted.state.turn,
+        TurnSubmissionScope::Resolution,
+    ))
+    .unwrap()
+    .is_empty());
     block_on(backend.submit_turn(&joiner, &active.id, second)).unwrap();
-    let submissions =
-        block_on(backend.load_turn_submissions(&creator, &active.id, active.persisted.state.turn))
-            .unwrap();
+    let submissions = block_on(backend.load_turn_submissions(
+        &creator,
+        &active.id,
+        active.persisted.state.turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            block_on(backend.load_turn_submissions(
+                &creator,
+                &active.id,
+                active.persisted.state.turn,
+                TurnSubmissionScope::Resolution
+            ))
+            .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(&submissions).unwrap(),
+    );
+    let mine = block_on(backend.load_turn_submissions(
+        &joiner,
+        &active.id,
+        active.persisted.state.turn,
+        TurnSubmissionScope::Mine,
+    ))
+    .unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].submission.player_id, 2);
     let mut next = active.persisted.state.clone();
     resolve_turn(
         &mut next,
@@ -1398,9 +1437,13 @@ fn simultaneous_submissions_and_resolvers_are_serialized() {
         assert_eq!(submitter.join().unwrap().unwrap(), SubmissionDisposition::Inserted);
     }
 
-    let submissions =
-        block_on(backend.load_turn_submissions(&creator, &active.id, active.persisted.state.turn))
-            .unwrap();
+    let submissions = block_on(backend.load_turn_submissions(
+        &creator,
+        &active.id,
+        active.persisted.state.turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
     let mut model = active.persisted.state.clone();
     resolve_turn(
         &mut model,

@@ -300,13 +300,27 @@ fn protection_changes_notify_the_affected_player_and_focus_the_world() {
         let mut revoked = granted;
         revoked.persisted.state.map.get_mut(protected).protection_permissions.remove(&2);
         let notices = protection_permission_notifications(
-            &BackendOutput::Record(Operation::Load, revoked),
+            &BackendOutput::Record(Operation::Load, revoked.clone()),
             &session,
         );
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Warning);
         assert!(notices[0].message.contains(&format!("{world} {name} was revoked")));
         assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
+
+        let mut with_fleet = revoked;
+        with_fleet.persisted.state.map.get_mut(protected).army.dock_protector(
+            2,
+            crate::core::units::Army::from([(
+                crate::core::units::Unit::Ship(crate::core::units::ships::Ship::LightFighter),
+                1,
+            )]),
+        );
+        assert!(protection_permission_notifications(
+            &BackendOutput::Record(Operation::Load, with_fleet),
+            &session,
+        )
+        .is_empty());
     }
 }
 
@@ -447,8 +461,13 @@ fn local_practice_backend_advances_without_an_opponent() {
         TurnSubmission::new(result.membership.player_id, turn, Vec::new()),
     ))
     .unwrap();
-    let submissions =
-        block_on(backend.load_turn_submissions(&auth, &result.game.id, turn)).unwrap();
+    let submissions = block_on(backend.load_turn_submissions(
+        &auth,
+        &result.game.id,
+        turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
     let mut model = result.game.persisted.state.clone();
     resolve_turn(
         &mut model,
@@ -820,9 +839,13 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(!app.world().resource::<MultiplayerSession>().busy);
-    let saved =
-        block_on(backend.load_turn_submissions(&host, &active.id, active.persisted.state.turn))
-            .unwrap();
+    let saved = block_on(backend.load_turn_submissions(
+        &host,
+        &active.id,
+        active.persisted.state.turn,
+        TurnSubmissionScope::All,
+    ))
+    .unwrap();
     assert_eq!(saved.len(), 1);
     assert!(!saved[0].ready);
     assert_eq!(

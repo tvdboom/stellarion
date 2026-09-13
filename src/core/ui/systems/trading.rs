@@ -1,7 +1,9 @@
 //! Trading Post notifications and bilateral resource-negotiation panels.
 
 use super::*;
-use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent};
+use crate::core::trading::{
+    trading_post_capacity, trading_posts_are_adjacent, visible_trading_post_owner,
+};
 use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse};
 
 const TRADE_ACCENT: Color32 = Color32::from_rgb(238, 179, 82);
@@ -218,9 +220,8 @@ fn draw_trade_panel(
         state.trade_open = None;
         let Some(planet) =
             state.trading_post_open.and_then(|id| map.try_get(id)).filter(|planet| {
-                planet.owned.is_some_and(|owner| {
-                    owner != player.id && trading_post_capacity(planet, owner) > 0
-                })
+                visible_trading_post_owner(map, player.id, planet)
+                    .is_some_and(|owner| owner != player.id)
             })
         else {
             state.trading_post_open = None;
@@ -271,7 +272,7 @@ fn draw_trade_panel(
                                 }
                                 ui.add_space(12.0);
                                 ui.add(egui::Label::new(
-                                    "You need a completed Trading Post of your own within 4 AU of this post to trade.",
+                                    "You need a completed Trading Post of your own within range of this post to trade. Both posts must reach each other.",
                                 ).wrap());
                             });
                         });

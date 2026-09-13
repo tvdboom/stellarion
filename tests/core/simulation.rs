@@ -8,6 +8,12 @@ use bevy::math::Vec2;
 #[path = "spy_missions.rs"]
 mod spy_missions;
 
+#[path = "operations.rs"]
+mod operations;
+
+#[path = "senate.rs"]
+mod senate;
+
 #[test]
 fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
     let mut model = started_model(2);
@@ -43,7 +49,8 @@ fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
             &model.players[0],
             model.map.get(home),
             Unit::Building(Building::ColonialAdministration),
-            3
+            3,
+            Default::default()
         ),
         Err(crate::core::orders::OrderError::ColonialAdministration)
     );
@@ -53,7 +60,8 @@ fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
             &model.players[0],
             model.map.get(colony),
             Unit::Building(Building::ColonialAdministration),
-            3
+            3,
+            Default::default()
         ),
         Ok(1)
     );
@@ -63,7 +71,8 @@ fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
         &model.players[0],
         model.map.get(moon),
         Unit::Building(Building::ColonialAdministration),
-        3
+        3,
+        Default::default()
     )
     .is_err());
 }
@@ -326,7 +335,7 @@ fn protection_is_an_additional_hostile_world_objective_until_a_fleet_is_statione
 }
 
 #[test]
-fn immediate_revocation_recalls_protection_and_preserves_controller_intelligence() {
+fn revoked_protection_waits_for_orders_then_returns_unsent_fleets_next_turn() {
     let mut model = started_model(3);
     let protected = model.players[0].home_planet;
     let protector_home = model.players[1].home_planet;
@@ -355,16 +364,67 @@ fn immediate_revocation_recalls_protection_and_preserves_controller_intelligence
 
     assert!(set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap());
 
+    model.validate().unwrap();
     assert!(!model.map.get(protected).allows_protection(2));
-    assert!(model.map.get(protected).army.protector(2).is_none());
+    assert_eq!(model.map.get(protected).army.protector(2).unwrap().amount(&cruiser), 2);
     assert_eq!(model.players[1].protection_controller(model.map.get(protected)), Some(1));
     let in_flight = model.missions.iter().find(|mission| mission.id == 900).unwrap();
     assert_eq!((in_flight.destination, in_flight.objective), (protector_home, Icon::Deploy));
     assert_eq!(in_flight.return_objective, Some(Icon::Protect));
-    let stationed = model.missions.iter().find(|mission| mission.id != 900).unwrap();
+    assert_eq!(model.missions.len(), 1);
+    let submissions = (1..=3)
+        .map(|player| TurnSubmission::new(player, model.turn, Vec::new()))
+        .collect::<Vec<_>>();
+    let (next, _) = resolved_turn(&model, &submissions).unwrap();
+    assert!(next.map.get(protected).army.protector(2).is_none());
+    let stationed =
+        next.missions.iter().find(|mission| mission.army.amount(&cruiser) == 2).unwrap();
     assert_eq!((stationed.origin, stationed.destination), (protected, protector_home));
-    assert_eq!(stationed.army.amount(&cruiser), 2);
     assert_eq!(stationed.return_objective, Some(Icon::Protect));
+}
+
+#[test]
+fn revoked_protection_fleet_can_choose_a_different_destination() {
+    let mut model = started_model(3);
+    let protected = model.players[0].home_planet;
+    let target = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.players[1].resources = Resources::new(1_000_000, 1_000_000, 1_000_000);
+    model.map.get_mut(protected).army.dock_protector(2, Army::from([(fighter, 3)]));
+    model.map.get_mut(protected).protection_permissions.insert(2);
+    set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap();
+    let order = TurnCommand::SendMission {
+        mission_id: 902,
+        origin: protected,
+        destination: target,
+        objective: Icon::Attack,
+        army: Army::from([(fighter, 3)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        deep_cover: false,
+        jump_gate: false,
+    };
+    let submissions = (1..=3)
+        .map(|player| {
+            TurnSubmission::new(
+                player,
+                model.turn,
+                if player == 2 {
+                    vec![order.clone()]
+                } else {
+                    Vec::new()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let (next, _) = resolved_turn(&model, &submissions).unwrap();
+    assert!(next.map.get(protected).army.protector(2).is_none());
+    assert!(next.missions.iter().any(|mission| mission.id == 902 && mission.destination == target));
+    assert!(!next
+        .missions
+        .iter()
+        .any(|mission| mission.origin == protected
+            && mission.return_objective == Some(Icon::Protect)));
 }
 
 #[test]
@@ -1873,17 +1933,10 @@ fn rejects_malformed_persisted_state() {
     with_report.players[0].push_report(crate::core::combat::report::MissionReport {
         id: 7,
         turn: 1,
-        mission,
-        planet: destination.clone(),
-        scout_probes: 0,
-        surviving_attacker: Army::new(),
         surviving_defender: destination.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: destination.owned,
         destination_controlled: destination.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(mission, destination.clone())
     });
     let mut invalid_report = PersistedGame::new(with_report.clone()).to_json().unwrap();
     invalid_report["state"]["players"][0]["reports"][0]["mission"]["destination"] =

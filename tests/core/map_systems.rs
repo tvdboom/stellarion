@@ -358,7 +358,7 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 );
                 assert_eq!(sprite.color, ASTEROID_TINT);
                 let tint = sprite.color.to_srgba();
-                assert!((0.6..=0.8).contains(&tint.red));
+                assert!((0.5..0.6).contains(&tint.red));
                 assert!(tint.red > tint.green && tint.green > tint.blue);
                 assert!(tint.alpha >= 0.9);
                 for (planet_position, planet_radius) in &planets {
@@ -438,7 +438,11 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         app.world().get::<Transform>(*entity).unwrap().rotation.angle_between(transform.rotation)
             > 0.08
     }));
-    assert_eq!(asteroid_render_scale(ASTEROID_REFERENCE_CAMERA_SCALE), 1.0);
+    const {
+        assert!(ASTEROID_BASE_RENDER_SCALE > 1.0);
+        assert!(ASTEROID_MAX_RENDER_SCALE > ASTEROID_BASE_RENDER_SCALE);
+    }
+    assert_eq!(asteroid_render_scale(ASTEROID_REFERENCE_CAMERA_SCALE), ASTEROID_BASE_RENDER_SCALE);
     assert_eq!(asteroid_render_scale(MAX_ZOOM), ASTEROID_MAX_RENDER_SCALE);
 }
 
@@ -610,23 +614,20 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            owner: local,
-            origin: player.home_planet,
-            destination: planet_id,
-            objective: Icon::Spy,
-            ..default()
-        },
-        planet: planet.clone(),
         scout_probes: 1_000_000,
-        surviving_attacker: Army::new(),
         surviving_defender: planet.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: local,
+                origin: player.home_planet,
+                destination: planet_id,
+                objective: Icon::Spy,
+                ..default()
+            },
+            planet.clone(),
+        )
     };
     // Live observation must also show upgrades made since the spy report.
     planet.army.insert(recycler_unit, 3);
@@ -729,6 +730,22 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
             }
         }
         assert_visible_levels(&mut app, expected);
+    }
+    {
+        let mut map = app.world_mut().resource_mut::<Map>();
+        let planet = map.get_mut(planet_id);
+        planet.control(local);
+        planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
+    }
+    assert_visible_levels(&mut app, 0);
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).colonize(local);
+    assert_visible_levels(&mut app, 3);
+    {
+        let mut map = app.world_mut().resource_mut::<Map>();
+        let planet = map.get_mut(planet_id);
+        planet.owned = Some(enemy);
+        planet.controlled = Some(local);
+        planet.army.insert(Unit::Ship(Ship::LightFighter), 0);
     }
     let world = app.world();
     assert_eq!(
@@ -1368,7 +1385,7 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             .map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map)
             .find(|map| map_scenery_selection(map) == expected_kind)
             .unwrap();
-        let follow = celestial_camera_follow(expected_kind);
+        let follow = CELESTIAL_PARALLAX_FOLLOW;
         let anchor =
             (celestial_position(&map, expected_kind) * (1.0 - follow)).extend(CELESTIAL_DEPTH);
         let sun_anchor = solar_star_position(&map).extend(SOLAR_STAR_DEPTH);
@@ -1445,9 +1462,11 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         assert_eq!(celestial.kind, expected_kind);
         assert_eq!(celestial.frames.len(), kind.frame_count());
         assert_eq!(transform.translation(), anchor);
-        if kind == CelestialKind::Magnetar {
-            assert!(anchor.truncate().abs().cmplt(Vec2::new(400.0, 225.0)).all());
-        }
+        assert!(!celestial_overlaps_planet(
+            world.resource::<Map>(),
+            kind,
+            celestial_position(world.resource::<Map>(), kind),
+        ));
 
         // Each landmark follows the camera by its own depth factor.
         let camera_position = Vec3::new(-2_000.0, 700.0, 1.0);
@@ -1459,8 +1478,7 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
             pan_position.truncate() - anchor.truncate() - camera_position.truncate();
         assert!(relative_motion.abs_diff_eq(camera_position.truncate() * (follow - 1.0), 1e-3));
 
-        // Corner landmarks scale like foreground map objects; the distant magnetar retains
-        // almost the same apparent size. Every frame remains behind the gameplay plane.
+        // Landmarks scale with the map, preserving their clearance at every zoom level.
         let mut apparent_widths = Vec::new();
         for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
             if let Projection::Orthographic(projection) =
@@ -1481,11 +1499,7 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         }
         let smallest = apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
         let largest = apparent_widths.iter().copied().fold(0.0, f32::max);
-        if kind != CelestialKind::Magnetar {
-            assert!((largest / smallest - MAX_ZOOM / MIN_ZOOM).abs() < 1e-3);
-        } else {
-            assert!(largest / smallest < 1.1);
-        }
+        assert!((largest / smallest - MAX_ZOOM / MIN_ZOOM).abs() < 1e-3);
         assert!(largest > smallest);
 
         // Elapsed time must preserve the depth response without adding drift.
@@ -1503,22 +1517,19 @@ fn every_game_has_a_corner_sun_and_one_landmark_with_appropriate_camera_depth() 
         let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
         let expected_rotation = Quat::from_rotation_z(36_000.0 * SOLAR_STAR_ANGULAR_SPEED);
         assert!(sun_roots.single(world).unwrap().rotation.angle_between(expected_rotation) < 1e-4);
-        if kind != CelestialKind::Magnetar {
-            let world = app.world_mut();
-            let planet_position = world.resource::<Map>().planets[0].position;
-            let forced_overlap =
-                (planet_position - anchor.truncate()) / CORNER_CELESTIAL_PARALLAX_FOLLOW;
-            world.get_mut::<Transform>(camera).unwrap().translation = forced_overlap.extend(1.0);
-            app.update();
-            let world = app.world_mut();
-            let mut landmark = world.query_filtered::<&Visibility, With<CelestialCmp>>();
-            assert_eq!(*landmark.single(world).unwrap(), Visibility::Hidden);
-            let safe_camera = celestial_position(world.resource::<Map>(), kind).extend(1.0);
-            world.get_mut::<Transform>(camera).unwrap().translation = safe_camera;
-            app.update();
-            let world = app.world_mut();
-            assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
-        }
+        let world = app.world_mut();
+        let planet_position = world.resource::<Map>().planets[0].position;
+        let forced_overlap = (planet_position - anchor.truncate()) / follow;
+        world.get_mut::<Transform>(camera).unwrap().translation = forced_overlap.extend(1.0);
+        app.update();
+        let world = app.world_mut();
+        let mut landmark = world.query_filtered::<&Visibility, With<CelestialCmp>>();
+        assert_eq!(*landmark.single(world).unwrap(), Visibility::Hidden);
+        let safe_camera = celestial_position(world.resource::<Map>(), kind).extend(1.0);
+        world.get_mut::<Transform>(camera).unwrap().translation = safe_camera;
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
     }
 }
 
@@ -1556,22 +1567,27 @@ fn celestial_landmarks_stay_visible_inside_normal_small_and_offset_maps() {
 }
 
 #[test]
-fn compact_landmarks_choose_a_clear_map_corner() {
+fn celestial_landmarks_keep_clear_of_planets_while_panning() {
     for seed in 0..128 {
         let map = GameModel::new([seed; 32], GameRules::default()).unwrap().map;
         let kind = map_scenery_selection(&map);
-        if kind == CelestialKind::Magnetar {
-            continue;
-        }
         let position = celestial_position(&map, kind);
-        let size = CELESTIAL_SIZE * kind.size_scale();
-        let vertical_inset = size.y * 0.5 + CELESTIAL_MAP_MARGIN;
-        assert!(
-            ((position.y - map.rect.center().y).abs() - (map.rect.half_size().y - vertical_inset))
-                .abs()
-                < 1e-3
-        );
-        assert!(!corner_celestial_overlaps_planet(&map, kind, position));
+        if kind != CelestialKind::Magnetar {
+            let size = CELESTIAL_SIZE * kind.size_scale();
+            let vertical_inset = size.y * 0.5 + CELESTIAL_MAP_MARGIN;
+            assert!(
+                ((position.y - map.rect.center().y).abs()
+                    - (map.rect.half_size().y - vertical_inset))
+                    .abs()
+                    < 1e-3
+            );
+        }
+        for camera_position in map.planets.iter().map(|planet| planet.position) {
+            assert!(
+                !celestial_overlaps_planet(&map, kind, camera_position),
+                "seed {seed}, {kind:?}, camera {camera_position:?}"
+            );
+        }
     }
 }
 
@@ -1707,7 +1723,7 @@ fn adjacent_trading_post_reveals_its_marker_and_owner_territory_when_completed()
     let enemy = model.players[1].home_planet;
     model.players[1].color = PlayerColor::new(4).unwrap();
     let owner_color = model.players[1].color().color();
-    model.map.get_mut(home).position = Vec2::X * Planet::SIZE * 2.5;
+    model.map.get_mut(home).position = Vec2::X * Planet::SIZE * 1.5;
     let target = model.map.get_mut(enemy);
     target.position = Vec2::ZERO;
     target.controlled = Some(3);
@@ -1801,6 +1817,14 @@ fn adjacent_trading_post_reveals_its_marker_and_owner_territory_when_completed()
         .army
         .insert(Unit::Building(Building::TradingPost), 1);
     app.update();
+    assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Hidden));
+    assert!(!app.world().get::<Pickable>(post).unwrap().is_hoverable);
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(home)
+        .army
+        .insert(Unit::Building(Building::TradingPost), 1);
+    app.update();
     assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Inherited));
     assert_eq!(app.world().get::<Sprite>(post).unwrap().color, owner_color);
     assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
@@ -1819,12 +1843,13 @@ fn adjacent_trading_post_reveals_its_marker_and_owner_territory_when_completed()
         );
     }
 
-    app.world_mut()
-        .resource_mut::<Map>()
-        .get_mut(home)
-        .army
-        .insert(Unit::Building(Building::TradingPost), 1);
+    let mut camera = app.world_mut().query_filtered::<&mut Projection, With<MainCamera>>();
+    if let Projection::Orthographic(projection) = &mut *camera.single_mut(app.world_mut()).unwrap()
+    {
+        projection.scale = MAX_ZOOM;
+    }
     app.update();
+    assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Inherited));
     assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
 
     app.world_mut().resource_mut::<Map>().get_mut(home).position = Vec2::X * Planet::SIZE * 3.01;
@@ -1852,7 +1877,14 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
     model.map.get_mut(home).position = Vec2::ZERO;
     model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 3.5;
     for id in [home, enemy] {
-        model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 1);
+        model.map.get_mut(id).army.insert(
+            Unit::Building(Building::TradingPost),
+            if id == home {
+                3
+            } else {
+                1
+            },
+        );
     }
     let mut app = App::new();
     app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
@@ -1900,7 +1932,7 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
         (home, PointerButton::Primary, true, None),
         (enemy, PointerButton::Secondary, true, None),
         (enemy, PointerButton::Primary, true, Some(enemy)),
-        (enemy, PointerButton::Primary, false, Some(enemy)),
+        (enemy, PointerButton::Primary, false, None),
     ] {
         if !has_own_post {
             app.world_mut()
@@ -1915,6 +1947,11 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
         });
         app.update();
         let post = posts[&planet];
+        if !has_own_post && planet == enemy {
+            assert!(!app.world().get::<Pickable>(post).unwrap().is_hoverable);
+            assert_eq!(app.world().get::<Visibility>(post), Some(&Visibility::Hidden));
+            continue;
+        }
         assert!(app.world().get::<Pickable>(post).unwrap().is_hoverable);
         app.world_mut().trigger(Pointer::new(
             PointerId::Mouse,
@@ -1985,6 +2022,82 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_withou
 }
 
 #[test]
+fn conquered_orbitals_stay_gray_until_colonized() {
+    let mut model = GameModel::new([17; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let enemy_home = model.players[1].home_planet;
+    model.map.get_mut(enemy_home).army = Unit::orbitals()
+        .into_iter()
+        .map(|unit| (unit, Building::MAX_LEVEL))
+        .collect::<Army>()
+        .into();
+    let session = MultiplayerSession::default();
+    let own_color = session.player_color(player.id).color();
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .init_resource::<Time>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Missions>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(session)
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, update_planet_defenses);
+    app.world_mut().spawn((Camera2d, MainCamera));
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    let enemy = test_defenses(app.world_mut(), enemy_home);
+    let enemy_railgun = test_railgun(app.world_mut(), enemy_home);
+    let enemy_satellites = test_satellites(app.world_mut(), enemy_home);
+    let enemy_phalanxes = test_phalanxes(app.world_mut(), enemy_home);
+    // Actual conquest clears ownership: all surviving orbitals remain visible in neutral gray.
+    {
+        let mut map = app.world_mut().resource_mut::<Map>();
+        let planet = map.get_mut(enemy_home);
+        planet.control(1);
+        planet.army.insert(Unit::Building(Building::TradingPost), 1);
+    }
+    let post = app
+        .world_mut()
+        .query::<(Entity, &TradingPostCmp)>()
+        .iter(app.world())
+        .find(|(_, marker)| marker.planet == enemy_home)
+        .unwrap()
+        .0;
+    let orbitals = [enemy.1, enemy.2, enemy.4, enemy_railgun, post]
+        .into_iter()
+        .chain(enemy_satellites.iter().copied())
+        .chain(enemy_phalanxes.iter().copied())
+        .collect::<Vec<_>>();
+    for colonized in [false, true] {
+        if colonized {
+            app.world_mut().resource_mut::<Map>().get_mut(enemy_home).colonize(1);
+        }
+        app.update();
+        let expected = if colonized {
+            own_color
+        } else {
+            Color::srgb_u8(190, 198, 210)
+        };
+        for entity in &orbitals {
+            assert_eq!(app.world().get::<Visibility>(*entity), Some(&Visibility::Inherited));
+            let actual = app.world().get::<Sprite>(*entity).unwrap().color;
+            assert_eq!(actual.with_alpha(1.0), expected);
+        }
+        if !colonized {
+            assert_eq!(app.world().get::<Pickable>(post), Some(&Pickable::IGNORE));
+        }
+    }
+}
+
+#[test]
 fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     let mut model = GameModel::new(
         [17; 32],
@@ -2014,24 +2127,21 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     player.reports.push(MissionReport {
         id: 1,
         turn: 1,
-        mission: Mission {
-            id: 1,
-            owner: player.id,
-            origin: own_home,
-            destination: enemy_home,
-            objective: Icon::Spy,
-            ..default()
-        },
-        planet: model.map.get(enemy_home).clone(),
         scout_probes: 1_000_000,
-        surviving_attacker: Army::new(),
         surviving_defender: army.into(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: Some(2),
         destination_controlled: Some(2),
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                id: 1,
+                owner: player.id,
+                origin: own_home,
+                destination: enemy_home,
+                objective: Icon::Spy,
+                ..default()
+            },
+            model.map.get(enemy_home).clone(),
+        )
     });
     let mut session = MultiplayerSession::default();
     session.active_game = Some(GameRecord {
@@ -2367,6 +2477,18 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
 
     // An unseen control change remains private for ordinary infrastructure, while public
     // strategic orbitals continue to identify the planet's owner.
+    // Use close zoom so these color assertions also expect fully opaque detail markers.
+    for mut projection in app
+        .world_mut()
+        .query_filtered::<&mut Projection, With<MainCamera>>()
+        .iter_mut(app.world_mut())
+    {
+        if let Projection::Orthographic(projection) = &mut *projection {
+            projection.scale = 0.7;
+        }
+    }
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).controlled = Some(3);
     for (index, color) in PLAYER_COLOR_PALETTE.into_iter().enumerate() {
         let enemy_color = PLAYER_COLOR_PALETTE[(index + 2) % PLAYER_COLOR_PALETTE.len()];
@@ -2514,7 +2636,8 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
         panic!("map camera should use an orthographic projection");
     };
     projection.scale = crate::core::constants::MAX_ZOOM;
-    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(220));
+    // Let the exponential zoom fade settle before checking the hidden endpoint.
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
     for world in [&own, &enemy] {
         assert_eq!(*app.world().get::<Visibility>(world.1).unwrap(), Visibility::Inherited);
@@ -2758,7 +2881,7 @@ fn phalanx_drone_pseudo_orbits_are_distinct_and_loop_seamlessly() {
 }
 
 #[test]
-fn jump_gate_hover_links_only_the_players_other_owned_gates() {
+fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
     let mut model = GameModel::new(
         [71; 32],
         GameRules {
@@ -2769,6 +2892,7 @@ fn jump_gate_hover_links_only_the_players_other_owned_gates() {
     .unwrap();
     model.start().unwrap();
     let player = model.players[0].clone();
+    let player_id = player.id;
     let home = player.home_planet;
     let enemy = model.players[1].home_planet;
     let other = model
@@ -2788,9 +2912,10 @@ fn jump_gate_hover_links_only_the_players_other_owned_gates() {
     let expected = jump_gate_link_particles(
         model.map.get(home).position + gate_offset,
         model.map.get(other).position + gate_offset,
-        PlayerColor::for_player(player.id).color(),
+        PlayerColor::for_player(player_id).color(),
         0.0,
         visual_noise(home as u32 ^ (other as u32).rotate_left(13)) * TAU,
+        JumpGateHelixStyle::GateLink,
     )
     .len();
     assert!(expected > 0);
@@ -2817,6 +2942,22 @@ fn jump_gate_hover_links_only_the_players_other_owned_gates() {
     app.update();
     let visible_links = app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count();
     assert_eq!(visible_links, expected, "the enemy gate must not receive a preview link");
+
+    let enemy_expected = jump_gate_link_particles(
+        app.world().resource::<Map>().get(home).position + gate_offset,
+        app.world().resource::<Map>().get(enemy).position + gate_offset,
+        PlayerColor::for_player(player_id).color(),
+        0.0,
+        visual_noise(home as u32 ^ (enemy as u32).rotate_left(13)) * TAU,
+        JumpGateHelixStyle::GateLink,
+    )
+    .len();
+    app.world_mut().resource_mut::<Map>().get_mut(enemy).protection_permissions.insert(player_id);
+    app.update();
+    assert_eq!(
+        app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count(),
+        expected + enemy_expected
+    );
 
     app.world_mut().resource_mut::<UiState>().jump_gate_hover = Some(enemy);
     app.update();
@@ -2873,6 +3014,37 @@ fn jump_gate_shortcut_needs_two_owned_gates_and_opens_an_enabled_deploy_draft() 
 }
 
 #[test]
+fn jump_gate_shortcut_opens_protect_draft_for_permitted_enemy_gate() {
+    let mut model = GameModel::new(
+        [73; 32],
+        GameRules {
+            player_count: 2,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let enemy = model.players[1].home_planet;
+    model.map.get_mut(home).army.insert(Unit::Building(Building::JumpGate), 1);
+    model.map.get_mut(enemy).army.insert(Unit::Building(Building::JumpGate), 1);
+    assert!(!jump_gate_network_available(&model.map, &player));
+
+    model.map.get_mut(enemy).protection_permissions.insert(player.id);
+    assert!(jump_gate_network_available(&model.map, &player));
+    let mut state = UiState::default();
+    assert!(open_jump_gate_mission(&mut state, &Settings::default(), &model.map, &player, home,));
+    assert_eq!(state.mission_info.destination, enemy);
+    assert_eq!(state.mission_info.objective, Icon::Protect);
+    assert_eq!(state.mission_info.protected_player, model.map.get(enemy).controlled);
+    assert!(state.mission_info.jump_gate);
+
+    model.map.get_mut(enemy).protection_permissions.remove(&player.id);
+    assert!(!jump_gate_network_available(&model.map, &player));
+}
+
+#[test]
 fn railgun_range_requires_intelligence_and_keeps_unseen_upgrades_private() {
     let railgun = Unit::Building(Building::OrbitalRailgun);
     let mut planet = Planet::new(1, "Enemy".into(), Vec2::ZERO, false, 1.0);
@@ -2885,24 +3057,22 @@ fn railgun_range_requires_intelligence_and_keeps_unseen_upgrades_private() {
     let mut report = MissionReport {
         id: 1,
         turn: 2,
-        mission: Mission {
-            owner: player.id,
-            origin: player.home_planet,
-            destination: planet.id,
-            objective: Icon::Spy,
-            army: Army::from([(Unit::probe(), 78)]),
-            ..default()
-        },
-        planet: planet.clone(),
         scout_probes: 20,
         surviving_attacker: Army::from([(Unit::probe(), 20)]),
         surviving_defender: planet.army.clone(),
-        planet_colonized: false,
-        planet_destroyed: false,
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
-        combat_report: None,
-        hidden: false,
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: player.id,
+                origin: player.home_planet,
+                destination: planet.id,
+                objective: Icon::Spy,
+                army: Army::from([(Unit::probe(), 78)]),
+                ..default()
+            },
+            planet.clone(),
+        )
     };
     player.push_report(report.clone());
     assert_eq!(railgun_preview_radius(&planet, &player, &[]), 0.0);
@@ -2987,8 +3157,8 @@ fn scanner_ranges_follow_infrastructure_marker_hover_and_controlled_moon_hover()
         (Some(home), None, None, None),
         (None, Some(MapRangePreview::SensorPhalanx(home)), None, Some((home, 250.0))),
         (None, Some(MapRangePreview::OrbitalRailgun(home)), None, Some((home, 400.0))),
-        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 400.0))),
-        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 400.0))),
+        (None, Some(MapRangePreview::TradingPost(home)), None, Some((home, 750.0))),
+        (None, Some(MapRangePreview::TradingPost(enemy)), None, Some((enemy, 750.0))),
         (Some(moon), None, Some(home), Some((moon, 395.0))),
         (None, None, Some(moon), None),
         (None, Some(MapRangePreview::SensorPhalanx(enemy)), None, None),

@@ -182,6 +182,94 @@ use crate::multiplayer::model::{BackendEvent, BackendEventKind, JoinDisposition}
 
 const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/supabase/schema.sql"));
 
+/// Exercise the actual client request so scoped reads cannot silently regress to all orders.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn submission_reads_send_the_requested_scope() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for scope in ["mine", "resolution", "all"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "POST /rest/v1/rpc/stellarion_load_turn_submissions HTTP/1.1\r\n");
+            let mut length = 0;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"p_game_id": "game-1", "p_turn": 7, "p_scope": scope})
+            );
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]").unwrap();
+        }
+    });
+    let backend = SupabaseBackend::new(
+        SupabaseConfig::new(format!("http://{address}"), "public-test-key").unwrap(),
+    )
+    .unwrap();
+    let session = AuthSession::new(UserId::new("test-user"), "test-token", "test-refresh");
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    for scope in
+        [TurnSubmissionScope::Mine, TurnSubmissionScope::Resolution, TurnSubmissionScope::All]
+    {
+        assert!(runtime
+            .block_on(backend.load_turn_submissions(&session, &GameId::new("game-1"), 7, scope,))
+            .unwrap()
+            .is_empty());
+    }
+    server.join().unwrap();
+}
+
+#[test]
+fn snapshot_acknowledgements_require_matching_metadata_before_reusing_state() {
+    let mut expected = record();
+    expected.revision = 1;
+    let mut metadata = serde_json::to_value(&expected).unwrap();
+    metadata.as_object_mut().unwrap().remove("persisted");
+    let user_id = &expected.members[0].user_id;
+    let install = |response, revision| {
+        validate_snapshot_acknowledgement(
+            serde_json::from_value(response)
+                .map_err(|error| BackendError::Protocol(error.to_string()))?,
+            expected.persisted.clone(),
+            &expected.id,
+            user_id,
+            revision,
+        )
+    };
+    let actual = install(metadata.clone(), 0).unwrap();
+    assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(&expected).unwrap());
+    assert!(install(metadata.clone(), 1).is_err());
+    assert!(install(metadata.clone(), u64::MAX).is_err());
+    assert!(install(serde_json::Value::Null, 0).is_err());
+    assert!(install(serde_json::to_value(&expected).unwrap(), 0).is_err());
+    for (field, value) in [
+        ("id", serde_json::json!("another-game")),
+        ("status", serde_json::json!("finished")),
+        ("saved_at", serde_json::json!(0)),
+        ("members", serde_json::json!([])),
+        ("submitted_players", serde_json::json!([1])),
+    ] {
+        let mut invalid = metadata.clone();
+        invalid[field] = value;
+        assert!(install(invalid, 0).is_err(), "invalid {field}");
+    }
+}
+
 /// Builds a valid two-player lobby response for transport-boundary tests.
 fn record() -> GameRecord {
     let persisted = PersistedGame::new(
@@ -437,7 +525,7 @@ fn schema_contains_the_complete_secure_contract() {
     }
     assert!(SCHEMA.contains("alter publication supabase_realtime"));
     assert!(SCHEMA.contains("add table public.stellarion_game_events"));
-    assert!(SCHEMA.contains("alter table public.stellarion_game_events replica identity full"));
+    assert!(SCHEMA.contains("alter table public.stellarion_game_events replica identity default"));
     assert!(SCHEMA.contains("grant select on table public.stellarion_game_events to authenticated"));
     assert!(SCHEMA.contains("create function public.stellarion_membership_records"));
     assert!(SCHEMA.contains("Draft saves deliberately do not advance the shared"));
