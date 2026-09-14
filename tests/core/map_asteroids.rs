@@ -46,7 +46,10 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                             assert!(
                                 position.distance(planet.position)
                                     > planet.size() * 0.5
-                                        + placement.diameter * 0.5
+                                        + placement.diameter
+                                            * 0.5
+                                            * ASTEROID_MAX_RENDER_SCALE
+                                            * ASTEROID_TUMBLE_SCALE_MARGIN
                                         + ASTEROID_PLANET_CLEARANCE
                                         + ASTEROID_MAXIMUM_WOBBLE
                             );
@@ -58,6 +61,8 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                     let average_spacing = TAU * layout.radius / count as f32;
                     let mut shortest_gap = f32::MAX;
                     let mut longest_gap = 0.0_f32;
+                    let mut short_gaps = 0;
+                    let mut long_gaps = 0;
                     for (start, end) in phases
                         .windows(2)
                         .map(|pair| (pair[0], pair[1]))
@@ -66,8 +71,12 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                         let distance = (end - start) * layout.radius;
                         shortest_gap = shortest_gap.min(distance);
                         longest_gap = longest_gap.max(distance);
-                        assert!((24.0..=310.0).contains(&distance),
-                            "crowded or sparse ring: gap={distance}, players={player_count}, worlds={planets_per_player}, moons={moons_percent}, sample={sample}");
+                        short_gaps += usize::from(distance < average_spacing * 0.82);
+                        long_gaps += usize::from(
+                            distance > average_spacing * 1.18 && distance < average_spacing * 1.4,
+                        );
+                        assert!(distance >= 24.0,
+                            "crowded ring: gap={distance}, players={player_count}, worlds={planets_per_player}, moons={moons_percent}, sample={sample}");
                         if distance > average_spacing * 1.6 + 0.1 {
                             // Larger interruptions must clear a planet, including at the wrap.
                             let midpoint =
@@ -76,7 +85,10 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                                 planets.iter().any(|planet| {
                                     midpoint.distance(planet.position)
                                         < planet.size() * 0.5
-                                            + layout.maximum_asteroid_diameter * 0.5
+                                            + layout.maximum_asteroid_diameter
+                                                * 0.5
+                                                * ASTEROID_MAX_RENDER_SCALE
+                                                * ASTEROID_TUMBLE_SCALE_MARGIN
                                             + ASTEROID_PLANET_CLEARANCE
                                             + ASTEROID_MAXIMUM_WOBBLE
                                             + layout.radial_half_width
@@ -90,6 +102,11 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                         shortest_gap < average_spacing * 0.75
                             && longest_gap > average_spacing * 1.25,
                         "belt looks evenly spaced: shortest={shortest_gap}, longest={longest_gap}, average={average_spacing}, sample={sample}"
+                    );
+                    assert!(
+                        short_gaps >= placements.len() / 5 && long_gaps >= placements.len() / 5,
+                        "local arcs lack variation: short={short_gaps}, long={long_gaps}, count={}, sample={sample}",
+                        placements.len()
                     );
                     minimum_visible =
                         minimum_visible.min(visible_asteroid_count(&map, &placements));

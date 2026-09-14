@@ -165,7 +165,15 @@ fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
             }
             assert_eq!(state.mission_info.deep_cover, has_relay);
             let fuel = state.mission_info.fuel_consumption(&model.map);
-            assert!(final_text.iter().any(|text| text == &format!("⛽ Fuel consumption: {fuel}")));
+            let fuel_row = final_text
+                .iter()
+                .position(|text| text == &format!("⛽ Fuel consumption: {fuel}"))
+                .expect("spy mission should show its fuel consumption");
+            let cover_row = final_text
+                .iter()
+                .position(|text| text == "Deep Cover:")
+                .expect("spy mission should show the Deep Cover option");
+            assert!(fuel_row < cover_row, "Deep Cover should follow fuel consumption");
             state.mission_info.objective = Icon::Attack;
             let mut output = context.run_ui(egui::RawInput::default(), |context| {
                 egui::CentralPanel::default().show(context, |ui| {
@@ -174,6 +182,109 @@ fn spy_missions_deep_cover_toggle_and_fuel_require_a_completed_origin_relay() {
             });
             output.textures_delta.clear();
             assert!(!state.mission_info.deep_cover);
+        }
+    }
+}
+
+#[test]
+fn deep_cover_label_and_switch_share_click_and_hover_behavior() {
+    for click_label in [true, false] {
+        let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+        origin.army.insert(Unit::Building(Building::CommandRelay), 1);
+        for check_hover in [false, true] {
+            let context = egui::Context::default();
+            if check_hover {
+                context.all_styles_mut(|style| {
+                    style.interaction.tooltip_delay = 0.0;
+                    style.interaction.show_tooltips_only_when_still = false;
+                });
+            }
+            let mut mission = Mission {
+                objective: Icon::Spy,
+                ..default()
+            };
+            let mut label_rect = egui::Rect::NOTHING;
+            let mut hovered_tooltip = false;
+            let steps = if check_hover {
+                5
+            } else {
+                3
+            };
+            for step in 0..steps {
+                let mut events = Vec::new();
+                if step > 0 {
+                    let point = if click_label {
+                        label_rect.center()
+                    } else {
+                        egui::pos2(label_rect.right() + 20.0, label_rect.center().y)
+                    };
+                    events.push(egui::Event::PointerMoved(point));
+                    if !check_hover {
+                        events.push(egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(840.0, 800.0),
+                        )),
+                        time: Some(if check_hover {
+                            step as f64
+                        } else {
+                            step as f64 * 0.1
+                        }),
+                        events,
+                        ..default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            draw_deep_cover_option(ui, &mut mission, &origin);
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if text.galley.text() == "Deep Cover:" {
+                            label_rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        }
+                        if text.galley.text().contains("extra deuterium per Probe") {
+                            hovered_tooltip = true;
+                        }
+                    }
+                }
+                if step == 1 {
+                    assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+                }
+            }
+            assert!(label_rect.is_positive());
+            if check_hover {
+                assert!(
+                    hovered_tooltip,
+                    "the {} should show the Deep Cover tooltip",
+                    if click_label {
+                        "label"
+                    } else {
+                        "switch"
+                    }
+                );
+            } else {
+                assert!(
+                    mission.deep_cover,
+                    "clicking the {} should enable Deep Cover",
+                    if click_label {
+                        "label"
+                    } else {
+                        "switch"
+                    }
+                );
+            }
         }
     }
 }
@@ -386,7 +497,7 @@ fn incoming_protection_reveals_its_objective_only_to_the_protected_player() {
 }
 
 #[test]
-fn joint_attackers_share_an_allied_marker_while_the_target_sees_an_unknown_fleet() {
+fn joint_attack_marker_applies_only_to_the_fleets_owner() {
     let mission = Mission {
         owner: 1,
         objective: Icon::Destroy,
@@ -402,7 +513,7 @@ fn joint_attackers_share_an_allied_marker_while_the_target_sees_an_unknown_fleet
     };
 
     assert_eq!(mission.displayed_objective(1), Icon::AlliedAttack);
-    assert_eq!(mission.displayed_objective(2), Icon::AlliedAttack);
+    assert_eq!(mission.displayed_objective(2), Icon::EnemyFleet);
     assert_eq!(mission.displayed_objective(3), Icon::EnemyFleet);
 }
 
@@ -416,6 +527,32 @@ fn joint_attack_fleet_strength_uses_each_ships_production_level() {
     ]);
 
     assert_eq!(fleet_strength(&army), 28);
+}
+
+#[test]
+fn mission_strength_badge_shows_only_icon_and_selected_total() {
+    let selected = Army::from([(Unit::probe(), 2), (Unit::colony_ship(), 3)]);
+    let images = ImageIds([("fleet".to_string(), egui::TextureId::User(92))].into());
+    let context = egui::Context::default();
+    let mut output = context.run_ui(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            let rect = ui.available_rect_before_wrap();
+            draw_mission_strength_badge(ui, &selected, &images, rect.center().y, rect.right());
+        });
+    });
+    output.textures_delta.clear();
+    let text = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!text.iter().any(|text| text.contains("Fleet strength")));
+    assert!(text.iter().any(|text| text == &selected.total_production().to_string()));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Mesh(mesh) if mesh.texture_id == egui::TextureId::User(92))));
 }
 
 #[test]
@@ -762,7 +899,9 @@ fn compact_recall_action_sits_between_eta_and_destination() {
 
 #[test]
 fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
-    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
     let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
     let mission = Mission::new_with_id(
         7,
@@ -1010,8 +1149,15 @@ fn active_mission_eta_never_displays_plus_zero() {
 
 #[test]
 fn missile_strikes_and_allied_attacks_do_not_offer_the_recall_action() {
+    let map = crate::core::simulation::GameModel::new(
+        [7; 32],
+        crate::core::simulation::GameRules::default(),
+    )
+    .unwrap()
+    .map;
     let owned_attack = Mission {
         owner: 7,
+        origin_owned: Some(7),
         objective: Icon::Attack,
         ..default()
     };
@@ -1024,9 +1170,41 @@ fn missile_strikes_and_allied_attacks_do_not_offer_the_recall_action() {
         ..owned_attack.clone()
     };
 
-    assert!(mission_recall_available(&owned_attack, 7));
-    assert!(!mission_recall_available(&missile_strike, 7));
-    assert!(!mission_recall_available(&allied_attack, 7));
+    assert!(mission_recall_available(&owned_attack, &map, 7));
+    assert!(!mission_recall_available(&missile_strike, &map, 7));
+    assert!(!mission_recall_available(&allied_attack, &map, 7));
+}
+
+#[test]
+fn revoked_protection_origin_does_not_offer_mission_recall() {
+    let mut model = crate::core::simulation::GameModel::new(
+        [81; 32],
+        crate::core::simulation::GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let protected = model.players[2].home_planet;
+    let destination = model.players[1].home_planet;
+    model.map.get_mut(protected).protection_permissions.insert(1);
+    let mission = Mission::new_with_id(
+        88,
+        model.turn as usize,
+        1,
+        model.map.get(protected),
+        model.map.get(destination),
+        Icon::Attack,
+        Army::from([(Unit::Ship(crate::core::units::ships::Ship::LightFighter), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert!(mission_recall_available(&mission, &model.map, 1));
+    model.map.get_mut(protected).protection_permissions.remove(&1);
+    assert!(!mission_recall_available(&mission, &model.map, 1));
 }
 
 #[test]

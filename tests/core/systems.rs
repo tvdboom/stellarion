@@ -103,7 +103,7 @@ fn escape_closes_mission_and_combat_details_without_opening_the_menu() {
 }
 
 #[test]
-fn escape_discards_attack_invitee_choices_but_keeps_the_mission_open() {
+fn escape_closes_mission_with_attack_invitees_preserved() {
     let mut keyboard = ButtonInput::default();
     keyboard.press(KeyCode::Escape);
     let mut app = App::new();
@@ -115,15 +115,13 @@ fn escape_discards_attack_invitee_choices_but_keeps_the_mission_open() {
         .insert_resource(UiState {
             mission: true,
             joint_attack_invitees: [2].into(),
-            joint_attack_invite_selection: Some([3].into()),
             ..default()
         })
         .add_message::<StartTurnMsg>()
         .add_message::<MultiplayerRequest>();
     app.world_mut().run_system_once(check_keys_menu).unwrap();
     let state = app.world().resource::<UiState>();
-    assert!(state.mission);
-    assert!(state.joint_attack_invite_selection.is_none());
+    assert!(!state.mission);
     assert_eq!(state.joint_attack_invitees, [2].into());
 }
 
@@ -230,6 +228,33 @@ fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
 
     app.world_mut().run_system_once(resume_gameplay_interactions).unwrap();
     assert!(app.world().get_entity(blocker).is_err());
+}
+
+#[test]
+fn opening_a_modal_menu_preserves_the_cursor_over_an_egui_button() {
+    let mut app = App::new();
+    let window = app
+        .world_mut()
+        .spawn((Window::default(), CursorIcon::from(SystemCursorIcon::Default)))
+        .id();
+    let mut output = EguiOutput::default();
+    output.platform_output.cursor_icon = bevy_egui::egui::CursorIcon::PointingHand;
+    let context = app.world_mut().spawn((PrimaryEguiContext, output)).id();
+    app.add_systems(Update, suspend_gameplay_interactions);
+
+    app.update();
+    assert_eq!(
+        app.world().get::<CursorIcon>(window),
+        Some(&CursorIcon::from(SystemCursorIcon::Pointer))
+    );
+
+    app.world_mut().get_mut::<EguiOutput>(context).unwrap().platform_output.cursor_icon =
+        bevy_egui::egui::CursorIcon::Default;
+    app.update();
+    assert_eq!(
+        app.world().get::<CursorIcon>(window),
+        Some(&CursorIcon::from(SystemCursorIcon::Default))
+    );
 }
 
 #[cfg(debug_assertions)]

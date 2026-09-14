@@ -97,6 +97,8 @@ pub struct SendMissionMsg {
     pub mission: Mission,
     /// Accepted contributions when this launch came from a private invitation.
     pub joint_attack: Option<JointMissionLaunch>,
+    /// Published invitation to cancel after this solo mission is accepted locally.
+    pub cancel_joint_attack: Option<u64>,
 }
 
 /// Final accepted invitation data attached to the inviter's launch command.
@@ -114,6 +116,16 @@ impl SendMissionMsg {
         Self {
             mission,
             joint_attack: None,
+            cancel_joint_attack: None,
+        }
+    }
+
+    /// Creates a solo launch that withdraws its published invitation on success.
+    pub fn solo_after_cancel(mission: Mission, attack_id: u64) -> Self {
+        Self {
+            mission,
+            joint_attack: None,
+            cancel_joint_attack: Some(attack_id),
         }
     }
 
@@ -122,6 +134,7 @@ impl SendMissionMsg {
         Self {
             mission,
             joint_attack: Some(joint_attack),
+            cancel_joint_attack: None,
         }
     }
 }
@@ -443,11 +456,11 @@ impl Mission {
 
     /// Returns the objective presentation visible to one player.
     ///
-    /// Hostile objectives stay concealed behind the generic enemy-fleet marker. Allied attackers
-    /// share a coordinated-attack marker, while a protection target sees Protect explicitly.
+    /// Hostile objectives stay concealed behind the generic enemy-fleet marker. A joint attacker
+    /// sees the coordinated-attack marker only for their own fleet; a protection target sees Protect.
     #[cfg(feature = "app")]
     pub(crate) fn displayed_objective(&self, player_id: PlayerId) -> Icon {
-        if self.joint_attack.is_some() && self.is_joint_attacker(player_id) {
+        if self.owner == player_id && self.joint_attack.is_some() {
             Icon::AlliedAttack
         } else if self.owner == player_id || self.is_incoming_protection_for(player_id) {
             self.objective
@@ -463,12 +476,6 @@ impl Mission {
     #[cfg(feature = "app")]
     pub(crate) fn is_incoming_protection_for(&self, player_id: PlayerId) -> bool {
         self.objective == Icon::Protect && self.protected_player == Some(player_id)
-    }
-
-    /// Returns whether this player explicitly contributed to the coordinated attacking force.
-    #[cfg(feature = "app")]
-    pub(crate) fn is_joint_attacker(&self, player_id: PlayerId) -> bool {
-        self.joint_attack.as_ref().is_some_and(|attack| attack.attackers.contains_key(&player_id))
     }
 
     /// Returns whether this fleet uses the War Sun silhouette on the strategic map.
@@ -509,6 +516,20 @@ impl Mission {
         // A fresh deployment can originate from a foreign world with our protection fleet.
         // Only explicit return metadata distinguishes it from a homeward leg.
         self.return_objective.is_some()
+    }
+
+    /// A fleet launched from another player's world may no longer return there after its
+    /// protection invitation is revoked, even if the launch was made this turn.
+    pub(crate) fn recall_blocked_by_revoked_protection(
+        &self,
+        map: &Map,
+        player_id: PlayerId,
+    ) -> bool {
+        self.origin_owned != Some(player_id)
+            && self.origin_controlled != Some(player_id)
+            && map
+                .try_get(self.origin)
+                .is_none_or(|origin| origin.is_destroyed || !origin.allows_protection(player_id))
     }
 
     /// Starts a free return leg from the fleet's exact current position to its original world.
@@ -620,6 +641,22 @@ impl Mission {
             (fuel * (1. - REACTOR_FUEL_REDUCTION_FACTOR * reactor)).ceil() as usize
         };
         travel_fuel.saturating_add(self.deep_cover_cost())
+    }
+
+    /// Returns the fuel charged when this player dispatches the mission.
+    /// Protection fleets may always return to their home planet for free, including after
+    /// permission is revoked. Other destinations use the ordinary travel cost.
+    pub fn dispatch_fuel_consumption(&self, map: &Map, player: &Player) -> usize {
+        if self.owner == player.id
+            && self.objective == Icon::Deploy
+            && self.destination == player.home_planet
+            && self.origin_owned != Some(player.id)
+            && self.origin_controlled != Some(player.id)
+        {
+            0
+        } else {
+            self.fuel_consumption(map)
+        }
     }
 
     /// Returns the total number of units, saturating if their counts exceed the platform limit.

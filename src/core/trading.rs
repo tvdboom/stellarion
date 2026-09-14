@@ -94,7 +94,7 @@ pub fn visible_trading_post_owner(
     .then_some(owner)
 }
 
-/// Returns whether two owned posts form a direct commerce route.
+/// Returns whether either owned, completed post reaches the other.
 pub fn trading_posts_are_adjacent(
     map: &Map,
     first_player: PlayerId,
@@ -114,7 +114,7 @@ pub fn trading_posts_are_adjacent(
         && planets_are_adjacent_within(
             first,
             second,
-            trading_post_range(first, first_player).min(trading_post_range(second, second_player)),
+            trading_post_range(first, first_player).max(trading_post_range(second, second_player)),
         )
 }
 

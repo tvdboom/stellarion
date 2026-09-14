@@ -95,13 +95,13 @@ impl StartTurnMsg {
 }
 
 /// Selects only missions visible to one player for the ECS/rendering projection.
+/// Joint-attack participation does not reveal the other fleets' routes.
 pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<Mission> {
     missions
         .iter()
         .filter(|mission| {
             mission.owner == player.id
                 || mission.is_incoming_protection_for(player.id)
-                || mission.is_joint_attacker(player.id)
                 || mission.is_seen_by_phalanx(map, player).is_some()
                 || mission.is_seen_by_radar(map, player).is_some()
         })
@@ -139,9 +139,7 @@ fn report_notification(
     origin: &Planet,
     destination: &Planet,
 ) -> MessageMsg {
-    let local_victory = report.winner().is_some_and(|winner| {
-        winner == player.id || report.is_defender(player.id) && report.is_defender(winner)
-    });
+    let local_victory = report.won_by(player.id);
     let notification = match report.mission.objective {
         Icon::Deploy if report.mission.is_returning() => {
             let probes_only =

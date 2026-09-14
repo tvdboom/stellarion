@@ -80,7 +80,7 @@ impl TradeInvitation {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JointAttackResponse {
-    /// The invited player has not made a decision yet.
+    /// This participant must confirm the latest proposal before launch.
     #[default]
     Pending,
     /// The player accepted the other participants' current offers.

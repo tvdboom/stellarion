@@ -306,6 +306,38 @@ impl MultiplayerSession {
             .map(|member| member.display_name.as_str())
     }
 
+    /// Replaces stable player slots in a displayed error with the lobby names players recognize.
+    pub(crate) fn error_with_player_names(&self, message: &str) -> String {
+        // An allied launch reports the inviter as the command owner; lead with the participant
+        // whose fleet actually failed, even when backend wrappers precede the simulation error.
+        let message =
+            message.find("allied attack: player ").map_or(message, |start| &message[start..]);
+        let mut rendered = String::with_capacity(message.len());
+        let mut remaining = message;
+        while let Some(index) = remaining.find("player ") {
+            let (prefix, suffix) = remaining.split_at(index + "player ".len());
+            rendered.push_str(prefix);
+            let digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
+            let (number, rest) = suffix.split_at(digits);
+            if digits > 0 {
+                if let Ok(player_id) = number.parse() {
+                    if let Some(name) = self.player_name(player_id) {
+                        rendered.push_str(name);
+                        remaining = rest;
+                        continue;
+                    }
+                }
+            }
+            rendered.push_str(number);
+            remaining = rest;
+        }
+        rendered.push_str(remaining);
+        if let Some(first) = rendered.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        rendered
+    }
+
     /// Clears selection data while retaining authentication and resumable games.
     pub fn leave_selected_game(&mut self) {
         self.active_game = None;
@@ -1140,8 +1172,9 @@ fn process_requests(
             let submissions = match local_practice_submissions(&record, &runtime.practice_players) {
                 Ok(submissions) => submissions,
                 Err(error) => {
-                    request_error(&mut session, &error.to_string());
-                    messages.write(MessageMsg::error(error.to_string()));
+                    let error = session.error_with_player_names(&error.to_string());
+                    request_error(&mut session, &error);
+                    messages.write(MessageMsg::error(error));
                     continue;
                 },
             };
@@ -1150,8 +1183,9 @@ fn process_requests(
             let next = match resolved_turn(&record.persisted.state, &commands) {
                 Ok((next, _)) => PersistedGame::new(next),
                 Err(error) => {
-                    request_error(&mut session, &error.to_string());
-                    messages.write(MessageMsg::error(error.to_string()));
+                    let error = session.error_with_player_names(&error.to_string());
+                    request_error(&mut session, &error);
+                    messages.write(MessageMsg::error(error));
                     continue;
                 },
             };
@@ -1716,8 +1750,9 @@ fn process_requests(
 /// Resets the busy flag and records an immediate request-validation failure.
 fn request_error(session: &mut MultiplayerSession, message: &str) {
     session.busy = false;
-    session.notice = Some(message.to_string());
-    session.menu_error = Some(message.to_string());
+    let message = session.error_with_player_names(message);
+    session.notice = Some(message.clone());
+    session.menu_error = Some(message);
 }
 
 /// Translates backend categories into actionable menu copy without leaking storage terminology.
@@ -1754,6 +1789,9 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
         (Operation::Trade, BackendError::Forbidden) => {
             "The trade changed. Review the latest offers before accepting again.".to_string()
         },
+        (Operation::Trade, BackendError::InvalidData(detail)) if detail == "trade" => {
+            "The saved game rejected this offer. Check that both Trading Posts are complete and neither player has ended the turn, then reopen the trade.".to_string()
+        },
         (Operation::JointAttack, BackendError::Forbidden) => {
             "The allied mission changed. Review the latest choices before accepting again.".to_string()
         },
@@ -1765,8 +1803,11 @@ fn user_facing_backend_error(operation: Operation, error: &BackendError) -> Stri
 }
 
 /// Reports explicit saves and rejected turn orders in the gameplay HUD.
-fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
-    match output {
+fn operation_notification(
+    output: &BackendOutput,
+    session: &MultiplayerSession,
+) -> Option<MessageMsg> {
+    let mut notification = match output {
         BackendOutput::Membership {
             color_notice: Some(notice),
             ..
@@ -1792,7 +1833,11 @@ fn operation_notification(output: &BackendOutput) -> Option<MessageMsg> {
             error @ BackendError::InvalidData(_),
         ) => Some(MessageMsg::error(format!("Could not end turn: {error}"))),
         _ => None,
+    }?;
+    if notification.level == crate::core::messages::MessageLevel::Error {
+        notification.message = session.error_with_player_names(&notification.message);
     }
+    Some(notification)
 }
 
 /// Announces protection invitations and manual revocations to the affected player.
@@ -1953,7 +1998,7 @@ fn poll_backend_tasks(
         if let Some(output) = block_on(poll_once(&mut task)) {
             let restore_draft = matches!(&output, BackendOutput::Withdrawn(draft) if draft.turn == pending.turn)
                 || matches!(&output, BackendOutput::DraftLoaded(turn, _) if *turn == pending.turn);
-            let notification = operation_notification(&output);
+            let notification = operation_notification(&output, &session);
             let lobby_closed_notification = host_closed_lobby_notification(&output, &session);
             let presence_notifications = disconnected_player_notifications(&output, &session);
             let protection_notifications = protection_permission_notifications(&output, &session);
@@ -2448,7 +2493,9 @@ fn apply_output(
             }
             if matches!(operation, Operation::Trade) {
                 session.trade_update_pending = false;
-                session.trade_reload_needed |= matches!(error, BackendError::Forbidden);
+                session.trade_reload_needed |=
+                    matches!(error, BackendError::Forbidden | BackendError::InvalidData(_));
+                session.reload_needed |= matches!(error, BackendError::InvalidData(_));
             }
             if matches!(operation, Operation::Withdraw) {
                 pending.resume_requested = false;
@@ -2479,7 +2526,9 @@ fn apply_output(
                 };
             }
             session.resolving = false;
-            session.notice = Some(user_facing_backend_error(operation, &error));
+            session.notice = Some(
+                session.error_with_player_names(&user_facing_backend_error(operation, &error)),
+            );
             session.menu_error.clone_from(&session.notice);
             if matches!(operation, Operation::ResumeLoad) {
                 session.reconnect_lobby = false;

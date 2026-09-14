@@ -4,10 +4,8 @@ use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
-use bevy_tweening::lens::{TransformPositionLens, TransformScaleLens};
-use bevy_tweening::{
-    AnimCompletedEvent, Delay, PlaybackState, RepeatCount, RepeatStrategy, Tween, TweenAnim,
-};
+use bevy_tweening::lens::{TextColorLens, TransformPositionLens, TransformScaleLens};
+use bevy_tweening::{AnimCompletedEvent, Delay, PlaybackState, Tween, TweenAnim};
 use strum::IntoEnumIterator;
 
 use crate::core::assets::WorldAssets;
@@ -48,6 +46,10 @@ const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
+const COMBAT_COUNT_FONT_SIZE: f32 = 600.0;
+const ROUND_BANNER_ENTER_MS: u64 = 250;
+const ROUND_BANNER_HOLD_MS: u64 = 1_300;
+const ROUND_BANNER_EXIT_MS: u64 = 300;
 const PLANETARY_SHIELD_HEIGHT_FACTOR: f32 = 0.3;
 const COMBAT_CARD_LOWER_EXTENT_FACTOR: f32 = 0.76;
 const COMBAT_DEFENDER_Y_OFFSET_FACTOR: f32 = -0.12;
@@ -62,6 +64,22 @@ const SALVAGE_PICKUP_TIME_MS: u64 =
     SALVAGE_PICKUP_REVEAL_TIME_MS * 2 + SALVAGE_PICKUP_DRIFT_TIME_MS;
 const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
+
+/// Both status overlays use this viewport anchor so pausing never moves the label.
+fn combat_status_node() -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.),
+        height: Val::Percent(105.),
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::Center,
+        ..default()
+    }
+}
+
+fn combat_status_transform() -> UiTransform {
+    UiTransform::from_translation(Val2::new(Val::ZERO, Val::Percent(COMBAT_STATUS_OFFSET)))
+}
 
 /// Resolves the combat report and round selected by the shared presentation state.
 fn selected_combat_round<'a>(
@@ -231,18 +249,38 @@ fn combat_unit_counts(
     }
 }
 
-/// Leaves enough room for one large owner count and the smaller protection counts after it.
+/// Leaves enough room for equally sized counts from every participating player.
 fn combat_count_badge_width(
     size: f32,
     owner_count: usize,
     protection: &[(PlayerId, usize)],
 ) -> f32 {
+    let characters = combat_count_characters(owner_count, protection);
+    size * (0.22 + 0.1 * characters).clamp(0.3, 0.95)
+}
+
+fn combat_count_characters(owner_count: usize, protection: &[(PlayerId, usize)]) -> f32 {
     let owner_chars = owner_count.to_string().len() as f32;
-    let protection_chars = protection
-        .iter()
-        .map(|(_, count)| (count.to_string().len() + 1) as f32 * 0.75)
-        .sum::<f32>();
-    size * (0.22 + 0.1 * (owner_chars + protection_chars)).clamp(0.3, 0.95)
+    let protection_chars =
+        protection.iter().map(|(_, count)| (count.to_string().len() + 1) as f32).sum::<f32>();
+    owner_chars + protection_chars
+}
+
+/// Fit crowded multi-player badges without making any contribution smaller than another.
+fn combat_count_font_size(
+    badge_width: f32,
+    projection_scale: f32,
+    owner_count: usize,
+    protection: &[(PlayerId, usize)],
+) -> f32 {
+    let full_size = COMBAT_COUNT_FONT_SIZE * projection_scale;
+    let estimated_width =
+        combat_count_characters(owner_count, protection) * full_size * 0.05 * 0.58;
+    if estimated_width <= badge_width * 0.9 {
+        full_size
+    } else {
+        full_size * badge_width * 0.9 / estimated_width
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -681,6 +719,8 @@ pub fn setup_combat(
 
             let (owner, owner_count, protection) = combat_unit_counts(report, &side, u);
             let w = combat_count_badge_width(size, owner_count, &protection);
+            let count_font_size =
+                combat_count_font_size(w, projection.scale, owner_count, &protection);
             let h = size * 0.3;
             let hull = c * report.unit_hull(*u, &side);
 
@@ -730,7 +770,7 @@ pub fn setup_combat(
                                     Text2d::new(owner_count.to_string()),
                                     TextFont {
                                         font: assets.font("bold").into(),
-                                        font_size: (600. * projection.scale).into(),
+                                        font_size: count_font_size.into(),
                                         ..default()
                                     },
                                     TextColor(WHITE.into()),
@@ -745,7 +785,7 @@ pub fn setup_combat(
                                             TextSpan::new(format!(" {count}")),
                                             TextFont {
                                                 font: assets.font("bold").into(),
-                                                font_size: (450. * projection.scale).into(),
+                                                font_size: count_font_size.into(),
                                                 ..default()
                                             },
                                             TextColor(session.player_color(*player_id).color()),
@@ -1170,14 +1210,7 @@ pub fn setup_combat(
 
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.),
-                height: Val::Percent(105.),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
+            combat_status_node(),
             if settings.combat_paused {
                 Visibility::Inherited
             } else {
@@ -1190,7 +1223,7 @@ pub fn setup_combat(
         ))
         .with_child((
             add_text("PAUSED", "medium", COMBAT_STATUS_FONT_SIZE, &assets, &window),
-            UiTransform::from_translation(Val2::new(Val::ZERO, Val::Percent(COMBAT_STATUS_OFFSET))),
+            combat_status_transform(),
             TextShadow::default(),
             Pickable::IGNORE,
         ));
@@ -1636,35 +1669,66 @@ pub fn animate_combat(
                 }
 
                 commands.spawn((
-                    add_root_node(false),
+                    combat_status_node(),
+                    Pickable::IGNORE,
+                    ZIndex(7),
                     children![(
-                        add_text(
-                            format!("Round {}", state.combat_round + 1),
-                            "medium",
-                            COMBAT_STATUS_FONT_SIZE,
-                            &assets,
-                            &window,
-                        ),
-                        TextShadow::default(),
+                        Node::default(),
                         UiTransform {
-                            translation: Val2::new(Val::ZERO, Val::Percent(COMBAT_STATUS_OFFSET),),
-                            scale: Vec2::ZERO,
-                            ..default()
+                            scale: Vec2::splat(0.97),
+                            ..combat_status_transform()
                         },
                         TweenAnim::new(
                             Tween::new(
-                                EaseFunction::QuadraticInOut,
-                                Duration::from_millis(1500),
+                                EaseFunction::CubicOut,
+                                Duration::from_millis(ROUND_BANNER_ENTER_MS),
                                 UiTransformScaleLens {
-                                    start: Vec2::ZERO,
+                                    start: Vec2::splat(0.97),
                                     end: Vec2::ONE,
                                 },
                             )
-                            .with_repeat_count(RepeatCount::Finite(2))
-                            .with_repeat_strategy(RepeatStrategy::MirroredRepeat)
+                            .then(Delay::new(Duration::from_millis(ROUND_BANNER_HOLD_MS)))
+                            .then(Tween::new(
+                                EaseFunction::CubicIn,
+                                Duration::from_millis(ROUND_BANNER_EXIT_MS),
+                                UiTransformScaleLens {
+                                    start: Vec2::ONE,
+                                    end: Vec2::splat(0.99),
+                                },
+                            ))
                         ),
                         DisplayTextCmp,
-                        CombatCmp, // Required for animation speed
+                        CombatCmp,
+                        children![(
+                            add_text(
+                                format!("Round {}", state.combat_round + 1),
+                                "medium",
+                                COMBAT_STATUS_FONT_SIZE,
+                                &assets,
+                                &window,
+                            ),
+                            TextColor(Color::from(WHITE).with_alpha(0.)),
+                            TweenAnim::new(
+                                Tween::new(
+                                    EaseFunction::CubicOut,
+                                    Duration::from_millis(ROUND_BANNER_ENTER_MS),
+                                    TextColorLens {
+                                        start: Color::from(WHITE).with_alpha(0.),
+                                        end: WHITE.into(),
+                                    },
+                                )
+                                .then(Delay::new(Duration::from_millis(ROUND_BANNER_HOLD_MS)))
+                                .then(Tween::new(
+                                    EaseFunction::CubicIn,
+                                    Duration::from_millis(ROUND_BANNER_EXIT_MS),
+                                    TextColorLens {
+                                        start: WHITE.into(),
+                                        end: Color::from(WHITE).with_alpha(0.),
+                                    },
+                                ))
+                            ),
+                            CombatCmp,
+                        )],
                     )],
                     CombatCmp,
                 ));

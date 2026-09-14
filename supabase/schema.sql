@@ -985,8 +985,12 @@ $$;
 
 -- Creates an inviter fleet plus a private list of invited player slots. Pending responses publish
 -- live fleet drafts and their own bombing/probe orders. Accepted players can keep editing.
--- Offer edits advance the shared revision and reset the other players' consent, except for
--- origin-only routing changes. Stale acceptances are rejected. Editors can close independently.
+-- Invited players remain on the roster until the inviter cancels the mission.
+-- Every offer edit, including an origin change, advances the shared revision and resets the
+-- other players' consent. Stale acceptances are rejected. Editors can close independently.
+-- Only the inviter may revise the shared target or objective. Guests edit their own fleets
+-- through the response operation while the published route stays fixed.
+-- The inviter must select at least one ship before publishing a proposal.
 -- A launch needs the inviter and at least one accepted guest; unanswered guests are excluded.
 -- Saving that launch freezes the roster and closes the invitation to further responses.
 create function public.stellarion_create_joint_attack(
@@ -1001,7 +1005,6 @@ as $$
 declare
     v_game public.stellarion_games%rowtype;
     v_previous jsonb;
-    v_old_participant jsonb;
     v_reset_acceptance boolean;
     v_revision bigint;
     v_player bigint;
@@ -1045,6 +1048,8 @@ begin
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
     end;
     v_participants := p_invitation -> 'participants';
+    select invitation into v_previous from public.stellarion_joint_attacks
+     where game_id = p_game_id and attack_id = v_attack_id;
     if jsonb_typeof(v_participants) = 'array' then
         select count(*), count(distinct (participant ->> 'player_id')::bigint)
           into v_total, v_unique
@@ -1066,12 +1071,21 @@ begin
        or v_total <> v_unique
        or v_destination is null
        or coalesce((v_destination ->> 'is_destroyed')::boolean, false)
-       or (v_destination ->> 'owned')::bigint = v_player
-       or (v_destination ->> 'controlled')::bigint = v_player
-       or (v_participants -> 0 ->> 'player_id')::bigint <> v_player
+       or (v_destination ->> 'owned')::bigint = (p_invitation ->> 'inviter')::bigint
+       or (v_destination ->> 'controlled')::bigint = (p_invitation ->> 'inviter')::bigint
+       or (v_participants -> 0 ->> 'player_id')::bigint <> (p_invitation ->> 'inviter')::bigint
        or (v_participants -> 0 ->> 'response') <> 'accepted'
        or jsonb_typeof(v_participants -> 0 -> 'contribution' -> 'army') is distinct from 'object'
-       or (v_participants -> 0 -> 'contribution' ->> 'player_id')::bigint <> v_player
+       or not exists (
+           select 1
+             from jsonb_each_text(case
+                 when jsonb_typeof(v_participants -> 0 -> 'contribution' -> 'army') = 'object'
+                 then v_participants -> 0 -> 'contribution' -> 'army'
+                 else '{}'::jsonb
+             end) as fleet(unit, amount)
+            where fleet.unit like 'Ship(%)' and fleet.amount ~ '^[1-9][0-9]*$'
+       )
+       or (v_participants -> 0 -> 'contribution' ->> 'player_id')::bigint <> (p_invitation ->> 'inviter')::bigint
        or v_revision is null or v_revision < 0
        or (v_participants -> 0 -> 'contribution' -> 'bombing') is distinct from (p_invitation -> 'bombing')
        or (v_participants -> 0 -> 'contribution' -> 'combat_probes') is distinct from (p_invitation -> 'combat_probes')
@@ -1084,7 +1098,7 @@ begin
             where jsonb_typeof(participant) is distinct from 'object'
                or not (participant ?& array['player_id', 'response', 'contribution'])
                or participant - array['player_id', 'response', 'contribution'] <> '{}'::jsonb
-               or (ordinal > 1 and (
+               or (v_previous is null and ordinal > 1 and (
                    participant ->> 'response' <> 'pending'
                    or participant -> 'contribution' <> 'null'::jsonb
                ))
@@ -1101,14 +1115,21 @@ begin
     then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack';
     end if;
-    select invitation into v_previous from public.stellarion_joint_attacks
-     where game_id = p_game_id and attack_id = v_attack_id;
-    if found then
+    if v_previous is not null then
         if (v_previous ->> 'inviter')::bigint <> v_player
            or (v_previous ->> 'revision')::bigint <> v_revision
            or (v_previous ->> 'canceled')::boolean
            or (v_previous ->> 'launched')::boolean then
             raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+        end if;
+        if exists (
+            select 1 from jsonb_array_elements(v_previous -> 'participants') old
+             where not exists (
+                select 1 from jsonb_array_elements(v_participants) next
+                 where next -> 'player_id' = old -> 'player_id'
+            )
+        ) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_invitees';
         end if;
         -- Duplicate publication leaves acceptance intact.
         if v_previous -> 'destination' = p_invitation -> 'destination'
@@ -1118,17 +1139,16 @@ begin
              = (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_participants) item) then
             return v_previous;
         end if;
-        -- Origin-only routing edits preserve consent. Shared target/roster changes and
-        -- changes to ships or combat orders require the other players to accept again.
+        -- Every route, fleet, target, or roster change requires fresh consent.
         v_reset_acceptance := v_previous -> 'destination' <> p_invitation -> 'destination'
             or v_previous -> 'objective' <> p_invitation -> 'objective'
-            or (v_previous #> '{participants,0,contribution}') - 'origin'
-                is distinct from (p_invitation #> '{participants,0,contribution}') - 'origin'
+            or (v_previous #> '{participants,0,contribution}')
+                is distinct from (p_invitation #> '{participants,0,contribution}')
             or (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_previous -> 'participants') item)
                 <> (select jsonb_agg(item -> 'player_id') from jsonb_array_elements(v_participants) item);
         p_invitation := jsonb_set(p_invitation, '{revision}', to_jsonb(v_revision + 1));
         select jsonb_agg(
-            case when ordinal = 1 then entries.item || jsonb_build_object('response', old.item -> 'response')
+            case when ordinal = 1 then entries.item || jsonb_build_object('response', 'accepted')
                  when old.item is not null then jsonb_build_object(
                      'player_id', entries.item -> 'player_id',
                      'response', case when not v_reset_acceptance or old.item ->> 'response' = 'rejected'
@@ -1145,14 +1165,6 @@ begin
         update public.stellarion_joint_attacks
            set invitation = p_invitation, updated_at = clock_timestamp()
          where game_id = p_game_id and attack_id = v_attack_id;
-        for v_old_participant in select value from jsonb_array_elements(v_previous -> 'participants')
-        loop
-            if not exists (select 1 from jsonb_array_elements(v_participants) item
-                where item -> 'player_id' = v_old_participant -> 'player_id') then
-                perform public.stellarion_emit_event(p_game_id, 'joint_attack_changed',
-                    v_game.current_turn, (v_old_participant ->> 'player_id')::bigint);
-            end if;
-        end loop;
     else
         if v_revision <> 0 then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_revision';
@@ -1175,8 +1187,8 @@ end;
 $$;
 
 -- Each contribution edit advances the shared revision so concurrent stale approvals fail.
--- Players may edit accepted contributions. An edit resets the other players' consent,
--- except when only the local origin changes; a response alone never resets their decisions.
+-- Players may edit accepted contributions. Every edit resets the other players' consent;
+-- a response alone never resets their decisions.
 create function public.stellarion_respond_joint_attack(
     p_game_id uuid,
     p_attack_id bigint,
@@ -1216,7 +1228,6 @@ begin
     end if;
     if not exists (select 1 from public.stellarion_games
         where id = p_game_id and status = 'active' and current_turn = v_row.turn)
-       or v_player = v_row.inviter
        or coalesce((v_row.invitation ->> 'canceled')::boolean, false)
        or coalesce((v_row.invitation ->> 'launched')::boolean, false)
        or (v_row.invitation ->> 'revision')::bigint is distinct from p_expected_revision
@@ -1244,6 +1255,8 @@ begin
         end if;
     end if;
     if p_response = 'accepted' then
+        -- Revoked protection fleets remain in the snapshot until turn resolution returns them;
+        -- they no longer prevent their commander from joining an attack on this world.
         select planet into v_planet
           from public.stellarion_games game_row,
                jsonb_array_elements(game_row.state -> 'state' -> 'map' -> 'planets') planet
@@ -1252,7 +1265,8 @@ begin
         if v_planet is null
            or (v_planet ->> 'owned')::bigint = v_player
            or (v_planet ->> 'controlled')::bigint = v_player
-           or coalesce(v_planet #> array['army', 'protectors', v_player::text], '{}'::jsonb) <> '{}'::jsonb
+           or (coalesce(v_planet #> array['army', 'protectors', v_player::text], '{}'::jsonb) <> '{}'::jsonb
+               and coalesce((v_planet -> 'protection_permissions') @> jsonb_build_array(v_player), false))
            or p_contribution -> 'army' = '{}'::jsonb
            or p_contribution is null
            or (p_contribution ->> 'player_id')::bigint <> v_player
@@ -1264,9 +1278,12 @@ begin
     select participant -> 'contribution' into v_previous_contribution
       from jsonb_array_elements(v_row.invitation -> 'participants') participant
      where (participant ->> 'player_id')::bigint = v_player;
+    if v_player = v_row.inviter and (p_response = 'rejected'
+        or p_contribution is distinct from v_previous_contribution) then
+        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
     v_changed := p_response <> 'rejected' and v_previous_contribution is distinct from p_contribution;
-    v_reset_acceptance := v_changed and (coalesce(nullif(v_previous_contribution, 'null'::jsonb), '{}'::jsonb) - 'origin')
-        is distinct from (p_contribution - 'origin');
+    v_reset_acceptance := v_changed;
     if v_changed then
         v_row.invitation := jsonb_set(v_row.invitation, '{revision}',
             to_jsonb((v_row.invitation ->> 'revision')::bigint + 1));
@@ -1466,6 +1483,8 @@ declare
     v_dx double precision;
     v_dy double precision;
     v_range double precision;
+    v_first_capacity bigint;
+    v_second_capacity bigint;
     v_first_player bigint;
     v_second_player bigint;
 begin
@@ -1484,14 +1503,15 @@ begin
         - (p_second #>> '{position,0}')::double precision;
     v_dy := (p_first #>> '{position,1}')::double precision
         - (p_second #>> '{position,1}')::double precision;
-    -- Match Rust trading_posts_are_adjacent: both completed posts must reach each other.
+    -- Match Rust trading_posts_are_adjacent: both posts must be complete, and either
+    -- one's range may establish the route. Sending capacity remains independent.
     -- Each level grants 1.5 AU (150 world units), up to 7.5 AU at level five.
     -- Capacity supplies the validated level: 500 resources per completed level.
-    v_range := least(
-        public.stellarion_trade_capacity(p_first, v_first_player),
-        public.stellarion_trade_capacity(p_second, v_second_player)
-    ) / 500 * 150;
-    return v_range > 0 and v_dx * v_dx + v_dy * v_dy <= v_range * v_range;
+    v_first_capacity := public.stellarion_trade_capacity(p_first, v_first_player);
+    v_second_capacity := public.stellarion_trade_capacity(p_second, v_second_player);
+    v_range := greatest(v_first_capacity, v_second_capacity) / 500 * 150;
+    return v_first_capacity > 0 and v_second_capacity > 0
+        and v_dx * v_dx + v_dy * v_dy <= v_range * v_range;
 exception
     when invalid_text_representation or numeric_value_out_of_range then
         return false;
@@ -1720,8 +1740,8 @@ begin
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trade_resources';
     end if;
 
-    -- Every resource edit is a live draft. Both sides must consent to the resulting version;
-    -- an acceptance from an older screen cannot finalize a concurrently changed offer.
+    -- Explicitly submitted offers replace the saved resources. Both sides must consent to the
+    -- resulting version; an acceptance from an older screen cannot finalize a changed offer.
     if p_response <> 'rejected' and v_old_resources is distinct from p_resources then
         v_row.invitation := jsonb_set(v_row.invitation, '{revision}',
             to_jsonb((v_row.invitation ->> 'revision')::bigint + 1));

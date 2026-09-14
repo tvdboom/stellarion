@@ -222,8 +222,9 @@ impl Description for Building {
             },
             Building::TradingPost => {
                 "A Trading Post establishes a commerce route with another player's Trading Post. \
-                Your posts reveal foreign posts when they lie within range. Each completed level \
-                adds 1.5 AU of range. Each level lets its owner send up to 500 combined resources \
+                Your posts reveal foreign posts when they lie within range. A route works when \
+                either completed post reaches the other. Each completed level adds 1.5 AU of range \
+                and lets its owner send up to 500 combined resources \
                 in one bilateral trade per player pair each turn. Incoming resources arrive when \
                 the turn resolves."
             },
@@ -268,7 +269,8 @@ impl Description for Building {
             Building::Senate => {
                 "The Senate is the political heart of your empire, where delegates chart its \
                 course among the stars. Each Senate level lets you own one extra planet and \
-                provides +2 production on every owned planet."
+                provides +2 fleet production under Expansion or +5 defense production under \
+                Consolidation on every owned planet."
             },
             Building::ColonialAdministration => {
                 "When attacked. enables the option to coordinate a strategic withdrawal to your \

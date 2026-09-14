@@ -547,7 +547,7 @@ const recoveredAgain = await rpc(
 assert.equal(recoveredAgain.membership.user_id, guest);
 assert.equal(recoveredAgain.recovery_code, guestRecovery);
 
-// Trade drafts publish both offers immediately and bind acceptance to their current revision.
+// Submitted trade offers bind acceptance to their current revision.
 const tradeLobby = await create(host, "TRADE1");
 const joinedTrade = (await rpc(guest,
   "select public.stellarion_join_game($1, $2, $3) as result",
@@ -576,6 +576,11 @@ tradeDraft = await rpc(host, "select public.stellarion_create_trade($1, $2) as r
 const respondTrade = (actor, revision, resources, response) => rpc(actor,
   "select public.stellarion_respond_trade($1, $2, $3, $4, $5) as result",
   [tradeGame.id, tradeDraft.id, revision, resources, response]);
+tradeDraft = await respondTrade(host, tradeDraft.revision, tradeResources(2000), "pending");
+assert.equal(tradeDraft.revision, 0, "withdrawing consent keeps the resource revision");
+assert.equal(tradeDraft.participants[0].response, "pending");
+tradeDraft = await respondTrade(host, tradeDraft.revision, tradeResources(2000), "accepted");
+assert.equal(tradeDraft.finalized, false);
 for (const [actor, playerId, resources] of [
   [guest, 2, tradeResources(0, 200)],
   [host, 1, tradeResources(2250)],
@@ -607,7 +612,7 @@ assert.equal(tradedGame.persisted.state.trades.length, 1);
 assert.deepEqual(tradedGame.persisted.state.trades[0].parties.map(party => party.resources),
   [tradeResources(2250), tradeResources(0, 250)], "both current offers are reserved for settlement");
 await assert.rejects(respondTrade(host, tradeDraft.revision, tradeResources(), "pending"), /STLR_FORBIDDEN/);
-console.log("Live bilateral trade offers, consent resets, stale acceptance, and finalization passed.");
+console.log("Submitted bilateral trade offers, consent withdrawal, stale acceptance, and finalization passed.");
 
 // Protection access is an immediate compact patch in matches with at least three active players.
 const protectionLobby = await create(host, "PRTCT1");
@@ -658,7 +663,30 @@ const cancelJointAttack = (actor, attackId) => rpc(actor,
 const loadJointAttacks = actor => rpc(actor,
   "select public.stellarion_load_joint_attacks($1) as result", [protectionGame.id]);
 await assert.rejects(createJointAttack(guest), /STLR_INVALID_DATA:joint_attack/);
+const emptyJointAttack = structuredClone(jointAttack);
+emptyJointAttack.participants[0].contribution.army = {};
+await assert.rejects(createJointAttack(host, emptyJointAttack),
+  /STLR_INVALID_DATA:joint_attack/, "the inviter must select ships before proposing");
+emptyJointAttack.participants[0].contribution.army = { "Ship(LightFighter)": 0 };
+await assert.rejects(createJointAttack(host, emptyJointAttack),
+  /STLR_INVALID_DATA:joint_attack/, "zero-count ships are still an empty proposal");
+emptyJointAttack.participants[0].contribution.army = { "Building(TradingPost)": 1 };
+await assert.rejects(createJointAttack(host, emptyJointAttack),
+  /STLR_INVALID_DATA:joint_attack/, "a proposal needs ships, not another unit type");
 assert.equal((await createJointAttack(host)).id, jointAttack.id);
+const guestRouteEdit = structuredClone(jointAttack);
+guestRouteEdit.objective = "Destroy";
+guestRouteEdit.participants[1].response = "accepted";
+guestRouteEdit.participants[1].contribution = {
+  player_id: 2, origin: protectorHome, army: { "Ship(LightFighter)": 1 },
+  bombing: "None", combat_probes: false,
+};
+await assert.rejects(createJointAttack(guest, guestRouteEdit),
+  /STLR_INVALID_DATA:joint_attack/, "only the inviter may revise the shared route");
+const removedInvitee = structuredClone(jointAttack);
+removedInvitee.participants[1].player_id = 3;
+await assert.rejects(createJointAttack(host, removedInvitee),
+  /STLR_INVALID_DATA:joint_attack_invitees/, "an invitee remains until mission cancellation");
 assert.equal((await loadJointAttacks(host)).length, 1);
 assert.equal((await loadJointAttacks(guest)).length, 1);
 assert.deepEqual(await loadJointAttacks(outsider), []);
@@ -678,9 +706,25 @@ const guestContribution = {
   bombing: "Economic",
   combat_probes: true,
 };
+// A protector blocks acceptance only while access remains active. After revocation it stays in
+// the snapshot until turn resolution returns it home, but can attack its former host.
+const revokedTargetState = structuredClone(protectionGame.persisted);
+const revokedTarget = revokedTargetState.state.map.planets.find(planet => planet.id === thirdHome);
+revokedTarget.army.protectors["2"] = { "Ship(LightFighter)": 1 };
+revokedTarget.protection_permissions.push(2);
+revokedTargetState.state.players[1].protection_intel[thirdHome] = 3;
+await db.query("update public.stellarion_games set state = $2 where id = $1",
+  [protectionGame.id, revokedTargetState]);
+await assert.rejects(respondJointAttack(guest, jointAttack.id, "accepted", guestContribution),
+  /STLR_FORBIDDEN/, "an active stationed protector cannot attack its host");
+revokedTarget.protection_permissions = [];
+await db.query("update public.stellarion_games set state = $2 where id = $1",
+  [protectionGame.id, revokedTargetState]);
 let updatedJointAttack = await respondJointAttack(guest, jointAttack.id, "accepted", guestContribution);
 assert.equal(updatedJointAttack.participants[1].response, "accepted");
 assert.deepEqual(updatedJointAttack.participants[1].contribution, guestContribution);
+await db.query("update public.stellarion_games set state = $2 where id = $1",
+  [protectionGame.id, protectionGame.persisted]);
 const jointCommand = {
   kind: "send_joint_mission",
   attack_id: jointAttack.id,
@@ -749,7 +793,7 @@ await assert.rejects(respondJointAttack(outsider, ownTargetAttack.id, "accepted"
   origin: thirdHome,
   army: { "Ship(LightFighter)": 1 },
 }), /STLR_FORBIDDEN/, "a target owner may see an unknown-intel invite but cannot accept it");
-// Live drafts, editable owner proposals, reversible acceptance, and a launch with an unanswered guest.
+// Submitted drafts, editable owner proposals, reversible acceptance, and a launch with an unanswered guest.
 const planningAttack = structuredClone(jointAttack);
 planningAttack.id = 7010;
 planningAttack.participants.push({ player_id: 3, response: "pending", contribution: null });
@@ -814,19 +858,38 @@ await assert.rejects(respondJointAttack(outsider, editable.id, "accepted", third
 editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
 editable = await respondJointAttack(guest, editable.id, "accepted",
   { ...largerFleet, origin: protectedPlanet }, editable.revision);
-assert.equal(editable.participants[2].response, "accepted", "origin-only changes keep consent");
+assert.equal(editable.participants[2].response, "pending", "origin changes require fresh consent");
 const originEdit = structuredClone(editableAttack);
 originEdit.revision = editable.revision;
 originEdit.participants[0].contribution.origin = protectorHome;
 editable = await createJointAttack(host, originEdit);
-assert.equal(editable.participants[0].response, "pending", "host edits do not approve guest offers");
-assert.equal(editable.participants[1].response, "accepted");
-assert.equal(editable.participants[2].response, "accepted");
+assert.equal(editable.participants[0].response, "accepted", "host accepts the proposal it publishes");
+assert.equal(editable.participants[1].response, "pending");
+assert.equal(editable.participants[2].response, "pending");
+const guestProposal = structuredClone(editable);
+guestProposal.destination = protectionGame.persisted.state.map.planets.find(planet =>
+  planet.owned == null && planet.controlled == null && !planet.is_destroyed
+    && planet.id !== editable.destination).id;
+guestProposal.objective = "Destroy";
+guestProposal.participants[1].response = "accepted";
+await assert.rejects(createJointAttack(guest, guestProposal), /STLR_INVALID_DATA:joint_attack/,
+  "guests cannot change the shared target or objective");
+const tamperedProposal = structuredClone(editable);
+tamperedProposal.participants[0].contribution.army = { "Ship(LightFighter)": 9 };
+await assert.rejects(createJointAttack(guest, tamperedProposal), /STLR_INVALID_DATA:joint_attack/);
+editable = await respondJointAttack(host, editable.id, "accepted",
+  editable.participants[0].contribution, editable.revision);
+assert.equal(editable.participants[0].response, "accepted");
 editable = await respondJointAttack(outsider, editable.id, "rejected", null, editable.revision);
 editable = await respondJointAttack(guest, editable.id, "accepted", guestContribution, editable.revision);
 assert.equal(editable.participants[2].response, "rejected", "edits never revive a rejected participant");
+const rejectedProposal = structuredClone(editable);
+rejectedProposal.objective = "Attack";
+rejectedProposal.participants[2].response = "accepted";
+rejectedProposal.participants[2].contribution = thirdContribution;
+await assert.rejects(createJointAttack(outsider, rejectedProposal), /STLR_INVALID_DATA:joint_attack/);
 await cancelJointAttack(host, editable.id);
-console.log("Editable accepted fleets, shared consent revisions, origin-only changes, and permanent rejection passed.");
+console.log("Editable fleets, host-controlled route, shared consent revisions, and permanent rejection passed.");
 
 await assert.rejects(rpc(host,
   "select public.stellarion_submit_turn($1, $2) as result",

@@ -196,7 +196,7 @@ fn senate_tiles_enforce_empire_queues_and_commitment_without_locking_a_draft() {
     assert_eq!(planet.operations.senate_locked_until, 0);
     assert_eq!(
         shop::shop_capacity_summary(Shop::Defenses, &planet, senate),
-        Some(("Production", 0, 6))
+        Some(("Production", 0, 15))
     );
     assert_eq!(
         shop::shop_capacity_summary(Shop::Fleet, &planet, senate),
@@ -260,7 +260,7 @@ fn operating_details_appear_only_on_hover_including_disabled_choices() {
             false,
             false,
             false,
-            "Consolidation: +2 defense production",
+            "Consolidation: +5 defense production",
             "The final selection becomes fixed for the next 3 turns.",
         ),
         (10, false, true, false, "Expansion: +2 fleet production", "Committed for 3 more turns."),
@@ -269,7 +269,7 @@ fn operating_details_appear_only_on_hover_including_disabled_choices() {
             false,
             false,
             true,
-            "Consolidation: +2 defense production",
+            "Consolidation: +5 defense production",
             "Queued units on a planet require the current Senate production bonus.",
         ),
         (9, false, true, false, "Bastion: +50% combat strength.", "Committed for 3 more turn(s)."),

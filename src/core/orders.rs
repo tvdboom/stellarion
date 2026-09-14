@@ -208,7 +208,7 @@ pub fn validate_mission(
             player.owns(destination),
             player.controls(destination),
             destination.allows_protection(player.id),
-            destination.is_protected_by(player.id),
+            destination.blocks_hostile_action_by(player.id),
         )
         .contains(&mission.objective)
     {

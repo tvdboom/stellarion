@@ -24,9 +24,9 @@ use crate::core::combat::report::{MissionReport, ReportId, Side};
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
 use crate::core::constants::{
-    BG2_COLOR, HEALTH_COLOR, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
+    BG2_COLOR, HEALTH_COLOR, HEIGHT, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
     SHIELD_COLOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
-    TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL,
+    TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL, WIDTH,
 };
 use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
@@ -61,7 +61,7 @@ use crate::multiplayer::client::{
     MultiplayerRequest, MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
 };
 use crate::multiplayer::model::{
-    JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+    GameMembership, JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
 };
 use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
@@ -171,14 +171,18 @@ pub struct UiState {
     pub mission_info: Mission,
     /// Player slots selected for the current joint-attack invitation.
     pub(crate) joint_attack_invitees: std::collections::BTreeSet<PlayerId>,
-    /// Unconfirmed player choices in the invitation picker; closing it discards these changes.
-    pub(crate) joint_attack_invite_selection: Option<std::collections::BTreeSet<PlayerId>>,
+    /// Last drawn invite picker bounds and UI pass, for crossing from the icon into the panel.
+    pub(crate) joint_attack_invite_panel_rect: Option<(u64, egui::Rect)>,
     /// Whether the current mission is being coordinated with invited players.
     pub(crate) allied_mission: bool,
     /// Invitation linked to the current editable mission draft.
     pub(crate) joint_attack_draft_id: Option<u64>,
     /// Preserved owner draft, independent of planet selection while looking around the map.
     pub(crate) joint_attack_owner_draft: Option<Mission>,
+    /// Shared route underlying the owner's current local draft.
+    pub(crate) joint_attack_owner_shared_route: Option<(usize, Icon)>,
+    /// Prevents multiple UI passes from withdrawing the same owner acceptance twice.
+    pub(crate) joint_attack_owner_withdrawal: Option<(u64, u64)>,
     /// Invitation currently opened from its persistent notification.
     pub(crate) joint_attack_open: Option<u64>,
     /// Origin and units being prepared in the invitation response modal.
@@ -239,7 +243,7 @@ impl UiState {
         self.world_shortcut_hover.or(self.planet_hover)
     }
 
-    /// Prevents readiness while shared choices still require agreement or a local picker is open.
+    /// Prevents readiness while shared choices still require agreement.
     pub(crate) fn end_turn_blocked(
         &self,
         session: Option<&MultiplayerSession>,
@@ -257,7 +261,6 @@ impl UiState {
             return false;
         }
         self.allied_mission
-            || self.joint_attack_invite_selection.is_some()
             || self.joint_attack_open.is_some()
             || self.trading_post_open.is_some()
             || session.is_some_and(|session| session.has_open_negotiation(pending))
@@ -324,10 +327,76 @@ fn show_panel_modal<R>(
     size: egui::Vec2,
     content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
 ) -> egui::ModalResponse<R> {
+    show_panel_modal_with_offset(context, images, modal_id, size, egui::Vec2::ZERO, content)
+}
+
+/// Keeps a mission modal centered while its entire interactive layer is scaled.
+fn scaled_modal<R>(
+    context: &egui::Context,
+    images: &ImageIds,
+    modal_id: egui::Id,
+    size: egui::Vec2,
+    scale: f32,
+    content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
+) -> egui::ModalResponse<R> {
+    scaled_modal_with_offset(context, images, modal_id, size, scale, egui::Vec2::ZERO, content)
+}
+
+fn scaled_modal_with_offset<R>(
+    context: &egui::Context,
+    images: &ImageIds,
+    modal_id: egui::Id,
+    size: egui::Vec2,
+    scale: f32,
+    visual_offset: egui::Vec2,
+    content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
+) -> egui::ModalResponse<R> {
+    context.set_transform_layer(
+        egui::LayerId::new(Order::Foreground, modal_id),
+        egui::emath::TSTransform::from_scaling(scale),
+    );
+    let offset = context.content_rect().center().to_vec2() * (1.0 / scale - 1.0) + visual_offset;
+    show_panel_modal_unscaled(context, images, modal_id, size, scale, offset, content)
+}
+
+/// Applies the viewport scale before placing a shared modal at the viewport center.
+fn show_panel_modal_with_offset<R>(
+    context: &egui::Context,
+    images: &ImageIds,
+    modal_id: egui::Id,
+    size: egui::Vec2,
+    offset: egui::Vec2,
+    content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
+) -> egui::ModalResponse<R> {
+    scaled_modal_with_offset(
+        context,
+        images,
+        modal_id,
+        size,
+        game_modal_scale(context.content_rect().size(), size),
+        offset,
+        content,
+    )
+}
+
+fn show_panel_modal_unscaled<R>(
+    context: &egui::Context,
+    images: &ImageIds,
+    modal_id: egui::Id,
+    size: egui::Vec2,
+    scale: f32,
+    offset: egui::Vec2,
+    content: impl FnOnce(&mut Ui, egui::Rect, egui::Rect) -> R,
+) -> egui::ModalResponse<R> {
     let content_rect = context.content_rect();
-    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min;
-    let area = egui::Modal::default_area(modal_id).anchor(Align2::LEFT_TOP, panel_offset);
+    let logical_viewport =
+        egui::Rect::from_min_max(content_rect.min / scale, content_rect.max / scale);
+    let panel_offset = content_rect.center() - size * 0.5 - content_rect.min + offset;
+    let area = egui::Modal::default_area(modal_id)
+        .anchor(Align2::LEFT_TOP, panel_offset)
+        .constrain_to(logical_viewport);
     egui::Modal::new(modal_id).area(area).frame(egui::Frame::NONE).show(context, |ui| {
+        ui.set_clip_rect(logical_viewport);
         let (panel, _) = ui.allocate_exact_size(size, Sense::hover());
         ui.painter().image(
             images.get("panel"),
@@ -689,7 +758,7 @@ const HUD_MIN_SCALE: f32 = 0.8;
 const HUD_MAX_SCALE: f32 = 1.6;
 
 /// Scales the strategic HUD with the limiting viewport dimension, within readable bounds.
-fn strategic_hud_scale(viewport: egui::Vec2) -> f32 {
+pub(crate) fn strategic_hud_scale(viewport: egui::Vec2) -> f32 {
     (viewport.x / HUD_REFERENCE_WIDTH)
         .min(viewport.y / HUD_REFERENCE_HEIGHT)
         .clamp(HUD_MIN_SCALE, HUD_MAX_SCALE)
@@ -698,6 +767,28 @@ fn strategic_hud_scale(viewport: egui::Vec2) -> f32 {
 /// Keeps the world shortcuts readable on short screens while still growing them on large ones.
 fn owned_worlds_hud_scale(viewport: egui::Vec2) -> f32 {
     strategic_hud_scale(viewport).max(1.0)
+}
+
+/// Keeps menus and controls at their original size in the default game window.
+pub(crate) fn viewport_ui_scale(viewport: egui::Vec2) -> f32 {
+    let relative = (viewport.x / WIDTH).min(viewport.y / HEIGHT).max(0.0);
+    relative.sqrt().clamp(0.5, 1.25)
+}
+
+/// Fits the largest paired hover panels inside smaller windows.
+pub(crate) fn game_panel_scale(viewport: egui::Vec2) -> f32 {
+    let preferred = viewport_ui_scale(viewport);
+    let max_width = (viewport.x - 16.0).max(1.0) / 850.0;
+    let max_height = (viewport.y - 16.0).max(1.0) / 640.0;
+    preferred.min(max_width).min(max_height).max(0.001)
+}
+
+/// Uses the shared growth curve while keeping smaller dialogs readable and fully on screen.
+fn game_modal_scale(viewport: egui::Vec2, size: egui::Vec2) -> f32 {
+    viewport_ui_scale(viewport)
+        .max(0.7)
+        .min((viewport.x - 32.0).max(1.0) / size.x.max(1.0))
+        .min((viewport.y - 32.0).max(1.0) / size.y.max(1.0))
 }
 
 fn scaled_margin(horizontal: f32, vertical: f32, scale: f32) -> egui::Margin {
@@ -742,28 +833,31 @@ fn mission_hover_shows_info_panel(mission_hover_from_ui: bool) -> bool {
     !mission_hover_from_ui
 }
 
-/// Draws the panel interface and emits any resulting local actions.
-fn draw_panel<R>(
+/// Scales the complete panel layer, including its artwork, text, controls, and hit targets.
+fn draw_scaled_panel<R>(
     contexts: &mut EguiContexts,
     name: &str,
     image: &str,
     pos: (f32, f32),
     size: (f32, f32),
+    scale: f32,
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) {
-    let _ =
-        draw_panel_with_horizontal_overflow(contexts, name, image, pos, size, 0.0, images, content);
+    let _ = draw_panel_with_horizontal_overflow(
+        contexts, name, image, pos, size, 0.0, scale, images, content,
+    );
 }
 
 /// Draws a panel while permitting an animated horizontal entrance beyond the viewport edge.
-fn draw_sliding_panel<R>(
+fn draw_scaled_sliding_panel<R>(
     contexts: &mut EguiContexts,
     name: &str,
     image: &str,
     pos: (f32, f32),
     size: (f32, f32),
     horizontal_overflow: f32,
+    scale: f32,
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) -> Option<egui::Rect> {
@@ -774,6 +868,7 @@ fn draw_sliding_panel<R>(
         pos,
         size,
         horizontal_overflow,
+        scale,
         images,
         content,
     )
@@ -786,32 +881,64 @@ fn draw_panel_with_horizontal_overflow<R>(
     pos: (f32, f32),
     size: (f32, f32),
     horizontal_overflow: f32,
+    scale: f32,
     images: &ImageIds,
     content: impl FnOnce(&mut Ui) -> R,
 ) -> Option<egui::Rect> {
     let Ok(context) = contexts.ctx_mut() else {
         return None;
     };
+    draw_panel_on_context(
+        context,
+        name,
+        image,
+        pos,
+        size,
+        horizontal_overflow,
+        scale,
+        images,
+        content,
+    )
+}
+
+fn draw_panel_on_context<R>(
+    context: &egui::Context,
+    name: &str,
+    image: &str,
+    pos: (f32, f32),
+    size: (f32, f32),
+    horizontal_overflow: f32,
+    scale: f32,
+    images: &ImageIds,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> Option<egui::Rect> {
+    let order = if name == "combat report" {
+        Order::Foreground
+    } else {
+        Order::Middle
+    };
+    let panel_id = egui::Id::new(name);
+    context.set_transform_layer(
+        egui::LayerId::new(order, panel_id),
+        egui::emath::TSTransform::from_scaling(scale),
+    );
     let mut window = egui::Window::new(name)
+        .id(panel_id)
         .frame(egui::Frame {
             fill: Color32::TRANSPARENT,
             ..default()
         })
-        .order(if name == "combat report" {
-            Order::Foreground
-        } else {
-            Order::Middle
-        })
+        .order(order)
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
-        .fixed_pos(pos)
+        .fixed_pos(egui::pos2(pos.0 / scale, pos.1 / scale))
         .fixed_size(size);
 
-    if horizontal_overflow > 0.0 {
-        window = window
-            .constrain_to(context.content_rect().expand2(egui::vec2(horizontal_overflow, 0.0)));
-    }
+    let viewport = context.content_rect();
+    let logical_viewport = egui::Rect::from_min_max(viewport.min / scale, viewport.max / scale);
+    window =
+        window.constrain_to(logical_viewport.expand2(egui::vec2(horizontal_overflow / scale, 0.0)));
 
     window
         .show(context, |ui| {
@@ -820,7 +947,9 @@ fn draw_panel_with_horizontal_overflow<R>(
 
             ui.scope_builder(UiBuilder::new().max_rect(response.rect), content);
         })
-        .map(|response| response.response.rect)
+        .map(|response| {
+            egui::emath::TSTransform::from_scaling(scale).mul_rect(response.response.rect)
+        })
 }
 
 /// Draws a centered, input-blocking planet action prompt over the game interface.
@@ -832,7 +961,8 @@ fn draw_planet_confirmation(
     image: &str,
 ) -> Option<ConfirmationAction> {
     let content_rect = context.content_rect();
-    let available = content_rect.size() - egui::vec2(32.0, 32.0);
+    let available =
+        content_rect.size() / game_panel_scale(content_rect.size()) - egui::vec2(32.0, 32.0);
     let size = egui::vec2(520.0_f32.min(available.x), 250.0_f32.min(available.y));
     let modal_id = egui::Id::new((action, "planet confirmation"));
     let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
@@ -937,7 +1067,7 @@ fn draw_protection_access_tooltip(ui: &mut Ui, planet: &Planet, session: &Multip
     });
 }
 
-/// Draws a compact player choice shared by protection and attack invitation modals.
+/// Draws a compact player choice shared by protection and attack invitation pickers.
 fn modal_player_row(
     ui: &mut Ui,
     width: f32,
@@ -1055,7 +1185,8 @@ fn draw_protection_access_modal(
         })
         .unwrap_or_default();
     let content_rect = context.content_rect();
-    let available = content_rect.size() - egui::vec2(32.0, 32.0);
+    let available =
+        content_rect.size() / game_panel_scale(content_rect.size()) - egui::vec2(32.0, 32.0);
     let desired_height = 242.0 + members.len() as f32 * 46.0;
     let size = egui::vec2(560.0_f32.min(available.x), desired_height.min(available.y));
     let modal_id = egui::Id::new(("protection access", planet.id));
@@ -1174,7 +1305,8 @@ fn draw_railgun_confirmation(
     has_deuterium: bool,
 ) -> Option<ConfirmationAction> {
     let content_rect = context.content_rect();
-    let available = content_rect.size() - egui::vec2(32.0, 32.0);
+    let available =
+        content_rect.size() / game_panel_scale(content_rect.size()) - egui::vec2(32.0, 32.0);
     let size = egui::vec2(610.0_f32.min(available.x), 330.0_f32.min(available.y));
     let modal_id = egui::Id::new("orbital railgun confirmation");
     let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
@@ -1332,7 +1464,7 @@ fn draw_world_shortcut(
     planet: &Planet,
     is_home: bool,
     is_selected: bool,
-    controller_fleet_color: Color32,
+    player_color: Color32,
     session: &MultiplayerSession,
     images: &ImageIds,
     scale: f32,
@@ -1341,8 +1473,7 @@ fn draw_world_shortcut(
     const FLEET_ICON_GAP: f32 = 6.0;
     const FLEET_ICON_SIZE: f32 = 20.0;
     const FLEET_ICON_SPACING: f32 = 3.0;
-    let fleet_icon_count =
-        world_shortcut_fleet_icons(planet, controller_fleet_color, session).count();
+    let fleet_icon_count = world_shortcut_fleet_icons(planet, player_color, session).count();
     let fleet_icon_width = if fleet_icon_count == 0 {
         0.0
     } else {
@@ -1368,34 +1499,32 @@ fn draw_world_shortcut(
     );
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
 
-    if is_selected {
+    let fill_alpha = match (is_selected, response.hovered()) {
+        (true, true) => 104,
+        (true, false) => 80,
+        (false, true) => 36,
+        (false, false) => 0,
+    };
+    if fill_alpha > 0 {
         ui.painter().rect_filled(
             rect,
             egui::CornerRadius::same((4.0 * scale).round() as u8),
             Color32::from_rgba_unmultiplied(
-                42,
-                100,
-                136,
-                if response.hovered() {
-                    160
-                } else {
-                    125
-                },
+                player_color.r(),
+                player_color.g(),
+                player_color.b(),
+                fill_alpha,
             ),
         );
+    }
+    if is_selected {
         ui.painter().rect_filled(
             egui::Rect::from_min_max(
                 egui::pos2(rect.left(), rect.top() + 5.0 * scale),
                 egui::pos2(rect.left() + 3.0 * scale, rect.bottom() - 5.0 * scale),
             ),
             1.0 * scale,
-            Color32::from_rgb(107, 185, 226),
-        );
-    } else if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same((4.0 * scale).round() as u8),
-            Color32::from_rgba_unmultiplied(62, 105, 137, 74),
+            player_color,
         );
     }
 
@@ -1434,7 +1563,7 @@ fn draw_world_shortcut(
     }
 
     for (index, (fleet_image, fleet_color)) in
-        world_shortcut_fleet_icons(planet, controller_fleet_color, session).enumerate()
+        world_shortcut_fleet_icons(planet, player_color, session).enumerate()
     {
         let fleet_icon_rect = egui::Rect::from_center_size(
             egui::pos2(
@@ -1471,7 +1600,7 @@ fn draw_world_group_header(ui: &mut Ui, title: &str, count: &str, scale: f32) {
 
 const OWNED_WORLDS_LEFT: f32 = 9.0;
 const OWNED_WORLDS_TOP: f32 = 112.0;
-const OWNED_WORLDS_WIDTH: f32 = 210.0;
+const OWNED_WORLDS_WIDTH: f32 = 164.0;
 const WORLD_SHORTCUT_HEIGHT: f32 = 40.0;
 const WORLD_LIST_ITEM_SPACING: f32 = 3.0;
 
@@ -1568,7 +1697,7 @@ fn draw_owned_worlds_widget(
                     }
                     draw_world_group_header(
                         ui,
-                        "CONTROLLED PLANETS AND MOONS",
+                        "CONTROLLED WORLDS",
                         &controlled.len().to_string(),
                         scale,
                     );
@@ -1669,9 +1798,85 @@ fn draw_players_widget_with_controls(
             scaled_hud_panel_frame(scale)
                 .fill(Color32::from_rgba_unmultiplied(10, 16, 23, 218))
                 .show(ui, |ui| {
-                    let max_width = (context.content_rect().width() - 62.0 * scale).max(0.0);
-                    ui.set_width((OWNED_WORLDS_WIDTH * scale).min(max_width));
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0) * scale;
+                    let progress_spacing = 12.0 * scale;
+                    let trailing_space = 8.0 * scale;
+                    let progress_for = |member: &GameMembership| {
+                        let is_eliminated = game
+                            .persisted
+                            .state
+                            .player(member.player_id)
+                            .is_ok_and(|player| player.spectator);
+                        let count = if is_eliminated {
+                            "0".to_owned()
+                        } else if member.player_id == local_player.id {
+                            local_progress.to_string()
+                        } else {
+                            counts
+                                .get(&member.player_id)
+                                .map_or_else(|| "?".to_owned(), usize::to_string)
+                        };
+                        format!("{count}/{target}")
+                    };
+                    let max_name_width = members
+                        .iter()
+                        .map(|member| {
+                            egui::WidgetText::from(
+                                RichText::new(&member.display_name).size(14.0 * scale).strong(),
+                            )
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Extend),
+                                f32::INFINITY,
+                                TextStyle::Body,
+                            )
+                            .size()
+                            .x
+                        })
+                        .fold(0.0_f32, f32::max);
+                    let progress_reserve = members
+                        .iter()
+                        .map(|member| {
+                            egui::WidgetText::from(
+                                RichText::new(progress_for(member)).size(13.0 * scale),
+                            )
+                            .into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Extend),
+                                f32::INFINITY,
+                                TextStyle::Body,
+                            )
+                            .size()
+                            .x
+                        })
+                        .fold(0.0_f32, f32::max);
+                    let status_reserve = if members.iter().any(|member| {
+                        !session.local_practice && !member.connected
+                    }) {
+                        let status_width = egui::WidgetText::from(
+                            RichText::new("DISCONNECTED").size(9.0 * scale).strong(),
+                        )
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            TextStyle::Body,
+                        )
+                        .size()
+                        .x;
+                        status_width + 12.0 * scale + 2.0 * ui.spacing().item_spacing.x
+                    } else {
+                        0.0
+                    };
+                    let max_width = (context.content_rect().width() - 62.0 * scale).max(0.0);
+                    let row_width = 18.0 * scale
+                        + 2.0 * ui.spacing().item_spacing.x
+                        + max_name_width
+                        + progress_spacing
+                        + progress_reserve
+                        + status_reserve
+                        + trailing_space;
+                    ui.set_width(row_width.min(max_width));
                     ui.label(
                         RichText::new("PLAYERS")
                             .size(11.0 * scale)
@@ -1679,6 +1884,17 @@ fn draw_players_widget_with_controls(
                             .color(Color32::from_rgb(166, 188, 211)),
                     );
                     ui.add_space(5.0 * scale);
+                    // Reserve one shared name column so every progress value starts at the same x.
+                    let name_column_width = max_name_width.min(
+                        (ui.available_width()
+                            - 18.0 * scale
+                            - 2.0 * ui.spacing().item_spacing.x
+                            - progress_spacing
+                            - progress_reserve
+                            - status_reserve
+                            - trailing_space)
+                            .max(0.0),
+                    );
                     for member in members {
                         ui.horizontal(|ui| {
                             let is_local = member.player_id == local_player.id;
@@ -1724,19 +1940,7 @@ fn draw_players_widget_with_controls(
                                 )
                             });
                             let progress = egui::WidgetText::from(
-                                RichText::new(format!(
-                                    "{}/{}",
-                                    if is_eliminated {
-                                        "0".to_owned()
-                                    } else if is_local {
-                                        local_progress.to_string()
-                                    } else {
-                                        counts
-                                            .get(&member.player_id)
-                                            .map_or_else(|| "?".to_owned(), usize::to_string)
-                                    },
-                                    target,
-                                ))
+                                RichText::new(progress_for(member))
                                 .size(13.0 * scale)
                                 .color(Color32::from_rgb(166, 188, 211)),
                             )
@@ -1747,7 +1951,6 @@ fn draw_players_widget_with_controls(
                                 TextStyle::Body,
                             );
                             // Keep progress and connection status visible even with long names.
-                            let progress_spacing = 12.0 * scale;
                             let status_width = status.as_ref().map_or(0.0, |galley| {
                                 galley.size().x
                                     + 12.0 * scale
@@ -1767,8 +1970,14 @@ fn draw_players_widget_with_controls(
                             .into_galley(
                                 ui,
                                 Some(egui::TextWrapMode::Truncate),
-                                (ui.available_width() - status_width - progress.size().x - progress_spacing
-                                    - ui.spacing().item_spacing.x).max(0.0),
+                                name_column_width.min(
+                                    (ui.available_width()
+                                        - status_width
+                                        - progress.size().x
+                                        - progress_spacing
+                                        - ui.spacing().item_spacing.x)
+                                        .max(0.0),
+                                ),
                                 TextStyle::Body,
                             );
                             let name_response = if session.local_practice {
@@ -1816,7 +2025,10 @@ fn draw_players_widget_with_controls(
                                     Stroke::new(1.4 * scale, Color32::from_rgb(190, 82, 82)),
                                 );
                             }
-                            ui.add_space(progress_spacing);
+                            ui.add_space(
+                                progress_spacing
+                                    + (name_column_width - name_response.rect.width()).max(0.0),
+                            );
                             let progress = ui.add(egui::Label::new(progress));
                             if is_eliminated {
                                 progress.on_hover_small("This player has been eliminated.");
@@ -2338,6 +2550,22 @@ const RESOURCE_BAR_ROW_HEIGHT: f32 = 50.0;
 const RESOURCE_BAR_VERTICAL_MARGIN: f32 = 4.0;
 const RESOURCE_SUMMARY_HORIZONTAL_PADDING: f32 = 4.0;
 const RESOURCE_SUMMARY_TEXT_VERTICAL_OFFSET: f32 = 2.0;
+const RESOURCE_IMAGE_BORDER_COLOR: Color32 = Color32::from_rgb(116, 211, 245);
+
+fn paint_bordered_resource_image(ui: &Ui, image: egui::TextureId, rect: egui::Rect, width: f32) {
+    ui.painter().image(
+        image,
+        rect.shrink(width * 0.5),
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(6),
+        Stroke::new(width, RESOURCE_IMAGE_BORDER_COLOR),
+        StrokeKind::Inside,
+    );
+}
 
 /// Returns the bottom edge reserved by the scaled top resource bar.
 pub(crate) fn resource_bar_bottom(viewport: egui::Vec2) -> f32 {
@@ -2393,8 +2621,18 @@ fn draw_resource_summary(
     value: &str,
     compact: bool,
     scale: f32,
+    bordered: bool,
 ) -> Response {
-    draw_resource_summary_with_value_color(ui, icon, label, value, Color32::WHITE, compact, scale)
+    draw_resource_summary_with_value_color(
+        ui,
+        icon,
+        label,
+        value,
+        Color32::WHITE,
+        compact,
+        scale,
+        bordered,
+    )
 }
 
 /// Draws one resource summary with an explicit value color for warning states.
@@ -2406,6 +2644,7 @@ fn draw_resource_summary_with_value_color(
     value_color: Color32,
     compact: bool,
     scale: f32,
+    bordered: bool,
 ) -> Response {
     let (icon_size, spacing, label_size, value_size) = resource_summary_style(compact, scale);
     let label = ui.painter().layout_no_wrap(
@@ -2428,12 +2667,16 @@ fn draw_resource_summary_with_value_color(
         egui::pos2(rect.left() + horizontal_padding + icon_size.x * 0.5, rect.center().y),
         icon_size,
     );
-    ui.painter().image(
-        icon,
-        icon_rect,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
+    if bordered {
+        paint_bordered_resource_image(ui, icon, icon_rect, 2.0 * scale);
+    } else {
+        ui.painter().image(
+            icon,
+            icon_rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
 
     let text_x = icon_rect.right() + spacing;
     // The font's visible glyphs sit slightly above its line box, so this small optical offset
@@ -2678,6 +2921,7 @@ fn draw_energy_tooltip(
     player: &Player,
     images: &ImageIds,
     action_demand: usize,
+    brief: bool,
 ) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get("energy"), [130.0, 90.0]).rect;
@@ -2693,8 +2937,10 @@ fn draw_energy_tooltip(
                     draw_energy_production_row(ui, map, player, action_demand);
                 });
                 ui.style_mut().interaction.selectable_labels = labels_selectable;
-                ui.add_space(3.0);
-                ui.small(ENERGY_DESCRIPTION);
+                if !brief {
+                    ui.add_space(3.0);
+                    ui.small(ENERGY_DESCRIPTION);
+                }
             });
         });
         image_rect
@@ -2749,9 +2995,16 @@ fn draw_resource_tooltip_with_trade(
     images: &ImageIds,
     action_demand: usize,
     trade_incoming: Resources,
+    brief: bool,
 ) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
+        ui.painter().rect_stroke(
+            image_rect,
+            egui::CornerRadius::same(6),
+            Stroke::new(2.0, RESOURCE_IMAGE_BORDER_COLOR),
+            StrokeKind::Inside,
+        );
         ui.vertical(|ui| {
             ui.set_max_width(360.0);
             ui.label(RichText::new(resource.to_name()).strong());
@@ -2765,8 +3018,10 @@ fn draw_resource_tooltip_with_trade(
                     ui.small(format!("Trade: +{incoming}"));
                 }
             });
-            ui.add_space(3.0);
-            ui.small(resource.description());
+            if !brief {
+                ui.add_space(3.0);
+                ui.small(resource.description());
+            }
         });
         image_rect
     })
@@ -2790,6 +3045,7 @@ fn draw_resource_tooltip(
         images,
         action_demand,
         Resources::default(),
+        false,
     )
 }
 
@@ -2818,19 +3074,20 @@ fn draw_resources_with_trade(
             &settings.turn.to_string(),
             compact,
             scale,
+            true,
         );
-        if settings.show_hover {
-            response.on_hover_ui(|ui| {
-                ui.horizontal(|ui| {
-                    ui.add_image(images.get("turn"), [130.0, 90.0]);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("Turn").strong());
-                        ui.separator();
+        response.on_hover_ui(|ui| {
+            ui.horizontal(|ui| {
+                ui.add_image(images.get("turn"), [130.0, 90.0]);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Turn").strong());
+                    ui.separator();
+                    if !settings.brief_hover_info {
                         ui.small("Current turn in the game.");
-                    });
+                    }
                 });
             });
-        }
+        });
 
         draw_resource_gap(ui, gap, scale);
 
@@ -2842,21 +3099,21 @@ fn draw_resources_with_trade(
                 &player.resources.get(&resource).to_string(),
                 compact,
                 scale,
+                true,
             );
 
-            if settings.show_hover {
-                response.on_hover_ui(|ui| {
-                    draw_resource_tooltip_with_trade(
-                        ui,
-                        resource,
-                        map,
-                        player,
-                        images,
-                        action_demand,
-                        trade_incoming,
-                    );
-                });
-            }
+            response.on_hover_ui(|ui| {
+                draw_resource_tooltip_with_trade(
+                    ui,
+                    resource,
+                    map,
+                    player,
+                    images,
+                    action_demand,
+                    trade_incoming,
+                    settings.brief_hover_info,
+                );
+            });
 
             if index + 1 < resource_count {
                 draw_resource_gap(ui, gap, scale);
@@ -2873,12 +3130,11 @@ fn draw_resources_with_trade(
             energy_balance_color(energy),
             compact,
             scale,
+            true,
         );
-        if settings.show_hover {
-            response.on_hover_ui(|ui| {
-                draw_energy_tooltip(ui, map, player, images, action_demand);
-            });
-        }
+        response.on_hover_ui(|ui| {
+            draw_energy_tooltip(ui, map, player, images, action_demand, settings.brief_hover_info);
+        });
     });
 }
 
@@ -3534,14 +3790,42 @@ fn draw_mission_fleet_hover(
     });
 }
 
+struct CombatParticipant {
+    name: String,
+    color: Color32,
+    strength: u128,
+}
+
+fn combat_side_participants(
+    report: &MissionReport,
+    side: &Side,
+    session: &MultiplayerSession,
+) -> Vec<CombatParticipant> {
+    let players = match side {
+        Side::Attacker => report.attacker_players(),
+        Side::Defender => report.defender_players(),
+    };
+    players
+        .into_iter()
+        .map(|id| CombatParticipant {
+            name: session
+                .player_name(id)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Player {id}")),
+            color: session.player_color(id).color().to_color32(),
+            strength: combat_participant_strength(report, side, id),
+        })
+        .collect()
+}
+
 /// Draws a combat role followed by independently colored participant names.
 fn draw_colored_combat_heading(
     ui: &mut Ui,
     role: &str,
     role_color: Color32,
-    participants: &[(String, Color32)],
+    participants: &[CombatParticipant],
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.label(
             RichText::new(if participants.is_empty() {
@@ -3552,13 +3836,106 @@ fn draw_colored_combat_heading(
             .strong()
             .color(role_color),
         );
-        for (index, (name, color)) in participants.iter().enumerate() {
+        for (index, participant) in participants.iter().enumerate() {
             if index > 0 {
                 ui.label(RichText::new(" + ").strong().color(role_color));
             }
-            ui.label(RichText::new(name).strong().color(*color));
+            ui.label(RichText::new(&participant.name).strong().color(participant.color));
         }
     });
+}
+
+/// Match the production-weighted ship strength used by fleet withdrawal and mission UI.
+fn combat_fleet_strength(army: &Army) -> u128 {
+    army.iter().fold(0_u128, |strength, (unit, count)| {
+        if unit.is_ship() {
+            strength.saturating_add((*count as u128).saturating_mul(unit.production() as u128))
+        } else {
+            strength
+        }
+    })
+}
+
+fn combat_participant_strength(report: &MissionReport, side: &Side, player_id: PlayerId) -> u128 {
+    match side {
+        Side::Attacker => {
+            let participant_army = report
+                .mission
+                .joint_attack
+                .as_ref()
+                .filter(|attack| !attack.attackers.is_empty())
+                .and_then(|attack| attack.attackers.get(&player_id));
+            if let Some(army) = participant_army {
+                combat_fleet_strength(army)
+            } else if player_id == report.mission.owner {
+                combat_fleet_strength(&report.mission.army)
+            } else {
+                0
+            }
+        },
+        Side::Defender => {
+            let controller = report.planet.controlled.or(report.planet.owned);
+            if Some(player_id) == controller {
+                combat_fleet_strength(report.planet.army.controller())
+            } else {
+                report.planet.army.protector(player_id).map_or(0, combat_fleet_strength)
+            }
+        },
+    }
+}
+
+/// Cumulative ranges keep adjoining player colors flush and fill the final pixel exactly.
+fn combat_strength_ranges(strengths: &[u128]) -> Vec<(f32, f32)> {
+    let total = strengths.iter().map(|strength| *strength as f64).sum::<f64>();
+    if total == 0.0 {
+        return strengths
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                if index == 0 {
+                    (0.0, 1.0)
+                } else {
+                    (1.0, 1.0)
+                }
+            })
+            .collect();
+    }
+
+    let last = strengths.iter().rposition(|strength| *strength > 0);
+    let mut consumed = 0.0_f64;
+    strengths
+        .iter()
+        .enumerate()
+        .map(|(index, strength)| {
+            let start = (consumed / total) as f32;
+            consumed += *strength as f64;
+            let end = if Some(index) == last {
+                1.0
+            } else {
+                (consumed / total) as f32
+            };
+            (start, end)
+        })
+        .collect()
+}
+
+fn draw_combat_strength_bar(ui: &mut Ui, participants: &[CombatParticipant]) {
+    ui.add_space(8.);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+    let strengths = participants.iter().map(|participant| participant.strength).collect::<Vec<_>>();
+    for (participant, (start, end)) in participants.iter().zip(combat_strength_ranges(&strengths)) {
+        if end > start {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + rect.width() * start, rect.top()),
+                    egui::pos2(rect.left() + rect.width() * end, rect.bottom()),
+                ),
+                0.0,
+                participant.color,
+            );
+        }
+    }
 }
 
 /// Draws the combat report interface and emits any resulting local actions.
@@ -3769,47 +4146,23 @@ fn draw_combat_report(
     let attack_c = session.player_color(attacker_id).color();
     let defend_c =
         defender_id.map_or(Color::srgb_u8(150, 158, 170), |id| session.player_color(id).color());
-    let attacker_name = session
-        .player_name(attacker_id)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("Player {attacker_id}"));
-    let defender_players = report.defender_players();
-    let defender_names = defender_players
-        .iter()
-        .copied()
-        .map(|id| {
-            (
-                session
-                    .player_name(id)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Player {id}")),
-                session.player_color(id).color().to_color32(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let attackers = combat_side_participants(report, &Side::Attacker, session);
+    let defenders = combat_side_participants(report, &Side::Defender, session);
 
     ui.horizontal(|ui| {
         ui.add_space(40.);
 
-        ui.visuals_mut().widgets.noninteractive.bg_stroke.width = 6.;
-
         ui.vertical(|ui| {
             ui.set_width(attacker_w);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("Attacker · {attacker_name}"))
-                        .strong()
-                        .color(attack_c.to_color32()),
-                );
+                draw_colored_combat_heading(ui, "Attacker", attack_c.to_color32(), &attackers);
             });
-            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = attack_c.to_color32();
-            ui.separator();
+            draw_combat_strength_bar(ui, &attackers);
         });
         ui.vertical(|ui| {
             ui.set_width(defender_w);
-            draw_colored_combat_heading(ui, "Defender", defend_c.to_color32(), &defender_names);
-            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = defend_c.to_color32();
-            ui.separator();
+            draw_colored_combat_heading(ui, "Defender", defend_c.to_color32(), &defenders);
+            draw_combat_strength_bar(ui, &defenders);
         });
     });
 
@@ -4091,6 +4444,89 @@ fn combat_selection_planet_image(report: &MissionReport) -> String {
     report.planet.image()
 }
 
+const COMBAT_SELECTION_MIN_WIDTH: f32 = 380.0;
+const COMBAT_SELECTION_ICON_RESERVE: f32 = 161.0;
+// Include the panel inset as well as the gap between the text and icon group.
+const COMBAT_SELECTION_TEXT_RESERVE: f32 = COMBAT_SELECTION_ICON_RESERVE + 24.0;
+
+fn combat_selection_reports(player: &Player, turn: usize) -> Vec<&MissionReport> {
+    player
+        .reports
+        .iter()
+        .filter(|report| {
+            report.turn == turn
+                && !report.hidden
+                && report.has_combat_playback()
+                && report.can_see(&Side::Defender, player.id)
+        })
+        .collect()
+}
+
+/// Keeps every participant's own color while separators remain readable in white.
+fn combat_selection_matchup(
+    report: &MissionReport,
+    session: &MultiplayerSession,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font_id = egui::FontId::new(14.0, FontFamily::Proportional);
+    let mut append = |text: &str, color| {
+        job.append(
+            text,
+            0.0,
+            egui::text::TextFormat {
+                font_id: font_id.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+    };
+    for (index, id) in report.attacker_players().into_iter().enumerate() {
+        if index > 0 {
+            append(" + ", Color32::WHITE);
+        }
+        let name =
+            session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"));
+        append(&name, session.player_color(id).color().to_color32());
+    }
+    append(" vs ", Color32::WHITE);
+    let defenders = report.defender_players();
+    if defenders.is_empty() {
+        append("Neutral", Color32::WHITE);
+    }
+    for (index, id) in defenders.into_iter().enumerate() {
+        if index > 0 {
+            append(" + ", Color32::WHITE);
+        }
+        let name =
+            session.player_name(id).map(str::to_owned).unwrap_or_else(|| format!("Player {id}"));
+        append(&name, session.player_color(id).color().to_color32());
+    }
+    job
+}
+
+fn combat_selection_panel_width(
+    context: &egui::Context,
+    reports: &[&MissionReport],
+    map: &Map,
+    session: &MultiplayerSession,
+    viewport_width: f32,
+) -> f32 {
+    let title_font = TextStyle::Body.resolve(&context.style_of(context.theme()));
+    let text_width = reports.iter().fold(0.0_f32, |width, report| {
+        let title = format!("Battle of {}", map.get(report.mission.destination).name);
+        let title_width = context.fonts_mut(|fonts| {
+            fonts.layout_no_wrap(title, title_font.clone(), Color32::WHITE).size().x
+        });
+        let matchup_width = context.fonts_mut(|fonts| {
+            fonts.layout_job(combat_selection_matchup(report, session)).size().x
+        });
+        width.max(title_width).max(matchup_width)
+    });
+    (text_width + COMBAT_SELECTION_TEXT_RESERVE)
+        .max(COMBAT_SELECTION_MIN_WIDTH)
+        .min((viewport_width - 16.0).max(1.0))
+}
+
 /// Draws the combat selection interface and emits any resulting local actions.
 fn draw_combat_selection(
     ui: &mut Ui,
@@ -4102,16 +4538,7 @@ fn draw_combat_selection(
     next_game_state: &mut NextState<GameState>,
     images: &ImageIds,
 ) {
-    let reports = player
-        .reports
-        .iter()
-        .filter(|r| {
-            r.turn == settings.turn
-                && !r.hidden
-                && r.has_combat_playback()
-                && r.can_see(&Side::Defender, player.id)
-        })
-        .collect::<Vec<_>>();
+    let reports = combat_selection_reports(player, settings.turn);
 
     ui.add_space(5.);
 
@@ -4129,29 +4556,28 @@ fn draw_combat_selection(
 
             for report in reports.iter().rev() {
                 let destination = map.get(report.mission.destination);
-
-                let (rect, response) =
-                    ui.allocate_exact_size([ui.available_width(), 72.].into(), Sense::click());
+                let text_width = (ui.available_width() - COMBAT_SELECTION_ICON_RESERVE).max(1.0);
+                let mut title_job = egui::text::LayoutJob::simple_singleline(
+                    format!("Battle of {}", destination.name),
+                    TextStyle::Body.resolve(ui.style()),
+                    Color32::WHITE,
+                );
+                title_job.wrap.max_width = text_width;
+                title_job.wrap.break_anywhere = true;
+                let title = ui.painter().layout_job(title_job);
+                let mut matchup_job = combat_selection_matchup(report, session);
+                matchup_job.wrap.max_width = text_width;
+                matchup_job.wrap.break_anywhere = true;
+                let matchup = ui.painter().layout_job(matchup_job);
+                let text_height = title.size().y + 2.0 + matchup.size().y;
+                let row_height = (text_height + 20.0).max(72.0);
+                let (rect, response) = ui
+                    .allocate_exact_size([ui.available_width(), row_height].into(), Sense::click());
                 let response = response.on_hover_cursor(CursorIcon::PointingHand);
                 let hovered = response.hovered();
                 let pressed = response.is_pointer_button_down_on();
                 let attacker_id = report.mission.owner;
-                let defender_id = report.planet.controlled.or(report.planet.owned);
                 let player_color = session.player_color(attacker_id).color().to_color32();
-                let opponent_id = if attacker_id == player.id {
-                    defender_id
-                } else {
-                    Some(attacker_id)
-                };
-                let opponent = opponent_id.map(|id| {
-                    (
-                        session
-                            .player_name(id)
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| format!("Player {id}")),
-                        session.player_color(id).color().to_color32(),
-                    )
-                });
 
                 let fill = if pressed {
                     Color32::from_rgba_unmultiplied(34, 61, 84, 248)
@@ -4221,34 +4647,17 @@ fn draw_combat_selection(
                 );
 
                 let text_painter = ui.painter().with_clip_rect(text_rect);
-                text_painter.text(
-                    egui::pos2(
-                        text_rect.left(),
-                        if opponent.is_some() {
-                            center_y - 9.0
-                        } else {
-                            center_y
-                        },
-                    ),
-                    Align2::LEFT_CENTER,
-                    format!("Battle of {}", destination.name),
-                    TextStyle::Body.resolve(ui.style()),
+                let text_top = center_y - text_height * 0.5;
+                text_painter.galley(
+                    egui::pos2(text_rect.left(), text_top),
+                    title.clone(),
                     Color32::WHITE,
                 );
-                if let Some((opponent_name, opponent_color)) = opponent {
-                    text_painter.circle_filled(
-                        egui::pos2(text_rect.left() + 2.5, center_y + 13.0),
-                        2.5,
-                        opponent_color,
-                    );
-                    text_painter.text(
-                        egui::pos2(text_rect.left() + 10.0, center_y + 13.0),
-                        Align2::LEFT_CENTER,
-                        opponent_name,
-                        egui::FontId::new(14.0, FontFamily::Proportional),
-                        opponent_color,
-                    );
-                }
+                text_painter.galley(
+                    egui::pos2(text_rect.left(), text_top + title.size().y + 2.0),
+                    matchup,
+                    Color32::WHITE,
+                );
 
                 if response.clicked() {
                     state.in_combat = Some(report.id);
@@ -4338,6 +4747,7 @@ pub fn draw_ui(
     }
 
     let (width, height) = (window.width(), window.height());
+    let panel_scale = game_panel_scale(egui::vec2(width, height));
     let action_energy_demand =
         pending_railgun_energy_demand(&map, player.id, &pending).saturating_add(
             crate::core::energy::jump_gate_energy_demand(&missions.0, player.id, settings.turn),
@@ -4436,7 +4846,7 @@ pub fn draw_ui(
             (PLANET_UNITS_PANEL_WIDTH, 630.)
         };
 
-        let slide_distance = window_w + 518.0;
+        let slide_distance = (window_w + 518.0) * panel_scale;
         let slide_x = planet_panel_slide_offset(slide_progress, right_side, slide_distance);
         let detail_line_progress =
             std::array::from_fn(|line| planet_panel_slide.detail_progress(line));
@@ -4449,31 +4859,32 @@ pub fn draw_ui(
         let mut draw_planet_info = |contexts, id, map, player, state, extension| {
             let (window_w2, window_h2) = (518., 216.);
 
-            draw_sliding_panel(
+            draw_scaled_sliding_panel(
                 contexts,
                 "planet overview",
                 "panel",
                 (
                     if right_side {
                         width * 0.998
-                            - window_w2
+                            - window_w2 * panel_scale
                             - if extension {
-                                window_w
+                                window_w * panel_scale
                             } else {
                                 0.
                             }
                     } else {
                         width * 0.002
                             + if extension {
-                                window_w
+                                window_w * panel_scale
                             } else {
                                 0.
                             }
                     } + slide_x,
-                    height * 0.5 - window_h * 0.5 + 27.,
+                    height * 0.5 - window_h * panel_scale * 0.5 + 27. * panel_scale,
                 ),
                 (window_w2, window_h2),
                 slide_distance,
+                panel_scale,
                 &images,
                 |ui| {
                     draw_planet_overview(
@@ -4503,20 +4914,21 @@ pub fn draw_ui(
         {
             include_planet_panel_rect(
                 &mut panel_rects,
-                draw_sliding_panel(
+                draw_scaled_sliding_panel(
                     &mut contexts,
                     "overview",
                     "panel",
                     (
                         if right_side {
-                            width * 0.998 - window_w
+                            width * 0.998 - window_w * panel_scale
                         } else {
                             width * 0.002
                         } + slide_x,
-                        height * 0.5 - window_h * 0.5,
+                        height * 0.5 - window_h * panel_scale * 0.5,
                     ),
                     (window_w, window_h),
                     slide_distance,
+                    panel_scale,
                     &images,
                     |ui| draw_overview(ui, planet, player.home_planet, &session, &images),
                 ),
@@ -4533,20 +4945,21 @@ pub fn draw_ui(
             if !planet.is_destroyed && !info.army.is_empty() {
                 include_planet_panel_rect(
                     &mut panel_rects,
-                    draw_sliding_panel(
+                    draw_scaled_sliding_panel(
                         &mut contexts,
                         "report overview",
                         "panel",
                         (
                             if right_side {
-                                width * 0.998 - window_w
+                                width * 0.998 - window_w * panel_scale
                             } else {
                                 width * 0.002
                             } + slide_x,
-                            height * 0.5 - window_h * 0.5,
+                            height * 0.5 - window_h * panel_scale * 0.5,
                         ),
                         (window_w, window_h),
                         slide_distance,
+                        panel_scale,
                         &images,
                         |ui| draw_report_overview(ui, planet, &info, player.home_planet, &images),
                     ),
@@ -4588,16 +5001,20 @@ pub fn draw_ui(
             return;
         };
 
-        let (fleet_x, info_x) =
-            mission_hover_panel_x_positions(window.cursor_position().map(|pos| pos.x), width);
+        let (fleet_x, info_x) = mission_hover_panel_x_positions(
+            window.cursor_position().map(|pos| pos.x / panel_scale),
+            width / panel_scale,
+        );
+        let (fleet_x, info_x) = (fleet_x * panel_scale, info_x * panel_scale);
         let window_h = 630.0;
 
-        draw_panel(
+        draw_scaled_panel(
             &mut contexts,
             "mission hover fleet",
             "panel",
-            (fleet_x, height * 0.5 - window_h * 0.5),
+            (fleet_x, height * 0.5 - window_h * panel_scale * 0.5),
             (MISSION_HOVER_FLEET_WIDTH, window_h),
+            panel_scale,
             &images,
             |ui| draw_mission_fleet_hover(ui, mission, &map, &player, &images),
         );
@@ -4606,12 +5023,13 @@ pub fn draw_ui(
             // Objective names such as "Missile Strike" must fit beside their icon and label.
             let window_h2 = 280.0;
 
-            draw_panel(
+            draw_scaled_panel(
                 &mut contexts,
                 "mission hover info",
                 "panel",
-                (info_x, height * 0.5 - window_h * 0.5 + 27.0),
+                (info_x, height * 0.5 - window_h * panel_scale * 0.5 + 27.0 * panel_scale),
                 (MISSION_HOVER_INFO_WIDTH, window_h2),
+                panel_scale,
                 &images,
                 |ui| draw_mission_info_hover(ui, mission, &settings, &map, &player, &images),
             );
@@ -4622,21 +5040,18 @@ pub fn draw_ui(
     let mission_hover_from_ui = std::mem::take(&mut state.mission_hover_from_ui);
 
     if mission_panel_visible(&state) {
-        let participants = if state.allied_mission {
-            state.joint_attack_invitees.len() + 1
-        } else {
-            0
-        };
-        let size = missions::mission_panel_size(egui::vec2(width, height), participants);
+        let mission_scale = missions::mission_panel_scale(egui::vec2(width, height));
+        let size = missions::mission_panel_size(egui::vec2(width, height) / mission_scale);
         let (window_w, window_h) = (size.x, size.y);
 
         let is_hovered = contexts.ctx_mut().is_ok_and(|ctx| ctx.is_pointer_over_egui());
-        draw_panel(
+        draw_scaled_panel(
             &mut contexts,
             "mission",
             "panel",
-            ((width - window_w) * 0.5, (height - window_h) * 0.5),
+            ((width - window_w * mission_scale) * 0.5, (height - window_h * mission_scale) * 0.5),
             (window_w, window_h),
+            mission_scale,
             &images,
             |ui| {
                 draw_mission(
@@ -4678,12 +5093,16 @@ pub fn draw_ui(
                 if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
                     let (window_w, window_h) = (735., 340.);
 
-                    draw_panel(
+                    draw_scaled_panel(
                         &mut contexts,
                         "shop",
                         "panel",
-                        (width * 0.5 - window_w * 0.5, height * 0.995 - window_h),
+                        (
+                            width * 0.5 - window_w * panel_scale * 0.5,
+                            height * 0.995 - window_h * panel_scale,
+                        ),
                         (window_w, window_h),
+                        panel_scale,
                         &images,
                         |ui| {
                             draw_shop(
@@ -4714,27 +5133,40 @@ pub fn draw_ui(
 
     if state.combat_report.is_some() {
         let (window_w, window_h) = (1070., 700.);
+        let scale = panel_scale
+            .min(((width - 16.0) / window_w).max(0.001))
+            .min(((height - 16.0) / window_h).max(0.001));
 
-        draw_panel(
+        draw_scaled_panel(
             &mut contexts,
             "combat report",
             "panel",
-            (width * 0.5 - window_w * 0.5, height * 0.9 - window_h),
+            (width * 0.5 - window_w * scale * 0.5, height * 0.9 - window_h * scale),
             (window_w, window_h),
+            scale,
             &images,
             |ui| draw_combat_report(ui, &mut state, &map, &player, &session, &images),
         );
     }
 
     if *game_state.get() == GameState::CombatMenu {
-        let (window_w, window_h) = (380., 420.);
+        let reports = combat_selection_reports(&player, settings.turn);
+        let window_h = 420.0;
+        let scale = panel_scale.min(((height - 16.0) / window_h).max(0.001));
+        let window_w = contexts
+            .ctx_mut()
+            .map(|context| {
+                combat_selection_panel_width(context, &reports, &map, &session, width / scale)
+            })
+            .unwrap_or(COMBAT_SELECTION_MIN_WIDTH);
 
-        draw_panel(
+        draw_scaled_panel(
             &mut contexts,
             "combat list",
             "panel",
-            ((width - window_w) * 0.5, (height - window_h) * 0.5),
+            ((width - window_w * scale) * 0.5, (height - window_h * scale) * 0.5),
             (window_w, window_h),
+            scale,
             &images,
             |ui| {
                 draw_combat_selection(
@@ -4794,9 +5226,9 @@ pub fn draw_ui(
         let valid = pending.can_accept_commands()
             && !origins.is_empty()
             && !already_committed
-            && map
-                .try_get(target)
-                .is_some_and(|planet| !planet.is_destroyed && !planet.is_protected_by(player.id));
+            && map.try_get(target).is_some_and(|planet| {
+                !planet.is_destroyed && !planet.blocks_hostile_action_by(player.id)
+            });
 
         if !valid {
             state.railgun_confirmation = None;

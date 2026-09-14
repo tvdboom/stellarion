@@ -67,16 +67,16 @@ impl Outcome {
             || !matches!(report.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
             || ownership_changed
             || control_changed
-            || !(report.mission.owner == player.id
-                || report.planet.owned == Some(player.id)
-                || report.planet.controlled == Some(player.id))
+            || !(report.is_attacker(player.id) || report.is_defender(player.id))
         {
             return None;
         }
-        Some(match report.winner() {
-            Some(id) if id == player.id => Self::Victory,
-            Some(_) => Self::Defeat,
-            None => Self::Draw,
+        Some(if report.winner().is_none() {
+            Self::Draw
+        } else if report.won_by(player.id) {
+            Self::Victory
+        } else {
+            Self::Defeat
         })
     }
 

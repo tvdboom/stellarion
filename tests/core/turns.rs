@@ -189,6 +189,64 @@ fn protected_player_sees_the_complete_fleet_without_scanner_coverage() {
 }
 
 #[test]
+fn joint_attack_does_not_reveal_an_allies_route_without_scanner_coverage() {
+    use crate::core::map::icon::Icon;
+    use crate::core::missions::JointAttackMission;
+    use crate::core::units::buildings::Building;
+
+    let mut map = Map::new_with_rng(3, 100, &mut rand_chacha::ChaCha8Rng::from_seed([41; 32]));
+    let worlds = map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon())
+        .map(|planet| planet.id)
+        .collect::<Vec<_>>();
+    let moon = map.moons()[0].id;
+    let teammate = Player::new(1, worlds[0]);
+    let owner = Player::new(2, worlds[1]);
+    let target = Player::new(3, worlds[2]);
+    map.get_mut(worlds[0]).owned = Some(teammate.id);
+    map.get_mut(worlds[0]).controlled = Some(teammate.id);
+    map.get_mut(worlds[1]).owned = Some(owner.id);
+    map.get_mut(worlds[1]).controlled = Some(owner.id);
+    map.get_mut(worlds[2]).owned = Some(target.id);
+    map.get_mut(worlds[2]).controlled = Some(target.id);
+
+    let mut mission = Mission::new_with_id(
+        91,
+        1,
+        owner.id,
+        map.get(worlds[1]),
+        map.get(worlds[2]),
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.joint_attack = Some(JointAttackMission {
+        leader: teammate.id,
+        attackers: std::collections::BTreeMap::from([
+            (teammate.id, Army::from([(Unit::probe(), 1)])),
+            (owner.id, mission.army.clone()),
+        ]),
+        ..default()
+    });
+    assert_eq!(mission.is_seen_by_radar(&map, &teammate), None);
+    assert_eq!(mission.is_seen_by_phalanx(&map, &teammate), None);
+    assert!(filter_missions(std::slice::from_ref(&mission), &map, &teammate).is_empty());
+    assert!(filter_missions(std::slice::from_ref(&mission), &map, &target).is_empty());
+    assert_eq!(filter_missions(std::slice::from_ref(&mission), &map, &owner).len(), 1);
+
+    map.get_mut(moon).controlled = Some(teammate.id);
+    map.get_mut(moon).army.insert(Unit::Building(Building::OrbitalRadar), 1);
+    mission.position = map.get(moon).position;
+    assert_eq!(mission.is_seen_by_radar(&map, &teammate), Some(1));
+    assert_eq!(filter_missions(&[mission], &map, &teammate).len(), 1);
+}
+
+#[test]
 fn returning_probes_create_a_reports_panel_toast() {
     use crate::core::combat::resolution::resolve_combat_with_rng;
 
@@ -428,6 +486,72 @@ fn protection_fleet_receives_a_victory_notification_when_the_defending_team_wins
     let notification = report_notification(&report, &protector, &origin, &destination);
     assert_eq!(notification.message, format!("Battle won at planet {}.", destination.name));
     assert_eq!(notification.level, MessageLevel::Info);
+}
+
+#[test]
+fn all_joint_attackers_see_the_same_winning_battle_result() {
+    use std::collections::BTreeMap;
+
+    use crate::core::combat::report::Side;
+    use crate::core::missions::JointAttackMission;
+
+    let mut model = GameModel::new([55; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let origin = model.map.get(model.players[0].home_planet).clone();
+    let destination = model.map.get(model.players[1].home_planet).clone();
+    let fleet = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
+    let mut mission = Mission::new_with_id(
+        75,
+        1,
+        model.players[0].id,
+        &origin,
+        &destination,
+        Icon::Attack,
+        fleet.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.joint_attack = Some(JointAttackMission {
+        leader: mission.owner,
+        attackers: BTreeMap::from([(1, fleet.clone()), (3, fleet.clone()), (4, fleet.clone())]),
+        ..default()
+    });
+    let mut report = MissionReport {
+        surviving_attacker: fleet,
+        combat_report: Some(CombatReport::default()),
+        ..crate::test_support::empty_report(mission, destination.clone())
+    };
+    assert_eq!(report.winner(), Some(1));
+
+    for id in [1, 3, 4] {
+        let player = Player::new(id, origin.id);
+        assert!(report.won_by(id));
+        assert_eq!(report.status(&player), "victory");
+        assert_eq!(report.image(&player), "won");
+        assert!(report.can_see(&Side::Attacker, id));
+        assert!(report.can_see(&Side::Defender, id));
+        let notification = report_notification(&report, &player, &origin, &destination);
+        assert_eq!(notification.message, format!("Battle won at planet {}.", destination.name));
+        assert_eq!(notification.level, MessageLevel::Info);
+    }
+    assert!(!report.won_by(2));
+    assert_eq!(report.status(&Player::new(2, destination.id)), "defeat");
+
+    report.surviving_attacker.clear();
+    report.surviving_defender = destination.army.clone();
+    assert_eq!(report.winner(), Some(2));
+    for id in [1, 3, 4] {
+        let player = Player::new(id, origin.id);
+        assert!(!report.won_by(id));
+        assert_eq!(report.status(&player), "defeat");
+        assert_eq!(report.image(&player), "lost");
+        let notification = report_notification(&report, &player, &origin, &destination);
+        assert_eq!(notification.message, format!("Battle lost at planet {}.", destination.name));
+        assert_eq!(notification.level, MessageLevel::Warning);
+    }
+    assert!(report.won_by(2));
 }
 
 #[test]

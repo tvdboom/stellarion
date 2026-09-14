@@ -15,7 +15,7 @@ use crate::core::map::systems::{CelestialCmp, SolarStarCmp};
 use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
-use crate::core::ui::systems::UiState;
+use crate::core::ui::systems::{viewport_ui_scale, UiState};
 use crate::core::units::Unit;
 
 /// Short feedback cues balanced for repeated menu and gameplay actions.
@@ -165,7 +165,7 @@ impl PlayAudioMsg {
                 // recording has a long low-frequency tail, so lift it above smaller impacts.
                 "large explosion" => -8.0,
                 "explosion" => -14.0,
-                "death ray" => -12.0,
+                "death ray" => -4.0,
                 "beam fire" => -10.0,
                 "short explosion" | "bomb release" | "probe retreat" => -18.0,
                 "missile miss" => -11.0,
@@ -421,8 +421,9 @@ fn volume_popover(
 const HUD_BUTTON_FOREGROUND: egui::Color32 = egui::Color32::from_rgb(232, 242, 250);
 
 /// Shared circular background and interaction bounds for the adjacent HUD controls.
-fn circular_hud_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+fn circular_hud_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(32.0, 32.0) * scale, egui::Sense::click());
     let painter = ui.painter();
     let center = rect.center();
     let white = HUD_BUTTON_FOREGROUND;
@@ -430,14 +431,14 @@ fn circular_hud_button(ui: &mut egui::Ui) -> egui::Response {
     let highlighted = response.hovered() || response.has_focus();
     painter.circle(
         center,
-        15.0,
+        15.0 * scale,
         if highlighted {
             egui::Color32::from_rgb(27, 49, 66)
         } else {
             egui::Color32::from_rgb(14, 28, 42)
         },
         egui::Stroke::new(
-            1.5,
+            1.5 * scale,
             if highlighted {
                 white
             } else {
@@ -449,13 +450,18 @@ fn circular_hud_button(ui: &mut egui::Ui) -> egui::Response {
 }
 
 /// Draws the HUD control at its final resolution; fine bitmap bevels blur at this size.
+#[cfg(test)]
 fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
-    let response = circular_hud_button(ui);
+    audio_mode_button_scaled(ui, mode, 1.0)
+}
+
+fn audio_mode_button_scaled(ui: &mut egui::Ui, mode: AudioState, scale: f32) -> egui::Response {
+    let response = circular_hud_button(ui, scale);
     let painter = ui.painter();
     let center = response.rect.center();
     let white = HUD_BUTTON_FOREGROUND;
-    let point = |x, y| center + egui::vec2(x, y);
-    let stroke = egui::Stroke::new(1.8, white);
+    let point = |x, y| center + egui::vec2(x, y) * scale;
+    let stroke = egui::Stroke::new(1.8 * scale, white);
     match mode {
         AudioState::Mute | AudioState::NoMusic => {
             painter.add(egui::Shape::convex_polygon(
@@ -493,8 +499,8 @@ fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
             ));
             painter.line_segment([point(-3.0, -5.0), point(-3.0, 6.0)], stroke);
             painter.line_segment([point(7.0, -7.0), point(7.0, 4.0)], stroke);
-            painter.circle_filled(point(-5.0, 6.0), 2.6, white);
-            painter.circle_filled(point(5.0, 4.0), 2.6, white);
+            painter.circle_filled(point(-5.0, 6.0), 2.6 * scale, white);
+            painter.circle_filled(point(5.0, 4.0), 2.6 * scale, white);
         },
     }
     response
@@ -503,22 +509,33 @@ fn audio_mode_button(ui: &mut egui::Ui, mode: AudioState) -> egui::Response {
 }
 
 /// Draws a compact gear using the same circular treatment as the adjacent audio control.
-fn combat_settings_button(ui: &mut egui::Ui) -> egui::Response {
-    let response = circular_hud_button(ui);
+#[cfg(test)]
+fn settings_gear_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    settings_gear_button_scaled(ui, label, 1.0)
+}
+
+fn settings_gear_button_scaled(ui: &mut egui::Ui, label: &str, scale: f32) -> egui::Response {
+    let response = circular_hud_button(ui, scale);
     let painter = ui.painter();
     let center = response.rect.center();
     let white = HUD_BUTTON_FOREGROUND;
-    let stroke = egui::Stroke::new(1.8, white);
-    painter.circle(center, 4.0, egui::Color32::TRANSPARENT, stroke);
-    painter.circle(center, 8.0, egui::Color32::TRANSPARENT, egui::Stroke::new(1.3, white));
+    let stroke = egui::Stroke::new(1.8 * scale, white);
+    painter.circle(center, 4.0 * scale, egui::Color32::TRANSPARENT, stroke);
+    painter.circle(
+        center,
+        8.0 * scale,
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.3 * scale, white),
+    );
     for index in 0..8 {
         let angle = index as f32 * std::f32::consts::TAU / 8.0;
         let direction = egui::vec2(angle.cos(), angle.sin());
-        painter.line_segment([center + direction * 8.0, center + direction * 11.0], stroke);
+        painter.line_segment(
+            [center + direction * (8.0 * scale), center + direction * (11.0 * scale)],
+            stroke,
+        );
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Combat settings")
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -600,28 +617,50 @@ fn audio_controls(
     context: &egui::Context,
     settings: &mut Settings,
     in_combat: bool,
-) -> egui::Response {
+    show_game_settings: bool,
+) -> (egui::Response, Option<egui::Response>) {
     // One inset for both axes, independent of the window aspect ratio and UI button padding.
+    let scale = viewport_ui_scale(context.content_rect().size());
     egui::Area::new(egui::Id::new("audio controls"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0) * scale)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
+            ui.spacing_mut().item_spacing.x *= scale;
             ui.horizontal(|ui| {
-                let settings_button = in_combat.then(|| combat_settings_button(ui));
-                let audio_button = audio_mode_button(ui, settings.audio);
+                let settings_button = (in_combat || show_game_settings).then(|| {
+                    settings_gear_button_scaled(
+                        ui,
+                        if in_combat {
+                            "Combat settings"
+                        } else {
+                            "Game settings"
+                        },
+                        scale,
+                    )
+                });
+                let audio_button = audio_mode_button_scaled(ui, settings.audio, scale);
                 let prefer_settings =
                     settings_button.as_ref().is_some_and(|button| button.hovered());
                 let prefer_volume = audio_button.hovered();
 
-                if let Some(settings_button) = &settings_button {
+                if let Some(settings_button) = settings_button.as_ref().filter(|_| in_combat) {
                     let _ = combat_settings_popover(settings_button, settings, prefer_volume);
                 }
                 volume_popover(&audio_button, settings, prefer_settings);
-                audio_button
+                (audio_button, settings_button)
             })
             .inner
         })
         .inner
+}
+
+/// The map gear opens settings directly and closes them back to active play.
+fn game_settings_destination(state: GameState) -> Option<GameState> {
+    match state {
+        GameState::Playing | GameState::GameMenu => Some(GameState::Settings),
+        GameState::Settings => Some(GameState::Playing),
+        GameState::CombatMenu | GameState::Combat | GameState::EndGame => None,
+    }
 }
 
 /// Draws the top-right audio mode icon and interactive hover volume control.
@@ -630,6 +669,7 @@ pub fn draw_audio_controls(
     mut settings: ResMut<Settings>,
     app_state: Res<State<AppState>>,
     game_state: Res<State<GameState>>,
+    mut next_game_state: ResMut<NextState<GameState>>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
     mut volume_feedback: MessageReader<VolumeFeedbackMsg>,
 ) {
@@ -638,12 +678,23 @@ pub fn draw_audio_controls(
     };
     let previous_audio = settings.audio;
     let in_combat = *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat;
+    let settings_destination = (*app_state.get() == AppState::Game)
+        .then(|| game_settings_destination(*game_state.get()))
+        .flatten();
     scroll_volume(context, &mut settings, in_combat);
     if !volume_feedback.is_empty() {
         volume_feedback.clear();
         show_volume_feedback(context);
     }
-    if audio_controls(context, &mut settings, in_combat).clicked() {
+    let (audio_button, settings_button) =
+        audio_controls(context, &mut settings, in_combat, settings_destination.is_some());
+    if let Some(destination) = settings_destination
+        .filter(|_| settings_button.as_ref().is_some_and(|button| button.clicked()))
+    {
+        next_game_state.set(destination);
+        set_ui_sound(context, Some(SoundEffect::Button));
+    }
+    if audio_button.clicked() {
         change_audio.write(ChangeAudioMsg(None));
         set_ui_sound(context, Some(SoundEffect::Button));
     } else if settings.audio != previous_audio {

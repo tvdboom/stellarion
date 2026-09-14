@@ -92,7 +92,7 @@ fn master_volume_preserves_the_mix_and_zero_is_silent() {
     assert_eq!(explosion.volume, -8.0);
     assert_eq!(PlayAudioMsg::new("explosion").volume, -14.0);
     assert_eq!(PlayAudioMsg::new("short explosion").volume, -18.0);
-    assert_eq!(PlayAudioMsg::new("death ray").volume, -12.0);
+    assert_eq!(PlayAudioMsg::new("death ray").volume, -4.0);
     assert_eq!(PlayAudioMsg::new("beam fire").volume, -10.0);
     assert_eq!(PlayAudioMsg::new("bomb release").volume, -18.0);
     assert_eq!(PlayAudioMsg::new("missile miss").volume, -11.0);
@@ -477,9 +477,15 @@ fn keyboard_volume_feedback_uses_the_same_hold_and_fade_as_scrolling() {
 #[test]
 fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
     for scale in [1.0, 1.25, 2.0] {
-        for size in [egui::vec2(400.0, 400.0), egui::vec2(1280.0, 720.0)] {
+        for size in [
+            egui::vec2(400.0, 400.0),
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(1600.0, 900.0),
+            egui::vec2(1920.0, 1080.0),
+        ] {
             let context = egui::Context::default();
             context.set_pixels_per_point(scale);
+            let ui_scale = viewport_ui_scale(size);
             let mut settings = Settings::default();
             for mode in [AudioState::Mute, AudioState::NoMusic, AudioState::Sound] {
                 settings.audio = mode;
@@ -490,16 +496,133 @@ fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
                             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                             ..default()
                         },
-                        |ui| button = audio_controls(ui.ctx(), &mut settings, false).rect,
+                        |ui| button = audio_controls(ui.ctx(), &mut settings, false, false).0.rect,
                     );
                     output.textures_delta.clear();
                 }
-                assert!((button.top() - 20.0).abs() <= 1.0);
-                assert!((size.x - button.right() - 20.0).abs() <= 1.0);
-                assert_eq!(button.size(), egui::vec2(32.0, 32.0));
+                assert!(
+                    (button.top() - 20.0 * ui_scale).abs() <= 2.0,
+                    "viewport {size:?}, pixel scale {scale}, button {button:?}, ui scale {ui_scale}"
+                );
+                assert!((size.x - button.right() - 20.0 * ui_scale).abs() <= 2.0);
+                assert!((button.width() - 32.0 * ui_scale).abs() <= 1.0);
+                assert!((button.height() - 32.0 * ui_scale).abs() <= 1.0);
             }
         }
     }
+}
+
+#[test]
+fn map_settings_gear_opens_and_closes_directly_beside_audio() {
+    assert_eq!(game_settings_destination(GameState::Playing), Some(GameState::Settings));
+    assert_eq!(game_settings_destination(GameState::GameMenu), Some(GameState::Settings));
+    assert_eq!(game_settings_destination(GameState::Settings), Some(GameState::Playing));
+    for state in [GameState::CombatMenu, GameState::Combat, GameState::EndGame] {
+        assert_eq!(game_settings_destination(state), None);
+    }
+
+    let context = egui::Context::default();
+    let mut settings = Settings::default();
+    let mut audio = egui::Rect::NOTHING;
+    let mut gear = None;
+    let mut clicked = false;
+    let frame = |events: Vec<egui::Event>,
+                 show_gear: bool,
+                 settings: &mut Settings,
+                 audio: &mut egui::Rect,
+                 gear: &mut Option<egui::Rect>,
+                 clicked: &mut bool| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 260.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                let (audio_button, settings_button) =
+                    audio_controls(ui.ctx(), settings, false, show_gear);
+                *audio = audio_button.rect;
+                *gear = settings_button.as_ref().map(|button| button.rect);
+                *clicked = settings_button.is_some_and(|button| button.clicked());
+            },
+        );
+        output.textures_delta.clear();
+    };
+
+    for _ in 0..3 {
+        frame(vec![], true, &mut settings, &mut audio, &mut gear, &mut clicked);
+    }
+    let gear_rect = gear.expect("map settings gear");
+    assert!(gear_rect.right() < audio.left());
+    assert_eq!(gear_rect.size(), audio.size());
+    let center = gear_rect.center();
+    frame(
+        vec![
+            egui::Event::PointerMoved(center),
+            egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        true,
+        &mut settings,
+        &mut audio,
+        &mut gear,
+        &mut clicked,
+    );
+    frame(
+        vec![egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        true,
+        &mut settings,
+        &mut audio,
+        &mut gear,
+        &mut clicked,
+    );
+    assert!(clicked);
+    let state = game_settings_destination(GameState::Playing).unwrap();
+    assert_eq!(state, GameState::Settings);
+
+    frame(
+        vec![egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        true,
+        &mut settings,
+        &mut audio,
+        &mut gear,
+        &mut clicked,
+    );
+    frame(
+        vec![egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        true,
+        &mut settings,
+        &mut audio,
+        &mut gear,
+        &mut clicked,
+    );
+    assert!(clicked);
+    assert_eq!(game_settings_destination(state), Some(GameState::Playing));
+
+    frame(vec![], false, &mut settings, &mut audio, &mut gear, &mut clicked);
+    assert!(gear.is_none());
 }
 
 #[test]
@@ -525,7 +648,7 @@ fn combat_settings_hover_panel_stays_on_screen_and_defaults_to_sequential_fire()
                 egui::Area::new(egui::Id::new("test combat settings"))
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-60.0, 20.0))
                     .show(ui.ctx(), |ui| {
-                        let response = combat_settings_button(ui);
+                        let response = settings_gear_button(ui, "Combat settings");
                         *button = response.rect;
                         *panel = combat_settings_popover(&response, settings, false);
                     });
@@ -575,7 +698,7 @@ fn combat_and_volume_hover_panels_are_mutually_exclusive() {
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 20.0))
                     .show(ui.ctx(), |ui| {
                         ui.horizontal(|ui| {
-                            let combat = combat_settings_button(ui);
+                            let combat = settings_gear_button(ui, "Combat settings");
                             let volume = audio_mode_button(ui, settings.audio);
                             *combat_button = combat.rect;
                             *volume_button = volume.rect;

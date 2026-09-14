@@ -168,6 +168,37 @@ fn battle_outcomes_follow_the_local_side_while_territory_headlines_take_priority
 }
 
 #[test]
+fn joint_attack_supporters_get_the_attacking_sides_map_result() {
+    use std::collections::BTreeMap;
+
+    use crate::core::missions::JointAttackMission;
+
+    let (_app, planet) = presentation_app();
+    let mut report = battle_report(21, &planet, Outcome::Victory);
+    report.mission.joint_attack = Some(JointAttackMission {
+        leader: report.mission.owner,
+        attackers: BTreeMap::from([
+            (1, Army::from([(Unit::Ship(Ship::LightFighter), 1)])),
+            (3, Army::from([(Unit::Ship(Ship::LightFighter), 1)])),
+            (4, Army::from([(Unit::Ship(Ship::LightFighter), 1)])),
+        ]),
+        ..default()
+    });
+
+    for id in [1, 3, 4] {
+        assert_eq!(Outcome::from_report(&report, &Player::new(id, 0)), Some(Outcome::Victory));
+    }
+    assert_eq!(Outcome::from_report(&report, &Player::new(2, 0)), Some(Outcome::Defeat));
+
+    report.surviving_attacker.clear();
+    report.surviving_defender = Army::from([(Unit::Ship(Ship::LightFighter), 1)]).into();
+    for id in [1, 3, 4] {
+        assert_eq!(Outcome::from_report(&report, &Player::new(id, 0)), Some(Outcome::Defeat));
+    }
+    assert_eq!(Outcome::from_report(&report, &Player::new(2, 0)), Some(Outcome::Victory));
+}
+
+#[test]
 fn world_destruction_replaces_the_battle_result_and_names_the_world_kind() {
     let (app, planet) = presentation_app();
     let mut player = app.world().resource::<Player>().clone();

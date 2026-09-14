@@ -58,7 +58,14 @@ fn senate_production_scales_per_level_on_each_owned_planet_only() {
         let support = model.players[0].senate_support(&model.map);
         for id in [home, colony] {
             let planet = model.map.get(id);
-            assert_eq!(support.bonus(planet, policy), 6);
+            assert_eq!(
+                support.bonus(planet, policy),
+                if policy == SenatePolicy::Expansion {
+                    6
+                } else {
+                    15
+                }
+            );
             assert_eq!(
                 support.fleet_capacity(planet),
                 if policy == SenatePolicy::Expansion {
@@ -70,7 +77,7 @@ fn senate_production_scales_per_level_on_each_owned_planet_only() {
             assert_eq!(
                 support.defense_capacity(planet),
                 if policy == SenatePolicy::Consolidation {
-                    11
+                    20
                 } else {
                     5
                 }
@@ -110,7 +117,7 @@ fn senate_bonus_does_not_unlock_units_or_expand_missile_storage() {
     let planet = model.map.get(colony);
     assert_eq!(
         purchase_limit(player, planet, Unit::Defense(Defense::RocketLauncher), 5, support),
-        Ok(11)
+        Ok(20)
     );
     assert_eq!(
         purchase_limit(player, planet, Unit::Defense(Defense::PlasmaTurret), 5, support),

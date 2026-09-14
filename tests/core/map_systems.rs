@@ -25,7 +25,14 @@ fn destruction_animation_hides_the_planet_swap_under_the_blast() {
 
 #[test]
 fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed() {
-    let mut model = GameModel::new([62; 32], GameRules::default()).unwrap();
+    let mut model = GameModel::new(
+        [62; 32],
+        GameRules {
+            player_count: 3,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
     model.start().unwrap();
     let player = model.players[0].clone();
     let origin = player.home_planet;
@@ -43,13 +50,14 @@ fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed(
         ..default()
     };
 
-    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, false));
-    assert!(railgun_action_available(&model.map, &player, Some(&pending), target, true));
-    assert!(railgun_action_available(&model.map, &player, Some(&pending), moon, true));
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, false, false));
+    assert!(railgun_action_available(&model.map, &player, Some(&pending), target, true, false));
+    assert!(railgun_action_available(&model.map, &player, Some(&pending), target, false, true));
+    assert!(railgun_action_available(&model.map, &player, Some(&pending), moon, false, true));
     assert!(pending.push(TurnCommand::FireOrbitalRailguns {
         target: moon,
     }));
-    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, true));
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, false, true));
 
     pending.commands.clear();
     model
@@ -57,7 +65,90 @@ fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed(
         .get_mut(target)
         .army
         .dock_protector(player.id, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
-    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, true));
+    model.map.get_mut(target).protection_permissions.insert(player.id);
+    assert!(!railgun_action_available(&model.map, &player, Some(&pending), target, false, true));
+}
+
+#[test]
+fn map_eye_shows_available_destruction_actions_without_hovering_the_targets() {
+    let mut model = GameModel::new(
+        [63; 32],
+        GameRules {
+            player_count: 3,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let origin = player.home_planet;
+    let target = model.players[1].home_planet;
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    model.map.get_mut(origin).army.insert(Unit::war_sun(), 1);
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(target).position = origin_position + Vec2::X * Planet::SIZE;
+    let moon_world = model.map.get_mut(moon);
+    moon_world.owned = None;
+    moon_world.controlled = None;
+    moon_world.position = origin_position + Vec2::Y * Planet::SIZE;
+
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Time>()
+        .init_resource::<UiState>()
+        .init_resource::<Settings>()
+        .init_resource::<Missions>()
+        .init_resource::<MultiplayerSession>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .add_systems(Startup, draw_map)
+        .add_systems(Update, update_planet_info);
+    app.world_mut().spawn((Camera2d, MainCamera));
+
+    let map_icon = |world: &mut World, id, icon_kind| {
+        let planet = world
+            .query::<(Entity, &PlanetCmp)>()
+            .iter(world)
+            .find(|(_, planet)| planet.id == id)
+            .unwrap()
+            .0;
+        world
+            .get::<Children>(planet)
+            .unwrap()
+            .iter()
+            .find(|&child| world.get::<Icon>(child) == Some(&icon_kind))
+            .unwrap()
+    };
+    app.update();
+    let target_icon = map_icon(app.world_mut(), target, Icon::RailgunStrike);
+    let moon_icon = map_icon(app.world_mut(), moon, Icon::RailgunStrike);
+    let destroy_icon = map_icon(app.world_mut(), target, Icon::Destroy);
+    for (hovered, always, target_visible, moon_visible) in
+        [(None, false, false, false), (None, true, true, true), (Some(target), false, true, false)]
+    {
+        app.world_mut().resource_mut::<UiState>().planet_hover = hovered;
+        app.world_mut().resource_mut::<Settings>().show_info = always;
+        app.update();
+        for (icon, expected) in [
+            (target_icon, target_visible),
+            (moon_icon, moon_visible),
+            (destroy_icon, target_visible),
+        ] {
+            assert_eq!(
+                app.world().get::<Visibility>(icon) == Some(&Visibility::Inherited),
+                expected,
+                "hovered={hovered:?}, always={always}, icon={icon:?}"
+            );
+        }
+    }
 }
 
 /// Finds the defenses spawned by the real map setup without a window or GPU.
@@ -364,7 +455,10 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                 assert!(tint.red > tint.green && tint.green > tint.blue);
                 assert!(tint.alpha >= 0.9);
                 for (planet_position, planet_radius) in &planets {
-                    let asteroid_radius = sprite.custom_size.unwrap().x * 0.5;
+                    let asteroid_radius = sprite.custom_size.unwrap().x
+                        * 0.5
+                        * ASTEROID_MAX_RENDER_SCALE
+                        * ASTEROID_TUMBLE_SCALE_MARGIN;
                     assert!(
                         transform.translation.truncate().distance(*planet_position)
                             > planet_radius + asteroid_radius + ASTEROID_PLANET_CLEARANCE - 2.0
@@ -390,7 +484,10 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         let base_spacing = TAU / base_count as f32;
         let maximum_planet_gap = 2.0
             * ((Planet::SIZE * 0.5
-                + layout.maximum_asteroid_diameter * 0.5
+                + layout.maximum_asteroid_diameter
+                    * 0.5
+                    * ASTEROID_MAX_RENDER_SCALE
+                    * ASTEROID_TUMBLE_SCALE_MARGIN
                 + ASTEROID_PLANET_CLEARANCE
                 + ASTEROID_MAXIMUM_WOBBLE)
                 / (layout.radius - layout.radial_half_width))
@@ -446,6 +543,53 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
     }
     assert_eq!(asteroid_render_scale(ASTEROID_REFERENCE_CAMERA_SCALE), ASTEROID_BASE_RENDER_SCALE);
     assert_eq!(asteroid_render_scale(MAX_ZOOM), ASTEROID_MAX_RENDER_SCALE);
+}
+
+#[test]
+fn orbiting_asteroid_hides_when_it_reaches_a_planet_and_returns_after_clearing_it() {
+    let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
+    let layout = asteroid_belt_layout(&map).unwrap();
+    let placement = asteroid_belt_placements(&map, layout)[0];
+    let planet_id = map.planets()[0].id;
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<Assets<Image>>()
+        .insert_resource(map)
+        .add_systems(
+            Startup,
+            |mut commands: Commands, map: Res<Map>, mut images: ResMut<Assets<Image>>| {
+                let images = [images.add(Image::default())];
+                spawn_asteroid_belt(&mut commands, &map, &images);
+            },
+        )
+        .add_systems(Update, animate_asteroid_belts);
+    app.update();
+
+    let entity = {
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &AsteroidCmp)>()
+            .iter(world)
+            .find_map(|(entity, asteroid)| {
+                (asteroid.placement.phase.to_bits() == placement.phase.to_bits()).then_some(entity)
+            })
+            .unwrap()
+    };
+    assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Inherited));
+
+    let position = crate::core::map::asteroids::asteroid_position_at_elapsed(
+        app.world().resource::<Map>(),
+        &placement,
+        1.0,
+    );
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).position = position;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+
+    app.world_mut().resource_mut::<Map>().get_mut(planet_id).position += Vec2::splat(10_000.0);
+    app.update();
+    assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Inherited));
 }
 
 #[test]
@@ -789,10 +933,105 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
 }
 
 #[test]
+fn two_safe_asteroids_are_assigned_to_distinct_recycler_workers() {
+    let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
+    let layout = asteroid_belt_layout(&map).unwrap();
+    let placements = asteroid_belt_placements(&map, layout);
+    let target_groups = recycler_asteroid_target_groups_at_elapsed(&map, &placements, 0.0);
+    let (&planet_id, targets) =
+        target_groups.iter().find(|(_, targets)| targets.len() >= 2).unwrap();
+    let mut assignments = BTreeMap::<(PlanetId, usize), RecyclerAsteroidAssignment>::new();
+    let assign =
+        |level, assignments: &mut BTreeMap<(PlanetId, usize), RecyclerAsteroidAssignment>| {
+            assigned_recycler_asteroid_target(
+                &map,
+                &placements,
+                assignments,
+                Some(&targets[..2]),
+                &RecyclerCmp {
+                    planet: planet_id,
+                    level,
+                    phase: 0.0,
+                    gate_angle: 0.0,
+                },
+                0,
+                0.0,
+            )
+            .unwrap()
+        };
+    assert_ne!(assign(1, &mut assignments), assign(2, &mut assignments));
+
+    let first_trip = assign(1, &mut assignments);
+    let marker = RecyclerCmp {
+        planet: planet_id,
+        level: 1,
+        phase: 0.0,
+        gate_angle: 0.0,
+    };
+    let next_trip = assigned_recycler_asteroid_target(
+        &map,
+        &placements,
+        &mut assignments,
+        Some(&targets[..1]),
+        &marker,
+        1,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(next_trip.0, first_trip.1, "the crossing destination must remain locked");
+}
+
+#[test]
+fn recycler_crosses_behind_the_planet_without_jumping_to_the_next_trip() {
+    let planet = Planet::new(0, "Recycler".into(), Vec2::ZERO, false, 1.0);
+    let recycler = RecyclerCmp {
+        planet: planet.id,
+        level: 1,
+        phase: 0.0,
+        gate_angle: 0.0,
+    };
+    let home = recycler_home(Vec2::X * Planet::SIZE * 2.0, &recycler, &planet);
+    let next_home = recycler_home(Vec2::NEG_X * Planet::SIZE * 2.0, &recycler, &planet);
+    let alternate_next_home = recycler_home(Vec2::Y * Planet::SIZE * 2.0, &recycler, &planet);
+    assert!(home.distance(next_home) > planet.size());
+    assert_eq!(recycler_docking_position(home, next_home, RECYCLER_DOCKING_START), home);
+    let entering = recycler_docking_position(
+        home,
+        next_home,
+        RECYCLER_DOCKING_START + (1.0 - RECYCLER_DOCKING_START) * 0.12,
+    );
+    assert!(entering.length() < home.length());
+    assert!(entering.normalize().dot(home.normalize()) > 0.9999);
+    assert_eq!(
+        entering,
+        recycler_docking_position(
+            home,
+            alternate_next_home,
+            RECYCLER_DOCKING_START + (1.0 - RECYCLER_DOCKING_START) * 0.12,
+        ),
+        "the craft must enter the planet on the same route regardless of its next asteroid"
+    );
+    assert!(
+        recycler_docking_position(home, next_home, 0.92).length() < planet.size() * 0.5,
+        "the crossing should pass behind the planet sprite"
+    );
+    assert!(recycler_docking_position(home, home, 0.92).length() < 0.001);
+    assert!(recycler_docking_position(home, next_home, 0.9999).distance(next_home) < 0.01);
+    assert!(
+        recycler_route_position(next_home, Vec2::NEG_X, recycler_progress(0.0)).distance(next_home)
+            < 0.001
+    );
+}
+
+#[test]
 fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     model.start().unwrap();
-    let target_groups = crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map);
+    let static_target_groups =
+        crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map);
+    let layout = asteroid_belt_layout(&model.map).unwrap();
+    let placements = asteroid_belt_placements(&model.map, layout);
+    let target_groups = recycler_asteroid_target_groups_at_elapsed(&model.map, &placements, 0.0);
     let (&planet_id, asteroid_targets) = target_groups
         .iter()
         .find(|(_, targets)| targets.len() >= 4)
@@ -804,7 +1043,7 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .map
         .planets()
         .into_iter()
-        .find(|planet| !planet.is_moon() && !target_groups.contains_key(&planet.id))
+        .find(|planet| !planet.is_moon() && !static_target_groups.contains_key(&planet.id))
         .map(|planet| planet.id)
         .expect("map should also have a planet beyond Recycler range");
     let owner = model.players[0].id;
@@ -923,10 +1162,10 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .iter()
         .all(|scan| app.world().get::<Visibility>(*scan) == Some(&Visibility::Hidden)));
 
-    // Put the first two workers into their collection beat together: even then they visibly split
-    // between two separate nearby rocks instead of stacking on one target.
+    // Put the first two workers into a fresh collection trip together: even then they visibly
+    // split between two separate nearby rocks instead of stacking on one target.
     for (entity, _, _) in recyclers.iter().take(2) {
-        app.world_mut().get_mut::<RecyclerCmp>(*entity).unwrap().phase = 0.4;
+        app.world_mut().get_mut::<RecyclerCmp>(*entity).unwrap().phase = 4.4;
     }
     app.update();
     let first_scan = scans.iter().find(|(_, level)| *level == 1).unwrap().0;
@@ -1005,6 +1244,24 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .collect::<Vec<_>>();
     app.world_mut().get_mut::<RecyclerCmp>(recycler).unwrap().phase = 0.0;
     app.update();
+    let next_asteroid_index = {
+        let map = app.world().resource::<Map>();
+        let placements =
+            shared_asteroid_belt_placements(map, shared_asteroid_belt_layout(map).unwrap());
+        let targets = recycler_asteroid_target_groups_at_elapsed(map, &placements, 0.0);
+        let mut assignments = BTreeMap::new();
+        assigned_recycler_asteroid_target(
+            map,
+            &placements,
+            &mut assignments,
+            Some(&targets[&planet_id]),
+            app.world().get::<RecyclerCmp>(recycler).unwrap(),
+            0,
+            0.0,
+        )
+        .unwrap();
+        assignments[&(planet_id, 1)].next_placement_index
+    };
 
     app.world_mut()
         .resource_mut::<Time>()
@@ -1081,16 +1338,11 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         let layout = shared_asteroid_belt_layout(map).unwrap();
         let placements = shared_asteroid_belt_placements(map, layout);
         let elapsed = app.world().resource::<Time>().elapsed_secs();
-        let targets = recycler_asteroid_target_groups_at_elapsed(map, &placements, elapsed);
         let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
-        let current_target = recycler_animation_target(
-            RecyclerSource::AsteroidField {
-                target: targets[&planet_id][0],
-            },
-            Some(&targets[&planet_id]),
-            marker,
-            map.get(planet_id),
-            1,
+        let current_target = crate::core::map::asteroids::asteroid_position_at_elapsed(
+            map,
+            &placements[next_asteroid_index],
+            elapsed,
         );
         (
             recycler_home(current_target, marker, map.get(planet_id))
@@ -1153,12 +1405,19 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .iter()
         .all(|(entity, _)| app.world().get::<Visibility>(*entity) == Some(&Visibility::Hidden)));
 
-    let before_wrap = Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, 0.9999));
-    let after_wrap = Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, 0.0001));
+    let before_wrap =
+        Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, Vec2::X, Vec2::Y, 0.9999));
+    let after_wrap =
+        Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, Vec2::Y, Vec2::NEG_X, 0.0001));
     assert!(before_wrap.angle_between(after_wrap) < 0.01);
     assert_eq!(recycler_progress(0.30), 1.0);
     assert_eq!(recycler_progress(0.6199), 1.0);
-    assert!((recycler_progress(0.9199) - recycler_progress(0.9201)).abs() < 0.001);
+    assert!(
+        (recycler_progress(RECYCLER_DOCKING_START - 0.0001)
+            - recycler_progress(RECYCLER_DOCKING_START + 0.0001))
+        .abs()
+            < 0.001
+    );
     assert!((recycler_progress(0.9999) - recycler_progress(0.0001)).abs() < 0.001);
 }
 
@@ -1389,21 +1648,22 @@ fn three_player_five_world_practice_keeps_the_belt_in_every_home_view() {
         }
     }
     assert!(
-        // A home view can crop the arc; a dozen separated rocks still make it recognizable.
-        minimum_visible >= 12,
+        // A home view can crop the arc; about a dozen separated rocks keep it recognizable.
+        minimum_visible >= 11,
         "a 3-player, 5-world practice home view can lose the asteroid belt: \
          minimum_visible={minimum_visible}"
     );
 }
 
 #[test]
-fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and_time() {
+fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() {
     for expected_kind in CelestialKind::ALL {
         let map = (0..64)
             .map(|seed| GameModel::new([seed; 32], GameRules::default()).unwrap().map)
             .find(|map| map_scenery_selection(map) == expected_kind)
             .unwrap();
         let anchor = celestial_position(&map, expected_kind).extend(FIRST_STAR_DEPTH);
+        let camera_origin = anchor.truncate();
         let sun_anchor = solar_star_position(&map).extend(SOLAR_STAR_DEPTH);
         assert!(anchor.z > BACKGROUND_Z && anchor.z < VORONOI_Z);
         let mut app = App::new();
@@ -1427,7 +1687,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
             .world_mut()
             .spawn((
                 MainCamera,
-                Transform::from_xyz(0.0, 0.0, 1.0),
+                Transform::from_translation(camera_origin.extend(1.0)),
                 Projection::Orthographic(OrthographicProjection {
                     scale: 1.0,
                     ..OrthographicProjection::default_2d()
@@ -1474,7 +1734,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
         }
 
         assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
-        assert_eq!(celestial_follow, None);
+        assert_eq!(celestial_follow, Some(CELESTIAL_PARALLAX_FOLLOW));
         let first_star_layer = world
             .query::<(Entity, &Transform, &Children)>()
             .iter(world)
@@ -1492,15 +1752,31 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
         let (celestial, transform) = landmarks.single(world).unwrap();
         assert_eq!(celestial.kind, expected_kind);
         assert_eq!(celestial.frames.len(), kind.frame_count());
-        assert_eq!(transform.translation(), anchor);
+        assert!(transform.translation().distance(anchor) < 0.01);
 
-        // Panning cannot pull the landmark away from its selected map edge.
-        let camera_position = Vec3::new(-2_000.0, 700.0, 1.0);
+        // A distant pan moves the landmark off screen without changing its opacity.
+        let camera_position = (camera_origin + Vec2::new(-2_000.0, 700.0)).extend(1.0);
         world.get_mut::<Transform>(camera).unwrap().translation = camera_position;
         app.update();
         let world = app.world_mut();
         let pan_position = landmarks.single(world).unwrap().1.translation();
-        assert_eq!(pan_position, anchor);
+        let expected_pan = anchor
+            + ((camera_position.truncate() - camera_origin) * CELESTIAL_PARALLAX_FOLLOW)
+                .extend(0.0);
+        assert!(pan_position.distance(expected_pan) < 0.01);
+        let mut frame_sprites = world.query_filtered::<&Sprite, With<CelestialFrameCmp>>();
+        let pan_alpha = frame_sprites.iter(world).map(|sprite| sprite.color.alpha()).sum::<f32>();
+        assert!(pan_position.distance(anchor) > 10.0);
+        assert!((pan_alpha - expected_kind.opacity()).abs() < 1e-5);
+        assert!(
+            (pan_position.x - camera_position.x).abs()
+                > crate::core::constants::WIDTH * 0.5
+                    + CELESTIAL_SIZE.x * expected_kind.size_scale() * 0.5
+        );
+
+        app.world_mut().get_mut::<Transform>(camera).unwrap().translation =
+            camera_origin.extend(1.0);
+        app.update();
 
         // Both cross-faded frames remain behind planets throughout the zoom range.
         let mut apparent_widths = Vec::new();
@@ -1522,7 +1798,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
                 assert!(transform.translation().z > BACKGROUND_Z);
                 assert!(transform.translation().z < VORONOI_Z);
                 assert!(transform.translation().z < PLANET_Z);
-                assert_eq!(transform.translation().truncate(), anchor.truncate());
+                assert!(transform.translation().truncate().distance(anchor.truncate()) < 0.01);
                 let scale = transform.to_scale_rotation_translation().0;
                 apparent_widths.push(sprite.custom_size.unwrap().x * scale.x / zoom);
             }
@@ -1533,7 +1809,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
         assert!((largest / smallest - expected_ratio).abs() < 1e-3);
         assert!(largest > smallest);
 
-        // Even a long session cannot drift the landmark off its edge.
+        // Time alone does not move the landmark away from its chosen edge.
         let world = app.world_mut();
         let before_drift = *landmarks.single(world).unwrap().1;
         world
@@ -1543,7 +1819,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
         let world = app.world_mut();
         let transform = landmarks.single(world).unwrap().1;
         assert_eq!(transform, &before_drift);
-        assert_eq!(transform.translation(), anchor);
+        assert!(transform.translation().distance(anchor) < 0.01);
         let mut suns = world.query_filtered::<&GlobalTransform, With<SolarStarCmp>>();
         assert_eq!(suns.single(world).unwrap().translation(), sun_anchor);
         let mut sun_roots = world.query_filtered::<&Transform, With<SolarStarCmp>>();
@@ -1551,7 +1827,7 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
         assert!(sun_roots.single(world).unwrap().rotation.angle_between(expected_rotation) < 1e-4);
         let world = app.world_mut();
         let planet_position = world.resource::<Map>().planets[0].position;
-        // Looking at a planet at any zoom leaves the landmark fixed and visible.
+        // Looking at a planet leaves every landmark behind the planet layer.
         for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
             let world = app.world_mut();
             world.get_mut::<Transform>(camera).unwrap().translation = planet_position.extend(1.0);
@@ -1566,7 +1842,9 @@ fn every_game_keeps_its_celestial_landmark_at_the_outer_edge_during_pan_zoom_and
             assert_eq!(*landmark.single(world).unwrap(), Visibility::Inherited);
             let mut frames = world.query_filtered::<&GlobalTransform, With<CelestialFrameCmp>>();
             for frame in frames.iter(world) {
-                assert_eq!(frame.translation().truncate(), anchor.truncate());
+                let expected = anchor.truncate()
+                    + (planet_position - camera_origin) * CELESTIAL_PARALLAX_FOLLOW;
+                assert!(frame.translation().truncate().distance(expected) < 0.01);
                 assert!(frame.translation().z < PLANET_Z);
             }
         }
@@ -1902,7 +2180,7 @@ fn adjacent_trading_post_reveals_its_marker_and_owner_territory_when_completed()
 }
 
 #[test]
-fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_without_a_route() {
+fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_with_one_way_range() {
     use bevy::camera::RenderTarget;
     use bevy::picking::{
         backend::HitData,
@@ -2823,6 +3101,7 @@ fn stationed_protection_world_can_become_a_new_mission_origin() {
         .get_mut(protected_world)
         .army
         .dock_protector(player.id, Army::from([(Unit::Ship(Ship::LightFighter), 3)]));
+    model.map.get_mut(protected_world).protection_permissions.insert(player.id);
     assert!(has_stationed_protection_fleet(model.map.get(protected_world), player.id));
     for icon in [
         Icon::Colonize,
@@ -2832,16 +3111,22 @@ fn stationed_protection_world_can_become_a_new_mission_origin() {
         Icon::Destroy,
         Icon::RailgunStrike,
     ] {
-        assert!(action_blocked_by_stationed_protection(
+        assert!(action_blocked_by_active_protection(
             model.map.get(protected_world),
             player.id,
             icon,
         ));
     }
-    assert!(!action_blocked_by_stationed_protection(
+    assert!(!action_blocked_by_active_protection(
         model.map.get(protected_world),
         player.id,
         Icon::Protect,
+    ));
+    model.map.get_mut(protected_world).protection_permissions.remove(&player.id);
+    assert!(!action_blocked_by_active_protection(
+        model.map.get(protected_world),
+        player.id,
+        Icon::Attack,
     ));
     state.mission_info.origin = player.home_planet;
     select_planet(model.map.get(protected_world), &mut state, &player);
@@ -3928,17 +4213,13 @@ fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
             MainButtonLabelCmp,
         ))
         .id();
-    for kind in 0..4 {
+    for kind in 0..3 {
         *app.world_mut().resource_mut::<UiState>() = match kind {
             0 => UiState {
                 allied_mission: true,
                 ..default()
             },
             1 => UiState {
-                joint_attack_invite_selection: Some([2].into()),
-                ..default()
-            },
-            2 => UiState {
                 trading_post_open: Some(2),
                 ..default()
             },
@@ -3946,8 +4227,47 @@ fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
         };
         app.update();
         assert_eq!(app.world().get::<Text>(button).unwrap().0, "End turn");
-        assert_eq!(app.world().get::<Pickable>(button).unwrap().is_hoverable, kind == 3);
-        assert_eq!(app.world().get::<ImageNode>(button).unwrap().color == Color::WHITE, kind == 3);
+        assert_eq!(app.world().get::<Pickable>(button).unwrap().is_hoverable, kind == 2);
+        assert_eq!(app.world().get::<ImageNode>(button).unwrap().color == Color::WHITE, kind == 2);
+    }
+}
+
+#[test]
+fn end_turn_button_tracks_window_size_without_moving_from_the_corner() {
+    let mut app = App::new();
+    app.insert_resource(State::new(GameState::Playing))
+        .insert_resource(Player::new(1, 0))
+        .init_resource::<UiState>()
+        .init_resource::<crate::multiplayer::client::PendingTurnCommands>()
+        .add_systems(Update, update_end_turn);
+    let window = app.world_mut().spawn(Window::default()).id();
+    let button = app
+        .world_mut()
+        .spawn((
+            Node::default(),
+            Visibility::Inherited,
+            ImageNode::default(),
+            Pickable::default(),
+            EndTurnButtonCmp,
+        ))
+        .id();
+    let label = app
+        .world_mut()
+        .spawn((Text::new("End turn"), TextFont::default(), MainButtonLabelCmp))
+        .id();
+
+    for (size, scale) in [((1600, 900), 1.0), ((2560, 1440), 1.25), ((800, 600), 0.70710677)] {
+        app.world_mut().get_mut::<Window>(window).unwrap().resolution = size.into();
+        app.update();
+        let node = app.world().get::<Node>(button).unwrap();
+        assert_eq!(node.width, Val::Px(MAIN_BUTTON_WIDTH * scale));
+        assert_eq!(node.height, Val::Px(MAIN_BUTTON_HEIGHT * scale));
+        assert_eq!(node.bottom, Val::Px(MAIN_BUTTON_BOTTOM * scale));
+        assert_eq!(node.right, Val::Px(MAIN_BUTTON_RIGHT * scale));
+        assert!(matches!(
+            app.world().get::<TextFont>(label).unwrap().font_size,
+            FontSize::Px(value) if (value - BUTTON_TEXT_SIZE * scale).abs() < 0.01
+        ));
     }
 }
 

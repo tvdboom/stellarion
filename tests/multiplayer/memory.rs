@@ -7,6 +7,7 @@ use crate::core::map::icon::Icon;
 use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand};
+use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
 use crate::multiplayer::model::JointAttackParticipant;
@@ -372,6 +373,37 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
         ],
     };
     block_on(backend.create_joint_attack(&host, &active.id, invitation.clone())).unwrap();
+    let mut removed_invitee = invitation.clone();
+    removed_invitee.participants[1].player_id = 3;
+    assert!(matches!(
+        block_on(backend.create_joint_attack(&host, &active.id, removed_invitee)),
+        Err(BackendError::InvalidData(field)) if field == "joint_attack_invitees"
+    ));
+    {
+        let mut state = backend.lock().unwrap();
+        let model = &mut state.games.get_mut(&active.id).unwrap().record.persisted.state;
+        set_protection_permission_immediately(model, 3, outsider_home, 2, true).unwrap();
+        model.map.get_mut(outsider_home).army.dock_protector(2, Army::from([(fighter, 1)]));
+        assert!(model.map.get(outsider_home).blocks_hostile_action_by(2));
+    }
+    assert!(matches!(
+        block_on(backend.respond_joint_attack(
+            &sessions[0],
+            &active.id,
+            invitation.id,
+            0,
+            JointAttackResponse::Accepted,
+            Some(contribution(2, guest_home)),
+        )),
+        Err(BackendError::Forbidden)
+    ));
+    {
+        let mut state = backend.lock().unwrap();
+        let model = &mut state.games.get_mut(&active.id).unwrap().record.persisted.state;
+        set_protection_permission_immediately(model, 3, outsider_home, 2, false).unwrap();
+        assert!(model.map.get(outsider_home).is_protected_by(2));
+        assert!(!model.map.get(outsider_home).blocks_hostile_action_by(2));
+    }
     assert_eq!(block_on(backend.load_joint_attacks(&host, &active.id)).unwrap().len(), 1);
     assert_eq!(block_on(backend.load_joint_attacks(&sessions[0], &active.id)).unwrap().len(), 1);
     assert!(block_on(backend.load_joint_attacks(&sessions[1], &active.id)).unwrap().is_empty());
@@ -1610,6 +1642,19 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             },
         ],
     };
+    let mut empty_proposal = invitation.clone();
+    empty_proposal.participants[0].contribution.as_mut().unwrap().army.clear();
+    assert!(matches!(
+        block_on(backend.create_joint_attack(&host, &active.id, empty_proposal)),
+        Err(BackendError::InvalidData(_))
+    ));
+    let mut non_ship_proposal = invitation.clone();
+    non_ship_proposal.participants[0].contribution.as_mut().unwrap().army =
+        Army::from([(Unit::Building(Building::TradingPost), 1)]);
+    assert!(matches!(
+        block_on(backend.create_joint_attack(&host, &active.id, non_ship_proposal)),
+        Err(BackendError::InvalidData(_))
+    ));
     block_on(backend.create_joint_attack(&host, &active.id, invitation.clone())).unwrap();
     assert!(block_on(backend.submit_turn(
         &host,
@@ -1683,13 +1728,13 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     edited_fleet.origin = contribution(3).origin;
     let routed = respond(invitation.revision, JointAttackResponse::Accepted, edited_fleet).unwrap();
     assert_eq!(routed.participants[1].response, JointAttackResponse::Accepted);
-    assert_eq!(routed.participants[2].response, JointAttackResponse::Accepted);
+    assert_eq!(routed.participants[2].response, JointAttackResponse::Pending);
     invitation.revision = routed.revision;
     invitation.revision =
         respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
             .unwrap()
             .revision;
-    // Other owner choices invalidate consent; origin-only and identical publications preserve it.
+    // Every owner edit invalidates consent; identical publications preserve it.
     for change in 0..6 {
         let mut proposal = invitation.clone();
         match change {
@@ -1714,14 +1759,7 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             _ => unreachable!(),
         }
         let revised = block_on(backend.create_joint_attack(&host, &active.id, proposal)).unwrap();
-        assert_eq!(
-            revised.participants[1].response,
-            if change == 3 {
-                JointAttackResponse::Accepted
-            } else {
-                JointAttackResponse::Pending
-            }
-        );
+        assert_eq!(revised.participants[1].response, JointAttackResponse::Pending);
         assert!(respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
             .is_err());
         let live = block_on(backend.load_joint_attacks(&guests[0], &active.id)).unwrap();
@@ -1738,6 +1776,32 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             block_on(backend.create_joint_attack(&host, &active.id, invitation.clone())).unwrap();
         assert_eq!(duplicate.participants[1].response, JointAttackResponse::Accepted);
     }
+    // Only the inviter may revise the shared route; guests respond with their own fleet.
+    let mut guest_proposal =
+        block_on(backend.load_joint_attacks(&guests[0], &active.id)).unwrap().remove(0);
+    let previous_destination = guest_proposal.destination;
+    guest_proposal.destination = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| {
+            !planet.is_destroyed
+                && planet.owned.is_none()
+                && planet.controlled.is_none()
+                && planet.id != previous_destination
+        })
+        .unwrap()
+        .id;
+    guest_proposal.objective = Icon::Destroy;
+    guest_proposal.participants[1].response = JointAttackResponse::Accepted;
+    assert!(block_on(backend.create_joint_attack(&guests[0], &active.id, guest_proposal.clone()))
+        .is_err());
+    assert!(block_on(backend.create_joint_attack(&guests[1], &active.id, guest_proposal)).is_err());
+    invitation.objective = Icon::Attack;
+    invitation.revision =
+        block_on(backend.create_joint_attack(&host, &active.id, invitation.clone()))
+            .unwrap()
+            .revision;
     let base_revision = invitation.revision;
     // Changing only the mission type invalidates the old agreement and retains fleet drafts.
     invitation.objective = Icon::Colonize;

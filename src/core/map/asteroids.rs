@@ -35,7 +35,10 @@ pub(crate) struct AsteroidBeltPlacement {
     pub(crate) diameter: f32,
 }
 
-pub(crate) const ASTEROID_PLANET_CLEARANCE: f32 = 12.0;
+/// Visible space between a planet and the largest animated asteroid cutout.
+pub(crate) const ASTEROID_PLANET_CLEARANCE: f32 = 32.0;
+pub(crate) const ASTEROID_MAX_RENDER_SCALE: f32 = 2.0;
+pub(crate) const ASTEROID_TUMBLE_SCALE_MARGIN: f32 = 1.04;
 pub(crate) const ASTEROID_BELT_RADIUS_SAMPLES: usize = 12;
 // Leave room for the cutouts' enlarged presentation as well as their physical diameters.
 pub(crate) const ASTEROID_BELT_TARGET_SPACING: f32 = 64.0;
@@ -220,8 +223,19 @@ impl AsteroidBeltPlacementGenerator {
         let seed = self.belt_seed.wrapping_add((index as u32).wrapping_mul(31));
         let angular_spacing = TAU / self.count as f32;
         let slot_phase = self.starting_angle + index as f32 * angular_spacing;
-        // Vary neighboring gaps noticeably while keeping rocks inside separate angular slots.
-        let phase_jitter = (visual_noise(seed) - 0.5) * angular_spacing * 0.6;
+        // Shift one rock in each pair so short and long gaps occur on every local arc.
+        // The shifts stay inside their slots and keep ordinary gaps below 1.35 slots.
+        let phase_jitter = if index.is_multiple_of(2) {
+            0.0
+        } else {
+            let magnitude = 0.2 + visual_noise(seed) * 0.13;
+            let direction = if visual_noise(seed.wrapping_add(3)) < 0.5 {
+                -1.0
+            } else {
+                1.0
+            };
+            direction * angular_spacing * magnitude
+        };
         let preferred_radius = self.layout.radius
             + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
         let minimum_diameter = ASTEROID_MINIMUM_DIAMETER.min(self.layout.maximum_asteroid_diameter);
@@ -245,7 +259,7 @@ impl AsteroidBeltPlacementGenerator {
                         self.planets.iter().all(|(planet_position, planet_radius)| {
                             position.distance(*planet_position)
                                 > planet_radius
-                                    + diameter * 0.5
+                                    + asteroid_render_radius(diameter)
                                     + ASTEROID_PLANET_CLEARANCE
                                     + ASTEROID_MAXIMUM_WOBBLE
                         })
@@ -260,6 +274,25 @@ impl AsteroidBeltPlacementGenerator {
             diameter,
         })
     }
+}
+
+fn asteroid_render_radius(diameter: f32) -> f32 {
+    diameter * 0.5 * ASTEROID_MAX_RENDER_SCALE * ASTEROID_TUMBLE_SCALE_MARGIN
+}
+
+/// A rotating rock may cross a planet long after its initially clear placement.
+#[cfg(feature = "app")]
+pub(crate) fn asteroid_clears_planets_at_position(
+    map: &Map,
+    placement: &AsteroidBeltPlacement,
+    position: Vec2,
+) -> bool {
+    map.planets.iter().filter(|planet| !planet.is_moon()).all(|planet| {
+        let minimum_distance = planet.size() * 0.5
+            + asteroid_render_radius(placement.diameter)
+            + ASTEROID_PLANET_CLEARANCE;
+        position.distance_squared(planet.position) > minimum_distance * minimum_distance
+    })
 }
 
 pub(crate) fn asteroid_belt_placements(
@@ -334,8 +367,10 @@ pub(crate) fn recycler_asteroid_target_groups_at_elapsed(
 ) -> BTreeMap<PlanetId, Vec<Vec2>> {
     let asteroids = placements
         .iter()
-        .map(|placement| {
-            (asteroid_position_at_elapsed(map, placement, elapsed), placement.diameter * 0.5)
+        .filter_map(|placement| {
+            let position = asteroid_position_at_elapsed(map, placement, elapsed);
+            asteroid_clears_planets_at_position(map, placement, position)
+                .then_some((position, placement.diameter * 0.5))
         })
         .collect::<Vec<_>>();
     recycler_targets_from_positions(map, &asteroids)

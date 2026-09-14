@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::core::messages::show_notification_area;
+use crate::core::messages::MessageAction;
 use crate::core::trading::{
     trading_post_capacity, trading_posts_are_adjacent, visible_trading_post_owner,
 };
@@ -9,6 +10,8 @@ use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse
 
 const TRADE_ACCENT: Color32 = Color32::from_rgb(112, 190, 255);
 const TRADE_SUMMARY_FONT_SIZE: f32 = 15.0;
+const TRADE_PANEL_TOP_BAR_FRACTION: f32 = 0.075;
+const TRADE_PANEL_VERTICAL_OFFSET: f32 = -11.0;
 
 fn trade_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     ui.add_enabled(
@@ -111,12 +114,11 @@ fn resource_row(ui: &mut Ui, mut contents: impl FnMut(&mut Ui, ResourceName, egu
     });
 }
 
-/// Keeps resource artwork at full brightness; only the border indicates interaction.
+/// Keeps every trade resource framed the same way, including read-only offers.
 fn resource_tile_button(
     ui: &mut Ui,
     image: egui::TextureId,
     size: egui::Vec2,
-    selected: bool,
     enabled: bool,
 ) -> Response {
     let sense = if enabled {
@@ -128,32 +130,7 @@ fn resource_tile_button(
     if enabled {
         response = response.on_hover_cursor(CursorIcon::PointingHand);
     }
-    let border = if enabled && (response.hovered() || response.has_focus()) {
-        Color32::from_rgb(154, 222, 255)
-    } else if selected {
-        Color32::from_rgb(116, 211, 245)
-    } else {
-        Color32::from_rgba_unmultiplied(100, 128, 151, 105)
-    };
-    ui.painter().image(
-        image,
-        rect.shrink(1.0),
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(6),
-        Stroke::new(
-            if selected {
-                2.0
-            } else {
-                1.0
-            },
-            border,
-        ),
-        StrokeKind::Inside,
-    );
+    paint_bordered_resource_image(ui, image, rect, 2.0);
     response
 }
 
@@ -178,14 +155,8 @@ fn resource_controls(
         } else {
             *amount
         };
-        let response = resource_tile_button(
-            ui,
-            images.get(resource.to_lowername()),
-            image_size,
-            *amount > 0,
-            enabled,
-        )
-        .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+        let response =
+            resource_tile_button(ui, images.get(resource.to_lowername()), image_size, enabled);
         response.widget_info(|| {
             egui::WidgetInfo::selected(
                 egui::WidgetType::Button,
@@ -204,26 +175,40 @@ fn resource_controls(
     });
 }
 
-fn trade_panel_header(
-    ui: &mut Ui,
-    panel: egui::Rect,
-    content: egui::Rect,
-    images: &ImageIds,
-) -> egui::Rect {
-    let inset = egui::vec2(0.0, 20.0);
-    draw_modal_header(
-        ui,
-        panel.translate(inset),
-        content.translate(inset),
-        RichText::new("Trading Post").size(21.0).strong().color(ABANDON_CONFIRMATION_TEXT_COLOR),
-        images.get("trading post"),
-    )
+fn trade_panel_header(ui: &mut Ui, panel: egui::Rect, content: egui::Rect) -> egui::Rect {
+    // The top ornament is part of the stretched panel artwork, so its height scales with it.
+    let bar_height = panel.height() * TRADE_PANEL_TOP_BAR_FRACTION;
+    let header = egui::Rect::from_min_size(
+        egui::pos2(content.left(), panel.top()),
+        egui::vec2(content.width(), bar_height),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(header.translate(egui::vec2(0.0, 2.0))), |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.label(
+                RichText::new("Trading Post")
+                    .size(21.0_f32.min(bar_height - 4.0))
+                    .strong()
+                    .color(ABANDON_CONFIRMATION_TEXT_COLOR),
+            );
+        });
+    });
+    header
 }
 
-fn offer_heading(ui: &mut Ui, label: RichText, response: Option<TradeResponse>) {
+fn offer_heading(
+    ui: &mut Ui,
+    label: RichText,
+    response: Option<TradeResponse>,
+    proposer: bool,
+    finalized: bool,
+) {
     let (status, color) = match response {
         Some(TradeResponse::Pending) => ("Pending", Color32::from_rgb(229, 190, 107)),
-        Some(TradeResponse::Accepted) => ("Accepted", Color32::from_rgb(121, 200, 158)),
+        Some(TradeResponse::Accepted) if finalized => {
+            ("Accepted", Color32::from_rgb(121, 200, 158))
+        },
+        Some(TradeResponse::Accepted) if proposer => ("Proposed", TRADE_ACCENT),
+        Some(TradeResponse::Accepted) => ("Confirmed", TRADE_ACCENT),
         Some(TradeResponse::Rejected) => ("Rejected", Color32::from_rgb(232, 126, 133)),
         None => ("Draft", ABANDON_CONFIRMATION_TEXT_COLOR),
     };
@@ -245,8 +230,7 @@ fn offer_heading(ui: &mut Ui, label: RichText, response: Option<TradeResponse>) 
 
 fn draw_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds) {
     resource_row(ui, |ui, resource, image_size, width| {
-        ui.add_image(images.get(resource.to_lowername()), image_size)
-            .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+        resource_tile_button(ui, images.get(resource.to_lowername()), image_size, false);
         ui.add_sized(
             egui::vec2(width, 34.0),
             egui::Label::new(RichText::new(resources.get(&resource).to_string()).small().strong()),
@@ -267,6 +251,7 @@ fn trade_footer_buttons(
     invitation: bool,
     editable: bool,
     valid: bool,
+    changed: bool,
     finished: bool,
 ) -> (bool, Option<TradeResponse>) {
     let count = if finished {
@@ -298,7 +283,9 @@ fn trade_footer_buttons(
             if invitation && draw_modal_button(ui, button_rect(), "Reject", editable).clicked() {
                 action = Some(TradeResponse::Rejected);
             }
-            let label = if invitation {
+            let label = if invitation && changed {
+                "Send offer"
+            } else if invitation {
                 "Accept"
             } else {
                 "Send offer"
@@ -321,10 +308,29 @@ fn draw_trade_panel(
     messages: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
 ) {
-    let new_route = state.trading_post_open.and_then(|enemy_planet| {
+    let projected_route = state.trading_post_open.and_then(|enemy_planet| {
         route_from_enemy_post(map, player, enemy_planet)
             .map(|(own_planet, enemy_player)| (own_planet, enemy_planet, enemy_player))
     });
+    // Draft previews can show a post that has not been committed to the saved turn yet.
+    // The backend validates the saved map, so only offer routes present there.
+    let submitted_route = projected_route.is_some_and(|(_, _, enemy_player)| {
+        session.active_game.as_ref().is_some_and(|game| {
+            game.submitted_players.contains(&player.id)
+                || game.submitted_players.contains(&enemy_player)
+        })
+    });
+    let new_route = match session.active_game.as_ref() {
+        Some(game) => state.trading_post_open.and_then(|enemy_planet| {
+            route_from_enemy_post(&game.persisted.state.map, player, enemy_planet)
+                .filter(|(_, enemy_player)| {
+                    !game.submitted_players.contains(&player.id)
+                        && !game.submitted_players.contains(enemy_player)
+                })
+                .map(|(own_planet, enemy_player)| (own_planet, enemy_planet, enemy_player))
+        }),
+        None => projected_route,
+    };
 
     // A negotiation belongs to the player pair for this turn, even when a different
     // visible post cannot establish a new route. Accepted trades remain reviewable.
@@ -361,21 +367,30 @@ fn draw_trade_panel(
             context,
             images,
             egui::Id::new("trading post panel"),
-            egui::vec2(560.0, 280.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
+            egui::vec2(560.0, 280.0).min(
+                context.content_rect().size() / game_panel_scale(context.content_rect().size())
+                    - egui::vec2(32.0, 32.0),
+            ),
             |ui, panel, content| {
-                let header = trade_panel_header(ui, panel, content, images);
+                let header = trade_panel_header(ui, panel, content);
                 let body = egui::Rect::from_min_max(
-                    egui::pos2(content.left(), header.bottom() + 8.0),
+                    egui::pos2(content.left(), header.bottom() + 20.0),
                     egui::pos2(
                         content.right(),
-                        (content.bottom() - MODAL_BUTTON_HEIGHT - 12.0).max(header.bottom() + 8.0),
+                        (content.bottom() - MODAL_BUTTON_HEIGHT - 12.0).max(header.bottom() + 20.0),
                     ),
                 );
                 ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                     ui.set_clip_rect(body);
                     ui.vertical_centered(|ui| {
                         ui.add(egui::Label::new(RichText::new(
-                            "You need a completed Trading Post of your own within range of this post to trade. Both posts must reach each other.",
+                            if submitted_route {
+                                "One of the players has already ended this turn. New trades can begin next turn."
+                            } else if projected_route.is_some() {
+                                "This route is not available in the saved turn yet. Complete both Trading Posts and advance the turn before trading."
+                            } else {
+                                "Both players need completed Trading Posts, and at least one post must reach the other to trade."
+                            },
                         ).size(17.0)).wrap());
                     });
                 });
@@ -383,7 +398,7 @@ fn draw_trade_panel(
                     egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
                     egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
                 );
-                trade_footer_buttons(ui, footer, false, false, false, true).0
+                trade_footer_buttons(ui, footer, false, false, false, false, true).0
             },
         );
         if response.inner || response.should_close() {
@@ -417,31 +432,38 @@ fn draw_trade_panel(
         return;
     };
 
-    let capacity =
-        map.try_get(own_planet).map_or(0, |planet| trading_post_capacity(planet, player.id));
+    let capacity_map = session.active_game.as_ref().map_or(map, |game| &game.persisted.state.map);
+    let capacity = capacity_map
+        .try_get(own_planet)
+        .map_or(0, |planet| trading_post_capacity(planet, player.id));
     let finalized = invitation.is_some_and(|trade| trade.finalized);
     let canceled = invitation.is_some_and(|trade| trade.canceled);
     let editable = !finalized && !canceled;
     let other_name = player_name(session, other_player);
-    let response = show_panel_modal(
+    let response = show_panel_modal_with_offset(
         context,
         images,
         egui::Id::new("trading post panel"),
-        egui::vec2(560.0, 460.0).min(context.content_rect().size() - egui::vec2(32.0, 32.0)),
+        egui::vec2(560.0, 402.0).min(
+            context.content_rect().size() / game_panel_scale(context.content_rect().size())
+                - egui::vec2(32.0, 86.0),
+        ),
+        egui::vec2(0.0, TRADE_PANEL_VERTICAL_OFFSET),
         |ui, panel, content| {
-            let header = trade_panel_header(ui, panel, content, images);
+            let header = trade_panel_header(ui, panel, content);
             let footer = egui::Rect::from_min_size(
                 egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
                 egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
             );
             let body = egui::Rect::from_min_max(
-                egui::pos2(content.left(), header.bottom() + 20.0),
-                egui::pos2(content.right(), (footer.top() - 12.0).max(header.bottom() + 20.0)),
+                egui::pos2(content.left(), header.bottom() + 30.0),
+                egui::pos2(content.right(), (footer.top() - 12.0).max(header.bottom() + 30.0)),
             );
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);
                 egui::ScrollArea::vertical()
                     .id_salt("trade offers")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 5.0;
@@ -464,10 +486,9 @@ fn draw_trade_panel(
                                 invitation.and_then(|trade| trade.participant(participant_id));
                             let status = participant
                                 .map(|participant| {
-                                    if canceled {
-                                        TradeResponse::Rejected
-                                    } else if own
+                                    if own
                                         && !finalized
+                                        && !canceled
                                         && participant.resources != state.trade_resources
                                     {
                                         TradeResponse::Pending
@@ -482,6 +503,8 @@ fn draw_trade_panel(
                                     session.player_color(participant_id).color().to_color32(),
                                 ),
                                 status,
+                                invitation.is_some_and(|trade| trade.proposer == participant_id),
+                                finalized,
                             );
                             if own {
                                 resource_controls(
@@ -512,17 +535,36 @@ fn draw_trade_panel(
                                 );
                             }
                         }
+                        // Keep the final summary reachable when a short viewport needs scrolling.
+                        ui.add_space(8.0);
                     });
             });
             let total = state.trade_resources.total();
-            let valid =
-                total > 0 && total <= capacity && player.resources.contains(state.trade_resources);
+            let other_has_offer = invitation.is_none_or(|trade| {
+                other_participant(trade, player.id)
+                    .is_some_and(|participant| !participant.resources.is_empty())
+            });
+            let valid = total > 0
+                && total <= capacity
+                && player.resources.contains(state.trade_resources)
+                && other_has_offer;
+            let changed = invitation.is_some_and(|trade| {
+                trade
+                    .participant(player.id)
+                    .is_some_and(|own| own.resources != state.trade_resources)
+            });
+            let needs_confirmation = invitation.is_none_or(|trade| {
+                trade
+                    .participant(player.id)
+                    .is_some_and(|own| own.response != TradeResponse::Accepted || changed)
+            });
             trade_footer_buttons(
                 ui,
                 footer,
                 invitation.is_some(),
                 editable && !session.trade_update_pending,
-                valid,
+                valid && needs_confirmation,
+                changed,
                 finalized || canceled,
             )
         },
@@ -578,21 +620,19 @@ fn draw_trade_panel(
             state.trade_draft_id = Some(id);
         }
         close = action == TradeResponse::Rejected;
-    } else if let Some(trade) = invitation.filter(|trade| {
-        editable
-            && !session.trade_update_pending
-            && trade
-                .participant(player.id)
-                .is_some_and(|own| own.resources != state.trade_resources)
-    }) {
-        // Publish every edit, including dragging and clearing an amount. Edits made while a
-        // request runs stay local and are published as soon as its acknowledgement arrives.
-        requests.write(MultiplayerRequest::RespondTrade {
-            trade_id: trade.id,
-            expected_revision: trade.revision,
-            resources: state.trade_resources,
-            response: TradeResponse::Pending,
-        });
+    } else if let Some(trade) = invitation.filter(|_| editable && !session.trade_update_pending) {
+        // Withdraw an accepted offer once editing begins. Keep all resource adjustments local
+        // until Send offer; the old accepted amounts must not finalize in the meantime.
+        if let Some(own) = trade.participant(player.id).filter(|own| {
+            own.response == TradeResponse::Accepted && own.resources != state.trade_resources
+        }) {
+            requests.write(MultiplayerRequest::RespondTrade {
+                trade_id: trade.id,
+                expected_revision: trade.revision,
+                resources: own.resources,
+                response: TradeResponse::Pending,
+            });
+        }
     }
     if close {
         state.trading_post_open = None;
@@ -618,28 +658,12 @@ pub(super) fn draw_trade_notifications(
     messages: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
 ) {
-    // Closing the panel must not drop resource edits made during an in-flight update.
-    if state.trade_open.is_none() {
-        if let Some(trade) =
-            state.trade_draft_id.and_then(|id| session.trades.iter().find(|trade| trade.id == id))
-        {
-            let own = trade.participant(player.id);
-            if trade.finalized
-                || trade.canceled
-                || own.is_none()
-                || (!session.trade_update_pending
-                    && own.is_some_and(|own| own.resources == state.trade_resources))
-            {
-                state.trade_draft_id = None;
-            } else if !session.trade_update_pending {
-                requests.write(MultiplayerRequest::RespondTrade {
-                    trade_id: trade.id,
-                    expected_revision: trade.revision,
-                    resources: state.trade_resources,
-                    response: TradeResponse::Pending,
-                });
-            }
-        }
+    if state.trade_open.is_none()
+        && state.trade_draft_id.is_some_and(|id| {
+            session.trades.iter().any(|trade| trade.id == id && (trade.finalized || trade.canceled))
+        })
+    {
+        state.trade_draft_id = None;
     }
     for invitation in &session.trades {
         if (!invitation.finalized && !invitation.canceled)
@@ -668,6 +692,7 @@ pub(super) fn draw_trade_notifications(
                 }
                 messages.write(
                     MessageMsg::info(format!("Trade with {other_name} successful."))
+                        .with_action(MessageAction::OpenTrade(invitation.id))
                         .with_duration(std::time::Duration::from_secs(2)),
                 );
             } else {

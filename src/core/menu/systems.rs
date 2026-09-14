@@ -14,6 +14,7 @@ use crate::core::settings::Settings;
 use crate::core::simulation::{GameRules, MatchStatus, MAX_MULTIPLAYER_PLAYERS};
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::turns::EndGamePresentation;
+use crate::core::ui::systems::viewport_ui_scale;
 use crate::multiplayer::client::{
     ConnectionIndicator, ConnectionStatus, MultiplayerForm, MultiplayerRequest, MultiplayerSession,
 };
@@ -1824,10 +1825,17 @@ fn settings_choice_rows(
     );
     choice_row(
         ui,
-        "Hover information",
-        "Show or hide additional game information when hovering over map objects and controls.",
-        &mut settings.show_hover,
-        &[(true, "Shown"), (false, "Hidden")],
+        "Planet information",
+        "Keep planet names, resources, and available action icons visible on the map. Press I to toggle this during play.",
+        &mut settings.show_info,
+        &[(false, "On hover"), (true, "Always")],
+    );
+    choice_row(
+        ui,
+        "Hover details",
+        "Brief removes long unit, resource, and objective descriptions while keeping prices, stats, requirements, and controls.",
+        &mut settings.brief_hover_info,
+        &[(false, "Full"), (true, "Brief")],
     );
 }
 
@@ -1860,76 +1868,87 @@ pub fn draw_game_overlay(
     if game_state.get().is_modal_menu() {
         block_gameplay_pointer(context);
     }
-    let viewport = context.viewport_rect();
-    let content_width = MENU_CONTENT_WIDTH.min((viewport.width() - 32.0).max(240.0));
-    egui::Area::new("stellarion_game_overlay".into())
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .movable(false)
-        .constrain(true)
-        .order(egui::Order::Foreground)
-        .show(context, |ui| {
-            apply_menu_style(ui);
-            if *game_state.get() == GameState::EndGame {
-                if let (Some(time), Some(mut end_game_fade)) = (time.as_deref(), end_game_fade) {
-                    end_game_fade.0.tick(time.delta());
-                    ui.set_opacity(end_game_overlay_alpha(end_game_fade.0.elapsed_secs()));
-                    if !end_game_fade.0.is_finished() {
-                        context.request_repaint();
-                    }
-                } else {
-                    ui.set_opacity(1.0);
+    let (area, content_width) = game_overlay_area(context);
+    area.show(context, |ui| {
+        apply_menu_style(ui);
+        if *game_state.get() == GameState::EndGame {
+            if let (Some(time), Some(mut end_game_fade)) = (time.as_deref(), end_game_fade) {
+                end_game_fade.0.tick(time.delta());
+                ui.set_opacity(end_game_overlay_alpha(end_game_fade.0.elapsed_secs()));
+                if !end_game_fade.0.is_finished() {
+                    context.request_repaint();
                 }
+            } else {
+                ui.set_opacity(1.0);
             }
-            ui.set_width(content_width);
-            ui.vertical_centered(|ui| match game_state.get() {
-                GameState::GameMenu => {
-                    main_menu_button(ui, "Continue", || next_game_state.set(GameState::Playing));
-                    if session.has_active_game() && !session.local_practice {
-                        if let Some(game) = session
-                            .active_game
-                            .as_ref()
-                            .filter(|game| game.status == MatchStatus::Active)
-                        {
-                            if session.membership.as_ref().is_some_and(|member| {
-                                game.persisted
-                                    .state
-                                    .player(member.player_id)
-                                    .is_ok_and(|player| !player.spectator)
-                            }) {
-                                main_menu_button(ui, "Save Game", || {
-                                    requests.write(MultiplayerRequest::SaveGame);
-                                });
-                            }
+        }
+        ui.set_width(content_width);
+        ui.vertical_centered(|ui| match game_state.get() {
+            GameState::GameMenu => {
+                main_menu_button(ui, "Continue", || next_game_state.set(GameState::Playing));
+                if session.has_active_game() && !session.local_practice {
+                    if let Some(game) = session
+                        .active_game
+                        .as_ref()
+                        .filter(|game| game.status == MatchStatus::Active)
+                    {
+                        if session.membership.as_ref().is_some_and(|member| {
+                            game.persisted
+                                .state
+                                .player(member.player_id)
+                                .is_ok_and(|player| !player.spectator)
+                        }) {
+                            main_menu_button(ui, "Save Game", || {
+                                requests.write(MultiplayerRequest::SaveGame);
+                            });
                         }
                     }
-                    main_menu_button(ui, "Settings", || next_game_state.set(GameState::Settings));
-                    main_menu_button(ui, "Return to Main Menu", || {
-                        requests.write(MultiplayerRequest::LeaveGame);
-                        next_game_state.set(GameState::Playing);
-                        next_app_state.set(AppState::MainMenu);
-                    });
-                },
-                GameState::Settings => {
-                    settings_choices(ui, &mut settings, &mut change_audio);
-                    main_menu_button(ui, "Back", || next_game_state.set(GameState::GameMenu));
-                },
-                GameState::EndGame => {
-                    ui.heading(egui::RichText::new(local_end_game_heading(&session)).size(36.0));
-                    ui.add_space(28.0);
-                    main_menu_button(ui, "Spectate", || next_game_state.set(GameState::Playing));
-                    main_menu_button(ui, "Return to Main Menu", || {
-                        requests.write(MultiplayerRequest::LeaveGame);
-                        next_game_state.set(GameState::Playing);
-                        next_app_state.set(AppState::MainMenu);
-                    });
-                },
-                GameState::Playing | GameState::CombatMenu | GameState::Combat => {},
-            });
+                }
+                main_menu_button(ui, "Settings", || next_game_state.set(GameState::Settings));
+                main_menu_button(ui, "Return to Main Menu", || {
+                    requests.write(MultiplayerRequest::LeaveGame);
+                    next_game_state.set(GameState::Playing);
+                    next_app_state.set(AppState::MainMenu);
+                });
+            },
+            GameState::Settings => {
+                settings_choices(ui, &mut settings, &mut change_audio);
+                main_menu_button(ui, "Back", || next_game_state.set(GameState::GameMenu));
+            },
+            GameState::EndGame => {
+                ui.heading(egui::RichText::new(local_end_game_heading(&session)).size(36.0));
+                ui.add_space(28.0);
+                main_menu_button(ui, "Spectate", || next_game_state.set(GameState::Playing));
+                main_menu_button(ui, "Return to Main Menu", || {
+                    requests.write(MultiplayerRequest::LeaveGame);
+                    next_game_state.set(GameState::Playing);
+                    next_app_state.set(AppState::MainMenu);
+                });
+            },
+            GameState::Playing | GameState::CombatMenu | GameState::Combat => {},
         });
+    });
 
     if *game_state.get() == GameState::GameMenu {
         game_access_codes(context, &session);
     }
+}
+
+fn game_overlay_area(context: &egui::Context) -> (egui::Area, f32) {
+    let viewport = context.viewport_rect();
+    let scale = viewport_ui_scale(viewport.size());
+    let content_width = MENU_CONTENT_WIDTH.min((viewport.width() / scale - 32.0).max(240.0));
+    let overlay_id = egui::Id::new("stellarion_game_overlay");
+    context.set_transform_layer(
+        egui::LayerId::new(egui::Order::Foreground, overlay_id),
+        egui::emath::TSTransform::new(viewport.center().to_vec2() * (1.0 - scale), scale),
+    );
+    let area = egui::Area::new(overlay_id)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .movable(false)
+        .constrain(false)
+        .order(egui::Order::Foreground);
+    (area, content_width)
 }
 
 /// Covers the viewport with an invisible interactive layer so Egui captures every pointer action.
@@ -1954,12 +1973,22 @@ fn game_access_codes(context: &egui::Context, session: &MultiplayerSession) {
         return;
     };
     let viewport = context.viewport_rect();
-    let panel_width =
-        (viewport.width() * 0.28).clamp(300.0, 360.0).min((viewport.width() - 48.0).max(240.0));
-    egui::Area::new("stellarion_game_access_codes".into())
+    let scale = viewport_ui_scale(viewport.size());
+    let panel_width = (viewport.width() / scale * 0.28)
+        .clamp(300.0, 360.0)
+        .min((viewport.width() / scale - 48.0).max(240.0));
+    let area_id = egui::Id::new("stellarion_game_access_codes");
+    context.set_transform_layer(
+        egui::LayerId::new(egui::Order::Foreground, area_id),
+        egui::emath::TSTransform::new(
+            egui::vec2(viewport.left(), viewport.bottom()) * (1.0 - scale),
+            scale,
+        ),
+    );
+    egui::Area::new(area_id)
         .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
         .movable(false)
-        .constrain(true)
+        .constrain(false)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
             apply_menu_style(ui);

@@ -191,39 +191,76 @@ fn color_update_success_does_not_create_a_toast() {
 
 #[test]
 fn manual_save_reports_success_and_failure() {
-    let success = operation_notification(&BackendOutput::Saved(SaveAcknowledgement {
-        revision: 2,
-        saved_at: 1_700_000_001,
-    }))
+    let success = operation_notification(
+        &BackendOutput::Saved(SaveAcknowledgement {
+            revision: 2,
+            saved_at: 1_700_000_001,
+        }),
+        &MultiplayerSession::default(),
+    )
     .unwrap();
     assert_eq!(success.message, "Shared game and your current turn draft saved.");
     assert_eq!(success.level, crate::core::messages::MessageLevel::Info);
 
     let error = BackendError::Offline("test outage".to_string());
-    let failure =
-        operation_notification(&BackendOutput::Failed(Operation::Save, error.clone())).unwrap();
-    assert_eq!(failure.message, user_facing_backend_error(Operation::Save, &error));
+    let failure = operation_notification(
+        &BackendOutput::Failed(Operation::Save, error.clone()),
+        &MultiplayerSession::default(),
+    )
+    .unwrap();
+    assert_eq!(failure.message, "Backend is offline: test outage");
     assert_eq!(failure.level, crate::core::messages::MessageLevel::Error);
 }
 
 #[test]
 fn rejected_turn_orders_are_visible_while_normal_waiting_stays_quiet() {
     for operation in [Operation::Submit, Operation::Resolve] {
-        let notification = operation_notification(&BackendOutput::Failed(
-            operation,
-            BackendError::InvalidData("Required production level is unavailable.".into()),
-        ))
+        let notification = operation_notification(
+            &BackendOutput::Failed(
+                operation,
+                BackendError::InvalidData("Required production level is unavailable.".into()),
+            ),
+            &MultiplayerSession::default(),
+        )
         .unwrap();
         assert_eq!(notification.level, crate::core::messages::MessageLevel::Error);
         assert!(notification.message.contains("Could not end turn"));
         assert!(notification.message.contains("Required production level is unavailable."));
     }
-    assert!(operation_notification(&BackendOutput::ResolutionWaiting).is_none());
-    assert!(operation_notification(&BackendOutput::Failed(
-        Operation::Resolve,
-        BackendError::TurnIncomplete,
-    ))
+    assert!(operation_notification(
+        &BackendOutput::ResolutionWaiting,
+        &MultiplayerSession::default()
+    )
     .is_none());
+    assert!(operation_notification(
+        &BackendOutput::Failed(Operation::Resolve, BackendError::TurnIncomplete,),
+        &MultiplayerSession::default()
+    )
+    .is_none());
+}
+
+#[test]
+fn allied_launch_errors_name_the_participant_and_begin_with_a_capital() {
+    let mut game = record("game-a", 1, 1, MatchStatus::Active);
+    game.members.push(membership(&game.id, 1, "Astra", true));
+    game.members.push(membership(&game.id, 3, "Nova", true));
+    let session = MultiplayerSession {
+        active_game: Some(game),
+        ..default()
+    };
+    let detail = "invalid command for player 1: allied attack: player 3 selected 5 Bombers, but the origin has only 3 available";
+    assert_eq!(
+        session.error_with_player_names(detail),
+        "Allied attack: player Nova selected 5 Bombers, but the origin has only 3 available",
+    );
+    let notification = operation_notification(
+        &BackendOutput::Failed(Operation::Submit, BackendError::InvalidData(detail.into())),
+        &session,
+    )
+    .unwrap();
+    assert!(notification.message.starts_with("Allied attack:"));
+    assert!(notification.message.contains("player Nova"));
+    assert!(!notification.message.contains("player 3"));
 }
 
 #[test]
@@ -767,6 +804,7 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
 fn local_practice_end_turn_closes_other_players_missions_even_after_a_failed_attempt() {
     use crate::core::map::icon::Icon;
     use crate::core::simulation::JointAttackContribution;
+    use crate::core::units::{ships::Ship, Army, Unit};
     use crate::multiplayer::model::{
         JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
     };
@@ -795,7 +833,7 @@ fn local_practice_end_turn_closes_other_players_missions_even_after_a_failed_att
                 contribution: Some(JointAttackContribution {
                     player_id: 2,
                     origin: record.persisted.state.players[1].home_planet,
-                    army: Default::default(),
+                    army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
                     bombing: Default::default(),
                     combat_probes: false,
                 }),

@@ -83,7 +83,7 @@ fn options_stay_compact_while_navigation_uses_original_main_menu_height() {
     }
 }
 /// Checks the rendered card geometry, including text and controls at narrow widths.
-fn assert_option_cards(shapes: &[egui::epaint::ClippedShape], labels: &[&str]) {
+fn assert_option_cards(shapes: &[egui::epaint::ClippedShape], labels: &[&str], scale: f32) {
     let mut previous: Option<egui::Rect> = None;
     for label in labels {
         let heading = visible_menu_label(shapes, label)
@@ -104,7 +104,7 @@ fn assert_option_cards(shapes: &[egui::epaint::ClippedShape], labels: &[&str]) {
             assert!((previous.left() - card.left()).abs() < 1.0, "{label} misaligned");
             assert!((previous.width() - card.width()).abs() < 1.0, "{label} width differs");
             assert!(
-                (card.top() - previous.bottom() - 12.0).abs() < 1.0,
+                (card.top() - previous.bottom() - 12.0 * scale).abs() < 1.0,
                 "{label} has inconsistent box spacing: {previous:?}, {card:?}"
             );
         }
@@ -215,14 +215,14 @@ fn option_boxes_align_and_contain_controls_on_each_page() {
                 ],
             ),
             (AppState::JoinGame, vec!["PLAYER NAME", "GAME CODE"]),
-            (AppState::Settings, vec!["AUDIO", "MAP CELLS", "HOVER INFORMATION"]),
+            (AppState::Settings, vec!["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS"]),
         ] {
             let (mut app, context) = menu_app();
             for _ in 0..3 {
                 menu_app_frame(&mut app, &context, viewport, state, vec![]);
             }
             let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
-            assert_option_cards(&shapes, &labels);
+            assert_option_cards(&shapes, &labels, 1.0);
         }
     }
 }
@@ -239,7 +239,11 @@ fn in_game_settings_boxes_fit_and_back_remains_reachable() {
         }
         let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
         if viewport.y >= 900.0 {
-            assert_option_cards(&shapes, &["AUDIO", "MAP CELLS", "HOVER INFORMATION"]);
+            assert_option_cards(
+                &shapes,
+                &["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS"],
+                viewport_ui_scale(viewport),
+            );
         }
         let back = visible_menu_label(&shapes, "Back").unwrap();
         assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(back));
@@ -249,6 +253,33 @@ fn in_game_settings_boxes_fit_and_back_remains_reachable() {
             NextState::Pending(GameState::GameMenu)
         ));
     }
+}
+
+#[test]
+fn settings_controls_the_existing_map_eye_and_brief_hover_mode() {
+    let (mut app, context) = menu_app();
+    let viewport = egui::vec2(800.0, 900.0);
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+    let always = visible_menu_label(&shapes, "Always").unwrap().center();
+    click_menu_app(&mut app, &context, viewport, AppState::Settings, always);
+    assert!(app.world().resource::<Settings>().show_info);
+
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+    let brief = visible_menu_label(&shapes, "Brief").unwrap().center();
+    click_menu_app(&mut app, &context, viewport, AppState::Settings, brief);
+    assert!(app.world().resource::<Settings>().brief_hover_info);
+
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+    let on_hover = visible_menu_label(&shapes, "On hover").unwrap().center();
+    click_menu_app(&mut app, &context, viewport, AppState::Settings, on_hover);
+    assert!(!app.world().resource::<Settings>().show_info);
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Settings, vec![]);
+    let full = visible_menu_label(&shapes, "Full").unwrap().center();
+    click_menu_app(&mut app, &context, viewport, AppState::Settings, full);
+    assert!(!app.world().resource::<Settings>().brief_hover_info);
 }
 
 #[test]
@@ -1144,6 +1175,41 @@ fn menu_frame_sized(
     system.apply(&mut world);
     let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
     (output.shapes, requests)
+}
+
+#[test]
+fn in_game_menu_buttons_scale_around_the_viewport_center() {
+    for viewport in
+        [egui::vec2(800.0, 600.0), egui::vec2(1600.0, 900.0), egui::vec2(2560.0, 1440.0)]
+    {
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        for _ in 0..2 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..default()
+                },
+                |ctx| {
+                    let (area, width) = game_overlay_area(ctx);
+                    area.show(ctx, |ui| {
+                        ui.set_width(width);
+                        ui.allocate_exact_size(egui::vec2(308.0, 55.0), egui::Sense::click());
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        }
+        let id = egui::Id::new("stellarion_game_overlay");
+        let layer = egui::LayerId::new(egui::Order::Foreground, id);
+        let logical = context.memory(|memory| memory.area_rect(id)).unwrap();
+        let painted = context
+            .layer_transform_to_global(layer)
+            .unwrap_or(egui::emath::TSTransform::IDENTITY)
+            .mul_rect(logical);
+        assert!((painted.center() - screen.center()).length() < 2.0);
+        assert!((painted.width() - MENU_CONTENT_WIDTH * viewport_ui_scale(viewport)).abs() < 2.0);
+    }
 }
 
 fn click_menu(

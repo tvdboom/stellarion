@@ -8,12 +8,12 @@
 <br><br>
 </div>
 
-<img src="assets/images/scenery/map.png" alt="Zoomed-out three-player galaxy with friendly and enemy missions, a Space Dock, and sensor coverage">
-<img src="assets/images/scenery/shop.png" alt="Two-player mid-game empire with varied planetary construction">
-<img src="assets/images/scenery/mission-planning.png" alt="Planning a balanced attack fleet in a three-player match">
-<img src="assets/images/scenery/active-missions.png" alt="Active colonization, attack, and espionage missions in a three-player match">
-<img src="assets/images/scenery/combat.png" alt="Live two-player battle with varied fleets, weapon fire, and explosions">
-<img src="assets/images/scenery/battle-report.png" alt="Detailed two-player battle report with varied fleets and planetary defenses">
+<img src="scenery/map.png" alt="Turn-12 three-player galaxy with developed colonies and fleets travelling across the map">
+<img src="scenery/shop.png" alt="Construction panel over a developed colony in a three-player match">
+<img src="scenery/mission-planning.png" alt="Planning a cruiser and fighter attack in a three-player match">
+<img src="scenery/active-missions.png" alt="Active colonization, espionage, and attack missions in a three-player match">
+<img src="scenery/combat.png" alt="Mara and Jonas in a live fleet battle with weapon fire and planetary defenses">
+<img src="scenery/battle-report.png" alt="Detailed report of Mara and Jonas's fleet battle with losses and planetary defenses">
 
 <br>
 
@@ -217,6 +217,5 @@ Things to keep in mind:
 - `Q`: Toggle the audio settings.
 - `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.
-- `H`: Enable/disable information tooltips on hover.
 - `B`: Show/hide the shop panel.
 - `M`: Show/hide the mission panel.

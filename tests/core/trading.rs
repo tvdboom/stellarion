@@ -115,17 +115,42 @@ fn each_post_level_supplies_its_owners_independent_capacity() {
 }
 
 #[test]
-fn trading_posts_require_both_ranges_and_include_the_boundary() {
+fn trading_posts_use_either_range_and_keep_each_senders_capacity() {
     let mut model = trading_game();
     let first = model.players[0].home_planet;
     let second = model.players[1].home_planet;
-    for (distance, expected) in [(2.5, true), (3.0, true), (3.01, false)] {
+    model.map.get_mut(first).army.insert(Unit::Building(Building::TradingPost), 5);
+    assert_eq!(trading_post_capacity(model.map.get(first), 1), 2_500);
+    assert_eq!(trading_post_capacity(model.map.get(second), 2), 1_000);
+    for (distance, expected) in [(3.0, true), (3.01, true), (7.5, true), (7.51, false)] {
         model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * distance;
         assert_eq!(trading_posts_are_adjacent(&model.map, 1, first, 2, second), expected);
+        assert_eq!(trading_posts_are_adjacent(&model.map, 2, second, 1, first), expected);
     }
-    model.map.get_mut(second).army.insert(Unit::Building(Building::TradingPost), 3);
-    model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * 4.5;
-    assert!(trading_posts_are_adjacent(&model.map, 1, first, 2, second));
+    model.map.get_mut(second).position = bevy::math::Vec2::X * Planet::SIZE * 6.0;
+    assert_eq!(visible_trading_post_owner(&model.map, 1, model.map.get(second)), Some(2));
+    assert_eq!(visible_trading_post_owner(&model.map, 2, model.map.get(first)), None);
+    add_trade_agreement_immediately(
+        &mut model,
+        TradeAgreement {
+            id: 93,
+            turn: 1,
+            parties: [
+                TradeParty {
+                    player_id: 1,
+                    planet_id: first,
+                    resources: Resources::new(2_000, 500, 0),
+                },
+                TradeParty {
+                    player_id: 2,
+                    planet_id: second,
+                    resources: Resources::new(1_000, 0, 0),
+                },
+            ],
+        },
+    )
+    .unwrap();
+    assert_eq!(model.trades.len(), 1);
 }
 
 #[test]

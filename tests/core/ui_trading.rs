@@ -115,7 +115,7 @@ fn trade_invitation(model: &GameModel) -> TradeInvitation {
 }
 
 #[test]
-fn trade_resource_edits_publish_live_and_acceptance_waits_for_server_confirmation() {
+fn trade_edits_wait_for_send_offer_and_accepted_offers_withdraw_once() {
     let mut model = trading_panel_game();
     for player in &mut model.players {
         player.resources = Resources::new(10_000, 10_000, 10_000);
@@ -136,7 +136,7 @@ fn trade_resource_edits_publish_live_and_acceptance_waits_for_server_confirmatio
     trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
     world.resource_mut::<Messages<MultiplayerRequest>>().clear();
     state.trade_resources.metal += 10;
-    // A pressed pointer must not delay live publication until the end of a drag.
+    // Adjusting a pending offer, including during a drag, stays local.
     let events = vec![egui::Event::PointerButton {
         pos: egui::pos2(10.0, 10.0),
         button: egui::PointerButton::Primary,
@@ -145,27 +145,13 @@ fn trade_resource_edits_publish_live_and_acceptance_waits_for_server_confirmatio
     }];
     trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, events, false);
     let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
-    assert!(matches!(requests.as_slice(), [MultiplayerRequest::RespondTrade {
-        trade_id: 19, expected_revision: 0, resources, response: TradeResponse::Pending
-    }] if resources.metal == 110));
-    session.trade_update_pending = true;
+    assert!(requests.is_empty());
     state.trade_resources.metal = 120;
     trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
     assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
-    session.trade_update_pending = false;
-    session.trades[0].revision = 1;
-    session.trades[0].participants[0].resources.metal = 110;
-    session.trades[0].participants[1].resources.crystal = 280;
     let output =
         trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
-    assert!(panel_labels(&output).contains_key("280"));
-    let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
-    assert!(matches!(requests.as_slice(), [MultiplayerRequest::RespondTrade {
-        expected_revision: 1, resources, response: TradeResponse::Pending, ..
-    }] if resources.metal == 120));
-    session.trades[0].revision = 2;
-    session.trades[0].participants[0].resources = state.trade_resources;
-    let accept = panel_labels(&output)["Accept"].center();
+    let send = panel_labels(&output)["Send offer"].center();
     for pressed in [false, true, false] {
         trading_ui_frame(
             &context,
@@ -175,9 +161,9 @@ fn trade_resource_edits_publish_live_and_acceptance_waits_for_server_confirmatio
             &session,
             size,
             vec![
-                egui::Event::PointerMoved(accept),
+                egui::Event::PointerMoved(send),
                 egui::Event::PointerButton {
-                    pos: accept,
+                    pos: send,
                     button: egui::PointerButton::Primary,
                     pressed,
                     modifiers: egui::Modifiers::NONE,
@@ -191,26 +177,32 @@ fn trade_resource_edits_publish_live_and_acceptance_waits_for_server_confirmatio
     assert!(matches!(
         requests.as_slice(),
         [MultiplayerRequest::RespondTrade {
-            expected_revision: 2,
+            expected_revision: 0,
             response: TradeResponse::Accepted,
+            resources,
             ..
-        }]
+        }] if resources.metal == 120
     ));
-    state.trade_resources = Resources::default();
-    state.trade_open = None;
-    session.trade_update_pending = true;
-    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], true);
-    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
-    session.trade_update_pending = false;
-    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], true);
+    session.trades[0].participants[0].resources = state.trade_resources;
+    session.trades[0].participants[0].response = TradeResponse::Accepted;
+    state.trade_resources.metal = 130;
+    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
     let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
     assert!(matches!(requests.as_slice(), [MultiplayerRequest::RespondTrade {
         resources, response: TradeResponse::Pending, ..
-    }] if resources.is_empty()));
+    }] if resources.metal == 120));
+    session.trades[0].participants[0].response = TradeResponse::Pending;
+    state.trade_resources.metal = 140;
+    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+    state.trade_open = None;
+    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], true);
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+    assert_eq!(state.trade_draft_id, Some(19));
 }
 
 #[test]
-fn closing_a_trade_preserves_a_reverted_offer_until_the_inflight_edit_finishes() {
+fn closing_a_trade_keeps_an_unsent_draft_local() {
     let model = trading_panel_game();
     let mut session = MultiplayerSession::default();
     session.trades.push(trade_invitation(&model));
@@ -230,21 +222,14 @@ fn closing_a_trade_preserves_a_reverted_offer_until_the_inflight_edit_finishes()
     assert_eq!(state.trade_draft_id, Some(19));
     assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
 
-    // An older edit arrives after the local player reverted to the initial amounts and closed.
+    // A server update while the panel is closed never publishes the local draft.
     session.trade_update_pending = false;
     session.trades[0].revision = 1;
     session.trades[0].participants[0].resources.metal += 50;
     trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], true);
-    let requests = world.resource::<Messages<MultiplayerRequest>>();
-    let mut cursor = requests.get_cursor();
-    assert!(cursor.read(requests).any(|request| matches!(request,
-        MultiplayerRequest::RespondTrade {
-            trade_id: 19,
-            expected_revision: 1,
-            resources,
-            response: TradeResponse::Pending,
-        } if *resources == original
-    )));
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+    assert_eq!(state.trade_resources, original);
+    assert_eq!(state.trade_draft_id, Some(19));
 }
 
 #[test]
@@ -304,6 +289,173 @@ fn trade_review_statuses_fit_without_scrolling() {
             }
         }
     }
+}
+
+#[test]
+fn trade_badges_show_each_players_role_and_response() {
+    for local_index in [0, 1] {
+        for (proposer_response, recipient_response, canceled, finalized, expected) in [
+            (
+                TradeResponse::Accepted,
+                TradeResponse::Pending,
+                false,
+                false,
+                ["Proposed", "Pending"],
+            ),
+            (
+                TradeResponse::Accepted,
+                TradeResponse::Rejected,
+                true,
+                false,
+                ["Proposed", "Rejected"],
+            ),
+            (
+                TradeResponse::Pending,
+                TradeResponse::Accepted,
+                false,
+                false,
+                ["Pending", "Confirmed"],
+            ),
+            (
+                TradeResponse::Accepted,
+                TradeResponse::Accepted,
+                false,
+                true,
+                ["Accepted", "Accepted"],
+            ),
+        ] {
+            let mut model = trading_panel_game();
+            let mut trade = trade_invitation(&model);
+            let proposer = trade.proposer;
+            let recipient = model.players[0].id;
+            trade.participants[1].response = proposer_response;
+            trade.participants[0].response = recipient_response;
+            trade.canceled = canceled;
+            trade.finalized = finalized;
+            let mut session = MultiplayerSession::default();
+            session.trades.push(trade);
+            model.players.swap(0, local_index);
+            let mut state = UiState {
+                trade_open: Some(19),
+                ..default()
+            };
+            let context = trading_context();
+            let mut world = World::new();
+            world.init_resource::<Messages<MultiplayerRequest>>();
+            world.init_resource::<Messages<MessageMsg>>();
+            let size = egui::vec2(640.0, 480.0);
+            trading_ui_frame(
+                &context,
+                &mut world,
+                &mut state,
+                &model,
+                &session,
+                size,
+                vec![],
+                false,
+            );
+            let output = trading_ui_frame(
+                &context,
+                &mut world,
+                &mut state,
+                &model,
+                &session,
+                size,
+                vec![],
+                false,
+            );
+            let labels = panel_labels(&output);
+            for (player_id, badge) in [(proposer, expected[0]), (recipient, expected[1])] {
+                let heading = labels[&format!("Player {player_id}")];
+                let matching = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == badge => {
+                            Some(text.galley.rect.translate(text.pos.to_vec2()))
+                        },
+                        _ => None,
+                    })
+                    .filter(|rect| (rect.center().y - heading.center().y).abs() < 2.0)
+                    .count();
+                assert_eq!(matching, 1, "Player {player_id} should show {badge}");
+            }
+        }
+    }
+}
+
+#[test]
+fn proposer_cannot_accept_until_the_other_player_offers_resources() {
+    let mut model = trading_panel_game();
+    model.players[1].resources = Resources::new(1000, 1000, 1000);
+    let mut trade = trade_invitation(&model);
+    trade.participants[0].resources = Resources::default();
+    trade.participants[1].resources = Resources::new(150, 0, 0);
+    let mut session = MultiplayerSession::default();
+    session.trades.push(trade);
+    model.players.swap(0, 1);
+    let mut state = UiState {
+        trade_open: Some(19),
+        ..default()
+    };
+    let context = trading_context();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let size = egui::vec2(640.0, 480.0);
+    let frame = |world: &mut World, state: &mut UiState, session: &MultiplayerSession, events| {
+        trading_ui_frame(&context, world, state, &model, session, size, events, false)
+    };
+    frame(&mut world, &mut state, &session, vec![]);
+    let output = frame(&mut world, &mut state, &session, vec![]);
+    let accept = panel_labels(&output)["Accept"].center();
+    for pressed in [true, false] {
+        frame(
+            &mut world,
+            &mut state,
+            &session,
+            vec![
+                egui::Event::PointerMoved(accept),
+                egui::Event::PointerButton {
+                    pos: accept,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        );
+    }
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+
+    session.trades[0].participants[0].resources = Resources::new(100, 0, 0);
+    session.trades[0].participants[1].response = TradeResponse::Pending;
+    frame(&mut world, &mut state, &session, vec![]);
+    for pressed in [true, false] {
+        frame(
+            &mut world,
+            &mut state,
+            &session,
+            vec![
+                egui::Event::PointerMoved(accept),
+                egui::Event::PointerButton {
+                    pos: accept,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        );
+    }
+    assert!(world.resource_mut::<Messages<MultiplayerRequest>>().drain().any(|request| {
+        matches!(
+            request,
+            MultiplayerRequest::RespondTrade {
+                trade_id: 19,
+                response: TradeResponse::Accepted,
+                ..
+            }
+        )
+    }));
 }
 
 #[test]
@@ -373,7 +525,7 @@ fn confirmed_trades_close_the_matching_panel_and_emit_one_two_second_toast_for_e
             assert_eq!(notices.len(), 1);
             assert_eq!(notices[0].message, format!("Trade with Player {other_player} successful."));
             assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
-            assert!(notices[0].action.is_none());
+            assert_eq!(notices[0].action, Some(MessageAction::OpenTrade(19)));
             assert_eq!(notices[0].display_duration, Some(std::time::Duration::from_secs(2)));
         }
     }
@@ -514,6 +666,28 @@ fn resource_image_rects(output: &egui::FullOutput) -> Vec<egui::Rect> {
         .collect()
 }
 
+fn assert_trade_resource_borders(output: &egui::FullOutput, scale: f32) {
+    let borders = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.stroke.color == RESOURCE_IMAGE_BORDER_COLOR
+                    && (rect.stroke.width - 2.0 * scale).abs() < 0.1 =>
+            {
+                Some(rect.rect)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let images = resource_image_rects(output);
+    assert_eq!(borders.len(), 6);
+    assert_eq!(images.len(), 6);
+    for image in images {
+        assert!(borders.iter().any(|border| border.contains_rect(image)));
+    }
+}
+
 fn assert_resource_art_is_full_brightness(output: &egui::FullOutput) {
     // The modal fades in as a whole; white with its current alpha still leaves art untinted.
     let untinted = |color: Color32| color == Color32::from_white_alpha(color.a());
@@ -630,6 +804,7 @@ fn trade_headings_keep_the_sender_first_with_each_players_name_and_color() {
 #[test]
 fn resource_tiles_select_all_stock_and_clear_only_the_clicked_type() {
     for size in [egui::vec2(542.0, 546.0), egui::vec2(360.0, 640.0)] {
+        let modal_scale = game_modal_scale(size, egui::vec2(560.0, 402.0));
         let mut model = trading_panel_game();
         model.players[0].resources = Resources::new(3200, 1700, 0);
         let mut session = MultiplayerSession::default();
@@ -686,8 +861,24 @@ fn resource_tiles_select_all_stock_and_clear_only_the_clicked_type() {
                     false,
                 );
                 assert_resource_art_is_full_brightness(&output);
-                let position = resource_image_rects(&output)[index + 3].center();
-                let mut hovered = output;
+                assert_trade_resource_borders(&output, modal_scale);
+                let other_position = resource_image_rects(&output)[index].center();
+                let mut read_only = output;
+                for _ in 0..3 {
+                    read_only = trading_ui_frame(
+                        &context,
+                        &mut world,
+                        &mut state,
+                        &model,
+                        &session,
+                        size,
+                        vec![egui::Event::PointerMoved(other_position)],
+                        false,
+                    );
+                }
+                assert_eq!(read_only.platform_output.cursor_icon, CursorIcon::Default);
+                let position = resource_image_rects(&read_only)[index + 3].center();
+                let mut hovered = read_only;
                 for _ in 0..3 {
                     hovered = trading_ui_frame(
                         &context,
@@ -702,12 +893,9 @@ fn resource_tiles_select_all_stock_and_clear_only_the_clicked_type() {
                 }
                 assert_eq!(hovered.platform_output.cursor_icon, CursorIcon::PointingHand);
                 assert_resource_art_is_full_brightness(&hovered);
+                assert_trade_resource_borders(&hovered, modal_scale);
                 if button == egui::PointerButton::Primary {
-                    assert!(hovered.shapes.iter().any(|shape| matches!(
-                    &shape.shape, egui::Shape::Text(text)
-                        if text.galley.text() == resource.to_name()
-                            && text.galley.job.sections.iter().all(|section| section.format.font_id.size == 15.0)
-                    )), "missing small tooltip for {resource:?} at {size:?}: {:?}", panel_labels(&hovered));
+                    assert!(!panel_labels(&hovered).contains_key(&resource.to_name()));
                 }
                 let mut expected = state.trade_resources;
                 *expected.get_mut(&resource) = if button == egui::PointerButton::Primary {
@@ -737,13 +925,7 @@ fn resource_tiles_select_all_stock_and_clear_only_the_clicked_type() {
                 }
                 assert_eq!(state.trade_resources, expected, "{resource:?}, {button:?}, {size:?}");
                 assert_eq!(state.trade_open, Some(19));
-                if expected != session.trades[0].participants[0].resources {
-                    assert!(world.resource_mut::<Messages<MultiplayerRequest>>().drain().any(
-                        |request| matches!(request, MultiplayerRequest::RespondTrade {
-                            trade_id: 19, resources, response: TradeResponse::Pending, ..
-                        } if resources == expected)
-                    ));
-                }
+                assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
             }
         }
     }
@@ -811,7 +993,7 @@ fn settled_trade_resource_tiles_do_not_change_historical_amounts() {
 }
 
 #[test]
-fn short_trade_panels_scroll_offers_without_moving_footer_actions() {
+fn scaled_trade_panels_keep_offers_and_footer_visible() {
     let mut model = trading_panel_game();
     model.players[0].resources = Resources::new(1000, 1000, 1000);
     let mut session = MultiplayerSession::default();
@@ -836,8 +1018,10 @@ fn short_trade_panels_scroll_offers_without_moving_footer_actions() {
                     && shape.clip_rect.contains_rect(text.galley.rect.translate(text.pos.to_vec2()))
         ))
     };
-    assert!(!selected_is_visible(&before));
+    assert!(selected_is_visible(&before));
+    let scroll_position = resource_image_rects(&before)[0].center();
     let mut after = before;
+    let mut selected_remained_visible = true;
     for _ in 0..10 {
         after = trading_ui_frame(
             &context,
@@ -847,7 +1031,7 @@ fn short_trade_panels_scroll_offers_without_moving_footer_actions() {
             &session,
             size,
             vec![
-                egui::Event::PointerMoved(egui::pos2(320.0, 200.0)),
+                egui::Event::PointerMoved(scroll_position),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -100.0),
@@ -857,12 +1041,16 @@ fn short_trade_panels_scroll_offers_without_moving_footer_actions() {
             ],
             false,
         );
+        selected_remained_visible &= selected_is_visible(&after);
     }
     let after_labels = panel_labels(&after);
     for action in ["Close", "Reject", "Accept"] {
         assert_eq!(before_labels[action], after_labels[action]);
     }
-    assert!(selected_is_visible(&after));
+    assert!(
+        selected_remained_visible,
+        "the last offer must remain visible: before={before_labels:?}, after={after_labels:?}"
+    );
 }
 
 fn trading_panel_game() -> GameModel {
@@ -874,6 +1062,57 @@ fn trading_panel_game() -> GameModel {
     model.map.get_mut(home).army.insert(Unit::Building(Building::TradingPost), 2);
     model.map.get_mut(enemy).army.insert(Unit::Building(Building::TradingPost), 1);
     model
+}
+
+#[test]
+fn projected_trading_post_cannot_offer_until_it_exists_in_the_saved_turn() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::PersistedGame;
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = trading_panel_game();
+    let enemy = model.players[1].home_planet;
+    model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 1.5;
+    let mut saved = model.clone();
+    let home = model.players[0].home_planet;
+    saved.map.get_mut(home).army.remove(&Unit::Building(Building::TradingPost));
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("unsaved-post"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: model.players.len() as u8,
+        status: model.status,
+        persisted: PersistedGame::new(saved),
+        members: Vec::new(),
+        submitted_players: Vec::new(),
+    });
+    let mut state = UiState {
+        trading_post_open: Some(enemy),
+        ..default()
+    };
+    let context = trading_context();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let size = egui::vec2(562.0, 441.0);
+    trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
+    let output =
+        trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
+    let labels = panel_labels(&output);
+    assert!(labels.keys().any(|label| label.starts_with("This route is not available")));
+    assert!(!labels.contains_key("Send offer"));
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+
+    let game = session.active_game.as_mut().unwrap();
+    game.persisted = PersistedGame::new(model.clone());
+    game.submitted_players.push(model.players[1].id);
+    let output =
+        trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
+    let labels = panel_labels(&output);
+    assert!(labels.keys().any(|label| label.starts_with("One of the players")));
+    assert!(!labels.contains_key("Send offer"));
 }
 
 #[test]
@@ -1001,7 +1240,7 @@ fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn
         visible_trading_post_owner(&model.map, player_id, model.map.get(alternate)),
         Some(other_id)
     );
-    assert!(!trading_posts_are_adjacent(&model.map, player_id, home, other_id, alternate));
+    assert!(trading_posts_are_adjacent(&model.map, player_id, home, other_id, alternate));
 
     let mut accepted = trade_invitation(&model);
     accepted.finalized = true;
@@ -1053,6 +1292,14 @@ fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn
         assert_eq!(state.trading_post_open, None);
         assert_eq!(state.trade_resources, accepted.participant(player_id).unwrap().resources);
         assert!(labels.contains_key("Accepted"));
+        assert_eq!(
+            output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Accepted"))
+                .count(),
+            2,
+        );
         assert!(labels.contains_key("Close"));
         for action in ["Send offer", "Accept", "Reject"] {
             assert!(!labels.contains_key(action), "a settled trade must only allow review");
@@ -1075,10 +1322,32 @@ fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn
 }
 
 #[test]
-fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes() {
+fn unavailable_saved_trade_route_panel_explains_and_closes_at_small_sizes() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::PersistedGame;
+    use crate::multiplayer::model::GameRecord;
+
     for size in [egui::vec2(1280.0, 800.0), egui::vec2(640.0, 480.0), egui::vec2(360.0, 640.0)] {
         let model = trading_panel_game();
         let enemy = model.players[1].home_planet;
+        let mut saved = model.clone();
+        saved
+            .map
+            .get_mut(model.players[0].home_planet)
+            .army
+            .remove(&Unit::Building(Building::TradingPost));
+        let mut session = MultiplayerSession::default();
+        session.active_game = Some(GameRecord {
+            id: GameId::new("unavailable-route"),
+            code: GameCode::new("ABCDEF"),
+            revision: 0,
+            saved_at: 0,
+            max_players: model.players.len() as u8,
+            status: model.status,
+            persisted: PersistedGame::new(saved),
+            members: Vec::new(),
+            submitted_players: Vec::new(),
+        });
         let mut state = UiState {
             trading_post_open: Some(enemy),
             ..default()
@@ -1087,17 +1356,38 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
         let mut world = World::new();
         world.init_resource::<Messages<MultiplayerRequest>>();
         world.init_resource::<Messages<MessageMsg>>();
-        trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
-        let output =
-            trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
+        trading_ui_frame(
+            &context,
+            &mut world,
+            &mut state,
+            &model,
+            &session,
+            size,
+            Vec::new(),
+            false,
+        );
+        let output = trading_ui_frame(
+            &context,
+            &mut world,
+            &mut state,
+            &model,
+            &session,
+            size,
+            Vec::new(),
+            false,
+        );
         let labels = panel_labels(&output);
-        let message =
-            "You need a completed Trading Post of your own within range of this post to trade. Both posts must reach each other.";
+        let message = "This route is not available in the saved turn yet. Complete both Trading Posts and advance the turn before trading.";
         assert!(labels.contains_key(message));
         assert!(!labels.contains_key("Send offer"));
         assert!(!labels.contains_key("Player 1"));
         assert_eq!(state.trading_post_open, Some(enemy));
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let panel_height = 280.0 * game_modal_scale(size, egui::vec2(560.0, 280.0));
+        let panel_top = (size.y - panel_height) * 0.5;
+        let bar_bottom = panel_top + panel_height * TRADE_PANEL_TOP_BAR_FRACTION;
+        assert!(labels["Trading Post"].top() >= panel_top - 2.0);
+        assert!(labels["Trading Post"].bottom() <= bar_bottom + 2.0);
         for text in ["Trading Post", message, "Close"] {
             assert!(screen.contains_rect(labels[text]), "{text} must fit at {size:?}");
         }
@@ -1106,11 +1396,12 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
 
         let position = labels["Close"].center();
         for pressed in [true, false] {
-            trading_panel_frame(
+            trading_ui_frame(
                 &context,
                 &mut world,
                 &mut state,
                 &model,
+                &session,
                 size,
                 vec![
                     egui::Event::PointerMoved(position),
@@ -1121,6 +1412,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
                         modifiers: default(),
                     },
                 ],
+                false,
             );
         }
         assert_eq!(state.trading_post_open, None);
@@ -1129,7 +1421,7 @@ fn missing_trading_post_panel_explains_the_requirement_and_closes_at_small_sizes
 }
 
 #[test]
-fn trading_panel_requires_both_posts_to_reach_each_other() {
+fn trading_panel_opens_when_either_post_reaches_the_other() {
     let mut model = trading_panel_game();
     let home = model.players[0].home_planet;
     let enemy = model.players[1].home_planet;
@@ -1145,7 +1437,8 @@ fn trading_panel_requires_both_posts_to_reach_each_other() {
         (1.5, 0, true, false, false),
         (1.51, 1, true, false, false),
         (1.5, 1, false, false, false),
-        (3.0, 2, true, true, false),
+        (3.0, 2, true, true, true),
+        (3.01, 2, true, false, false),
         (1.49, 1, true, true, true),
         (1.5, 1, true, true, true),
     ] {
@@ -1192,7 +1485,12 @@ fn trading_panel_requires_both_posts_to_reach_each_other() {
 
 #[test]
 fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
-    for size in [egui::vec2(542.0, 546.0), egui::vec2(640.0, 480.0), egui::vec2(360.0, 640.0)] {
+    for size in [
+        egui::vec2(542.0, 546.0),
+        egui::vec2(640.0, 480.0),
+        egui::vec2(562.0, 441.0),
+        egui::vec2(360.0, 640.0),
+    ] {
         let mut model = trading_panel_game();
         let home = model.players[0].home_planet;
         let enemy = model.players[1].home_planet;
@@ -1211,6 +1509,12 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
             trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
         let labels = panel_labels(&output);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let modal_scale = game_modal_scale(size, egui::vec2(560.0, 402.0));
+        let panel_height = 402.0 * modal_scale;
+        let panel_top = (size.y - panel_height) * 0.5 + TRADE_PANEL_VERTICAL_OFFSET * modal_scale;
+        let bar_bottom = panel_top + panel_height * TRADE_PANEL_TOP_BAR_FRACTION;
+        assert!(labels["Trading Post"].top() >= panel_top - 2.0);
+        assert!(labels["Trading Post"].bottom() <= bar_bottom + 2.0);
         for text in ["Trading Post", "Player 1", "Player 2", "Close", "Send offer"] {
             assert!(screen.contains_rect(labels[text]), "{text} must fit at {size:?}");
         }
@@ -1232,15 +1536,15 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
         assert_eq!(inputs.len(), 6);
         assert!(labels["Player 1"].left() <= icons[0].left());
         assert!((labels["Player 1"].center().y - labels["Draft"].center().y).abs() < 2.0);
-        assert!(labels["Trading Post"].bottom() + 28.0 <= labels["Player 1"].top());
+        assert!(labels["Trading Post"].bottom() + 20.0 * modal_scale <= labels["Player 1"].top());
         assert!(labels["Player 1"].bottom() < labels["Player 2"].top());
         for (index, (icon, input)) in icons.iter().zip(&inputs).take(3).enumerate() {
             assert!(screen.contains_rect(*icon));
             assert!(screen.contains_rect(*input));
             assert!((icon.center().y - input.center().y).abs() < 2.0);
             assert!(icon.right() < input.left());
-            assert!(labels["Player 1"].bottom() + 8.0 <= icon.top());
-            assert!(icon.bottom() + 10.0 <= labels["0 / 500 selected"].top());
+            assert!(labels["Player 1"].bottom() + 8.0 * modal_scale <= icon.top());
+            assert!(icon.bottom() + 10.0 * modal_scale <= labels["0 / 500 selected"].top());
             assert!(input.bottom() < labels["Close"].top());
             if index > 0 {
                 assert!(inputs[index - 1].right() < icon.left());
@@ -1258,9 +1562,10 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
                 );
             }
         }
-        let panel_bottom = (size.y + 460.0_f32.min(size.y - 32.0)) * 0.5;
-        assert!(labels["Close"].bottom() < panel_bottom - 12.0);
-        assert!(labels["Send offer"].bottom() < panel_bottom - 12.0);
+        let panel_bottom =
+            (size.y + panel_height) * 0.5 + TRADE_PANEL_VERTICAL_OFFSET * modal_scale;
+        assert!(labels["Close"].bottom() < panel_bottom - 12.0 * modal_scale);
+        assert!(labels["Send offer"].bottom() < panel_bottom - 12.0 * modal_scale);
         for pressed in [true, false] {
             let position = labels["Send offer"].center();
             trading_panel_frame(

@@ -231,10 +231,11 @@ pub(super) fn draw_moon_building_stats(
 }
 
 /// Draws the unit hover interface and emits any resulting local actions.
-fn draw_unit_hover(
+pub(super) fn draw_unit_hover(
     ui: &mut Ui,
     unit: &Unit,
     count: usize,
+    brief: bool,
     state: &mut UiState,
     player: &mut Player,
     planet: &mut Planet,
@@ -276,53 +277,59 @@ fn draw_unit_hover(
                 }
             });
 
-            ui.separator();
-
-            if let Some(msg) = msg {
-                ui.colored_label(Color32::RED, RichText::new(msg).small());
+            if msg.is_some() || !brief {
+                ui.separator();
+                if let Some(msg) = msg {
+                    ui.colored_label(Color32::RED, RichText::new(msg).small());
+                }
+                if !brief {
+                    ui.small(unit.description());
+                }
             }
-
-            ui.small(unit.description());
-
-            ui.add_space(10.);
 
             ui.spacing_mut().item_spacing.y = 0.;
+            ui.add_space(4.);
 
             if !unit.is_building() {
-                ui.separator();
-            }
-
-            if !unit.is_building() {
-                for (i, row) in CombatStats::iter()
-                    .filter(|c| {
-                        !(matches!(
-                            c,
-                            CombatStats::RapidFire | CombatStats::Intelligence | CombatStats::Range
-                        ) || *c == CombatStats::Production && unit.is_orbital())
-                    })
-                    .collect::<Vec<CombatStats>>()
-                    .chunks(3)
-                    .enumerate()
-                {
-                    if i == 0 || row.iter().any(|s| unit.get_stat(s) != "---") {
-                        egui::Grid::new(ui.auto_id_with(format!("row_{:?}", row[0])))
-                            .spacing([20., 0.])
-                            .striped(false)
-                            .show(ui, |ui| {
-                                for stat in row {
-                                    draw_operating_unit_stat_cell(ui, unit, stat, images, planet);
-                                }
-                            });
+                draw_unit_hover_section(ui, |ui| {
+                    let is_space_dock = *unit == Unit::space_dock();
+                    let mut has_stat_row = false;
+                    for (i, row) in CombatStats::iter()
+                        .filter(|stat| match stat {
+                            CombatStats::Hull | CombatStats::Shield | CombatStats::Damage => true,
+                            CombatStats::Production => !unit.is_orbital() || is_space_dock,
+                            CombatStats::Intelligence | CombatStats::Range => is_space_dock,
+                            CombatStats::Speed | CombatStats::FuelConsumption => !is_space_dock,
+                            CombatStats::RapidFire => false,
+                        })
+                        .collect::<Vec<CombatStats>>()
+                        .chunks(3)
+                        .enumerate()
+                    {
+                        if i == 0 || row.iter().any(|s| unit.get_stat(s) != "---") {
+                            if has_stat_row {
+                                ui.add_space(12.);
+                            }
+                            egui::Grid::new(ui.auto_id_with(format!("row_{:?}", row[0])))
+                                .spacing([20., 0.])
+                                .striped(false)
+                                .show(ui, |ui| {
+                                    for stat in row {
+                                        draw_operating_unit_stat_cell(
+                                            ui, unit, stat, images, planet,
+                                        );
+                                    }
+                                });
+                            has_stat_row = true;
+                        }
                     }
-
-                    ui.spacing_mut().item_spacing.y = 10.;
-                }
+                });
             }
 
             let section_spacing = ui.spacing().item_spacing.y;
             ui.spacing_mut().item_spacing.y = 0.;
 
-            if unit.is_orbital() {
+            if unit.is_orbital() && !unit.is_defense() {
                 let _ = draw_orbital_stats(ui, unit, images);
             } else if unit.is_building() && planet.is_moon() {
                 let _ = draw_moon_building_stats(ui, unit, images);
@@ -484,30 +491,37 @@ fn draw_unit_hover(
             ui.spacing_mut().item_spacing.y = section_spacing;
 
             if !unit.rapid_fire().is_empty() {
-                ui.separator();
-                ui.small(CombatStats::RapidFire.to_name())
-                    .on_hover_ui(|ui| draw_stat_hover(ui, &CombatStats::RapidFire, images));
+                draw_unit_hover_section(ui, |ui| {
+                    ui.small(CombatStats::RapidFire.to_name())
+                        .on_hover_ui(|ui| draw_stat_hover(ui, &CombatStats::RapidFire, images));
 
-                egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(ui, |ui| {
-                    let mut counter = 0;
-                    for rf_unit in Unit::all().iter().flatten() {
-                        if let Some(rf) = unit.rapid_fire().get(rf_unit) {
-                            ui.horizontal(|ui| {
-                                ui.set_width(115.);
-                                ui.spacing_mut().item_spacing.x = 8.;
+                    egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(
+                        ui,
+                        |ui| {
+                            let mut counter = 0;
+                            for rf_unit in Unit::all().iter().flatten() {
+                                if let Some(rf) = unit.rapid_fire().get(rf_unit) {
+                                    ui.horizontal(|ui| {
+                                        ui.set_width(115.);
+                                        ui.spacing_mut().item_spacing.x = 8.;
 
-                                ui.add_image(images.get(rf_unit.to_lowername()), [45., 45.]);
-                                ui.small(format!("{}%", rf));
-                            })
-                            .response
-                            .on_hover_text(RichText::new(rf_unit.to_name()).small());
+                                        ui.add_image(
+                                            images.get(rf_unit.to_lowername()),
+                                            [45., 45.],
+                                        );
+                                        ui.small(format!("{}%", rf));
+                                    })
+                                    .response
+                                    .on_hover_text(RichText::new(rf_unit.to_name()).small());
 
-                            counter += 1;
-                            if counter % 4 == 0 {
-                                ui.end_row();
+                                    counter += 1;
+                                    if counter % 4 == 0 {
+                                        ui.end_row();
+                                    }
+                                }
                             }
-                        }
-                    }
+                        },
+                    );
                 });
             }
 
@@ -730,11 +744,11 @@ pub(super) fn draw_senate_policy(
                     egui::WidgetType::Button, ui.is_enabled(), selected, policy.label(),
                 ));
                 let hover = |ui: &mut Ui| {
-                    let category = match policy {
-                        SenatePolicy::Expansion => "fleet",
-                        SenatePolicy::Consolidation => "defense",
+                    let (bonus, category) = match policy {
+                        SenatePolicy::Expansion => (2, "fleet"),
+                        SenatePolicy::Consolidation => (5, "defense"),
                     };
-                    ui.small(format!("{}: +2 {category} production per completed Senate level on every planet.", policy.label()));
+                    ui.small(format!("{}: +{bonus} {category} production per completed Senate level on every planet.", policy.label()));
                     if remaining > 0 {
                         let turns = if remaining == 1 { "turn" } else { "turns" };
                         ui.small(format!("Committed for {remaining} more {turns}."));
@@ -1089,43 +1103,43 @@ pub(super) fn draw_shop(
                         );
                     }
 
-                    if settings.show_hover {
-                        response
-                            .on_hover_ui(|ui| {
-                                draw_unit_hover(
-                                    ui,
-                                    unit,
-                                    count,
-                                    state,
-                                    player,
-                                    planet,
-                                    solar_band,
-                                    &mut senate,
-                                    senate_queues_fit,
-                                    pending,
-                                    message,
-                                    None,
-                                    images,
-                                );
-                            })
-                            .on_disabled_hover_ui(|ui| {
-                                draw_unit_hover(
-                                    ui,
-                                    unit,
-                                    count,
-                                    state,
-                                    player,
-                                    planet,
-                                    solar_band,
-                                    &mut senate,
-                                    senate_queues_fit,
-                                    pending,
-                                    message,
-                                    purchase.as_ref().err().map(ToString::to_string),
-                                    images,
-                                );
-                            });
-                    }
+                    response
+                        .on_hover_ui(|ui| {
+                            draw_unit_hover(
+                                ui,
+                                unit,
+                                count,
+                                settings.brief_hover_info,
+                                state,
+                                player,
+                                planet,
+                                solar_band,
+                                &mut senate,
+                                senate_queues_fit,
+                                pending,
+                                message,
+                                None,
+                                images,
+                            );
+                        })
+                        .on_disabled_hover_ui(|ui| {
+                            draw_unit_hover(
+                                ui,
+                                unit,
+                                count,
+                                settings.brief_hover_info,
+                                state,
+                                player,
+                                planet,
+                                solar_band,
+                                &mut senate,
+                                senate_queues_fit,
+                                pending,
+                                message,
+                                purchase.as_ref().err().map(ToString::to_string),
+                                images,
+                            );
+                        });
                 });
             }
         });

@@ -127,7 +127,7 @@ pub enum SenatePolicy {
     /// Two additional ship production per owned planet per completed Senate level.
     #[default]
     Expansion,
-    /// Two additional defense production per owned planet per completed Senate level.
+    /// Five additional defense production per owned planet per completed Senate level.
     Consolidation,
 }
 
@@ -173,7 +173,10 @@ impl SenateSupport {
             && !planet.is_moon()
             && !planet.is_destroyed
         {
-            self.level.saturating_mul(2)
+            self.level.saturating_mul(match policy {
+                SenatePolicy::Expansion => 2,
+                SenatePolicy::Consolidation => 5,
+            })
         } else {
             0
         }

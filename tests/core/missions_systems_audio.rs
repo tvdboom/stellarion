@@ -86,7 +86,103 @@ fn rejected_mission_keeps_error_feedback_without_an_action_cue() {
 }
 
 #[test]
-fn sending_allied_mission_projects_every_contingent_and_requests_publication() {
+fn solo_dispatch_after_inviting_players_cancels_only_after_the_launch_is_accepted() {
+    use crate::core::simulation::JointAttackContribution;
+    use crate::multiplayer::client::MultiplayerRequest;
+    use crate::multiplayer::model::{
+        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+    };
+
+    for (selected, succeeds) in [(2, true), (4, false)] {
+        let mut map = Map::new(2, 0);
+        let origin_id = map.planets[0].id;
+        let destination_id = map.planets[1].id;
+        let fighter = Unit::Ship(crate::core::units::ships::Ship::LightFighter);
+        map.planets[0].army.insert(fighter, 3);
+        map.planets[0].owned = Some(1);
+        map.planets[0].controlled = Some(1);
+        let mut player = Player::new(1, origin_id);
+        player.resources.deuterium = 100_000;
+        let fleet = Army::from([(fighter, selected)]);
+        let mission = Mission::from_mission(
+            1,
+            player.id,
+            map.get(origin_id),
+            map.get(destination_id),
+            &Mission {
+                objective: Icon::Attack,
+                army: fleet.clone(),
+                ..default()
+            },
+        );
+        let invitation = JointAttackInvitation {
+            id: 99,
+            revision: 0,
+            turn: 1,
+            inviter: player.id,
+            destination: destination_id,
+            objective: Icon::Attack,
+            bombing: BombingRaid::None,
+            combat_probes: false,
+            canceled: false,
+            launched: false,
+            participants: vec![
+                JointAttackParticipant {
+                    player_id: player.id,
+                    response: JointAttackResponse::Accepted,
+                    contribution: Some(JointAttackContribution {
+                        player_id: player.id,
+                        origin: origin_id,
+                        army: Army::from([(fighter, 2)]),
+                        bombing: BombingRaid::None,
+                        combat_probes: false,
+                    }),
+                },
+                JointAttackParticipant {
+                    player_id: 2,
+                    response: JointAttackResponse::Pending,
+                    contribution: None,
+                },
+            ],
+        };
+        let mut session = MultiplayerSession::default();
+        session.joint_attacks.push(invitation);
+        let mut app = App::new();
+        app.insert_resource(map)
+            .insert_resource(player)
+            .insert_resource(session)
+            .insert_resource(PendingTurnCommands {
+                turn: 1,
+                ..default()
+            })
+            .init_resource::<Missions>()
+            .add_message::<SendMissionMsg>()
+            .add_message::<MessageMsg>()
+            .add_message::<PlayAudioMsg>()
+            .add_message::<MultiplayerRequest>()
+            .add_systems(Update, send_mission);
+        app.world_mut().write_message(SendMissionMsg::solo_after_cancel(mission, 99));
+        app.update();
+        assert_eq!(app.world().resource::<Missions>().0.len() == 1, succeeds);
+        assert_eq!(
+            app.world_mut()
+                .resource_mut::<Messages<MultiplayerRequest>>()
+                .drain()
+                .filter(|request| matches!(
+                    request,
+                    MultiplayerRequest::CancelJointAttack {
+                        attack_id: 99
+                    }
+                ))
+                .count(),
+            usize::from(succeeds),
+        );
+        assert_eq!(app.world().resource::<PendingTurnCommands>().commands.len() == 1, succeeds,);
+    }
+}
+
+#[test]
+fn sending_allied_mission_projects_only_own_contingent_and_requests_publication() {
     use crate::core::identity::{GameCode, GameId};
     use crate::core::missions::JointMissionLaunch;
     use crate::core::simulation::{GameModel, GameRules, JointAttackContribution, PersistedGame};
@@ -169,14 +265,19 @@ fn sending_allied_mission_projects_every_contingent_and_requests_publication() {
     let pending = app.world().resource::<PendingTurnCommands>();
     let expected = crate::core::simulation::preview_commands(&model, 1, &pending.commands).unwrap();
     let missions = app.world().resource::<Missions>();
-    assert_eq!(missions.0.len(), 2);
+    assert_eq!(missions.0.len(), 1);
     assert_eq!(
         missions.0.iter().map(|mission| (mission.id, mission.owner)).collect::<Vec<_>>(),
-        vec![(77, 1), (78, 2)]
+        vec![(77, 1)]
     );
     assert_eq!(
         serde_json::to_value(&missions.0).unwrap(),
-        serde_json::to_value(&expected.missions).unwrap()
+        serde_json::to_value(crate::core::turns::filter_missions(
+            &expected.missions,
+            &expected.map,
+            &expected.players[0],
+        ))
+        .unwrap()
     );
     for player in &model.players[..2] {
         assert_eq!(
@@ -184,8 +285,11 @@ fn sending_allied_mission_projects_every_contingent_and_requests_publication() {
             0
         );
         assert_eq!(
-            crate::core::turns::filter_missions(&missions.0, &expected.map, player).len(),
-            2
+            crate::core::turns::filter_missions(&expected.missions, &expected.map, player)
+                .iter()
+                .map(|mission| mission.owner)
+                .collect::<Vec<_>>(),
+            vec![player.id]
         );
     }
     assert_eq!(

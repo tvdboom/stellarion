@@ -579,6 +579,7 @@ pub fn send_mission(
     for SendMissionMsg {
         mission,
         joint_attack,
+        cancel_joint_attack,
     } in send_mission.read()
     {
         let worlds = map
@@ -587,10 +588,18 @@ pub fn send_mission(
             .find(|p| p.id == mission.origin)
             .zip(map.planets.iter().find(|p| p.id == mission.destination));
         let reserved_conflict = session.as_ref().is_some_and(|session| {
-            session
+            let mut reserved = Army::new();
+            for contribution in session
                 .joint_attacks
                 .iter()
-                .filter(|invitation| invitation.inviter != player.id)
+                .filter(|invitation| {
+                    !invitation.canceled
+                        && !invitation.launched
+                        && joint_attack
+                            .as_ref()
+                            .is_none_or(|launch| launch.attack_id != invitation.id)
+                        && Some(invitation.id) != *cancel_joint_attack
+                })
                 .flat_map(|invitation| &invitation.participants)
                 .filter(|participant| {
                     participant.player_id == player.id
@@ -599,12 +608,16 @@ pub fn send_mission(
                 })
                 .filter_map(|participant| participant.contribution.as_ref())
                 .filter(|contribution| contribution.origin == mission.origin)
-                .any(|contribution| {
-                    mission.army.iter().any(|(unit, count)| {
-                        origin_available(&map, mission.origin, player.id, unit)
-                            < count.saturating_add(contribution.army.amount(unit))
-                    })
-                })
+            {
+                for (unit, count) in &contribution.army {
+                    let total = reserved.entry(*unit).or_default();
+                    *total = total.saturating_add(*count);
+                }
+            }
+            mission.army.iter().any(|(unit, count)| {
+                origin_available(&map, mission.origin, player.id, unit)
+                    < count.saturating_add(reserved.amount(unit))
+            })
         });
         let valid = !reserved_conflict
             && worlds.is_some_and(|(origin, destination)| {
@@ -613,7 +626,7 @@ pub fn send_mission(
             });
         if !valid
             || !pending.can_accept_commands()
-            || mission.fuel_consumption(&map) > player.resources.deuterium
+            || mission.dispatch_fuel_consumption(&map, &player) > player.resources.deuterium
         {
             message.write(MessageMsg::error(
                 "This mission is unavailable. Continue your turn before changing orders.",
@@ -650,9 +663,9 @@ pub fn send_mission(
                 jump_gate: mission.jump_gate,
             }
         };
-        // A joint launch changes several empires at once. Use the same deterministic preview
-        // as draft restoration so every accepted contingent appears immediately, with its own
-        // origin, identity, fleet deduction and the canonical shared arrival turn.
+        // A joint launch changes several empires at once. Use the deterministic preview to
+        // apply every accepted fleet deduction and shared arrival turn, then project only
+        // missions this player can normally see.
         let joint_projection = if joint_attack.is_some() {
             let Some((session, game)) = session
                 .as_ref()
@@ -673,12 +686,16 @@ pub fn send_mission(
                 Ok(model) => match model.player(player.id) {
                     Ok(projected_player) => Some((projected_player.clone(), model)),
                     Err(error) => {
-                        message.write(MessageMsg::error(error.to_string()));
+                        let error = error.to_string();
+                        let error = session.error_with_player_names(&error);
+                        message.write(MessageMsg::error(error));
                         continue;
                     },
                 },
                 Err(error) => {
-                    message.write(MessageMsg::error(error.to_string()));
+                    let error = error.to_string();
+                    let error = session.error_with_player_names(&error);
+                    message.write(MessageMsg::error(error));
                     continue;
                 },
             }
@@ -688,6 +705,11 @@ pub fn send_mission(
         if !pending.push(command) {
             message.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
             continue;
+        }
+        if let Some(attack_id) = cancel_joint_attack {
+            requests.write(crate::multiplayer::client::MultiplayerRequest::CancelJointAttack {
+                attack_id: *attack_id,
+            });
         }
         if let Some((projected_player, model)) = joint_projection {
             missions.0 =
@@ -699,8 +721,10 @@ pub fn send_mission(
             message.write(MessageMsg::info("Mission sent.").silent());
             continue;
         }
-        player.resources.deuterium =
-            player.resources.deuterium.saturating_sub(mission.fuel_consumption(&map));
+        player.resources.deuterium = player
+            .resources
+            .deuterium
+            .saturating_sub(mission.dispatch_fuel_consumption(&map, &player));
 
         let origin = map.get_mut(mission.origin);
 
@@ -774,6 +798,12 @@ pub fn recall_mission(
             message.write(MessageMsg::error("Missile strikes cannot be recalled once launched."));
             continue;
         }
+        if mission.recall_blocked_by_revoked_protection(&map, player.id) {
+            message.write(MessageMsg::error(
+                "This fleet cannot return to a world after protection was revoked.",
+            ));
+            continue;
+        }
 
         let command_matches = |command: &TurnCommand| {
             matches!(
@@ -816,7 +846,7 @@ pub fn recall_mission(
                 .and_then(|record| record.persisted.state.map.try_get(mission.origin))
                 .map(|origin| origin.protection_permissions.clone());
             let mission = missions.0.remove(mission_index);
-            let fuel = mission.fuel_consumption(&map);
+            let fuel = mission.dispatch_fuel_consumption(&map, &player);
             player.resources.deuterium = player.resources.deuterium.saturating_add(fuel);
             let origin = map.get_mut(mission.origin);
             if mission.jump_gate {

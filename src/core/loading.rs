@@ -447,6 +447,7 @@ pub(crate) fn refresh_turn_draft(
             }
         },
         Err(error) => {
+            let error = session.error_with_player_names(&error.to_string());
             messages.write(crate::core::messages::MessageMsg::error(format!(
                 "Could not restore turn orders: {error}"
             )));

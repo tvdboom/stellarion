@@ -78,12 +78,17 @@ impl MissionReport {
         }
     }
 
-    /// Returns every player whose fleet began this report on the attacking side.
+    /// Returns the attacking commander first, followed by the other fleet owners.
     pub fn attacker_players(&self) -> Vec<PlayerId> {
         if let Some(attack) =
             self.mission.joint_attack.as_ref().filter(|attack| !attack.attackers.is_empty())
         {
-            return attack.attackers.keys().copied().collect();
+            let mut players = attack.attackers.keys().copied().collect::<Vec<_>>();
+            if let Some(index) = players.iter().position(|id| *id == self.mission.owner) {
+                players.remove(index);
+                players.insert(0, self.mission.owner);
+            }
+            return players;
         }
         vec![self.mission.owner]
     }
@@ -99,14 +104,11 @@ impl MissionReport {
             })
     }
 
-    /// Returns every player whose forces began this report on the defending side.
+    /// Returns the defending controller first, followed by protection-fleet owners.
     pub fn defender_players(&self) -> Vec<PlayerId> {
-        let mut players = self.planet.army.protector_ids().collect::<Vec<_>>();
-        if let Some(controller) = self.planet.controlled.or(self.planet.owned) {
-            players.push(controller);
-        }
-        players.sort_unstable();
-        players.dedup();
+        let controller = self.planet.controlled.or(self.planet.owned);
+        let mut players = controller.into_iter().collect::<Vec<_>>();
+        players.extend(self.planet.army.protector_ids().filter(|id| Some(*id) != controller));
         players
     }
 
@@ -236,6 +238,14 @@ impl MissionReport {
         }
     }
 
+    /// Returns whether this player fought on the winning side of the battle.
+    pub fn won_by(&self, player_id: PlayerId) -> bool {
+        self.winner().is_some_and(|winner| {
+            (self.is_attacker(winner) && self.is_attacker(player_id))
+                || (self.is_defender(winner) && self.is_defender(player_id))
+        })
+    }
+
     /// Both combat armies remain after the bounded round limit; neither side conquered the world.
     pub fn is_stalemate(&self) -> bool {
         matches!(self.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
@@ -258,11 +268,12 @@ impl MissionReport {
 
     /// Returns the user-facing status of this combat side.
     pub fn status(&self, player: &Player) -> &'static str {
-        match self.winner() {
-            None => "draw",
-            Some(id) if id == player.id => "victory",
-            Some(id) if self.is_defender(player.id) && self.is_defender(id) => "victory",
-            _ => "defeat",
+        if self.winner().is_none() {
+            "draw"
+        } else if self.won_by(player.id) {
+            "victory"
+        } else {
+            "defeat"
         }
     }
 
@@ -271,13 +282,7 @@ impl MissionReport {
         match self.mission.objective {
             Icon::MissileStrike => "missile",
             Icon::Spy if self.scout_probes > 0 => "eye",
-            _ if self.winner() == Some(player.id) => "won",
-            _ if self
-                .winner()
-                .is_some_and(|winner| self.is_defender(player.id) && self.is_defender(winner)) =>
-            {
-                "won"
-            },
+            _ if self.won_by(player.id) => "won",
             _ => "lost",
         }
     }
@@ -286,12 +291,12 @@ impl MissionReport {
     pub fn can_see(&self, side: &Side, player_id: PlayerId) -> bool {
         match side {
             Side::Attacker => {
-                self.mission.owner == player_id
+                self.is_attacker(player_id)
                     || self.is_defender(player_id)
-                    || self.winner() == Some(player_id)
+                    || self.won_by(player_id)
                     || matches!(self.mission.objective, Icon::Spy | Icon::MissileStrike)
             },
-            Side::Defender => self.is_defender(player_id) || self.winner() == Some(player_id),
+            Side::Defender => self.is_defender(player_id) || self.won_by(player_id),
         }
     }
 }

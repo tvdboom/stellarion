@@ -305,7 +305,8 @@ impl Description for Icon {
                 "Send your fleet to a world whose controller has granted you protection access. \
                 The fleet remains yours and joins that world's defense. Select that world as a \
                 mission origin to send your stationed units elsewhere, or recall the entire fleet \
-                home. You cannot attack that world while any of your fleet remains stationed there."
+                home. You cannot attack that world while your fleet is stationed there with active \
+                protection access. A revoked fleet departs before incoming attacks resolve."
             },
             _ => "This icon selects a local map or shop category.",
         }

@@ -1619,10 +1619,13 @@ fn apply_recall(
     if !mission.objective.is_recallable() {
         return invalid(player_id, "missile strikes cannot be recalled once launched");
     }
+    if mission.recall_blocked_by_revoked_protection(&model.map, player_id) {
+        return invalid(player_id, "a fleet cannot return to a world after protection was revoked");
+    }
 
     if mission.send == turn && mission.travel_turns == 0 {
         let mission = model.missions.remove(mission_index);
-        let fuel = mission.fuel_consumption(&model.map);
+        let fuel = mission.dispatch_fuel_consumption(&model.map, model.player(player_id)?);
         let player = model.player_mut(player_id)?;
         player.resources.deuterium = player.resources.deuterium.saturating_add(fuel);
 
@@ -2069,7 +2072,7 @@ fn apply_orbital_railgun_fire(
     if model.map.try_get(target).is_none() {
         return invalid(player_id, "orbital-railgun target does not exist");
     }
-    if model.map.get(target).is_protected_by(player_id) {
+    if model.map.get(target).blocks_hostile_action_by(player_id) {
         return invalid(player_id, "a player cannot fire on a world they are protecting");
     }
     let origins = orbital_railgun_origins(&model.map, player_id, target);
@@ -2275,7 +2278,7 @@ fn apply_mission(
     .with_deep_cover(deep_cover);
     validate_mission(model.player(player_id)?, &model.map, origin, destination, &mission)
         .map_err(|error| invalid_error(player_id, error.to_string()))?;
-    let fuel = mission.fuel_consumption(&model.map);
+    let fuel = mission.dispatch_fuel_consumption(&model.map, model.player(player_id)?);
     let player_index = model
         .players
         .iter()
@@ -2350,7 +2353,7 @@ fn apply_joint_mission(
         if participant.spectator
             || destination.owned == Some(contribution.player_id)
             || destination.controlled == Some(contribution.player_id)
-            || destination.is_protected_by(contribution.player_id)
+            || destination.blocks_hostile_action_by(contribution.player_id)
         {
             return invalid(
                 leader,
@@ -2361,18 +2364,30 @@ fn apply_joint_mission(
             .map
             .try_get(contribution.origin)
             .ok_or_else(|| invalid_error(leader, "joint attack origin does not exist"))?;
-        if !origin.can_launch_mission(contribution.player_id) {
+        if origin.id == destination_id || !origin.can_launch_mission(contribution.player_id) {
             return invalid(leader, "joint attack origin is not available to its participant");
         }
         let available = origin.mission_origin_army(contribution.player_id).ok_or_else(|| {
             invalid_error(leader, "joint attack origin is not available to its participant")
         })?;
-        if contribution
-            .army
-            .iter()
-            .any(|(unit, count)| *count == 0 || !unit.is_ship() || available.amount(unit) < *count)
+        if contribution.army.iter().any(|(unit, count)| *count == 0 || !unit.is_ship()) {
+            return invalid(leader, "joint attack contributions must contain positive ship counts");
+        }
+        if let Some((unit, count)) =
+            contribution.army.iter().find(|(unit, count)| available.amount(unit) < **count)
         {
-            return invalid(leader, "joint attack contribution contains unavailable units");
+            let unit_name = unit.to_name();
+            return invalid(
+                leader,
+                format!(
+                    "allied attack: player {} selected {} {}{}, but the origin has only {} available",
+                    contribution.player_id,
+                    count,
+                    unit_name,
+                    if *count == 1 { "" } else { "s" },
+                    available.amount(unit),
+                ),
+            );
         }
         if index == 0
             && (!objective.condition_for_army(&contribution.army)

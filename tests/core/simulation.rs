@@ -364,6 +364,8 @@ fn revoked_protection_waits_for_orders_then_returns_unsent_fleets_next_turn() {
 
     assert!(set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap());
 
+    model.players[1].resources.deuterium = 0;
+
     model.validate().unwrap();
     assert!(!model.map.get(protected).allows_protection(2));
     assert_eq!(model.map.get(protected).army.protector(2).unwrap().amount(&cruiser), 2);
@@ -381,6 +383,100 @@ fn revoked_protection_waits_for_orders_then_returns_unsent_fleets_next_turn() {
         next.missions.iter().find(|mission| mission.army.amount(&cruiser) == 2).unwrap();
     assert_eq!((stationed.origin, stationed.destination), (protected, protector_home));
     assert_eq!(stationed.return_objective, Some(Icon::Protect));
+}
+
+#[test]
+fn revoked_protection_can_return_home_with_no_fuel_but_other_routes_still_cost_fuel() {
+    let mut model = started_model(3);
+    let protected = model.players[0].home_planet;
+    let home = model.players[1].home_planet;
+    let other = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let army = Army::from([(fighter, 3)]);
+    model.map.get_mut(protected).protection_permissions.insert(2);
+    model.map.get_mut(protected).army.dock_protector(2, army.clone());
+    set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap();
+    model.players[1].resources.deuterium = 0;
+
+    let home_order = TurnCommand::SendMission {
+        mission_id: 901,
+        origin: protected,
+        destination: home,
+        objective: Icon::Deploy,
+        army: army.clone(),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        deep_cover: false,
+        jump_gate: false,
+    };
+    let returned = preview_commands(&model, 2, std::slice::from_ref(&home_order)).unwrap();
+    assert!(returned.missions[0].fuel_consumption(&returned.map) > 0);
+    assert_eq!(returned.player(2).unwrap().resources.deuterium, 0);
+    assert!(returned.map.get(protected).army.protector(2).is_none());
+    assert_eq!(returned.missions[0].destination, home);
+
+    let canceled = preview_commands(
+        &returned,
+        2,
+        &[TurnCommand::RecallMission {
+            mission_id: 901,
+        }],
+    );
+    assert!(canceled.is_err());
+
+    let other_order = TurnCommand::SendMission {
+        mission_id: 902,
+        origin: protected,
+        destination: other,
+        objective: Icon::Attack,
+        army,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        deep_cover: false,
+        jump_gate: false,
+    };
+    assert!(preview_commands(&model, 2, std::slice::from_ref(&other_order)).is_err());
+    model.players[1].resources.deuterium = 1_000_000;
+    let other_mission = preview_commands(&model, 2, &[other_order]).unwrap();
+    assert_eq!(
+        other_mission.player(2).unwrap().resources.deuterium,
+        1_000_000 - other_mission.missions[0].fuel_consumption(&other_mission.map)
+    );
+}
+
+#[test]
+fn a_fleet_sent_from_revoked_protection_cannot_be_recalled_to_that_world() {
+    let mut model = started_model(3);
+    let protected = model.players[0].home_planet;
+    let other = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    set_protection_permission_immediately(&mut model, 1, protected, 2, true).unwrap();
+    model.map.get_mut(protected).army.dock_protector(2, Army::from([(fighter, 3)]));
+    set_protection_permission_immediately(&mut model, 1, protected, 2, false).unwrap();
+    model.players[1].resources.deuterium = 1_000_000;
+
+    let send = TurnCommand::SendMission {
+        mission_id: 903,
+        origin: protected,
+        destination: other,
+        objective: Icon::Attack,
+        army: Army::from([(fighter, 3)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        deep_cover: false,
+        jump_gate: false,
+    };
+    let launched = preview_commands(&model, 2, std::slice::from_ref(&send)).unwrap();
+    let recall = TurnCommand::RecallMission {
+        mission_id: 903,
+    };
+    assert!(preview_commands(&model, 2, &[send, recall.clone()]).is_err());
+    assert!(preview_commands(&launched, 2, std::slice::from_ref(&recall)).is_err());
+
+    let mut travelling = launched;
+    travelling.missions[0].travel_turns = 1;
+    assert!(preview_commands(&travelling, 2, &[recall]).is_err());
+    assert!(travelling.map.get(protected).army.protector(2).is_none());
 }
 
 #[test]
@@ -2112,6 +2208,17 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
     model.map.get_mut(target).position = target_position;
     model.map.get_mut(target).controlled = Some(3);
     model.map.get_mut(target).army.clear();
+    set_protection_permission_immediately(&mut model, 3, target, 1, true).unwrap();
+    model
+        .map
+        .get_mut(target)
+        .army
+        .dock_protector(1, Army::from([(Unit::Ship(Ship::LightFighter), 2)]));
+    assert!(model.map.get(target).is_protected_by(1));
+    assert!(model.map.get(target).blocks_hostile_action_by(1));
+    model.map.get_mut(target).protection_permissions.insert(2);
+    assert!(model.map.get(target).allows_protection(2));
+    assert!(!model.map.get(target).is_protected_by(2));
     model.map.get_mut(leader_origin).position = target_position + Vec2::X * Planet::SIZE;
     model.map.get_mut(supporter_origin).position = target_position + Vec2::X * Planet::SIZE * 12.0;
     model.map.get_mut(leader_origin).army.insert(Unit::Ship(Ship::LightFighter), 4);
@@ -2144,8 +2251,36 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
             },
         ],
     };
+    assert!(preview_commands(&model, 1, std::slice::from_ref(&joint)).is_err());
+    set_protection_permission_immediately(&mut model, 3, target, 1, false).unwrap();
+    assert!(model.map.get(target).is_protected_by(1));
+    assert!(!model.map.get(target).blocks_hostile_action_by(1));
+    let mut same_world_launch = joint.clone();
+    if let TurnCommand::SendJointMission {
+        contributions,
+        ..
+    } = &mut same_world_launch
+    {
+        contributions[0].origin = target;
+        contributions[0].army = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
+    }
+    assert!(preview_commands(&model, 1, &[same_world_launch]).is_err());
     let turn = model.turn;
     assert!(preview_commands(&model, 1, &[joint.clone(), joint.clone()]).is_err());
+    let mut unavailable = joint.clone();
+    if let TurnCommand::SendJointMission {
+        contributions,
+        ..
+    } = &mut unavailable
+    {
+        contributions[1].army.insert(Unit::Ship(Ship::LightFighter), 4);
+    }
+    assert!(matches!(
+        preview_commands(&model, 1, &[unavailable]),
+        Err(GameError::InvalidCommand { reason, .. })
+            if reason.contains("player 2 selected 4 Light Fighters")
+                && reason.contains("only 3 available")
+    ));
     resolve_turn(
         &mut model,
         &[
@@ -2191,6 +2326,8 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
     );
     let report = model.player(2).unwrap().reports.last().unwrap();
     assert_eq!(report.attacker_players(), vec![1, 2]);
+    assert_eq!(report.winner(), Some(1));
+    assert_eq!(report.status(model.player(2).unwrap()), "victory");
 }
 
 #[test]
@@ -2573,13 +2710,6 @@ fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
             < ORBITAL_RAILGUN_FIRE_ENERGY_COST as i128,
         "the test must exercise firing through an Energy shortage"
     );
-    model
-        .map
-        .get_mut(target)
-        .army
-        .dock_protector(1, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
-    assert!(preview_commands(&model, 1, std::slice::from_ref(&fire)).is_err());
-    model.map.get_mut(target).army.remove_protector(1);
     let preview = preview_commands(&model, 1, std::slice::from_ref(&fire)).unwrap();
     assert_eq!(orbital_railgun_fire_cost(1), Resources::new(0, 0, 1_000));
     assert_eq!(ORBITAL_RAILGUN_FIRE_ENERGY_COST, 5);

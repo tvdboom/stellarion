@@ -97,6 +97,7 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
 #[test]
 fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
     for size in [egui::vec2(1600.0, 900.0), egui::vec2(560.0, 460.0), egui::vec2(320.0, 640.0)] {
+        let toast_scale = crate::core::messages::notification_scale(size);
         let (mut model, player, mut state, mut invitation) = fixture();
         model.map.get_mut(invitation.destination).name = "Io".into();
         invitation.inviter = player.id;
@@ -197,7 +198,7 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
                 .iter()
                 .find_map(|shape| match &shape.shape {
                     egui::Shape::Rect(rect)
-                        if rect.corner_radius == egui::CornerRadius::same(5)
+                        if rect.corner_radius == egui::CornerRadius::same(5) * toast_scale
                             && rect.rect.contains_rect(text) =>
                     {
                         Some(rect.rect)
@@ -207,13 +208,16 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
                 .unwrap();
             assert!(screen.contains_rect(rect), "toast outside {size:?}: {rect:?}");
             assert!(
-                rect.contains_rect(text.expand2(egui::vec2(12.0, 8.0))),
+                rect.contains_rect(text.expand2(egui::vec2(12.0, 8.0) * toast_scale)),
                 "missing text padding at {size:?}: {label}, frame {rect:?}, text {text:?}"
             );
             rect
         });
         for pair in frames.windows(2) {
-            assert!(pair[1].top() >= pair[0].bottom() + 5.0, "overlap at {size:?}: {frames:?}");
+            assert!(
+                pair[1].top() >= pair[0].bottom() + 6.0 * toast_scale - 0.2,
+                "overlap at {size:?}: {frames:?}"
+            );
             assert!((pair[0].right() - pair[1].right()).abs() < 1.0);
         }
 
@@ -226,6 +230,13 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
             frame(&mut app, &mut state, vec![]);
         }
         let trade = context.memory(|memory| memory.area_rect("trade_notifications")).unwrap();
+        let trade = context
+            .layer_transform_to_global(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("trade_notifications"),
+            ))
+            .unwrap_or(egui::emath::TSTransform::IDENTITY)
+            .mul_rect(trade);
         assert!((trade.top() - frames[0].top()).abs() < 1.0, "stale gap at {size:?}: {trade:?}");
 
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));

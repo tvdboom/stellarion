@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, SystemCursorIcon, WindowResized};
+use bevy_egui::{EguiOutput, PrimaryEguiContext};
 use itertools::Itertools;
 
 use crate::core::camera::MainCamera;
@@ -31,6 +32,7 @@ pub(crate) fn suspend_gameplay_interactions(
     mut state: Option<ResMut<UiState>>,
     window: Query<Entity, With<Window>>,
     blockers: Query<Entity, With<GameplayInputBlocker>>,
+    egui_output: Query<&EguiOutput, With<PrimaryEguiContext>>,
 ) {
     if blockers.is_empty() {
         // A Bevy blocker also catches drags that began before Egui's modal area appeared.
@@ -48,7 +50,16 @@ pub(crate) fn suspend_gameplay_interactions(
         state.combat_report_hover = None;
     }
     if let Ok(window) = window.single() {
-        commands.entity(window).insert(CursorIcon::from(SystemCursorIcon::Default));
+        // Bevy Egui only writes the cursor when Egui's requested icon changes. Preserve
+        // its last icon when entering a menu while the pointer remains on a UI button.
+        let ui_cursor = egui_output
+            .single()
+            .ok()
+            .and_then(|output| {
+                bevy_egui::helpers::egui_to_winit_cursor_icon(output.platform_output.cursor_icon)
+            })
+            .unwrap_or(SystemCursorIcon::Default);
+        commands.entity(window).insert(CursorIcon::from(ui_cursor));
     }
 }
 
@@ -120,7 +131,6 @@ pub fn check_keys_menu(
                                 || state.colonize_confirmation.is_some()
                                 || state.railgun_confirmation.is_some()
                                 || state.protection_access.is_some()
-                                || state.joint_attack_invite_selection.is_some()
                                 || state.trade_open.is_some()
                                 || state.trading_post_open.is_some()
                             {
@@ -130,7 +140,6 @@ pub fn check_keys_menu(
                                 state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
                                 state.protection_access = None;
-                                state.joint_attack_invite_selection = None;
                                 state.trade_open = None;
                                 state.trading_post_open = None;
                             } else if state.joint_attack_open.is_some() {
@@ -208,9 +217,6 @@ pub fn check_keys_combat(
 pub fn check_preference_keys(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<Settings>) {
     if keyboard.just_pressed(KeyCode::KeyC) {
         settings.show_cells = !settings.show_cells;
-    }
-    if keyboard.just_pressed(KeyCode::KeyH) {
-        settings.show_hover = !settings.show_hover;
     }
 }
 

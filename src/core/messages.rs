@@ -16,13 +16,18 @@ use crate::core::map::systems::select_planet;
 use crate::core::missions::{Mission, MissionId};
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
-use crate::core::ui::systems::{resource_bar_bottom, MissionTab, UiState};
+use crate::core::ui::systems::{resource_bar_bottom, viewport_ui_scale, MissionTab, UiState};
 use crate::core::units::Amount;
+use crate::multiplayer::client::MultiplayerSession;
 
 const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
 const MAX_NOTIFICATION_WIDTH: f32 = 440.0;
 const NOTIFICATION_SPACING: f32 = 6.0;
+
+pub(crate) fn notification_scale(viewport: egui::Vec2) -> f32 {
+    (viewport_ui_scale(viewport) * 1.1).clamp(0.8, 1.35)
+}
 
 /// Appends a notification group below those already measured in this egui pass.
 pub(crate) fn show_notification_area(
@@ -35,33 +40,41 @@ pub(crate) fn show_notification_area(
     let stack_id = egui::Id::new("notification_stack_bottom");
     let pass = context.cumulative_pass_nr();
     let viewport = context.content_rect();
+    let scale = notification_scale(viewport.size());
     let top = if playing {
-        DEFAULT_NOTIFICATION_TOP
-            .max(resource_bar_bottom(viewport.size()) + RESOURCE_BAR_NOTIFICATION_GAP)
+        (DEFAULT_NOTIFICATION_TOP * scale)
+            .max(resource_bar_bottom(viewport.size()) + RESOURCE_BAR_NOTIFICATION_GAP * scale)
     } else {
-        DEFAULT_NOTIFICATION_TOP
+        DEFAULT_NOTIFICATION_TOP * scale
     };
     let top = context.data(|data| {
         data.get_temp::<(u64, f32)>(stack_id)
             .filter(|(last_pass, _)| *last_pass == pass)
-            .map_or(top, |(_, bottom)| top.max(bottom - viewport.top() + NOTIFICATION_SPACING))
+            .map_or(top, |(_, bottom)| {
+                top.max(bottom - viewport.top() + NOTIFICATION_SPACING * scale)
+            })
     });
-    let response = egui::Area::new(id.into())
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, top))
+    let area_id = egui::Id::new(id);
+    let transform =
+        egui::emath::TSTransform::new(egui::vec2(viewport.right() * (1.0 - scale), 0.0), scale);
+    context.set_transform_layer(egui::LayerId::new(egui::Order::Tooltip, area_id), transform);
+    let response = egui::Area::new(area_id)
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, top / scale))
         .order(egui::Order::Tooltip)
         .interactable(true)
         // Overflow stays clipped below the viewport instead of moving over earlier toasts.
         .constrain(false)
         .layout(egui::Layout::top_down(egui::Align::Max))
         .show(context, |ui| {
-            ui.set_max_width(max_width.min((viewport.width() - 24.0).max(0.0)));
+            ui.set_max_width(max_width.min((viewport.width() / scale - 24.0).max(0.0)));
             ui.spacing_mut().item_spacing.x = 12.0;
             ui.spacing_mut().item_spacing.y = NOTIFICATION_SPACING;
             contents(ui);
         })
         .response;
     if response.rect.height() > 0.0 {
-        context.data_mut(|data| data.insert_temp(stack_id, (pass, response.rect.bottom())));
+        let bottom = transform.mul_rect(response.rect).bottom();
+        context.data_mut(|data| data.insert_temp(stack_id, (pass, bottom)));
     }
 }
 
@@ -85,6 +98,8 @@ pub enum MessageAction {
     OpenMissionReport(MissionId),
     /// Opens the mission interface on the reports tab without selecting a hidden report.
     OpenMissionReports,
+    /// Opens the completed resource trade for review.
+    OpenTrade(u64),
     /// Centers the strategic map on a still-owned colony and selects it.
     FocusColony(PlanetId),
     /// Centers the strategic map on a public world without opening its information panel.
@@ -152,6 +167,10 @@ impl MessageMsg {
 
     /// Creates an error notification.
     pub fn error(message: impl Into<String>) -> Self {
+        let mut message = message.into();
+        if let Some(first) = message.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
         Self::new(message, MessageLevel::Error)
     }
 }
@@ -219,6 +238,7 @@ fn check_messages(
     player: Option<Res<Player>>,
     app_state: Option<Res<State<AppState>>>,
     game_state: Option<Res<State<GameState>>>,
+    session: Option<Res<MultiplayerSession>>,
 ) {
     // Only make one sound per severity per frame.
     let (mut info_sound, mut warning_sound, mut error_sound) = (true, true, true);
@@ -263,11 +283,18 @@ fn check_messages(
                             == Some(MessageAction::OpenRevokedProtectionMission(planet.id))
                     })
                 {
-                    messages.push(&MessageMsg::warning(format!(
-                        "Protection access to {} {} was revoked. Send your stationed fleet to another world before the turn ends, or it will return home.",
-                        if planet.is_moon() { "moon" } else { "planet" },
-                        planet.name
-                    )).with_action(MessageAction::OpenRevokedProtectionMission(planet.id)));
+                    messages.push(
+                        &MessageMsg::warning(format!(
+                            "Protection access to {} {} was revoked.",
+                            if planet.is_moon() {
+                                "moon"
+                            } else {
+                                "planet"
+                            },
+                            planet.name
+                        ))
+                        .with_action(MessageAction::OpenRevokedProtectionMission(planet.id)),
+                    );
                 }
             }
         }
@@ -336,6 +363,24 @@ fn check_messages(
                 },
                 MessageAction::OpenMissionReports => {
                     open_mission_reports(state, None);
+                },
+                MessageAction::OpenTrade(trade_id) => {
+                    if playing
+                        && session.as_ref().zip(player.as_ref()).is_some_and(|(session, player)| {
+                            session.active_game.as_ref().is_some_and(|game| {
+                                session.trades.iter().any(|trade| {
+                                    trade.id == trade_id
+                                        && trade.turn == game.persisted.state.turn
+                                        && trade.finalized
+                                        && trade.participant(player.id).is_some()
+                                })
+                            })
+                        })
+                    {
+                        state.trade_open = Some(trade_id);
+                        state.trading_post_open = None;
+                        state.planet_selected = None;
+                    }
                 },
                 MessageAction::FocusColony(planet_id) => {
                     if playing {

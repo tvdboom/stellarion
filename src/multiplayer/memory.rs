@@ -491,6 +491,7 @@ impl MultiplayerBackend for InMemoryBackend {
             let mut participant_ids = HashSet::new();
             let first = invitation.participants.first();
             let destination = stored.record.persisted.state.map.try_get(invitation.destination);
+            let previous = stored.joint_attacks.get(&invitation.id);
             if invitation.id == 0
                 || invitation.inviter != inviter
                 || invitation.canceled
@@ -504,22 +505,27 @@ impl MultiplayerBackend for InMemoryBackend {
                 || invitation.participants.len() < 2
                 || destination.is_none_or(|planet| {
                     planet.is_destroyed
-                        || planet.owned == Some(inviter)
-                        || planet.controlled == Some(inviter)
+                        || planet.owned == Some(invitation.inviter)
+                        || planet.controlled == Some(invitation.inviter)
                 })
                 || first.is_none_or(|participant| {
-                    participant.player_id != inviter
+                    participant.player_id != invitation.inviter
                         || participant.response != JointAttackResponse::Accepted
                         || participant.contribution.as_ref().is_none_or(|entry| {
-                            entry.player_id != inviter
+                            entry.player_id != invitation.inviter
+                                || !entry
+                                    .army
+                                    .iter()
+                                    .any(|(unit, count)| unit.is_ship() && *count > 0)
                                 || entry.bombing != invitation.bombing
                                 || entry.combat_probes != invitation.combat_probes
                         })
                 })
-                || invitation.participants.iter().skip(1).any(|participant| {
-                    participant.response != JointAttackResponse::Pending
-                        || participant.contribution.is_some()
-                })
+                || (previous.is_none()
+                    && invitation.participants.iter().skip(1).any(|participant| {
+                        participant.response != JointAttackResponse::Pending
+                            || participant.contribution.is_some()
+                    }))
                 || invitation.participants.iter().any(|participant| {
                     !participant_ids.insert(participant.player_id)
                         || !stored
@@ -539,6 +545,11 @@ impl MultiplayerBackend for InMemoryBackend {
                     || previous.revision != invitation.revision
                 {
                     return Err(BackendError::Forbidden);
+                }
+                if previous.participants.iter().any(|old| {
+                    !invitation.participants.iter().any(|next| next.player_id == old.player_id)
+                }) {
+                    return Err(BackendError::InvalidData("joint_attack_invitees".into()));
                 }
                 let previous_contribution =
                     previous.participants.first().and_then(|item| item.contribution.as_ref());
@@ -569,9 +580,9 @@ impl MultiplayerBackend for InMemoryBackend {
                         if participant.player_id != inviter {
                             participant.contribution.clone_from(&old.contribution);
                         }
-                        participant.response = if participant.player_id == inviter
-                            || !reset_acceptance
-                            || old.response == JointAttackResponse::Rejected
+                        participant.response = if participant.player_id == inviter {
+                            JointAttackResponse::Accepted
+                        } else if !reset_acceptance || old.response == JointAttackResponse::Rejected
                         {
                             old.response
                         } else {
@@ -582,23 +593,7 @@ impl MultiplayerBackend for InMemoryBackend {
             } else if invitation.revision != 0 {
                 return Err(BackendError::InvalidData("joint_attack_revision".into()));
             }
-            let previous_players = stored
-                .joint_attacks
-                .get(&invitation.id)
-                .map(|old| old.participants.iter().map(|item| item.player_id).collect::<Vec<_>>())
-                .unwrap_or_default();
             stored.joint_attacks.insert(invitation.id, invitation.clone());
-            // Removed invitees must refresh too, so an open editor disappears immediately.
-            for player_id in previous_players {
-                if !invitation.participants.iter().any(|item| item.player_id == player_id) {
-                    push_event(
-                        stored,
-                        BackendEventKind::JointAttackChanged,
-                        Some(invitation.turn),
-                        Some(player_id),
-                    );
-                }
-            }
             for participant in &invitation.participants {
                 push_event(
                     stored,
@@ -633,7 +628,6 @@ impl MultiplayerBackend for InMemoryBackend {
                 || invitation.canceled
                 || invitation.launched
                 || invitation.revision != expected_revision
-                || player_id == invitation.inviter
             {
                 return Err(BackendError::Forbidden);
             }
@@ -647,7 +641,7 @@ impl MultiplayerBackend for InMemoryBackend {
             if response == JointAttackResponse::Accepted
                 && (destination.owned == Some(player_id)
                     || destination.controlled == Some(player_id)
-                    || destination.is_protected_by(player_id))
+                    || destination.blocks_hostile_action_by(player_id))
             {
                 return Err(BackendError::Forbidden);
             }
@@ -657,6 +651,12 @@ impl MultiplayerBackend for InMemoryBackend {
                 .find(|participant| participant.player_id == player_id)
                 .ok_or(BackendError::Forbidden)?;
             if participant.response == JointAttackResponse::Rejected {
+                return Err(BackendError::Forbidden);
+            }
+            if player_id == invitation.inviter
+                && (response == JointAttackResponse::Rejected
+                    || contribution.as_ref() != participant.contribution.as_ref())
+            {
                 return Err(BackendError::Forbidden);
             }
             let contribution = match response {
@@ -1558,13 +1558,12 @@ impl MultiplayerBackend for InMemoryBackend {
     }
 }
 
-/// Origin is a local routing choice; ships and combat orders are the offer others accept.
+/// Every fleet edit changes the offer the other players accepted.
 fn joint_attack_offer_changed(
     previous: Option<&crate::core::simulation::JointAttackContribution>,
     next: Option<&crate::core::simulation::JointAttackContribution>,
 ) -> bool {
-    previous.map(|item| (&item.army, &item.bombing, item.combat_probes))
-        != next.map(|item| (&item.army, &item.bombing, item.combat_probes))
+    previous != next
 }
 
 /// Freeze accepted rosters only after the complete submission has passed validation.

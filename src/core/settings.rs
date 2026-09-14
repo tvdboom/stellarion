@@ -40,7 +40,8 @@ pub struct Settings {
     pub p_moons: usize,
     pub show_cells: bool,
     pub show_info: bool,
-    pub show_hover: bool,
+    /// Omits descriptive prose from hover cards while retaining prices, stats, and controls.
+    pub brief_hover_info: bool,
     pub show_menu: bool,
     pub combat_paused: bool,
     pub combat_speed: f32,
@@ -138,7 +139,7 @@ impl Default for Settings {
             p_moons: 30,
             show_cells: true,
             show_info: false,
-            show_hover: true,
+            brief_hover_info: false,
             show_menu: true,
             combat_paused: false,
             combat_speed: 1.0,

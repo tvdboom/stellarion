@@ -3,12 +3,19 @@ use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
 
+#[test]
+fn error_notifications_begin_with_a_capital_letter() {
+    assert_eq!(MessageMsg::error("invalid command").message, "Invalid command");
+    assert_eq!(MessageMsg::error("Already capitalized").message, "Already capitalized");
+}
+
 fn notification_frame(
     context: &egui::Context,
     messages: &Messages,
     screen: egui::Rect,
     events: Vec<egui::Event>,
 ) -> Vec<egui::Rect> {
+    let scale = notification_scale(screen.size());
     let mut output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(screen),
@@ -24,7 +31,9 @@ fn notification_frame(
         .shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            egui::Shape::Rect(rect) if rect.corner_radius == egui::CornerRadius::same(5) => {
+            egui::Shape::Rect(rect)
+                if rect.corner_radius == egui::CornerRadius::same(5) * scale =>
+            {
                 Some(rect.rect)
             },
             _ => None,
@@ -32,11 +41,21 @@ fn notification_frame(
         .collect()
 }
 
+fn notification_area_rect(context: &egui::Context) -> Option<egui::Rect> {
+    let id = egui::Id::new("stellarion_notifications");
+    let rect = context.memory(|memory| memory.area_rect(id))?;
+    let transform = context
+        .layer_transform_to_global(egui::LayerId::new(egui::Order::Tooltip, id))
+        .unwrap_or(egui::emath::TSTransform::IDENTITY);
+    Some(transform.mul_rect(rect))
+}
+
 #[test]
 fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
     let context = egui::Context::default();
     let long = "Battle at planet Ganymede ended in a draw; the attacking fleet is returning to its planet of origin.";
     for size in [egui::vec2(1600.0, 900.0), egui::vec2(320.0, 320.0), egui::vec2(360.0, 640.0)] {
+        let scale = notification_scale(size);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         let mut messages = Messages::default();
         messages.push(&MessageMsg::warning(long));
@@ -47,7 +66,10 @@ fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
         let rects = notification_frame(&context, &messages, screen, vec![]);
         assert_eq!(rects.len(), 2);
         assert!(rects.iter().all(|rect| screen.contains_rect(*rect)));
-        assert!(rects[1].top() >= rects[0].bottom() + 5.0, "boxes must not overlap: {rects:?}");
+        assert!(
+            rects[1].top() >= rects[0].bottom() + NOTIFICATION_SPACING * scale - 0.2,
+            "boxes must not overlap: {rects:?}"
+        );
         assert!((rects[0].right() - rects[1].right()).abs() < 1.0);
         assert!(
             rects[1].width() < rects[0].width() * 0.6,
@@ -65,16 +87,16 @@ fn notifications_stack_separately_and_shrink_when_long_messages_expire() {
         }
         let compact = notification_frame(&context, &messages, screen, vec![]);
         assert_eq!(compact.len(), 1);
-        let expected_top =
-            DEFAULT_NOTIFICATION_TOP.max(resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP);
+        let expected_top = (DEFAULT_NOTIFICATION_TOP * scale)
+            .max(resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP * scale);
         assert!((compact[0].top() - expected_top).abs() < 1.0);
         assert!(
-            compact[0].top() >= resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP - 1.0,
+            compact[0].top()
+                >= resource_bar_bottom(size) + RESOURCE_BAR_NOTIFICATION_GAP * scale - 1.0,
             "toast overlaps the resource panel: {compact:?}"
         );
         assert!((compact[0].width() - rects[1].width()).abs() < 1.0);
-        let area =
-            context.memory(|m| m.area_rect(egui::Id::new("stellarion_notifications"))).unwrap();
+        let area = notification_area_rect(&context).unwrap();
         assert!(
             (area.width() - compact[0].width()).abs() < 1.0,
             "expired toast left a fixed-width area"
@@ -150,9 +172,7 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
         };
         frame(vec![]);
         frame(vec![]);
-        let rect = context
-            .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
-            .unwrap();
+        let rect = notification_area_rect(&context).unwrap();
         assert!(screen.contains_rect(rect), "notification is clipped at {size:?}: {rect:?}");
         let pos = rect.center();
         frame(vec![
@@ -239,9 +259,7 @@ fn spy_toast_click_opens_the_requested_mission_report() {
     };
     frame(vec![]);
     frame(vec![]);
-    let rect = context
-        .memory(|memory| memory.area_rect(egui::Id::new("stellarion_notifications")))
-        .unwrap();
+    let rect = notification_area_rect(&context).unwrap();
     let pos = rect.center();
     frame(vec![
         egui::Event::PointerMoved(pos),
@@ -347,7 +365,8 @@ fn space_dock_notification_fits_on_one_line_at_normal_game_width() {
 
     assert_eq!(dock.height(), single_line.height());
     assert!(dock.width() > 360.0);
-    assert!(dock.width() <= MAX_NOTIFICATION_WIDTH);
+    let scale = notification_scale(screen.size());
+    assert!(dock.width() <= MAX_NOTIFICATION_WIDTH * scale);
 }
 
 #[test]

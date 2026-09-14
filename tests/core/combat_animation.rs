@@ -7,7 +7,7 @@ use super::*;
 use crate::core::combat::report::MissionReport;
 use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::map::planet::Planet;
-use crate::core::missions::Mission;
+use crate::core::missions::{JointAttackMission, Mission};
 use crate::core::random::DeterministicRngState;
 use crate::core::units::defense::Defense;
 use crate::core::units::Army;
@@ -123,6 +123,48 @@ fn owner_entity(app: &App, descendants: &[Entity], owner: PlayerId) -> Entity {
 }
 
 #[test]
+fn combat_participants_list_the_side_commanders_before_other_players() {
+    let mut report = report(5, 0, true, 31);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    report.planet.army.dock_protector(1, Army::from([(fighter, 3)]));
+    assert_eq!(report.defender_players(), vec![2, 1]);
+
+    report.mission.owner = 3;
+    report.mission.joint_attack = Some(JointAttackMission {
+        attackers: [
+            (1, Army::from([(fighter, 1)])),
+            (2, Army::from([(fighter, 2)])),
+            (3, Army::from([(fighter, 3)])),
+        ]
+        .into(),
+        ..default()
+    });
+    assert_eq!(report.attacker_players(), vec![3, 1, 2]);
+}
+
+#[test]
+fn joint_attack_badge_keeps_every_count_in_order_and_fits_crowded_fleets() {
+    let mut report = report(5, 0, true, 31);
+    let bomber = Unit::Ship(Ship::Bomber);
+    report.mission.owner = 3;
+    report.mission.joint_attack = Some(JointAttackMission {
+        attackers: [
+            (1, Army::from([(bomber, 99)])),
+            (2, Army::from([(bomber, 99)])),
+            (3, Army::from([(bomber, 99)])),
+            (4, Army::from([(bomber, 99)])),
+        ]
+        .into(),
+        ..default()
+    });
+    let (owner, count, others) = combat_unit_counts(&report, &Side::Attacker, &bomber);
+    assert_eq!((owner, count), (Some(3), 99));
+    assert_eq!(others, vec![(1, 99), (2, 99), (4, 99)]);
+    let badge_width = combat_count_badge_width(UNIT_SIZE, count, &others);
+    assert!(combat_count_font_size(badge_width, 1.0, count, &others) < COMBAT_COUNT_FONT_SIZE);
+}
+
+#[test]
 fn colonial_withdrawal_hides_colony_ships_and_flies_combat_ships_to_an_upper_corner() {
     use crate::core::combat::resolution::resolve_combat_with_retreat_with_rng;
     use crate::core::energy::EnergyGrid;
@@ -223,7 +265,7 @@ fn combat_setup_never_spawns_colony_ship_cards() {
 }
 
 #[test]
-fn defender_cards_show_controller_count_then_smaller_colored_protection_counts() {
+fn defender_cards_show_equally_sized_controller_and_colored_protection_counts() {
     let mut unresolved = report(5, 0, true, 31);
     let fighter = Unit::Ship(Ship::LightFighter);
     unresolved.planet.army.insert(fighter, 6);
@@ -280,9 +322,7 @@ fn defender_cards_show_controller_count_then_smaller_colored_protection_counts()
     assert_eq!(owner.0, "6");
     assert_eq!(owner.2, WHITE.into());
     assert_eq!(protector.0, " 3");
-    assert!(
-        protector.1.eval(Vec2::splat(1_000.0), 16.0) < owner.1.eval(Vec2::splat(1_000.0), 16.0)
-    );
+    assert_eq!(protector.1, owner.1);
     assert_eq!(protector.2, app.world().resource::<MultiplayerSession>().player_color(3).color());
 
     {
@@ -874,7 +914,7 @@ fn round_banner_after_navigation_uses_the_normal_playback_duration() {
         .query_filtered::<&TweenAnim, With<DisplayTextCmp>>()
         .single(app.world())
         .unwrap();
-    assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1500));
+    assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1850));
 }
 
 #[test]

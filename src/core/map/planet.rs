@@ -986,6 +986,12 @@ impl Planet {
         self.army.protector(player_id).is_some()
     }
 
+    /// Revoked fleets depart before incoming missions resolve, so only an active invitation and
+    /// a stationed fleet prevent their commander from attacking this world.
+    pub fn blocks_hostile_action_by(&self, player_id: PlayerId) -> bool {
+        self.allows_protection(player_id) && self.is_protected_by(player_id)
+    }
+
     /// Stations one foreign player's surviving Protect fleet without transferring control.
     pub fn dock_protecting_fleet(&mut self, player_id: PlayerId, army: Army) {
         self.army.dock_protector(player_id, army);
