@@ -4485,7 +4485,7 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         assert!(home_edges >= 3);
         let (first, second) = shared_edges
             .values()
-            .find_map(|edges| (edges.len() == 2).then_some((edges[0], edges[1])))
+            .find_map(|edges| (edges.len() == 2).then(|| (edges[0], edges[1])))
             .expect("generated map has at least one shared Voronoi edge");
         assert!(first.0.dot(second.0) < -0.99, "shared edges point into opposite cells");
         assert!((first.1 + second.1).length() < 0.01, "shared lines straddle the boundary");
