@@ -135,7 +135,7 @@ fn a_new_turn_keeps_its_public_railgun_strike_for_playback() {
 }
 
 #[test]
-fn newly_resolved_railgun_strike_warns_everyone_except_its_shooters_once() {
+fn newly_resolved_railgun_strike_warns_every_player_without_spoiling_the_outcome() {
     let mut model = GameModel::new(
         [45; 32],
         GameRules {
@@ -160,27 +160,25 @@ fn newly_resolved_railgun_strike_warns_everyone_except_its_shooters_once() {
     });
     let prior_turn = model.turn.saturating_sub(1);
 
-    for player in [target_player, observer] {
-        let notifications =
-            orbital_strike_notifications(Some(&previous), &model, player, prior_turn);
+    for _player in [shooter, target_player, observer] {
+        let notifications = orbital_strike_notifications(Some(&previous), &model, prior_turn);
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].level, MessageLevel::Warning);
         assert_eq!(
             notifications[0].message,
-            format!("Railgun shot fired on planet {}.", model.map.get(target).name)
+            format!(
+                "Planet {} is being attacked by an Orbital Railgun.",
+                model.map.get(target).name
+            )
         );
         assert_eq!(notifications[0].action, Some(MessageAction::FocusRailgunTarget(target)));
     }
 
     assert!(
-        orbital_strike_notifications(Some(&previous), &model, shooter, prior_turn).is_empty(),
-        "the firing player already received immediate order feedback"
-    );
-    assert!(
-        orbital_strike_notifications(Some(&previous), &model, observer, model.turn).is_empty(),
+        orbital_strike_notifications(Some(&previous), &model, model.turn).is_empty(),
         "refreshing the same canonical turn must not duplicate the warning"
     );
-    assert!(orbital_strike_notifications(None, &model, observer, prior_turn).is_empty());
+    assert!(orbital_strike_notifications(None, &model, prior_turn).is_empty());
 }
 
 #[test]
@@ -252,10 +250,9 @@ fn newly_eliminated_player_is_announced_to_the_remaining_opponents_once() {
 }
 
 #[test]
-fn destroyed_moon_railgun_warning_remains_focusable() {
+fn successful_railgun_destruction_keeps_its_outcome_out_of_the_public_toast() {
     let mut model = GameModel::new([46; 32], GameRules::default()).unwrap();
     model.start().unwrap();
-    let observer = model.players[1].id;
     let origin = model.players[0].home_planet;
     let target = model
         .map
@@ -274,16 +271,59 @@ fn destroyed_moon_railgun_warning_remains_focusable() {
         destroyed: true,
     });
 
-    let notifications = orbital_strike_notifications(
-        Some(&previous),
-        &model,
-        observer,
-        model.turn.saturating_sub(1),
+    let railgun_notifications =
+        orbital_strike_notifications(Some(&previous), &model, model.turn.saturating_sub(1));
+    assert_eq!(railgun_notifications.len(), 1);
+    assert_eq!(
+        railgun_notifications[0].message,
+        format!("Moon {} is being attacked by an Orbital Railgun.", model.map.get(target).name)
     );
+    assert_eq!(railgun_notifications[0].action, Some(MessageAction::FocusRailgunTarget(target)));
+    let destroyed = newly_destroyed_planets(Some(&previous), &model, model.turn.saturating_sub(1));
+    let combat_destructions = combat_planet_destructions(&model, &destroyed);
+    assert!(
+        combat_destructions.is_empty(),
+        "the public Railgun impact already supplies the explosion"
+    );
+    assert!(planet_destruction_notifications(&model, &combat_destructions).is_empty());
+}
 
-    assert_eq!(notifications.len(), 1);
-    assert!(notifications[0].message.starts_with("Railgun shot fired on moon "));
-    assert_eq!(notifications[0].action, Some(MessageAction::FocusRailgunTarget(target)));
+#[test]
+fn combat_destruction_is_a_public_focusable_event_for_every_player() {
+    let mut model = GameModel::new(
+        [48; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let target = model.players[1].home_planet;
+    let previous = model.map.clone();
+    model.map.get_mut(target).destroy();
+    let prior_turn = model.turn.saturating_sub(1);
+
+    let destroyed = newly_destroyed_planets(Some(&previous), &model, prior_turn);
+    assert_eq!(destroyed, vec![target]);
+    assert_eq!(combat_planet_destructions(&model, &destroyed), vec![target]);
+    for _local_player in &model.players {
+        let notifications = planet_destruction_notifications(
+            &model,
+            &combat_planet_destructions(&model, &destroyed),
+        );
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0].message,
+            format!("Planet {} has been destroyed.", model.map.get(target).name)
+        );
+        assert_eq!(notifications[0].level, MessageLevel::Warning);
+        assert_eq!(notifications[0].action, Some(MessageAction::FocusDestroyedPlanet(target)));
+    }
+
+    assert!(newly_destroyed_planets(Some(&model.map), &model, prior_turn).is_empty());
+    assert!(newly_destroyed_planets(Some(&previous), &model, model.turn).is_empty());
+    assert!(newly_destroyed_planets(None, &model, prior_turn).is_empty());
 }
 
 #[test]

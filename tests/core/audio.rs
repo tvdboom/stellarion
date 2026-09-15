@@ -753,7 +753,7 @@ fn combat_and_volume_hover_panels_are_mutually_exclusive() {
 #[test]
 fn celestial_ambience_requires_both_close_zoom_and_proximity() {
     let landmark = Vec2::new(1_000.0, 500.0);
-    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_FULL_ZOOM, landmark), -21.0);
+    assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_FULL_ZOOM, landmark), -16.0);
     assert_eq!(celestial_ambience_volume(landmark, STAR_AMBIENCE_SILENT_ZOOM, landmark), -60.0);
     assert_eq!(
         celestial_ambience_volume(
@@ -770,6 +770,19 @@ fn celestial_ambience_requires_both_close_zoom_and_proximity() {
         landmark,
     );
     assert!((STAR_AMBIENCE_SILENCE..STAR_AMBIENCE_MAX_VOLUME).contains(&audible));
+}
+
+#[test]
+fn mission_hover_gets_stronger_as_the_map_zooms_in() {
+    let close = mission_hover_volume(MIN_ZOOM);
+    let middle = mission_hover_volume((MIN_ZOOM + MAX_ZOOM) * 0.5);
+    let far = mission_hover_volume(MAX_ZOOM);
+
+    assert_eq!(close, MISSION_HOVER_CLOSE_VOLUME);
+    assert_eq!(far, MISSION_HOVER_FAR_VOLUME);
+    assert!(close > middle && middle > far);
+    assert_eq!(mission_hover_volume(MIN_ZOOM - 1.0), close);
+    assert_eq!(mission_hover_volume(MAX_ZOOM + 1.0), far);
 }
 
 /// Builds the real playback system without opening a speaker or GPU device.
@@ -917,6 +930,8 @@ fn hover_audio_app() -> (App, Entity) {
         ]))
         .add_message::<PlayAudioMsg>()
         .add_message::<StopAudioMsg>()
+        .init_resource::<PlayingAudio>()
+        .init_resource::<Assets<AudioInstance>>()
         .add_systems(Update, update_mission_hover_audio);
     let mut window = Window {
         focused: true,
@@ -924,6 +939,13 @@ fn hover_audio_app() -> (App, Entity) {
     };
     window.set_cursor_position(Some(Vec2::splat(50.)));
     let window = app.world_mut().spawn((window, PrimaryWindow)).id();
+    app.world_mut().spawn((
+        MainCamera,
+        Projection::Orthographic(OrthographicProjection {
+            scale: 1.0,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
     (app, window)
 }
 
@@ -934,7 +956,7 @@ fn hover_audio_frame(app: &mut App) -> (usize, usize) {
         assert_eq!(play.name, "booster");
         assert!(play.is_looped);
         assert!(!play.is_background);
-        assert_eq!(play.volume, PlayingAudio::AMBIENCE_VOLUME);
+        assert_eq!(play.volume, mission_hover_volume(1.0));
     }
     let stops: Vec<_> = app.world_mut().resource_mut::<Messages<StopAudioMsg>>().drain().collect();
     assert!(stops.iter().all(|stop| stop.name == "booster"));

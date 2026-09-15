@@ -7,6 +7,76 @@ use crate::core::map::icon::Icon;
 use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand};
+
+#[test]
+fn sync_suppresses_unchanged_rosters_and_preserves_private_replay() {
+    let backend = InMemoryBackend::new();
+    let (host, recovery) = identity(&backend);
+    let created = create(&backend, &host, &recovery, 2);
+    let (guest, recovery) = identity(&backend);
+    block_on(backend.join_game(
+        &guest,
+        JoinGameRequest {
+            code: created.game.code,
+            display_name: "Guest".into(),
+            recovery_code: recovery.expose().into(),
+        },
+    ))
+    .unwrap();
+    let game_id = &created.game.id;
+    let first = block_on(backend.sync_game(&host, game_id, 0, true, None)).unwrap();
+    assert_eq!(first.members.as_ref().unwrap().len(), 2);
+    let quiet = block_on(backend.sync_game(
+        &host,
+        game_id,
+        first.batch.cursor,
+        true,
+        Some(&first.roster_token),
+    ))
+    .unwrap();
+    assert!(quiet.members.is_none());
+    assert!(quiet.batch.events.is_empty());
+    assert!(!quiet.batch.resync_required);
+    let last_seen = {
+        let mut state = backend.inner.lock().unwrap();
+        let stored = state.games.get_mut(game_id).unwrap();
+        stored.connected_players.insert(1, Instant::now() - PLAYER_CONNECTION_TIMEOUT);
+        stored.connected_players[&1]
+    };
+    let expired = block_on(backend.sync_game(
+        &host,
+        game_id,
+        quiet.batch.cursor,
+        false,
+        Some(&quiet.roster_token),
+    ))
+    .unwrap();
+    assert!(!expired.members.as_ref().unwrap()[0].connected);
+    assert_ne!(expired.roster_token, quiet.roster_token);
+    assert_eq!(backend.inner.lock().unwrap().games[game_id].connected_players[&1], last_seen);
+    assert_eq!(backend.inner.lock().unwrap().games[game_id].record.saved_at, created.game.saved_at);
+
+    {
+        let mut state = backend.inner.lock().unwrap();
+        let stored = state.games.get_mut(game_id).unwrap();
+        for _ in 0..2050 {
+            push_event(stored, BackendEventKind::TradeChanged, Some(1), Some(1));
+        }
+        assert_eq!(stored.events.len(), 2048);
+    }
+    let missed = block_on(backend.sync_game(&guest, game_id, 0, false, None)).unwrap();
+    assert!(missed.batch.events.is_empty());
+    assert!(missed.batch.cursor >= 256);
+    assert!(missed.batch.resync_required);
+    let visible = block_on(backend.sync_game(&host, game_id, 0, false, None)).unwrap();
+    assert_eq!(visible.batch.events.len(), 256);
+    assert_eq!(visible.batch.cursor, missed.batch.cursor);
+    let (outsider, _) = identity(&backend);
+    assert!(matches!(
+        block_on(backend.sync_game(&outsider, game_id, 0, true, Some(&quiet.roster_token))),
+        Err(BackendError::Forbidden)
+    ));
+}
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
@@ -1408,6 +1478,21 @@ fn coordinates_idempotent_submission_and_single_resolution() {
     ))
     .unwrap();
     assert_eq!(accepted.persisted.state.turn, active.persisted.state.turn + 1);
+    for scope in
+        [TurnSubmissionScope::All, TurnSubmissionScope::Mine, TurnSubmissionScope::Resolution]
+    {
+        assert!(
+            block_on(backend.load_turn_submissions(
+                &creator,
+                &active.id,
+                active.persisted.state.turn,
+                scope,
+            ))
+            .unwrap()
+            .is_empty(),
+            "resolved commands must not be retained"
+        );
+    }
     assert!(matches!(
         block_on(backend.publish_resolution(
             &creator,
@@ -1663,7 +1748,6 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     ))
     .is_err());
     let mut guest_fleet = contribution(2);
-    guest_fleet.bombing = BombingRaid::Industrial;
     guest_fleet.combat_probes = true;
     let respond = |revision, response, fleet| {
         block_on(backend.respond_joint_attack(
@@ -1675,6 +1759,12 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             Some(fleet),
         ))
     };
+    let mut conflicting_bombing = guest_fleet.clone();
+    conflicting_bombing.bombing = BombingRaid::Industrial;
+    assert!(matches!(
+        respond(0, JointAttackResponse::Pending, conflicting_bombing),
+        Err(BackendError::InvalidData(field)) if field == "joint_attack_contribution"
+    ));
     let published = respond(0, JointAttackResponse::Pending, guest_fleet.clone()).unwrap();
     invitation.revision = published.revision;
     for viewer in [&host, &guests[1]] {
@@ -1760,6 +1850,11 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
         }
         let revised = block_on(backend.create_joint_attack(&host, &active.id, proposal)).unwrap();
         assert_eq!(revised.participants[1].response, JointAttackResponse::Pending);
+        assert!(revised
+            .participants
+            .iter()
+            .filter_map(|item| item.contribution.as_ref())
+            .all(|contribution| contribution.bombing == revised.bombing));
         assert!(respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
             .is_err());
         let live = block_on(backend.load_joint_attacks(&guests[0], &active.id)).unwrap();

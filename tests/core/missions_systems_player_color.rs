@@ -3,12 +3,61 @@ use crate::core::camera::MainCamera;
 use crate::core::identity::{GameCode, GameId};
 use crate::core::map::icon::Icon;
 use crate::core::map::systems::{draw_map, PlanetCmp};
-use crate::core::missions::Mission;
+use crate::core::missions::{JointAttackMission, Mission};
 use crate::core::player::PLAYER_COLOR_PALETTE;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
 use crate::core::units::Unit;
 use crate::multiplayer::model::GameRecord;
 use bevy_kira_audio::AudioSource;
+
+#[test]
+fn joint_hover_groups_only_visible_contingents_from_the_same_attack() {
+    const VIEWER: u64 = 9;
+    let joint_attack = |id| {
+        Some(JointAttackMission {
+            id,
+            attackers: std::collections::BTreeMap::from([(VIEWER, Army::new())]),
+            ..default()
+        })
+    };
+    let visible = Missions(vec![
+        Mission {
+            id: 1,
+            joint_attack: joint_attack(70),
+            ..default()
+        },
+        Mission {
+            id: 2,
+            joint_attack: joint_attack(70),
+            ..default()
+        },
+        Mission {
+            id: 3,
+            joint_attack: joint_attack(71),
+            ..default()
+        },
+        Mission {
+            id: 4,
+            ..default()
+        },
+    ]);
+    let hovered = visible.get(1);
+    let grouped = visible
+        .iter()
+        .filter(|mission| mission_has_group_hover(mission, hovered, VIEWER))
+        .map(|mission| mission.id)
+        .collect::<Vec<_>>();
+
+    // This resource is the viewer's filtered projection, so no unseen contingent can be grouped.
+    assert_eq!(grouped, [1, 2]);
+
+    let outsider_group = visible
+        .iter()
+        .filter(|mission| mission_has_group_hover(mission, hovered, 10))
+        .map(|mission| mission.id)
+        .collect::<Vec<_>>();
+    assert_eq!(outsider_group, [1]);
+}
 
 #[test]
 fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
@@ -208,6 +257,27 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         };
         assert_eq!(arrow_count > 0, expected_style == Some(MissionRouteStyle::Standard));
         assert_eq!(helix_count > 0, expected_style == Some(MissionRouteStyle::JumpGate));
+        if expected_style == Some(MissionRouteStyle::JumpGate) {
+            let (direction, destination_surface) = {
+                let mission = world.resource::<Missions>().get(2).unwrap();
+                let map = world.resource::<Map>();
+                let origin = map.get(mission.origin);
+                let destination = map.get(mission.destination);
+                let direction = (destination.position - origin.position).normalize();
+                (
+                    direction,
+                    (destination.position - direction * destination.size() * 0.5).dot(direction),
+                )
+            };
+            let last_particle = world
+                .query_filtered::<&Transform, With<MissionRouteHelixCmp>>()
+                .iter(world)
+                .map(|transform| transform.translation.truncate().dot(direction))
+                .reduce(f32::max)
+                .unwrap();
+
+            assert!(destination_surface - last_particle < 8.0);
+        }
     }
 }
 
@@ -263,6 +333,23 @@ fn jump_gate_route_is_thinner_than_gate_hover_and_flows_toward_destination() {
     assert!(!route.is_empty());
     assert!(route.iter().all(|particle| particle.size.y < gate[0].size.y));
     assert!(route[0].transform.translation.x < later[0].transform.translation.x);
+}
+
+#[test]
+fn jump_gate_route_reaches_its_planet_edge_without_a_second_clearance() {
+    let destination_edge = 500.0;
+    let route = jump_gate_link_particles(
+        Vec2::ZERO,
+        Vec2::new(destination_edge, 0.0),
+        Color::WHITE,
+        0.0,
+        0.0,
+        JumpGateHelixStyle::MissionRoute,
+    );
+    let last_center =
+        route.iter().map(|particle| particle.transform.translation.x).reduce(f32::max).unwrap();
+
+    assert!(destination_edge - last_center < 8.0);
 }
 
 #[test]

@@ -439,11 +439,20 @@ impl Mission {
     /// Returns the mission silhouette.
     ///
     /// Jump-gate travel is presented by a map-only animated effect instead of alternate artwork.
-    pub fn image(&self, _player: &Player) -> &str {
+    pub fn image(&self, player: &Player) -> &str {
         let image_objective = self.return_objective.unwrap_or(self.objective);
+        // A resolved joint attack is represented by one combined mission, but each participant
+        // should continue to see the silhouette of their own contributed fleet in reports.
+        let visible_army = self
+            .joint_attack
+            .as_ref()
+            .and_then(|attack| attack.attackers.get(&player.id))
+            .unwrap_or(&self.army);
         if image_objective == Icon::Colonize {
             "mission colonize"
-        } else if self.uses_war_sun_image() {
+        } else if visible_army.amount(&Unit::war_sun()) > 0
+            || self.return_objective == Some(Icon::Destroy)
+        {
             "mission destroy"
         } else if image_objective == Icon::MissileStrike {
             "mission missile"
@@ -456,17 +465,25 @@ impl Mission {
 
     /// Returns the objective presentation visible to one player.
     ///
-    /// Hostile objectives stay concealed behind the generic enemy-fleet marker. A joint attacker
-    /// sees the coordinated-attack marker only for their own fleet; a protection target sees Protect.
+    /// Hostile objectives stay concealed behind the generic enemy-fleet marker. Joint-attack
+    /// participants know the shared objective once another contingent becomes visible to them,
+    /// and a protection target sees Protect.
     #[cfg(feature = "app")]
     pub(crate) fn displayed_objective(&self, player_id: PlayerId) -> Icon {
-        if self.owner == player_id && self.joint_attack.is_some() {
-            Icon::AlliedAttack
-        } else if self.owner == player_id || self.is_incoming_protection_for(player_id) {
+        if self.owner == player_id
+            || self.is_joint_attack_participant(player_id)
+            || self.is_incoming_protection_for(player_id)
+        {
             self.objective
         } else {
             Icon::EnemyFleet
         }
+    }
+
+    /// Returns whether this player contributes a fleet to the same coordinated attack.
+    #[cfg(feature = "app")]
+    pub(crate) fn is_joint_attack_participant(&self, player_id: PlayerId) -> bool {
+        self.joint_attack.as_ref().is_some_and(|attack| attack.attackers.contains_key(&player_id))
     }
 
     /// Returns whether this fleet is travelling to protect the requested player.
@@ -490,16 +507,6 @@ impl Mission {
             MissionRouteStyle::JumpGate
         } else {
             MissionRouteStyle::Standard
-        }
-    }
-
-    /// Scales cosmetic route motion from the fleet's actual slowest unit.
-    #[cfg(feature = "app")]
-    pub(crate) fn route_speed_factor(&self) -> f64 {
-        if self.jump_gate {
-            2.0
-        } else {
-            (f64::from(self.speed()) / 2.0).clamp(0.55, 1.65)
         }
     }
 
@@ -576,13 +583,18 @@ impl Mission {
             })
     }
 
-    /// Returns the route-marker speed shared by the strategic map and mission panels.
+    /// Returns the next-turn route-marker speed shared by the strategic map and mission panels.
+    ///
+    /// This keeps chevrons synchronized with acceleration, coordinated-attack pacing, and the
+    /// shortened final movement instead of freezing them at launch speed. Jump Gate routes use
+    /// their own helix animation when that travel method is visible to the viewer.
     #[cfg(feature = "app")]
-    pub(crate) fn route_animation_speed(&self) -> f64 {
-        if self.jump_gate {
-            300.0
+    pub(crate) fn route_animation_speed(&self, map: &Map) -> f64 {
+        let movement = f64::from(self.next_turn_movement(map));
+        if movement.is_finite() {
+            16.0 * movement.max(0.0)
         } else {
-            32.0 * self.route_speed_factor()
+            0.0
         }
     }
 
@@ -810,8 +822,13 @@ impl Mission {
 
         // Recall swaps the endpoints without moving the fleet. Both inbound and departing
         // missions remain detectable while their actual position is within endpoint coverage.
-        [self.origin, self.destination]
+        // Every participant's departure world is also an endpoint of a coordinated attack, even
+        // though each persisted contingent keeps only its own origin in `Mission::origin`.
+        let coordinated_origin =
+            self.joint_attack.as_ref().and_then(|attack| attack.origins.get(&player.id)).copied();
+        [Some(self.origin), Some(self.destination), coordinated_origin]
             .into_iter()
+            .flatten()
             .filter_map(|id| {
                 let planet = map.get(id);
                 let phalanx = planet.army.amount(&Unit::Building(Building::SensorPhalanx));

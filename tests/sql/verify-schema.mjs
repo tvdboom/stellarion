@@ -311,6 +311,7 @@ for (const signature of [
   "stellarion_withdraw_turn(uuid,bigint,bigint)",
   "stellarion_publish_resolution(uuid,bigint,bigint,jsonb)",
   "stellarion_load_turn_submissions(uuid,bigint,text)",
+  "stellarion_sync_game(uuid,bigint,boolean,text)",
 ]) {
   for (const role of ["anon", "authenticated"]) {
     assert.equal((await db.query("select has_function_privilege($1, $2, 'execute') as allowed",
@@ -474,14 +475,66 @@ assert.equal(resolved.revision, active.revision + 1);
 assert(resolved.saved_at >= active.saved_at);
 assert.deepEqual(resolved.submitted_players, []);
 assert.deepEqual(await scopedOrders(host, "resolution"), [], "do not send already-resolved orders");
-assert.deepEqual(await scopedOrders(host, "all"), submissions, "historical reads remain available");
+assert.deepEqual(await scopedOrders(host, "all"), [], "resolved commands are no longer stored");
+assert.equal((await db.query(
+  "select count(*)::int as n from public.stellarion_turn_submissions where game_id = $1", [id],
+)).rows[0].n, 0);
+await assert.rejects(submit(host, 1), /STLR_STALE_SUBMISSION/);
 await assert.rejects(publish(guest), /STLR_CONFLICT/);
 const events = await rpc(guest, "select public.stellarion_events_since($1, $2) as result", [id, 0]);
 assert(events.events.some(e => e.kind === "turn_resolved"));
 assert(events.events.some(e => e.kind === "turn_withdrawn"));
+const sync = (actor, cursor, renew, token = null, gameId = id) => rpc(actor,
+  "select public.stellarion_sync_game($1, $2, $3, $4) as result", [gameId, cursor, renew, token]);
+await sync(guest, 0, true);
+const firstSync = await sync(host, 0, true);
+assert.equal(firstSync.members.length, 2);
+assert.equal(firstSync.roster_token.length, 64);
+assert(!JSON.stringify(firstSync).includes("recovery_code"));
+assert(!JSON.stringify(firstSync).includes("persisted"));
+const quietSync = await sync(host, firstSync.batch.cursor, true, firstSync.roster_token);
+assert.equal(quietSync.members, null, "heartbeats must not resend an unchanged roster");
+assert.deepEqual(quietSync.batch.events, [], "heartbeats must not create durable events");
+assert.equal(quietSync.roster_token, firstSync.roster_token);
+const seenAt = async () => (await db.query(
+  "select last_seen_at::text as value from public.stellarion_game_players where game_id = $1 and user_id = $2",
+  [id, host],
+)).rows[0].value;
+const beforeSyncRead = await seenAt();
+await sync(host, quietSync.batch.cursor, false, quietSync.roster_token);
+assert.equal(await seenAt(), beforeSyncRead, "event-only reads do not write presence");
+await db.query(
+  "update public.stellarion_game_players set last_seen_at = clock_timestamp() - interval '16 seconds' where game_id = $1 and user_id = $2",
+  [id, guest],
+);
+const expiredSync = await sync(host, quietSync.batch.cursor, false, quietSync.roster_token);
+assert.equal(expiredSync.members.find(member => member.user_id === guest).connected, false);
+assert.notEqual(expiredSync.roster_token, quietSync.roster_token, "lease expiry changes the roster token without an event");
+await sync(guest, expiredSync.batch.cursor, true);
+for (const renew of [true, false]) {
+  await assert.rejects(sync(outsider, 0, renew, firstSync.roster_token), /STLR_FORBIDDEN/);
+  await assert.rejects(sync(null, 0, renew), /STLR_UNAUTHENTICATED/);
+}
+await assert.rejects(sync(host, -1, true), /STLR_INVALID_DATA:event_cursor/);
+await assert.rejects(sync(host, 0, null), /STLR_INVALID_DATA:connected/);
+assert.equal((await rpc(host, "select public.stellarion_load_game($1) as result", [id])).saved_at, resolved.saved_at);
+const oldQuietBytes = Buffer.byteLength(JSON.stringify({ok: true, members: firstSync.members}))
+  + Buffer.byteLength(JSON.stringify({events: [], cursor: quietSync.batch.cursor}));
+const quietSyncBytes = Buffer.byteLength(JSON.stringify(quietSync));
+assert(quietSyncBytes < oldQuietBytes / 2);
+console.log(`Quiet two-player sync: ${quietSyncBytes} JSON bytes vs ${oldQuietBytes} for separate roster/event responses; excludes HTTP/compression. Resolved command rows: 0.`);
 const temporary = await create(host, "XYZABC");
 await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
   ["XYZABC", "Guest", "CDEF-0123-4567-89AB"]);
+await db.query(`select public.stellarion_emit_event($1, 'trade_changed', 1, 1)
+  from generate_series(1, 2050)`, [temporary.game.id]);
+const missedPrivate = await sync(guest, 0, false, null, temporary.game.id);
+assert.deepEqual(missedPrivate.batch.events, [], "sync preserves private event filtering");
+assert(missedPrivate.batch.resync_required, "pruned cursors must request canonical reload");
+assert(missedPrivate.batch.cursor >= 256, "hidden events still advance the replay cursor");
+assert.equal((await db.query(
+  "select count(*)::int as n from public.stellarion_game_events where game_id = $1", [temporary.game.id],
+)).rows[0].n, 2048);
 const deletedLobbyPresence = await rpc(host,
   "select public.stellarion_set_connected($1, false) as result", [temporary.game.id]);
 assert.deepEqual(deletedLobbyPresence, { ok: true, members: [] });
@@ -703,9 +756,16 @@ const guestContribution = {
   player_id: 2,
   origin: protectorHome,
   army: { "Ship(LightFighter)": 1 },
-  bombing: "Economic",
+  bombing: "None",
   combat_probes: true,
 };
+const conflictingGuestBombing = structuredClone(guestContribution);
+conflictingGuestBombing.bombing = "Industrial";
+await assert.rejects(
+  respondJointAttack(guest, jointAttack.id, "pending", conflictingGuestBombing),
+  /STLR_INVALID_DATA:joint_attack_contribution/,
+  "the inviter's bombing objective applies to every allied fleet",
+);
 // A protector blocks acceptance only while access remains active. After revocation it stays in
 // the snapshot until turn resolution returns it home, but can attack its former host.
 const revokedTargetState = structuredClone(protectionGame.persisted);
@@ -809,6 +869,18 @@ await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution
 assert.equal((await respondJointAttack(guest, planningAttack.id, "pending", guestContribution, planningAttack.revision))
   .participants[1].response, "pending", "acceptance can be undone before launch");
 await respondJointAttack(guest, planningAttack.id, "accepted", guestContribution, planningAttack.revision);
+planningAttack.bombing = "Industrial";
+planningAttack.participants[0].contribution.bombing = "Industrial";
+let revisedBombing = await createJointAttack(host, planningAttack);
+assert.equal(revisedBombing.participants[1].response, "pending");
+assert.equal(revisedBombing.participants[1].contribution.bombing, "Industrial",
+  "an inviter bombing change rewrites every saved fleet to the shared objective");
+planningAttack.revision = revisedBombing.revision;
+planningAttack.bombing = "None";
+planningAttack.participants[0].contribution.bombing = "None";
+revisedBombing = await createJointAttack(host, planningAttack);
+assert.equal(revisedBombing.participants[1].contribution.bombing, "None");
+planningAttack.revision = revisedBombing.revision;
 planningAttack.objective = "Destroy";
 const revisedPlanning = await createJointAttack(host, planningAttack);
 assert.equal(revisedPlanning.revision, planningAttack.revision + 1);
@@ -834,7 +906,7 @@ await assert.rejects(respondJointAttack(guest, planningAttack.id, "pending", gue
 await assert.rejects(respondJointAttack(outsider, planningAttack.id, "accepted",
   { ...guestContribution, player_id: 3, origin: thirdHome }, finalPlanning.revision), /STLR_FORBIDDEN/);
 await assert.rejects(createJointAttack(host, { ...planningAttack, revision: finalPlanning.revision }), /STLR_FORBIDDEN/);
-console.log("Live allied planning, per-fleet orders, proposal revisions, undo acceptance, and early launch passed.");
+console.log("Live allied planning, shared bombing, per-fleet probe orders, proposal revisions, undo acceptance, and early launch passed.");
 
 // All participants may revise an accepted offer; consent belongs to the other offers.
 const editableAttack = structuredClone(jointAttack);

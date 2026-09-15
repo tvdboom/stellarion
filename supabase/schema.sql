@@ -18,8 +18,10 @@
 -- with pg_cron registration stubbed. It never resets the hosted project.
 -- Cost controls: one current snapshot per game, no snapshot in Realtime or
 -- presence traffic, no snapshot echo to a successful uploader, caller-only
--- draft recovery, and empty resolver reads until the current turn is complete.
--- Preserve full replay (latest 2,048 events), retained submission history, all
+-- draft recovery, and no resolver reads until the known current turn is complete.
+-- Presence and event replay share one RPC; unchanged rosters return only a token.
+-- Resolved commands are deleted in the transaction that installs their result.
+-- Preserve full replay (latest 2,048 events), current drafts/readiness generations, all
 -- recovery/membership checks, and the existing 48-hour/30-day game deadlines.
 -- PostgreSQL can reuse vacuumed space; deleting rows does not itself reduce
 -- provisioned Supabase disk capacity or retroactively reduce billed egress.
@@ -510,7 +512,7 @@ $$;
 -- Presence is a renewable lease, not a saved fact. Closing a window or losing the
 -- network can prevent an explicit disconnect. All roster responses, resume checks,
 -- and recovery guards therefore use the same 15-second heartbeat deadline. Clients
--- renew every 5 seconds and receive only this small roster, never the game snapshot.
+-- renew every 5 seconds through sync_game, which returns a roster only when it changes.
 -- Read-only loads never extend the lease, and expiry does not delete a saved game.
 create function public.stellarion_connection_is_live(
     p_connected boolean,
@@ -984,12 +986,13 @@ end;
 $$;
 
 -- Creates an inviter fleet plus a private list of invited player slots. Pending responses publish
--- live fleet drafts and their own bombing/probe orders. Accepted players can keep editing.
+-- live fleet drafts and their own probe orders. The inviter's bombing objective applies to every
+-- fleet and is displayed read-only to guests. Accepted players can keep editing their fleets.
 -- Invited players remain on the roster until the inviter cancels the mission.
 -- Every offer edit, including an origin change, advances the shared revision and resets the
 -- other players' consent. Stale acceptances are rejected. Editors can close independently.
--- Only the inviter may revise the shared target or objective. Guests edit their own fleets
--- through the response operation while the published route stays fixed.
+-- Only the inviter may revise the shared target, objective, or bombing order. Guests edit their
+-- own fleets through the response operation while the published route and bombing order stay fixed.
 -- The inviter must select at least one ship before publishing a proposal.
 -- A launch needs the inviter and at least one accepted guest; unanswered guests are excluded.
 -- Saving that launch freezes the roster and closes the invitation to further responses.
@@ -1153,7 +1156,13 @@ begin
                      'player_id', entries.item -> 'player_id',
                      'response', case when not v_reset_acceptance or old.item ->> 'response' = 'rejected'
                          then old.item ->> 'response' else 'pending' end,
-                     'contribution', old.item -> 'contribution'
+                     'contribution', case when old.item -> 'contribution' = 'null'::jsonb
+                         then 'null'::jsonb
+                         else jsonb_set(
+                             old.item -> 'contribution',
+                             '{bombing}',
+                             p_invitation -> 'bombing'
+                         ) end
                  ) else entries.item end order by ordinal
         ) into v_participants
         from jsonb_array_elements(v_participants) with ordinality entries(item, ordinal)
@@ -1250,6 +1259,7 @@ begin
            or jsonb_typeof(p_contribution -> 'combat_probes') is distinct from 'boolean'
            or jsonb_typeof(p_contribution -> 'bombing') is distinct from 'string'
            or (p_contribution ->> 'bombing') not in ('None', 'Economic', 'Industrial')
+           or p_contribution -> 'bombing' is distinct from v_row.invitation -> 'bombing'
         then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_contribution';
         end if;
@@ -2356,6 +2366,10 @@ begin
            or v_invitation -> 'objective' <> v_command -> 'objective'
            or v_invitation -> 'bombing' <> v_command -> 'bombing'
            or v_invitation -> 'combat_probes' <> v_command -> 'combat_probes'
+           or exists (
+               select 1 from jsonb_array_elements(v_expected_contributions) contribution
+                where contribution -> 'bombing' is distinct from v_invitation -> 'bombing'
+           )
            or jsonb_array_length(v_expected_contributions) < 2
            or v_expected_contributions <> v_command -> 'contributions'
         then
@@ -2725,8 +2739,8 @@ begin
     -- Frequent resolver retries need no command payload until every participant
     -- is ready. STABLE makes the completeness check and response use the same
     -- database snapshot. Publication still rechecks readiness under its row lock.
-    -- Draft recovery requests only the caller's row; explicit historical reads
-    -- retain the full existing contract and diagnostic/idempotency window.
+    -- Draft recovery requests only the caller's row. Resolved turns no longer
+    -- retain command payloads: the canonical snapshot already contains their result.
     if p_scope = 'resolution' and (
         v_game.status <> 'active' or v_game.current_turn <> p_turn
         or exists (
@@ -2854,9 +2868,11 @@ begin
         null
     );
 
-    -- Retain a short diagnostic/idempotency window without unbounded rows.
+    -- The new snapshot contains the result and reports. Current-turn generation
+    -- checks preserve idempotency; old-turn requests fail before consulting a row.
+    -- No historical copy of those potentially large command payloads is needed.
     delete from public.stellarion_turn_submissions
-     where game_id = p_game_id and turn < p_resolved_turn - 8;
+     where game_id = p_game_id and turn <= p_resolved_turn;
     delete from public.stellarion_joint_attacks
      where game_id = p_game_id and turn <= p_resolved_turn;
     delete from public.stellarion_trades
@@ -2930,7 +2946,14 @@ begin
       into v_events, v_cursor
       from replay;
 
-    return jsonb_build_object('events', v_events, 'cursor', v_cursor);
+    -- A bounded log must explicitly invalidate a cursor older than its first row.
+    -- Otherwise a missed readiness/state event could leave the client waiting forever.
+    return jsonb_build_object(
+        'events', v_events, 'cursor', v_cursor,
+        'resync_required', p_after_sequence < coalesce((
+            select min(sequence) - 1 from public.stellarion_game_events where game_id = p_game_id
+        ), 0)
+    );
 end;
 $$;
 
@@ -2984,7 +3007,7 @@ security definer
 set search_path = pg_catalog, public, auth
 as $$
 declare
-    v_game public.stellarion_games%rowtype;
+    v_status text;
     v_player public.stellarion_game_players%rowtype;
 begin
     if auth.uid() is null then
@@ -2995,7 +3018,7 @@ begin
     end if;
     -- Serialize departure with joins and starting the match. All these RPCs
     -- lock the game before its memberships, so a started game cannot be deleted.
-    select * into v_game from public.stellarion_games
+    select status into v_status from public.stellarion_games
       where id = p_game_id for update;
     if not found then
         raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
@@ -3008,7 +3031,7 @@ begin
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
     end if;
 
-    if not p_connected and v_game.status = 'lobby' and v_player.is_creator then
+    if not p_connected and v_status = 'lobby' and v_player.is_creator then
         -- Cascades erase every membership/recovery code, submission, and event.
         -- No tombstone is retained: guest event polls report GAME_NOT_FOUND and
         -- return those clients to the menu, even if a Realtime hint was missed.
@@ -3033,6 +3056,48 @@ begin
     return jsonb_build_object(
         'ok', true,
         'members', public.stellarion_membership_records(p_game_id)
+    );
+end;
+$$;
+
+-- One request handles the five-second presence lease and durable event fallback.
+-- Realtime wake-ups use the same route without a presence write until renewal is due.
+-- The fingerprint covers only displayed membership fields (including lease expiry),
+-- never last_seen_at, recovery codes, or the snapshot. Quiet heartbeats therefore
+-- return a fixed-size token instead of resending every player's identity and name.
+-- Tokens are change hints, never authorization: events_since checks the caller on
+-- every request, and set_connected enforces membership before any presence write.
+create function public.stellarion_sync_game(
+    p_game_id uuid,
+    p_after_sequence bigint,
+    p_renew_presence boolean,
+    p_roster_token text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+    v_batch jsonb;
+    v_members jsonb;
+    v_token text;
+begin
+    if p_renew_presence is null then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:connected';
+    end if;
+    if p_renew_presence then
+        v_members := public.stellarion_set_connected(p_game_id, true) -> 'members';
+    end if;
+    v_batch := public.stellarion_events_since(p_game_id, p_after_sequence);
+    if not p_renew_presence then
+        v_members := public.stellarion_membership_records(p_game_id);
+    end if;
+    v_token := encode(sha256(convert_to(v_members::text, 'UTF8')), 'hex');
+    return jsonb_build_object(
+        'batch', v_batch,
+        'members', case when p_roster_token = v_token then null else v_members end,
+        'roster_token', v_token
     );
 end;
 $$;
@@ -3149,6 +3214,10 @@ revoke all on function public.stellarion_events_since(uuid, bigint)
     from public, anon;
 revoke all on function public.stellarion_set_connected(uuid, boolean)
     from public, anon;
+revoke all on function public.stellarion_sync_game(uuid, bigint, boolean, text)
+    from public, anon;
+grant execute on function public.stellarion_sync_game(uuid, bigint, boolean, text)
+    to authenticated;
 
 grant execute on function public.stellarion_join_game(text, text, text)
     to authenticated;

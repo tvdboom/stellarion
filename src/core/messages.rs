@@ -108,6 +108,8 @@ pub enum MessageAction {
     OpenRevokedProtectionMission(PlanetId),
     /// Centers the strategic map on a Railgun target and zooms out as far as possible.
     FocusRailgunTarget(PlanetId),
+    /// Centers the strategic map on a destroyed world without opening hidden information.
+    FocusDestroyedPlanet(PlanetId),
 }
 
 /// Requests a transient notification.
@@ -203,6 +205,7 @@ impl Messages {
                             MessageAction::FocusColony(_)
                                 | MessageAction::FocusPlanet(_)
                                 | MessageAction::FocusRailgunTarget(_)
+                                | MessageAction::FocusDestroyedPlanet(_)
                         )
                     ) {
                         10.0
@@ -318,6 +321,9 @@ fn check_messages(
             Some(MessageAction::FocusRailgunTarget(id)) => {
                 map.as_ref().is_some_and(|map| map.try_get(id).is_some())
             },
+            Some(MessageAction::FocusDestroyedPlanet(id)) => map
+                .as_ref()
+                .is_some_and(|map| map.try_get(id).is_some_and(|planet| planet.is_destroyed)),
             _ => true,
         };
         if matches!(
@@ -327,6 +333,7 @@ fn check_messages(
                     | MessageAction::FocusPlanet(_)
                     | MessageAction::OpenRevokedProtectionMission(_)
                     | MessageAction::FocusRailgunTarget(_)
+                    | MessageAction::FocusDestroyedPlanet(_)
             )
         ) {
             if !in_game || !actionable_planet_is_valid {
@@ -407,6 +414,13 @@ fn check_messages(
                     if playing {
                         if let Some(map) = &map {
                             focus_railgun_target(planet_id, map, state);
+                        }
+                    }
+                },
+                MessageAction::FocusDestroyedPlanet(planet_id) => {
+                    if playing {
+                        if let Some(map) = &map {
+                            focus_destroyed_planet(planet_id, map, state);
                         }
                     }
                 },
@@ -502,6 +516,7 @@ fn draw_notifications(
                                 | MessageAction::FocusPlanet(_)
                                 | MessageAction::OpenRevokedProtectionMission(_)
                                 | MessageAction::FocusRailgunTarget(_)
+                                | MessageAction::FocusDestroyedPlanet(_)
                         )
                     )
                 {
@@ -596,6 +611,20 @@ fn focus_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
 /// Centers and fully zooms out on a Railgun target, including a destroyed world.
 fn focus_railgun_target(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
     let Some(planet) = map.try_get(planet_id) else {
+        return false;
+    };
+    state.planet_selected = None;
+    state.focus_planet = Some(planet.id);
+    state.focus_zoom = Some(MAX_ZOOM);
+    state.to_selected = true;
+    state.mission = false;
+    state.combat_report = None;
+    true
+}
+
+/// Centers and fully zooms out on a destroyed world while keeping its information hidden.
+fn focus_destroyed_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
+    let Some(planet) = map.try_get(planet_id).filter(|planet| planet.is_destroyed) else {
         return false;
     };
     state.planet_selected = None;

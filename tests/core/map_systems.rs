@@ -762,10 +762,20 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let player = model.players[0].clone();
-    let planet_id = *crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map)
-        .keys()
-        .find(|id| **id != player.home_planet)
-        .expect("map should have a world near an asteroid");
+    let recycler_elapsed = 1.0;
+    // Match the animated positions consumed by `animate_recyclers`; the canonical positions can
+    // select a rock that has drifted just outside presentation range by this test frame.
+    let asteroid_layout =
+        asteroid_belt_layout(&model.map).expect("map should have an asteroid belt");
+    let asteroid_placements = asteroid_belt_placements(&model.map, asteroid_layout);
+    let planet_id = *recycler_asteroid_target_groups_at_elapsed(
+        &model.map,
+        &asteroid_placements,
+        recycler_elapsed,
+    )
+    .keys()
+    .find(|id| **id != player.home_planet)
+    .expect("map should have a world near an asteroid");
     let local = player.id;
     let enemy = model.players[1].id;
     let recycler_unit = Unit::Building(Building::Recycler);
@@ -841,7 +851,7 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
             .id();
         markers.push((level, craft, scan));
     }
-    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(recycler_elapsed));
     let assert_visible_levels = |app: &mut App, count: usize| {
         app.update();
         for (level, craft, scan) in &markers {
@@ -4448,14 +4458,21 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
         let home_entity = home_entity.expect("home world has an ownership cell");
         let mut edges = world.query::<(
             &VoronoiEdgeCmp,
+            &VoronoiEdgeSideCmp,
             &Visibility,
+            &Transform,
             &GlobalTransform,
             &MeshMaterial2d<ColorMaterial>,
         )>();
         let mut home_edges = 0;
-        for (edge, visibility, transform, material) in edges.iter(world) {
-            assert!(transform.translation().z > VORONOI_Z);
-            assert!(transform.translation().z < PLANET_Z);
+        let mut shared_edges = HashMap::<_, Vec<_>>::new();
+        for (edge, side, visibility, transform, global_transform, material) in edges.iter(world) {
+            assert!(global_transform.translation().z > VORONOI_Z);
+            assert!(global_transform.translation().z < PLANET_Z);
+            shared_edges
+                .entry(edge.key)
+                .or_default()
+                .push((side.0, transform.translation.truncate()));
             if edge.planet == home {
                 home_edges += 1;
                 assert_eq!(*visibility, Visibility::Inherited);
@@ -4466,6 +4483,16 @@ fn ownership_cells_render_above_background_in_local_and_multiplayer_games() {
             }
         }
         assert!(home_edges >= 3);
+        let (first, second) = shared_edges
+            .values()
+            .find_map(|edges| (edges.len() == 2).then_some((edges[0], edges[1])))
+            .expect("generated map has at least one shared Voronoi edge");
+        assert!(first.0.dot(second.0) < -0.99, "shared edges point into opposite cells");
+        assert!((first.1 + second.1).length() < 0.01, "shared lines straddle the boundary");
+        assert!(
+            (first.1.distance(second.1) - 1.0).abs() < 0.01,
+            "shared lines are one pixel apart"
+        );
 
         if let Some(enemy) = public_enemy {
             let enemy_entity = public_enemy_entity.unwrap();

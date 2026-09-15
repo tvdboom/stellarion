@@ -118,7 +118,7 @@ pub struct JointAttackInvitation {
     pub destination: usize,
     /// Shared Colonize, Attack, or Destroy objective.
     pub objective: Icon,
-    /// Inviter fleet bombing policy.
+    /// Shared bombing policy selected by the inviter for every participating fleet.
     pub bombing: BombingRaid,
     /// Inviter fleet probe combat policy.
     pub combat_probes: bool,
@@ -416,6 +416,22 @@ pub enum BackendEventKind {
 pub struct EventBatch {
     /// Events strictly newer than the requested cursor.
     pub events: Vec<BackendEvent>,
-    /// Highest observed cursor, or the input cursor when no event was available.
+    /// Highest raw event cursor, including private events omitted from this batch.
+    /// Unchanged from the input cursor when no newer raw event exists.
     pub cursor: u64,
+    /// The cursor predates retained history; reload the snapshot and private coordination.
+    pub resync_required: bool,
+}
+
+/// Compact event catch-up and optional presence update from one backend request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameSync {
+    /// Durable events after the caller's cursor.
+    pub batch: EventBatch,
+    /// Current roster, omitted when its token has not changed.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub members: Option<Vec<GameMembership>>,
+    /// Opaque roster fingerprint, scoped to this backend and game.
+    pub roster_token: String,
 }

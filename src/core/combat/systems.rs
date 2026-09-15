@@ -16,7 +16,9 @@ pub use crate::core::combat::effects::{
 };
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
 use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
-use crate::core::combat::report::{CombatReport, MissionReport, RoundReport, Side};
+use crate::core::combat::report::{
+    combat_strength_ranges, CombatReport, MissionReport, RoundReport, Side,
+};
 use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
     BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, HEALTH_COLOR, PS_WIDTH, SETUP_TIME,
@@ -47,8 +49,9 @@ const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
 const COMBAT_COUNT_FONT_SIZE: f32 = 600.0;
+const COMBAT_COUNT_SEPARATOR: &str = "  ";
 const ROUND_BANNER_ENTER_MS: u64 = 250;
-const ROUND_BANNER_HOLD_MS: u64 = 1_300;
+const ROUND_BANNER_HOLD_MS: u64 = 650;
 const ROUND_BANNER_EXIT_MS: u64 = 300;
 const PLANETARY_SHIELD_HEIGHT_FACTOR: f32 = 0.3;
 const COMBAT_CARD_LOWER_EXTENT_FACTOR: f32 = 0.76;
@@ -99,6 +102,10 @@ pub struct CombatMenuCmp;
 #[derive(Component)]
 /// Bevy component marking combat presentation entities.
 pub struct CombatCmp;
+
+#[derive(Component)]
+/// One player-colored segment in a combat identity card's accent line.
+struct CombatIdentityAccentSegmentCmp;
 
 #[derive(Component)]
 /// Marks cards whose firing highlight must be reversed after firing.
@@ -261,8 +268,11 @@ fn combat_count_badge_width(
 
 fn combat_count_characters(owner_count: usize, protection: &[(PlayerId, usize)]) -> f32 {
     let owner_chars = owner_count.to_string().len() as f32;
-    let protection_chars =
-        protection.iter().map(|(_, count)| (count.to_string().len() + 1) as f32).sum::<f32>();
+    let separator_chars = COMBAT_COUNT_SEPARATOR.chars().count();
+    let protection_chars = protection
+        .iter()
+        .map(|(_, count)| (count.to_string().len() + separator_chars) as f32)
+        .sum::<f32>();
     owner_chars + protection_chars
 }
 
@@ -408,7 +418,7 @@ pub struct SpawnShotMsg {
 fn spawn_combat_identity(
     commands: &mut Commands,
     role: &str,
-    participants: &[(String, Color)],
+    participants: &[(String, Color, u128)],
     color: Color,
     top: Option<f32>,
     bottom: Option<f32>,
@@ -452,14 +462,45 @@ fn spawn_combat_identity(
             CombatCmp,
         ))
         .with_children(|parent| {
-            parent.spawn((
-                Node {
+            parent
+                .spawn(Node {
                     width: Val::Px(3.0),
                     height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
                     ..default()
-                },
-                BackgroundColor(color),
-            ));
+                })
+                .with_children(|accent| {
+                    if participants.is_empty() {
+                        accent.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                            CombatIdentityAccentSegmentCmp,
+                        ));
+                        return;
+                    }
+
+                    let strengths =
+                        participants.iter().map(|(_, _, strength)| *strength).collect::<Vec<_>>();
+                    for ((_, participant_color, _), (start, end)) in
+                        participants.iter().zip(combat_strength_ranges(&strengths))
+                    {
+                        if end > start {
+                            accent.spawn((
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    height: Val::Percent((end - start) * 100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(*participant_color),
+                                CombatIdentityAccentSegmentCmp,
+                            ));
+                        }
+                    }
+                });
             parent
                 .spawn(Node {
                     flex_direction: FlexDirection::Column,
@@ -487,7 +528,7 @@ fn spawn_combat_identity(
                             color
                         }),
                     ));
-                    for (name, participant_color) in participants {
+                    for (name, participant_color, _) in participants {
                         content.spawn((
                             add_text(name, "medium", 9.0, assets, window),
                             TextColor(*participant_color),
@@ -714,6 +755,17 @@ pub fn setup_combat(
                      y_end: f32| {
         let total = units.len() as f32;
         let total_width = spacing * (total - 1.0);
+        let has_multiple_players = match &side {
+            Side::Attacker => report.attacker_players().len() > 1,
+            Side::Defender => report.defender_players().len() > 1,
+        };
+        let count_color = |owner: Option<PlayerId>| {
+            if has_multiple_players {
+                owner.map_or(WHITE.into(), |player_id| session.player_color(player_id).color())
+            } else {
+                WHITE.into()
+            }
+        };
         for (i, (u, c)) in units.iter().enumerate() {
             let x = -total_width * 0.5 + i as f32 * spacing;
 
@@ -773,7 +825,7 @@ pub fn setup_combat(
                                         font_size: count_font_size.into(),
                                         ..default()
                                     },
-                                    TextColor(WHITE.into()),
+                                    TextColor(count_color(owner)),
                                     Transform::from_scale(Vec3::splat(0.05)),
                                     CountCmp {
                                         owner,
@@ -782,13 +834,15 @@ pub fn setup_combat(
                                 .with_children(|text| {
                                     for (player_id, count) in &protection {
                                         text.spawn((
-                                            TextSpan::new(format!(" {count}")),
+                                            TextSpan::new(format!(
+                                                "{COMBAT_COUNT_SEPARATOR}{count}"
+                                            )),
                                             TextFont {
                                                 font: assets.font("bold").into(),
                                                 font_size: count_font_size.into(),
                                                 ..default()
                                             },
-                                            TextColor(session.player_color(*player_id).color()),
+                                            TextColor(count_color(Some(*player_id))),
                                             CountCmp {
                                                 owner: Some(*player_id),
                                             },
@@ -874,6 +928,7 @@ pub fn setup_combat(
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("Player {id}")),
                 session.player_color(id).color(),
+                report.participant_fleet_strength(&Side::Attacker, id),
             )
         })
         .collect::<Vec<_>>();
@@ -887,6 +942,7 @@ pub fn setup_combat(
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("Player {id}")),
                 session.player_color(id).color(),
+                report.participant_fleet_strength(&Side::Defender, id),
             )
         })
         .collect::<Vec<_>>();
@@ -912,9 +968,7 @@ pub fn setup_combat(
         &window,
     );
 
-    let attacking = Unit::all()
-        .into_iter()
-        .flatten()
+    let attacking = Unit::iter()
         .filter_map(|u| {
             let amount = report.mission.army.amount(&u);
             (u != Unit::colony_ship() && amount > 0).then_some((u, amount))
@@ -1615,6 +1669,47 @@ pub fn animate_combat(
         return;
     }
 
+    // The result belongs to the conclusion, not the end of the salvage flourish. Starting it in
+    // either conclusion phase lets surviving Crawlers collect resources beneath the overlay.
+    if matches!(combat_state.get(), CombatState::Salvage | CombatState::EndCombat)
+        && text_q.is_none()
+    {
+        let result = report.status(&player);
+
+        play_audio_msg.write(PlayAudioMsg::new(result));
+        commands.spawn((
+            add_root_node(false),
+            children![(
+                Node {
+                    max_width: Val::Vw(90.),
+                    ..default()
+                },
+                ImageNode::new(assets.image(result)),
+                UiTransform {
+                    translation: Val2::new(Val::ZERO, Val::Percent(-10.)),
+                    scale: Vec2::ZERO,
+                    ..default()
+                },
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_millis(1500),
+                    UiTransformScaleLens {
+                        start: Vec2::ZERO,
+                        end: Vec2::splat(match result {
+                            "victory" => 0.55,
+                            "draw" => 0.4,
+                            "defeat" => 0.6,
+                            _ => 0.5,
+                        }),
+                    },
+                )),
+                DisplayTextCmp,
+                CombatCmp,
+            )],
+            CombatCmp,
+        ));
+    }
+
     match combat_state.get() {
         CombatState::Setup => {
             if !completed.is_empty() {
@@ -1962,44 +2057,7 @@ pub fn animate_combat(
                 )),
             ));
         },
-        CombatState::EndCombat => {
-            if text_q.is_none() {
-                let result = report.status(&player);
-
-                play_audio_msg.write(PlayAudioMsg::new(result));
-                commands.spawn((
-                    add_root_node(false),
-                    children![(
-                        Node {
-                            max_width: Val::Vw(90.),
-                            ..default()
-                        },
-                        ImageNode::new(assets.image(result)),
-                        UiTransform {
-                            translation: Val2::new(Val::ZERO, Val::Percent(-10.)),
-                            scale: Vec2::ZERO,
-                            ..default()
-                        },
-                        TweenAnim::new(Tween::new(
-                            EaseFunction::QuadraticInOut,
-                            Duration::from_millis(1500),
-                            UiTransformScaleLens {
-                                start: Vec2::ZERO,
-                                end: Vec2::splat(match result {
-                                    "victory" => 0.55,
-                                    "draw" => 0.4,
-                                    "defeat" => 0.6,
-                                    _ => 0.5,
-                                }),
-                            },
-                        )),
-                        DisplayTextCmp,
-                        CombatCmp,
-                    )],
-                    CombatCmp,
-                ));
-            }
-        },
+        CombatState::EndCombat => {},
     }
 }
 
@@ -2088,7 +2146,7 @@ pub fn update_combat_stats(
                     text.0 = count.to_string();
                 }
                 if let Some(mut span) = span {
-                    span.0 = format!(" {count}");
+                    span.0 = format!("{COMBAT_COUNT_SEPARATOR}{count}");
                 }
             }
 

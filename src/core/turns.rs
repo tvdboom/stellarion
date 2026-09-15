@@ -94,6 +94,13 @@ impl StartTurnMsg {
     }
 }
 
+/// Combat-destroyed worlds awaiting their public strategic-map explosion.
+///
+/// Successful Railgun strikes carry their own public impact animation, so their targets are not
+/// included here.
+#[derive(Resource, Default)]
+pub(crate) struct PublicPlanetDestructions(pub(crate) Vec<PlanetId>);
+
 /// Selects only missions visible to one player for the ECS/rendering projection.
 /// Joint-attack participation does not reveal the other fleets' routes.
 pub fn filter_missions(missions: &[Mission], map: &Map, player: &Player) -> Vec<Mission> {
@@ -213,7 +220,9 @@ fn report_notification(
         },
         _ => MessageMsg::warning(format!("Battle lost at planet {}.", destination.name)),
     };
-    notification.with_action(if report.hidden {
+    notification.with_action(if report.planet_destroyed {
+        MessageAction::FocusDestroyedPlanet(destination.id)
+    } else if report.hidden {
         MessageAction::OpenMissionReports
     } else {
         MessageAction::OpenMissionReport(report.mission.id)
@@ -222,17 +231,12 @@ fn report_notification(
 
 fn should_start_planet_destruction(
     planet: &Planet,
-    reports: &[&MissionReport],
-    turn: usize,
+    public_destructions: &[PlanetId],
     animating_planets: &mut BTreeSet<PlanetId>,
 ) -> bool {
     planet.is_destroyed
         && planet.image != 0
-        && reports.iter().any(|report| {
-            report.turn == turn
-                && report.planet_destroyed
-                && report.mission.destination == planet.id
-        })
+        && public_destructions.contains(&planet.id)
         && animating_planets.insert(planet.id)
 }
 
@@ -270,7 +274,10 @@ pub fn start_turn(
     mut commands: Commands,
     mut start_turn_messages: MessageReader<StartTurnMsg>,
     planet_query: Query<(&Transform, &PlanetCmp), Without<MainCamera>>,
-    active_destructions: Query<&ExplosionCmp>,
+    (active_destructions, mut public_destructions): (
+        Query<&ExplosionCmp>,
+        Option<ResMut<PublicPlanetDestructions>>,
+    ),
     gameplay_blockers: Query<(), With<GameplayInputBlocker>>,
     settings: Res<Settings>,
     mut state: ResMut<UiState>,
@@ -288,10 +295,12 @@ pub fn start_turn(
         active_destructions.iter().map(|effect| effect.planet).collect::<BTreeSet<_>>();
 
     for request in start_turn_messages.read() {
+        let garrison_hidden_players = std::mem::take(&mut state.garrison_hidden_players);
         *state = UiState {
             mission_hover: None,
             lab: state.lab,
             mission_report: state.mission_report,
+            garrison_hidden_players,
             ..default()
         };
 
@@ -354,11 +363,14 @@ pub fn start_turn(
             messages.write(report_notification(report, &player, origin, destination));
         }
 
+        let pending_public_destructions = public_destructions
+            .as_deref()
+            .map_or_else(Vec::new, |destructions| destructions.0.clone());
+        let mut presented_destructions = BTreeSet::new();
         for planet in &map.planets {
             if !should_start_planet_destruction(
                 planet,
-                &new_reports,
-                settings.turn,
+                &pending_public_destructions,
                 &mut animating_planets,
             ) {
                 continue;
@@ -397,6 +409,10 @@ pub fn start_turn(
                 },
             ));
             play_audio.write(PlayAudioMsg::new("explosion"));
+            presented_destructions.insert(planet.id);
+        }
+        if let Some(destructions) = public_destructions.as_deref_mut() {
+            destructions.0.retain(|planet| !presented_destructions.contains(planet));
         }
 
         for report in &new_reports {
@@ -409,6 +425,11 @@ pub fn start_turn(
                 && player.owns(destination)
                 && !destination.is_destroyed
             {
+                continue;
+            }
+            // A newly destroyed planet already has one public, focusable toast for every player.
+            // Resumed turns retain report navigation because no public transition was observed.
+            if report.planet_destroyed && !request.skip_end_game {
                 continue;
             }
             messages.write(report_notification(report, &player, origin, destination));

@@ -1164,10 +1164,13 @@ pub(crate) fn jump_gate_link_particles(
     let (spacing, speed, width, thickness, wavelength, depth) = style.parameters();
     let route = to - from;
     let route_length = route.length();
-    let clearance = if matches!(style, JumpGateHelixStyle::MissionLoop) {
-        0.0
-    } else {
+    // Gate links begin at marker centers, so keep their particles clear of the artwork. Mission
+    // routes are already clipped to the planet edges by their caller, while mission loops are
+    // deliberately allowed to pass through the fleet.
+    let clearance = if matches!(style, JumpGateHelixStyle::GateLink) {
         16.0
+    } else {
+        0.0
     };
     if route_length <= clearance * 2.0 {
         return Vec::new();
@@ -1325,6 +1328,8 @@ pub(crate) fn update_jump_gate_links(
 }
 
 const TERRITORY_TRANSITION_SECONDS: f32 = 1.35;
+/// Half the screen-space separation between the two one-pixel lines at a shared border.
+const TERRITORY_BORDER_HALF_SEPARATION: f32 = 0.5;
 
 #[derive(Component, Debug)]
 /// Local presentation state for smooth ownership-color and visibility changes.
@@ -1360,6 +1365,10 @@ pub struct VoronoiEdgeCmp {
     /// Canonical quantized endpoints used to deduplicate this border edge.
     pub key: (i32, i32, i32, i32),
 }
+
+#[derive(Component)]
+/// Direction from a Voronoi edge into the cell that owns its rendered line.
+pub(crate) struct VoronoiEdgeSideCmp(Vec2);
 
 #[derive(Component)]
 /// Bevy component marking end turn label presentation entities.
@@ -1410,6 +1419,7 @@ fn spawn_voronoi_cells(
         // the entity at z=0, so transparent cells can sort behind the map background.
         let positions =
             points.iter().map(|p| Vec3::new(p.x as f32, p.y as f32, 0.0)).collect::<Vec<_>>();
+        let cell_center = positions.iter().map(|point| point.truncate()).sum::<Vec2>() / n as f32;
         let indices = (1..n - 1).flat_map(|i| [0, i as u32, (i + 1) as u32]).collect();
         let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
@@ -1430,6 +1440,12 @@ fn spawn_voronoi_cells(
             let b = points[(j + 1) % n];
             let v1 = Vec2::new(a.x as f32, a.y as f32);
             let v2 = Vec2::new(b.x as f32, b.y as f32);
+            let edge_normal = (v2 - v1).normalize_or_zero().perp();
+            let inward = if edge_normal.dot(cell_center - v1.midpoint(v2)) >= 0.0 {
+                edge_normal
+            } else {
+                -edge_normal
+            };
             let mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default())
                 .with_inserted_attribute(
                     Mesh::ATTRIBUTE_POSITION,
@@ -1446,6 +1462,7 @@ fn spawn_voronoi_cells(
                     planet: planet.id,
                     key: edge_key(v1, v2),
                 },
+                VoronoiEdgeSideCmp(inward),
                 TerritoryTransitionCmp::default(),
                 MapCmp,
             ));
@@ -2182,6 +2199,7 @@ pub fn draw_map(
                                         })
                                         .min_by_key(|mission| mission.turns_to_destination(&map))
                                     {
+                                        state.planet_hover = None;
                                         state.mission_hover = Some(mission.id);
                                     }
                                 },
@@ -3639,6 +3657,8 @@ pub(crate) fn update_voronoi(
     time: Option<Res<Time>>,
     game_state: Option<Res<State<GameState>>>,
     structure_effects: Query<&PublicStructureEffect>,
+    camera: Query<&Projection, With<MainCamera>>,
+    mut edge_geometry_q: Query<(&mut Transform, &VoronoiEdgeSideCmp)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let fading_public_owners = structure_effects
@@ -3672,6 +3692,24 @@ pub(crate) fn update_voronoi(
     let animate = game_state.as_ref().is_none_or(|state| *state.get() == GameState::Playing);
     let delta_seconds =
         time.as_ref().map_or(TERRITORY_TRANSITION_SECONDS, |time| time.delta_secs());
+    let camera_scale = camera
+        .single()
+        .ok()
+        .and_then(|projection| match projection {
+            Projection::Orthographic(projection) => Some(projection.scale),
+            _ => None,
+        })
+        .unwrap_or(1.0);
+
+    // Each cell owns one copy of a shared edge. Put those copies on their respective sides of the
+    // mathematical boundary so different player colors form two crisp adjacent lines instead of
+    // alpha-blending into one mixed color. Scaling the offset with the camera keeps the separation
+    // at exactly one screen pixel throughout the zoom range.
+    for (mut transform, side) in &mut edge_geometry_q {
+        let offset = side.0 * TERRITORY_BORDER_HALF_SEPARATION * camera_scale;
+        transform.translation.x = offset.x;
+        transform.translation.y = offset.y;
+    }
 
     for (mut cell_v, cell_m, cell, mut transition) in &mut cell_q {
         let planet = map.get(cell.0);

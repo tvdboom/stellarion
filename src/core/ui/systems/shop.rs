@@ -160,11 +160,10 @@ fn draw_unit_stat_cell_on_world(
     .on_hover_ui(|ui| draw_stat_hover(ui, stat, images))
 }
 
-/// Keeps stat rows and special choices equally inset from their section separators.
+/// Keeps stat rows and special choices evenly separated without drawing divider rules.
 fn draw_unit_hover_section<R>(ui: &mut Ui, contents: impl FnOnce(&mut Ui) -> R) -> R {
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.;
-        ui.separator();
         egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(0, 12))
             .show(ui, |ui| {
@@ -219,11 +218,14 @@ pub(super) fn draw_moon_building_stats(
                 unit,
                 &CombatStats::Intelligence,
                 images,
-                180.,
+                150.,
                 true,
             );
+            // Lunar buildings have no production stat, but their intelligence and range
+            // still occupy the outer cells of the standard three-column stat row.
+            ui.allocate_space(egui::vec2(150., 45.));
             let range =
-                draw_unit_stat_cell_on_world(ui, unit, &CombatStats::Range, images, 180., true);
+                draw_unit_stat_cell_on_world(ui, unit, &CombatStats::Range, images, 150., true);
             (intelligence, range)
         })
         .inner
@@ -278,7 +280,7 @@ pub(super) fn draw_unit_hover(
             });
 
             if msg.is_some() || !brief {
-                ui.separator();
+                ui.add_space(8.);
                 if let Some(msg) = msg {
                     ui.colored_label(Color32::RED, RichText::new(msg).small());
                 }
@@ -290,7 +292,7 @@ pub(super) fn draw_unit_hover(
             ui.spacing_mut().item_spacing.y = 0.;
             ui.add_space(4.);
 
-            if !unit.is_building() {
+            if !brief && !unit.is_building() {
                 draw_unit_hover_section(ui, |ui| {
                     let is_space_dock = *unit == Unit::space_dock();
                     let mut has_stat_row = false;
@@ -329,12 +331,14 @@ pub(super) fn draw_unit_hover(
             let section_spacing = ui.spacing().item_spacing.y;
             ui.spacing_mut().item_spacing.y = 0.;
 
-            if unit.is_orbital() && !unit.is_defense() {
-                let _ = draw_orbital_stats(ui, unit, images);
-            } else if unit.is_building() && planet.is_moon() {
-                let _ = draw_moon_building_stats(ui, unit, images);
-            } else if unit.is_building() {
-                let _ = draw_intelligence_stat(ui, unit, images);
+            if !brief {
+                if unit.is_orbital() && !unit.is_defense() {
+                    let _ = draw_orbital_stats(ui, unit, images);
+                } else if unit.is_building() && planet.is_moon() {
+                    let _ = draw_moon_building_stats(ui, unit, images);
+                } else if unit.is_building() {
+                    let _ = draw_intelligence_stat(ui, unit, images);
+                }
             }
 
             if count > 0 {
@@ -490,7 +494,12 @@ pub(super) fn draw_unit_hover(
 
             ui.spacing_mut().item_spacing.y = section_spacing;
 
-            if !unit.rapid_fire().is_empty() {
+            let rapid_fire = if brief {
+                HashMap::new()
+            } else {
+                unit.rapid_fire()
+            };
+            if !rapid_fire.is_empty() {
                 draw_unit_hover_section(ui, |ui| {
                     ui.small(CombatStats::RapidFire.to_name())
                         .on_hover_ui(|ui| draw_stat_hover(ui, &CombatStats::RapidFire, images));
@@ -498,26 +507,22 @@ pub(super) fn draw_unit_hover(
                     egui::Grid::new("rapid_fire").spacing([10., 10.]).striped(false).show(
                         ui,
                         |ui| {
-                            let mut counter = 0;
-                            for rf_unit in Unit::all().iter().flatten() {
-                                if let Some(rf) = unit.rapid_fire().get(rf_unit) {
-                                    ui.horizontal(|ui| {
-                                        ui.set_width(115.);
-                                        ui.spacing_mut().item_spacing.x = 8.;
+                            for (index, (rf_unit, rf)) in Unit::iter()
+                                .filter_map(|u| rapid_fire.get(&u).map(|rf| (u, rf)))
+                                .enumerate()
+                            {
+                                ui.horizontal(|ui| {
+                                    ui.set_width(115.);
+                                    ui.spacing_mut().item_spacing.x = 8.;
 
-                                        ui.add_image(
-                                            images.get(rf_unit.to_lowername()),
-                                            [45., 45.],
-                                        );
-                                        ui.small(format!("{}%", rf));
-                                    })
-                                    .response
-                                    .on_hover_text(RichText::new(rf_unit.to_name()).small());
+                                    ui.add_image(images.get(rf_unit.to_lowername()), [45., 45.]);
+                                    ui.small(format!("{}%", rf));
+                                })
+                                .response
+                                .on_hover_text(RichText::new(rf_unit.to_name()).small());
 
-                                    counter += 1;
-                                    if counter % 4 == 0 {
-                                        ui.end_row();
-                                    }
+                                if (index + 1) % 4 == 0 {
+                                    ui.end_row();
                                 }
                             }
                         },

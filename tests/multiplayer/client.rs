@@ -113,6 +113,13 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
     assert_eq!(block_on(backend.load_game(&guest, &active.id)).unwrap().submitted_players, vec![1]);
     assert_eq!(app.world().resource::<PendingTurnCommands>().commands.len(), 2);
     block_on(backend.submit_turn(&guest, &active.id, TurnSubmission::new(2, 1, vec![]))).unwrap();
+    // Deliver the compact readiness projection before attempting to download commands.
+    app.world_mut()
+        .resource_mut::<MultiplayerSession>()
+        .active_game
+        .as_mut()
+        .unwrap()
+        .submitted_players = vec![1, 2];
     app.world_mut().resource_mut::<MultiplayerSession>().resolve_needed = true;
     settle(&mut app);
     let pending = app.world().resource::<PendingTurnCommands>();
@@ -536,11 +543,7 @@ fn local_practice_switching_preserves_each_players_draft() {
         app.world().resource::<MultiplayerSession>().membership.as_ref().unwrap().player_id,
         1
     );
-    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
-        TurnCommand::PracticeBoost {
-            owned_worlds_only: false,
-        },
-    ));
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
 
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
     app.update();
@@ -549,27 +552,19 @@ fn local_practice_switching_preserves_each_players_draft() {
         2
     );
     assert!(app.world().resource::<PendingTurnCommands>().commands.is_empty());
-    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
-        TurnCommand::PracticeBoost {
-            owned_worlds_only: true,
-        },
-    ));
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
 
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
     app.update();
     assert!(matches!(
         app.world().resource::<PendingTurnCommands>().commands.as_slice(),
-        [TurnCommand::PracticeBoost {
-            owned_worlds_only: false,
-        }]
+        [TurnCommand::PracticeBoost]
     ));
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
     app.update();
     assert!(matches!(
         app.world().resource::<PendingTurnCommands>().commands.as_slice(),
-        [TurnCommand::PracticeBoost {
-            owned_worlds_only: true,
-        }]
+        [TurnCommand::PracticeBoost]
     ));
 }
 
@@ -580,18 +575,10 @@ fn local_practice_next_turn_resolves_every_players_draft_at_once() {
 
     let mut app = local_practice_app_with_players(2);
     settle_local_practice(&mut app);
-    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
-        TurnCommand::PracticeBoost {
-            owned_worlds_only: false,
-        },
-    ));
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
     app.update();
-    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
-        TurnCommand::PracticeBoost {
-            owned_worlds_only: false,
-        },
-    ));
+    assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
 
     app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
     settle_local_practice(&mut app);
@@ -677,9 +664,7 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
             app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
             app.update();
         }
-        app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost {
-            owned_worlds_only: true,
-        });
+        app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost);
     }
     app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
     settle_local_practice(&mut app);
@@ -1167,6 +1152,7 @@ fn semantic_events_only_reload_for_a_new_canonical_state() {
                 event(3, BackendEventKind::StateChanged, Some(4), None, None),
             ],
             cursor: 3,
+            resync_required: false,
         }),
         &mut runtime,
         &mut session,
@@ -1183,6 +1169,7 @@ fn semantic_events_only_reload_for_a_new_canonical_state() {
         BackendOutput::Events(EventBatch {
             events: vec![event(4, BackendEventKind::StateChanged, Some(5), None, None)],
             cursor: 4,
+            resync_required: false,
         }),
         &mut runtime,
         &mut session,
@@ -1766,13 +1753,15 @@ fn leaving_while_busy_discards_pending_loads_and_never_waits_for_authentication(
 }
 
 #[test]
-/// Empty durable polls keep a submitted current turn eligible for resolution retries.
+/// Empty polls retry complete turns, without issuing reads while another player is planning.
 fn submitted_current_turn_awaits_resolution_until_projection_advances() {
     let mut session = MultiplayerSession {
         active_game: Some(record("game-a", 4, 7, MatchStatus::Active)),
         submitted_turn: Some(7),
         ..MultiplayerSession::default()
     };
+    assert!(!local_submission_awaits_resolution(&session));
+    session.active_game.as_mut().unwrap().submitted_players = vec![1, 2];
     assert!(local_submission_awaits_resolution(&session));
 
     session.active_game.as_mut().unwrap().persisted.state.turn = 8;
@@ -1780,6 +1769,47 @@ fn submitted_current_turn_awaits_resolution_until_projection_advances() {
     session.active_game.as_mut().unwrap().persisted.state.turn = 7;
     session.active_game.as_mut().unwrap().status = MatchStatus::Finished;
     assert!(!local_submission_awaits_resolution(&session));
+}
+
+#[test]
+fn sync_applies_roster_and_requests_replay_gap_reload_without_an_extra_heartbeat() {
+    let game = record("game-a", 4, 7, MatchStatus::Active);
+    let mut session = MultiplayerSession {
+        active_game: Some(game.clone()),
+        ..default()
+    };
+    let mut runtime = ClientRuntime {
+        backend: None,
+        realtime_config: None,
+        storage: Arc::new(MemoryStorage::default()),
+        profile: ClientProfile::default(),
+        practice_return: None,
+        practice_players: Vec::new(),
+    };
+    let members = vec![membership(&game.id, 1, "Host", true)];
+    let update = crate::multiplayer::model::GameSync {
+        batch: EventBatch {
+            events: Vec::new(),
+            cursor: 300,
+            resync_required: true,
+        },
+        members: Some(members.clone()),
+        roster_token: "a".repeat(64),
+    };
+    apply_output(
+        BackendOutput::Synced(update),
+        &mut runtime,
+        &mut session,
+        &mut MultiplayerForm::default(),
+        &mut PendingTurnCommands::default(),
+        &mut NextState::default(),
+        false,
+    );
+    assert_eq!(session.active_game.as_ref().unwrap().members, members);
+    assert!(session.reload_needed && session.event_poll_needed);
+    assert!(!session.presence_needed);
+    assert_eq!(session.event_cursor, 300);
+    assert_eq!(session.roster_token, Some("a".repeat(64)));
 }
 
 #[test]

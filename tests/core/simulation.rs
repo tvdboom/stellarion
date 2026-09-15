@@ -306,6 +306,40 @@ fn protection_permission_is_planet_specific_and_controller_only() {
 }
 
 #[test]
+fn attacking_a_world_immediately_revokes_only_the_attackers_protection_rights() {
+    let mut model = started_model(3);
+    let target = model.players[0].home_planet;
+    let origin = model.players[1].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    set_protection_permission_immediately(&mut model, 1, target, 2, true).unwrap();
+    set_protection_permission_immediately(&mut model, 1, target, 3, true).unwrap();
+    model.map.get_mut(origin).army.insert(fighter, 1);
+    model.players[1].resources.deuterium = 1_000_000;
+
+    let preview = preview_commands(
+        &model,
+        2,
+        &[TurnCommand::SendMission {
+            mission_id: 299,
+            origin,
+            destination: target,
+            objective: Icon::Attack,
+            army: Army::from([(fighter, 1)]),
+            bombing: BombingRaid::None,
+            combat_probes: false,
+            deep_cover: false,
+            jump_gate: false,
+        }],
+    )
+    .unwrap();
+
+    assert!(!preview.map.get(target).allows_protection(2));
+    assert!(preview.map.get(target).allows_protection(3));
+    assert!(model.map.get(target).allows_protection(2));
+    assert_eq!(preview.missions.len(), 1);
+}
+
+#[test]
 fn protection_is_disabled_until_three_players_are_active() {
     let mut model = started_model(2);
     let protected = model.players[0].home_planet;
@@ -903,141 +937,128 @@ fn local_practice_resolves_immediately_and_stays_active() {
 }
 
 #[test]
-fn testing_boost_covers_controlled_worlds_and_uses_each_worlds_roster() {
-    for owned_worlds_only in [false, true] {
-        let mut model = GameModel::new(
-            [1; 32],
-            GameRules {
-                player_count: 1,
-                practice_mode: true,
-                ..GameRules::default()
-            },
-        )
-        .unwrap();
-        model.start().unwrap();
-        let home = model.players[0].home_planet;
-        let moon = model.map.moons()[0].id;
-        model.map.get_mut(moon).controlled = Some(1);
-        // Fleet-controlled planets are valid targets even before they are colonized.
-        let occupied = model.map.planets().into_iter().find(|p| p.id != home).unwrap().id;
-        model.map.get_mut(occupied).controlled = Some(1);
-        let commands = vec![
-            TurnCommand::PracticeBoost {
-                owned_worlds_only,
-            },
-            TurnCommand::BuyUnits {
-                planet_id: home,
-                unit: Unit::war_sun(),
-                count: 1,
-            },
-        ];
-        let preview = preview_commands(&model, 1, &commands).unwrap();
-        assert_eq!(preview.map.get(moon).owned, None, "moons are controlled, never colonized");
+fn testing_boost_affects_owned_planets_and_all_buildings_on_controlled_moons() {
+    let mut model = GameModel::new(
+        [1; 32],
+        GameRules {
+            player_count: 1,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let home = model.players[0].home_planet;
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(moon).controlled = Some(1);
+    model.map.get_mut(moon).army.insert(Unit::Ship(Ship::Cruiser), 2);
+    let mut available = model
+        .map
+        .planets()
+        .into_iter()
+        .filter(|planet| !planet.is_moon() && planet.id != home)
+        .map(|planet| planet.id);
+    let colony = available.next().unwrap();
+    let controlled_only = available.next().unwrap();
+    model.map.get_mut(colony).owned = Some(1);
+    model.map.get_mut(colony).controlled = Some(1);
+    model.map.get_mut(controlled_only).controlled = Some(1);
+    let original_moon_cruisers = model.map.get(moon).army.amount(&Unit::Ship(Ship::Cruiser));
+    let original_controlled_army = model.map.get(controlled_only).army.clone();
+    let commands = vec![
+        TurnCommand::PracticeBoost,
+        TurnCommand::BuyUnits {
+            planet_id: home,
+            unit: Unit::war_sun(),
+            count: 1,
+        },
+    ];
+    let preview = preview_commands(&model, 1, &commands).unwrap();
+
+    for building in Unit::lunar_buildings() {
         assert_eq!(
-            preview.map.get(occupied).army.amount(&Unit::war_sun()),
-            3,
-            "controlled planets must be included in the Shift shortcut"
+            preview.map.get(moon).army.amount(&building),
+            Building::MAX_LEVEL,
+            "unexpected testing amount for {building:?} on controlled moon {moon}"
         );
-        for unit in Unit::all().into_iter().flatten() {
-            let expected = if unit.valid_on(true) {
-                if unit.is_building() {
-                    Building::MAX_LEVEL
-                } else {
-                    3
-                }
-            } else {
-                0
-            };
-            assert_eq!(
-                preview.map.get(moon).army.amount(&unit),
-                expected,
-                "unexpected testing amount for {unit:?} on a moon"
-            );
-        }
+    }
+    assert_eq!(
+        preview.map.get(moon).army.amount(&Unit::Ship(Ship::Cruiser)),
+        original_moon_cruisers
+    );
+    assert!(preview.map.get(moon).fields_consumed() > preview.map.get(moon).max_fields());
+    assert_eq!(preview.map.get(controlled_only).army, original_controlled_army);
+    for (planet_id, is_home) in [(home, true), (colony, false)] {
         for unit in Unit::all().into_iter().flatten() {
             let expected = if unit.valid_on(false) {
                 match unit {
-                    Unit::Building(Building::ColonialAdministration) => 0,
+                    Unit::Building(Building::ColonialAdministration) if is_home => 0,
+                    Unit::Building(Building::Senate) if !is_home => 0,
                     Unit::Building(Building::Senate) | Unit::Defense(Defense::SpaceDock) => 1,
                     Unit::Building(_) => Building::MAX_LEVEL,
-                    Unit::Ship(_) | Unit::Defense(_) => model.map.get(home).army.amount(&unit) + 3,
+                    Unit::Ship(_) | Unit::Defense(_) => {
+                        model.map.get(planet_id).army.amount(&unit) + 3
+                    },
                 }
             } else {
                 0
             };
             assert_eq!(
-                preview.map.get(home).army.amount(&unit),
+                preview.map.get(planet_id).army.amount(&unit),
                 expected,
-                "unexpected testing amount for {unit:?} on a planet"
-            );
-        }
-        assert_eq!(
-            preview
-                .map
-                .planets
-                .iter()
-                .map(|planet| planet.army.amount(&Unit::Building(Building::Senate)))
-                .sum::<usize>(),
-            1,
-            "the testing shortcut must create only the home-world Senate"
-        );
-        for planet in &preview.map.planets {
-            let targeted =
-                !owned_worlds_only || planet.owned == Some(1) || planet.controlled == Some(1);
-            assert_eq!(
-                planet.army.amount(&Unit::space_dock()),
-                usize::from(targeted && !planet.is_moon()),
-                "the testing shortcut must create at most one Space Dock per planet"
-            );
-        }
-        let mut preview_rng_state = preview.rng.clone();
-        let mut preview_rng = preview_rng_state.next_rng();
-        let expected_resources = preview.players[0].resources
-            + preview.players[0].energy_grid(&preview.map).scale_resources(
-                preview.players[0].raw_resource_production(&preview.map)
-                    + recycler_production(
-                        &preview.map,
-                        &preview.players,
-                        1,
-                        preview.turn as usize,
-                        &mut preview_rng,
-                    ),
-            );
-        resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
-        assert_eq!(model.turn, 2);
-        assert_eq!(model.status, MatchStatus::Active);
-        assert_eq!(model.players[0].resources, expected_resources);
-        for planet in &model.map.planets {
-            assert_eq!(
-                planet.army.amount(&Unit::war_sun()),
-                if planet.id == home {
-                    4
-                } else if !owned_worlds_only || planet.id == moon || planet.id == occupied {
-                    3
-                } else {
-                    0
-                }
-            );
-        }
-        for unit in Unit::all().into_iter().flatten().filter(|unit| !unit.valid_on(true)) {
-            assert_eq!(
-                model.map.get(moon).army.amount(&unit),
-                0,
-                "{unit:?} must remain absent from a moon after resolution"
+                "unexpected testing amount for {unit:?} on owned planet {planet_id}"
             );
         }
     }
+
+    let mut preview_rng_state = preview.rng.clone();
+    let mut preview_rng = preview_rng_state.next_rng();
+    let expected_resources = preview.players[0].resources
+        + preview.players[0].energy_grid(&preview.map).scale_resources(
+            preview.players[0].raw_resource_production(&preview.map)
+                + recycler_production(
+                    &preview.map,
+                    &preview.players,
+                    1,
+                    preview.turn as usize,
+                    &mut preview_rng,
+                ),
+        );
+    resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
+    assert_eq!(model.turn, 2);
+    assert_eq!(model.status, MatchStatus::Active);
+    assert_eq!(model.players[0].resources, expected_resources);
+    assert_eq!(model.map.get(home).army.amount(&Unit::war_sun()), 4);
+    assert_eq!(model.map.get(colony).army.amount(&Unit::war_sun()), 3);
+    for building in Unit::lunar_buildings() {
+        assert_eq!(model.map.get(moon).army.amount(&building), Building::MAX_LEVEL);
+    }
+    assert_eq!(model.map.get(moon).army.amount(&Unit::Ship(Ship::Cruiser)), original_moon_cruisers);
+    assert_eq!(model.map.get(controlled_only).army, original_controlled_army);
+}
+
+#[test]
+fn testing_boost_rejects_non_practice_games() {
+    let model = started_model(2);
+    assert!(preview_commands(&model, 1, &[TurnCommand::PracticeBoost]).is_err());
 }
 
 #[test]
 fn multiplayer_replays_testing_boost_for_every_peer() {
-    let mut model = started_model(2);
+    let mut model = GameModel::new(
+        [3; 32],
+        GameRules {
+            player_count: 2,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
     let player_id = model.players[0].id;
     let home = model.players[0].home_planet;
     let resources = model.players[0].resources;
-    let commands = vec![TurnCommand::PracticeBoost {
-        owned_worlds_only: true,
-    }];
+    let commands = vec![TurnCommand::PracticeBoost];
     let preview = preview_commands(&model, player_id, &commands).unwrap();
     assert_eq!(preview.players[0].resources, resources + 1_000usize);
     assert_eq!(preview.map.get(home).army.amount(&Unit::war_sun()), 3);
@@ -2267,6 +2288,19 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
     assert!(preview_commands(&model, 1, &[same_world_launch]).is_err());
     let turn = model.turn;
     assert!(preview_commands(&model, 1, &[joint.clone(), joint.clone()]).is_err());
+    let mut conflicting_bombing = joint.clone();
+    if let TurnCommand::SendJointMission {
+        contributions,
+        ..
+    } = &mut conflicting_bombing
+    {
+        contributions[1].bombing = BombingRaid::Industrial;
+    }
+    assert!(matches!(
+        preview_commands(&model, 1, &[conflicting_bombing]),
+        Err(GameError::InvalidCommand { reason, .. })
+            if reason.contains("leader's bombing objective")
+    ));
     let mut unavailable = joint.clone();
     if let TurnCommand::SendJointMission {
         contributions,
@@ -2281,6 +2315,8 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
             if reason.contains("player 2 selected 4 Light Fighters")
                 && reason.contains("only 3 available")
     ));
+    let launch_preview = preview_commands(&model, 1, std::slice::from_ref(&joint)).unwrap();
+    assert!(!launch_preview.map.get(target).allows_protection(2));
     resolve_turn(
         &mut model,
         &[
@@ -2328,6 +2364,85 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
     assert_eq!(report.attacker_players(), vec![1, 2]);
     assert_eq!(report.winner(), Some(1));
     assert_eq!(report.status(model.player(2).unwrap()), "victory");
+}
+
+#[test]
+fn practice_boost_precedes_joint_attack_fleet_reservations() {
+    let mut model = GameModel::new(
+        [17; 32],
+        GameRules {
+            player_count: 2,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let leader_origin = model.player(1).unwrap().home_planet;
+    let supporter_origin = model.player(2).unwrap().home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let probes = Unit::Ship(Ship::Probe);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(leader_origin).army.clear();
+    model.map.get_mut(leader_origin).army.insert(probes, 3);
+    model.map.get_mut(leader_origin).army.insert(fighter, 1);
+    model.map.get_mut(supporter_origin).army.clear();
+    model.map.get_mut(supporter_origin).army.insert(fighter, 1);
+    for player in &mut model.players {
+        player.resources.deuterium = 100_000;
+    }
+
+    let joint = TurnCommand::SendJointMission {
+        attack_id: 78,
+        mission_id: 7_800,
+        destination: target,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: true,
+        contributions: vec![
+            JointAttackContribution {
+                player_id: 1,
+                origin: leader_origin,
+                army: Army::from([(probes, 6), (fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: true,
+            },
+            JointAttackContribution {
+                player_id: 2,
+                origin: supporter_origin,
+                army: Army::from([(fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+        ],
+    };
+    let commands = vec![TurnCommand::PracticeBoost, joint.clone()];
+
+    let preview = preview_commands(&model, 1, &commands).unwrap();
+    assert_eq!(preview.map.get(leader_origin).army.amount(&probes), 0);
+    assert_eq!(
+        preview
+            .missions
+            .iter()
+            .find(|mission| mission.owner == 1 && mission.joint_attack.is_some())
+            .unwrap()
+            .army
+            .amount(&probes),
+        6
+    );
+
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[TurnSubmission::new(1, turn, commands), TurnSubmission::new(2, turn, Vec::new())],
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2740,6 +2855,30 @@ fn orbital_railgun_range_deuterium_cost_and_once_per_turn_limit_are_enforced() {
     ];
     resolve_turn(&mut model, &submissions).unwrap();
     assert_eq!(model.players[0].resources, Resources::new(1_000, 1_000, 0) + firing_income);
+}
+
+#[test]
+fn orbital_attack_immediately_revokes_protection_rights() {
+    let mut model = started_model(3);
+    let target = model.players[0].home_planet;
+    let origin = model.players[1].home_planet;
+    set_protection_permission_immediately(&mut model, 1, target, 2, true).unwrap();
+    let target_position = model.map.get(target).position;
+    model.map.get_mut(origin).position = target_position + Vec2::X * Planet::SIZE;
+    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
+    model.players[1].resources.deuterium = 1_000;
+
+    let preview = preview_commands(
+        &model,
+        2,
+        &[TurnCommand::FireOrbitalRailguns {
+            target,
+        }],
+    )
+    .unwrap();
+
+    assert!(!preview.map.get(target).allows_protection(2));
+    assert!(model.map.get(target).allows_protection(2));
 }
 
 #[test]

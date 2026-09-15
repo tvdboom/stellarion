@@ -460,6 +460,31 @@ fn railgun_toast_focuses_and_fully_zooms_out_even_when_the_target_was_destroyed(
 }
 
 #[test]
+fn planet_destruction_toast_focuses_only_a_destroyed_world() {
+    let mut model = GameModel::new([11; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let target = model.players[1].home_planet;
+    let intact = model.players[0].home_planet;
+    model.map.get_mut(target).destroy();
+    let mut state = UiState {
+        planet_selected: Some(intact),
+        mission: true,
+        combat_report: Some(3),
+        ..default()
+    };
+
+    assert!(focus_destroyed_planet(target, &model.map, &mut state));
+    assert_eq!(state.planet_selected, None);
+    assert_eq!(state.focus_planet, Some(target));
+    assert_eq!(state.focus_zoom, Some(MAX_ZOOM));
+    assert!(state.to_selected);
+    assert!(!state.mission);
+    assert_eq!(state.combat_report, None);
+    assert!(!focus_destroyed_planet(intact, &model.map, &mut state));
+    assert!(!focus_destroyed_planet(usize::MAX, &model.map, &mut state));
+}
+
+#[test]
 fn enemy_detection_toast_opens_the_enemy_missions_panel() {
     let mut state = UiState {
         planet_selected: Some(4),

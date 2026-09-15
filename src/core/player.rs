@@ -17,6 +17,10 @@ use crate::core::settings::Settings;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Unit};
 
+#[cfg(test)]
+#[path = "../../tests/core/player.rs"]
+mod tests;
+
 /// Largest Senate level supported by any match configuration.
 pub const SENATE_MAX_LEVEL: usize = 5;
 /// Base colony slots required for each possible Senate level.
@@ -265,128 +269,87 @@ impl Player {
 
     /// Returns the most recent information report for a planet when present.
     pub fn last_info(&self, planet: &Planet, missions: &[Mission]) -> Option<PlanetInfo> {
-        let mut reports = vec![];
-
         if planet.is_destroyed {
             return None;
         }
 
-        for r in self.reports.iter() {
-            if r.mission.origin == planet.id {
-                if r.mission.owner == self.id {
-                    // Ignore returning probes or from destroy mission
-                    if r.mission.origin_controlled == Some(self.id) {
-                        // Own mission send from this planet (and it's no longer controlled)
-                        reports.push(PlanetInfo {
-                            turn: r.mission.send,
-                            controlled: None,
-                            army: Unit::all()
-                                .iter()
-                                .flatten()
-                                .map(|u| {
-                                    (
-                                        *u,
-                                        r.mission
-                                            .origin_army
-                                            .amount(u)
-                                            .saturating_sub(r.mission.army.amount(u)),
-                                    )
-                                })
-                                .collect(),
-                        });
-                    }
-                } else if !r.mission.objective.is_hidden() {
-                    // Enemy mission send from this planet
-                    reports.push(PlanetInfo {
-                        turn: r.mission.send,
-                        controlled: Some(r.mission.owner),
-                        army: Army::new(),
-                    });
+        let departure = |mission: &Mission| {
+            if mission.origin != planet.id {
+                return None;
+            }
+            let (controlled, army) = if mission.owner == self.id {
+                // Returning probes and destroy missions do not reveal the departure army.
+                if mission.origin_controlled != Some(self.id) {
+                    return None;
                 }
+                let army = Unit::iter()
+                    .map(|u| {
+                        (u, mission.origin_army.amount(&u).saturating_sub(mission.army.amount(&u)))
+                    })
+                    .collect();
+                (None, army)
+            } else if !mission.objective.is_hidden() {
+                (Some(mission.owner), Army::new())
+            } else {
+                return None;
+            };
+            Some(PlanetInfo {
+                turn: mission.send,
+                controlled,
+                army,
+            })
+        };
+        let reports = self.reports.iter().filter_map(|r| {
+            if r.mission.origin == planet.id {
+                departure(&r.mission)
             } else if r.mission.destination == planet.id
                 && r.mission.objective != Icon::MissileStrike
             {
-                // Mission arrived at this planet
                 let can_see = r.can_see(&Side::Defender, self.id);
-                reports.push(PlanetInfo {
+                let defender_remains =
+                    r.winner() == r.planet.controlled || r.mission.objective == Icon::Destroy;
+                Some(PlanetInfo {
                     turn: r.turn,
                     controlled: r.destination_controlled,
-                    army: Unit::all()
-                        .iter()
-                        .flatten()
+                    army: Unit::iter()
                         .filter_map(|u| {
                             if can_see {
-                                if r.winner() == r.planet.controlled
-                                    || r.mission.objective == Icon::Destroy
-                                {
-                                    Some((*u, r.surviving_defender.combined_amount(u)))
+                                let amount = if defender_remains || u.is_building() {
+                                    r.surviving_defender.combined_amount(&u)
+                                } else if u == Unit::probe() {
+                                    r.surviving_attacker.amount(&u).saturating_sub(r.scout_probes)
                                 } else {
-                                    Some((
-                                        *u,
-                                        if u.is_building() {
-                                            r.surviving_defender.combined_amount(u)
-                                        } else if *u == Unit::probe() {
-                                            r.surviving_attacker
-                                                .amount(u)
-                                                .saturating_sub(r.scout_probes)
-                                        } else {
-                                            r.surviving_attacker.amount(u)
-                                        },
-                                    ))
-                                }
+                                    r.surviving_attacker.amount(&u)
+                                };
+                                Some((u, amount))
                             } else if r.mission.owner == self.id
                                 && u.revealed_by_probes_on_world(r.scout_probes, r.planet.is_moon())
                             {
-                                Some((*u, r.planet.army.combined_amount(u)))
+                                Some((u, r.planet.army.combined_amount(&u)))
                             } else {
                                 None
                             }
                         })
                         .collect(),
-                });
+                })
+            } else {
+                None
+            }
+        });
+
+        // Retain only the latest report, while remembering ordinary buildings' peak levels.
+        let mut buildings = Unit::buildings().map(|unit| (unit, 0));
+        let mut best: Option<PlanetInfo> = None;
+        for info in reports.chain(missions.iter().filter_map(departure)) {
+            for (unit, highest) in &mut buildings {
+                *highest = (*highest).max(info.army.amount(unit));
+            }
+            if best.as_ref().is_none_or(|previous| info.turn >= previous.turn) {
+                best = Some(info);
             }
         }
-
-        // Add missions that haven't arrived yet
-        for m in missions {
-            if m.origin == planet.id {
-                if m.owner == self.id {
-                    // Ignore returning probes or from destroy mission
-                    if m.origin_controlled == Some(self.id) {
-                        // Own mission send from this planet (and it's no longer controlled)
-                        let army: Army = Unit::all()
-                            .iter()
-                            .flatten()
-                            .map(|u| (*u, m.origin_army.amount(u).saturating_sub(m.army.amount(u))))
-                            .collect();
-
-                        reports.push(PlanetInfo {
-                            turn: m.send,
-                            controlled: None, // It's no longer controlled or we wouldn't need last_info
-                            army,
-                        });
-                    }
-                } else if !m.objective.is_hidden() {
-                    // Enemy mission
-                    reports.push(PlanetInfo {
-                        turn: m.send,
-                        controlled: Some(m.owner),
-                        army: Army::new(),
-                    });
-                }
-            }
-        }
-
-        // Select the latest report and take the highest building level from every report
-        reports.iter().max_by_key(|r| r.turn).cloned().map(|mut best| {
-            for building in Unit::buildings() {
-                if let Some(highest) =
-                    reports.iter().map(|r| r.army.amount(&building)).filter(|a| *a > 0).max()
-                {
-                    best.army.insert(building, highest);
-                }
-            }
-
+        best.map(|mut best| {
+            best.army.extend(buildings.into_iter().filter(|(_, amount)| *amount > 0));
             best
         })
     }

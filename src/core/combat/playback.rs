@@ -1,9 +1,12 @@
 //! Playback shortcuts and early completion; recorded reports remain authoritative.
 
+use std::collections::HashMap;
+
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_tweening::TweenAnim;
 
+use super::effects::{PendingImpact, Wreck};
 use super::report::{MissionReport, Side};
 use super::systems::{
     restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatUnitCmp, FireState,
@@ -52,6 +55,29 @@ fn replay_phase(report: &MissionReport, index: usize) -> CombatState {
         }
     } else {
         CombatState::DisplayRound
+    }
+}
+
+/// Returns whether backward navigation should restart the selected round before moving earlier.
+fn current_round_has_started(world: &mut World, phase: CombatState) -> bool {
+    match phase {
+        CombatState::Setup | CombatState::DisplayRound => false,
+        CombatState::AntiBallistic | CombatState::Fire => {
+            world
+                .query::<&CombatUnitCmp>()
+                .iter(world)
+                .any(|card| !matches!(card.fire, FireState::Idle) || card.outcome_visible)
+                || world
+                    .query_filtered::<(), Or<(With<PendingImpact>, With<Wreck>)>>()
+                    .iter(world)
+                    .next()
+                    .is_some()
+        },
+        CombatState::Repair
+        | CombatState::Bomb
+        | CombatState::DeathRay
+        | CombatState::Salvage
+        | CombatState::EndCombat => true,
     }
 }
 
@@ -124,28 +150,31 @@ fn snapshot_card(
             },
         )
     } else {
-        let records = round.units(&side);
-        let count = records.iter().filter(|record| record.unit == unit).count();
-        let hull = records
+        // IDs survive casualties and reordering; index once instead of scanning per survivor.
+        let previous_hulls: HashMap<_, _> = previous
+            .filter(|_| !finished)
+            .into_iter()
+            .flat_map(|snapshot| snapshot.units(&side))
+            .map(|record| (record.id, record.hull))
+            .collect();
+        let (count, hull, shield) = round
+            .units(&side)
             .iter()
             .filter(|record| record.unit == unit)
-            .map(|record| {
-                if finished {
-                    record.hull
+            .fold((0, 0, 0), |(count, hull, shield), record| {
+                let (unit_hull, unit_shield) = if finished {
+                    (record.hull, record.shield)
                 } else {
-                    previous
-                        .and_then(|snapshot| {
-                            snapshot.units(&side).iter().find(|old| old.id == record.id)
-                        })
-                        .map_or(report.unit_hull(unit, &side), |old| old.hull)
-                }
-            })
-            .sum();
-        let shield = if finished {
-            records.iter().filter(|record| record.unit == unit).map(|record| record.shield).sum()
-        } else {
-            count * report.unit_shield(unit, &side)
-        };
+                    (
+                        previous_hulls
+                            .get(&record.id)
+                            .copied()
+                            .unwrap_or_else(|| report.unit_hull(unit, &side)),
+                        report.unit_shield(unit, &side),
+                    )
+                };
+                (count + 1, hull + unit_hull, shield + unit_shield)
+            });
         (
             hull,
             count * report.unit_hull(unit, &side),
@@ -286,10 +315,16 @@ pub fn control_combat_playback(world: &mut World) {
     if shortcut.is_none() && (!active || world.resource::<Settings>().combat_paused) {
         return;
     }
+    let rewind_current = shortcut == Some(false) && current_round_has_started(world, phase);
     let mut alive = [false; 2];
+    let mut destroyed_card = false;
     for card in world.query::<&CombatUnitCmp>().iter(world) {
-        if combatant(card.unit) && card.hull > 0 {
-            alive[usize::from(card.side == Side::Defender)] = true;
+        if combatant(card.unit) {
+            if card.hull > 0 {
+                alive[usize::from(card.side == Side::Defender)] = true;
+            } else {
+                destroyed_card = true;
+            }
         }
     }
     let state = world.resource::<UiState>();
@@ -321,7 +356,11 @@ pub fn control_combat_playback(world: &mut World) {
                 },
             )
         } else {
-            let destination = index.saturating_sub(1);
+            let destination = if rewind_current {
+                index
+            } else {
+                index.saturating_sub(1)
+            };
             (destination, false, replay_phase(report, destination))
         }
     } else {
@@ -338,6 +377,9 @@ pub fn control_combat_playback(world: &mut World) {
         if !started_with_both
             || alive.into_iter().all(|present| present)
             || report.mission.objective == Icon::MissileStrike
+            // Hull reaches zero on impact, one frame before the normal state machine creates and
+            // completes the wreck sequence. Do not rebuild the conclusion over those explosions.
+            || destroyed_card
         {
             return;
         }

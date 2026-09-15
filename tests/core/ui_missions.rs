@@ -497,8 +497,8 @@ fn incoming_protection_reveals_its_objective_only_to_the_protected_player() {
 }
 
 #[test]
-fn joint_attack_marker_applies_only_to_the_fleets_owner() {
-    let mission = Mission {
+fn joint_attack_participants_see_the_actual_mission_objective() {
+    let mut mission = Mission {
         owner: 1,
         objective: Icon::Destroy,
         joint_attack: Some(JointAttackMission {
@@ -512,9 +512,42 @@ fn joint_attack_marker_applies_only_to_the_fleets_owner() {
         ..default()
     };
 
-    assert_eq!(mission.displayed_objective(1), Icon::AlliedAttack);
-    assert_eq!(mission.displayed_objective(2), Icon::EnemyFleet);
-    assert_eq!(mission.displayed_objective(3), Icon::EnemyFleet);
+    for objective in [Icon::Colonize, Icon::Destroy] {
+        mission.objective = objective;
+        assert_eq!(mission.displayed_objective(1), objective);
+        assert_eq!(mission.displayed_objective(2), objective);
+        assert_eq!(mission.displayed_objective(3), Icon::EnemyFleet);
+    }
+}
+
+#[test]
+fn joint_attack_report_icon_uses_the_viewers_fleet_and_color() {
+    let war_sun = Unit::war_sun();
+    let fighter = Unit::Ship(crate::core::units::ships::Ship::LightFighter);
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            army: Army::from([(war_sun, 1), (fighter, 1)]),
+            joint_attack: Some(JointAttackMission {
+                attackers: std::collections::BTreeMap::from([
+                    (1, Army::from([(war_sun, 1)])),
+                    (2, Army::from([(fighter, 1)])),
+                ]),
+                ..default()
+            }),
+            ..default()
+        },
+        Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0),
+    );
+    let leader = Player::new(1, 0);
+    let participant = Player::new(2, 0);
+    let observer = Player::new(3, 0);
+
+    assert_eq!(report.mission.image(&leader), "mission destroy");
+    assert_eq!(report.mission.image(&participant), "mission");
+    assert_eq!(report.mission.image(&observer), "mission destroy");
+    assert_eq!(mission_report_fleet_owner(&report, participant.id), participant.id);
+    assert_eq!(mission_report_fleet_owner(&report, observer.id), leader.id);
 }
 
 #[test]
@@ -1313,17 +1346,35 @@ fn jump_gate_preview_reverses_motion_on_the_return_leg() {
 }
 
 #[test]
-fn route_preview_speed_tracks_the_missions_slowest_ship() {
-    let slow = Mission {
-        army: Army::from([(Unit::Ship(Ship::ColonyShip), 1)]),
-        ..default()
+fn route_preview_speed_tracks_next_turn_movement_and_acceleration() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let destination =
+        Planet::new(1, "Destination".into(), Vec2::X * Planet::SIZE * 20.0, false, 1.0);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin.clone(), destination.clone()],
     };
-    let fast = Mission {
-        army: Army::from([(Unit::Ship(Ship::Probe), 1)]),
-        ..default()
-    };
+    let mut mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        &origin,
+        &destination,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::ColonyShip), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
 
-    assert!(fast.route_animation_speed() > slow.route_animation_speed());
+    let launch_speed = mission.route_animation_speed(&map);
+    mission.advance(&map);
+    let accelerated_speed = mission.route_animation_speed(&map);
+
+    assert!(accelerated_speed > launch_speed);
+    assert_eq!(accelerated_speed, 16.0 * f64::from(mission.next_turn_movement(&map)));
 }
 
 #[test]

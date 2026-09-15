@@ -9,7 +9,7 @@ use crate::core::identity::{GameId, PlayerId};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{PersistedGame, TurnSubmission};
 use crate::multiplayer::model::{
-    AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, JoinGameRequest,
+    AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, GameSync, JoinGameRequest,
     JointAttackInvitation, JointAttackResponse, MembershipResult, ProtectionPermissionUpdate,
     RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition,
     TradeInvitation, TradeResponse,
@@ -24,7 +24,7 @@ pub(crate) const PLAYER_CONNECTION_TIMEOUT: std::time::Duration =
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnSubmissionScope {
-    /// All retained submissions, including withdrawn drafts and historical turns.
+    /// All current-turn submissions, including withdrawn drafts.
     All,
     /// Only the authenticated caller's ready submission or recoverable draft.
     Mine,
@@ -325,6 +325,17 @@ pub trait MultiplayerBackend: Send + Sync {
         game_id: &'a GameId,
         after_sequence: u64,
     ) -> BackendFuture<'a, EventBatch>;
+
+    /// Replays events and returns a roster only when its opaque token changes.
+    /// Presence renewal shares this request when due; event-only reads do not renew it.
+    fn sync_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        after_sequence: u64,
+        renew_presence: bool,
+        roster_token: Option<&'a str>,
+    ) -> BackendFuture<'a, GameSync>;
 
     /// Renews connection presence and returns the current compact membership roster.
     /// Presence expires after 15 seconds without a heartbeat.

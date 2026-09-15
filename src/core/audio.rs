@@ -10,6 +10,7 @@ use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
+use crate::core::constants::{MAX_ZOOM, MIN_ZOOM};
 use crate::core::map::scenery::CelestialKind;
 use crate::core::map::systems::{CelestialCmp, SolarStarCmp};
 use crate::core::missions::Missions;
@@ -133,12 +134,16 @@ impl PlayingAudio {
 }
 
 const STAR_AMBIENCE_NAME: &str = "star ambience";
-const STAR_AMBIENCE_MAX_VOLUME: f32 = -21.0;
+const MISSION_HOVER_NAME: &str = "booster";
+const MISSION_HOVER_CLOSE_VOLUME: f32 = -6.0;
+const MISSION_HOVER_FAR_VOLUME: f32 = -30.0;
+const MISSION_HOVER_TWEEN: AudioTween = AudioTween::linear(Duration::from_millis(120));
+const STAR_AMBIENCE_MAX_VOLUME: f32 = -16.0;
 const STAR_AMBIENCE_SILENCE: f32 = -60.0;
-const STAR_AMBIENCE_NEAR_DISTANCE: f32 = 260.0;
-const STAR_AMBIENCE_FAR_DISTANCE: f32 = 1_100.0;
+const STAR_AMBIENCE_NEAR_DISTANCE: f32 = 320.0;
+const STAR_AMBIENCE_FAR_DISTANCE: f32 = 1_350.0;
 const STAR_AMBIENCE_FULL_ZOOM: f32 = 0.6;
-const STAR_AMBIENCE_SILENT_ZOOM: f32 = 1.0;
+const STAR_AMBIENCE_SILENT_ZOOM: f32 = 1.15;
 const STAR_AMBIENCE_TWEEN: AudioTween = AudioTween::linear(Duration::from_millis(350));
 // Keep layered volleys audible without exhausting Kira's shared sound capacity.
 const MAX_COMBAT_SOUND_INSTANCES: usize = 10;
@@ -756,7 +761,7 @@ pub fn toggle_audio(
     if keyboard.just_pressed(KeyCode::KeyQ) {
         change_audio_msg.write(ChangeAudioMsg(None));
     }
-    // Leave modified arrows available for gameplay shortcuts such as Ctrl+Up.
+    // Leave modified arrows available for gameplay shortcuts such as Ctrl+Shift+Up.
     if keyboard.any_pressed([
         KeyCode::ControlLeft,
         KeyCode::ControlRight,
@@ -793,7 +798,14 @@ pub fn play_music(mut play_audio_msg: MessageWriter<PlayAudioMsg>) {
     play_audio_msg.write(PlayAudioMsg::new("music").background());
 }
 
-/// Keeps one quiet booster loop active only while a visible map mission is hovered during play.
+fn mission_hover_volume(zoom: f32) -> f32 {
+    let zoom_progress = (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
+    MISSION_HOVER_CLOSE_VOLUME
+        + (MISSION_HOVER_FAR_VOLUME - MISSION_HOVER_CLOSE_VOLUME)
+            * smooth_audio_falloff(zoom_progress)
+}
+
+/// Keeps one zoom-sensitive booster loop active while a visible map mission is hovered during play.
 pub fn update_mission_hover_audio(
     state: Option<Res<UiState>>,
     missions: Option<Res<Missions>>,
@@ -801,10 +813,22 @@ pub fn update_mission_hover_audio(
     game_state: Res<State<GameState>>,
     settings: Res<Settings>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    camera_q: Query<&Projection, With<MainCamera>>,
+    mut playing_audio: ResMut<PlayingAudio>,
+    mut audio_instances: ResMut<Assets<AudioInstance>>,
     mut playing: Local<bool>,
+    mut last_volume: Local<Option<f32>>,
     mut play: MessageWriter<PlayAudioMsg>,
     mut stop: MessageWriter<StopAudioMsg>,
 ) {
+    let target_volume = camera_q
+        .single()
+        .ok()
+        .and_then(|projection| match projection {
+            Projection::Orthographic(projection) => Some(mission_hover_volume(projection.scale)),
+            _ => None,
+        })
+        .unwrap_or(PlayingAudio::AMBIENCE_VOLUME);
     let hovered = *app_state.get() == AppState::Game
         && *game_state.get() == GameState::Playing
         && settings.audio != AudioState::Mute
@@ -815,11 +839,33 @@ pub fn update_mission_hover_audio(
         });
     if hovered != *playing {
         if hovered {
-            play.write(PlayAudioMsg::new("booster").ambience());
+            play.write(PlayAudioMsg::new(MISSION_HOVER_NAME).ambience().gain(target_volume));
+            *last_volume = Some(target_volume);
         } else {
-            stop.write(StopAudioMsg::new("booster"));
+            stop.write(StopAudioMsg::new(MISSION_HOVER_NAME));
+            *last_volume = None;
         }
         *playing = hovered;
+    } else if hovered && last_volume.is_none_or(|previous| (previous - target_volume).abs() >= 0.25)
+    {
+        let mut updated = false;
+        if let Some(handles) = playing_audio.0.get_mut(MISSION_HOVER_NAME) {
+            for handle in handles {
+                if let Some(mut instance) = audio_instances.get_mut(&handle.handle) {
+                    handle.base_volume = target_volume;
+                    handle.master_volume = settings.volume;
+                    instance.set_decibels(
+                        output_volume(target_volume, settings.volume),
+                        MISSION_HOVER_TWEEN,
+                    );
+                    updated = true;
+                }
+            }
+        }
+        // Queued audio has no instance yet, so leave the previous value in place and retry.
+        if updated {
+            *last_volume = Some(target_volume);
+        }
     }
 }
 

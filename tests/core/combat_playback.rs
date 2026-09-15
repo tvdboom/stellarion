@@ -13,6 +13,44 @@ use crate::core::units::{defense::Defense, ships::Ship, Army, Combat};
 use crate::multiplayer::client::MultiplayerSession;
 use bevy_tweening::AnimCompletedEvent;
 
+#[test]
+fn snapshot_matches_hull_by_id_across_casualties_and_reordered_rounds() {
+    use crate::core::combat::report::{CombatReport, RoundReport};
+    use crate::core::combat::resolution::CombatUnit;
+
+    let unit = Unit::Ship(Ship::LightFighter);
+    let record = |id, hull, shield| CombatUnit {
+        id,
+        owner: Some(1),
+        unit,
+        hull,
+        shield,
+        repairs: Vec::new(),
+        shots: Vec::new(),
+    };
+    let mut report = crate::test_support::empty_report(
+        Mission::default(),
+        Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0),
+    );
+    report.combat_report = Some(CombatReport {
+        rounds: vec![
+            RoundReport {
+                attacker: vec![record(31, 12, 3), record(8, 0, 0), record(72, 25, 6)],
+                ..default()
+            },
+            RoundReport {
+                attacker: vec![record(72, 18, 2), record(31, 0, 0)],
+                ..default()
+            },
+        ],
+        ..default()
+    });
+    let before = snapshot_card(&report, 1, false, unit, Side::Attacker).unwrap();
+    assert_eq!((before.hull, before.shield), (37, 2 * unit.shield()));
+    let after = snapshot_card(&report, 1, true, unit, Side::Attacker).unwrap();
+    assert_eq!((after.hull, after.shield), (18, 2));
+}
+
 fn app(bombers: usize) -> App {
     app_with_raid(bombers, BombingRaid::None)
 }
@@ -201,56 +239,28 @@ fn round_shortcuts_restore_saved_hull_and_destroyed_cards_even_while_paused() {
 }
 
 #[test]
-fn eliminated_army_ends_playback_without_replaying_its_remaining_shots() {
-    let mut app = app(150);
-    let report = app.world().resource::<Player>().reports[0].clone();
-    let (source, kind, position) = app
-        .world_mut()
-        .query::<(Entity, &CombatUnitCmp, &Transform)>()
-        .iter(app.world())
-        .find(|(_, card, _)| card.side == Side::Defender && combatant(card.unit))
-        .map(|(entity, card, transform)| (entity, card.unit, transform.translation))
-        .unwrap();
-    app.world_mut().resource_mut::<Messages<SpawnShotMsg>>().write(SpawnShotMsg {
-        source: Some((source, kind, position)),
-        side: Side::Attacker,
-        repair: false,
-        shot: crate::core::combat::resolution::ShotReport {
-            unit: Some(Unit::Ship(Ship::Bomber)),
-            hull_damage: 5,
-            ..default()
-        },
-    });
-    app.world_mut().run_system_once(super::super::effects::run_combat_animations).unwrap();
-    assert!(app.world_mut().query::<&PendingImpact>().iter(app.world()).next().is_some());
+fn eliminated_army_finishes_its_wrecks_before_concluding_playback() {
+    let mut app = app(2);
     for mut card in app.world_mut().query::<&mut CombatUnitCmp>().iter_mut(app.world_mut()) {
-        if card.side == Side::Defender && combatant(card.unit) {
+        if card.side == Side::Attacker && combatant(card.unit) {
             card.hull = 0;
         }
-        card.fire = FireState::Idle;
+        card.fire = FireState::Fired;
     }
+
     app.world_mut().run_system_once(control_combat_playback).unwrap();
-    assert!(matches!(
-        *app.world().resource::<NextState<CombatState>>(),
-        NextState::Pending(CombatState::EndCombat)
-    ));
-    assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
-    assert!(app.world_mut().query::<&PendingImpact>().iter(app.world()).next().is_none());
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+
     app.world_mut().run_system_once(super::super::systems::animate_combat).unwrap();
-    assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
-    let last = report.combat_report.as_ref().unwrap().rounds.len() - 1;
-    for card in app.world_mut().query::<&CombatUnitCmp>().iter(app.world()) {
-        if combatant(card.unit) {
-            let final_hull: usize = report.combat_report.as_ref().unwrap().rounds[last]
-                .units(&card.side)
-                .iter()
-                .filter(|record| record.unit == card.unit)
-                .map(|record| record.hull)
-                .sum();
-            assert_eq!(card.hull, final_hull);
-        }
-        assert!(card.fire == FireState::Fired);
-    }
+    assert!(app
+        .world_mut()
+        .query::<&super::super::effects::Wreck>()
+        .iter(app.world())
+        .next()
+        .is_some());
+
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 }
 
 #[test]
@@ -259,10 +269,16 @@ fn finishing_ship_fire_keeps_recorded_bombing_and_applies_building_losses_once()
     let report = app.world().resource::<Player>().reports[0].clone();
     let last = report.combat_report.as_ref().unwrap().rounds.last().unwrap();
     assert!(last.attacker.iter().flat_map(|unit| &unit.shots).any(|shot| shot.is_bombing()));
-    for mut card in app.world_mut().query::<&mut CombatUnitCmp>().iter_mut(app.world_mut()) {
-        if card.side == Side::Defender && combatant(card.unit) {
-            card.hull = 0;
-        }
+    let defeated = app
+        .world_mut()
+        .query::<(Entity, &CombatUnitCmp)>()
+        .iter(app.world())
+        .filter_map(|(entity, card)| {
+            (card.side == Side::Defender && combatant(card.unit)).then_some(entity)
+        })
+        .collect::<Vec<_>>();
+    for entity in defeated {
+        app.world_mut().despawn(entity);
     }
     app.world_mut().run_system_once(control_combat_playback).unwrap();
     assert!(matches!(
@@ -317,6 +333,31 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::EndCombat)
     ));
+}
+
+#[test]
+fn backward_shortcut_restarts_a_started_round_before_moving_to_the_previous_round() {
+    let mut app = app(12);
+    let last =
+        app.world().resource::<Player>().reports[0].combat_report.as_ref().unwrap().rounds.len()
+            - 1;
+    assert!(last > 0);
+    app.world_mut().resource_mut::<UiState>().combat_round = last;
+    app.insert_resource(State::new(CombatState::EndCombat));
+
+    key(&mut app, KeyCode::ArrowLeft, true);
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+    assert_eq!(app.world().resource::<UiState>().combat_round, last);
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::DisplayRound)
+    ));
+
+    app.insert_resource(State::new(CombatState::DisplayRound));
+    app.insert_resource(NextState::<CombatState>::Unchanged);
+    key(&mut app, KeyCode::ArrowLeft, true);
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+    assert_eq!(app.world().resource::<UiState>().combat_round, last - 1);
 }
 
 #[test]

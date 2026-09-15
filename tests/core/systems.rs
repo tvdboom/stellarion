@@ -259,25 +259,47 @@ fn opening_a_modal_menu_preserves_the_cursor_over_an_egui_button() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn ctrl_shift_up_queues_the_testing_boost_in_a_real_match() {
+fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_practice_planets() {
     use crate::core::identity::{GameCode, GameId};
     use crate::core::messages::MessageMsg;
     use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-    use crate::core::units::{Amount, Unit};
+    use crate::core::units::{buildings::Building, Amount, Unit};
     use crate::multiplayer::model::GameRecord;
 
-    let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
+    let mut model = GameModel::new(
+        [9; 32],
+        GameRules {
+            player_count: 1,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
     model.start().unwrap();
     let home = model.players[0].home_planet;
+    let mut other_planets = model
+        .map
+        .planets()
+        .into_iter()
+        .filter(|planet| !planet.is_moon() && planet.id != home)
+        .map(|planet| planet.id);
+    let other = other_planets.next().unwrap();
+    let controlled_only = other_planets.next().unwrap();
+    let moon = model.map.moons()[0].id;
+    model.map.get_mut(other).owned = Some(1);
+    model.map.get_mut(other).controlled = Some(1);
+    model.map.get_mut(controlled_only).controlled = Some(1);
+    model.map.get_mut(moon).controlled = Some(1);
+    let other_war_suns = model.map.get(other).army.amount(&Unit::war_sun());
+    let controlled_war_suns = model.map.get(controlled_only).army.amount(&Unit::war_sun());
     let initial_resources = model.players[0].resources;
     let mut keyboard = ButtonInput::default();
     keyboard.press(KeyCode::ControlLeft);
-    keyboard.press(KeyCode::ShiftLeft);
     keyboard.press(KeyCode::ArrowUp);
 
     let mut session = MultiplayerSession::default();
     session.active_game = Some(GameRecord {
-        id: GameId::new("real-testing-shortcut"),
+        id: GameId::new("local-testing-shortcut"),
         code: GameCode::new("ABCDEF"),
         revision: 1,
         saved_at: 0,
@@ -287,7 +309,7 @@ fn ctrl_shift_up_queues_the_testing_boost_in_a_real_match() {
         members: Vec::new(),
         submitted_players: Vec::new(),
     });
-    assert!(!session.local_practice);
+    session.local_practice = true;
 
     let mut app = App::new();
     app.insert_resource(keyboard)
@@ -300,16 +322,25 @@ fn ctrl_shift_up_queues_the_testing_boost_in_a_real_match() {
         })
         .add_message::<MessageMsg>();
     app.world_mut().run_system_once(debug_cheat_keys).unwrap();
+    assert!(app.world().resource::<PendingTurnCommands>().commands.is_empty());
+    assert_eq!(app.world().resource::<Player>().resources, initial_resources);
+
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::ControlLeft);
+    keyboard.press(KeyCode::ShiftLeft);
+    keyboard.press(KeyCode::ArrowUp);
+    app.insert_resource(keyboard);
+    app.world_mut().run_system_once(debug_cheat_keys).unwrap();
 
     let pending = app.world().resource::<PendingTurnCommands>();
-    assert!(matches!(
-        pending.commands.as_slice(),
-        [TurnCommand::PracticeBoost {
-            owned_worlds_only: true
-        }]
-    ));
+    assert!(matches!(pending.commands.as_slice(), [TurnCommand::PracticeBoost]));
     let player = app.world().resource::<Player>();
     let map = app.world().resource::<Map>();
     assert_eq!(player.resources, initial_resources + 1_000usize);
     assert_eq!(map.get(home).army.amount(&Unit::war_sun()), 3);
+    assert_eq!(map.get(other).army.amount(&Unit::war_sun()), other_war_suns + 3);
+    assert_eq!(map.get(controlled_only).army.amount(&Unit::war_sun()), controlled_war_suns);
+    for building in Unit::lunar_buildings() {
+        assert_eq!(map.get(moon).army.amount(&building), Building::MAX_LEVEL);
+    }
 }

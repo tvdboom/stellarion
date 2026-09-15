@@ -234,6 +234,93 @@ fn submission_reads_send_the_requested_scope() {
     server.join().unwrap();
 }
 
+/// Catch-up and renewal use one HTTP request and reuse the existing TCP connection.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn sync_reuses_http_connection_and_omits_unchanged_rosters() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let game = record();
+    let token = "a".repeat(64);
+    let first = GameSync {
+        batch: EventBatch {
+            events: Vec::new(),
+            cursor: 0,
+            resync_required: false,
+        },
+        members: Some(game.members.clone()),
+        roster_token: token.clone(),
+    };
+    let quiet = GameSync {
+        batch: EventBatch {
+            events: Vec::new(),
+            cursor: 256,
+            resync_required: false,
+        },
+        members: None,
+        ..first.clone()
+    };
+    let responses =
+        [serde_json::to_string(&first).unwrap(), serde_json::to_string(&quiet).unwrap()];
+    let expected_id = game.id.0.clone();
+    let expected_token = token.clone();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream);
+        for (index, response) in responses.iter().enumerate() {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "POST /rest/v1/rpc/stellarion_sync_game HTTP/1.1\r\n");
+            let mut length = 0;
+            let mut authenticated = false;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let header = line.to_ascii_lowercase();
+                if let Some(value) = header.strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                authenticated |= header == "authorization: bearer test-token\r\n";
+            }
+            assert!(authenticated);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({
+                    "p_game_id": expected_id,
+                    "p_after_sequence": 0,
+                    "p_renew_presence": index == 0,
+                    "p_roster_token": (index == 1).then_some(&expected_token),
+                })
+            );
+            write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{response}", response.len()).unwrap();
+        }
+    });
+    let mut backend = SupabaseBackend::new(
+        SupabaseConfig::new(format!("http://{address}"), "public-test-key").unwrap(),
+    )
+    .unwrap();
+    backend.request_timeout = std::time::Duration::from_secs(5);
+    let auth = AuthSession::new(game.members[0].user_id.clone(), "test-token", "refresh");
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    assert_eq!(runtime.block_on(backend.sync_game(&auth, &game.id, 0, true, None)).unwrap(), first);
+    assert_eq!(
+        runtime.block_on(backend.sync_game(&auth, &game.id, 0, false, Some(&token))).unwrap(),
+        quiet
+    );
+    server.join().unwrap();
+    assert!(validate_game_sync(quiet.clone(), &game.id, &auth.user_id, 0, None).is_err());
+    let mut wrong_game = first;
+    wrong_game.members.as_mut().unwrap()[0].game_id = GameId::new("another-game");
+    assert!(validate_game_sync(wrong_game, &game.id, &auth.user_id, 0, None).is_err());
+}
+
 #[test]
 fn snapshot_acknowledgements_require_matching_metadata_before_reusing_state() {
     let mut expected = record();
@@ -376,10 +463,51 @@ fn validates_durable_event_batches() {
         turn: Some(1),
         player_id: None,
     };
+    for events in [Vec::new(), vec![event.clone()]] {
+        assert!(
+            validate_event_batch(
+                EventBatch {
+                    events,
+                    cursor: 259,
+                    resync_required: false,
+                },
+                &game_id,
+                3
+            )
+            .is_ok(),
+            "private events can fill the rest of a raw page"
+        );
+    }
+    for cursor in [2, 260] {
+        assert!(validate_event_batch(
+            EventBatch {
+                events: Vec::new(),
+                cursor,
+                resync_required: false,
+            },
+            &game_id,
+            3
+        )
+        .is_err());
+    }
+    assert!(
+        validate_event_batch(
+            EventBatch {
+                events: Vec::new(),
+                cursor: 3000,
+                resync_required: true,
+            },
+            &game_id,
+            3
+        )
+        .is_ok(),
+        "expired history can advance beyond one ordinary page"
+    );
     assert!(validate_event_batch(
         EventBatch {
             events: vec![event.clone()],
             cursor: 4,
+            resync_required: false,
         },
         &game_id,
         3,
@@ -389,7 +517,8 @@ fn validates_durable_event_batches() {
         validate_event_batch(
             EventBatch {
                 events: vec![event],
-                cursor: 5,
+                cursor: 3,
+                resync_required: false,
             },
             &game_id,
             3,
@@ -518,6 +647,7 @@ fn schema_contains_the_complete_secure_contract() {
         "stellarion_load_turn_submissions",
         "stellarion_publish_resolution",
         "stellarion_events_since",
+        "stellarion_sync_game",
         "stellarion_set_connected",
     ] {
         assert!(SCHEMA.contains(&format!("create function public.{rpc}")));

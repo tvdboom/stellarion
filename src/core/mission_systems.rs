@@ -12,7 +12,9 @@ use crate::core::audio::{PlayAudioMsg, SoundEffect};
 use crate::core::constants::MISSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
-use crate::core::map::systems::{jump_gate_link_particles, JumpGateHelixStyle, MissionCmp};
+use crate::core::map::systems::{
+    jump_gate_link_particles, JumpGateHelixStyle, JumpGateLinkParticle, MissionCmp,
+};
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
@@ -121,6 +123,24 @@ fn mission_flame_transform(size: f32, route_angle: f32, image_rotation: f32) -> 
     }
 }
 
+/// Groups only the visible contingents sharing the hovered fleet's coordinated-attack identity.
+fn mission_has_group_hover(
+    mission: &Mission,
+    hovered: Option<&Mission>,
+    player_id: crate::core::identity::PlayerId,
+) -> bool {
+    hovered.is_some_and(|hovered| {
+        mission.id == hovered.id
+            || (hovered.is_joint_attack_participant(player_id)
+                && hovered.joint_attack.as_ref().is_some_and(|hovered_attack| {
+                    mission
+                        .joint_attack
+                        .as_ref()
+                        .is_some_and(|attack| attack.id == hovered_attack.id)
+                }))
+    })
+}
+
 #[derive(Component)]
 /// One animated chevron in the hovered mission's route.
 pub struct MissionRouteArrowCmp {
@@ -194,6 +214,7 @@ pub fn update_missions(
     suppressed_spies: Option<Res<SuppressedReturningSpies>>,
 ) {
     let player_id = player.id;
+    let hovered = state.mission_hover.and_then(|id| missions.get(id));
 
     for mission in missions.iter() {
         if !mission_q.iter().any(|(_, _, _, _, m)| m.id == mission.id) {
@@ -281,6 +302,8 @@ pub fn update_missions(
                 .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                 .observe(cursor::<Out>(SystemCursorIcon::Default))
                 .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
+                    state.planet_hover = None;
+                    state.mission_planet_hover = None;
                     state.mission_hover = Some(id);
                     state.mission_hover_from_ui = false;
                 })
@@ -324,7 +347,7 @@ pub fn update_missions(
             mission_s.flip_x = mission_map_flip_x(mission);
             mission_s.flip_y = mission_map_flip_y(image, direction);
 
-            if state.mission_hover.is_some_and(|id| id == mission.id) {
+            if mission_has_group_hover(mission, hovered, player_id) {
                 // Lift above other missions while staying below the planet's icons.
                 mission_t.translation = mission.position.extend(MISSION_Z + 0.1);
                 // Size, rather than a blue/red texture swap, indicates hover without losing identity.
@@ -447,7 +470,7 @@ pub fn update_mission_route_arrow(
     assets: Res<WorldAssets>,
     time: Res<Time>,
 ) {
-    let Some(mission) = state.mission_hover.and_then(|id| missions.get(id)) else {
+    let Some(hovered) = state.mission_hover.and_then(|id| missions.get(id)) else {
         for (entity, _, _, _) in &mut arrow_q {
             commands.entity(entity).despawn();
         }
@@ -457,50 +480,53 @@ pub fn update_mission_route_arrow(
         return;
     };
 
-    let origin = map.get(mission.origin);
-    let destination = map.get(mission.destination);
-    let style = mission.route_style(&player);
     let spacing = MISSION_ROUTE_SPACING;
-    let animation_speed = mission.route_animation_speed();
     // Motion is measured in world units, so speed and spacing do not depend on route length.
     let offset =
         |speed: f64| (time.elapsed_secs_f64() * speed).rem_euclid(f64::from(spacing)) as f32;
-    let arrows = if style == MissionRouteStyle::Standard {
-        mission_route_markers(
-            origin.position,
-            mission.position,
-            origin.size() * 0.7,
-            48.0,
-            Color::srgba(0.72, 0.77, 0.84, 0.55),
-            offset(animation_speed * 0.625),
-        )
-        .into_iter()
-        .chain(mission_route_markers(
-            mission.position,
-            destination.position,
-            38.0,
-            destination.size() * 0.7,
-            session.player_color(mission.owner).color(),
-            offset(animation_speed),
-        ))
-        .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let helix = if style == MissionRouteStyle::JumpGate {
-        // A narrow braid runs across the whole route and through the fleet toward the destination.
-        let direction = (destination.position - origin.position).normalize_or_zero();
-        jump_gate_link_particles(
-            origin.position + direction * origin.size() * 0.7,
-            destination.position - direction * destination.size() * 0.7,
-            session.player_color(mission.owner).color(),
-            time.elapsed_secs(),
-            0.0,
-            JumpGateHelixStyle::MissionRoute,
-        )
-    } else {
-        Vec::new()
-    };
+    let mut arrows: Vec<(Transform, TextColor)> = Vec::new();
+    let mut helix: Vec<JumpGateLinkParticle> = Vec::new();
+    // `Missions` is already the viewer's filtered projection, so unseen allied contingents never
+    // gain a route or hover treatment. The UI panels continue to use only `state.mission_hover`.
+    for mission in
+        missions.iter().filter(|mission| mission_has_group_hover(mission, Some(hovered), player.id))
+    {
+        let origin = map.get(mission.origin);
+        let destination = map.get(mission.destination);
+        let animation_speed = mission.route_animation_speed(&map);
+        match mission.route_style(&player) {
+            MissionRouteStyle::Standard => {
+                arrows.extend(mission_route_markers(
+                    origin.position,
+                    mission.position,
+                    origin.size() * 0.7,
+                    48.0,
+                    Color::srgba(0.72, 0.77, 0.84, 0.55),
+                    offset(animation_speed * 0.625),
+                ));
+                arrows.extend(mission_route_markers(
+                    mission.position,
+                    destination.position,
+                    38.0,
+                    destination.size() * 0.7,
+                    session.player_color(mission.owner).color(),
+                    offset(animation_speed),
+                ));
+            },
+            MissionRouteStyle::JumpGate => {
+                // A narrow braid runs between the rendered planet surfaces and through the fleet.
+                let direction = (destination.position - origin.position).normalize_or_zero();
+                helix.extend(jump_gate_link_particles(
+                    origin.position + direction * origin.size() * 0.5,
+                    destination.position - direction * destination.size() * 0.5,
+                    session.player_color(mission.owner).color(),
+                    time.elapsed_secs(),
+                    0.0,
+                    JumpGateHelixStyle::MissionRoute,
+                ));
+            },
+        }
+    }
     let mut present = vec![false; arrows.len()];
 
     for (entity, mut transform, mut text_color, arrow) in &mut arrow_q {

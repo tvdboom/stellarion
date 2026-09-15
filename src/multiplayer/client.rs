@@ -202,6 +202,7 @@ pub struct MultiplayerSession {
     submitted_turn: Option<u64>,
     presence_needed: bool,
     presence_elapsed: Duration,
+    roster_token: Option<String>,
     reauthentication_needed: bool,
     auth_refresh_needed: bool,
 }
@@ -360,6 +361,7 @@ impl MultiplayerSession {
         self.trade_update_pending = false;
         self.presence_needed = false;
         self.presence_elapsed = Duration::ZERO;
+        self.roster_token = None;
         self.reconnect_lobby = false;
         self.reauthentication_needed = false;
         self.local_practice = false;
@@ -556,7 +558,6 @@ enum Operation {
     RestoreDraft,
     Events,
     Resolve,
-    Presence,
     #[cfg(debug_assertions)]
     Practice,
     #[cfg(debug_assertions)]
@@ -613,6 +614,7 @@ enum BackendOutput {
     Withdrawn(TurnSubmission),
     DraftLoaded(u64, Option<crate::multiplayer::model::StoredTurnSubmission>),
     Events(EventBatch),
+    Synced(crate::multiplayer::model::GameSync),
     ResolutionWaiting,
     SessionRefreshed(AuthSession),
     Reauthenticated(AuthSession),
@@ -676,7 +678,6 @@ impl Plugin for MultiplayerClientPlugin {
                     drive_trade_reload,
                     #[cfg(debug_assertions)]
                     drive_local_practice_turn,
-                    drive_presence,
                     poll_durable_events,
                     drive_resolution,
                     update_connection_indicator,
@@ -1952,7 +1953,11 @@ fn disconnected_player_notifications(
     }
     let (game_id, status, members) = match output {
         BackendOutput::Record(_, next) => (&next.id, next.status, next.members.as_slice()),
-        BackendOutput::Presence(members) => {
+        BackendOutput::Presence(members)
+        | BackendOutput::Synced(crate::multiplayer::model::GameSync {
+            members: Some(members),
+            ..
+        }) => {
             let Some(game) = &session.active_game else {
                 return Vec::new();
             };
@@ -2329,6 +2334,14 @@ fn apply_output(
                 pending.submission = SubmissionState::Accepted;
             }
             session.submitted_turn = Some(turn);
+            if let (Some(record), Some(member)) = (&mut session.active_game, &session.membership) {
+                if record.persisted.state.turn == turn
+                    && !record.submitted_players.contains(&member.player_id)
+                {
+                    record.submitted_players.push(member.player_id);
+                    record.submitted_players.sort_unstable();
+                }
+            }
             session.resolve_needed = true;
             session.connection = ConnectionStatus::Connected;
             session.notice = Some(if session.local_practice {
@@ -2376,10 +2389,35 @@ fn apply_output(
             }
             session.restore_draft_needed = false;
         },
+        BackendOutput::Synced(update) => {
+            apply_output(
+                BackendOutput::Events(update.batch),
+                runtime,
+                session,
+                form,
+                pending,
+                next_state,
+                gameplay_visible,
+            );
+            if let Some(members) = update.members {
+                apply_output(
+                    BackendOutput::Presence(members),
+                    runtime,
+                    session,
+                    form,
+                    pending,
+                    next_state,
+                    gameplay_visible,
+                );
+            }
+            session.roster_token = Some(update.roster_token);
+            // The same response already checked the roster, including lease expiry.
+            session.presence_needed = false;
+        },
         BackendOutput::Events(batch) => {
             session.restore_draft_needed |= pending.submission == SubmissionState::Loading;
             let mut game_resumed = false;
-            let mut state_reload = false;
+            let mut state_reload = batch.resync_required;
             let mut roster_refresh = false;
             let local_player = session.membership.as_ref().map(|member| member.player_id);
             if let Some(record) = &mut session.active_game {
@@ -2433,12 +2471,13 @@ fn apply_output(
                     }
                 }
             }
+            // SQL pages raw events before privacy filtering, so even an empty visible
+            // page can have more history. Drain full pages without waiting for a heartbeat.
+            session.event_poll_needed |= batch.cursor.saturating_sub(session.event_cursor) >= 256;
             session.event_cursor = batch.cursor;
             session.reload_needed |= state_reload;
             session.presence_needed |= roster_refresh;
-            // A submission event can be consumed before the first resolution attempt observes
-            // every row. Keep the local submitter eligible to retry on each durable poll, even
-            // when the next batch is empty, until a canonical next turn is installed.
+            // Retry complete turns after transient failures without querying incomplete turns.
             session.resolve_needed |= local_submission_awaits_resolution(session);
             session.connection = ConnectionStatus::Connected;
             if game_resumed && session.reconnect_lobby {
@@ -2570,7 +2609,6 @@ fn apply_output(
                         operation,
                         Operation::Load
                             | Operation::Events
-                            | Operation::Presence
                             | Operation::Color
                             | Operation::Protection
                             | Operation::JointAttack
@@ -2829,6 +2867,7 @@ fn install_record(
     // response (or the initial draft restore) may change the local draft state.
     let status = record.status;
     session.active_game = Some(record);
+    session.roster_token = None;
     session.joint_attack_reload_needed = true;
     session.trade_reload_needed = true;
     session.reload_needed = false;
@@ -2991,10 +3030,22 @@ fn local_submission_awaits_resolution(session: &MultiplayerSession) -> bool {
     session.active_game.as_ref().is_some_and(|record| {
         record.status == MatchStatus::Active
             && session.submitted_turn == Some(record.persisted.state.turn)
+            && all_players_submitted(record)
     })
 }
 
-/// Polls durable events periodically so missed/disconnected Realtime notifications are harmless.
+/// Readiness events are compact; fetch command payloads only once everyone is ready.
+fn all_players_submitted(record: &GameRecord) -> bool {
+    record
+        .persisted
+        .state
+        .players
+        .iter()
+        .filter(|player| !player.spectator)
+        .all(|player| record.submitted_players.contains(&player.id))
+}
+
+/// Coalesces presence, durable catch-up, and Realtime hints into one compact RPC.
 fn poll_durable_events(
     time: Res<Time<Real>>,
     mut timer: ResMut<EventPollTimer>,
@@ -3015,10 +3066,14 @@ fn poll_durable_events(
     let periodically_due = timer.0.tick(time.delta()).just_finished();
     if !session.has_active_game() || session.local_practice {
         session.event_poll_needed = false;
+        session.presence_elapsed = Duration::ZERO;
         timer.0.reset();
         return;
     }
-    if (!periodically_due && !session.event_poll_needed) || !tasks.0.is_empty() {
+    session.presence_elapsed = session.presence_elapsed.saturating_add(time.delta());
+    let renew_presence =
+        session.presence_needed || session.presence_elapsed >= PRESENCE_HEARTBEAT_INTERVAL;
+    if (!periodically_due && !session.event_poll_needed && !renew_presence) || !tasks.0.is_empty() {
         return;
     }
     let (Some(backend), Some(auth), Some(game_id)) = (
@@ -3029,43 +3084,20 @@ fn poll_durable_events(
         return;
     };
     let cursor = session.event_cursor;
+    let roster_token = session.roster_token.clone();
     session.event_poll_needed = false;
+    session.presence_needed = false;
+    if renew_presence {
+        session.presence_elapsed = Duration::ZERO;
+    }
     timer.0.reset();
     spawn_backend_task(&mut tasks, async move {
-        Operation::Events
-            .complete(backend.subscribe(&auth, &game_id, cursor).await, BackendOutput::Events)
-    });
-}
-
-/// Renews presence while a game is open so recovery can distinguish live and abandoned clients.
-fn drive_presence(
-    time: Res<Time<Real>>,
-    runtime: Res<ClientRuntime>,
-    mut session: ResMut<MultiplayerSession>,
-    mut tasks: ResMut<BackendTasks>,
-) {
-    if !session.has_active_game() || session.local_practice {
-        session.presence_elapsed = Duration::ZERO;
-        return;
-    }
-    session.presence_elapsed = session.presence_elapsed.saturating_add(time.delta());
-    if (!session.presence_needed && session.presence_elapsed < PRESENCE_HEARTBEAT_INTERVAL)
-        || !tasks.0.is_empty()
-    {
-        return;
-    }
-    let (Some(backend), Some(auth), Some(game_id)) = (
-        runtime.backend.clone(),
-        session.auth.clone(),
-        session.active_game.as_ref().map(|r| r.id.clone()),
-    ) else {
-        return;
-    };
-    session.presence_needed = false;
-    session.presence_elapsed = Duration::ZERO;
-    spawn_backend_task(&mut tasks, async move {
-        Operation::Presence
-            .complete(backend.set_connected(&auth, &game_id, true).await, BackendOutput::Presence)
+        Operation::Events.complete(
+            backend
+                .sync_game(&auth, &game_id, cursor, renew_presence, roster_token.as_deref())
+                .await,
+            BackendOutput::Synced,
+        )
     });
 }
 
@@ -3207,7 +3239,7 @@ fn drive_resolution(
         return;
     }
     let (Some(backend), Some(auth), Some(record)) =
-        (runtime.backend.clone(), session.auth.clone(), session.active_game.clone())
+        (runtime.backend.clone(), session.auth.clone(), session.active_game.as_ref())
     else {
         return;
     };
@@ -3215,6 +3247,11 @@ fn drive_resolution(
         session.resolve_needed = false;
         return;
     }
+    if !all_players_submitted(record) {
+        session.resolve_needed = false;
+        return;
+    }
+    let record = record.clone();
     session.resolve_needed = false;
     session.resolving = true;
     spawn_backend_task(&mut tasks, async move {

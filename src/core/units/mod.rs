@@ -166,7 +166,7 @@ impl Unit {
     ];
 
     /// Returns every building unit kind.
-    pub fn buildings() -> Vec<Self> {
+    pub fn buildings() -> [Self; 15] {
         [
             Building::LunarBase,
             Building::TidalGenerator,
@@ -184,9 +184,7 @@ impl Unit {
             Building::Senate,
             Building::ColonialAdministration,
         ]
-        .into_iter()
         .map(Unit::Building)
-        .collect()
     }
 
     /// Returns the construction roster for one moon, home world, or colony.
@@ -222,7 +220,16 @@ impl Unit {
 
     /// Returns every value in this unit category.
     pub fn all() -> Vec<Vec<Self>> {
-        vec![Self::buildings(), Self::orbitals(), Self::ships(), Self::defenses()]
+        vec![Self::buildings().to_vec(), Self::orbitals(), Self::ships(), Self::defenses()]
+    }
+
+    /// Iterates over every unit in shop order without allocating category vectors.
+    pub fn iter() -> impl Iterator<Item = Self> {
+        Self::buildings()
+            .into_iter()
+            .chain(orbitals::ALL)
+            .chain(Ship::iter().map(Self::Ship))
+            .chain(Defense::iter().map(Self::Defense).filter(|unit| *unit != Self::space_dock()))
     }
 
     /// Returns units valid for the supplied planet and ownership context.
@@ -265,10 +272,10 @@ impl Unit {
 
     /// Returns all combat units in deterministic firing order.
     pub fn all_firing_order() -> Vec<Self> {
-        Unit::ships()
-            .into_iter()
+        Ship::iter()
+            .map(Unit::Ship)
             .chain(std::iter::once(Unit::space_dock()))
-            .chain(Unit::defenses().into_iter().filter(|u| {
+            .chain(Defense::iter().map(Unit::Defense).filter(|u| {
                 *u != Unit::crawler() && *u != Unit::repair_truck() && *u != Unit::space_dock()
             }))
             .collect()

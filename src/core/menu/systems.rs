@@ -1833,7 +1833,7 @@ fn settings_choice_rows(
     choice_row(
         ui,
         "Hover details",
-        "Brief removes long unit, resource, and objective descriptions while keeping prices, stats, requirements, and controls.",
+        "Brief removes descriptions and general unit statistics while keeping prices, requirements, and special controls.",
         &mut settings.brief_hover_info,
         &[(false, "Full"), (true, "Brief")],
     );

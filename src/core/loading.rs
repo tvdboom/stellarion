@@ -13,7 +13,7 @@ use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::turns::{filter_missions, StartTurnMsg};
+use crate::core::turns::{filter_missions, PublicPlanetDestructions, StartTurnMsg};
 use crate::core::ui::systems::UiState;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Unit};
@@ -127,6 +127,7 @@ pub fn finish_gameplay_loading(
         true,
         true,
         true,
+        Vec::new(),
     ) {
         next_app_state.set(AppState::Game);
     }
@@ -171,6 +172,20 @@ pub fn refresh_gameplay_projection(
         } => present_turn,
     };
     let previous_turn = settings.turn as u64;
+    let destroyed_planets = if present_turn {
+        session.active_game.as_ref().map_or_else(Vec::new, |record| {
+            newly_destroyed_planets(previous_map.as_deref(), &record.persisted.state, previous_turn)
+        })
+    } else {
+        Vec::new()
+    };
+    let combat_destructions = session.active_game.as_ref().map_or_else(Vec::new, |record| {
+        combat_planet_destructions(&record.persisted.state, &destroyed_planets)
+    });
+    let public_destruction_notifications =
+        session.active_game.as_ref().map_or_else(Vec::new, |record| {
+            planet_destruction_notifications(&record.persisted.state, &combat_destructions)
+        });
     let structure_notifications = if present_turn {
         session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
             Vec::new,
@@ -186,17 +201,13 @@ pub fn refresh_gameplay_projection(
         Vec::new()
     };
     let railgun_notifications = if present_turn {
-        session.active_game.as_ref().zip(session.membership.as_ref()).map_or_else(
-            Vec::new,
-            |(record, membership)| {
-                orbital_strike_notifications(
-                    previous_map.as_deref(),
-                    &record.persisted.state,
-                    membership.player_id,
-                    previous_turn,
-                )
-            },
-        )
+        session.active_game.as_ref().map_or_else(Vec::new, |record| {
+            orbital_strike_notifications(
+                previous_map.as_deref(),
+                &record.persisted.state,
+                previous_turn,
+            )
+        })
     } else {
         Vec::new()
     };
@@ -225,6 +236,7 @@ pub fn refresh_gameplay_projection(
         !present_turn,
         !present_turn,
         present_turn,
+        combat_destructions,
     ) {
         if center_home_world {
             let home = session.active_game.as_ref().zip(session.membership.as_ref()).and_then(
@@ -244,6 +256,9 @@ pub fn refresh_gameplay_projection(
             messages.write(notification);
         }
         for notification in railgun_notifications {
+            messages.write(notification);
+        }
+        for notification in public_destruction_notifications {
             messages.write(notification);
         }
         for (change, notification) in structure_notifications {
@@ -282,36 +297,85 @@ fn player_elimination_notifications(
         .collect()
 }
 
-/// Warns observers and targets once when a newly resolved public Railgun strike is installed.
+/// Warns every player about a newly resolved Railgun attack without revealing its outcome.
 fn orbital_strike_notifications(
     previous: Option<&Map>,
     current: &crate::core::simulation::GameModel,
-    local_player_id: PlayerId,
     previously_displayed_turn: u64,
 ) -> Vec<MessageMsg> {
-    let Some(previous) = previous.filter(|_| current.turn > previously_displayed_turn) else {
+    if previous.is_none() || current.turn <= previously_displayed_turn {
         return Vec::new();
-    };
+    }
     current
         .orbital_strikes
         .iter()
         .filter(|strike| strike.turn == current.turn)
-        .filter(|strike| {
-            !strike.origins.iter().any(|origin| {
-                previous.try_get(*origin).and_then(|planet| planet.owned) == Some(local_player_id)
-            })
-        })
         .filter_map(|strike| {
             let target = current.map.try_get(strike.target)?;
             let world = if target.is_moon() {
-                "moon"
+                "Moon"
             } else {
-                "planet"
+                "Planet"
             };
             Some(
-                MessageMsg::warning(format!("Railgun shot fired on {world} {}.", target.name))
-                    .with_action(MessageAction::FocusRailgunTarget(target.id)),
+                MessageMsg::warning(format!(
+                    "{world} {} is being attacked by an Orbital Railgun.",
+                    target.name
+                ))
+                .with_action(MessageAction::FocusRailgunTarget(target.id)),
             )
+        })
+        .collect()
+}
+
+/// Finds every world newly destroyed in the canonical turn being installed.
+fn newly_destroyed_planets(
+    previous: Option<&Map>,
+    current: &crate::core::simulation::GameModel,
+    previously_displayed_turn: u64,
+) -> Vec<PlanetId> {
+    let Some(previous) = previous.filter(|_| current.turn > previously_displayed_turn) else {
+        return Vec::new();
+    };
+    current
+        .map
+        .planets
+        .iter()
+        .filter(|planet| {
+            planet.is_destroyed
+                && previous.try_get(planet.id).is_some_and(|prior| !prior.is_destroyed)
+        })
+        .map(|planet| planet.id)
+        .collect()
+}
+
+/// Creates the same public, focusable destruction toast for every local player.
+fn planet_destruction_notifications(
+    current: &crate::core::simulation::GameModel,
+    destroyed_planets: &[PlanetId],
+) -> Vec<MessageMsg> {
+    destroyed_planets
+        .iter()
+        .filter_map(|planet_id| current.map.try_get(*planet_id))
+        .map(|planet| {
+            MessageMsg::warning(format!("Planet {} has been destroyed.", planet.name))
+                .with_action(MessageAction::FocusDestroyedPlanet(planet.id))
+        })
+        .collect()
+}
+
+/// Leaves Railgun targets to the synchronized strike effect and returns combat destructions.
+fn combat_planet_destructions(
+    current: &crate::core::simulation::GameModel,
+    destroyed_planets: &[PlanetId],
+) -> Vec<PlanetId> {
+    destroyed_planets
+        .iter()
+        .copied()
+        .filter(|planet_id| {
+            !current.orbital_strikes.iter().any(|strike| {
+                strike.turn == current.turn && strike.destroyed && strike.target == *planet_id
+            })
         })
         .collect()
 }
@@ -466,6 +530,7 @@ fn install_gameplay_projection(
     skip_battle: bool,
     skip_end_game: bool,
     present_turn: bool,
+    public_planet_destructions: Vec<PlanetId>,
 ) -> bool {
     let (Some(record), Some(membership)) = (&session.active_game, &session.membership) else {
         return false;
@@ -494,6 +559,7 @@ fn install_gameplay_projection(
     commands.insert_resource(player.clone());
     commands.insert_resource(Missions(filter_missions(&model.missions, &model.map, player)));
     commands.insert_resource(OrbitalStrikes(model.orbital_strikes.clone()));
+    commands.insert_resource(PublicPlanetDestructions(public_planet_destructions));
     commands.insert_resource(if present_turn {
         UiState::default()
     } else {

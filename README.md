@@ -8,7 +8,7 @@
 <br><br>
 </div>
 
-<img src="scenery/map.png" alt="Turn-12 three-player galaxy with developed colonies and fleets travelling across the map">
+<img src="scenery/map.png" alt="Turn-18 three-player galaxy with colored territories and fleets from every empire travelling across the map">
 <img src="scenery/shop.png" alt="Construction panel over a developed colony in a three-player match">
 <img src="scenery/mission-planning.png" alt="Planning a cruiser and fighter attack in a three-player match">
 <img src="scenery/active-missions.png" alt="Active colonization, espionage, and attack missions in a three-player match">
@@ -84,7 +84,8 @@ defenses.
   A player can select a protected world as a mission origin and send some or
   all of their own stationed units elsewhere, or recall the entire fleet home. They cannot use
   the controller's units or target a world they currently protect with hostile missions or
-  Orbital Railguns.
+  Orbital Railguns. Launching any hostile action at a world immediately forfeits any protection
+  access the attacker had there.
 - **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
   The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
   planet.

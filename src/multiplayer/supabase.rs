@@ -14,7 +14,7 @@ use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope,
 };
 use crate::multiplayer::model::{
-    AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary,
+    AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary, GameSync,
     JoinGameRequest, JointAttackInvitation, JointAttackResponse, MembershipResult,
     ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
     SubmissionDisposition, TradeInvitation, TradeResponse, MAX_DISPLAY_NAME_CHARS,
@@ -42,11 +42,11 @@ impl SupabaseBackend {
     }
 
     /// Calls a security-definer database function with the caller's JWT and decodes JSON.
-    async fn rpc<Request: Serialize + ?Sized, Response: DeserializeOwned>(
+    async fn rpc<Request: Serialize, Response: DeserializeOwned>(
         &self,
         session: &AuthSession,
         function: &str,
-        request: &Request,
+        request: Request,
     ) -> Result<Response, BackendError> {
         let response = self
             .client
@@ -54,7 +54,7 @@ impl SupabaseBackend {
             .header("apikey", &self.config.publishable_key)
             .bearer_auth(&session.access_token)
             .header("Content-Type", "application/json")
-            .json(request)
+            .json(&request)
             .timeout(self.request_timeout)
             .send()
             .await
@@ -143,7 +143,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 max_players: request.persisted.state.rules.player_count,
                 persisted: request.persisted,
             };
-            let result = self.rpc(session, "stellarion_create_game", &payload).await?;
+            let result = self.rpc(session, "stellarion_create_game", payload).await?;
             validate_membership_result(result, &session.user_id)
         })
     }
@@ -159,7 +159,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_join_game",
-                    &JoinGameRpc {
+                    JoinGameRpc {
                         code: request.code.0,
                         display_name: request.display_name,
                         recovery_code: request.recovery_code,
@@ -181,7 +181,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_recover_player",
-                    &RecoverPlayerRpc {
+                    RecoverPlayerRpc {
                         code: request.code.0,
                         recovery_code: request.recovery_code,
                     },
@@ -195,7 +195,7 @@ impl MultiplayerBackend for SupabaseBackend {
     fn list_games<'a>(&'a self, session: &'a AuthSession) -> BackendFuture<'a, Vec<GameSummary>> {
         Box::pin(async move {
             let summaries =
-                self.rpc(session, "stellarion_list_games", &serde_json::json!({})).await?;
+                self.rpc(session, "stellarion_list_games", serde_json::json!({})).await?;
             validate_summaries(summaries)
         })
     }
@@ -211,7 +211,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_load_game",
-                    &GameIdRpc {
+                    GameIdRpc {
                         game_id: &game_id.0,
                     },
                 )
@@ -234,7 +234,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_set_protection_permission",
-                    &ProtectionPermissionRpc {
+                    ProtectionPermissionRpc {
                         game_id: &game_id.0,
                         planet_id,
                         protector,
@@ -252,17 +252,14 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
         invitation: JointAttackInvitation,
     ) -> BackendFuture<'a, JointAttackInvitation> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_create_joint_attack",
-                &CreateJointAttackRpc {
-                    game_id: &game_id.0,
-                    invitation,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_create_joint_attack",
+            CreateJointAttackRpc {
+                game_id: &game_id.0,
+                invitation,
+            },
+        ))
     }
 
     fn respond_joint_attack<'a>(
@@ -274,20 +271,17 @@ impl MultiplayerBackend for SupabaseBackend {
         response: JointAttackResponse,
         contribution: Option<crate::core::simulation::JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_respond_joint_attack",
-                &RespondJointAttackRpc {
-                    game_id: &game_id.0,
-                    attack_id,
-                    expected_revision,
-                    response,
-                    contribution,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_respond_joint_attack",
+            RespondJointAttackRpc {
+                game_id: &game_id.0,
+                attack_id,
+                expected_revision,
+                response,
+                contribution,
+            },
+        ))
     }
 
     fn cancel_joint_attack<'a>(
@@ -296,17 +290,14 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
         attack_id: u64,
     ) -> BackendFuture<'a, JointAttackInvitation> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_cancel_joint_attack",
-                &CancelJointAttackRpc {
-                    game_id: &game_id.0,
-                    attack_id,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_cancel_joint_attack",
+            CancelJointAttackRpc {
+                game_id: &game_id.0,
+                attack_id,
+            },
+        ))
     }
 
     fn load_joint_attacks<'a>(
@@ -314,16 +305,13 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
     ) -> BackendFuture<'a, Vec<JointAttackInvitation>> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_load_joint_attacks",
-                &GameIdRpc {
-                    game_id: &game_id.0,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_load_joint_attacks",
+            GameIdRpc {
+                game_id: &game_id.0,
+            },
+        ))
     }
 
     fn create_trade<'a>(
@@ -332,17 +320,14 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
         invitation: TradeInvitation,
     ) -> BackendFuture<'a, TradeInvitation> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_create_trade",
-                &CreateTradeRpc {
-                    game_id: &game_id.0,
-                    invitation,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_create_trade",
+            CreateTradeRpc {
+                game_id: &game_id.0,
+                invitation,
+            },
+        ))
     }
 
     fn respond_trade<'a>(
@@ -354,20 +339,17 @@ impl MultiplayerBackend for SupabaseBackend {
         resources: crate::core::resources::Resources,
         response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_respond_trade",
-                &RespondTradeRpc {
-                    game_id: &game_id.0,
-                    trade_id,
-                    expected_revision,
-                    resources,
-                    response,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_respond_trade",
+            RespondTradeRpc {
+                game_id: &game_id.0,
+                trade_id,
+                expected_revision,
+                resources,
+                response,
+            },
+        ))
     }
 
     fn load_trades<'a>(
@@ -375,16 +357,13 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
     ) -> BackendFuture<'a, Vec<TradeInvitation>> {
-        Box::pin(async move {
-            self.rpc(
-                session,
-                "stellarion_load_trades",
-                &GameIdRpc {
-                    game_id: &game_id.0,
-                },
-            )
-            .await
-        })
+        Box::pin(self.rpc(
+            session,
+            "stellarion_load_trades",
+            GameIdRpc {
+                game_id: &game_id.0,
+            },
+        ))
     }
 
     /// Claims a lobby color through the database's row-locked first-writer-wins RPC.
@@ -402,7 +381,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_set_player_color",
-                    &PlayerColorRpc {
+                    PlayerColorRpc {
                         game_id: &game_id.0,
                         color: color.index(),
                     },
@@ -429,7 +408,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_start_game",
-                    &StateWriteRpc {
+                    StateWriteRpc {
                         game_id: &game_id.0,
                         expected_revision,
                         persisted: &persisted,
@@ -457,7 +436,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_resume_game",
-                    &GameIdRpc {
+                    GameIdRpc {
                         game_id: &game_id.0,
                     },
                 )
@@ -486,7 +465,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_save_game",
-                    &SaveRpc {
+                    SaveRpc {
                         game_id: &game_id.0,
                         expected_revision,
                         draft,
@@ -515,7 +494,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_submit_turn",
-                    &SubmitTurnRpc {
+                    SubmitTurnRpc {
                         game_id: &game_id.0,
                         submission,
                     },
@@ -538,7 +517,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_withdraw_turn",
-                    &WithdrawTurnRpc {
+                    WithdrawTurnRpc {
                         game_id: &game_id.0,
                         turn,
                         generation,
@@ -550,7 +529,7 @@ impl MultiplayerBackend for SupabaseBackend {
         })
     }
 
-    /// Requests only the orders needed for recovery, resolution, or history.
+    /// Requests only the current orders needed for recovery or resolution.
     fn load_turn_submissions<'a>(
         &'a self,
         session: &'a AuthSession,
@@ -563,7 +542,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_load_turn_submissions",
-                    &TurnRpc {
+                    TurnRpc {
                         game_id: &game_id.0,
                         turn,
                         scope,
@@ -594,7 +573,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_publish_resolution",
-                    &ResolutionRpc {
+                    ResolutionRpc {
                         game_id: &game_id.0,
                         expected_revision,
                         resolved_turn,
@@ -624,13 +603,38 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_events_since",
-                    &EventsRpc {
+                    EventsRpc {
                         game_id: &game_id.0,
                         after_sequence,
                     },
                 )
                 .await?;
             validate_event_batch(batch, game_id, after_sequence)
+        })
+    }
+
+    fn sync_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        after_sequence: u64,
+        renew_presence: bool,
+        roster_token: Option<&'a str>,
+    ) -> BackendFuture<'a, GameSync> {
+        Box::pin(async move {
+            let update = self
+                .rpc(
+                    session,
+                    "stellarion_sync_game",
+                    SyncGameRpc {
+                        game_id: &game_id.0,
+                        after_sequence,
+                        renew_presence,
+                        roster_token,
+                    },
+                )
+                .await?;
+            validate_game_sync(update, game_id, &session.user_id, after_sequence, roster_token)
         })
     }
 
@@ -646,7 +650,7 @@ impl MultiplayerBackend for SupabaseBackend {
                 .rpc(
                     session,
                     "stellarion_set_connected",
-                    &PresenceRpc {
+                    PresenceRpc {
                         game_id: &game_id.0,
                         connected,
                     },
@@ -870,6 +874,18 @@ struct EventsRpc<'a> {
     game_id: &'a str,
     #[serde(rename = "p_after_sequence")]
     after_sequence: u64,
+}
+
+#[derive(Serialize)]
+struct SyncGameRpc<'a> {
+    #[serde(rename = "p_game_id")]
+    game_id: &'a str,
+    #[serde(rename = "p_after_sequence")]
+    after_sequence: u64,
+    #[serde(rename = "p_renew_presence")]
+    renew_presence: bool,
+    #[serde(rename = "p_roster_token")]
+    roster_token: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -1238,6 +1254,32 @@ fn validate_stored_submissions(
     Ok(submissions)
 }
 
+/// A missing roster is valid only when the caller already has that exact version.
+fn validate_game_sync(
+    mut update: GameSync,
+    game_id: &GameId,
+    user_id: &UserId,
+    after_sequence: u64,
+    roster_token: Option<&str>,
+) -> Result<GameSync, BackendError> {
+    if update.roster_token.len() != 64
+        || !update
+            .roster_token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || (update.members.is_none() && roster_token != Some(update.roster_token.as_str()))
+    {
+        return invalid_protocol(
+            "sync response omitted an unknown roster or returned an invalid token",
+        );
+    }
+    update.batch = validate_event_batch(update.batch, game_id, after_sequence)?;
+    if let Some(members) = update.members.take() {
+        update.members = Some(validate_presence_members(members, game_id, user_id, false)?);
+    }
+    Ok(update)
+}
+
 /// Validates ordering and scoping of a durable notification replay batch.
 fn validate_event_batch(
     batch: EventBatch,
@@ -1260,9 +1302,12 @@ fn validate_event_batch(
         }
         previous = event.sequence;
     }
-    let expected_cursor = batch.events.last().map_or(after_sequence, |event| event.sequence);
-    if batch.cursor != expected_cursor {
-        return invalid_protocol("event replay cursor does not match its final event");
+    // SQL advances across private events before filtering them from the response.
+    // A page may end after its final visible event, or contain no visible events.
+    if batch.cursor < after_sequence
+        || (!batch.resync_required && batch.cursor.saturating_sub(after_sequence) > 256)
+    {
+        return invalid_protocol("event replay cursor is outside its raw page");
     }
     Ok(batch)
 }

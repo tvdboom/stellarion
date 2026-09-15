@@ -143,6 +143,40 @@ fn combat_participants_list_the_side_commanders_before_other_players() {
 }
 
 #[test]
+fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
+    let mut report = report(2, 0, true, 37);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    report.mission.joint_attack = Some(JointAttackMission {
+        attackers: [(1, Army::from([(fighter, 5)])), (3, Army::from([(fighter, 5)]))].into(),
+        ..default()
+    });
+    let mut rng = DeterministicRngState::from_u64(37).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    let attacker_colors = {
+        let session = app.world().resource::<MultiplayerSession>();
+        [session.player_color(1).color(), session.player_color(3).color()]
+    };
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let segments = app
+        .world_mut()
+        .query_filtered::<(&Node, &BackgroundColor), With<CombatIdentityAccentSegmentCmp>>()
+        .iter(app.world())
+        .map(|(node, color)| (node.height, color.0))
+        .collect::<Vec<_>>();
+    for color in attacker_colors {
+        assert!(segments.contains(&(Val::Percent(50.0), color)));
+    }
+}
+
+#[test]
 fn joint_attack_badge_keeps_every_count_in_order_and_fits_crowded_fleets() {
     let mut report = report(5, 0, true, 31);
     let bomber = Unit::Ship(Ship::Bomber);
@@ -265,7 +299,7 @@ fn combat_setup_never_spawns_colony_ship_cards() {
 }
 
 #[test]
-fn defender_cards_show_equally_sized_controller_and_colored_protection_counts() {
+fn defender_cards_show_spaced_equally_sized_counts_in_each_players_color() {
     let mut unresolved = report(5, 0, true, 31);
     let fighter = Unit::Ship(Ship::LightFighter);
     unresolved.planet.army.insert(fighter, 6);
@@ -320,8 +354,8 @@ fn defender_cards_show_equally_sized_controller_and_colored_protection_counts() 
         .unwrap();
 
     assert_eq!(owner.0, "6");
-    assert_eq!(owner.2, WHITE.into());
-    assert_eq!(protector.0, " 3");
+    assert_eq!(owner.2, app.world().resource::<MultiplayerSession>().player_color(2).color());
+    assert_eq!(protector.0, "  3");
     assert_eq!(protector.1, owner.1);
     assert_eq!(protector.2, app.world().resource::<MultiplayerSession>().player_color(3).color());
 
@@ -354,7 +388,7 @@ fn defender_cards_show_equally_sized_controller_and_colored_protection_counts() 
     // Recorded casualties stay hidden until the volley has fully resolved.
     app.world_mut().run_system_once(update_combat_stats).unwrap();
     assert_eq!(app.world().get::<Text2d>(owner_entity(&app, &descendants, 2)).unwrap().0, "6");
-    assert_eq!(app.world().get::<TextSpan>(owner_entity(&app, &descendants, 3)).unwrap().0, " 3");
+    assert_eq!(app.world().get::<TextSpan>(owner_entity(&app, &descendants, 3)).unwrap().0, "  3");
 
     app.world_mut().get_mut::<CombatUnitCmp>(card).unwrap().outcome_visible = true;
     app.world_mut().run_system_once(update_combat_stats).unwrap();
@@ -388,7 +422,7 @@ fn defender_cards_show_equally_sized_controller_and_colored_protection_counts() 
             )
             .unwrap()
             .0,
-        " 1"
+        "  1"
     );
 }
 
@@ -914,7 +948,7 @@ fn round_banner_after_navigation_uses_the_normal_playback_duration() {
         .query_filtered::<&TweenAnim, With<DisplayTextCmp>>()
         .single(app.world())
         .unwrap();
-    assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1850));
+    assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1200));
 }
 
 #[test]
@@ -1365,6 +1399,11 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let crawler_home = app.world().get::<Transform>(crawler).unwrap().translation;
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert!(app.world().get::<SalvageCrawlerCmp>(crawler).is_some());
+    assert_eq!(
+        app.world_mut().query_filtered::<Entity, With<DisplayTextCmp>>().iter(app.world()).count(),
+        1,
+        "the result appears while the Crawler animation begins"
+    );
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
     assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 0);

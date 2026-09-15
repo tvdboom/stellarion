@@ -50,8 +50,8 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
             keyboard.press(KeyCode::ShiftLeft);
             keyboard.press(KeyCode::ArrowUp);
             app.insert_resource(keyboard);
-            app.world_mut().run_system_once(debug_cheat_keys).unwrap();
             let planet_id = app.world().resource::<Player>().home_planet;
+            app.world_mut().run_system_once(debug_cheat_keys).unwrap();
             assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
                 TurnCommand::BuyUnits {
                     planet_id,
@@ -231,6 +231,10 @@ fn joint_attack_does_not_reveal_an_allies_route_without_scanner_coverage() {
             (teammate.id, Army::from([(Unit::probe(), 1)])),
             (owner.id, mission.army.clone()),
         ]),
+        origins: std::collections::BTreeMap::from([
+            (teammate.id, worlds[0]),
+            (owner.id, worlds[1]),
+        ]),
         ..default()
     });
     assert_eq!(mission.is_seen_by_radar(&map, &teammate), None);
@@ -239,11 +243,21 @@ fn joint_attack_does_not_reveal_an_allies_route_without_scanner_coverage() {
     assert!(filter_missions(std::slice::from_ref(&mission), &map, &target).is_empty());
     assert_eq!(filter_missions(std::slice::from_ref(&mission), &map, &owner).len(), 1);
 
+    map.get_mut(worlds[0]).army.insert(Unit::Building(Building::SensorPhalanx), 1);
+    mission.position = map.get(worlds[0]).position;
+    assert_eq!(mission.is_seen_by_phalanx(&map, &teammate), Some(1));
+    let visible = filter_missions(std::slice::from_ref(&mission), &map, &teammate);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].displayed_objective(teammate.id), Icon::Attack);
+    map.get_mut(worlds[0]).army.remove(&Unit::Building(Building::SensorPhalanx));
+
     map.get_mut(moon).controlled = Some(teammate.id);
     map.get_mut(moon).army.insert(Unit::Building(Building::OrbitalRadar), 1);
     mission.position = map.get(moon).position;
     assert_eq!(mission.is_seen_by_radar(&map, &teammate), Some(1));
-    assert_eq!(filter_missions(&[mission], &map, &teammate).len(), 1);
+    let visible = filter_missions(&[mission], &map, &teammate);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].displayed_objective(teammate.id), Icon::Attack);
 }
 
 #[test]
@@ -620,7 +634,7 @@ fn resolved_spy_and_destroy_returns_keep_their_outbound_silhouettes() {
 }
 
 #[test]
-fn planet_destruction_animation_only_starts_once_for_its_reported_turn() {
+fn planet_destruction_animation_only_starts_for_a_public_transition() {
     let mut model = GameModel::new([23; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let player = model.players[0].clone();
@@ -648,12 +662,73 @@ fn planet_destruction_animation_only_starts_once_for_its_reported_turn() {
     };
     let mut destroyed = destination;
     destroyed.destroy();
-    let reports = [&report];
     let mut animating = BTreeSet::new();
 
-    assert!(!should_start_planet_destruction(&destroyed, &reports, 3, &mut animating));
-    assert!(should_start_planet_destruction(&destroyed, &reports, 4, &mut animating));
-    assert!(!should_start_planet_destruction(&destroyed, &reports, 4, &mut animating));
+    let notification = report_notification(&report, &player, &origin, &destroyed);
+    assert_eq!(notification.action, Some(MessageAction::FocusDestroyedPlanet(destroyed.id)));
+
+    assert!(!should_start_planet_destruction(&destroyed, &[], &mut animating));
+    assert!(should_start_planet_destruction(
+        &destroyed,
+        &[report.mission.destination],
+        &mut animating
+    ));
+    assert!(!should_start_planet_destruction(
+        &destroyed,
+        &[report.mission.destination],
+        &mut animating
+    ));
+}
+
+#[test]
+fn combat_destruction_animation_is_shown_to_an_observer_without_a_report() {
+    let mut model = GameModel::new(
+        [24; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let target = model.players[1].home_planet;
+    let observer = model.players.remove(2);
+    assert!(observer.reports.is_empty());
+    model.map.get_mut(target).destroy();
+    let target_position = model.map.get(target).position;
+
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .insert_resource(model.map)
+        .insert_resource(observer)
+        .insert_resource(Settings {
+            turn: 2,
+            ..default()
+        })
+        .insert_resource(PublicPlanetDestructions(vec![target]))
+        .init_resource::<UiState>()
+        .init_resource::<NextState<GameState>>()
+        .init_resource::<WorldAssets>()
+        .add_message::<StartTurnMsg>()
+        .add_message::<MessageMsg>()
+        .add_message::<PlayAudioMsg>()
+        .add_systems(Update, start_turn);
+    app.world_mut().spawn((
+        Transform::from_translation(target_position.extend(0.0)),
+        PlanetCmp {
+            id: target,
+        },
+    ));
+    app.world_mut().write_message(StartTurnMsg::new(false, false));
+    app.update();
+
+    let explosions = app.world_mut().query::<&ExplosionCmp>().iter(app.world()).count();
+    assert_eq!(explosions, 1);
+    assert!(app.world().resource::<PublicPlanetDestructions>().0.is_empty());
 }
 
 #[test]

@@ -1,6 +1,13 @@
 use super::*;
 
 #[test]
+fn flat_roster_preserves_group_order_and_contains_each_unit_once() {
+    let flat = Unit::iter().collect::<Vec<_>>();
+    assert_eq!(flat, Unit::all().into_iter().flatten().collect::<Vec<_>>());
+    assert_eq!(flat.len(), flat.iter().collect::<std::collections::BTreeSet<_>>().len());
+}
+
+#[test]
 fn every_unit_keeps_its_persisted_identifier_and_round_trips_as_an_army_key() {
     let army: Army = Unit::all().into_iter().flatten().map(|unit| (unit, 1)).collect();
     for unit in army.keys() {

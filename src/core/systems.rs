@@ -353,7 +353,13 @@ pub fn debug_cheat_keys(
     mut messages: MessageWriter<crate::core::messages::MessageMsg>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    if !ctrl_pressed || !keyboard.just_pressed(KeyCode::ArrowUp) || !pending.is_editable() {
+    let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if !ctrl_pressed
+        || !shift_pressed
+        || !keyboard.just_pressed(KeyCode::ArrowUp)
+        || !session.local_practice
+        || !pending.is_editable()
+    {
         return;
     }
     let Some(record) = &session.active_game else {
@@ -363,9 +369,7 @@ pub fn debug_cheat_keys(
         return;
     }
 
-    if !pending.push(TurnCommand::PracticeBoost {
-        owned_worlds_only: keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
-    }) {
+    if !pending.push(TurnCommand::PracticeBoost) {
         messages.write(crate::core::messages::MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
         return;
     }

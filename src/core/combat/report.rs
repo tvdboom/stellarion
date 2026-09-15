@@ -12,6 +12,52 @@ use crate::core::player::Player;
 use crate::core::resources::Resources;
 use crate::core::units::{Amount, Army, Combat, Price, Unit};
 
+/// Match the production-weighted ship strength used by fleet withdrawal and mission UI.
+pub(crate) fn combat_fleet_strength(army: &Army) -> u128 {
+    army.iter().fold(0_u128, |strength, (unit, count)| {
+        if unit.is_ship() {
+            strength.saturating_add((*count as u128).saturating_mul(unit.production() as u128))
+        } else {
+            strength
+        }
+    })
+}
+
+/// Cumulative ranges keep adjoining player colors flush and fill the final pixel exactly.
+pub(crate) fn combat_strength_ranges(strengths: &[u128]) -> Vec<(f32, f32)> {
+    let total = strengths.iter().map(|strength| *strength as f64).sum::<f64>();
+    if total == 0.0 {
+        return strengths
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                if index == 0 {
+                    (0.0, 1.0)
+                } else {
+                    (1.0, 1.0)
+                }
+            })
+            .collect();
+    }
+
+    let last = strengths.iter().rposition(|strength| *strength > 0);
+    let mut consumed = 0.0_f64;
+    strengths
+        .iter()
+        .enumerate()
+        .map(|(index, strength)| {
+            let start = (consumed / total) as f32;
+            consumed += *strength as f64;
+            let end = if Some(index) == last {
+                1.0
+            } else {
+                (consumed / total) as f32
+            };
+            (start, end)
+        })
+        .collect()
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Persisted outcome and visibility data produced when one mission resolves.
@@ -110,6 +156,35 @@ impl MissionReport {
         let mut players = controller.into_iter().collect::<Vec<_>>();
         players.extend(self.planet.army.protector_ids().filter(|id| Some(*id) != controller));
         players
+    }
+
+    /// Returns one participant's production-weighted ships at the start of combat.
+    pub(crate) fn participant_fleet_strength(&self, side: &Side, player_id: PlayerId) -> u128 {
+        match side {
+            Side::Attacker => {
+                let participant_army = self
+                    .mission
+                    .joint_attack
+                    .as_ref()
+                    .filter(|attack| !attack.attackers.is_empty())
+                    .and_then(|attack| attack.attackers.get(&player_id));
+                if let Some(army) = participant_army {
+                    combat_fleet_strength(army)
+                } else if player_id == self.mission.owner {
+                    combat_fleet_strength(&self.mission.army)
+                } else {
+                    0
+                }
+            },
+            Side::Defender => {
+                let controller = self.planet.controlled.or(self.planet.owned);
+                if Some(player_id) == controller {
+                    combat_fleet_strength(self.planet.army.controller())
+                } else {
+                    self.planet.army.protector(player_id).map_or(0, combat_fleet_strength)
+                }
+            },
+        }
     }
 
     /// Returns whether this player participated in the defense recorded by the report.

@@ -33,9 +33,8 @@ pub const BOMBING_HIT_CHANCE: f32 = 0.25;
 pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;
 
 /// Unit statistics are immutable; build the rapid-fire tables once instead of once per shot.
-static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> = LazyLock::new(|| {
-    Unit::all().into_iter().flatten().map(|unit| (unit, unit.rapid_fire())).collect()
-});
+static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> =
+    LazyLock::new(|| Unit::iter().map(|unit| (unit, unit.rapid_fire())).collect());
 
 #[derive(Component, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

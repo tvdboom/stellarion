@@ -25,7 +25,7 @@ use crate::multiplayer::backend::{
 };
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
-    GameRecord, GameSummary, JoinDisposition, JoinGameRequest, JointAttackInvitation,
+    GameRecord, GameSummary, GameSync, JoinDisposition, JoinGameRequest, JointAttackInvitation,
     JointAttackResponse, MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest,
     SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition, TradeInvitation,
     TradeResponse, MAX_DISPLAY_NAME_CHARS,
@@ -579,6 +579,9 @@ impl MultiplayerBackend for InMemoryBackend {
                     {
                         if participant.player_id != inviter {
                             participant.contribution.clone_from(&old.contribution);
+                            if let Some(contribution) = &mut participant.contribution {
+                                contribution.bombing.clone_from(&invitation.bombing);
+                            }
                         }
                         participant.response = if participant.player_id == inviter {
                             JointAttackResponse::Accepted
@@ -638,6 +641,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 .map
                 .try_get(invitation.destination)
                 .ok_or_else(|| BackendError::InvalidData("joint_attack_destination".into()))?;
+            let shared_bombing = invitation.bombing.clone();
             if response == JointAttackResponse::Accepted
                 && (destination.owned == Some(player_id)
                     || destination.controlled == Some(player_id)
@@ -666,6 +670,7 @@ impl MultiplayerBackend for InMemoryBackend {
                             entry.player_id == player_id
                                 && (response == JointAttackResponse::Pending
                                     || entry.army.has_army())
+                                && entry.bombing == shared_bombing
                         })
                         .ok_or_else(|| {
                             BackendError::InvalidData("joint_attack_contribution".into())
@@ -1468,8 +1473,8 @@ impl MultiplayerBackend for InMemoryBackend {
                 Some(resolved_turn.saturating_add(1)),
                 None,
             );
-            let oldest_retained = resolved_turn.saturating_sub(8);
-            stored.submissions.retain(|(turn, _), _| *turn >= oldest_retained);
+            // The committed snapshot owns the result; stale retries fail on turn/revision.
+            stored.submissions.retain(|(turn, _), _| *turn > resolved_turn);
             let current_turn = stored.record.persisted.state.turn;
             stored.joint_attacks.retain(|_, invitation| invitation.turn >= current_turn);
             stored.trades.retain(|_, invitation| invitation.turn >= current_turn);
@@ -1500,13 +1505,49 @@ impl MultiplayerBackend for InMemoryBackend {
             let events = replay
                 .into_iter()
                 .filter(|event| {
-                    event.kind != BackendEventKind::JointAttackChanged
-                        || event.player_id == Some(player_id)
+                    !matches!(
+                        event.kind,
+                        BackendEventKind::JointAttackChanged | BackendEventKind::TradeChanged
+                    ) || event.player_id == Some(player_id)
                 })
                 .collect();
             Ok(EventBatch {
                 events,
                 cursor,
+                resync_required: stored
+                    .events
+                    .first()
+                    .is_some_and(|event| after_sequence.saturating_add(1) < event.sequence),
+            })
+        })
+    }
+
+    fn sync_game<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+        after_sequence: u64,
+        renew_presence: bool,
+        roster_token: Option<&'a str>,
+    ) -> BackendFuture<'a, GameSync> {
+        Box::pin(async move {
+            if renew_presence {
+                self.set_connected(session, game_id, true).await?;
+            }
+            let batch = self.subscribe(session, game_id, after_sequence).await?;
+            let state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
+            authorize_member(stored, &user_id)?;
+            let members = &stored.record.members;
+            let token = hex::encode(Sha256::digest(
+                serde_json::to_vec(members)
+                    .map_err(|error| BackendError::Protocol(error.to_string()))?,
+            ));
+            Ok(GameSync {
+                batch,
+                members: (roster_token != Some(token.as_str())).then(|| members.clone()),
+                roster_token: token,
             })
         })
     }
@@ -1635,6 +1676,7 @@ fn validate_joint_attack_commands(
             || invitation.objective != *objective
             || invitation.bombing != *bombing
             || invitation.combat_probes != *combat_probes
+            || expected.iter().any(|contribution| contribution.bombing != invitation.bombing)
             || expected.len() < 2
             || serde_json::to_value(expected)
                 .map_err(|error| BackendError::InvalidData(error.to_string()))?

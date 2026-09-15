@@ -745,11 +745,9 @@ pub enum TurnCommand {
         /// Ship production or defense production across the empire.
         policy: SenatePolicy,
     },
-    /// Adds debug-only testing resources and units to a local turn draft.
-    PracticeBoost {
-        /// Limits the boost to the player's owned or controlled worlds when true.
-        owned_worlds_only: bool,
-    },
+    /// Adds debug-only testing resources and units to owned planets and buildings to controlled
+    /// moons in local practice.
+    PracticeBoost,
     /// Queues one or more identical units on a controlled planet.
     BuyUnits {
         /// Planet on which production is queued.
@@ -875,7 +873,7 @@ pub struct JointAttackContribution {
     pub origin: PlanetId,
     /// Ships committed by this commander.
     pub army: Army,
-    /// Bombing policy selected by this commander for their own Bombers.
+    /// Shared bombing policy copied from the allied-attack owner's selection.
     pub bombing: BombingRaid,
     /// Whether this commander's Probes remain in combat.
     pub combat_probes: bool,
@@ -1030,6 +1028,18 @@ pub(crate) fn resolved_turn(
     reserve_trade_resources(&mut working)?;
     let mut ordered = submissions.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|submission| submission.player_id);
+    // Practice boosts are setup commands for later orders in the same draft. Apply them before
+    // joint-fleet reservations so an allied contribution can use the units shown by the boosted
+    // draft projection.
+    for submission in &ordered {
+        for command in submission
+            .commands
+            .iter()
+            .filter(|command| matches!(command, TurnCommand::PracticeBoost))
+        {
+            apply_command(&mut working, submission.player_id, command)?;
+        }
+    }
     // Accepted joint fleets are reservations. Apply them before ordinary per-player orders so
     // resolution never depends on whether the inviter has a lower or higher player slot.
     for submission in &ordered {
@@ -1042,10 +1052,9 @@ pub(crate) fn resolved_turn(
         }
     }
     for submission in ordered {
-        let ordinary = submission
-            .commands
-            .iter()
-            .filter(|command| !matches!(command, TurnCommand::SendJointMission { .. }));
+        let ordinary = submission.commands.iter().filter(|command| {
+            !matches!(command, TurnCommand::PracticeBoost | TurnCommand::SendJointMission { .. })
+        });
         apply_commands(&mut working, submission.player_id, ordinary)?;
     }
 
@@ -1098,6 +1107,11 @@ pub(crate) fn preview_commands_with_allied_launches(
     let mut preview = state.clone();
     preview.orbital_strikes.clear();
     reserve_trade_resources(&mut preview)?;
+    // Match full-turn resolution: testing setup must exist before a shared fleet validates its
+    // accepted contributions.
+    for command in commands.iter().filter(|command| matches!(command, TurnCommand::PracticeBoost)) {
+        apply_command(&mut preview, player_id, command)?;
+    }
     let mut launched = BTreeSet::new();
     for command in commands {
         if let TurnCommand::SendJointMission {
@@ -1123,7 +1137,9 @@ pub(crate) fn preview_commands_with_allied_launches(
     apply_commands(
         &mut preview,
         player_id,
-        commands.iter().filter(|command| !matches!(command, TurnCommand::SendJointMission { .. })),
+        commands.iter().filter(|command| {
+            !matches!(command, TurnCommand::PracticeBoost | TurnCommand::SendJointMission { .. })
+        }),
     )?;
     Ok(preview)
 }
@@ -1288,9 +1304,7 @@ fn apply_command(
     command: &TurnCommand,
 ) -> Result<(), GameError> {
     match command {
-        TurnCommand::PracticeBoost {
-            owned_worlds_only,
-        } => apply_practice_boost(model, player_id, *owned_worlds_only),
+        TurnCommand::PracticeBoost => apply_practice_boost(model, player_id),
         TurnCommand::BuyUnits {
             planet_id,
             unit,
@@ -1648,24 +1662,27 @@ fn apply_recall(
 }
 
 /// Keeps testing shortcuts in the same ordered draft as the orders that depend on them.
-fn apply_practice_boost(
-    model: &mut GameModel,
-    player_id: PlayerId,
-    owned_worlds_only: bool,
-) -> Result<(), GameError> {
+fn apply_practice_boost(model: &mut GameModel, player_id: PlayerId) -> Result<(), GameError> {
+    if !model.rules.practice_mode {
+        return invalid(player_id, "testing boosts are available only in local practice");
+    }
     let home_planet = model.player(player_id)?.home_planet;
     let senate_level_limit =
         Player::senate_level_limit(&model.map, model.rules.colonizable_percent);
     model.player_mut(player_id)?.resources += 1_000usize;
     for planet in model.map.planets.iter_mut().filter(|planet| {
         !planet.is_destroyed
-            && (!owned_worlds_only
-                || planet.owned == Some(player_id)
-                || planet.controlled == Some(player_id))
+            && (planet.owned == Some(player_id)
+                || (planet.is_moon() && planet.controlled == Some(player_id)))
     }) {
-        // Testing shortcuts bypass costs and capacity, but never create a unit on a world where
-        // that unit cannot normally be constructed.
-        for unit in Unit::all_valid(planet.is_moon()).into_iter().flatten() {
+        // Controlled moons receive buildings only; their fleets are not part of the planet boost.
+        // Directly setting every lunar building intentionally bypasses the moon's field capacity.
+        let unit_groups = if planet.is_moon() {
+            vec![Unit::lunar_buildings()]
+        } else {
+            Unit::all_valid(false)
+        };
+        for unit in unit_groups.into_iter().flatten() {
             if unit == Unit::Building(Building::Senate) && planet.id != home_planet {
                 continue;
             }
@@ -2100,6 +2117,7 @@ fn apply_orbital_railgun_fire(
         chance_basis_points: 0,
         destroyed: false,
     });
+    model.map.get_mut(target).protection_permissions.remove(&player_id);
     Ok(())
 }
 
@@ -2303,6 +2321,9 @@ fn apply_mission(
     source_army.retain(|_, count| *count > 0);
     origin.army.retain_protectors(|_, army| army.has_army());
     origin.release_control_if_vacant();
+    if mission.objective.is_hostile_action() {
+        model.map.get_mut(destination_id).protection_permissions.remove(&player_id);
+    }
     model.missions.push(mission);
     Ok(())
 }
@@ -2373,6 +2394,9 @@ fn apply_joint_mission(
         if contribution.army.iter().any(|(unit, count)| *count == 0 || !unit.is_ship()) {
             return invalid(leader, "joint attack contributions must contain positive ship counts");
         }
+        if contribution.bombing != bombing {
+            return invalid(leader, "all allied fleets must use the leader's bombing objective");
+        }
         if let Some((unit, count)) =
             contribution.army.iter().find(|(unit, count)| available.amount(unit) < **count)
         {
@@ -2391,7 +2415,6 @@ fn apply_joint_mission(
         }
         if index == 0
             && (!objective.condition_for_army(&contribution.army)
-                || contribution.bombing != bombing
                 || contribution.combat_probes != combat_probes)
         {
             return invalid(leader, "the inviter's fleet does not meet the selected objective");
@@ -2404,7 +2427,7 @@ fn apply_joint_mission(
             &destination,
             objective,
             contribution.army.clone(),
-            contribution.bombing.clone(),
+            bombing.clone(),
             contribution.combat_probes,
             false,
             Some(format!("- ({turn}) Joined coordinated mission to {}.", destination.name)),
@@ -2467,6 +2490,10 @@ fn apply_joint_mission(
         });
         model.map.get_mut(contingent.origin).release_control_if_vacant();
         model.missions.push(contingent);
+    }
+    let destination = model.map.get_mut(destination_id);
+    for attacker in seen {
+        destination.protection_permissions.remove(&attacker);
     }
     Ok(())
 }

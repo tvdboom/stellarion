@@ -21,31 +21,157 @@ fn combat_details_hide_the_underlying_mission_panel_until_closed() {
 }
 
 #[test]
-fn combat_defender_heading_uses_each_participants_game_color() {
+fn combat_attacker_heading_keeps_reading_order_and_participant_colors() {
     let context = egui::Context::default();
-    let controller_color = Color32::from_rgb(88, 112, 255);
-    let protector_color = Color32::from_rgb(42, 214, 156);
+    let attacker_color = Color32::from_rgb(88, 112, 255);
+    let ally_color = Color32::from_rgb(42, 214, 156);
     let participants = [
         CombatParticipant {
-            name: "Practice P1".to_string(),
-            color: controller_color,
+            name: "Mara".to_string(),
+            color: attacker_color,
             strength: 9,
         },
         CombatParticipant {
-            name: "Practice P3".to_string(),
-            color: protector_color,
+            name: "Ally".to_string(),
+            color: ally_color,
             strength: 1,
         },
     ];
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_colored_combat_heading(ui, "Defender", controller_color, &participants);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            draw_colored_combat_heading(ui, "Attacker", &participants);
+        });
     });
     output.textures_delta.clear();
 
-    assert_eq!(text_color(&output.shapes, "Defender · "), controller_color);
-    assert_eq!(text_color(&output.shapes, "Practice P1"), controller_color);
-    assert_eq!(text_color(&output.shapes, "Practice P3"), protector_color);
-    assert_eq!(text_color(&output.shapes, " + "), controller_color);
+    let heading = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(label) if label.galley.job.text.starts_with("Attacker") => {
+                Some(&label.galley.job)
+            },
+            _ => None,
+        })
+        .expect("combat heading");
+    assert_eq!(heading.text, "Attacker · Mara + Ally");
+    assert_eq!(
+        heading.sections.iter().map(|section| section.format.color).collect::<Vec<_>>(),
+        vec![Color32::WHITE, attacker_color, Color32::WHITE, ally_color]
+    );
+}
+
+#[test]
+fn combat_heading_shrinks_multiple_participant_names_to_one_line() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let body_size = TextStyle::Body.resolve(&context.style_of(context.theme())).size;
+    let heading_width = 250.0;
+    let participants = [
+        CombatParticipant {
+            name: "Practice P4".to_string(),
+            color: Color32::LIGHT_RED,
+            strength: 1,
+        },
+        CombatParticipant {
+            name: "Practice P1".to_string(),
+            color: Color32::LIGHT_BLUE,
+            strength: 1,
+        },
+    ];
+    let mut output = context.run_ui(Default::default(), |ui| {
+        ui.set_width(heading_width);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            draw_colored_combat_heading(ui, "Attacker", &participants);
+        });
+    });
+    output.textures_delta.clear();
+
+    let heading = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(label) if label.galley.job.text.starts_with("Attacker") => {
+                Some(&label.galley)
+            },
+            _ => None,
+        })
+        .expect("combat heading");
+    assert_eq!(heading.rows.len(), 1);
+    assert!(heading.size().x <= heading_width + 0.5);
+    assert!(heading.job.sections.iter().all(|section| section.format.font_id.size < body_size));
+}
+
+#[test]
+fn combat_heading_and_strength_bars_keep_the_same_vertical_anchors_after_fitting() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let attacker_colors = [Color32::from_rgb(232, 72, 188), Color32::from_rgb(83, 111, 255)];
+    let defender_color = Color32::from_rgb(255, 91, 58);
+    let attackers = [
+        CombatParticipant {
+            name: "Practice Player Four".to_string(),
+            color: attacker_colors[0],
+            strength: 3,
+        },
+        CombatParticipant {
+            name: "Practice Player One".to_string(),
+            color: attacker_colors[1],
+            strength: 1,
+        },
+    ];
+    let defenders = [CombatParticipant {
+        name: "Practice P2".to_string(),
+        color: defender_color,
+        strength: 1,
+    }];
+    let mut output = context.run_ui(Default::default(), |ui| {
+        ui.set_width(700.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(250.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    draw_colored_combat_heading(ui, "Attacker", &attackers);
+                });
+                draw_combat_strength_bar(ui, &attackers);
+            });
+            ui.vertical(|ui| {
+                ui.set_width(350.0);
+                draw_colored_combat_heading(ui, "Defender", &defenders);
+                draw_combat_strength_bar(ui, &defenders);
+            });
+        });
+    });
+    output.textures_delta.clear();
+
+    let text_rect = |prefix: &str| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(label) if label.galley.job.text.starts_with(prefix) => {
+                    Some(egui::Rect::from_min_size(label.pos, label.galley.size()))
+                },
+                _ => None,
+            })
+            .expect("combat heading")
+    };
+    let attacker_heading = text_rect("Attacker");
+    let defender_heading = text_rect("Defender");
+    assert!((attacker_heading.center().y - defender_heading.center().y).abs() <= 0.5);
+    assert!(attacker_heading.height() < defender_heading.height());
+
+    let bar_top = |color| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == color => Some(rect.rect.top()),
+                _ => None,
+            })
+            .expect("strength bar segment")
+    };
+    assert!((bar_top(attacker_colors[0]) - bar_top(defender_color)).abs() <= 0.5);
 }
 
 #[test]
@@ -111,7 +237,56 @@ fn combat_detail_participants_keep_defender_controller_first_and_match_strength_
 }
 
 #[test]
-fn combat_selection_names_both_sides_in_player_colors_and_keeps_icons_clear() {
+fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let owner = 3;
+    let allies = [1, 4];
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner,
+            joint_attack: Some(crate::core::missions::JointAttackMission {
+                attackers: [
+                    (owner, Army::from([(fighter, 7)])),
+                    (allies[0], Army::from([(fighter, 2)])),
+                    (allies[1], Army::from([(fighter, 1)])),
+                ]
+                .into(),
+                ..default()
+            }),
+            ..default()
+        },
+        Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0),
+    );
+    let session = MultiplayerSession::default();
+    let colors =
+        [owner, allies[0], allies[1]].map(|id| session.player_color(id).color().to_color32());
+    let context = egui::Context::default();
+    let mut output = context.run_ui(Default::default(), |ui| {
+        ui.set_width(400.0);
+        ui.horizontal(|ui| {
+            draw_mission_report_strength_bars(ui, &report, &session, 200.0);
+        });
+    });
+    output.textures_delta.clear();
+
+    let segments = colors.map(|color| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == color => Some(rect.rect),
+                _ => None,
+            })
+            .expect("attacker strength segment")
+    });
+    assert_eq!(segments.map(|rect| rect.width()), [140.0, 40.0, 20.0]);
+    assert_eq!(segments.map(|rect| rect.top()), [segments[0].top(); 3]);
+    assert_eq!(segments[0].right(), segments[1].left());
+    assert_eq!(segments[1].right(), segments[2].left());
+}
+
+#[test]
+fn combat_selection_names_both_sides_in_player_colors_and_keeps_planet_clear() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut planet = Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0);
     planet.controlled = Some(2);
@@ -155,6 +330,16 @@ fn combat_selection_names_both_sides_in_player_colors_and_keeps_icons_clear() {
     let measured = context.fonts_mut(|fonts| fonts.layout_job(job).size().x);
     assert!(widths.0 >= measured + COMBAT_SELECTION_TEXT_RESERVE);
     assert_eq!(widths.1, 304.0);
+}
+
+#[test]
+fn combat_selection_places_planet_before_text_with_compact_gap() {
+    let row = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(380.0, 72.0));
+    let (planet, text) = combat_selection_row_content_rects(row);
+
+    assert_eq!(planet.left(), row.left() + COMBAT_SELECTION_PLANET_LEFT_INSET);
+    assert_eq!(text.left() - planet.right(), COMBAT_SELECTION_TEXT_PLANET_GAP);
+    assert_eq!(row.right() - text.right(), COMBAT_SELECTION_TEXT_RIGHT_INSET);
 }
 
 fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egui::Ui)) {
@@ -1060,6 +1245,7 @@ fn orbital_hover_stats_put_production_intelligence_and_range_in_one_row() {
 #[test]
 fn moon_building_hover_shows_world_specific_intelligence_and_radar_range() {
     let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
     let images = ImageIds(HashMap::from([
         ("intelligence".into(), egui::TextureId::User(1)),
         ("range".into(), egui::TextureId::User(2)),
@@ -1071,30 +1257,40 @@ fn moon_building_hover_shows_world_specific_intelligence_and_radar_range() {
         (Building::Laboratory, "3", "---"),
         (Building::OrbitalRadar, "4", "1.2"),
     ] {
+        let mut intelligence_box = egui::Rect::NOTHING;
+        let mut range_box = egui::Rect::NOTHING;
         let mut output = context.run_ui(Default::default(), |ui| {
-            shop::draw_moon_building_stats(ui, &Unit::Building(building), &images);
+            let (intelligence, range) =
+                shop::draw_moon_building_stats(ui, &Unit::Building(building), &images);
+            intelligence_box = intelligence.rect;
+            range_box = range.rect;
         });
         output.textures_delta.clear();
         assert!(has_text(&output.shapes, intelligence), "{building:?}");
         assert!(has_text(&output.shapes, range), "{building:?}");
+        assert_eq!(
+            range_box.left() - intelligence_box.left(),
+            340.0,
+            "{building:?} stats should occupy the outer cells of a three-column row"
+        );
     }
 }
 
 #[test]
-fn intelligence_stat_leaves_space_before_the_next_separator() {
+fn intelligence_stat_leaves_space_before_the_next_section() {
     let context = egui::Context::default();
     let images = ImageIds(HashMap::from([("intelligence".into(), egui::TextureId::User(1))]));
     let unit = Unit::Building(Building::SensorPhalanx);
     let mut stat = egui::Rect::NOTHING;
-    let mut separator = egui::Rect::NOTHING;
+    let mut next = egui::Rect::NOTHING;
 
     let mut output = context.run_ui(Default::default(), |ui| {
         stat = shop::draw_intelligence_stat(ui, &unit, &images).rect;
-        separator = ui.separator().rect;
+        next = ui.allocate_response(egui::vec2(1.0, 1.0), Sense::hover()).rect;
     });
     output.textures_delta.clear();
 
-    assert!(separator.top() - stat.bottom() >= 12.0);
+    assert!(next.top() - stat.bottom() >= 12.0);
 }
 
 #[test]
@@ -1308,7 +1504,8 @@ fn players_panel_width_follows_the_longest_name_and_keeps_its_left_inset() {
                 ..default()
             },
             |context| {
-                owned_panel = draw_owned_worlds_widget(
+                players_panel = draw_players_widget(context, &session, &player, &model.map, &[]);
+                owned_panel = draw_owned_worlds_widget_with_max_bottom(
                     context,
                     &model.map,
                     &player,
@@ -1316,14 +1513,20 @@ fn players_panel_width_follows_the_longest_name_and_keeps_its_left_inset() {
                     &mut state,
                     &mut settings,
                     &images,
+                    players_panel.top() - strategic_hud_panel_gap(viewport_size),
                 );
-                players_panel = draw_players_widget(context, &session, &player, &model.map, &[]);
             },
         );
         output.textures_delta.clear();
 
         assert_eq!(players_panel.left(), owned_panel.left());
         assert!(players_panel.width() < owned_panel.width());
+        let resource_to_worlds_gap = owned_panel.top() - resource_bar_bottom(viewport_size);
+        let worlds_to_players_gap = players_panel.top() - owned_panel.bottom();
+        assert!(
+            worlds_to_players_gap + 1.0 >= resource_to_worlds_gap,
+            "world panel gap should be at least the resource gap: resources={resource_to_worlds_gap}, players={worlds_to_players_gap}"
+        );
 
         session.active_game.as_mut().unwrap().members[1].display_name =
             "A considerably longer opponent name".into();
@@ -1594,39 +1797,143 @@ fn protection_access_tooltip_lists_allowed_players_in_their_game_colors() {
 }
 
 #[test]
-fn protecting_unit_counts_exclude_the_white_controller_total() {
+fn garrison_filters_default_to_all_players_and_remove_hidden_fleets_from_totals() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let rocket_launcher = Unit::Defense(Defense::RocketLauncher);
+    let mut planet = Planet::new(9, "Protected world".into(), Vec2::ZERO, false, 1.0);
+    planet.controlled = Some(1);
+    planet.army.insert(fighter, 6);
+    planet.army.insert(rocket_launcher, 5);
+    planet.army.insert(Unit::space_dock(), 1);
+    planet.army.dock_protector(2, Army::from([(fighter, 3)]));
+    planet.army.dock_protector(3, Army::from([(fighter, 4)]));
+
+    assert_eq!(garrison_player_ids(&planet), vec![1, 2, 3]);
+    assert_eq!(filtered_garrison_amount(&planet, &fighter, None), 13);
+    assert_eq!(filtered_garrison_fleet_strength(&planet, None), 13 * fighter.production());
+    assert_eq!(
+        filtered_garrison_defense_strength(&planet, None),
+        5 * rocket_launcher.production() + 5
+    );
+
+    let hidden = HashSet::from([2]);
+    assert_eq!(filtered_garrison_amount(&planet, &fighter, Some(&hidden)), 10);
+    assert_eq!(filtered_garrison_fleet_strength(&planet, Some(&hidden)), 10 * fighter.production());
+}
+
+#[test]
+fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
+    let rect =
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(270.0, WORLD_OVERVIEW_HEADER_HEIGHT));
+    let layout = world_overview_header_layout(rect, 24.0, Some(24.0), true);
+    let protection = layout.protection_icon.expect("protection filter icon");
+    let defense_badge = layout.defense_badge.expect("defense badge");
+    let defense = layout.defense_icon.expect("defense icon");
+
+    assert_eq!(layout.fleet_icon.size(), egui::Vec2::splat(WORLD_OVERVIEW_ICON_SIZE));
+    assert_eq!(protection.size(), layout.fleet_icon.size());
+    assert_eq!(defense.size(), layout.fleet_icon.size());
+    assert_eq!(layout.fleet_badge.right() + WORLD_OVERVIEW_BADGE_GAP, defense_badge.left());
+    assert_eq!(defense_badge.right() + WORLD_OVERVIEW_PROTECTION_GAP, protection.left());
+    assert_eq!(protection.right(), rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN);
+
+    let moon_layout = world_overview_header_layout(rect, 24.0, None, true);
+    assert!(moon_layout.defense_badge.is_none());
+    assert!(moon_layout.defense_icon.is_none());
+    let moon_protection = moon_layout.protection_icon.expect("moon protection filter icon");
+    assert_eq!(
+        moon_layout.fleet_badge.right() + WORLD_OVERVIEW_PROTECTION_GAP,
+        moon_protection.left()
+    );
+    assert_eq!(moon_protection.right(), rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN);
+}
+
+#[test]
+fn protection_filter_players_appear_immediately_on_hover() {
+    let context = egui::Context::default();
+    let mut target = egui::Rect::NOTHING;
+    let draw = |ui: &mut Ui, target: &mut egui::Rect| {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), Sense::hover());
+        *target = rect;
+        on_immediate_hover_ui(response, |ui| {
+            let _ = ui.button("Player 1");
+        });
+    };
+
+    let mut output = context.run_ui(Default::default(), |ui| draw(ui, &mut target));
+    output.textures_delta.clear();
+    assert!(!has_text(&output.shapes, "Player 1"));
+
+    let mut sizing_pass = context.run_ui(
+        egui::RawInput {
+            time: Some(1.0),
+            events: vec![egui::Event::PointerMoved(target.center())],
+            ..default()
+        },
+        |ui| draw(ui, &mut target),
+    );
+    sizing_pass.textures_delta.clear();
+    let mut output = context.run_ui(
+        egui::RawInput {
+            time: Some(1.0),
+            ..default()
+        },
+        |ui| draw(ui, &mut target),
+    );
+    output.textures_delta.clear();
+
+    assert!(has_text(&output.shapes, "Player 1"));
+    assert_eq!(context.global_style().interaction.tooltip_delay, 0.5);
+    assert!(context.global_style().interaction.show_tooltips_only_when_still);
+}
+
+#[test]
+fn garrison_filter_settings_are_kept_independently_for_each_planet() {
+    let mut state = UiState::default();
+    state.garrison_hidden_players.insert(9, HashSet::from([2]));
+    state.garrison_hidden_players.insert(12, HashSet::from([3]));
+
+    assert_eq!(state.garrison_hidden_players.get(&9), Some(&HashSet::from([2])));
+    assert_eq!(state.garrison_hidden_players.get(&12), Some(&HashSet::from([3])));
+}
+
+#[test]
+fn garrison_player_checkbox_updates_its_planets_filtered_total() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut planet = Planet::new(9, "Protected world".into(), Vec2::ZERO, false, 1.0);
     planet.controlled = Some(1);
     planet.army.insert(fighter, 6);
     planet.army.dock_protector(2, Army::from([(fighter, 3)]));
-    planet.army.dock_protector(3, Army::from([(fighter, 4)]));
+    let context = egui::Context::default();
+    let session = MultiplayerSession::default();
+    let mut state = UiState::default();
 
-    let protection = protecting_unit_counts(&planet, &fighter);
-    assert_eq!(protection, vec![(2, 3), (3, 4)]);
-    assert_eq!(protection.iter().map(|(_, count)| count).sum::<usize>(), 7);
-    assert_eq!(planet.army.combined_amount(&fighter), 13);
+    click_text(&context, "Player 2", |ui| {
+        draw_garrison_filters(ui, &planet, &session, &mut state);
+    });
+    let hidden = state.garrison_hidden_players.get(&planet.id).expect("planet filter");
+    assert_eq!(hidden, &HashSet::from([2]));
+    assert_eq!(filtered_garrison_amount(&planet, &fighter, Some(hidden)), 6);
+
+    click_text(&context, "Player 2", |ui| {
+        draw_garrison_filters(ui, &planet, &session, &mut state);
+    });
+    assert!(!state.garrison_hidden_players.contains_key(&planet.id));
+    assert_eq!(filtered_garrison_amount(&planet, &fighter, None), 9);
 }
 
 #[test]
-fn overview_unit_counts_render_protection_smaller_and_in_player_colors() {
+fn overview_unit_count_renders_one_white_total() {
     let context = egui::Context::default();
-    let session = MultiplayerSession::default();
-    let protection = [(2, 3), (3, 4)];
     let mut image_rect = egui::Rect::NOTHING;
     let mut output = context.run_ui(Default::default(), |ui| {
         image_rect = ui.allocate_exact_size(egui::vec2(50.0, 50.0), Sense::hover()).0;
-        draw_overview_unit_counts(ui, image_rect, 6, &protection, &session);
+        draw_overview_unit_count(ui, image_rect, 13);
     });
     output.textures_delta.clear();
 
-    assert_eq!(text_color(&output.shapes, "6"), Color32::WHITE);
-    assert_eq!(text_color(&output.shapes, "3"), session.player_color(2).color().to_color32());
-    assert_eq!(text_color(&output.shapes, "4"), session.player_color(3).color().to_color32());
-    assert!(text_font_size(&output.shapes, "3") < text_font_size(&output.shapes, "6"));
-    for text in ["6", "3", "4"] {
-        assert!(image_rect.intersects(text_rect(&output.shapes, text)));
-    }
+    assert_eq!(text_color(&output.shapes, "13"), Color32::WHITE);
+    assert!(image_rect.intersects(text_rect(&output.shapes, "13")));
 }
 
 fn text_color(shapes: &[egui::epaint::ClippedShape], text: &str) -> Color32 {
@@ -1951,7 +2258,7 @@ fn world_shortcut_shows_a_protecting_fleet_in_its_players_selected_color() {
 }
 
 #[test]
-fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
+fn home_shortcut_crown_sits_on_planet_with_long_names_and_fleets_at_small_scales() {
     for scale in [0.72, 1.0] {
         let context = egui::Context::default();
         context.set_global_style(NordDark.custom_style());
@@ -1987,6 +2294,7 @@ fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
         });
         output.textures_delta.clear();
         let name = text_rect(&output.shapes, &planet.name);
+        let planet_image = image_rect(&output.shapes, planet_texture).expect("home planet image");
         assert!(!has_text(&output.shapes, "HOME"));
         let home = output
             .shapes
@@ -2004,8 +2312,10 @@ fn home_shortcut_crown_fits_with_long_names_and_fleets_at_small_scales() {
         assert!(row.contains_rect(home));
         assert!(row.contains_rect(name));
         assert!(row.contains_rect(fleet));
-        assert!(home.right() < name.left());
-        assert!((home.center().y - name.center().y).abs() < 1.0);
+        assert!((home.center().x - planet_image.center().x).abs() < 1.0);
+        assert!(home.intersects(planet_image));
+        assert!(home.center().y < planet_image.top());
+        assert!(planet_image.right() < name.left());
         assert!(name.right() < fleet.left());
     }
 }
@@ -2049,6 +2359,184 @@ fn world_groups_use_separate_headings_with_matching_count_sizes() {
             _ => true,
         }),
         "the removed aggregate heading was still painted"
+    );
+}
+
+#[test]
+fn owned_worlds_panel_expands_to_fit_full_names_and_every_fleet_icon() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::player::PlayerColor;
+    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = GameModel::new([41; 32], Default::default()).unwrap();
+    model.players[1].color = PlayerColor::new(4).unwrap();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("wide-owned-worlds-panel"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 2,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model),
+        submitted_players: Vec::new(),
+        members: Vec::new(),
+    });
+
+    let world_name = "Vovryn Prime with a deliberately long name";
+    let mut planet = Planet::new(0, world_name.into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(1);
+    planet.controlled = Some(1);
+    planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
+    planet.army.dock_protector(2, Army::from([(Unit::probe(), 1)]));
+    let planet_texture = egui::TextureId::User(1);
+    let fleet_texture = egui::TextureId::User(2);
+    let protector_texture = egui::TextureId::User(3);
+    let images = ImageIds(HashMap::from([
+        (planet.image(), planet_texture),
+        ("mission".into(), fleet_texture),
+        ("mission spy".into(), protector_texture),
+    ]));
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
+    };
+    let player = Player::new(1, 0);
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut state = UiState::default();
+    let mut settings = Settings::default();
+    let mut panel = egui::Rect::NOTHING;
+    let input = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_280.0, 720.0))),
+        ..default()
+    };
+    let mut draw = || {
+        context.run_ui(input(), |context| {
+            panel = draw_owned_worlds_widget(
+                context,
+                &map,
+                &player,
+                &session,
+                &mut state,
+                &mut settings,
+                &images,
+            );
+        })
+    };
+    for _ in 0..30 {
+        let mut warmup = draw();
+        warmup.textures_delta.clear();
+    }
+    let mut output = draw();
+    output.textures_delta.clear();
+
+    let name = text_rect(&output.shapes, world_name);
+    let fleet = image_rect(&output.shapes, fleet_texture).expect("missing controller fleet");
+    let protector =
+        image_rect(&output.shapes, protector_texture).expect("missing protecting fleet");
+    assert!(panel.width() > OWNED_WORLDS_WIDTH + 20.0);
+    assert!(name.width() > 200.0, "planet name was truncated: {name:?}");
+    assert!(panel.contains_rect(name));
+    assert!(panel.contains_rect(fleet));
+    assert!(panel.contains_rect(protector));
+    assert!(name.right() < fleet.left());
+    assert!(fleet.right() < protector.left());
+}
+
+#[test]
+fn protected_worlds_show_the_controller_and_every_protecting_fleet() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    let model = GameModel::new(
+        [42; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    let player = model.players[0].clone();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("protected-worlds-panel"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 3,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        submitted_players: Vec::new(),
+        members: Vec::new(),
+    });
+
+    let mut planet = Planet::new(100, "Haven".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(2);
+    planet.controlled = Some(2);
+    planet.army.insert(Unit::Ship(Ship::LightFighter), 1);
+    planet.army.dock_protector(player.id, Army::from([(Unit::probe(), 1)]));
+    planet.army.dock_protector(3, Army::from([(Unit::war_sun(), 1)]));
+    let planet_texture = egui::TextureId::User(1);
+    let controller_texture = egui::TextureId::User(2);
+    let local_texture = egui::TextureId::User(3);
+    let other_texture = egui::TextureId::User(4);
+    let images = ImageIds(HashMap::from([
+        (planet.image(), planet_texture),
+        ("mission".into(), controller_texture),
+        ("mission spy".into(), local_texture),
+        ("mission destroy".into(), other_texture),
+    ]));
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![planet],
+    };
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut state = UiState::default();
+    let mut settings = Settings::default();
+    let input = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_280.0, 720.0))),
+        ..default()
+    };
+    let mut draw = || {
+        context.run_ui(input(), |context| {
+            draw_owned_worlds_widget(
+                context,
+                &map,
+                &player,
+                &session,
+                &mut state,
+                &mut settings,
+                &images,
+            );
+        })
+    };
+    for _ in 0..30 {
+        let mut warmup = draw();
+        warmup.textures_delta.clear();
+    }
+    let mut output = draw();
+    output.textures_delta.clear();
+
+    text_rect(&output.shapes, "PROTECTED WORLDS");
+    text_rect(&output.shapes, "Haven");
+    assert!(!has_text(&output.shapes, "CONTROLLED WORLDS"));
+    assert_eq!(
+        image_tint(&output.shapes, controller_texture),
+        Some(model.players[1].color().color().to_color32())
+    );
+    assert_eq!(
+        image_tint(&output.shapes, local_texture),
+        Some(player.color().color().to_color32())
+    );
+    assert_eq!(
+        image_tint(&output.shapes, other_texture),
+        Some(model.players[2].color().color().to_color32())
     );
 }
 
@@ -2242,13 +2730,17 @@ fn owned_worlds_highlight_the_selected_planet_or_moon() {
 
 #[test]
 fn owned_worlds_panel_grows_with_the_number_of_planets() {
-    fn panel_height(planet_count: usize) -> f32 {
+    fn panel_height(owned_count: usize, controlled_count: usize, viewport_height: f32) -> f32 {
         let context = egui::Context::default();
         context.set_global_style(NordDark.custom_style());
-        let planets = (0..planet_count)
+        let planets = (0..owned_count + controlled_count)
             .map(|id| {
                 let mut planet = Planet::new(id, format!("Planet {id}"), Vec2::ZERO, false, 1.0);
-                planet.owned = Some(1);
+                if id < owned_count {
+                    planet.owned = Some(1);
+                } else {
+                    planet.controlled = Some(1);
+                }
                 planet
             })
             .collect::<Vec<_>>();
@@ -2264,16 +2756,160 @@ fn owned_worlds_panel_grows_with_the_number_of_planets() {
         let mut state = UiState::default();
         let mut settings = Settings::default();
         let mut height = 0.0;
-        let mut output = context.run_ui(
+        for _ in 0..30 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1_280.0, viewport_height),
+                    )),
+                    ..default()
+                },
+                |context| {
+                    height = draw_owned_worlds_widget(
+                        context,
+                        &map,
+                        &player,
+                        &MultiplayerSession::default(),
+                        &mut state,
+                        &mut settings,
+                        &images,
+                    )
+                    .height();
+                },
+            );
+            output.textures_delta.clear();
+        }
+        height
+    }
+
+    let one_planet = panel_height(1, 0, 2_000.0);
+    let four_planets = panel_height(1, 3, 2_000.0);
+
+    assert!(
+        four_planets >= one_planet + 3.0 * (WORLD_SHORTCUT_HEIGHT + WORLD_LIST_ITEM_SPACING),
+        "one planet: {one_planet}, four planets: {four_planets}"
+    );
+
+    let capped = panel_height(10, 10, 720.0);
+    assert!(
+        (capped - 720.0 * 0.6).abs() < 1.0,
+        "panel should grow to 60% of the viewport before scrolling: {capped}"
+    );
+}
+
+#[test]
+fn owned_worlds_panel_expands_after_worlds_are_acquired() {
+    fn render_height(
+        context: &egui::Context,
+        map: &Map,
+        player: &Player,
+        state: &mut UiState,
+        settings: &mut Settings,
+        images: &ImageIds,
+    ) -> f32 {
+        let mut height = 0.0;
+        for _ in 0..10 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1_280.0, 720.0),
+                    )),
+                    ..default()
+                },
+                |context| {
+                    height = draw_owned_worlds_widget(
+                        context,
+                        map,
+                        player,
+                        &MultiplayerSession::default(),
+                        state,
+                        settings,
+                        images,
+                    )
+                    .height();
+                },
+            );
+            output.textures_delta.clear();
+        }
+        height
+    }
+
+    let planets = (0..4)
+        .map(|id| {
+            let mut planet = Planet::new(id, format!("Planet {id}"), Vec2::ZERO, false, 1.0);
+            if id == 0 {
+                planet.owned = Some(1);
+            } else {
+                planet.controlled = Some(1);
+            }
+            planet
+        })
+        .collect::<Vec<_>>();
+    let images =
+        ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
+    let small_map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: planets[..1].to_vec(),
+    };
+    let expanded_map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets,
+    };
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let player = Player::new(1, 0);
+    let mut state = UiState::default();
+    let mut settings = Settings::default();
+
+    let one_planet =
+        render_height(&context, &small_map, &player, &mut state, &mut settings, &images);
+    let four_planets =
+        render_height(&context, &expanded_map, &player, &mut state, &mut settings, &images);
+
+    assert!(
+        four_planets >= one_planet + 3.0 * (WORLD_SHORTCUT_HEIGHT + WORLD_LIST_ITEM_SPACING),
+        "panel did not expand after acquiring worlds: one={one_planet}, four={four_planets}"
+    );
+}
+
+#[test]
+fn owned_worlds_panel_scrolls_before_reaching_the_reserved_lower_panel_space() {
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let planets = (0..20)
+        .map(|id| {
+            let mut planet = Planet::new(id, format!("Planet {id}"), Vec2::ZERO, false, 1.0);
+            planet.owned = Some(1);
+            planet.controlled = Some(1);
+            planet
+        })
+        .collect::<Vec<_>>();
+    let images =
+        ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets,
+    };
+    let player = Player::new(1, 0);
+    let mut state = UiState::default();
+    let mut settings = Settings::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_280.0, 720.0));
+    let max_bottom = 500.0;
+    let mut panel = egui::Rect::NOTHING;
+    let mut draw = |events| {
+        context.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1_280.0, 2_000.0),
-                )),
+                screen_rect: Some(viewport),
+                events,
                 ..default()
             },
             |context| {
-                height = draw_owned_worlds_widget(
+                panel = draw_owned_worlds_widget_with_max_bottom(
                     context,
                     &map,
                     &player,
@@ -2281,20 +2917,35 @@ fn owned_worlds_panel_grows_with_the_number_of_planets() {
                     &mut state,
                     &mut settings,
                     &images,
-                )
-                .height();
+                    max_bottom,
+                );
             },
-        );
-        output.textures_delta.clear();
-        height
+        )
+    };
+    let mut warmup = draw(Vec::new());
+    warmup.textures_delta.clear();
+    let mut scroll = draw(vec![
+        egui::Event::PointerMoved(egui::pos2(100.0, 250.0)),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -2_000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: default(),
+        },
+    ]);
+    scroll.textures_delta.clear();
+    for _ in 0..30 {
+        let mut animation = draw(Vec::new());
+        animation.textures_delta.clear();
     }
+    let mut output = draw(Vec::new());
+    output.textures_delta.clear();
 
-    let one_planet = panel_height(1);
-    let four_planets = panel_height(4);
-
+    assert!((panel.bottom() - max_bottom).abs() < 1.0, "panel was not height-capped: {panel:?}");
+    let last_world = text_rect(&output.shapes, "Planet 19");
     assert!(
-        four_planets >= one_planet + 3.0 * (WORLD_SHORTCUT_HEIGHT + WORLD_LIST_ITEM_SPACING),
-        "one planet: {one_planet}, four planets: {four_planets}"
+        panel.intersects(last_world),
+        "the final row did not become reachable by scrolling: panel={panel:?}, row={last_world:?}"
     );
 }
 
@@ -2697,7 +3348,7 @@ fn committed_railguns_immediately_reduce_top_bar_energy_until_the_draft_resets()
 }
 
 #[test]
-fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_names() {
+fn production_hover_breakdowns_exclude_controlled_planets_and_empty_moons() {
     let mut model = crate::core::simulation::GameModel::new([46; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
     for world in &mut model.map.planets {
@@ -2706,8 +3357,12 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
         world.army.clear();
     }
     let home_id = player.home_planet;
-    let planet_id = model.map.planets().into_iter().find(|planet| planet.id != home_id).unwrap().id;
-    let moon_id = model.map.moons().first().unwrap().id;
+    let mut planets = model.map.planets().into_iter().filter(|planet| planet.id != home_id);
+    let planet_id = planets.next().unwrap().id;
+    let controlled_id = planets.next().unwrap().id;
+    let moons = model.map.moons();
+    let moon_id = moons[0].id;
+    let empty_moon_id = moons[1].id;
 
     let home = model.map.get_mut(home_id);
     home.name = "Home".into();
@@ -2718,12 +3373,23 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
     planet.name = "Colony".into();
     planet.colonize(player.id);
     planet.army.insert(Unit::Building(Building::MetalMine), 2);
+    let controlled = model.map.get_mut(controlled_id);
+    controlled.name = "Controlled".into();
+    controlled.control(player.id);
+    controlled.army.insert(Unit::Building(Building::MetalMine), 5);
+    controlled.army.insert(Unit::Building(Building::CrystalMine), 5);
+    controlled.army.insert(Unit::Building(Building::DeuteriumSynthesizer), 5);
+    controlled.army.insert(Unit::Building(Building::Reactor), 5);
     let moon = model.map.get_mut(moon_id);
     moon.name = "Darian".into();
     moon.control(player.id);
     moon.army.insert(Unit::Building(Building::TidalGenerator), 1);
     moon.army.insert(Unit::Building(Building::Laboratory), 1);
-    player.world_acquisition_order = vec![home_id, moon_id, planet_id];
+    let empty_moon = model.map.get_mut(empty_moon_id);
+    empty_moon.name = "Empty Moon".into();
+    empty_moon.control(player.id);
+    player.world_acquisition_order =
+        vec![home_id, empty_moon_id, moon_id, controlled_id, planet_id];
 
     let energy = energy_world_breakdown(&model.map, &player);
     assert_eq!(
@@ -2732,11 +3398,14 @@ fn production_hover_breakdowns_follow_acquisition_order_and_only_show_world_name
     );
     assert!(energy.iter().all(|(name, _)| !name.contains("(Moon)")));
 
-    let metal = resource_world_breakdown(&model.map, &player, ResourceName::Metal, 0);
-    assert_eq!(
-        metal.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
-        ["Home", "Colony"]
-    );
+    for resource in ResourceName::iter() {
+        let worlds = resource_world_breakdown(&model.map, &player, resource, 0);
+        assert_eq!(
+            worlds.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
+            ["Home", "Colony"],
+            "{resource:?} hover"
+        );
+    }
 }
 
 #[test]
@@ -2994,7 +3663,7 @@ fn resource_tooltip_shows_queued_production_as_production() {
 }
 
 #[test]
-fn brief_space_dock_hover_keeps_mode_controls_without_its_long_description() {
+fn brief_space_dock_hover_keeps_cost_and_mode_controls_without_description_or_stats() {
     use bevy::ecs::system::SystemState;
 
     let context = egui::Context::default();
@@ -3012,24 +3681,33 @@ fn brief_space_dock_hover_keeps_mode_controls_without_its_long_description() {
     let images = ImageIds::default();
     let mut render = |brief| {
         let mut writer = writer_state.get_mut(app.world_mut()).unwrap();
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            shop::draw_unit_hover(
-                ui,
-                &Unit::space_dock(),
-                1,
-                brief,
-                &mut state,
-                &mut player,
-                &mut planet,
-                None,
-                &mut senate,
-                [true; 2],
-                &mut pending,
-                &mut writer,
-                None,
-                &images,
-            );
-        });
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1_000.0, 1_400.0),
+                )),
+                ..default()
+            },
+            |ui| {
+                shop::draw_unit_hover(
+                    ui,
+                    &Unit::space_dock(),
+                    1,
+                    brief,
+                    &mut state,
+                    &mut player,
+                    &mut planet,
+                    None,
+                    &mut senate,
+                    [true; 2],
+                    &mut pending,
+                    &mut writer,
+                    None,
+                    &images,
+                );
+            },
+        );
         output.textures_delta.clear();
         output.shapes
     };
@@ -3038,7 +3716,76 @@ fn brief_space_dock_hover_keeps_mode_controls_without_its_long_description() {
     assert!(has_text(&full, Unit::space_dock().description()));
     let brief = render(true);
     assert!(!has_text(&brief, Unit::space_dock().description()));
+    for price in ["1000", "750", "650"] {
+        assert!(has_text(&brief, price));
+    }
     assert!(has_text(&brief, "Space Dock mode"));
+}
+
+#[test]
+fn brief_ship_hover_hides_combat_movement_and_rapid_fire_sections() {
+    use bevy::ecs::system::SystemState;
+
+    let context = egui::Context::default();
+    let mut app = App::new();
+    app.add_message::<MessageMsg>();
+    let mut writer_state = SystemState::<MessageWriter<MessageMsg>>::new(app.world_mut());
+    let mut planet = Planet::new(0, "Shipyard".into(), Vec2::ZERO, false, 1.0);
+    planet.owned = Some(0);
+    planet.controlled = Some(0);
+    let mut player = Player::new(0, 0);
+    let mut state = UiState::default();
+    let mut senate = crate::core::units::operations::SenateSupport::default();
+    let mut pending = PendingTurnCommands::default();
+    let unit = Unit::Ship(Ship::WarSun);
+    let images = ImageIds::default();
+    let mut render = |brief| {
+        let mut writer = writer_state.get_mut(app.world_mut()).unwrap();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1_000.0, 1_400.0),
+                )),
+                ..default()
+            },
+            |ui| {
+                shop::draw_unit_hover(
+                    ui,
+                    &unit,
+                    0,
+                    brief,
+                    &mut state,
+                    &mut player,
+                    &mut planet,
+                    None,
+                    &mut senate,
+                    [true; 2],
+                    &mut pending,
+                    &mut writer,
+                    None,
+                    &images,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        output.shapes
+    };
+
+    let full = render(false);
+    for stat in ["1400", "5", "1.6"] {
+        assert!(has_text(&full, stat));
+    }
+    assert!(has_text(&full, &CombatStats::RapidFire.to_name()));
+
+    let brief = render(true);
+    for stat in ["1400", "5", "1.6"] {
+        assert!(!has_text(&brief, stat));
+    }
+    assert!(!has_text(&brief, &CombatStats::RapidFire.to_name()));
+    for price in ["1000", "500", "250"] {
+        assert!(has_text(&brief, price));
+    }
 }
 
 #[test]
@@ -3382,6 +4129,25 @@ fn planet_detail_lines_start_after_the_panel_and_follow_from_top_to_bottom() {
 }
 
 #[test]
+fn incoming_mission_skips_the_planet_detail_delay_and_starts_its_exit() {
+    let target = PlanetPanelSlideTarget {
+        id: 1,
+        mode: PlanetPanelMode::Full,
+        right_side: true,
+    };
+    let mut slide = PlanetPanelSlide::default();
+    slide.update(Some(target), 0.0);
+    slide.update(Some(target), PLANET_PANEL_TOTAL_DURATION);
+
+    slide.skip_detail_exit();
+    let (_, first_exit_progress) = slide.update(None, 0.01).unwrap();
+    assert!(
+        first_exit_progress < 1.0,
+        "mission hover must move the planet panel without unwinding detail rows first"
+    );
+}
+
+#[test]
 fn planet_panel_survives_pointer_transfer_and_stays_open_while_hovered() {
     let target = PlanetPanelSlideTarget {
         id: 1,
@@ -3517,6 +4283,49 @@ fn mission_hover_panels_stay_opposite_the_pointer() {
 }
 
 #[test]
+fn mission_hover_panels_reverse_immediately_after_pointer_out() {
+    let target = MissionHoverPanelSlideTarget {
+        id: 7,
+        from_ui: false,
+        right_side: true,
+    };
+    let mut slide = MissionHoverPanelSlide::default();
+
+    assert_eq!(slide.update(Some(target), 0.0), Some((target, 0.0)));
+    assert_eq!(slide.update(Some(target), PLANET_PANEL_SLIDE_DURATION), Some((target, 1.0)),);
+
+    let (_, first_exit_progress) = slide.update(None, 0.01).unwrap();
+    assert!(first_exit_progress < 1.0, "PointerOut must start the exit without a hold");
+    assert_eq!(slide.update(None, PLANET_PANEL_SLIDE_DURATION), None);
+}
+
+#[test]
+fn mission_fleet_hover_replaces_the_mission_label_with_fleet_strength() {
+    let model = crate::core::simulation::GameModel::new([71; 32], Default::default()).unwrap();
+    let player = model.players[0].clone();
+    let mut mission = Mission {
+        owner: player.id,
+        army: Army::from([(Unit::Ship(Ship::LightFighter), 3), (Unit::Ship(Ship::Cruiser), 2)]),
+        ..default()
+    };
+    assert_eq!(mission_fleet_strength_label(&mission, &model.map, &player), "9");
+    let fleet_texture = egui::TextureId::User(71);
+    let images = ImageIds(HashMap::from([("fleet".to_owned(), fleet_texture)]));
+    let mut output = egui::Context::default().run_ui(Default::default(), |ui| {
+        ui.set_width(MISSION_HOVER_FLEET_WIDTH);
+        draw_mission_fleet_hover(ui, &mission, &model.map, &player, &images);
+    });
+    output.textures_delta.clear();
+
+    assert!(has_text(&output.shapes, "9"));
+    assert!(!has_text(&output.shapes, "Mission"));
+    assert!(image_rect(&output.shapes, fleet_texture).is_some());
+
+    mission.owner = model.players[1].id;
+    assert_eq!(mission_fleet_strength_label(&mission, &model.map, &player), "?");
+}
+
+#[test]
 fn scaled_panel_layers_reach_both_edges_and_stay_centered() {
     assert_eq!(game_panel_scale(egui::vec2(1600.0, 900.0)), 1.0);
     assert!(game_panel_scale(egui::vec2(1920.0, 1080.0)) > 1.0);
@@ -3631,6 +4440,132 @@ fn shared_modals_keep_their_default_size_and_center_as_the_window_changes() {
 fn mission_list_hover_hides_route_details_but_map_hover_keeps_them() {
     assert!(!mission_hover_shows_info_panel(true));
     assert!(mission_hover_shows_info_panel(false));
+}
+
+#[test]
+fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
+    let map = Map::new(2, 0);
+    let origin = map.planets[0].id;
+    let destination = map.planets[1].id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let viewer_army = Army::from([(fighter, 3)]);
+    let hovered_army = Army::from([(fighter, 5)]);
+    let other_army = Army::from([(fighter, 7_000)]);
+    let mission = Mission {
+        owner: 2,
+        origin,
+        destination,
+        objective: Icon::Attack,
+        army: hovered_army.clone(),
+        joint_attack: Some(JointAttackMission {
+            leader: 2,
+            attackers: [
+                (1, viewer_army.clone()),
+                (2, hovered_army.clone()),
+                (30, other_army.clone()),
+            ]
+            .into(),
+            ..default()
+        }),
+        ..default()
+    };
+
+    let participants = mission_hover_participants(&mission, 1).collect::<Vec<_>>();
+    assert_eq!(
+        participants.iter().map(|(player_id, _)| *player_id).collect::<Vec<_>>(),
+        [2, 1, 30]
+    );
+    assert!(mission_hover_participants(&mission, 9).next().is_none());
+    assert_eq!(
+        mission_info_hover_height(&mission, 1),
+        MISSION_HOVER_INFO_BASE_HEIGHT
+            + MISSION_HOVER_ALLIED_HEADER_HEIGHT
+            + 3.0 * MISSION_HOVER_ALLIED_ROW_HEIGHT
+    );
+
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let player = Player::new(1, origin);
+    let fleet_texture = egui::TextureId::User(81);
+    let images = ImageIds(HashMap::from([("fleet".to_owned(), fleet_texture)]));
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(MISSION_HOVER_INFO_WIDTH, 600.0),
+            )),
+            ..default()
+        },
+        |ui| {
+            draw_mission_info_hover(
+                ui,
+                &mission,
+                &Settings::default(),
+                &map,
+                &player,
+                &MultiplayerSession::default(),
+                &images,
+            );
+        },
+    );
+    output.textures_delta.clear();
+
+    assert!(has_text(&output.shapes, "Allied Attack"));
+    assert!(has_text(&output.shapes, "Player 1"));
+    assert!(has_text(&output.shapes, "Player 2"));
+    assert!(has_text(&output.shapes, "Player 30"));
+    assert!(has_text(&output.shapes, &format_thousands(viewer_army.total_production())));
+    assert!(has_text(&output.shapes, &format_thousands(other_army.total_production())));
+    assert!(has_text(&output.shapes, &format_thousands(hovered_army.total_production())));
+
+    let duration_turns = mission.duration(&map);
+    let duration_label = format!(
+        "⏱ Duration: +{} turn{} ({})",
+        duration_turns,
+        if duration_turns == 1 {
+            ""
+        } else {
+            "s"
+        },
+        mission_arrival_turn(Settings::default().turn, duration_turns)
+    );
+    let duration = text_rect(&output.shapes, &duration_label);
+    let allied_header = text_rect(&output.shapes, "Allied Attack");
+    assert!(duration.bottom() < allied_header.top());
+
+    let names = ["Player 2", "Player 1", "Player 30"].map(|name| text_rect(&output.shapes, name));
+    assert!(names.windows(2).all(|pair| (pair[0].left() - pair[1].left()).abs() < 0.5));
+    assert!(names.windows(2).all(|pair| pair[0].top() < pair[1].top()));
+
+    let strengths = [
+        format_thousands(hovered_army.total_production()),
+        format_thousands(viewer_army.total_production()),
+        format_thousands(other_army.total_production()),
+    ]
+    .map(|strength| text_rect(&output.shapes, &strength));
+    assert!(strengths.windows(2).all(|pair| (pair[0].left() - pair[1].left()).abs() < 0.5));
+    assert_eq!(text_font_size(&output.shapes, "Player 1"), MISSION_HOVER_ALLIED_FONT_SIZE);
+    assert_eq!(
+        text_font_size(&output.shapes, &format_thousands(viewer_army.total_production())),
+        MISSION_HOVER_ALLIED_FONT_SIZE
+    );
+    let fleet_icons = image_rects(&output.shapes, fleet_texture);
+    assert_eq!(fleet_icons.len(), 3);
+    assert!(fleet_icons.windows(2).all(|pair| (pair[0].left() - pair[1].left()).abs() < 0.5));
+    let widest_name_right = names.iter().map(|rect| rect.right()).fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        (fleet_icons[0].left() - widest_name_right - MISSION_HOVER_ALLIED_NAME_ICON_GAP).abs()
+            < 0.5
+    );
+    assert!(fleet_icons.iter().zip(&strengths).all(|(icon, strength)| {
+        (strength.left() - icon.right() - MISSION_HOVER_ALLIED_ICON_VALUE_GAP).abs() < 0.5
+    }));
+}
+
+#[test]
+fn concealed_mission_objective_is_labeled_unknown() {
+    assert_eq!(mission_objective_label(Icon::EnemyFleet), "Unknown");
+    assert_eq!(mission_objective_label(Icon::Attack), "Attack");
 }
 
 #[test]
@@ -3777,7 +4712,8 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
         ("railgun strike".to_string(), railgun_texture),
     ]));
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 340.0));
-    let modal_scale = game_modal_scale(viewport.size(), egui::vec2(610.0, 330.0));
+    let modal_scale =
+        game_modal_scale(viewport.size(), egui::vec2(610.0, RAILGUN_CONFIRMATION_HEIGHT));
     let input = || egui::RawInput {
         screen_rect: Some(viewport),
         ..default()
@@ -3861,4 +4797,15 @@ fn railgun_confirmation_centers_its_costs_and_keeps_all_content_inside_the_panel
     let button_row = buttons[0].union(*buttons[1]);
     assert!((button_row.center().x - panel.center().x).abs() < 1.0);
     assert!(panel.contains_rect(button_row));
+    assert!((deuterium.width() - 40.0 * modal_scale).abs() < 1.0);
+    assert!((deuterium.height() - 28.0 * modal_scale).abs() < 1.0);
+    assert!((energy.width() - 40.0 * modal_scale).abs() < 1.0);
+    assert!((energy.height() - 28.0 * modal_scale).abs() < 1.0);
+    let resource_border_top = deuterium.top() - modal_scale;
+    let heading_to_resources = resource_border_top - heading.bottom();
+    let chance_to_buttons = button_row.top() - chance_details.bottom();
+    assert!(
+        (heading_to_resources - chance_to_buttons).abs() < 1.0,
+        "railgun confirmation spacing differs: heading to resources is {heading_to_resources}, chance to buttons is {chance_to_buttons}",
+    );
 }
