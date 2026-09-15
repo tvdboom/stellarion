@@ -146,7 +146,10 @@ pub fn draw_menu(
         return;
     };
     clear_browser_copy_candidate();
-    let menu_size = egui::vec2(window.width(), window.height());
+    let viewport =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(window.width(), window.height()));
+    let menu_scale = viewport_ui_scale(viewport.size());
+    let menu_size = viewport.size() / menu_scale;
     if !session.busy {
         *refreshing_games = false;
     }
@@ -180,11 +183,15 @@ pub fn draw_menu(
     } else {
         (egui::Align2::CENTER_CENTER, menu_size.y * 0.5)
     };
-    egui::Area::new(egui::Id::new(("stellarion_menu_content", *app_state.get())))
+    let content_id = egui::Id::new(("stellarion_menu_content", *app_state.get()));
+    set_menu_layer_scale(context, content_id, egui::Order::Middle, viewport, menu_scale);
+    egui::Area::new(content_id)
         .pivot(content_pivot)
         .fixed_pos(egui::pos2(menu_size.x * 0.5, content_y))
         .constrain(false)
+        .order(egui::Order::Middle)
         .show(context, |ui| {
+            ui.set_clip_rect(logical_content_rect(ui));
             apply_menu_style(ui);
             ui.set_width(content_width);
             ui.vertical_centered(|ui| {
@@ -241,23 +248,29 @@ pub fn draw_menu(
 
     if is_primary_navigation {
         let title = main_menu_title(context, menu_size);
-        egui::Area::new("stellarion_main_title".into())
+        let title_id = egui::Id::new("stellarion_main_title");
+        set_menu_layer_scale(context, title_id, egui::Order::Middle, viewport, menu_scale);
+        egui::Area::new(title_id)
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(egui::pos2(menu_size.x * 0.5, menu_size.y * 0.17))
             .constrain(false)
             .interactable(false)
             .show(context, |ui| {
+                ui.set_clip_rect(logical_content_rect(ui));
                 let (rect, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
                 ui.painter().galley(rect.min, title, ui.visuals().strong_text_color());
             });
     }
 
-    let footer = egui::Area::new("stellarion_menu_footer".into())
+    let footer_id = egui::Id::new("stellarion_menu_footer");
+    set_menu_layer_scale(context, footer_id, egui::Order::Foreground, viewport, menu_scale);
+    let footer = egui::Area::new(footer_id)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(egui::pos2(menu_size.x - 24.0, menu_size.y - 18.0))
         .constrain(false)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
+            ui.set_clip_rect(logical_content_rect(ui));
             let mode = if session.local_practice {
                 " · local practice"
             } else if session.mock_backend {
@@ -279,16 +292,46 @@ pub fn draw_menu(
 
     if let Some(error) = session.menu_error.as_deref() {
         let toast_width = menu_error_width(menu_size, content_width, *app_state.get());
-        egui::Area::new("stellarion_menu_error".into())
+        let error_id = egui::Id::new("stellarion_menu_error");
+        set_menu_layer_scale(context, error_id, egui::Order::Foreground, viewport, menu_scale);
+        egui::Area::new(error_id)
             .pivot(egui::Align2::RIGHT_BOTTOM)
             .fixed_pos(egui::pos2(menu_size.x - 24.0, footer.response.rect.top() - 10.0))
             .constrain(false)
             .interactable(false)
             .order(egui::Order::Foreground)
             .show(context, |ui| {
+                ui.set_clip_rect(logical_content_rect(ui));
                 menu_error_panel_width(ui, menu_error_title(*app_state.get()), error, toast_width);
             });
     }
+}
+
+/// Scales a complete standalone-menu layer from the viewport origin.
+///
+/// Layout is performed in logical menu coordinates and this transform grows or
+/// shrinks the resulting controls, text, spacing, and hit targets together.
+fn set_menu_layer_scale(
+    context: &egui::Context,
+    id: egui::Id,
+    order: egui::Order,
+    viewport: egui::Rect,
+    scale: f32,
+) {
+    let translation = viewport.min.to_vec2() * (1.0 - scale);
+    context.set_transform_layer(
+        egui::LayerId::new(order, id),
+        egui::emath::TSTransform::new(translation, scale),
+    );
+}
+
+/// Returns the viewport expressed in the coordinate system of the current UI layer.
+fn logical_content_rect(ui: &egui::Ui) -> egui::Rect {
+    let transform = ui
+        .ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .unwrap_or(egui::emath::TSTransform::IDENTITY);
+    transform.inverse().mul_rect(ui.ctx().content_rect())
 }
 
 /// Draws the transport state as a compact badge that remains legible over menu artwork.
@@ -440,7 +483,7 @@ fn main_screen(
 ) {
     // Keep every action reachable above the footer on short windows.
     let available_height =
-        (ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 96.0).max(80.0);
+        (logical_content_rect(ui).bottom() - ui.next_widget_position().y - 96.0).max(80.0);
     // An Area remembers its previous content height. Expand the parent before the
     // scroll area measures it, including after a small window grows again.
     ui.set_max_height(available_height);
@@ -1774,7 +1817,7 @@ fn menu_form(
 ) {
     ui.spacing_mut().item_spacing.y = 0.0;
     // Reset the remembered Area height so the form can expand after a window resize.
-    let height = (ui.ctx().content_rect().height() - 128.0).max(160.0);
+    let height = (logical_content_rect(ui).height() - 128.0).max(160.0);
     ui.set_max_height(height);
     let actions_height = action_rows as f32 * MENU_ACTION_HEIGHT
         + action_rows.saturating_sub(1) as f32 * FORM_CARD_GAP;
@@ -1870,6 +1913,7 @@ pub fn draw_game_overlay(
     }
     let (area, content_width) = game_overlay_area(context);
     area.show(context, |ui| {
+        ui.set_clip_rect(logical_content_rect(ui));
         apply_menu_style(ui);
         if *game_state.get() == GameState::EndGame {
             if let (Some(time), Some(mut end_game_fade)) = (time.as_deref(), end_game_fade) {
@@ -1991,6 +2035,7 @@ fn game_access_codes(context: &egui::Context, session: &MultiplayerSession) {
         .constrain(false)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
+            ui.set_clip_rect(logical_content_rect(ui));
             apply_menu_style(ui);
             ui.set_width(panel_width);
             game_access_code_cards(ui, game, session.issued_recovery_code.as_deref());

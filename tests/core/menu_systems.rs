@@ -156,8 +156,12 @@ fn menu_action_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> egui:
 fn navigation_dimensions_match_across_menus_and_after_window_resize() {
     let (mut app, context) = menu_app();
     app.insert_resource(test_lobby());
-    for viewport in [egui::vec2(1600.0, 900.0), egui::vec2(400.0, 400.0), egui::vec2(770.0, 900.0)]
-    {
+    for viewport in [
+        egui::vec2(2560.0, 1440.0),
+        egui::vec2(1600.0, 900.0),
+        egui::vec2(400.0, 400.0),
+        egui::vec2(770.0, 900.0),
+    ] {
         for (state, labels) in [
             (AppState::MainMenu, &["New Game", "Join Game"][..]),
             (AppState::CreateGame, &["Back", "Create Game"]),
@@ -185,11 +189,13 @@ fn navigation_dimensions_match_across_menus_and_after_window_resize() {
                 } else {
                     452.0_f32
                 };
-                let content_width = preferred_width.min(viewport.x - 32.0);
+                let scale = viewport_ui_scale(viewport);
+                let logical_viewport = viewport / scale;
+                let content_width = preferred_width.min(logical_viewport.x - 32.0);
                 let expected = egui::vec2(
                     308.0_f32.min((content_width - 12.0 * (columns - 1.0)) / columns),
                     55.0,
-                );
+                ) * scale;
                 assert!(
                     (rect.size() - expected).length() < 1.0,
                     "{state:?} {label} at {viewport:?}: {:?}, expected {expected:?}",
@@ -222,7 +228,7 @@ fn option_boxes_align_and_contain_controls_on_each_page() {
                 menu_app_frame(&mut app, &context, viewport, state, vec![]);
             }
             let shapes = menu_app_frame(&mut app, &context, viewport, state, vec![]);
-            assert_option_cards(&shapes, &labels, 1.0);
+            assert_option_cards(&shapes, &labels, viewport_ui_scale(viewport));
         }
     }
 }
@@ -460,35 +466,6 @@ fn main_menu_shows_all_actions_after_boot_and_resize() {
             menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
         }
         let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
-        if viewport.y == 600.0 {
-            // Preserve the original button size and scroll when the full stack cannot fit.
-            let first = menu_action_rect(&shapes, "New Game");
-            assert_eq!(first.size(), egui::vec2(308.0, 55.0));
-            menu_app_frame(
-                &mut app,
-                &context,
-                viewport,
-                AppState::MainMenu,
-                vec![
-                    egui::Event::PointerMoved(first.center()),
-                    egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Point,
-                        delta: egui::vec2(0.0, -1000.0),
-                        phase: egui::TouchPhase::Move,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
-            for _ in 0..30 {
-                menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
-            }
-            let scrolled = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
-            assert_eq!(
-                menu_action_rect(&scrolled, main_action_labels().last().unwrap()).size(),
-                first.size()
-            );
-            continue;
-        }
         assert_main_actions_visible(&shapes, viewport);
     }
 }
@@ -515,7 +492,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Circle(circle)
-                if (circle.radius - 4.0).abs() < f32::EPSILON
+                if (circle.radius - 4.0 * viewport_ui_scale(viewport)).abs() < 0.01
                     && circle.center.x < offline.left()
                     && (offline.top()..=offline.bottom()).contains(&circle.center.y) =>
             {
@@ -550,7 +527,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
     assert!(u16::from(status_dot.fill.r()) > u16::from(status_dot.fill.g()) * 2);
     assert!(toast.bottom() < offline.top());
     assert!(toast.center().x > viewport.x * 0.5);
-    assert!((toast.right() - (viewport.x - 24.0)).abs() < 1.0);
+    assert!((toast.right() - (viewport.x - 24.0 * viewport_ui_scale(viewport))).abs() < 1.0);
     assert!(toast.left() > last_button.right());
     assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(toast));
 
@@ -565,7 +542,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Circle(circle)
-                if (circle.radius - 4.0).abs() < f32::EPSILON
+                if (circle.radius - 4.0 * viewport_ui_scale(viewport)).abs() < 0.01
                     && circle.center.x < connected_with_issues.left()
                     && (connected_with_issues.top()..=connected_with_issues.bottom())
                         .contains(&circle.center.y) =>
@@ -589,7 +566,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Circle(circle)
-                if (circle.radius - 4.0).abs() < f32::EPSILON
+                if (circle.radius - 4.0 * viewport_ui_scale(viewport)).abs() < 0.01
                     && circle.center.x < connected.left()
                     && (connected.top()..=connected.bottom()).contains(&circle.center.y) =>
             {
@@ -635,7 +612,10 @@ fn every_menu_error_uses_the_right_hand_message_rail() {
                     egui::Shape::Rect(rect)
                         if rect.rect.contains_rect(title_rect)
                             && rect.rect.contains_rect(message_rect)
-                            && (rect.rect.right() - (viewport.x - 24.0)).abs() < 1.0 =>
+                            && (rect.rect.right()
+                                - (viewport.x - 24.0 * viewport_ui_scale(viewport)))
+                            .abs()
+                                < 1.0 =>
                     {
                         Some(rect.rect)
                     },
@@ -655,7 +635,9 @@ fn every_menu_error_uses_the_right_hand_message_rail() {
                 panel.center().x > viewport.x * 0.5,
                 "error was not on the right for {state:?} at {viewport:?}: {panel:?}"
             );
-            assert!((panel.right() - (viewport.x - 24.0)).abs() < 1.0);
+            assert!(
+                (panel.right() - (viewport.x - 24.0 * viewport_ui_scale(viewport))).abs() < 1.0
+            );
             assert!(panel.bottom() < status.top());
             assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(panel));
         }
@@ -663,7 +645,7 @@ fn every_menu_error_uses_the_right_hand_message_rail() {
 }
 
 #[test]
-fn main_menu_scrolls_short_windows_and_recovers_after_navigation_and_growth() {
+fn main_menu_scales_to_short_windows_and_recovers_after_navigation_and_growth() {
     let (mut app, context) = menu_app();
     let small = egui::vec2(400.0, 400.0);
     for _ in 0..3 {
@@ -673,27 +655,7 @@ fn main_menu_scrolls_short_windows_and_recovers_after_navigation_and_growth() {
         menu_app_frame(&mut app, &context, small, AppState::MainMenu, vec![]);
     }
     let shapes = menu_app_frame(&mut app, &context, small, AppState::MainMenu, vec![]);
-    let new_game = visible_menu_label(&shapes, "New Game").unwrap().center();
-    assert!(visible_menu_label(&shapes, "Settings").is_none());
-    menu_app_frame(
-        &mut app,
-        &context,
-        small,
-        AppState::MainMenu,
-        vec![
-            egui::Event::PointerMoved(new_game),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -1000.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ],
-    );
-    for _ in 0..30 {
-        menu_app_frame(&mut app, &context, small, AppState::MainMenu, vec![]);
-    }
-    let shapes = menu_app_frame(&mut app, &context, small, AppState::MainMenu, vec![]);
+    assert_main_actions_visible(&shapes, small);
     assert!(visible_menu_label(&shapes, main_action_labels().last().unwrap()).is_some());
     let settings = visible_menu_label(&shapes, "Settings").unwrap().center();
     click_menu_app(&mut app, &context, small, AppState::MainMenu, settings);
@@ -718,6 +680,39 @@ fn main_menu_scrolls_short_windows_and_recovers_after_navigation_and_growth() {
     }
     let shapes = menu_app_frame(&mut app, &context, large, AppState::MainMenu, vec![]);
     assert_main_actions_visible(&shapes, large);
+}
+
+#[test]
+fn main_menu_still_scrolls_below_the_minimum_scale() {
+    let (mut app, context) = menu_app();
+    let viewport = egui::vec2(400.0, 240.0);
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    let first = visible_menu_label(&shapes, "New Game").unwrap().center();
+    assert!(visible_menu_label(&shapes, main_action_labels().last().unwrap()).is_none());
+
+    menu_app_frame(
+        &mut app,
+        &context,
+        viewport,
+        AppState::MainMenu,
+        vec![
+            egui::Event::PointerMoved(first),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1000.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    for _ in 0..30 {
+        menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
+    assert!(visible_menu_label(&shapes, main_action_labels().last().unwrap()).is_some());
 }
 
 #[test]
