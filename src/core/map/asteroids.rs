@@ -121,7 +121,12 @@ fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> As
         between_bands: gap.between_bands,
         radius: minimum_radius + (maximum_radius - minimum_radius) * radial_position,
         radial_half_width,
-        maximum_asteroid_diameter: maximum_asteroid_radius * 2.0,
+        // A narrow generated band may leave less than one normal rock diameter between the
+        // nearest planet surfaces. Keep that constraint for choosing the belt's radial lane,
+        // but never feed it back into the artwork size: doing so made whole belts render as
+        // near-invisible specks for otherwise valid seeds. Individual placements still test
+        // their full rendered footprint against every planet below.
+        maximum_asteroid_diameter: (maximum_asteroid_radius * 2.0).max(ASTEROID_MINIMUM_DIAMETER),
     }
 }
 
@@ -238,10 +243,9 @@ impl AsteroidBeltPlacementGenerator {
         };
         let preferred_radius = self.layout.radius
             + (visual_noise(seed.wrapping_add(1)) - 0.5) * self.layout.radial_half_width * 2.0;
-        let minimum_diameter = ASTEROID_MINIMUM_DIAMETER.min(self.layout.maximum_asteroid_diameter);
-        let diameter = minimum_diameter
+        let diameter = ASTEROID_MINIMUM_DIAMETER
             + visual_noise(seed.wrapping_add(2))
-                * (self.layout.maximum_asteroid_diameter - minimum_diameter);
+                * (self.layout.maximum_asteroid_diameter - ASTEROID_MINIMUM_DIAMETER);
         // Keep each rock in its own angular slot. Search across the band's width before
         // adjusting its angle, so clearing a planet cannot pile rocks into neighboring slots.
         let (phase, radius) =

@@ -34,7 +34,8 @@ use crate::core::map::systems::{
     animate_range_markers, animate_recyclers, animate_space_scenery, draw_map,
     ensure_asteroid_belt, hide_planet_details, position_home_crown, run_map_animations,
     sync_home_crown, update_ambient_comets, update_end_turn, update_jump_gate_links,
-    update_planet_defenses, update_planet_info, update_voronoi, AmbientCometSpawner,
+    update_planet_defenses, update_planet_info, update_trade_post_links, update_voronoi,
+    AmbientCometSpawner,
 };
 use crate::core::menu::buttons::MenuCmp;
 use crate::core::menu::systems::{
@@ -51,11 +52,9 @@ use crate::core::missions::{
 };
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
-#[cfg(debug_assertions)]
-use crate::core::systems::debug_cheat_keys;
 use crate::core::systems::{
     check_keys, check_keys_combat, check_keys_menu, check_preference_keys, on_resize_system,
-    resume_gameplay_interactions, suspend_gameplay_interactions,
+    resume_gameplay_interactions, suspend_gameplay_interactions, testing_boost_keys,
 };
 use crate::core::turns::{check_turn_ended, start_turn, StartTurnMsg};
 use crate::core::turns::{
@@ -274,6 +273,7 @@ impl Plugin for GamePlugin {
                             .before(bevy_tweening::AnimationSystem::AnimationUpdate),
                         animate_orbital_railguns.after(update_planet_defenses),
                         update_jump_gate_links.after(update_planet_defenses),
+                        update_trade_post_links.after(update_planet_defenses),
                         update_ambient_comets,
                         send_mission,
                         recall_mission,
@@ -335,10 +335,9 @@ impl Plugin for GamePlugin {
             )
             .add_systems(OnExit(GameState::EndGame), exit_end_game);
 
-        #[cfg(debug_assertions)]
         app.add_systems(
             Update,
-            debug_cheat_keys
+            testing_boost_keys
                 .run_if(end_game_presentation_inactive)
                 .in_set(InPlayingGameSet)
                 .before(check_keys),

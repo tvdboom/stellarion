@@ -15,7 +15,8 @@ use crate::core::simulation::{
     MAX_COMMANDS_PER_SUBMISSION,
 };
 use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent, TradeAgreement};
-use crate::core::units::Amount;
+use crate::core::units::buildings::Building;
+use crate::core::units::{Amount, Unit};
 use crate::multiplayer::authority::{
     initial_snapshot, recolored_lobby_snapshot, resolved_snapshot, same_snapshot,
     started_snapshot_for_members, validate_incoming,
@@ -488,6 +489,9 @@ impl MultiplayerBackend for InMemoryBackend {
             {
                 return Err(BackendError::InvalidGameStatus);
             }
+            if !stored.record.persisted.state.joint_attacks_enabled() {
+                return Err(BackendError::InvalidData("joint_attack".into()));
+            }
             let mut participant_ids = HashSet::new();
             let first = invitation.participants.first();
             let destination = stored.record.persisted.state.map.try_get(invitation.destination);
@@ -624,6 +628,9 @@ impl MultiplayerBackend for InMemoryBackend {
             let stored = state.games.get_mut(game_id).ok_or(BackendError::GameNotFound)?;
             let player_id = authorize_member(stored, &user_id)?.player_id;
             let current_turn = stored.record.persisted.state.turn;
+            if !stored.record.persisted.state.joint_attacks_enabled() {
+                return Err(BackendError::InvalidGameStatus);
+            }
             let invitation =
                 stored.joint_attacks.get_mut(&attack_id).ok_or(BackendError::GameNotFound)?;
             if stored.record.status != MatchStatus::Active
@@ -788,6 +795,9 @@ impl MultiplayerBackend for InMemoryBackend {
             let user_id = authenticated_user(&state, session)?;
             let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
             let player_id = authorize_member(stored, &user_id)?.player_id;
+            if !stored.record.persisted.state.joint_attacks_enabled() {
+                return Ok(Vec::new());
+            }
             Ok(stored
                 .joint_attacks
                 .values()
@@ -808,6 +818,7 @@ impl MultiplayerBackend for InMemoryBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         invitation: TradeInvitation,
+        projected_post: bool,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(async move {
             let mut state = self.lock()?;
@@ -826,6 +837,27 @@ impl MultiplayerBackend for InMemoryBackend {
                     && trade.participants.clone().map(|participant| participant.player_id)
                         == participant_ids
             });
+            let mut projected = None;
+            if projected_post {
+                let Some(planet_id) = proposer_party.map(|party| party.planet_id) else {
+                    return Err(BackendError::InvalidData("trade".into()));
+                };
+                let valid_planet =
+                    stored.record.persisted.state.map.try_get(planet_id).is_some_and(|planet| {
+                        !planet.is_destroyed && !planet.is_moon() && planet.owned == Some(proposer)
+                    });
+                if !valid_planet {
+                    return Err(BackendError::InvalidData("trade".into()));
+                }
+                let mut persisted = stored.record.persisted.clone();
+                let planet = persisted.state.map.get_mut(planet_id);
+                planet.record_surface_building(Building::TradingPost);
+                planet.army.insert(Unit::Building(Building::TradingPost), Building::MAX_LEVEL);
+                projected = Some(persisted);
+            }
+            let trade_map = projected
+                .as_ref()
+                .map_or(&stored.record.persisted.state.map, |persisted| &persisted.state.map);
             if stored.record.status != MatchStatus::Active
                 || invitation.turn != stored.record.persisted.state.turn
                 || invitation.id == 0
@@ -846,16 +878,12 @@ impl MultiplayerBackend for InMemoryBackend {
                 || other_party.is_none_or(|party| {
                     party.response != TradeResponse::Pending || !party.resources.is_empty()
                 })
-                || stored
-                    .record
-                    .persisted
-                    .state
-                    .map
+                || trade_map
                     .try_get(first.planet_id)
                     .map_or(0, |planet| trading_post_capacity(planet, first.player_id))
                     < first.resources.total()
                 || !trading_posts_are_adjacent(
-                    &stored.record.persisted.state.map,
+                    trade_map,
                     first.player_id,
                     first.planet_id,
                     second.player_id,
@@ -863,6 +891,12 @@ impl MultiplayerBackend for InMemoryBackend {
                 )
             {
                 return Err(BackendError::InvalidData("trade".into()));
+            }
+            if let Some(persisted) = projected {
+                stored.record.revision = stored.record.revision.saturating_add(1);
+                stored.record.status = persisted.state.status;
+                stored.record.persisted = persisted;
+                push_event(stored, BackendEventKind::StateChanged, Some(invitation.turn), None);
             }
             stored.trades.insert(invitation.id, invitation.clone());
             for player_id in participant_ids {
@@ -1657,6 +1691,11 @@ fn validate_joint_attack_commands(
         else {
             continue;
         };
+        if !stored.record.persisted.state.joint_attacks_enabled() {
+            return Err(BackendError::InvalidData(
+                "joint attacks require at least three active players".into(),
+            ));
+        }
         let invitation = stored.joint_attacks.get(attack_id).ok_or_else(|| {
             BackendError::InvalidData("joint attack invitation is missing".into())
         })?;

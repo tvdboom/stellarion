@@ -301,7 +301,7 @@ for (const signature of [
   "stellarion_respond_joint_attack(uuid,bigint,bigint,text,jsonb)",
   "stellarion_cancel_joint_attack(uuid,bigint)",
   "stellarion_load_joint_attacks(uuid)",
-  "stellarion_create_trade(uuid,jsonb)",
+  "stellarion_create_trade(uuid,jsonb,boolean)",
   "stellarion_respond_trade(uuid,bigint,bigint,jsonb,text)",
   "stellarion_load_trades(uuid)",
   "stellarion_set_protection_permission(uuid,bigint,bigint,boolean)",
@@ -366,6 +366,38 @@ let active = await start(host);
 assert.equal(active.status, "active");
 assert.equal(active.max_players, 2);
 assert.equal(active.members.length, 2);
+const twoPlayerJointAttack = {
+  id: 6999,
+  revision: 0,
+  turn: active.persisted.state.turn,
+  inviter: 1,
+  destination: active.persisted.state.players[1].home_planet,
+  objective: "Attack",
+  bombing: "None",
+  combat_probes: false,
+  canceled: false,
+  launched: false,
+  participants: [
+    {
+      player_id: 1,
+      response: "accepted",
+      contribution: {
+        player_id: 1,
+        origin: active.persisted.state.players[0].home_planet,
+        army: { "Ship(LightFighter)": 1 },
+        bombing: "None",
+        combat_probes: false,
+      },
+    },
+    { player_id: 2, response: "pending", contribution: null },
+  ],
+};
+await assert.rejects(rpc(host,
+  "select public.stellarion_create_joint_attack($1, $2) as result",
+  [id, twoPlayerJointAttack]), /STLR_INVALID_DATA:joint_attack/,
+  "two active players cannot create a joint attack");
+assert.deepEqual(await rpc(host,
+  "select public.stellarion_load_joint_attacks($1) as result", [id]), []);
 await assert.rejects(rpc(host,
   "select public.stellarion_set_protection_permission($1, $2, $3, $4) as result",
   [id, active.persisted.state.players[0].home_planet, 2, true]),
@@ -611,7 +643,7 @@ for (const [index, home] of tradeHomes.entries()) {
   const planet = tradeSnapshot.state.map.planets.find(planet => planet.id === home);
   // Level-five posts must negotiate and finalize across their full 7.5 AU range.
   planet.position = [index * 750, 0];
-  planet.army.controller["Building(TradingPost)"] = 5;
+  planet.army.controller["Building(TradingPost)"] = index === 0 ? 0 : 5;
   tradeSnapshot.state.players[index].resources = { metal: 10000, crystal: 10000, deuterium: 10000 };
 }
 const tradeGame = await snapshotWrite(host,
@@ -625,7 +657,19 @@ let tradeDraft = {
     { player_id: 2, planet_id: tradeHomes[1], resources: tradeResources(), response: "pending" },
   ],
 };
-tradeDraft = await rpc(host, "select public.stellarion_create_trade($1, $2) as result", [tradeGame.id, tradeDraft]);
+await assert.rejects(
+  rpc(host, "select public.stellarion_create_trade($1, $2, false) as result", [tradeGame.id, tradeDraft]),
+  /STLR_INVALID_DATA:trade/,
+  "an unsaved Trading Post route must be declared as projected",
+);
+tradeDraft = await rpc(host, "select public.stellarion_create_trade($1, $2, true) as result", [tradeGame.id, tradeDraft]);
+const projectedTradeGame = await rpc(host, "select public.stellarion_load_game($1) as result", [tradeGame.id]);
+assert.equal(
+  projectedTradeGame.persisted.state.map.planets.find(planet => planet.id === tradeHomes[0])
+    .army.controller["Building(TradingPost)"],
+  5,
+  "creating a projected route commits the proposer's completed Trading Post",
+);
 const respondTrade = (actor, revision, resources, response) => rpc(actor,
   "select public.stellarion_respond_trade($1, $2, $3, $4, $5) as result",
   [tradeGame.id, tradeDraft.id, revision, resources, response]);

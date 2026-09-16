@@ -646,6 +646,64 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
 }
 
 #[test]
+fn two_player_games_reject_joint_attack_invitations() {
+    let backend = InMemoryBackend::new();
+    let (host, host_recovery) = identity(&backend);
+    let created = create(&backend, &host, &host_recovery, 2);
+    let (guest, guest_recovery) = identity(&backend);
+    let mut game = block_on(backend.join_game(
+        &guest,
+        JoinGameRequest {
+            code: created.game.code,
+            display_name: "Guest".into(),
+            recovery_code: guest_recovery.expose().into(),
+        },
+    ))
+    .unwrap()
+    .game;
+    game.persisted.state.start().unwrap();
+    let active =
+        block_on(backend.start_game(&host, &game.id, game.revision, game.persisted)).unwrap();
+    let host_home = active.persisted.state.players[0].home_planet;
+    let invitation = JointAttackInvitation {
+        id: 505,
+        revision: 0,
+        turn: active.persisted.state.turn,
+        inviter: 1,
+        destination: active.persisted.state.players[1].home_planet,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        canceled: false,
+        launched: false,
+        participants: vec![
+            JointAttackParticipant {
+                player_id: 1,
+                response: JointAttackResponse::Accepted,
+                contribution: Some(crate::core::simulation::JointAttackContribution {
+                    player_id: 1,
+                    origin: host_home,
+                    army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+                    bombing: BombingRaid::None,
+                    combat_probes: false,
+                }),
+            },
+            JointAttackParticipant {
+                player_id: 2,
+                response: JointAttackResponse::Pending,
+                contribution: None,
+            },
+        ],
+    };
+
+    assert!(matches!(
+        block_on(backend.create_joint_attack(&host, &active.id, invitation)),
+        Err(BackendError::InvalidData(field)) if field == "joint_attack"
+    ));
+    assert!(block_on(backend.load_joint_attacks(&host, &active.id)).unwrap().is_empty());
+}
+
+#[test]
 /// Only the host can release an active match, and only after every member reconnects.
 fn resumed_game_waits_for_every_connected_player() {
     let backend = InMemoryBackend::new();
@@ -2016,6 +2074,7 @@ fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orde
                     },
                 }),
             },
+            false,
         ))
         .unwrap();
     }
@@ -2147,7 +2206,9 @@ fn trade_edits_are_live_reset_both_sides_and_require_current_consent_to_finalize
         let model = &mut storage.games.get_mut(&game.id).unwrap().record.persisted.state;
         for (i, home) in homes.iter().enumerate() {
             model.map.get_mut(*home).position = bevy::math::Vec2::new(i as f32 * 100.0, 0.0);
-            model.map.get_mut(*home).army.insert(Unit::Building(Building::TradingPost), 3);
+            if i != 0 {
+                model.map.get_mut(*home).army.insert(Unit::Building(Building::TradingPost), 3);
+            }
             model.players[i].resources = Resources::new(10_000, 10_000, 10_000);
         }
     }
@@ -2177,8 +2238,20 @@ fn trade_edits_are_live_reset_both_sides_and_require_current_consent_to_finalize
                 },
             ],
         },
+        true,
     ))
     .unwrap();
+    assert_eq!(
+        backend.lock().unwrap().games[&game.id]
+            .record
+            .persisted
+            .state
+            .map
+            .get(homes[0])
+            .army
+            .amount(&Unit::Building(Building::TradingPost)),
+        Building::MAX_LEVEL
+    );
     for (actor, player_id, resources) in [
         (&guest, 2, Resources::new(0, 200, 0)),
         (&host, 1, Resources::new(150, 0, 0)),

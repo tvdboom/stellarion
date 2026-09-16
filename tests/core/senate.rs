@@ -107,7 +107,7 @@ fn senate_bonus_does_not_unlock_units_or_expand_missile_storage() {
     );
     assert_eq!(
         purchase_limit(player, model.map.get(colony), Unit::Ship(Ship::Cruiser), 5, support),
-        Err(OrderError::Production)
+        Err(OrderError::ShipyardLevel(3))
     );
     apply_senate_policy(&mut model, 1, home, SenatePolicy::Consolidation).unwrap();
     let planet = model.map.get_mut(colony);
@@ -121,7 +121,7 @@ fn senate_bonus_does_not_unlock_units_or_expand_missile_storage() {
     );
     assert_eq!(
         purchase_limit(player, planet, Unit::Defense(Defense::PlasmaTurret), 5, support),
-        Err(OrderError::Production)
+        Err(OrderError::FactoryLevel(4))
     );
     assert_eq!(
         purchase_limit(player, planet, Unit::antiballistic_missile(), 5, support),

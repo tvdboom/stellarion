@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn mission_objectives_require_their_origin_units_before_selection() {
+    let destination = Planet::new(2, "Target".into(), Vec2::ZERO, false, 1.0);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut army = Army::from([(fighter, 1)]);
+
+    assert!(mission_objective_available(Icon::Attack, &army, &destination, 1, 2));
+    for objective in [Icon::Colonize, Icon::Spy, Icon::MissileStrike, Icon::Destroy] {
+        assert!(
+            !mission_objective_available(objective, &army, &destination, 1, 2),
+            "{objective:?} should be disabled without its required unit"
+        );
+    }
+
+    army.insert(Unit::colony_ship(), 1);
+    army.insert(Unit::probe(), crate::core::constants::MIN_SPY_PROBES);
+    army.insert(Unit::interplanetary_missile(), 1);
+    army.insert(Unit::war_sun(), 1);
+
+    for objective in [Icon::Colonize, Icon::Spy, Icon::MissileStrike, Icon::Destroy] {
+        assert!(
+            mission_objective_available(objective, &army, &destination, 1, 2),
+            "{objective:?} should be enabled once its required unit is available"
+        );
+    }
+}
+
+#[test]
 fn destroy_draft_shows_first_volley_chance_for_selected_war_suns() {
     use crate::core::simulation::{GameModel, GameRules};
 

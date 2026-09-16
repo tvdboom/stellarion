@@ -1,10 +1,11 @@
 //! Trading Post notifications and bilateral resource-negotiation panels.
 
+use super::shop::sized_image_tile_button;
 use super::*;
 use crate::core::messages::show_notification_area;
 use crate::core::messages::MessageAction;
 use crate::core::trading::{
-    trading_post_capacity, trading_posts_are_adjacent, visible_trading_post_owner,
+    trading_post_capacity, trading_posts_are_adjacent, visible_trading_post_owner, ResourceLoan,
 };
 use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse};
 
@@ -90,28 +91,45 @@ fn route_from_enemy_post(
         .map(|planet| (planet.id, enemy_player))
 }
 
+const RESOURCE_ROW_HORIZONTAL_MARGIN: i8 = 9;
+const RESOURCE_HUB_ROW_WIDTH: f32 = 428.0;
+
 /// Reserves equal resource columns independently of the amount widget's width.
-fn resource_row(ui: &mut Ui, mut contents: impl FnMut(&mut Ui, ResourceName, egui::Vec2, f32)) {
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(9, 0)).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let cell_width = (ui.available_width() - 12.0) / 3.0;
-        let image_width = (cell_width * 0.45).min(62.0);
-        // Preserve the art's 3:2 ratio inside the tile's one-point border.
-        let image_size = egui::vec2(image_width, (image_width - 2.0) / 1.5 + 2.0);
-        let amount_width = (cell_width - image_width - 6.0).clamp(1.0, 64.0);
-        ui.horizontal(|ui| {
-            for resource in ResourceName::iter() {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(cell_width, image_size.y.max(34.0)),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        ui.set_min_width(cell_width);
-                        contents(ui, resource, image_size, amount_width);
-                    },
-                );
-            }
+fn resource_row(
+    ui: &mut Ui,
+    max_width: f32,
+    max_image_width: f32,
+    max_amount_width: f32,
+    mut contents: impl FnMut(&mut Ui, ResourceName, egui::Vec2, f32),
+) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(RESOURCE_ROW_HORIZONTAL_MARGIN, 0))
+        .show(ui, |ui| {
+            let row_width = ui.available_width().min(max_width);
+            ui.vertical_centered(|ui| {
+                ui.set_width(row_width);
+                let resource_gap = 10.0;
+                ui.spacing_mut().item_spacing.x = resource_gap;
+                let cell_width = (row_width - resource_gap * 2.0) / 3.0;
+                let image_width = (cell_width * 0.5).min(max_image_width);
+                // Preserve the art's 3:2 ratio inside the tile's one-point border.
+                let image_size = egui::vec2(image_width, (image_width - 2.0) / 1.5 + 2.0);
+                let amount_width = (cell_width - image_width - 6.0).clamp(1.0, max_amount_width);
+                ui.horizontal(|ui| {
+                    for resource in ResourceName::iter() {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(cell_width, image_size.y.max(34.0)),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.set_min_width(cell_width);
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                contents(ui, resource, image_size, amount_width);
+                            },
+                        );
+                    }
+                });
+            });
         });
-    });
 }
 
 /// Keeps every trade resource framed the same way, including read-only offers.
@@ -141,7 +159,7 @@ fn resource_controls(
     enabled: bool,
     images: &ImageIds,
 ) {
-    resource_row(ui, |ui, resource, image_size, width| {
+    resource_row(ui, RESOURCE_HUB_ROW_WIDTH, 62.0, 64.0, |ui, resource, image_size, width| {
         style_selection_boxes(ui);
         ui.style_mut().drag_value_text_style = TextStyle::Small;
         ui.spacing_mut().button_padding = egui::vec2(4.0, 6.0);
@@ -175,7 +193,12 @@ fn resource_controls(
     });
 }
 
-fn trade_panel_header(ui: &mut Ui, panel: egui::Rect, content: egui::Rect) -> egui::Rect {
+fn trade_panel_header(
+    ui: &mut Ui,
+    panel: egui::Rect,
+    content: egui::Rect,
+    title: &str,
+) -> egui::Rect {
     // The top ornament is part of the stretched panel artwork, so its height scales with it.
     let bar_height = panel.height() * TRADE_PANEL_TOP_BAR_FRACTION;
     let header = egui::Rect::from_min_size(
@@ -185,7 +208,7 @@ fn trade_panel_header(ui: &mut Ui, panel: egui::Rect, content: egui::Rect) -> eg
     ui.scope_builder(UiBuilder::new().max_rect(header.translate(egui::vec2(0.0, 2.0))), |ui| {
         ui.centered_and_justified(|ui| {
             ui.label(
-                RichText::new("Trading Post")
+                RichText::new(title)
                     .size(21.0_f32.min(bar_height - 4.0))
                     .strong()
                     .color(ABANDON_CONFIRMATION_TEXT_COLOR),
@@ -201,6 +224,7 @@ fn offer_heading(
     response: Option<TradeResponse>,
     proposer: bool,
     finalized: bool,
+    text_inset: f32,
 ) {
     let (status, color) = match response {
         Some(TradeResponse::Pending) => ("Pending", Color32::from_rgb(229, 190, 107)),
@@ -220,6 +244,7 @@ fn offer_heading(
                 egui::vec2(ui.available_width(), 24.0),
                 Layout::left_to_right(Align::Center),
                 |ui| {
+                    ui.add_space(text_inset);
                     ui.add(egui::Label::new(label.size(18.0).strong()).wrap());
                 },
             );
@@ -229,7 +254,7 @@ fn offer_heading(
 }
 
 fn draw_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds) {
-    resource_row(ui, |ui, resource, image_size, width| {
+    resource_row(ui, 342.0, 52.0, 30.0, |ui, resource, image_size, width| {
         resource_tile_button(ui, images.get(resource.to_lowername()), image_size, false);
         ui.add_sized(
             egui::vec2(width, 34.0),
@@ -239,6 +264,37 @@ fn draw_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds) {
     });
     ui.add_space(8.0);
     ui.label(
+        RichText::new(format!("{} total", resources.total()))
+            .size(TRADE_SUMMARY_FONT_SIZE)
+            .color(Color32::GRAY),
+    );
+}
+
+fn resource_hub_text_inset(available_width: f32) -> f32 {
+    let margin = f32::from(RESOURCE_ROW_HORIZONTAL_MARGIN);
+    margin + ((available_width - margin * 2.0 - RESOURCE_HUB_ROW_WIDTH).max(0.0) * 0.5)
+}
+
+fn resource_hub_text_label(ui: &mut Ui, inset: f32, text: RichText) {
+    ui.horizontal(|ui| {
+        ui.add_space(inset);
+        ui.label(text);
+    });
+}
+
+fn draw_resource_hub_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds, text_inset: f32) {
+    resource_row(ui, RESOURCE_HUB_ROW_WIDTH, 62.0, 64.0, |ui, resource, image_size, width| {
+        resource_tile_button(ui, images.get(resource.to_lowername()), image_size, false);
+        ui.add_sized(
+            egui::vec2(width, 34.0),
+            egui::Label::new(RichText::new(resources.get(&resource).to_string()).small().strong()),
+        )
+        .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+    });
+    ui.add_space(8.0);
+    resource_hub_text_label(
+        ui,
+        text_inset,
         RichText::new(format!("{} total", resources.total()))
             .size(TRADE_SUMMARY_FONT_SIZE)
             .color(Color32::GRAY),
@@ -298,6 +354,428 @@ fn trade_footer_buttons(
     (close, action)
 }
 
+fn resource_hub_term_button(
+    ui: &mut Ui,
+    images: &ImageIds,
+    term: ResourceLoanTerm,
+    selected: bool,
+    enabled: bool,
+    width: f32,
+    principal: Resources,
+) -> Response {
+    let (image, label, turns, premium) = match term {
+        ResourceLoanTerm::Short => ("loan short", "Short-term", 1, 10),
+        ResourceLoanTerm::Medium => ("loan medium", "Mid-term", 2, 30),
+        ResourceLoanTerm::Long => ("loan long", "Long-term", 3, 50),
+    };
+    let contents = ui
+        .add_enabled_ui(enabled, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 72.0),
+                Layout::top_down(Align::Center),
+                |ui| {
+                    let image = sized_image_tile_button(
+                        ui,
+                        images.get(image),
+                        selected,
+                        egui::vec2(70.0, 47.0),
+                    );
+                    ui.add_space(1.0);
+                    image.union(
+                        ui.add(
+                            egui::Label::new(RichText::new(label).small().strong())
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        ),
+                    )
+                },
+            )
+            .inner
+        })
+        .inner;
+    let hover_region =
+        ui.interact(contents.rect, ui.id().with(("resource hub term", label)), Sense::hover());
+    let response = contents.union(hover_region);
+    let repayment = term.repayment(principal);
+    let hover = |ui: &mut Ui| {
+        ui.set_max_width(360.0);
+        ui.small(format!(
+            "Repay after {turns} turn{} with a {premium}% premium on each borrowed resource. \
+            The complete repayment is deducted automatically after production on the due turn.",
+            if turns == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Repayment bundle").small().strong().color(TRADE_ACCENT));
+        draw_bundle(ui, repayment, images);
+        ui.add_space(4.0);
+        ui.small(
+            "If it cannot be paid in full, it remains due and retries next turn. Until \
+            every overdue repayment is cleared, none of your Resource Markets can open a new \
+            loan.",
+        );
+    };
+    response
+        .on_hover_ui(hover)
+        .on_disabled_hover_ui(hover)
+        .on_hover_cursor(CursorIcon::PointingHand)
+}
+
+fn pending_resource_loan(
+    pending: &PendingTurnCommands,
+    player_id: PlayerId,
+    selected_planet: PlanetId,
+    turn: u64,
+) -> Option<ResourceLoan> {
+    pending.commands.iter().chain(&pending.queued_commands).find_map(|command| match command {
+        TurnCommand::BorrowResources {
+            planet_id,
+            resources,
+            term,
+        } if *planet_id == selected_planet => Some(ResourceLoan {
+            player_id,
+            planet_id: *planet_id,
+            issued_turn: turn,
+            due_turn: turn.saturating_add(term.turns()),
+            principal: *resources,
+            term: *term,
+        }),
+        _ => None,
+    })
+}
+
+fn pending_early_resource_loan_repayment(
+    pending: &PendingTurnCommands,
+    planet_id: PlanetId,
+) -> bool {
+    pending.commands.iter().chain(&pending.queued_commands).any(|command| {
+        matches!(
+            command,
+            TurnCommand::RepayResourceLoanEarly {
+                planet_id: pending_planet,
+            } if *pending_planet == planet_id
+        )
+    })
+}
+
+fn resource_loan_repayment_heading(
+    loan: &ResourceLoan,
+    turn: u64,
+    early_repayment_pending: bool,
+) -> String {
+    if early_repayment_pending || loan.due_turn == turn {
+        "Repayment due this turn".to_owned()
+    } else if loan.due_turn < turn {
+        let overdue = turn - loan.due_turn;
+        format!(
+            "Repayment overdue by {overdue} turn{}",
+            if overdue == 1 {
+                ""
+            } else {
+                "s"
+            }
+        )
+    } else {
+        let remaining = loan.due_turn - turn;
+        if remaining == 1 {
+            "Repayment due in 1 turn".to_owned()
+        } else {
+            format!("Repayment due in {remaining} turns")
+        }
+    }
+}
+
+fn draw_resource_hub_panel(
+    context: &egui::Context,
+    state: &mut UiState,
+    map: &Map,
+    player: &Player,
+    session: &MultiplayerSession,
+    pending: &mut PendingTurnCommands,
+    messages: &mut MessageWriter<MessageMsg>,
+    images: &ImageIds,
+) {
+    let Some(planet_id) = state.trading_post_open else {
+        return;
+    };
+    let canonical = session.active_game.as_ref().map(|game| &game.persisted.state);
+    let turn = canonical.map_or(pending.turn.max(1), |model| model.turn);
+    // `map` is the projected draft. A testing boost can create a completed Trading Post before
+    // the turn is saved, and the Resource Hub must use the same infrastructure the player sees.
+    let capacity =
+        map.try_get(planet_id).map_or(0, |planet| trading_post_capacity(planet, player.id));
+    let active_loan = canonical
+        .and_then(|model| {
+            model
+                .resource_loans
+                .iter()
+                .find(|loan| loan.player_id == player.id && loan.planet_id == planet_id)
+        })
+        .cloned();
+    let borrowing_blocked =
+        canonical.is_some_and(|model| model.resource_hub_borrowing_blocked(player.id));
+    let drafted_loan = pending_resource_loan(pending, player.id, planet_id, turn);
+    let early_repayment_pending = pending_early_resource_loan_repayment(pending, planet_id);
+    let displayed_loan = active_loan.as_ref().or(drafted_loan.as_ref());
+    let preferred_height =
+        if displayed_loan.is_some_and(|loan| !early_repayment_pending && loan.due_turn < turn) {
+            480.0
+        } else if displayed_loan.is_some() {
+            440.0
+        } else {
+            470.0
+        };
+    let panel_size = egui::vec2(520.0, preferred_height).min(
+        context.content_rect().size() / game_panel_scale(context.content_rect().size())
+            - egui::vec2(32.0, 62.0),
+    );
+    let response = show_panel_modal_with_offset(
+        context,
+        images,
+        egui::Id::new("resource hub panel"),
+        panel_size,
+        egui::vec2(0.0, TRADE_PANEL_VERTICAL_OFFSET),
+        |ui, panel, content| {
+            let header = trade_panel_header(ui, panel, content, "Resource Market");
+            let footer = egui::Rect::from_min_size(
+                egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
+                egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
+            );
+            let body = egui::Rect::from_min_max(
+                egui::pos2(content.left(), header.bottom() + 22.0),
+                egui::pos2(content.right(), footer.top() - 12.0),
+            );
+            let mut borrow = false;
+            let mut repay_early = false;
+            ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+                ui.set_clip_rect(body);
+                let resource_text_inset = resource_hub_text_inset(ui.available_width());
+                if let Some(loan) = displayed_loan {
+                    let repayment = loan.repayment();
+                    let drafted = active_loan.is_none();
+                    resource_hub_text_label(
+                        ui,
+                        resource_text_inset,
+                        RichText::new("Borrowed resources")
+                            .size(18.0)
+                            .strong()
+                            .color(TRADE_ACCENT),
+                    );
+                    ui.add_space(4.0);
+                    draw_resource_hub_bundle(
+                        ui,
+                        loan.principal,
+                        images,
+                        resource_text_inset,
+                    );
+                    ui.add_space(10.0);
+                    resource_hub_text_label(
+                        ui,
+                        resource_text_inset,
+                        RichText::new(resource_loan_repayment_heading(
+                            loan,
+                            turn,
+                            early_repayment_pending,
+                        ))
+                        .size(18.0)
+                        .strong()
+                        .color(TRADE_ACCENT),
+                    );
+                    ui.add_space(4.0);
+                    draw_resource_hub_bundle(ui, repayment, images, resource_text_inset);
+                    if !early_repayment_pending && loan.due_turn < turn {
+                        ui.add_space(10.0);
+                        resource_hub_text_label(
+                            ui,
+                            resource_text_inset,
+                            RichText::new(
+                                "Repayment will retry automatically this turn, and new Resource Market loans remain blocked.",
+                            )
+                            .size(16.0),
+                        );
+                    }
+                    if !drafted && loan.due_turn <= turn && !player.resources.contains(repayment) {
+                        resource_hub_text_label(
+                            ui,
+                            resource_text_inset,
+                            RichText::new(
+                                "Insufficient resources: repayment will retry next turn.",
+                            )
+                            .color(Color32::from_rgb(229, 190, 107)),
+                        );
+                    }
+                } else if borrowing_blocked {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "New Resource Market loans are unavailable while your empire has an overdue repayment.",
+                            )
+                            .size(17.0),
+                        );
+                    });
+                } else if capacity == 0 {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "This Trading Post is not available in the saved turn yet. Complete it and advance the turn before borrowing.",
+                            )
+                            .size(17.0),
+                        );
+                    });
+                } else {
+                    resource_hub_text_label(
+                        ui,
+                        resource_text_inset,
+                        RichText::new("Choose a resource bundle")
+                            .size(18.0)
+                            .strong()
+                            .color(TRADE_ACCENT),
+                    );
+                    ui.add_space(8.0);
+                    resource_controls(
+                        ui,
+                        &mut state.resource_hub_resources,
+                        Resources::new(capacity, capacity, capacity),
+                        pending.can_accept_commands(),
+                        images,
+                    );
+                    let total = state.resource_hub_resources.total();
+                    ui.add_space(7.0);
+                    resource_hub_text_label(
+                        ui,
+                        resource_text_inset,
+                        RichText::new(format!("{total} / {capacity} selected"))
+                            .size(TRADE_SUMMARY_FONT_SIZE)
+                            .color(if total <= capacity {
+                                Color32::GRAY
+                            } else {
+                                Color32::LIGHT_RED
+                            }),
+                    );
+                    ui.add_space(13.0);
+                    resource_hub_text_label(
+                        ui,
+                        resource_text_inset,
+                        RichText::new("Choose a repayment term")
+                            .size(18.0)
+                            .strong()
+                            .color(TRADE_ACCENT),
+                    );
+                    ui.add_space(7.0);
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 38.0;
+                        ui.set_width(328.0);
+                        ui.columns(3, |columns| {
+                            for (column, term) in columns.iter_mut().zip([
+                                ResourceLoanTerm::Short,
+                                ResourceLoanTerm::Medium,
+                                ResourceLoanTerm::Long,
+                            ]) {
+                                if resource_hub_term_button(
+                                    column,
+                                    images,
+                                    term,
+                                    state.resource_hub_term == term,
+                                    pending.can_accept_commands(),
+                                    70.0,
+                                    state.resource_hub_resources,
+                                )
+                                .clicked()
+                                {
+                                    state.resource_hub_term = term;
+                                }
+                            }
+                        });
+                    });
+                }
+            });
+            let total = state.resource_hub_resources.total();
+            let valid = displayed_loan.is_none()
+                && !borrowing_blocked
+                && capacity > 0
+                && total > 0
+                && total <= capacity
+                && pending.can_accept_commands();
+            let mut close = false;
+            ui.scope(|ui| {
+                style_modal_buttons(ui);
+                let gap = 10.0;
+                let width = 124.0_f32.min((footer.width() - gap) * 0.5);
+                let active_repayment = active_loan.as_ref().filter(|_| !early_repayment_pending);
+                let show_borrow = displayed_loan.is_none() && capacity > 0;
+                let has_second_button = active_repayment.is_some() || show_borrow;
+                let left = if has_second_button {
+                    footer.center().x - width - gap * 0.5
+                } else {
+                    footer.center().x - width * 0.5
+                };
+                let first = egui::Rect::from_min_size(
+                    egui::pos2(left, footer.center().y - MODAL_BUTTON_HEIGHT * 0.5),
+                    egui::vec2(width, MODAL_BUTTON_HEIGHT),
+                );
+                close = draw_modal_button(ui, first, "Close", true).clicked();
+                if let Some(loan) = active_repayment {
+                    let repayment = loan.repayment();
+                    repay_early = draw_modal_button(
+                        ui,
+                        first.translate(egui::vec2(width + gap, 0.0)),
+                        "Repay early",
+                        pending.can_accept_commands() && player.resources.contains(repayment),
+                    )
+                    .on_disabled_hover_text("The complete repayment bundle is not available.")
+                    .clicked();
+                } else if show_borrow {
+                    borrow = draw_modal_button(
+                        ui,
+                        first.translate(egui::vec2(width + gap, 0.0)),
+                        "Borrow",
+                        valid,
+                    )
+                    .clicked();
+                }
+            });
+            (close, borrow, repay_early)
+        },
+    );
+    let (mut close, borrow, repay_early) = response.inner;
+    close |= response.should_close();
+    if borrow {
+        let resources = state.resource_hub_resources;
+        let term = state.resource_hub_term;
+        if pending.push(TurnCommand::BorrowResources {
+            planet_id,
+            resources,
+            term,
+        }) {
+            messages.write(MessageMsg::info(format!(
+                "Successfully borrowed {} resources.",
+                resources.total(),
+            )));
+            close = true;
+        } else {
+            messages.write(MessageMsg::info(COMMAND_LIMIT_REACHED_MESSAGE));
+        }
+    }
+    if repay_early {
+        if pending.push(TurnCommand::RepayResourceLoanEarly {
+            planet_id,
+        }) {
+            messages.write(MessageMsg::info(
+                "Full Resource Market repayment added to this turn's draft.",
+            ));
+            close = true;
+        } else {
+            messages.write(MessageMsg::info(COMMAND_LIMIT_REACHED_MESSAGE));
+        }
+    }
+    if close {
+        state.trading_post_open = None;
+        state.resource_hub_resources = Resources::default();
+    }
+}
+
 fn draw_trade_panel(
     context: &egui::Context,
     state: &mut UiState,
@@ -312,25 +790,22 @@ fn draw_trade_panel(
         route_from_enemy_post(map, player, enemy_planet)
             .map(|(own_planet, enemy_player)| (own_planet, enemy_planet, enemy_player))
     });
-    // Draft previews can show a post that has not been committed to the saved turn yet.
-    // The backend validates the saved map, so only offer routes present there.
+    let saved_route = session.active_game.as_ref().and_then(|game| {
+        state.trading_post_open.and_then(|enemy_planet| {
+            route_from_enemy_post(&game.persisted.state.map, player, enemy_planet)
+                .map(|(own_planet, enemy_player)| (own_planet, enemy_planet, enemy_player))
+        })
+    });
+    // The backend commits a completed post from the visible draft before creating this private
+    // negotiation, keeping the canonical route consistent for the other participant.
+    let projected_post = projected_route.is_some() && saved_route.is_none();
     let submitted_route = projected_route.is_some_and(|(_, _, enemy_player)| {
         session.active_game.as_ref().is_some_and(|game| {
             game.submitted_players.contains(&player.id)
                 || game.submitted_players.contains(&enemy_player)
         })
     });
-    let new_route = match session.active_game.as_ref() {
-        Some(game) => state.trading_post_open.and_then(|enemy_planet| {
-            route_from_enemy_post(&game.persisted.state.map, player, enemy_planet)
-                .filter(|(_, enemy_player)| {
-                    !game.submitted_players.contains(&player.id)
-                        && !game.submitted_players.contains(enemy_player)
-                })
-                .map(|(own_planet, enemy_player)| (own_planet, enemy_planet, enemy_player))
-        }),
-        None => projected_route,
-    };
+    let new_route = projected_route.filter(|_| !submitted_route);
 
     // A negotiation belongs to the player pair for this turn, even when a different
     // visible post cannot establish a new route. Accepted trades remain reviewable.
@@ -372,7 +847,7 @@ fn draw_trade_panel(
                     - egui::vec2(32.0, 32.0),
             ),
             |ui, panel, content| {
-                let header = trade_panel_header(ui, panel, content);
+                let header = trade_panel_header(ui, panel, content, "Trading Post");
                 let body = egui::Rect::from_min_max(
                     egui::pos2(content.left(), header.bottom() + 20.0),
                     egui::pos2(
@@ -386,8 +861,6 @@ fn draw_trade_panel(
                         ui.add(egui::Label::new(RichText::new(
                             if submitted_route {
                                 "One of the players has already ended this turn. New trades can begin next turn."
-                            } else if projected_route.is_some() {
-                                "This route is not available in the saved turn yet. Complete both Trading Posts and advance the turn before trading."
                             } else {
                                 "Both players need completed Trading Posts, and at least one post must reach the other to trade."
                             },
@@ -432,10 +905,8 @@ fn draw_trade_panel(
         return;
     };
 
-    let capacity_map = session.active_game.as_ref().map_or(map, |game| &game.persisted.state.map);
-    let capacity = capacity_map
-        .try_get(own_planet)
-        .map_or(0, |planet| trading_post_capacity(planet, player.id));
+    let capacity =
+        map.try_get(own_planet).map_or(0, |planet| trading_post_capacity(planet, player.id));
     let finalized = invitation.is_some_and(|trade| trade.finalized);
     let canceled = invitation.is_some_and(|trade| trade.canceled);
     let editable = !finalized && !canceled;
@@ -444,13 +915,13 @@ fn draw_trade_panel(
         context,
         images,
         egui::Id::new("trading post panel"),
-        egui::vec2(560.0, 402.0).min(
+        egui::vec2(520.0, 422.0).min(
             context.content_rect().size() / game_panel_scale(context.content_rect().size())
                 - egui::vec2(32.0, 86.0),
         ),
         egui::vec2(0.0, TRADE_PANEL_VERTICAL_OFFSET),
         |ui, panel, content| {
-            let header = trade_panel_header(ui, panel, content);
+            let header = trade_panel_header(ui, panel, content, "Trading Post");
             let footer = egui::Rect::from_min_size(
                 egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
                 egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
@@ -461,12 +932,13 @@ fn draw_trade_panel(
             );
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);
-                egui::ScrollArea::vertical()
+                ScrollArea::vertical()
                     .id_salt("trade offers")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 5.0;
+                        let resource_text_inset = resource_hub_text_inset(ui.available_width());
 
                         // Both players see the sender first, including before the draft is sent.
                         let own_first = invitation.is_none_or(|trade| trade.proposer == player.id);
@@ -477,9 +949,9 @@ fn draw_trade_panel(
                         };
                         for (index, participant_id) in order.into_iter().enumerate() {
                             if index > 0 {
-                                ui.add_space(8.0);
+                                ui.add_space(16.0);
                                 ui.separator();
-                                ui.add_space(8.0);
+                                ui.add_space(16.0);
                             }
                             let own = participant_id == player.id;
                             let participant =
@@ -505,6 +977,7 @@ fn draw_trade_panel(
                                 status,
                                 invitation.is_some_and(|trade| trade.proposer == participant_id),
                                 finalized,
+                                resource_text_inset,
                             );
                             if own {
                                 resource_controls(
@@ -521,17 +994,20 @@ fn draw_trade_panel(
                                     Color32::LIGHT_RED
                                 };
                                 ui.add_space(8.0);
-                                ui.label(
+                                resource_hub_text_label(
+                                    ui,
+                                    resource_text_inset,
                                     RichText::new(format!("{total} / {capacity} selected"))
                                         .size(TRADE_SUMMARY_FONT_SIZE)
                                         .color(color),
                                 );
                             } else {
-                                draw_bundle(
+                                draw_resource_hub_bundle(
                                     ui,
                                     participant
                                         .map_or_else(Resources::default, |other| other.resources),
                                     images,
+                                    resource_text_inset,
                                 );
                             }
                         }
@@ -607,15 +1083,18 @@ fn draw_trade_panel(
                 },
             ];
             participants.sort_by_key(|participant| participant.player_id);
-            requests.write(MultiplayerRequest::CreateTrade(TradeInvitation {
-                id,
-                revision: 0,
-                turn: game.persisted.state.turn,
-                proposer: player.id,
-                canceled: false,
-                finalized: false,
-                participants,
-            }));
+            requests.write(MultiplayerRequest::CreateTrade {
+                invitation: TradeInvitation {
+                    id,
+                    revision: 0,
+                    turn: game.persisted.state.turn,
+                    proposer: player.id,
+                    canceled: false,
+                    finalized: false,
+                    participants,
+                },
+                projected_post,
+            });
             state.trade_open = Some(id);
             state.trade_draft_id = Some(id);
         }
@@ -654,6 +1133,7 @@ pub(super) fn draw_trade_notifications(
     map: &Map,
     player: &Player,
     session: &MultiplayerSession,
+    pending: &mut PendingTurnCommands,
     requests: &mut MessageWriter<MultiplayerRequest>,
     messages: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
@@ -752,7 +1232,14 @@ pub(super) fn draw_trade_notifications(
         }
     });
 
-    if state.trade_open.is_some() || state.trading_post_open.is_some() {
+    let own_hub_open = state.trading_post_open.is_some_and(|planet_id| {
+        map.try_get(planet_id).is_some_and(|planet| {
+            visible_trading_post_owner(map, player.id, planet) == Some(player.id)
+        })
+    });
+    if own_hub_open {
+        draw_resource_hub_panel(context, state, map, player, session, pending, messages, images);
+    } else if state.trade_open.is_some() || state.trading_post_open.is_some() {
         draw_trade_panel(context, state, map, player, session, requests, messages, images);
     }
 }

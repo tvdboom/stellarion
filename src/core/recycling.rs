@@ -20,13 +20,13 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 
 /// Minimum per-level haul while harvesting the permanent asteroid field.
-pub const RECYCLER_ASTEROID_OUTPUT_MIN: Resources = Resources::new(15, 7, 3);
+pub const RECYCLER_ASTEROID_OUTPUT_MIN: Resources = Resources::new(45, 21, 9);
 /// Maximum per-level haul while harvesting the permanent asteroid field.
-pub const RECYCLER_ASTEROID_OUTPUT_MAX: Resources = Resources::new(25, 13, 7);
-/// Minimum per-level haul while salvaging temporary battle debris.
-pub const RECYCLER_DEBRIS_OUTPUT_MIN: Resources = Resources::new(40, 20, 8);
-/// Maximum per-level haul while salvaging temporary battle debris.
-pub const RECYCLER_DEBRIS_OUTPUT_MAX: Resources = Resources::new(60, 30, 12);
+pub const RECYCLER_ASTEROID_OUTPUT_MAX: Resources = Resources::new(75, 39, 21);
+/// Minimum per-level haul while salvaging temporary battle debris: three times asteroid output.
+pub const RECYCLER_DEBRIS_OUTPUT_MIN: Resources = Resources::new(135, 63, 27);
+/// Maximum per-level haul while salvaging temporary battle debris: three times asteroid output.
+pub const RECYCLER_DEBRIS_OUTPUT_MAX: Resources = Resources::new(225, 117, 63);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Coarse wreckage class controlling how many turns a battle site remains usable.

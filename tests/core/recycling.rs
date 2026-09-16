@@ -90,6 +90,11 @@ fn debris_counts_destroyed_protection_ships_from_the_shared_garrison() {
 
 #[test]
 fn recycler_prefers_debris_and_scales_output_by_level() {
+    assert_eq!(RECYCLER_ASTEROID_OUTPUT_MIN, Resources::new(45, 21, 9));
+    assert_eq!(RECYCLER_ASTEROID_OUTPUT_MAX, Resources::new(75, 39, 21));
+    assert_eq!(RECYCLER_DEBRIS_OUTPUT_MIN, Resources::new(135, 63, 27));
+    assert_eq!(RECYCLER_DEBRIS_OUTPUT_MAX, Resources::new(225, 117, 63));
+
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     let asteroid_targets = recycler_asteroid_targets(&model.map);
     let target = model
@@ -132,5 +137,6 @@ fn recycler_prefers_debris_and_scales_output_by_level() {
     );
     assert!(output >= RECYCLER_DEBRIS_OUTPUT_MIN * 3usize);
     assert!(output <= RECYCLER_DEBRIS_OUTPUT_MAX * 3usize);
-    assert!(RECYCLER_DEBRIS_OUTPUT_MIN > RECYCLER_ASTEROID_OUTPUT_MAX);
+    assert_eq!(RECYCLER_DEBRIS_OUTPUT_MIN, RECYCLER_ASTEROID_OUTPUT_MIN * 3usize);
+    assert_eq!(RECYCLER_DEBRIS_OUTPUT_MAX, RECYCLER_ASTEROID_OUTPUT_MAX * 3usize);
 }

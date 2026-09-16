@@ -38,9 +38,11 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
     });
     let context = egui::Context::default();
     let mut world = World::new();
+    world.init_resource::<PendingTurnCommands>();
     world.init_resource::<Messages<MultiplayerRequest>>();
     world.init_resource::<Messages<MessageMsg>>();
     let mut params = bevy::ecs::system::SystemState::<(
+        ResMut<PendingTurnCommands>,
         MessageWriter<MultiplayerRequest>,
         MessageWriter<MessageMsg>,
     )>::new(&mut world);
@@ -48,7 +50,7 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
         let player = model.player(player_id).unwrap();
         let mut state = UiState::default();
         let mut output = context.run_ui(egui::RawInput::default(), |ctx| {
-            let (mut requests, mut messages) = params.get_mut(&mut world).unwrap();
+            let (mut pending, mut requests, mut messages) = params.get_mut(&mut world).unwrap();
             draw_joint_attack_notifications(
                 ctx,
                 &mut state,
@@ -65,6 +67,7 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
                 &model.map,
                 player,
                 &session,
+                &mut pending,
                 &mut requests,
                 &mut messages,
                 &ImageIds::default(),
@@ -124,6 +127,7 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
         let mut app = App::new();
         app.init_resource::<EguiUserTextures>()
             .init_resource::<Time>()
+            .init_resource::<PendingTurnCommands>()
             .insert_resource(State::new(AppState::Game))
             .insert_resource(State::new(GameState::Playing))
             .add_message::<MessageMsg>()
@@ -152,10 +156,12 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
                 },
                 |_| {
                     let mut params = bevy::ecs::system::SystemState::<(
+                        ResMut<PendingTurnCommands>,
                         MessageWriter<MultiplayerRequest>,
                         MessageWriter<MessageMsg>,
                     )>::new(app.world_mut());
-                    let (mut requests, mut messages) = params.get_mut(app.world_mut()).unwrap();
+                    let (mut pending, mut requests, mut messages) =
+                        params.get_mut(app.world_mut()).unwrap();
                     draw_joint_attack_notifications(
                         &context,
                         state,
@@ -172,6 +178,7 @@ fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
                         &model.map,
                         &player,
                         &session,
+                        &mut pending,
                         &mut requests,
                         &mut messages,
                         &ImageIds::default(),

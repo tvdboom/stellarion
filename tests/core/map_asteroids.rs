@@ -116,3 +116,35 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
     }
     assert!(minimum_visible >= 16, "visible={minimum_visible}");
 }
+
+#[test]
+fn two_player_practice_seeds_never_shrink_asteroids_below_the_legible_minimum() {
+    let rules = GameRules {
+        player_count: 2,
+        practice_mode: true,
+        ..Default::default()
+    };
+
+    let mut narrow_layouts = 0;
+    for sample in 0..512 {
+        let seed = DeterministicRngState::from_u64(sample).seed;
+        let map = GameModel::new(seed, rules.clone()).unwrap().map;
+        let layout = asteroid_belt_layout(&map).unwrap();
+        let gap = solar_band_gaps(&map)
+            .into_iter()
+            .find(|gap| gap.between_bands == layout.between_bands)
+            .unwrap();
+        narrow_layouts += usize::from(
+            gap.outer_edge > gap.inner_edge
+                && (gap.outer_edge - gap.inner_edge) * 0.4 < ASTEROID_MINIMUM_DIAMETER,
+        );
+        let placements = asteroid_belt_placements(&map, layout);
+
+        assert!(!placements.is_empty(), "sample {sample} produced no asteroid field");
+        assert!(
+            placements.iter().all(|placement| placement.diameter >= ASTEROID_MINIMUM_DIAMETER),
+            "sample {sample} produced a sub-legible asteroid: layout={layout:?}"
+        );
+    }
+    assert!(narrow_layouts > 0, "the regression sweep did not exercise any narrow belts");
+}

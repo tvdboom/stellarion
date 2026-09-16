@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#0c1014">
+    <link rel="icon" type="image/png" href="./assets-runtime/images/icons/planet.png">
     <title>Stellarion</title>
     <style>
       :root { color-scheme: dark; background: #0c1014; }
@@ -102,6 +103,34 @@
           console.warn("Clipboard write was unavailable", error);
         }
         return false;
+      };
+
+      // A canvas has no native editable context menu. The in-game Paste action starts the
+      // permission-gated read synchronously from its click, then Rust consumes it next frame.
+      let pendingPaste;
+      window.stellarionRequestPaste = () => {
+        pendingPaste = null;
+        try {
+          if (window.isSecureContext && navigator.clipboard?.readText) {
+            navigator.clipboard.readText().then(
+              (text) => { pendingPaste = String(text); },
+              (error) => {
+                console.warn("Clipboard read was rejected", error);
+                pendingPaste = false;
+              },
+            );
+            return true;
+          }
+        } catch (error) {
+          console.warn("Clipboard read was unavailable", error);
+        }
+        pendingPaste = false;
+        return false;
+      };
+      window.stellarionTakePaste = () => {
+        const result = pendingPaste;
+        if (typeof result === "string" || result === false) pendingPaste = undefined;
+        return result;
       };
 
       const status = document.querySelector("#status");

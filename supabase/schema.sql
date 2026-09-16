@@ -356,6 +356,7 @@ declare
     v_missions jsonb;
     v_orbital_strikes jsonb;
     v_trades jsonb;
+    v_resource_loans jsonb;
     v_planet_total integer;
     v_unique_planets integer;
     v_min_planet_id bigint;
@@ -368,9 +369,9 @@ begin
        or not (p_persisted ?& array['state'])
        or p_persisted - array['state'] <> '{}'::jsonb
        or not ((p_persisted -> 'state') ?&
-           array['players', 'map', 'missions', 'orbital_strikes', 'trades', 'turn', 'rng', 'rules', 'status'])
+           array['players', 'map', 'missions', 'orbital_strikes', 'trades', 'resource_loans', 'turn', 'rng', 'rules', 'status'])
        or (p_persisted -> 'state') -
-           array['players', 'map', 'missions', 'orbital_strikes', 'trades', 'turn', 'rng', 'rules', 'status'] <> '{}'::jsonb then
+           array['players', 'map', 'missions', 'orbital_strikes', 'trades', 'resource_loans', 'turn', 'rng', 'rules', 'status'] <> '{}'::jsonb then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:persisted object';
     end if;
 
@@ -385,9 +386,14 @@ begin
     v_missions := p_persisted #> '{state,missions}';
     v_orbital_strikes := p_persisted #> '{state,orbital_strikes}';
     v_trades := p_persisted #> '{state,trades}';
+    v_resource_loans := p_persisted #> '{state,resource_loans}';
     if jsonb_typeof(v_trades) is distinct from 'array'
        or jsonb_array_length(v_trades) > 6 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trades';
+    end if;
+    if jsonb_typeof(v_resource_loans) is distinct from 'array'
+       or jsonb_array_length(v_resource_loans) > 160 then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:resource_loans';
     end if;
 
 
@@ -993,6 +999,7 @@ $$;
 -- other players' consent. Stale acceptances are rejected. Editors can close independently.
 -- Only the inviter may revise the shared target, objective, or bombing order. Guests edit their
 -- own fleets through the response operation while the published route and bombing order stay fixed.
+-- Coordination is disabled once fewer than three non-spectator players remain.
 -- The inviter must select at least one ship before publishing a proposal.
 -- A launch needs the inviter and at least one accepted guest; unanswered guests are excluded.
 -- Saving that launch freezes the roster and closes the invitation to further responses.
@@ -1062,6 +1069,8 @@ begin
       from jsonb_array_elements(v_game.state -> 'state' -> 'map' -> 'planets') planet
      where (planet ->> 'id')::bigint = (p_invitation ->> 'destination')::bigint;
     if v_game.status <> 'active'
+       or (select count(*) from jsonb_array_elements(v_game.state #> '{state,players}') player
+            where (player ->> 'spectator')::boolean = false) < 3
        or (p_invitation ->> 'turn')::bigint <> v_game.current_turn
        or (p_invitation ->> 'inviter')::bigint <> v_player
        or coalesce((p_invitation ->> 'canceled')::boolean, true)
@@ -1213,6 +1222,7 @@ as $$
 declare
     v_player bigint;
     v_row public.stellarion_joint_attacks%rowtype;
+    v_active_players bigint;
     v_planet jsonb;
     v_participants jsonb;
     v_participant jsonb;
@@ -1230,12 +1240,18 @@ begin
     end if;
     -- Serialize draft responses with launch saves under the same game lock.
     perform 1 from public.stellarion_games where id = p_game_id for update;
+    select count(*) into v_active_players
+      from public.stellarion_games game_row,
+           jsonb_array_elements(game_row.state #> '{state,players}') player
+     where game_row.id = p_game_id
+       and (player ->> 'spectator')::boolean = false;
     select * into v_row from public.stellarion_joint_attacks
      where game_id = p_game_id and attack_id = p_attack_id for update;
     if not found then
         raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
     end if;
-    if not exists (select 1 from public.stellarion_games
+    if v_active_players < 3
+       or not exists (select 1 from public.stellarion_games
         where id = p_game_id and status = 'active' and current_turn = v_row.turn)
        or coalesce((v_row.invitation ->> 'canceled')::boolean, false)
        or coalesce((v_row.invitation ->> 'launched')::boolean, false)
@@ -1406,16 +1422,24 @@ as $$
 declare
     v_player bigint;
     v_turn bigint;
+    v_active_players bigint;
 begin
     if auth.uid() is null then
         raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
     end if;
-    select gp.player_id, g.current_turn into v_player, v_turn
+    select gp.player_id, g.current_turn, (
+        select count(*)
+          from jsonb_array_elements(g.state #> '{state,players}') player
+         where (player ->> 'spectator')::boolean = false
+    ) into v_player, v_turn, v_active_players
       from public.stellarion_game_players gp
       join public.stellarion_games g on g.id = gp.game_id
      where gp.game_id = p_game_id and gp.user_id = auth.uid();
     if v_player is null then
         raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    if v_active_players < 3 then
+        return '[]'::jsonb;
     end if;
     return coalesce((
         select jsonb_agg(ja.invitation order by ja.attack_id)
@@ -1528,7 +1552,11 @@ exception
 end;
 $$;
 
-create function public.stellarion_create_trade(p_game_id uuid, p_invitation jsonb)
+create function public.stellarion_create_trade(
+    p_game_id uuid,
+    p_invitation jsonb,
+    p_projected_post boolean
+)
 returns jsonb
 language plpgsql
 security definer
@@ -1543,6 +1571,7 @@ declare
     v_second jsonb;
     v_first_planet jsonb;
     v_second_planet jsonb;
+    v_planets jsonb;
     v_participant jsonb;
 begin
     if auth.uid() is null then
@@ -1581,6 +1610,20 @@ begin
     select planet into v_second_planet
       from jsonb_array_elements(v_game.state #> '{state,map,planets}') planet
      where (planet ->> 'id')::bigint = (v_second ->> 'planet_id')::bigint;
+    -- A local draft may already contain the testing shortcut's completed infrastructure. Commit
+    -- only the proposer's selected Trading Post before route validation so the invitation, the
+    -- other participant, and later acceptance all observe the same canonical route.
+    if coalesce(p_projected_post, false) then
+        if (v_first ->> 'player_id')::bigint = v_player then
+            v_first_planet := jsonb_set(
+                v_first_planet, '{army,controller,Building(TradingPost)}', '5'::jsonb, true
+            );
+        elsif (v_second ->> 'player_id')::bigint = v_player then
+            v_second_planet := jsonb_set(
+                v_second_planet, '{army,controller,Building(TradingPost)}', '5'::jsonb, true
+            );
+        end if;
+    end if;
     if v_game.status <> 'active'
        or v_trade_id <= 0
        or (p_invitation ->> 'turn')::bigint <> v_game.current_turn
@@ -1646,6 +1689,26 @@ begin
               )
        ) then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:trade';
+    end if;
+    if coalesce(p_projected_post, false) then
+        select jsonb_agg(
+                   case (planet ->> 'id')::bigint
+                       when (v_first ->> 'planet_id')::bigint then v_first_planet
+                       when (v_second ->> 'planet_id')::bigint then v_second_planet
+                       else planet
+                   end order by ordinal
+               ) into v_planets
+          from jsonb_array_elements(v_game.state #> '{state,map,planets}')
+               with ordinality as entries(planet, ordinal);
+        v_game.state := jsonb_set(v_game.state, '{state,map,planets}', v_planets, false);
+        update public.stellarion_games
+           set state = v_game.state,
+               revision = revision + 1,
+               updated_at = clock_timestamp()
+         where id = p_game_id;
+        perform public.stellarion_emit_event(
+            p_game_id, 'state_changed', v_game.current_turn, null
+        );
     end if;
     insert into public.stellarion_trades(
         game_id, trade_id, turn, player_low, player_high, invitation
@@ -2341,7 +2404,13 @@ declare
     v_command jsonb;
     v_invitation jsonb;
     v_expected_contributions jsonb;
+    v_active_players bigint;
 begin
+    select count(*) into v_active_players
+      from public.stellarion_games game_row,
+           jsonb_array_elements(game_row.state #> '{state,players}') player
+     where game_row.id = p_game_id
+       and (player ->> 'spectator')::boolean = false;
     for v_command in
         select value from jsonb_array_elements(p_submission -> 'commands')
          where value ->> 'kind' = 'send_joint_mission'
@@ -2359,7 +2428,8 @@ begin
                with ordinality as entries(participant, ordinal)
          where participant ->> 'response' = 'accepted'
             or (participant ->> 'player_id')::bigint = p_player_id;
-        if coalesce((v_invitation ->> 'canceled')::boolean, false)
+        if v_active_players < 3
+           or coalesce((v_invitation ->> 'canceled')::boolean, false)
            or (v_invitation ->> 'turn')::bigint <> p_turn
            or (v_invitation ->> 'inviter')::bigint <> p_player_id
            or (v_invitation ->> 'destination')::bigint <> (v_command ->> 'destination')::bigint
@@ -3170,9 +3240,9 @@ revoke all on function public.stellarion_trade_capacity(jsonb, bigint)
     from public, anon, authenticated;
 revoke all on function public.stellarion_trade_route_valid(jsonb, jsonb)
     from public, anon, authenticated;
-revoke all on function public.stellarion_create_trade(uuid, jsonb)
+revoke all on function public.stellarion_create_trade(uuid, jsonb, boolean)
     from public, anon;
-grant execute on function public.stellarion_create_trade(uuid, jsonb)
+grant execute on function public.stellarion_create_trade(uuid, jsonb, boolean)
     to authenticated;
 revoke all on function public.stellarion_respond_trade(uuid, bigint, bigint, jsonb, text)
     from public, anon;

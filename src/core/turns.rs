@@ -9,6 +9,7 @@ use crate::core::audio::PlayAudioMsg;
 use crate::core::camera::MainCamera;
 use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::EXPLOSION_Z;
+use crate::core::identity::PlayerId;
 use crate::core::map::battle::BattleEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
@@ -19,7 +20,9 @@ use crate::core::menu::utils::add_root_node;
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Mission;
 use crate::core::player::Player;
+use crate::core::resources::Resources;
 use crate::core::settings::Settings;
+use crate::core::simulation::GameModel;
 use crate::core::states::GameState;
 use crate::core::systems::GameplayInputBlocker;
 use crate::core::ui::systems::{known_planet_counts, MissionTab, UiState};
@@ -27,8 +30,31 @@ use crate::core::units::Unit;
 use crate::multiplayer::client::{
     MultiplayerRequest, MultiplayerSession, PendingTurnCommands, SubmissionState,
 };
+use crate::utils::format_thousands;
 
 const PLANET_DESTRUCTION_EXPLOSION_SCALE: f32 = 1.75;
+
+fn resource_hub_repayment_reminder(
+    model: &GameModel,
+    player_id: PlayerId,
+    current_turn: usize,
+) -> Option<MessageMsg> {
+    let due_turn = u64::try_from(current_turn).ok()?.checked_add(1)?;
+    let repayment = model
+        .resource_loans
+        .iter()
+        .filter(|loan| loan.player_id == player_id && loan.due_turn == due_turn)
+        .map(|loan| loan.repayment())
+        .sum::<Resources>();
+    (!repayment.is_empty()).then(|| {
+        MessageMsg::info(format!(
+            "Resource Market repayment due next turn: {} Metal, {} Crystal, and {} Deuterium.",
+            format_thousands(repayment.metal),
+            format_thousands(repayment.crystal),
+            format_thousands(repayment.deuterium),
+        ))
+    })
+}
 
 /// Holds the terminal overlay until every visible turn-resolution effect has completed.
 #[derive(Resource, Default)]
@@ -347,6 +373,13 @@ pub fn start_turn(
         };
 
         messages.write(MessageMsg::info(format!("Turn {} started.", settings.turn)));
+        if let Some(notification) =
+            session.as_deref().and_then(|session| session.active_game.as_ref()).and_then(|game| {
+                resource_hub_repayment_reminder(&game.persisted.state, player.id, settings.turn)
+            })
+        {
+            messages.write(notification);
+        }
         // Initial game loading also emits StartTurnMsg, but it is not a newly resolved turn.
         // Delaying this warning until combat playback finishes keeps it with the actual turn start.
         if !request.skip_end_game {

@@ -46,7 +46,9 @@ fn trading_ui_frame(
     events: Vec<egui::Event>,
     notifications: bool,
 ) -> egui::FullOutput {
+    world.init_resource::<PendingTurnCommands>();
     let mut params = bevy::ecs::system::SystemState::<(
+        ResMut<PendingTurnCommands>,
         MessageWriter<MultiplayerRequest>,
         MessageWriter<MessageMsg>,
     )>::new(world);
@@ -57,32 +59,61 @@ fn trading_ui_frame(
             ..default()
         },
         |_| {
-            let (mut requests, mut messages) = params.get_mut(world).unwrap();
-            let draw = if notifications {
-                draw_trade_notifications
+            let (mut pending, mut requests, mut messages) = params.get_mut(world).unwrap();
+            if notifications {
+                draw_trade_notifications(
+                    context,
+                    state,
+                    &model.map,
+                    &model.players[0],
+                    session,
+                    &mut pending,
+                    &mut requests,
+                    &mut messages,
+                    &ImageIds(
+                        ResourceName::iter()
+                            .enumerate()
+                            .map(|(index, resource)| {
+                                (
+                                    resource.to_lowername().to_owned(),
+                                    egui::TextureId::User(index as u64 + 1),
+                                )
+                            })
+                            .chain([
+                                ("loan short".to_owned(), egui::TextureId::User(10)),
+                                ("loan medium".to_owned(), egui::TextureId::User(11)),
+                                ("loan long".to_owned(), egui::TextureId::User(12)),
+                            ])
+                            .collect(),
+                    ),
+                );
             } else {
-                draw_trade_panel
-            };
-            draw(
-                context,
-                state,
-                &model.map,
-                &model.players[0],
-                session,
-                &mut requests,
-                &mut messages,
-                &ImageIds(
-                    ResourceName::iter()
-                        .enumerate()
-                        .map(|(index, resource)| {
-                            (
-                                resource.to_lowername().to_owned(),
-                                egui::TextureId::User(index as u64 + 1),
-                            )
-                        })
-                        .collect(),
-                ),
-            );
+                draw_trade_panel(
+                    context,
+                    state,
+                    &model.map,
+                    &model.players[0],
+                    session,
+                    &mut requests,
+                    &mut messages,
+                    &ImageIds(
+                        ResourceName::iter()
+                            .enumerate()
+                            .map(|(index, resource)| {
+                                (
+                                    resource.to_lowername().to_owned(),
+                                    egui::TextureId::User(index as u64 + 1),
+                                )
+                            })
+                            .chain([
+                                ("loan short".to_owned(), egui::TextureId::User(10)),
+                                ("loan medium".to_owned(), egui::TextureId::User(11)),
+                                ("loan long".to_owned(), egui::TextureId::User(12)),
+                            ])
+                            .collect(),
+                    ),
+                );
+            }
         },
     );
     output.textures_delta.clear();
@@ -112,6 +143,407 @@ fn trade_invitation(model: &GameModel) -> TradeInvitation {
             },
         ],
     }
+}
+
+#[test]
+fn owned_trading_post_opens_resource_hub_and_adds_a_fixed_term_loan() {
+    let mut model = trading_panel_game();
+    model.start().unwrap();
+    let home = model.players[0].home_planet;
+    let mut state = UiState {
+        trading_post_open: Some(home),
+        resource_hub_resources: Resources::new(300, 200, 100),
+        resource_hub_term: ResourceLoanTerm::Medium,
+        ..default()
+    };
+    let context = trading_context();
+    context.global_style_mut(|style| {
+        style.interaction.tooltip_delay = 0.0;
+        style.interaction.show_tooltips_only_when_still = false;
+    });
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let size = egui::vec2(720.0, 600.0);
+    let frame = |state: &mut UiState, world: &mut World, events| {
+        trading_ui_frame(
+            &context,
+            world,
+            state,
+            &model,
+            &MultiplayerSession::default(),
+            size,
+            events,
+            true,
+        )
+    };
+    frame(&mut state, &mut world, vec![]);
+    let output = frame(&mut state, &mut world, vec![]);
+    let labels = panel_labels(&output);
+    for label in ["Resource Market", "Short-term", "Mid-term", "Long-term", "Borrow", "Close"] {
+        assert!(labels.contains_key(label), "missing {label}: {labels:?}");
+    }
+    for label in ["Short-term", "Mid-term", "Long-term"] {
+        assert!(labels[label].height() < 20.0, "wrapped term caption {label}: {labels:?}");
+    }
+    assert!(labels.contains_key("600 / 1000 selected"));
+    let mut resource_images = resource_image_rects(&output);
+    resource_images.sort_by(|left, right| left.left().total_cmp(&right.left()));
+    assert_eq!(resource_images.len(), 3);
+    let resource_gaps =
+        resource_images.windows(2).map(|pair| pair[1].left() - pair[0].right()).collect::<Vec<_>>();
+    assert!(
+        resource_gaps.iter().all(|gap| (59.5..=61.0).contains(gap)),
+        "unexpected resource gaps: {resource_gaps:?}"
+    );
+    let resource_left = resource_images[0].left();
+    for label in ["Choose a resource bundle", "600 / 1000 selected", "Choose a repayment term"] {
+        assert!(
+            (labels[label].left() - resource_left).abs() < 1.5,
+            "{label} should align with the metal resource: {labels:?}"
+        );
+    }
+    let mut term_images = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh)
+                if matches!(mesh.texture_id, egui::TextureId::User(10..=12)) =>
+            {
+                Some(mesh.calc_bounds())
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    term_images.sort_by(|left, right| left.left().total_cmp(&right.left()));
+    assert_eq!(term_images.len(), 3);
+    assert!(term_images
+        .windows(2)
+        .all(|pair| (pair[0].center().y - pair[1].center().y).abs() < 0.1));
+    let term_gaps =
+        term_images.windows(2).map(|pair| pair[1].left() - pair[0].right()).collect::<Vec<_>>();
+    assert!(
+        term_gaps.iter().all(|gap| (37.0..=39.0).contains(gap)),
+        "unexpected term image gaps: {term_gaps:?}"
+    );
+    let term_bottom = ["Short-term", "Mid-term", "Long-term"]
+        .into_iter()
+        .map(|label| labels[label].bottom())
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        labels["Close"].top() - term_bottom < 60.0,
+        "repayment terms should remain close to the footer: {labels:?}"
+    );
+
+    let mid_term = labels["Mid-term"].center();
+    frame(&mut state, &mut world, vec![egui::Event::PointerMoved(mid_term)]);
+    let hovered = frame(&mut state, &mut world, vec![]);
+    let hovered = panel_labels(&hovered);
+    assert!(
+        hovered.keys().any(|label| label.starts_with("Repay after 2 turns with a 30% premium")),
+        "missing repayment terms tooltip: {hovered:?}"
+    );
+    assert!(
+        hovered.keys().any(|label| label
+            .starts_with("If it cannot be paid in full, it remains due and retries next turn")),
+        "missing missed-payment tooltip: {hovered:?}"
+    );
+    assert!(hovered
+        .keys()
+        .any(|label| label
+            .contains("The complete repayment is deducted automatically after production")));
+    for amount in ["390", "260", "130"] {
+        assert!(hovered.contains_key(amount), "missing repayment amount {amount}: {hovered:?}");
+    }
+
+    let borrow = labels["Borrow"].center();
+    for pressed in [true, false] {
+        frame(
+            &mut state,
+            &mut world,
+            vec![
+                egui::Event::PointerMoved(borrow),
+                egui::Event::PointerButton {
+                    pos: borrow,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        );
+    }
+    let pending = world.resource::<PendingTurnCommands>();
+    assert!(matches!(
+        pending.commands.as_slice(),
+        [TurnCommand::BorrowResources {
+            planet_id,
+            resources,
+            term: ResourceLoanTerm::Medium,
+        }] if *planet_id == home && *resources == Resources::new(300, 200, 100)
+    ));
+    assert!(world.resource_mut::<Messages<MessageMsg>>().drain().any(|message| {
+        message.level == crate::core::messages::MessageLevel::Info
+            && message.message == "Successfully borrowed 600 resources."
+    }));
+    assert_eq!(state.trading_post_open, None);
+
+    state.trading_post_open = Some(home);
+    frame(&mut state, &mut world, vec![]);
+    let drafted_output = frame(&mut state, &mut world, vec![]);
+    let drafted = panel_labels(&drafted_output);
+    assert!(!drafted.contains_key("Outstanding loan"));
+    assert!(drafted.contains_key("Borrowed resources"));
+    assert!(drafted.contains_key("Repayment due in 2 turns"));
+    assert!(!drafted.contains_key("Automatic repayment"));
+    assert!(!drafted.contains_key("Due in 2 turns."));
+    assert!(!drafted.contains_key("Draft"));
+    assert!(!drafted.contains_key("Loan added to draft"));
+    assert!(!drafted.contains_key("Choose a repayment term"));
+    assert!((drafted["Close"].center().x - size.x * 0.5).abs() < 0.5);
+    let footer_gap = drafted["Close"].top() - drafted["780 total"].bottom();
+    assert!((0.0..40.0).contains(&footer_gap), "unexpected loan footer gap: {footer_gap}");
+    assert_eq!(drafted["Borrowed resources"].height(), labels["Choose a resource bundle"].height());
+    assert_eq!(
+        drafted["Repayment due in 2 turns"].height(),
+        labels["Choose a repayment term"].height()
+    );
+    let drafted_resource_images = resource_image_rects(&drafted_output);
+    assert_eq!(drafted_resource_images.len(), 6);
+    assert!(drafted_resource_images
+        .iter()
+        .all(|image| (image.width() - resource_images[0].width()).abs() < 0.1));
+    for amount in ["390", "260", "130"] {
+        assert!(
+            drafted.contains_key(amount),
+            "missing fixed repayment amount {amount}: {drafted:?}"
+        );
+    }
+    for amount in ["300", "200", "100"] {
+        assert!(drafted.contains_key(amount), "missing borrowed amount {amount}: {drafted:?}");
+    }
+}
+
+#[test]
+fn testing_boost_trading_post_opens_resource_hub_before_the_turn_is_saved() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::{preview_commands, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    let mut saved = trading_panel_game();
+    saved.start().unwrap();
+    let player_id = saved.players[0].id;
+    let home = saved.players[0].home_planet;
+    saved.map.get_mut(home).army.remove(&Unit::Building(Building::TradingPost));
+    let projected = preview_commands(&saved, player_id, &[TurnCommand::PracticeBoost]).unwrap();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("draft-resource-hub"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: saved.players.len() as u8,
+        status: saved.status,
+        persisted: PersistedGame::new(saved.clone()),
+        members: Vec::new(),
+        submitted_players: Vec::new(),
+    });
+    let mut state = UiState {
+        trading_post_open: Some(home),
+        ..default()
+    };
+    let context = trading_context();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    world.insert_resource(PendingTurnCommands {
+        turn: saved.turn,
+        commands: vec![TurnCommand::PracticeBoost],
+        ..default()
+    });
+    let size = egui::vec2(720.0, 600.0);
+
+    trading_ui_frame(
+        &context,
+        &mut world,
+        &mut state,
+        &projected,
+        &session,
+        size,
+        Vec::new(),
+        true,
+    );
+    let output = trading_ui_frame(
+        &context,
+        &mut world,
+        &mut state,
+        &projected,
+        &session,
+        size,
+        Vec::new(),
+        true,
+    );
+    let labels = panel_labels(&output);
+    assert!(labels.contains_key("Choose a resource bundle"));
+    assert!(labels.contains_key("Borrow"));
+    assert!(
+        !labels
+            .keys()
+            .any(|label| label
+                .starts_with("This Trading Post is not available in the saved turn yet"))
+    );
+}
+
+#[test]
+fn active_post_loan_reopens_with_available_early_repayment() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::PersistedGame;
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = trading_panel_game();
+    model.start().unwrap();
+    model.turn = 2;
+    let home = model.players[0].home_planet;
+    model.resource_loans.push(ResourceLoan {
+        player_id: model.players[0].id,
+        planet_id: home,
+        issued_turn: 1,
+        due_turn: 3,
+        principal: Resources::new(100, 200, 300),
+        term: ResourceLoanTerm::Long,
+    });
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("resource-hub-reopen"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: model.players.len() as u8,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: Vec::new(),
+        submitted_players: Vec::new(),
+    });
+    let mut state = UiState {
+        trading_post_open: Some(home),
+        ..default()
+    };
+    let context = trading_context();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let size = egui::vec2(720.0, 600.0);
+    let frame = |state: &mut UiState, world: &mut World, events| {
+        trading_ui_frame(&context, world, state, &model, &session, size, events, true)
+    };
+    frame(&mut state, &mut world, vec![]);
+    let output = frame(&mut state, &mut world, vec![]);
+    let labels = panel_labels(&output);
+    assert!(!labels.contains_key("Outstanding loan"));
+    assert!(labels.contains_key("Borrowed resources"));
+    assert!(labels.contains_key("Repayment due in 1 turn"));
+    assert!(!labels.contains_key("Automatic repayment"));
+    assert!(!labels.contains_key("Due in 2 turns."));
+    assert!(labels.contains_key("Repay early"));
+    assert!(labels.contains_key("450"));
+
+    let repay = labels["Repay early"].center();
+    for pressed in [true, false] {
+        frame(
+            &mut state,
+            &mut world,
+            vec![
+                egui::Event::PointerMoved(repay),
+                egui::Event::PointerButton {
+                    pos: repay,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        );
+    }
+    assert!(matches!(
+        world.resource::<PendingTurnCommands>().commands.as_slice(),
+        [TurnCommand::RepayResourceLoanEarly { planet_id }] if *planet_id == home
+    ));
+}
+
+#[test]
+fn overdue_repayment_blocks_new_hub_loans_but_keeps_existing_agreement_accessible() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::simulation::PersistedGame;
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = trading_panel_game();
+    model.start().unwrap();
+    model.turn = 3;
+    let home = model.players[0].home_planet;
+    let available_post = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let post = model.map.get_mut(available_post);
+    post.owned = Some(model.players[0].id);
+    post.controlled = Some(model.players[0].id);
+    post.army.insert(Unit::Building(Building::TradingPost), 1);
+    model.resource_loans.push(ResourceLoan {
+        player_id: model.players[0].id,
+        planet_id: home,
+        issued_turn: 1,
+        due_turn: 2,
+        principal: Resources::new(100, 200, 300),
+        term: ResourceLoanTerm::Short,
+    });
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("resource-hub-overdue"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: model.players.len() as u8,
+        status: model.status,
+        persisted: PersistedGame::new(model.clone()),
+        members: Vec::new(),
+        submitted_players: Vec::new(),
+    });
+    let context = trading_context();
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<MessageMsg>>();
+    let size = egui::vec2(720.0, 600.0);
+
+    let render = |planet, world: &mut World| {
+        let mut state = UiState {
+            trading_post_open: Some(planet),
+            ..default()
+        };
+        trading_ui_frame(&context, world, &mut state, &model, &session, size, vec![], true);
+        panel_labels(&trading_ui_frame(
+            &context,
+            world,
+            &mut state,
+            &model,
+            &session,
+            size,
+            vec![],
+            true,
+        ))
+    };
+    let blocked = render(available_post, &mut world);
+    assert!(blocked
+        .keys()
+        .any(|label| label.starts_with("New Resource Market loans are unavailable")));
+    assert!(blocked.contains_key("Borrow"));
+
+    let existing = render(home, &mut world);
+    assert!(existing.contains_key("Repayment overdue by 1 turn"));
+    assert!(existing
+        .keys()
+        .any(|label| label.starts_with("Repayment will retry automatically this turn")));
+    assert!(existing.contains_key("Repay early"));
 }
 
 #[test]
@@ -804,7 +1236,7 @@ fn trade_headings_keep_the_sender_first_with_each_players_name_and_color() {
 #[test]
 fn resource_tiles_select_all_stock_and_clear_only_the_clicked_type() {
     for size in [egui::vec2(542.0, 546.0), egui::vec2(360.0, 640.0)] {
-        let modal_scale = game_modal_scale(size, egui::vec2(560.0, 402.0));
+        let modal_scale = game_modal_scale(size, egui::vec2(520.0, 422.0));
         let mut model = trading_panel_game();
         model.players[0].resources = Resources::new(3200, 1700, 0);
         let mut session = MultiplayerSession::default();
@@ -1065,7 +1497,7 @@ fn trading_panel_game() -> GameModel {
 }
 
 #[test]
-fn projected_trading_post_cannot_offer_until_it_exists_in_the_saved_turn() {
+fn projected_trading_post_can_offer_before_it_exists_in_the_saved_turn() {
     use crate::core::identity::{GameCode, GameId};
     use crate::core::simulation::PersistedGame;
     use crate::multiplayer::model::GameRecord;
@@ -1101,13 +1533,48 @@ fn projected_trading_post_cannot_offer_until_it_exists_in_the_saved_turn() {
     let output =
         trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
     let labels = panel_labels(&output);
-    assert!(labels.keys().any(|label| label.starts_with("This route is not available")));
-    assert!(!labels.contains_key("Send offer"));
+    assert!(labels.contains_key("Send offer"));
+    assert!(!labels.keys().any(|label| label.starts_with("This route is not available")));
     assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+
+    state.trade_resources = Resources::new(100, 0, 0);
+    let output =
+        trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
+    let send = panel_labels(&output)["Send offer"].center();
+    for pressed in [true, false] {
+        trading_ui_frame(
+            &context,
+            &mut world,
+            &mut state,
+            &model,
+            &session,
+            size,
+            vec![
+                egui::Event::PointerMoved(send),
+                egui::Event::PointerButton {
+                    pos: send,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+            false,
+        );
+    }
+    let requests = world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
+    assert!(matches!(
+        requests.as_slice(),
+        [MultiplayerRequest::CreateTrade {
+            projected_post: true,
+            ..
+        }]
+    ));
 
     let game = session.active_game.as_mut().unwrap();
     game.persisted = PersistedGame::new(model.clone());
     game.submitted_players.push(model.players[1].id);
+    state.trade_open = None;
+    state.trading_post_open = Some(enemy);
     let output =
         trading_ui_frame(&context, &mut world, &mut state, &model, &session, size, vec![], false);
     let labels = panel_labels(&output);
@@ -1200,9 +1667,14 @@ fn closing_an_unsent_trade_then_sending_a_new_offer_uses_only_the_new_draft() {
         click(&mut state, &mut world, "Send offer");
         let requests =
             world.resource_mut::<Messages<MultiplayerRequest>>().drain().collect::<Vec<_>>();
-        let [MultiplayerRequest::CreateTrade(invitation)] = requests.as_slice() else {
+        let [MultiplayerRequest::CreateTrade {
+            invitation,
+            projected_post,
+        }] = requests.as_slice()
+        else {
             panic!("only the second draft should create an offer");
         };
+        assert!(!projected_post);
         assert!(invitation.id > 0);
         assert_eq!(invitation.turn, model.turn);
         assert_eq!(invitation.revision, 0);
@@ -1322,7 +1794,7 @@ fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn
 }
 
 #[test]
-fn unavailable_saved_trade_route_panel_explains_and_closes_at_small_sizes() {
+fn submitted_projected_trade_route_panel_explains_and_closes_at_small_sizes() {
     use crate::core::identity::{GameCode, GameId};
     use crate::core::simulation::PersistedGame;
     use crate::multiplayer::model::GameRecord;
@@ -1346,7 +1818,7 @@ fn unavailable_saved_trade_route_panel_explains_and_closes_at_small_sizes() {
             status: model.status,
             persisted: PersistedGame::new(saved),
             members: Vec::new(),
-            submitted_players: Vec::new(),
+            submitted_players: vec![model.players[1].id],
         });
         let mut state = UiState {
             trading_post_open: Some(enemy),
@@ -1377,7 +1849,8 @@ fn unavailable_saved_trade_route_panel_explains_and_closes_at_small_sizes() {
             false,
         );
         let labels = panel_labels(&output);
-        let message = "This route is not available in the saved turn yet. Complete both Trading Posts and advance the turn before trading.";
+        let message =
+            "One of the players has already ended this turn. New trades can begin next turn.";
         assert!(labels.contains_key(message));
         assert!(!labels.contains_key("Send offer"));
         assert!(!labels.contains_key("Player 1"));
@@ -1509,8 +1982,8 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
             trading_panel_frame(&context, &mut world, &mut state, &model, size, Vec::new());
         let labels = panel_labels(&output);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-        let modal_scale = game_modal_scale(size, egui::vec2(560.0, 402.0));
-        let panel_height = 402.0 * modal_scale;
+        let modal_scale = game_modal_scale(size, egui::vec2(520.0, 422.0));
+        let panel_height = 422.0 * modal_scale;
         let panel_top = (size.y - panel_height) * 0.5 + TRADE_PANEL_VERTICAL_OFFSET * modal_scale;
         let bar_bottom = panel_top + panel_height * TRADE_PANEL_TOP_BAR_FRACTION;
         assert!(labels["Trading Post"].top() >= panel_top - 2.0);
@@ -1534,10 +2007,18 @@ fn trading_offer_and_footer_fit_inside_the_panel_at_small_sizes() {
             .collect::<Vec<_>>();
         assert_eq!(icons.len(), 6);
         assert_eq!(inputs.len(), 6);
-        assert!(labels["Player 1"].left() <= icons[0].left());
+        assert!((labels["Player 1"].left() - icons[0].left()).abs() < 1.5);
+        assert!((labels["Player 2"].left() - icons[3].left()).abs() < 1.5);
+        assert_eq!(labels["Player 1"].left(), labels["0 / 500 selected"].left());
+        assert_eq!(labels["Player 2"].left(), labels["0 total"].left());
         assert!((labels["Player 1"].center().y - labels["Draft"].center().y).abs() < 2.0);
         assert!(labels["Trading Post"].bottom() + 20.0 * modal_scale <= labels["Player 1"].top());
         assert!(labels["Player 1"].bottom() < labels["Player 2"].top());
+        for index in 0..3 {
+            assert!((icons[index].left() - icons[index + 3].left()).abs() < 0.1);
+            assert!((icons[index].width() - icons[index + 3].width()).abs() < 0.1);
+            assert!((inputs[index].center().x - inputs[index + 3].center().x).abs() < 0.1);
+        }
         for (index, (icon, input)) in icons.iter().zip(&inputs).take(3).enumerate() {
             assert!(screen.contains_rect(*icon));
             assert!(screen.contains_rect(*input));

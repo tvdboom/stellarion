@@ -60,11 +60,11 @@ use crate::core::player::Player;
 use crate::core::recycling::{
     debris_sites, recycler_sources_with_asteroid_targets, DebrisSite, RecyclerSource,
 };
-use crate::core::resources::ResourceName;
+use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
-use crate::core::trading::visible_trading_post_owner;
+use crate::core::trading::{trading_posts_are_adjacent, visible_trading_post_owner};
 use crate::core::ui::systems::{viewport_ui_scale, MapRangePreview, MissionTab, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
@@ -78,6 +78,10 @@ const PHALANX_DRONE_CYCLE_SECONDS: f32 = 11.0;
 const RANGE_MARKER_CYCLE_SECONDS: f32 = 7.0;
 const SOLAR_SATELLITE_PHASE_STEPS: [usize; Building::MAX_LEVEL] = [0, 2, 4, 1, 3];
 const JUMP_GATE_LINK_STRANDS: usize = 2;
+const TRADE_LINK_LANES: usize = 2;
+const TRADE_LINK_PARTICLE_SPACING: f32 = 22.0;
+const TRADE_LINK_PARTICLE_SPEED: f32 = 32.0;
+const TRADE_LINK_LANE_OFFSET: f32 = 3.8;
 /// Shared rotation rate for gate links and mission helices, in radians per second.
 pub(crate) const JUMP_GATE_HELIX_ANGULAR_SPEED: f32 = 5.0;
 // Keep gate links and mission particles moving at the same pace.
@@ -427,11 +431,11 @@ pub struct TradingPostCmp {
     planet: PlanetId,
 }
 
-/// Visible foreign posts open the trade panel even when the player has no eligible route.
+/// A visible completed post opens either its owner's Resource Hub or foreign commerce.
 fn can_open_trading_post(map: &Map, player: &Player, planet_id: PlanetId) -> bool {
-    map.try_get(planet_id).is_some_and(|planet| {
-        visible_trading_post_owner(map, player.id, planet).is_some_and(|owner| owner != player.id)
-    })
+    map.try_get(planet_id)
+        .and_then(|planet| visible_trading_post_owner(map, player.id, planet))
+        .is_some()
 }
 
 /// Returns whether this world contributes one usable endpoint to the player's gate network.
@@ -555,6 +559,12 @@ fn open_jump_gate_mission(
 #[derive(Component)]
 /// One particle in the hover-only animated Jump Gate network.
 pub(crate) struct JumpGateLinkCmp {
+    index: usize,
+}
+
+#[derive(Component)]
+/// One cargo pulse in the hover-only animated Trading Post network.
+pub(crate) struct TradePostLinkCmp {
     index: usize,
 }
 
@@ -1320,6 +1330,192 @@ pub(crate) fn update_jump_gate_links(
             particle.transform,
             Pickable::IGNORE,
             JumpGateLinkCmp {
+                index,
+            },
+            MapCmp,
+        ));
+    }
+}
+
+fn trade_post_link_particles(
+    local: Vec2,
+    foreign: Vec2,
+    local_color: Color,
+    foreign_color: Color,
+    elapsed: f32,
+    route_phase: f32,
+) -> Vec<JumpGateLinkParticle> {
+    let route = foreign - local;
+    let route_length = route.length();
+    let clearance = 18.0;
+    if route_length <= clearance * 2.0 {
+        return Vec::new();
+    }
+    let direction = route / route_length;
+    let normal = Vec2::new(-direction.y, direction.x);
+    let length = route_length - clearance * 2.0;
+    let start = local + direction * clearance;
+    let count = (length / TRADE_LINK_PARTICLE_SPACING).ceil() as usize;
+    let travel = (elapsed * TRADE_LINK_PARTICLE_SPEED).rem_euclid(TRADE_LINK_PARTICLE_SPACING);
+    let gold = Color::srgb(1.0, 0.72, 0.18);
+
+    (0..TRADE_LINK_LANES)
+        .flat_map(|lane| {
+            (0..count).filter_map(move |index| {
+                // The two separated lanes carry goods in opposite directions. This makes the
+                // relationship read as bilateral commerce rather than another transit route.
+                let distance = if lane == 0 {
+                    index as f32 * TRADE_LINK_PARTICLE_SPACING + travel
+                } else {
+                    index as f32 * TRADE_LINK_PARTICLE_SPACING
+                        + (TRADE_LINK_PARTICLE_SPACING - travel)
+                            .rem_euclid(TRADE_LINK_PARTICLE_SPACING)
+                };
+                (distance < length).then(|| {
+                    let t = distance / length;
+                    let lane_sign = if lane == 0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let shimmer = (distance * 0.045 + elapsed * 2.4 + route_phase).sin();
+                    let position = start
+                        + direction * distance
+                        + normal * (lane_sign * TRADE_LINK_LANE_OFFSET + shimmer * 0.7);
+                    let edge_fade = (t.min(1.0 - t) / 0.08).clamp(0.0, 1.0);
+                    let pulse = 0.72 + 0.28 * (elapsed * 4.0 + index as f32 * 0.9).sin().abs();
+                    let party_color = if lane == 0 {
+                        local_color
+                    } else {
+                        foreign_color
+                    };
+                    JumpGateLinkParticle {
+                        transform: Transform {
+                            translation: position.extend(MISSION_Z - 0.17),
+                            rotation: Quat::from_rotation_z(direction.y.atan2(direction.x)),
+                            ..default()
+                        },
+                        color: gold.mix(&party_color, 0.34).with_alpha(edge_fade * pulse * 0.9),
+                        size: Vec2::new(9.0 + pulse * 3.0, 2.2 + pulse * 1.2),
+                    }
+                })
+            })
+        })
+        .collect()
+}
+
+/// Draws counter-flowing cargo pulses between the hovered post and every eligible counterparty.
+pub(crate) fn update_trade_post_links(
+    mut commands: Commands,
+    mut link_q: Query<
+        (Entity, &mut Transform, &mut Sprite, &TradePostLinkCmp),
+        Without<TradingPostCmp>,
+    >,
+    post_q: Query<(&Transform, &TradingPostCmp), Without<TradePostLinkCmp>>,
+    state: Res<UiState>,
+    map: Res<Map>,
+    player: Res<Player>,
+    session: Res<MultiplayerSession>,
+    time: Res<Time>,
+) {
+    let hovered = match state.range_preview {
+        Some(MapRangePreview::TradingPost(planet)) => Some(planet),
+        _ => None,
+    };
+    let mut posts = post_q
+        .iter()
+        .filter_map(|(transform, post)| {
+            let planet = map.get(post.planet);
+            visible_trading_post_owner(&map, player.id, planet).map(|owner| {
+                (post.planet, owner, planet.position + transform.translation.truncate())
+            })
+        })
+        .collect::<Vec<_>>();
+    posts.sort_by_key(|(planet, _, _)| *planet);
+
+    let particles = hovered
+        .and_then(|hovered| {
+            let from = posts.iter().find(|(planet, _, _)| *planet == hovered)?;
+            Some(
+                posts
+                    .iter()
+                    .filter(|(planet, owner, _)| {
+                        *planet != hovered
+                            && ((*owner == player.id) != (from.1 == player.id))
+                            && trading_posts_are_adjacent(
+                                &map,
+                                player.id,
+                                if from.1 == player.id {
+                                    hovered
+                                } else {
+                                    *planet
+                                },
+                                if from.1 == player.id {
+                                    *owner
+                                } else {
+                                    from.1
+                                },
+                                if from.1 == player.id {
+                                    *planet
+                                } else {
+                                    hovered
+                                },
+                            )
+                    })
+                    .flat_map(|(planet, owner, position)| {
+                        let (
+                            local_planet,
+                            local_position,
+                            foreign_planet,
+                            foreign_owner,
+                            foreign_position,
+                        ) = if from.1 == player.id {
+                            (hovered, from.2, *planet, *owner, *position)
+                        } else {
+                            (*planet, *position, hovered, from.1, from.2)
+                        };
+                        trade_post_link_particles(
+                            local_position,
+                            foreign_position,
+                            session.player_color(player.id).color(),
+                            session.player_color(foreign_owner).color(),
+                            time.elapsed_secs(),
+                            visual_noise(
+                                local_planet as u32
+                                    ^ (foreign_planet as u32).rotate_left(11)
+                                    ^ 0x0005_4ad3,
+                            ) * TAU,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    let mut present = vec![false; particles.len()];
+
+    for (entity, mut transform, mut sprite, link) in &mut link_q {
+        let Some(particle) = particles.get(link.index) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        present[link.index] = true;
+        *transform = particle.transform;
+        sprite.color = particle.color;
+        sprite.custom_size = Some(particle.size);
+    }
+    for (index, particle) in particles.into_iter().enumerate() {
+        if present[index] {
+            continue;
+        }
+        commands.spawn((
+            Sprite {
+                color: particle.color,
+                custom_size: Some(particle.size),
+                ..default()
+            },
+            particle.transform,
+            Pickable::IGNORE,
+            TradePostLinkCmp {
                 index,
             },
             MapCmp,
@@ -2788,6 +2984,7 @@ pub fn draw_map(
                                     state.trading_post_open = Some(planet_id);
                                     state.trade_open = None;
                                     state.trade_draft_id = None;
+                                    state.resource_hub_resources = Resources::default();
                                     state.planet_selected = None;
                                 }
                             },

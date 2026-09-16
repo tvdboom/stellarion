@@ -19,6 +19,130 @@ fn construction_prices_use_multiples_of_ten() {
 }
 
 #[test]
+fn purchase_errors_name_the_exact_blocker() {
+    for (error, message) in [
+        (OrderError::Resources, "Not enough resources."),
+        (OrderError::BuildingAtMaximumLevel, "Building is already at maximum level."),
+        (OrderError::BuildingAlreadyQueued, "Building is already queued."),
+        (OrderError::ShipyardLevel(4), "Requires Shipyard level 4."),
+        (OrderError::FactoryLevel(3), "Requires Factory level 3."),
+        (OrderError::MissileSiloLevel(2), "Requires Missile Silo level 2."),
+        (OrderError::FleetProduction, "Not enough fleet production."),
+        (OrderError::DefenseProduction, "Not enough defense production."),
+        (OrderError::MissileCapacity, "Not enough Missile Silo capacity."),
+        (OrderError::SpaceDockAlreadyBuilt, "Space Dock is already built."),
+        (OrderError::SpaceDockAlreadyQueued, "Space Dock is already queued."),
+    ] {
+        assert_eq!(error.to_string(), message);
+    }
+}
+
+#[test]
+fn purchase_limit_distinguishes_prerequisites_queues_and_capacity() {
+    let mut game = game();
+    let home = game.players[0].home_planet;
+    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    let player = &game.players[0];
+    let planet = game.map.get_mut(home);
+    planet.army.clear();
+
+    let mine = Unit::Building(Building::MetalMine);
+    planet.army.insert(mine, Building::MAX_LEVEL);
+    assert_eq!(
+        purchase_limit(player, planet, mine, Building::MAX_LEVEL, Default::default()),
+        Err(OrderError::BuildingAtMaximumLevel)
+    );
+    planet.army.insert(mine, Building::MAX_LEVEL - 1);
+    planet.buy.push(mine);
+    assert_eq!(
+        purchase_limit(player, planet, mine, Building::MAX_LEVEL, Default::default()),
+        Err(OrderError::BuildingAlreadyQueued)
+    );
+    planet.buy.clear();
+
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::Building(Building::JumpGate),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::ShipyardLevel(4))
+    );
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::Ship(Ship::Cruiser),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::ShipyardLevel(3))
+    );
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::Defense(crate::core::units::defense::Defense::GaussCannon),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::FactoryLevel(3))
+    );
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::interplanetary_missile(),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::MissileSiloLevel(2))
+    );
+
+    planet.army.insert(Unit::Building(Building::Shipyard), 1);
+    planet.buy.extend([Unit::Ship(Ship::LightFighter); 5]);
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::Ship(Ship::LightFighter),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::FleetProduction)
+    );
+    planet.buy.clear();
+
+    planet.army.insert(Unit::Building(Building::Factory), 1);
+    planet.buy.extend([Unit::Defense(crate::core::units::defense::Defense::RocketLauncher); 5]);
+    assert_eq!(
+        purchase_limit(
+            player,
+            planet,
+            Unit::Defense(crate::core::units::defense::Defense::RocketLauncher),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::DefenseProduction)
+    );
+    planet.buy.clear();
+
+    planet.buy.push(Unit::space_dock());
+    assert_eq!(
+        purchase_limit(player, planet, Unit::space_dock(), Building::MAX_LEVEL, Default::default(),),
+        Err(OrderError::SpaceDockAlreadyQueued)
+    );
+    planet.buy.clear();
+    planet.army.insert(Unit::space_dock(), 1);
+    assert_eq!(
+        purchase_limit(player, planet, Unit::space_dock(), Building::MAX_LEVEL, Default::default(),),
+        Err(OrderError::SpaceDockAlreadyBuilt)
+    );
+}
+
+#[test]
 fn senate_has_a_capstone_building_price() {
     assert_eq!(
         Unit::Building(Building::Senate).price(),
@@ -63,12 +187,12 @@ fn senate_purchase_respects_the_match_level_limit() {
     assert_eq!(purchase_limit(player, planet, senate, 2, Default::default()), Ok(1));
     assert_eq!(
         purchase_limit(player, planet, senate, 1, Default::default()),
-        Err(OrderError::Building)
+        Err(OrderError::BuildingAtMaximumLevel)
     );
     planet.army.insert(senate, 2);
     assert_eq!(
         purchase_limit(player, planet, senate, 2, Default::default()),
-        Err(OrderError::Building)
+        Err(OrderError::BuildingAtMaximumLevel)
     );
 }
 
@@ -218,14 +342,16 @@ fn purchase_limit_includes_queued_missiles_of_both_types() {
         2
     );
     planet.buy.extend([Unit::antiballistic_missile(); 2]);
-    assert!(purchase_limit(
-        &game.players[0],
-        planet,
-        Unit::interplanetary_missile(),
-        Building::MAX_LEVEL,
-        Default::default(),
-    )
-    .is_err());
+    assert_eq!(
+        purchase_limit(
+            &game.players[0],
+            planet,
+            Unit::antiballistic_missile(),
+            Building::MAX_LEVEL,
+            Default::default(),
+        ),
+        Err(OrderError::MissileCapacity)
+    );
 }
 
 #[test]
@@ -287,7 +413,7 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
             Building::MAX_LEVEL,
             Default::default()
         ),
-        Err(crate::core::orders::OrderError::Production),
+        Err(crate::core::orders::OrderError::ShipyardLevel(3)),
         "Terraforming must not replace Shipyard unlock levels"
     );
 
@@ -362,7 +488,7 @@ fn orbitals_require_their_production_level_in_completed_shipyards() {
         planet.army.insert(Unit::Building(Building::Shipyard), required - 1);
         assert_eq!(
             purchase_limit(player, planet, orbital, Building::MAX_LEVEL, Default::default()),
-            Err(OrderError::Production),
+            Err(OrderError::ShipyardLevel(required)),
             "{orbital:?} should require Shipyard level {required}"
         );
         planet.army.insert(Unit::Building(Building::Shipyard), required);

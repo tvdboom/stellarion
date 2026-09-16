@@ -313,6 +313,7 @@ fn in_game_menu_keeps_manual_save_without_a_lobby_shortcut() {
 fn menu_app() -> (App, egui::Context) {
     let mut app = App::new();
     app.init_resource::<EguiUserTextures>()
+        .init_resource::<EguiClipboard>()
         .init_resource::<MultiplayerForm>()
         .init_resource::<MultiplayerSession>()
         .init_resource::<ConnectionIndicator>()
@@ -942,7 +943,10 @@ fn in_game_menu_shows_the_current_session_recovery_code() {
 
 #[test]
 fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
-    for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(640.0, 480.0)] {
+    let mut logical_heading_size = None;
+    for viewport in
+        [egui::vec2(2560.0, 1440.0), egui::vec2(1280.0, 720.0), egui::vec2(640.0, 480.0)]
+    {
         let mut session = test_lobby();
         let (loser_membership, finished_game) = {
             let game = session.active_game.as_mut().unwrap();
@@ -1002,9 +1006,28 @@ fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
             );
         }
         assert!(egui.is_pointer_over_egui(), "map corner must be blocked");
-        assert!(visible_menu_label(&shapes, "You won").is_some());
+        let heading = visible_menu_label(&shapes, "You won").unwrap();
         assert!(visible_menu_label(&shapes, "Game finished").is_none());
         assert!(visible_menu_label(&shapes, "Return to Main Menu").is_some());
+        let scale = viewport_ui_scale(viewport);
+        let expected_button_size = egui::vec2(MENU_ACTION_WIDTH, MENU_ACTION_HEIGHT) * scale;
+        for label in ["Spectate", "Return to Main Menu"] {
+            let button = menu_action_rect(&shapes, label);
+            assert!(
+                (button.size() - expected_button_size).length() < 1.0,
+                "{label} did not scale at {viewport:?}: {:?}",
+                button.size()
+            );
+        }
+        let heading_size = heading.size() / scale;
+        if let Some(expected) = logical_heading_size {
+            assert!(
+                (heading_size - expected).length() < 1.0,
+                "result heading did not scale at {viewport:?}: {heading_size:?}"
+            );
+        } else {
+            logical_heading_size = Some(heading_size);
+        }
         let spectate = visible_menu_label(&shapes, "Spectate").unwrap().center();
         for pressed in [true, false] {
             menu_app_frame(
@@ -1026,6 +1049,32 @@ fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
         assert!(matches!(
             app.world().resource::<NextState<GameState>>(),
             NextState::Pending(GameState::Playing)
+        ));
+
+        let return_to_menu = visible_menu_label(&shapes, "Return to Main Menu").unwrap().center();
+        for pressed in [true, false] {
+            menu_app_frame(
+                &mut app,
+                &egui,
+                viewport,
+                AppState::Game,
+                vec![
+                    egui::Event::PointerMoved(return_to_menu),
+                    egui::Event::PointerButton {
+                        pos: return_to_menu,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let requests: Vec<_> =
+            app.world_mut().resource_mut::<Messages<MultiplayerRequest>>().drain().collect();
+        assert!(matches!(requests.as_slice(), [MultiplayerRequest::LeaveGame]));
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Pending(AppState::MainMenu)
         ));
     }
 }
@@ -1795,6 +1844,61 @@ fn join_name_is_editable_and_navigation_stays_visible_on_small_windows() {
                 if display_name == "ABCDEFGHIJKLMNOP" && code == "ABCDEF"
         ));
     }
+}
+
+#[test]
+fn menu_text_fields_accept_paste_events() {
+    let (mut app, context) = menu_app();
+    let viewport = egui::vec2(800.0, 900.0);
+    app.world_mut().resource_mut::<MultiplayerForm>().display_name.clear();
+
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::JoinGame, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::JoinGame, vec![]);
+    let name_field = visible_menu_label(&shapes, "Enter player name").unwrap();
+    click_menu_app(&mut app, &context, viewport, AppState::JoinGame, name_field.center());
+    menu_app_frame(
+        &mut app,
+        &context,
+        viewport,
+        AppState::JoinGame,
+        vec![egui::Event::Paste("Nova".to_string())],
+    );
+    assert_eq!(app.world().resource::<MultiplayerForm>().display_name, "Nova");
+
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::JoinGame, vec![]);
+    let game_code_field = visible_menu_label(&shapes, "Enter game code").unwrap();
+    click_menu_app(&mut app, &context, viewport, AppState::JoinGame, game_code_field.center());
+    menu_app_frame(
+        &mut app,
+        &context,
+        viewport,
+        AppState::JoinGame,
+        vec![egui::Event::Paste("ABCDEF".to_string())],
+    );
+    assert_eq!(app.world().resource::<MultiplayerForm>().game_code, "ABCDEF");
+
+    for _ in 0..3 {
+        menu_app_frame(&mut app, &context, viewport, AppState::RecoverPlayer, vec![]);
+    }
+    let shapes = menu_app_frame(&mut app, &context, viewport, AppState::RecoverPlayer, vec![]);
+    let recovery_code_field = visible_menu_label(&shapes, "Enter recovery code").unwrap();
+    click_menu_app(
+        &mut app,
+        &context,
+        viewport,
+        AppState::RecoverPlayer,
+        recovery_code_field.center(),
+    );
+    menu_app_frame(
+        &mut app,
+        &context,
+        viewport,
+        AppState::RecoverPlayer,
+        vec![egui::Event::Paste("0123-4567-89AB-CDEF".to_string())],
+    );
+    assert_eq!(app.world().resource::<MultiplayerForm>().recovery_code, "0123-4567-89AB-CDEF");
 }
 
 #[test]

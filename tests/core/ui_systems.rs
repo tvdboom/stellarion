@@ -1448,6 +1448,82 @@ fn eliminated_player_shows_zero_progress_and_a_struck_name() {
 }
 
 #[test]
+fn finished_game_winner_keeps_progress_and_unstruck_name_while_spectating() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::{GameMembership, GameRecord};
+
+    let mut model = GameModel::new(
+        [25; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    let winner = model.players[0].clone();
+    let target = model.planets_to_win();
+    for planet in model.map.planets.iter_mut().filter(|planet| !planet.is_moon()).take(target) {
+        planet.controlled = Some(winner.id);
+    }
+    model.status = MatchStatus::Finished;
+    for player in &mut model.players {
+        player.spectator = true;
+    }
+    assert_eq!(model.winner(), Some(winner.id));
+
+    let game_id = GameId::new("winner-spectator-panel");
+    let members = [(winner.id, "Victorious empire"), (2, "Defeated empire"), (3, "Rival")]
+        .into_iter()
+        .map(|(player_id, display_name)| GameMembership {
+            game_id: game_id.clone(),
+            player_id,
+            user_id: UserId::new(format!("user-{player_id}")),
+            display_name: display_name.into(),
+            is_creator: player_id == winner.id,
+            identity_version: 1,
+            connected: true,
+        })
+        .collect();
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: game_id,
+        code: GameCode::new("ABCDEF"),
+        revision: 1,
+        saved_at: 0,
+        max_players: 3,
+        status: MatchStatus::Finished,
+        persisted: PersistedGame::new(model.clone()),
+        submitted_players: Vec::new(),
+        members,
+    });
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 420.0));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..default()
+            },
+            |context| {
+                draw_players_widget(context, &session, &winner, &model.map, &[]);
+            },
+        );
+        output.textures_delta.clear();
+        shapes = output.shapes;
+    }
+
+    assert!(has_text(&shapes, &format!("{target}/{target}")));
+    let name = text_rect(&shapes, "Victorious empire");
+    assert!(
+        !shapes.iter().any(|shape| shape_has_line_through(&shape.shape, name)),
+        "the completed-game winner should not be styled as eliminated"
+    );
+}
+
+#[test]
 fn players_panel_width_follows_the_longest_name_and_keeps_its_left_inset() {
     use crate::core::identity::{GameCode, GameId, UserId};
     use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
@@ -3398,8 +3474,9 @@ fn production_hover_breakdowns_exclude_controlled_planets_and_empty_moons() {
     );
     assert!(energy.iter().all(|(name, _)| !name.contains("(Moon)")));
 
+    let recycler_ranges = RecyclerProductionRanges::default();
     for resource in ResourceName::iter() {
-        let worlds = resource_world_breakdown(&model.map, &player, resource, 0);
+        let worlds = resource_world_breakdown(&model.map, &player, resource, 0, &recycler_ranges);
         assert_eq!(
             worlds.iter().map(|world| world.name.as_str()).collect::<Vec<_>>(),
             ["Home", "Colony"],
@@ -3645,6 +3722,7 @@ fn resource_tooltip_shows_queued_production_as_production() {
     assert_eq!(tooltip_image.size(), egui::vec2(130.0, 90.0));
     assert!(has_text(&output.shapes, ResourceName::Metal.description()));
 
+    let recycler_ranges = RecyclerProductionRanges::default();
     let mut brief = context.run_ui(input(), |ui| {
         draw_resource_tooltip_with_trade(
             ui,
@@ -3654,11 +3732,14 @@ fn resource_tooltip_shows_queued_production_as_production() {
             &images,
             0,
             Resources::default(),
+            Resources::new(25, 0, 0),
             true,
+            &recycler_ranges,
         );
     });
     brief.textures_delta.clear();
     assert!(has_text(&brief.shapes, "Production: +16"));
+    assert!(has_text(&brief.shapes, "Resource Market: -25 after production this turn"));
     assert!(!has_text(&brief.shapes, ResourceName::Metal.description()));
 }
 
@@ -3807,6 +3888,7 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_000.0, 300.0));
 
     let context = egui::Context::default();
+    let recycler_ranges = RecyclerProductionRanges::default();
     let mut target = egui::Rect::NOTHING;
     let input = |events| egui::RawInput {
         screen_rect: Some(viewport),
@@ -3814,12 +3896,27 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
         ..default()
     };
     let mut warmup = context.run_ui(input(Vec::new()), |ui| {
-        target = draw_resource_production_row(ui, &map, &player, ResourceName::Metal, 0).rect;
+        target = draw_resource_production_row(
+            ui,
+            &map,
+            &player,
+            ResourceName::Metal,
+            0,
+            &recycler_ranges,
+        )
+        .rect;
     });
     warmup.textures_delta.clear();
     let mut output =
         context.run_ui(input(vec![egui::Event::PointerMoved(target.center())]), |ui| {
-            draw_resource_production_row(ui, &map, &player, ResourceName::Metal, 0);
+            draw_resource_production_row(
+                ui,
+                &map,
+                &player,
+                ResourceName::Metal,
+                0,
+                &recycler_ranges,
+            );
         });
     output.textures_delta.clear();
 
@@ -3830,6 +3927,96 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
     assert!(!has_text(&output.shapes, "Terraformer"));
     assert!(!has_text(&output.shapes, "(100%)"));
     assert_eq!(text_color(&output.shapes, "(+20%)"), HEALTH_COLOR.to_color32());
+}
+
+#[test]
+fn resource_production_hover_folds_recycler_mean_and_half_range_into_white_totals() {
+    use crate::core::recycling::{RECYCLER_ASTEROID_OUTPUT_MAX, RECYCLER_ASTEROID_OUTPUT_MIN};
+    use crate::core::simulation::GameModel;
+
+    let mut model = GameModel::new([29; 32], Default::default()).unwrap();
+    let player_id = model.players[0].id;
+    let target = recycler_sources(&model.map, &BTreeMap::new())
+        .keys()
+        .copied()
+        .next()
+        .expect("generated map should contain a world in Recycler range");
+    let planet = model.map.get_mut(target);
+    planet.name = "Salvage World".into();
+    planet.owned = Some(player_id);
+    planet.controlled = Some(player_id);
+    planet.army.insert(Unit::Building(Building::Recycler), 1);
+    planet.buy.push(Unit::Building(Building::Recycler));
+    planet.operations.recycler_focus = Some(ResourceName::Metal);
+
+    let home = model.players[0].home_planet;
+    model.map.get_mut(home).army.insert(Unit::Building(Building::OrbitalRailgun), 5);
+    let player = &model.players[0];
+    assert_eq!(projected_energy(&model.map, player, 0).efficiency_percent(), 30);
+    let recycler_ranges = projected_recycler_production_ranges(&model.map, player, 1);
+    let operations = &model.map.get(target).operations;
+    let minimum = operations.recycler_output(RECYCLER_ASTEROID_OUTPUT_MIN * 2usize);
+    let maximum = operations.recycler_output(RECYCLER_ASTEROID_OUTPUT_MAX * 2usize);
+    assert_eq!(
+        recycler_ranges.get(&target),
+        Some(&(minimum, maximum)),
+        "queued and specialized Recycler output should remain unscaled during a brownout"
+    );
+    assert_eq!(recycler_ranges[&target].0.crystal, 0);
+    assert_eq!(recycler_ranges[&target].1.deuterium, 0);
+
+    let expected = ResourceProductionRange {
+        minimum: recycler_ranges[&target].0.metal,
+        maximum: recycler_ranges[&target].1.metal,
+    };
+    let world =
+        resource_world_breakdown(&model.map, player, ResourceName::Metal, 0, &recycler_ranges)
+            .into_iter()
+            .find(|world| world.name == "Salvage World")
+            .expect("owned Recycler world should appear in the resource breakdown");
+    let total = resource_production(&model.map, player, 0).metal;
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut output = context.run_ui(Default::default(), |ui| {
+        draw_resource_production_row(
+            ui,
+            &model.map,
+            player,
+            ResourceName::Metal,
+            0,
+            &recycler_ranges,
+        );
+        draw_resource_world_breakdown(
+            ui,
+            &model.map,
+            player,
+            ResourceName::Metal,
+            0,
+            &recycler_ranges,
+        );
+    });
+    output.textures_delta.clear();
+
+    let total_text = format!("Production: {}", resource_production_text(total, expected));
+    let world_text = format!("Salvage World: {}", resource_production_text(world.amount, expected));
+    assert!(has_text(&output.shapes, &total_text));
+    assert!(has_text(&output.shapes, &world_text));
+    let total_color = text_color(&output.shapes, &total_text);
+    assert_eq!(total_color, text_color(&output.shapes, &world_text));
+    assert_ne!(total_color, RESOURCE_IMAGE_BORDER_COLOR);
+    assert_eq!(
+        resource_production_text(
+            210,
+            ResourceProductionRange {
+                minimum: 10,
+                maximum: 19,
+            }
+        ),
+        "+225 ± 5"
+    );
+    assert!(output.shapes.iter().all(|shape| {
+        !matches!(&shape.shape, egui::Shape::Text(label) if label.galley.job.text.contains("Recycler"))
+    }));
 }
 
 #[test]
@@ -3849,18 +4036,27 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
         planets: vec![focused],
     };
     let player = Player::new(0, 0);
+    let recycler_ranges = RecyclerProductionRanges::default();
 
-    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal, 0);
+    let metal = resource_world_breakdown(&map, &player, ResourceName::Metal, 0, &recycler_ranges);
     assert_eq!(metal[0].amount, 12);
     assert_eq!(metal[0].terraformer_modifier_percent, 20);
-    let crystal = resource_world_breakdown(&map, &player, ResourceName::Crystal, 0);
+    let crystal =
+        resource_world_breakdown(&map, &player, ResourceName::Crystal, 0, &recycler_ranges);
     assert_eq!(crystal[0].amount, 8);
     assert_eq!(crystal[0].terraformer_modifier_percent, -20);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0);
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Crystal, 0);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0, &recycler_ranges);
+        draw_resource_world_breakdown(
+            ui,
+            &map,
+            &player,
+            ResourceName::Crystal,
+            0,
+            &recycler_ranges,
+        );
     });
     output.textures_delta.clear();
     assert!(!has_text(&output.shapes, "Terraformer"));
@@ -3881,14 +4077,16 @@ fn resource_breakdown_hides_terraformers_without_an_active_modifier() {
         planets: vec![planet],
     };
     let player = Player::new(0, 0);
+    let recycler_ranges = RecyclerProductionRanges::default();
 
-    let breakdown = resource_world_breakdown(&map, &player, ResourceName::Metal, 0);
+    let breakdown =
+        resource_world_breakdown(&map, &player, ResourceName::Metal, 0, &recycler_ranges);
     assert_eq!(breakdown[0].terraformer_modifier_percent, 0);
     assert_eq!(breakdown[0].amount, 4);
 
     let context = egui::Context::default();
     let mut output = context.run_ui(Default::default(), |ui| {
-        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0);
+        draw_resource_world_breakdown(ui, &map, &player, ResourceName::Metal, 0, &recycler_ranges);
     });
     output.textures_delta.clear();
     assert!(has_text(&output.shapes, "Quiet World: +4"));

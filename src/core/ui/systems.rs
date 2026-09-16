@@ -1,6 +1,6 @@
 //! Egui systems for the strategic HUD, shops, missions, and combat reports.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
@@ -41,6 +41,7 @@ use crate::core::missions::{
 };
 use crate::core::orders::{purchase_limit, validate_mission};
 use crate::core::player::{PlanetInfo, Player};
+use crate::core::recycling::{debris_sites, recycler_sources};
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::simulation::{
@@ -49,7 +50,7 @@ use crate::core::simulation::{
     TurnCommand,
 };
 use crate::core::states::GameState;
-use crate::core::trading::visible_trading_post_owner;
+use crate::core::trading::{visible_trading_post_owner, ResourceLoanTerm};
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
@@ -159,6 +160,10 @@ pub struct UiState {
     pub(crate) trade_draft_id: Option<u64>,
     /// Resources selected for the local side of a Trading Post negotiation.
     pub(crate) trade_resources: Resources,
+    /// Resources selected for a new loan from the player's own Trading Post.
+    pub(crate) resource_hub_resources: Resources,
+    /// Repayment schedule selected in the Resource Hub panel.
+    pub(crate) resource_hub_term: ResourceLoanTerm,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
@@ -2042,6 +2047,11 @@ fn draw_players_widget_with_controls(
         .filter(|planet| !planet.is_moon() && !planet.is_destroyed && local_player.controls(planet))
         .count();
     let target = game.persisted.state.planets_to_win();
+    let winner = game.persisted.state.winner();
+    let is_eliminated = |player_id| {
+        game.persisted.state.player(player_id).is_ok_and(|player| player.spectator)
+            && winner != Some(player_id)
+    };
     let scale = owned_worlds_hud_scale(context.content_rect().size());
 
     egui::Area::new("stellarion_players".into())
@@ -2060,12 +2070,7 @@ fn draw_players_widget_with_controls(
                     let progress_spacing = 12.0 * scale;
                     let trailing_space = 8.0 * scale;
                     let progress_for = |member: &GameMembership| {
-                        let is_eliminated = game
-                            .persisted
-                            .state
-                            .player(member.player_id)
-                            .is_ok_and(|player| player.spectator);
-                        let count = if is_eliminated {
+                        let count = if is_eliminated(member.player_id) {
                             "0".to_owned()
                         } else if member.player_id == local_player.id {
                             local_progress.to_string()
@@ -2156,11 +2161,7 @@ fn draw_players_widget_with_controls(
                     for member in members {
                         ui.horizontal(|ui| {
                             let is_local = member.player_id == local_player.id;
-                            let is_eliminated = game
-                                .persisted
-                                .state
-                                .player(member.player_id)
-                                .is_ok_and(|player| player.spectator);
+                            let is_eliminated = is_eliminated(member.player_id);
                             let connected = session.local_practice || member.connected;
                             let color = session.player_color(member.player_id);
                             let [red, green, blue] = color.rgb();
@@ -3007,7 +3008,27 @@ struct ResourceWorldProduction {
     name: String,
     amount: usize,
     terraformer_modifier_percent: i32,
+    recycler: ResourceProductionRange,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ResourceProductionRange {
+    minimum: usize,
+    maximum: usize,
+}
+
+impl ResourceProductionRange {
+    fn rounded_mean(self) -> usize {
+        self.minimum.saturating_add(self.half_range())
+    }
+
+    fn half_range(self) -> usize {
+        let span = self.maximum.saturating_sub(self.minimum);
+        span / 2 + span % 2
+    }
+}
+
+type RecyclerProductionRanges = BTreeMap<PlanetId, (Resources, Resources)>;
 
 fn next_turn_planet(planet: &Planet) -> Planet {
     let mut projected = planet.clone();
@@ -3023,6 +3044,44 @@ fn resource_production(map: &Map, player: &Player, action_demand: usize) -> Reso
         .map(|planet| next_turn_planet(planet).resource_production())
         .sum();
     projected_energy(map, player, action_demand).scale_resources(raw)
+}
+
+fn projected_recycler_production_ranges(
+    map: &Map,
+    player: &Player,
+    turn: usize,
+) -> RecyclerProductionRanges {
+    let debris = debris_sites(player.reports.iter(), turn);
+    let sources = recycler_sources(map, &debris);
+
+    map.planets
+        .iter()
+        .filter(|planet| player.owns(planet))
+        .filter_map(|planet| {
+            let projected = next_turn_planet(planet);
+            let level =
+                projected.army.amount(&Unit::Building(Building::Recycler)).min(Building::MAX_LEVEL);
+            let source = sources.get(&planet.id).copied()?;
+            (level > 0).then(|| {
+                let (minimum, maximum) = source.output_range();
+                let minimum = projected.operations.recycler_output(minimum * level);
+                let maximum = projected.operations.recycler_output(maximum * level);
+                (planet.id, (minimum, maximum))
+            })
+        })
+        .collect()
+}
+
+fn resource_production_text(production: usize, recycler: ResourceProductionRange) -> String {
+    if recycler.maximum > 0 {
+        format!(
+            "+{} ± {}",
+            production.saturating_add(recycler.rounded_mean()),
+            recycler.half_range()
+        )
+    } else {
+        format!("+{production}")
+    }
 }
 
 fn terraformer_modifier_percent(planet: &Planet, resource: ResourceName) -> i32 {
@@ -3049,6 +3108,7 @@ fn resource_world_breakdown(
     player: &Player,
     resource: ResourceName,
     action_demand: usize,
+    recycler_ranges: &RecyclerProductionRanges,
 ) -> Vec<ResourceWorldProduction> {
     let energy = projected_energy(map, player, action_demand);
     let mut accumulated_raw = 0usize;
@@ -3070,6 +3130,13 @@ fn resource_world_breakdown(
                 name: planet.name.clone(),
                 amount,
                 terraformer_modifier_percent: terraformer_modifier_percent(&projected, resource),
+                recycler: recycler_ranges.get(&planet.id).map_or_else(
+                    ResourceProductionRange::default,
+                    |(minimum, maximum)| ResourceProductionRange {
+                        minimum: minimum.get(&resource),
+                        maximum: maximum.get(&resource),
+                    },
+                ),
             }
         })
         .collect()
@@ -3081,12 +3148,17 @@ fn draw_resource_world_breakdown(
     player: &Player,
     resource: ResourceName,
     action_demand: usize,
+    recycler_ranges: &RecyclerProductionRanges,
 ) {
     ui.spacing_mut().item_spacing.y = 2.0;
-    for world in resource_world_breakdown(map, player, resource, action_demand) {
+    for world in resource_world_breakdown(map, player, resource, action_demand, recycler_ranges) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.small(format!("{}: +{}", world.name, world.amount));
+            ui.small(format!(
+                "{}: {}",
+                world.name,
+                resource_production_text(world.amount, world.recycler)
+            ));
             if world.terraformer_modifier_percent != 0 {
                 let color = if world.terraformer_modifier_percent > 0 {
                     HEALTH_COLOR.to_color32()
@@ -3108,13 +3180,23 @@ fn draw_resource_production_row(
     player: &Player,
     resource: ResourceName,
     action_demand: usize,
+    recycler_ranges: &RecyclerProductionRanges,
 ) -> Response {
     let energy = projected_energy(map, player, action_demand);
     let production = resource_production(map, player, action_demand).get(&resource);
+    let recycler = recycler_ranges.values().fold(
+        ResourceProductionRange::default(),
+        |mut total, (minimum, maximum)| {
+            total.minimum = total.minimum.saturating_add(minimum.get(&resource));
+            total.maximum = total.maximum.saturating_add(maximum.get(&resource));
+            total
+        },
+    );
     let response = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let production = ui.small(format!("Production: +{production}"));
+            let production =
+                ui.small(format!("Production: {}", resource_production_text(production, recycler)));
             let energy_penalty = 100usize.saturating_sub(energy.efficiency_percent());
             if energy_penalty > 0 {
                 production.union(ui.colored_label(
@@ -3130,7 +3212,14 @@ fn draw_resource_production_row(
     if response.hovered() {
         ui.add_space(2.0);
         ui.indent("Production", |ui| {
-            draw_resource_world_breakdown(ui, map, player, resource, action_demand);
+            draw_resource_world_breakdown(
+                ui,
+                map,
+                player,
+                resource,
+                action_demand,
+                recycler_ranges,
+            );
         });
         ui.add_space(2.0);
     }
@@ -3255,7 +3344,9 @@ fn draw_resource_tooltip_with_trade(
     images: &ImageIds,
     action_demand: usize,
     trade_incoming: Resources,
+    hub_repayment: Resources,
     brief: bool,
+    recycler_ranges: &RecyclerProductionRanges,
 ) -> egui::Rect {
     ui.horizontal(|ui| {
         let image_rect = ui.add_image(images.get(resource.to_lowername()), [130.0, 90.0]).rect;
@@ -3272,10 +3363,27 @@ fn draw_resource_tooltip_with_trade(
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.style_mut().interaction.selectable_labels = true;
-                draw_resource_production_row(ui, map, player, resource, action_demand);
+                draw_resource_production_row(
+                    ui,
+                    map,
+                    player,
+                    resource,
+                    action_demand,
+                    recycler_ranges,
+                );
                 let incoming = trade_incoming.get(&resource);
                 if incoming > 0 {
                     ui.small(format!("Trade: +{incoming}"));
+                }
+                let repayment = hub_repayment.get(&resource);
+                if repayment > 0 {
+                    ui.colored_label(
+                        Color32::from_rgb(229, 190, 107),
+                        RichText::new(format!(
+                            "Resource Market: -{repayment} after production this turn"
+                        ))
+                        .small(),
+                    );
                 }
             });
             if !brief {
@@ -3297,6 +3405,7 @@ fn draw_resource_tooltip(
     images: &ImageIds,
     action_demand: usize,
 ) -> egui::Rect {
+    let recycler_ranges = projected_recycler_production_ranges(map, player, 0);
     draw_resource_tooltip_with_trade(
         ui,
         resource,
@@ -3305,7 +3414,9 @@ fn draw_resource_tooltip(
         images,
         action_demand,
         Resources::default(),
+        Resources::default(),
         false,
+        &recycler_ranges,
     )
 }
 
@@ -3320,9 +3431,11 @@ fn draw_resources_with_trade(
     scale: f32,
     action_demand: usize,
     trade_incoming: Resources,
+    hub_repayment: Resources,
 ) {
     let gap = resource_bar_gap(compact, scale);
     let resource_count = ResourceName::iter().count();
+    let recycler_ranges = projected_recycler_production_ranges(map, player, settings.turn);
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -3371,7 +3484,9 @@ fn draw_resources_with_trade(
                     images,
                     action_demand,
                     trade_incoming,
+                    hub_repayment,
                     settings.brief_hover_info,
+                    &recycler_ranges,
                 );
             });
 
@@ -3419,6 +3534,7 @@ fn draw_resources(
         scale,
         action_demand,
         Resources::default(),
+        Resources::default(),
     );
 }
 
@@ -3431,6 +3547,7 @@ fn draw_resources_widget_with_trade(
     images: &ImageIds,
     action_demand: usize,
     trade_incoming: Resources,
+    hub_repayment: Resources,
 ) -> egui::Rect {
     let scale = strategic_hud_scale(context.content_rect().size());
     egui::Area::new("stellarion_resources".into())
@@ -3469,6 +3586,7 @@ fn draw_resources_widget_with_trade(
                     scale,
                     action_demand,
                     trade_incoming,
+                    hub_repayment,
                 );
             });
         })
@@ -3492,6 +3610,7 @@ fn draw_resources_widget(
         player,
         images,
         action_demand,
+        Resources::default(),
         Resources::default(),
     )
 }
@@ -5489,6 +5608,7 @@ pub fn draw_ui(
                 &map,
                 &player,
                 &session,
+                &mut pending,
                 &mut multiplayer_requests,
                 &mut message,
                 &images,
@@ -5519,6 +5639,9 @@ pub fn draw_ui(
                 action_energy_demand,
                 session.active_game.as_ref().map_or_else(Resources::default, |game| {
                     game.persisted.state.trade_incoming(player.id)
+                }),
+                session.active_game.as_ref().map_or_else(Resources::default, |game| {
+                    game.persisted.state.resource_hub_repayment_due(player.id)
                 }),
             );
         }

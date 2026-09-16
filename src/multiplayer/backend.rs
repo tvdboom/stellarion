@@ -220,6 +220,7 @@ pub trait MultiplayerBackend: Send + Sync {
         _session: &'a AuthSession,
         _game_id: &'a GameId,
         _invitation: TradeInvitation,
+        _projected_post: bool,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(async { Err(BackendError::Configuration("trading is unavailable".into())) })
     }

@@ -28,7 +28,10 @@ use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
 use crate::core::random::DeterministicRngState;
 use crate::core::recycling::recycler_production;
 use crate::core::resources::{ResourceName, Resources};
-use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent, TradeAgreement};
+use crate::core::trading::{
+    trading_post_capacity, trading_posts_are_adjacent, ResourceLoan, ResourceLoanTerm,
+    TradeAgreement, TRADE_RESOURCES_PER_LEVEL,
+};
 use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::operations::{mine_building, MineMode, SenatePolicy, SpaceDockMode};
 use crate::core::units::{Amount, Army, Price, Unit};
@@ -154,6 +157,8 @@ pub struct GameModel {
     pub orbital_strikes: Vec<OrbitalStrike>,
     /// Bilateral exchanges accepted during the current planning turn.
     pub trades: Vec<TradeAgreement>,
+    /// At most one outstanding Resource Hub loan for each owned Trading Post.
+    pub resource_loans: Vec<ResourceLoan>,
     /// Current turn awaiting submissions, starting at one.
     pub turn: u64,
     /// Persisted deterministic random stream cursor.
@@ -165,6 +170,11 @@ pub struct GameModel {
 }
 
 impl GameModel {
+    /// Whether enough non-spectator empires remain to coordinate a joint attack.
+    pub(crate) fn joint_attacks_enabled(&self) -> bool {
+        self.players.iter().filter(|player| !player.spectator).count() >= 3
+    }
+
     /// Territorial target, based on surviving non-moon worlds and starting player slots.
     pub fn planets_to_win(&self) -> usize {
         let planets = self
@@ -237,6 +247,7 @@ impl GameModel {
             missions: Vec::new(),
             orbital_strikes: Vec::new(),
             trades: Vec::new(),
+            resource_loans: Vec::new(),
             turn: 1,
             rng: rng_state,
             rules,
@@ -285,6 +296,22 @@ impl GameModel {
     /// Returns resources due to one player when the current turn resolves.
     pub fn trade_incoming(&self, player_id: PlayerId) -> Resources {
         self.trades.iter().map(|trade| trade.incoming(player_id)).sum()
+    }
+
+    /// Returns the fixed Resource Hub bundle attempted when the current turn resolves.
+    pub fn resource_hub_repayment_due(&self, player_id: PlayerId) -> Resources {
+        self.resource_loans
+            .iter()
+            .filter(|loan| loan.player_id == player_id && loan.due_turn <= self.turn)
+            .map(ResourceLoan::repayment)
+            .sum()
+    }
+
+    /// Whether a missed repayment prevents this empire from opening any new Resource Hub loan.
+    pub fn resource_hub_borrowing_blocked(&self, player_id: PlayerId) -> bool {
+        self.resource_loans
+            .iter()
+            .any(|loan| loan.player_id == player_id && loan.due_turn < self.turn)
     }
 
     /// Validates cross-references and boundaries in a deserialized snapshot.
@@ -389,6 +416,31 @@ impl GameModel {
                 return Err(GameError::MalformedState(format!(
                     "player {} cannot settle current trades",
                     player.id
+                )));
+            }
+        }
+
+        let mut loan_posts = HashSet::with_capacity(self.resource_loans.len());
+        if self.resource_loans.len() > self.map.planets.len() {
+            return Err(GameError::MalformedState(
+                "resource loan count exceeds planet count".to_string(),
+            ));
+        }
+        for loan in &self.resource_loans {
+            let expected_due = loan.issued_turn.checked_add(loan.term.turns());
+            if !player_ids.contains(&loan.player_id)
+                || !planet_ids.contains(&loan.planet_id)
+                || !loan_posts.insert(loan.planet_id)
+                || loan.issued_turn == 0
+                || loan.issued_turn >= self.turn
+                || expected_due != Some(loan.due_turn)
+                || loan.principal.is_empty()
+                || loan.principal.total()
+                    > TRADE_RESOURCES_PER_LEVEL.saturating_mul(Building::MAX_LEVEL)
+            {
+                return Err(GameError::MalformedState(format!(
+                    "player {} has an invalid Resource Market loan",
+                    loan.player_id
                 )));
             }
         }
@@ -715,6 +767,20 @@ impl PersistedGame {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnCommand {
+    /// Borrows one bundle through an owned completed Trading Post.
+    BorrowResources {
+        /// Owned planet whose Trading Post determines the combined borrowing capacity.
+        planet_id: PlanetId,
+        /// Metal, Crystal, and Deuterium added before the remaining draft is applied.
+        resources: Resources,
+        /// Fixed repayment delay and premium.
+        term: ResourceLoanTerm,
+    },
+    /// Repays the complete fixed amount of one Trading Post loan before it is due.
+    RepayResourceLoanEarly {
+        /// Trading Post whose outstanding loan is repaid.
+        planet_id: PlanetId,
+    },
     /// Selects the operating mode of a completed mine or synthesizer.
     SetMineMode {
         /// Owned planet containing the extraction building.
@@ -745,8 +811,7 @@ pub enum TurnCommand {
         /// Ship production or defense production across the empire.
         policy: SenatePolicy,
     },
-    /// Adds debug-only testing resources and units to owned planets and buildings to controlled
-    /// moons in local practice.
+    /// Adds testing resources and units to owned planets and buildings to controlled moons.
     PracticeBoost,
     /// Queues one or more identical units on a controlled planet.
     BuyUnits {
@@ -1028,14 +1093,25 @@ pub(crate) fn resolved_turn(
     reserve_trade_resources(&mut working)?;
     let mut ordered = submissions.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|submission| submission.player_id);
-    // Practice boosts are setup commands for later orders in the same draft. Apply them before
-    // joint-fleet reservations so an allied contribution can use the units shown by the boosted
-    // draft projection.
+    // Testing boosts create completed infrastructure used by later commands in the same draft.
+    // Apply them before Resource Hub borrowing and joint-fleet reservations so the authoritative
+    // resolution matches the draft preview shown by the client.
     for submission in &ordered {
         for command in submission
             .commands
             .iter()
             .filter(|command| matches!(command, TurnCommand::PracticeBoost))
+        {
+            apply_command(&mut working, submission.player_id, command)?;
+        }
+    }
+    // Resource Hub credit is available to the rest of the same draft, regardless of where the
+    // command appears in the player's interaction order.
+    for submission in &ordered {
+        for command in submission
+            .commands
+            .iter()
+            .filter(|command| matches!(command, TurnCommand::BorrowResources { .. }))
         {
             apply_command(&mut working, submission.player_id, command)?;
         }
@@ -1053,7 +1129,12 @@ pub(crate) fn resolved_turn(
     }
     for submission in ordered {
         let ordinary = submission.commands.iter().filter(|command| {
-            !matches!(command, TurnCommand::PracticeBoost | TurnCommand::SendJointMission { .. })
+            !matches!(
+                command,
+                TurnCommand::BorrowResources { .. }
+                    | TurnCommand::PracticeBoost
+                    | TurnCommand::SendJointMission { .. }
+            )
         });
         apply_commands(&mut working, submission.player_id, ordinary)?;
     }
@@ -1107,9 +1188,14 @@ pub(crate) fn preview_commands_with_allied_launches(
     let mut preview = state.clone();
     preview.orbital_strikes.clear();
     reserve_trade_resources(&mut preview)?;
-    // Match full-turn resolution: testing setup must exist before a shared fleet validates its
-    // accepted contributions.
+    // Match full-turn resolution: testing setup must exist before a Resource Hub or shared fleet
+    // validates the completed infrastructure and units shown in the draft preview.
     for command in commands.iter().filter(|command| matches!(command, TurnCommand::PracticeBoost)) {
+        apply_command(&mut preview, player_id, command)?;
+    }
+    for command in
+        commands.iter().filter(|command| matches!(command, TurnCommand::BorrowResources { .. }))
+    {
         apply_command(&mut preview, player_id, command)?;
     }
     let mut launched = BTreeSet::new();
@@ -1138,7 +1224,12 @@ pub(crate) fn preview_commands_with_allied_launches(
         &mut preview,
         player_id,
         commands.iter().filter(|command| {
-            !matches!(command, TurnCommand::PracticeBoost | TurnCommand::SendJointMission { .. })
+            !matches!(
+                command,
+                TurnCommand::BorrowResources { .. }
+                    | TurnCommand::PracticeBoost
+                    | TurnCommand::SendJointMission { .. }
+            )
         }),
     )?;
     Ok(preview)
@@ -1304,7 +1395,15 @@ fn apply_command(
     command: &TurnCommand,
 ) -> Result<(), GameError> {
     match command {
-        TurnCommand::PracticeBoost => apply_practice_boost(model, player_id),
+        TurnCommand::BorrowResources {
+            planet_id,
+            resources,
+            term,
+        } => apply_resource_loan(model, player_id, *planet_id, *resources, *term),
+        TurnCommand::RepayResourceLoanEarly {
+            planet_id,
+        } => apply_early_resource_loan_repayment(model, player_id, *planet_id),
+        TurnCommand::PracticeBoost => apply_testing_boost(model, player_id),
         TurnCommand::BuyUnits {
             planet_id,
             unit,
@@ -1420,6 +1519,81 @@ fn command_turn(model: &GameModel, player_id: PlayerId) -> Result<usize, GameErr
 fn simulation_turn(turn: u64) -> Result<usize, GameError> {
     usize::try_from(turn)
         .map_err(|_| GameError::MalformedState("turn exceeds this platform's limits".to_string()))
+}
+
+fn apply_resource_loan(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+    resources: Resources,
+    term: ResourceLoanTerm,
+) -> Result<(), GameError> {
+    let player = model.player(player_id)?;
+    if model.resource_hub_borrowing_blocked(player_id) {
+        return invalid(player_id, "overdue Resource Market repayments block all new borrowing");
+    }
+    if player.spectator || model.resource_loans.iter().any(|loan| loan.planet_id == planet_id) {
+        return invalid(
+            player_id,
+            "this Trading Post already has an outstanding Resource Market loan",
+        );
+    }
+    let capacity =
+        model.map.try_get(planet_id).map_or(0, |planet| trading_post_capacity(planet, player_id));
+    if resources.is_empty() || resources.total() > capacity {
+        return invalid(
+            player_id,
+            "Resource Market borrowing exceeds the selected Trading Post's capacity",
+        );
+    }
+    let due_turn = model
+        .turn
+        .checked_add(term.turns())
+        .ok_or_else(|| invalid_error(player_id, "Resource Market repayment turn is exhausted"))?;
+    let balance = model.player(player_id)?.resources;
+    let updated =
+        Resources::new(
+            balance.metal.checked_add(resources.metal).ok_or_else(|| {
+                invalid_error(player_id, "Resource Market metal balance overflow")
+            })?,
+            balance.crystal.checked_add(resources.crystal).ok_or_else(|| {
+                invalid_error(player_id, "Resource Market crystal balance overflow")
+            })?,
+            balance.deuterium.checked_add(resources.deuterium).ok_or_else(|| {
+                invalid_error(player_id, "Resource Market deuterium balance overflow")
+            })?,
+        );
+    model.player_mut(player_id)?.resources = updated;
+    model.resource_loans.push(ResourceLoan {
+        player_id,
+        planet_id,
+        issued_turn: model.turn,
+        due_turn,
+        principal: resources,
+        term,
+    });
+    Ok(())
+}
+
+fn apply_early_resource_loan_repayment(
+    model: &mut GameModel,
+    player_id: PlayerId,
+    planet_id: PlanetId,
+) -> Result<(), GameError> {
+    let (index, repayment) = model
+        .resource_loans
+        .iter()
+        .enumerate()
+        .find(|(_, loan)| loan.player_id == player_id && loan.planet_id == planet_id)
+        .map(|(index, loan)| (index, loan.repayment()))
+        .ok_or_else(|| invalid_error(player_id, "this Trading Post has no Resource Market loan"))?;
+    let player = model.player_mut(player_id)?;
+    if !player.resources.contains(repayment) {
+        return invalid(player_id, "not enough resources for early Resource Market repayment");
+    }
+    player.resources -= repayment;
+    model.resource_loans.remove(index);
+    Ok(())
 }
 
 /// Rejects a command before it would exceed the persisted active-mission bound.
@@ -1662,10 +1836,7 @@ fn apply_recall(
 }
 
 /// Keeps testing shortcuts in the same ordered draft as the orders that depend on them.
-fn apply_practice_boost(model: &mut GameModel, player_id: PlayerId) -> Result<(), GameError> {
-    if !model.rules.practice_mode {
-        return invalid(player_id, "testing boosts are available only in local practice");
-    }
+fn apply_testing_boost(model: &mut GameModel, player_id: PlayerId) -> Result<(), GameError> {
     let home_planet = model.player(player_id)?.home_planet;
     let senate_level_limit =
         Player::senate_level_limit(&model.map, model.rules.colonizable_percent);
@@ -2341,6 +2512,9 @@ fn apply_joint_mission(
     combat_probes: bool,
     contributions: &[JointAttackContribution],
 ) -> Result<(), GameError> {
+    if !model.joint_attacks_enabled() {
+        return invalid(leader, "joint attacks require at least three active players");
+    }
     if attack_id == 0
         || mission_id == 0
         || !matches!(objective, Icon::Colonize | Icon::Attack | Icon::Destroy)
@@ -2573,10 +2747,13 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         .collect::<BTreeMap<_, _>>();
     for player in &mut model.players {
         let energy = resolution_energy_grid(player, &model.map, &action_energy_demand);
-        let raw = player.raw_resource_production(&model.map)
-            + recycler_output.get(&player.id).copied().unwrap_or_default();
-        player.resources += energy.scale_resources(raw);
+        let powered_production = energy.scale_resources(player.raw_resource_production(&model.map));
+        let salvage = recycler_output.get(&player.id).copied().unwrap_or_default();
+        // Recycler craft use their own salvage systems rather than the planetary power grid.
+        // A brownout therefore reduces mine output without reducing an already recovered haul.
+        player.resources += powered_production + salvage;
     }
+    settle_resource_hub_loans(model, model.turn.saturating_sub(1));
 
     // Lock grids before any missions resolve. Conquest and destruction affect the next turn,
     // never a later battle in the current randomized mission order.
@@ -3132,6 +3309,31 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         }
     }
     Ok(())
+}
+
+/// Deducts a due loan only when its complete fixed bundle is available. An unaffordable loan
+/// remains due and is retried after production on the next turn. The overdue record also blocks
+/// new Resource Hub borrowing until the complete empire-wide due bundle can be settled.
+fn settle_resource_hub_loans(model: &mut GameModel, resolved_turn: u64) {
+    let due = model.resource_loans.iter().filter(|loan| loan.due_turn <= resolved_turn).fold(
+        BTreeMap::<PlayerId, Resources>::new(),
+        |mut due, loan| {
+            *due.entry(loan.player_id).or_default() += loan.repayment();
+            due
+        },
+    );
+    let mut settled_players = HashSet::new();
+    for (player_id, repayment) in due {
+        if let Some(player) = model.players.iter_mut().find(|player| player.id == player_id) {
+            if player.resources.contains(repayment) {
+                player.resources -= repayment;
+                settled_players.insert(player_id);
+            }
+        }
+    }
+    model
+        .resource_loans
+        .retain(|loan| loan.due_turn > resolved_turn || !settled_players.contains(&loan.player_id));
 }
 
 /// Replaces every due contingent with one lead mission while retaining per-player ownership.

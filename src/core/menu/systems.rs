@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::{egui, EguiClipboard, EguiContexts};
 use chrono::{Local as ChronoLocal, TimeZone};
 
 use crate::core::assets::WorldAssets;
@@ -131,6 +131,7 @@ fn cover_source_rect(source: Vec2, viewport: Vec2) -> Rect {
 /// Draws all non-game screens and emits transport-neutral multiplayer requests.
 pub fn draw_menu(
     mut contexts: EguiContexts,
+    mut clipboard: ResMut<EguiClipboard>,
     window: Single<&Window, With<PrimaryWindow>>,
     app_state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -145,6 +146,7 @@ pub fn draw_menu(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
+    apply_pending_menu_paste(context, &mut clipboard);
     clear_browser_copy_candidate();
     let viewport =
         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(window.width(), window.height()));
@@ -184,7 +186,7 @@ pub fn draw_menu(
         (egui::Align2::CENTER_CENTER, menu_size.y * 0.5)
     };
     let content_id = egui::Id::new(("stellarion_menu_content", *app_state.get()));
-    set_menu_layer_scale(context, content_id, egui::Order::Middle, viewport, menu_scale);
+    set_menu_layer_scale(context, content_id, egui::Order::Middle, viewport.min, menu_scale);
     egui::Area::new(content_id)
         .pivot(content_pivot)
         .fixed_pos(egui::pos2(menu_size.x * 0.5, content_y))
@@ -249,7 +251,7 @@ pub fn draw_menu(
     if is_primary_navigation {
         let title = main_menu_title(context, menu_size);
         let title_id = egui::Id::new("stellarion_main_title");
-        set_menu_layer_scale(context, title_id, egui::Order::Middle, viewport, menu_scale);
+        set_menu_layer_scale(context, title_id, egui::Order::Middle, viewport.min, menu_scale);
         egui::Area::new(title_id)
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(egui::pos2(menu_size.x * 0.5, menu_size.y * 0.17))
@@ -263,7 +265,7 @@ pub fn draw_menu(
     }
 
     let footer_id = egui::Id::new("stellarion_menu_footer");
-    set_menu_layer_scale(context, footer_id, egui::Order::Foreground, viewport, menu_scale);
+    set_menu_layer_scale(context, footer_id, egui::Order::Foreground, viewport.min, menu_scale);
     let footer = egui::Area::new(footer_id)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(egui::pos2(menu_size.x - 24.0, menu_size.y - 18.0))
@@ -293,7 +295,7 @@ pub fn draw_menu(
     if let Some(error) = session.menu_error.as_deref() {
         let toast_width = menu_error_width(menu_size, content_width, *app_state.get());
         let error_id = egui::Id::new("stellarion_menu_error");
-        set_menu_layer_scale(context, error_id, egui::Order::Foreground, viewport, menu_scale);
+        set_menu_layer_scale(context, error_id, egui::Order::Foreground, viewport.min, menu_scale);
         egui::Area::new(error_id)
             .pivot(egui::Align2::RIGHT_BOTTOM)
             .fixed_pos(egui::pos2(menu_size.x - 24.0, footer.response.rect.top() - 10.0))
@@ -307,7 +309,7 @@ pub fn draw_menu(
     }
 }
 
-/// Scales a complete standalone-menu layer from the viewport origin.
+/// Scales a complete menu layer around a stable viewport point.
 ///
 /// Layout is performed in logical menu coordinates and this transform grows or
 /// shrinks the resulting controls, text, spacing, and hit targets together.
@@ -315,10 +317,10 @@ fn set_menu_layer_scale(
     context: &egui::Context,
     id: egui::Id,
     order: egui::Order,
-    viewport: egui::Rect,
+    fixed_point: egui::Pos2,
     scale: f32,
 ) {
-    let translation = viewport.min.to_vec2() * (1.0 - scale);
+    let translation = fixed_point.to_vec2() * (1.0 - scale);
     context.set_transform_layer(
         egui::LayerId::new(order, id),
         egui::emath::TSTransform::new(translation, scale),
@@ -1305,8 +1307,69 @@ fn editable_form_card(
         if let Some(limit) = char_limit {
             editor = editor.char_limit(limit);
         }
-        ui.add_sized(egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT), editor);
+        let response = ui.add_sized(egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT), editor);
+        response.context_menu(|ui| {
+            if ui.button("Paste").clicked() {
+                request_menu_paste(ui, response.id);
+                ui.close();
+            }
+        });
     })
+}
+
+/// Identifies the editable field waiting for a right-click paste operation.
+fn menu_paste_target_id() -> egui::Id {
+    egui::Id::new("stellarion_menu_paste_target")
+}
+
+/// Requests clipboard text while preserving focus on the field that opened the context menu.
+fn request_menu_paste(ui: &egui::Ui, target: egui::Id) {
+    #[cfg(target_arch = "wasm32")]
+    if !call_browser_clipboard_function("stellarionRequestPaste", None)
+        .and_then(|result| result.as_bool())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    ui.ctx().data_mut(|data| data.insert_temp(menu_paste_target_id(), target));
+}
+
+/// Delivers a queued context-menu paste before the target `TextEdit` handles this frame's input.
+fn apply_pending_menu_paste(context: &egui::Context, _clipboard: &mut EguiClipboard) {
+    let Some(target) = context.data(|data| data.get_temp::<egui::Id>(menu_paste_target_id()))
+    else {
+        return;
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = Some(_clipboard.get_text().ok_or(()));
+    #[cfg(target_arch = "wasm32")]
+    let result = take_browser_paste_result();
+
+    let Some(result) = result else {
+        return;
+    };
+    context.data_mut(|data| data.remove::<egui::Id>(menu_paste_target_id()));
+    let Ok(text) = result else {
+        return;
+    };
+
+    context.memory_mut(|memory| memory.request_focus(target));
+    context.input_mut(|input| input.events.push(egui::Event::Paste(text)));
+}
+
+/// Polls the asynchronous browser clipboard read started by the context-menu button.
+#[cfg(target_arch = "wasm32")]
+fn take_browser_paste_result() -> Option<Result<String, ()>> {
+    let result = call_browser_clipboard_function("stellarionTakePaste", None)?;
+    if let Some(text) = result.as_string() {
+        Some(Ok(text))
+    } else if result.as_bool() == Some(false) {
+        Some(Err(()))
+    } else {
+        None
+    }
 }
 
 /// Draws one lobby access code as a compact card with an icon-only copy action.
@@ -1983,10 +2046,7 @@ fn game_overlay_area(context: &egui::Context) -> (egui::Area, f32) {
     let scale = viewport_ui_scale(viewport.size());
     let content_width = MENU_CONTENT_WIDTH.min((viewport.width() / scale - 32.0).max(240.0));
     let overlay_id = egui::Id::new("stellarion_game_overlay");
-    context.set_transform_layer(
-        egui::LayerId::new(egui::Order::Foreground, overlay_id),
-        egui::emath::TSTransform::new(viewport.center().to_vec2() * (1.0 - scale), scale),
-    );
+    set_menu_layer_scale(context, overlay_id, egui::Order::Foreground, viewport.center(), scale);
     let area = egui::Area::new(overlay_id)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .movable(false)

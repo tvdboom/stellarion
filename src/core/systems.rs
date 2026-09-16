@@ -11,13 +11,11 @@ use crate::core::map::model::{Map, MapCmp};
 use crate::core::menu::utils::{add_root_node, TextSize};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
-#[cfg(debug_assertions)]
-use crate::core::simulation::{preview_commands, TurnCommand};
+use crate::core::simulation::TurnCommand;
 use crate::core::states::{AppState, CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::multiplayer::client::MultiplayerRequest;
-#[cfg(debug_assertions)]
 use crate::multiplayer::client::{
     MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
 };
@@ -342,9 +340,8 @@ pub fn check_keys(
     }
 }
 
-#[cfg(debug_assertions)]
 /// Queues and previews the testing shortcut so subsequent orders use the same canonical draft.
-pub fn debug_cheat_keys(
+pub fn testing_boost_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
@@ -357,7 +354,6 @@ pub fn debug_cheat_keys(
     if !ctrl_pressed
         || !shift_pressed
         || !keyboard.just_pressed(KeyCode::ArrowUp)
-        || !session.local_practice
         || !pending.is_editable()
     {
         return;
@@ -373,7 +369,7 @@ pub fn debug_cheat_keys(
         messages.write(crate::core::messages::MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
         return;
     }
-    let preview = preview_commands(&record.persisted.state, player.id, &pending.commands);
+    let preview = session.preview_commands(&record.persisted.state, player.id, &pending.commands);
     match preview.and_then(|model| Ok((model.player(player.id)?.clone(), model.map))) {
         Ok((preview_player, preview_map)) => {
             *player = preview_player;

@@ -14,6 +14,73 @@ pub const TRADE_RESOURCES_PER_LEVEL: usize = 500;
 /// Center-to-center reach granted by each completed Trading Post level, in AU.
 pub const TRADING_POST_RANGE_PER_LEVEL: f32 = 1.5;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Repayment schedule selected for a Resource Hub loan.
+pub enum ResourceLoanTerm {
+    /// Repay on the following turn with a ten-percent premium.
+    #[default]
+    Short,
+    /// Repay after two turns with a thirty-percent premium.
+    Medium,
+    /// Repay after three turns with a fifty-percent premium.
+    Long,
+}
+
+impl ResourceLoanTerm {
+    /// Number of turns between issuing and repaying the loan.
+    pub const fn turns(self) -> u64 {
+        match self {
+            Self::Short => 1,
+            Self::Medium => 2,
+            Self::Long => 3,
+        }
+    }
+
+    /// Premium applied independently to every borrowed resource.
+    pub const fn premium_percent(self) -> usize {
+        match self {
+            Self::Short => 10,
+            Self::Medium => 30,
+            Self::Long => 50,
+        }
+    }
+
+    /// Returns the fixed per-resource repayment for a principal at this term's premium.
+    pub fn repayment(self, principal: Resources) -> Resources {
+        let percent = 100usize.saturating_add(self.premium_percent());
+        let scale = |amount: usize| {
+            (amount as u128 * percent as u128).div_ceil(100).min(usize::MAX as u128) as usize
+        };
+        Resources::new(scale(principal.metal), scale(principal.crystal), scale(principal.deuterium))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// One outstanding Resource Hub loan, including its fixed repayment terms.
+pub struct ResourceLoan {
+    /// Empire that borrowed the resources.
+    pub player_id: PlayerId,
+    /// Owned Trading Post used to establish the loan's capacity.
+    pub planet_id: PlanetId,
+    /// Turn in which the resources were added to the borrower's draft.
+    pub issued_turn: u64,
+    /// First turn whose resolution attempts the automatic repayment.
+    pub due_turn: u64,
+    /// Original Metal, Crystal, and Deuterium bundle.
+    pub principal: Resources,
+    /// Selected fixed-term repayment schedule.
+    pub term: ResourceLoanTerm,
+}
+
+impl ResourceLoan {
+    /// Fixed bundle deducted when the loan can be repaid in full.
+    pub fn repayment(&self) -> Resources {
+        self.term.repayment(self.principal)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// One side of a finalized bilateral trade.

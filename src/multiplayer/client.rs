@@ -208,6 +208,15 @@ pub struct MultiplayerSession {
 }
 
 impl MultiplayerSession {
+    /// Whether the selected match still has enough active players for joint attacks.
+    pub(crate) fn joint_attacks_enabled(&self) -> bool {
+        self.membership.is_some()
+            && self
+                .active_game
+                .as_ref()
+                .is_some_and(|game| game.persisted.state.joint_attacks_enabled())
+    }
+
     /// Includes frozen allied launches in every participant's current-turn projection.
     pub(crate) fn preview_commands(
         &self,
@@ -219,7 +228,10 @@ impl MultiplayerSession {
             .joint_attacks
             .iter()
             .filter(|invitation| {
-                invitation.launched && !invitation.canceled && invitation.turn == state.turn
+                state.joint_attacks_enabled()
+                    && invitation.launched
+                    && !invitation.canceled
+                    && invitation.turn == state.turn
             })
             .map(|invitation| {
                 (
@@ -253,27 +265,29 @@ impl MultiplayerSession {
     pub(crate) fn has_open_negotiation(&self, pending: &PendingTurnCommands) -> bool {
         self.has_open_allied_mission(pending)
             || self.membership.as_ref().is_some_and(|member| {
-                self.joint_attacks.iter().any(|invitation| {
-                    !invitation.canceled
-                        && !invitation.launched
-                        && invitation.inviter != member.player_id
-                        && invitation.participants.iter().any(|participant| {
-                            participant.player_id == member.player_id
-                                && participant.response
-                                    != crate::multiplayer::model::JointAttackResponse::Rejected
-                        })
-                }) || self.trades.iter().any(|trade| {
-                    !trade.canceled
-                        && !trade.finalized
-                        && trade.participant(member.player_id).is_some()
-                }) || self.trade_update_pending
-                    || self.joint_attack_update_pending
+                (self.joint_attacks_enabled()
+                    && (self.joint_attacks.iter().any(|invitation| {
+                        !invitation.canceled
+                            && !invitation.launched
+                            && invitation.inviter != member.player_id
+                            && invitation.participants.iter().any(|participant| {
+                                participant.player_id == member.player_id
+                                    && participant.response
+                                        != crate::multiplayer::model::JointAttackResponse::Rejected
+                            })
+                    }) || self.joint_attack_update_pending))
+                    || self.trades.iter().any(|trade| {
+                        !trade.canceled
+                            && !trade.finalized
+                            && trade.participant(member.player_id).is_some()
+                    })
+                    || self.trade_update_pending
             })
     }
 
     /// An owner must finish or cancel allied planning before becoming ready.
     pub(crate) fn has_open_allied_mission(&self, pending: &PendingTurnCommands) -> bool {
-        self.membership.as_ref().is_some_and(|membership| {
+        self.joint_attacks_enabled() && self.membership.as_ref().is_some_and(|membership| {
             self.joint_attacks.iter().any(|invitation| {
                 invitation.inviter == membership.player_id && !invitation.canceled
                     && !invitation.launched
@@ -455,7 +469,12 @@ pub enum MultiplayerRequest {
     /// Saves the launch draft and freezes its shared roster without ending the turn.
     PublishJointMission,
     /// Creates a private bilateral Trading Post negotiation.
-    CreateTrade(TradeInvitation),
+    CreateTrade {
+        /// Initial offer and route selected by the proposer.
+        invitation: TradeInvitation,
+        /// Whether the proposer's visible draft contains a newer completed Trading Post.
+        projected_post: bool,
+    },
     /// Updates this player's resources and response in one trade.
     RespondTrade {
         /// Stable trade identifier.
@@ -1601,7 +1620,10 @@ fn process_requests(
             MultiplayerRequest::PublishJointMission => {
                 session.joint_launch_save_needed = true;
             },
-            MultiplayerRequest::CreateTrade(invitation) => {
+            MultiplayerRequest::CreateTrade {
+                invitation,
+                projected_post,
+            } => {
                 if session.trade_update_pending {
                     continue;
                 }
@@ -1612,9 +1634,10 @@ fn process_requests(
                 };
                 session.trade_update_pending = true;
                 let invitation = invitation.clone();
+                let projected_post = *projected_post;
                 spawn_backend_task(&mut tasks, async move {
                     Operation::Trade.complete(
-                        backend.create_trade(&auth, &game_id, invitation).await,
+                        backend.create_trade(&auth, &game_id, invitation, projected_post).await,
                         BackendOutput::TradeChanged,
                     )
                 });

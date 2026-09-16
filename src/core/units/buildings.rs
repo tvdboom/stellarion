@@ -189,7 +189,8 @@ impl Description for Building {
                 damage. Enemy ships must first destroy the Planetary Shield before they can \
                 attack the planet's buildings or defenses. Each level of the building increases \
                 the shield with 300. This shield does not regenerate after every combat round. \
-                Interplanetary Missiles ignore the Planetary Shield."
+                Each level also reduces the destruction chance of Orbital Railgun shots by 1%, \
+                or 2% while overloaded. Interplanetary Missiles ignore the Planetary Shield."
             },
             Building::Reactor => {
                 "The Reactor is a high-output energy facility that enhances the efficiency of \
@@ -205,11 +206,13 @@ impl Description for Building {
             },
             Building::SolarSatellite => {
                 "Solar Satellites collect stellar radiation in orbit and transmit power to the \
-                empire-wide grid."
+                empire-wide grid. The energy production depends on the distance from the star."
             },
             Building::Recycler => {
                 "Recyclers dispatch small salvage craft from their planet. Each Recycler recovers \
-                a variable haul every turn from a nearby battle debris or asteroid field. Bulk recovery yields all three resources. Selective recovery yields 50% more of the chosen resource and none of the others. Fractional output rounds down."
+                a variable haul every turn from a nearby battle debris or asteroid field. Battle \
+                debris yields three times as much as asteroids. If there are no asteroids nor \
+                battle debris nearby, no resources are collected."
             },
             Building::CommandRelay => {
                 "An active Command Relay diverts undersized enemy Spy missions before combat and \
@@ -221,20 +224,18 @@ impl Description for Building {
                 Relay levels count for Deep Cover even when deception is switched off."
             },
             Building::TradingPost => {
-                "A Trading Post establishes a commerce route with another player's Trading Post. \
-                Your posts reveal foreign posts when they lie within range. A route works when \
-                either completed post reaches the other. Each completed level adds 1.5 AU of range \
-                and lets its owner send up to 500 combined resources \
-                in one bilateral trade per player pair each turn. Incoming resources arrive when \
-                the turn resolves."
+                "A Trading Post lets you borrow resources from the galactic resource Market. It \
+                also establishes a commerce route with another player's Trading Post. Your posts \
+                reveal foreign posts when they lie within range. Each completed level adds 1.5 AU \
+                of range and lets its owner trade up to 500 extra resources in one bilateral trade \
+                per player pair each turn."
             },
             Building::SensorPhalanx => {
                 "The Sensor Phalanx detects enemy missions approaching or leaving its planet, \
-                including recalled fleets while they remain in range. \
-                A Phalanx of level N scans the space at 1.0 * N AU from the planet, and it only \
-                sees units with production <= N. The objective of the enemy mission is not \
-                revealed. Spy and Missile Strike missions are not detected by the Phalanx, \
-                including their return legs."
+                including recalled fleets while they remain in range. A Phalanx of level N scans \
+                the space at 1.0 * N AU from the planet, and it only sees units with production \
+                <= N. The objective of the enemy mission is not revealed. Spy and Missile Strike \
+                missions are not detected by the Phalanx, including their return legs."
             },
             Building::JumpGate => {
                 "The Jump Gate enables rapid travel between two owned planets with jump gates \

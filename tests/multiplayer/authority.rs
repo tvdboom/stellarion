@@ -1,6 +1,6 @@
 use crate::core::identity::GameCode;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission};
-use crate::core::units::Unit;
+use crate::core::units::{Amount, Unit};
 use crate::multiplayer::authority::resolved_snapshot;
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
@@ -81,6 +81,28 @@ fn invalid_orders_cannot_poison_an_immutable_submission_slot() {
             .unwrap();
     assert_eq!(next.persisted.state.turn, 2);
     assert!(next.submitted_players.is_empty());
+}
+
+#[test]
+fn online_game_accepts_and_replays_the_testing_boost() {
+    let (backend, host, guest, active) = started();
+    assert!(!active.persisted.state.rules.practice_mode);
+    let home = active.persisted.state.players[0].home_planet;
+    let resources = active.persisted.state.players[0].resources;
+    let submissions = vec![
+        TurnSubmission::new(1, 1, vec![TurnCommand::PracticeBoost]),
+        TurnSubmission::new(2, 1, Vec::new()),
+    ];
+
+    block_on(backend.submit_turn(&host, &active.id, submissions[0].clone())).unwrap();
+    block_on(backend.submit_turn(&guest, &active.id, submissions[1].clone())).unwrap();
+    let canonical = resolved_snapshot(&active, &submissions).unwrap();
+    let next =
+        block_on(backend.publish_resolution(&host, &active.id, active.revision, 1, canonical))
+            .unwrap();
+
+    assert!(next.persisted.state.players[0].resources.contains(resources + 1_000usize));
+    assert_eq!(next.persisted.state.map.get(home).army.amount(&Unit::war_sun()), 3);
 }
 
 #[test]

@@ -5,11 +5,71 @@ use crate::core::combat::report::CombatReport;
 use crate::core::messages::MessageLevel;
 use crate::core::missions::BombingRaid;
 use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::trading::{ResourceLoan, ResourceLoanTerm};
 use crate::core::units::ships::Ship;
 use crate::core::units::Army;
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
 use bevy::ecs::system::RunSystemOnce;
+
+#[test]
+fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
+    let mut model = GameModel::new([47; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    model.turn = 4;
+    let player_id = model.players[0].id;
+    let other_player_id = model.players[1].id;
+    let posts = model
+        .map
+        .planets
+        .iter()
+        .filter(|planet| !planet.is_moon())
+        .map(|planet| planet.id)
+        .take(4)
+        .collect::<Vec<_>>();
+    model.resource_loans = vec![
+        ResourceLoan {
+            player_id,
+            planet_id: posts[0],
+            issued_turn: 2,
+            due_turn: 5,
+            principal: crate::core::resources::Resources::new(100, 200, 0),
+            term: ResourceLoanTerm::Long,
+        },
+        ResourceLoan {
+            player_id,
+            planet_id: posts[1],
+            issued_turn: 3,
+            due_turn: 5,
+            principal: crate::core::resources::Resources::new(0, 0, 1_000),
+            term: ResourceLoanTerm::Medium,
+        },
+        ResourceLoan {
+            player_id,
+            planet_id: posts[2],
+            issued_turn: 3,
+            due_turn: 6,
+            principal: crate::core::resources::Resources::new(9_999, 0, 0),
+            term: ResourceLoanTerm::Long,
+        },
+        ResourceLoan {
+            player_id: other_player_id,
+            planet_id: posts[3],
+            issued_turn: 3,
+            due_turn: 5,
+            principal: crate::core::resources::Resources::new(8_888, 0, 0),
+            term: ResourceLoanTerm::Medium,
+        },
+    ];
+
+    let reminder = resource_hub_repayment_reminder(&model, player_id, 4).unwrap();
+    assert_eq!(reminder.level, MessageLevel::Info);
+    assert_eq!(
+        reminder.message,
+        "Resource Market repayment due next turn: 150 Metal, 300 Crystal, and 1.300 Deuterium."
+    );
+    assert!(resource_hub_repayment_reminder(&model, player_id, 2).is_none());
+}
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
@@ -18,7 +78,7 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
         refresh_gameplay_projection, refresh_turn_draft, PublicStructureChangeMsg,
     };
     use crate::core::simulation::{MatchStatus, TurnCommand};
-    use crate::core::systems::debug_cheat_keys;
+    use crate::core::systems::testing_boost_keys;
     use crate::multiplayer::client::tests::{local_practice_app, settle_local_practice};
     use crate::multiplayer::client::MultiplayerSession;
     use bevy::ecs::system::RunSystemOnce;
@@ -51,7 +111,7 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
             keyboard.press(KeyCode::ArrowUp);
             app.insert_resource(keyboard);
             let planet_id = app.world().resource::<Player>().home_planet;
-            app.world_mut().run_system_once(debug_cheat_keys).unwrap();
+            app.world_mut().run_system_once(testing_boost_keys).unwrap();
             assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(
                 TurnCommand::BuyUnits {
                     planet_id,

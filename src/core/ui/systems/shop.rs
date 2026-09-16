@@ -160,10 +160,11 @@ fn draw_unit_stat_cell_on_world(
     .on_hover_ui(|ui| draw_stat_hover(ui, stat, images))
 }
 
-/// Keeps stat rows and special choices evenly separated without drawing divider rules.
+/// Keeps stat rows and special choices equally inset from their section separators.
 fn draw_unit_hover_section<R>(ui: &mut Ui, contents: impl FnOnce(&mut Ui) -> R) -> R {
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.;
+        ui.separator();
         egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(0, 12))
             .show(ui, |ui| {
@@ -957,7 +958,6 @@ pub(super) fn draw_shop(
         if ui
             .add_sized([26., 24.], egui::Button::new(RichText::new("‹").size(19.)).frame(false))
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Previous shop category")
             .clicked()
         {
             state.shop = state.shop.previous(planet.is_moon());
@@ -969,7 +969,6 @@ pub(super) fn draw_shop(
         if ui
             .add_sized([26., 24.], egui::Button::new(RichText::new("›").size(19.)).frame(false))
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Next shop category")
             .clicked()
         {
             state.shop = state.shop.next(planet.is_moon());

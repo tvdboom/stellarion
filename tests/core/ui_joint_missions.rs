@@ -512,6 +512,56 @@ fn owner_frame(
 }
 
 #[test]
+fn joint_attack_controls_are_hidden_with_only_two_active_players() {
+    let (mut model, mut player, mut state, _) = fixture();
+    let eliminated_home = model.players[2].home_planet;
+    model.players[2].spectator = true;
+    model.map.get_mut(eliminated_home).owned = None;
+    model.map.get_mut(eliminated_home).controlled = None;
+    state.mission_info = state.joint_attack_contribution.clone();
+    state.joint_attack_open = None;
+    state.joint_attack_invitees.insert(2);
+    state.allied_mission = true;
+    let session = session_for_model(&model);
+    let context = egui::Context::default();
+    context.set_global_style(NordDark.custom_style());
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    world.init_resource::<Messages<SendMissionMsg>>();
+
+    owner_frame(
+        &context,
+        &mut world,
+        &mut model,
+        &mut player,
+        &mut state,
+        &session,
+        egui::vec2(1040.0, 800.0),
+        vec![],
+        &ButtonInput::default(),
+    );
+    let output = owner_frame(
+        &context,
+        &mut world,
+        &mut model,
+        &mut player,
+        &mut state,
+        &session,
+        egui::vec2(1040.0, 800.0),
+        vec![],
+        &ButtonInput::default(),
+    );
+
+    assert!(!output.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == INVITE_ICON_TEXTURE)
+    }));
+    assert!(!state.allied_mission);
+    assert!(state.joint_attack_invitees.is_empty());
+    assert!(state.joint_attack_draft_id.is_none());
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+}
+
+#[test]
 fn inviting_players_keeps_live_ship_cards_clickable_and_allows_a_proposal() {
     let (mut model, mut player, mut state, _) = fixture();
     let bomber = Unit::Ship(Ship::Bomber);
@@ -2510,7 +2560,7 @@ fn joint_owner_draft_survives_inspecting_another_planet() {
     state.joint_attack_owner_draft = Some(state.joint_attack_contribution.clone());
     state.mission_info.origin = model.players[1].home_planet;
     state.mission_info.army.clear();
-    let mut session = MultiplayerSession::default();
+    let mut session = session_for_model(&model);
     session.joint_attacks.push(invitation);
     let context = egui::Context::default();
     let mut world = World::new();

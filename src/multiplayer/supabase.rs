@@ -319,6 +319,7 @@ impl MultiplayerBackend for SupabaseBackend {
         session: &'a AuthSession,
         game_id: &'a GameId,
         invitation: TradeInvitation,
+        projected_post: bool,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(self.rpc(
             session,
@@ -326,6 +327,7 @@ impl MultiplayerBackend for SupabaseBackend {
             CreateTradeRpc {
                 game_id: &game_id.0,
                 invitation,
+                projected_post,
             },
         ))
     }
@@ -766,6 +768,8 @@ struct CreateTradeRpc<'a> {
     game_id: &'a str,
     #[serde(rename = "p_invitation")]
     invitation: TradeInvitation,
+    #[serde(rename = "p_projected_post")]
+    projected_post: bool,
 }
 
 #[derive(Serialize)]

@@ -787,6 +787,26 @@ fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_worl
 }
 
 #[test]
+fn joint_missions_require_at_least_three_active_players() {
+    let model = started_model(2);
+    let command = TurnCommand::SendJointMission {
+        attack_id: 706,
+        mission_id: 707,
+        destination: model.players[1].home_planet,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        contributions: Vec::new(),
+    };
+
+    assert!(matches!(
+        preview_commands(&model, 1, &[command]),
+        Err(GameError::InvalidCommand { reason, .. })
+            if reason == "joint attacks require at least three active players"
+    ));
+}
+
+#[test]
 fn same_turn_protection_arrives_before_an_attack() {
     let mut model = started_model(3);
     let protected = model.players[0].home_planet;
@@ -1014,15 +1034,15 @@ fn testing_boost_affects_owned_planets_and_all_buildings_on_controlled_moons() {
     let mut preview_rng_state = preview.rng.clone();
     let mut preview_rng = preview_rng_state.next_rng();
     let expected_resources = preview.players[0].resources
-        + preview.players[0].energy_grid(&preview.map).scale_resources(
-            preview.players[0].raw_resource_production(&preview.map)
-                + recycler_production(
-                    &preview.map,
-                    &preview.players,
-                    1,
-                    preview.turn as usize,
-                    &mut preview_rng,
-                ),
+        + preview.players[0]
+            .energy_grid(&preview.map)
+            .scale_resources(preview.players[0].raw_resource_production(&preview.map))
+        + recycler_production(
+            &preview.map,
+            &preview.players,
+            1,
+            preview.turn as usize,
+            &mut preview_rng,
         );
     resolve_turn(&mut model, &[TurnSubmission::new(1, 1, commands)]).unwrap();
     assert_eq!(model.turn, 2);
@@ -1038,23 +1058,18 @@ fn testing_boost_affects_owned_planets_and_all_buildings_on_controlled_moons() {
 }
 
 #[test]
-fn testing_boost_rejects_non_practice_games() {
+fn testing_boost_projects_in_standard_games() {
     let model = started_model(2);
-    assert!(preview_commands(&model, 1, &[TurnCommand::PracticeBoost]).is_err());
+    let resources = model.players[0].resources;
+    let home = model.players[0].home_planet;
+    let preview = preview_commands(&model, 1, &[TurnCommand::PracticeBoost]).unwrap();
+    assert_eq!(preview.players[0].resources, resources + 1_000usize);
+    assert_eq!(preview.map.get(home).army.amount(&Unit::war_sun()), 3);
 }
 
 #[test]
-fn multiplayer_replays_testing_boost_for_every_peer() {
-    let mut model = GameModel::new(
-        [3; 32],
-        GameRules {
-            player_count: 2,
-            practice_mode: true,
-            ..GameRules::default()
-        },
-    )
-    .unwrap();
-    model.start().unwrap();
+fn standard_multiplayer_replays_testing_boost_for_every_peer() {
+    let mut model = started_model(2);
     let player_id = model.players[0].id;
     let home = model.players[0].home_planet;
     let resources = model.players[0].resources;
@@ -1138,6 +1153,50 @@ fn direct_colonization_adds_balanced_starter_infrastructure() {
     }
     assert_eq!(planet.army.amount(&Unit::colony_ship()), 0);
     assert_eq!(crate::core::energy::EnergyGrid::for_world(&model.map, planet).balance(), 0);
+}
+
+#[test]
+fn recycler_salvage_bypasses_empire_grid_brownouts() {
+    let mut model = started_model(2);
+    let player_id = model.players[0].id;
+    let asteroid_targets = crate::core::map::asteroids::recycler_asteroid_targets(&model.map);
+    let home = model.players[0].home_planet;
+    let reachable_world = *asteroid_targets
+        .keys()
+        .next()
+        .expect("generated map should have a world in Recycler range");
+    let reachable_position = model.map.get(reachable_world).position;
+    let planet = model.map.get_mut(home);
+    planet.position = reachable_position;
+    planet.army.insert(Unit::Building(Building::Recycler), Building::MAX_LEVEL);
+    assert!(crate::core::map::asteroids::recycler_asteroid_targets(&model.map).contains_key(&home));
+
+    model
+        .map
+        .get_mut(home)
+        .army
+        .insert(Unit::Building(Building::OrbitalRailgun), Building::MAX_LEVEL);
+    model.players[0].resources = Resources::default();
+    let grid = model.players[0].energy_grid(&model.map);
+    assert_eq!(grid.efficiency_percent(), 30, "test requires the maximum brownout penalty");
+
+    let powered_production =
+        grid.scale_resources(model.players[0].raw_resource_production(&model.map));
+    let mut expected_rng_state = model.rng.clone();
+    let mut expected_rng = expected_rng_state.next_rng();
+    let salvage = recycler_production(
+        &model.map,
+        &model.players,
+        player_id,
+        model.turn as usize,
+        &mut expected_rng,
+    );
+    assert!(!salvage.is_empty());
+    assert_ne!(salvage, grid.scale_resources(salvage));
+
+    advance_simulation(&mut model).unwrap();
+
+    assert_eq!(model.players[0].resources, powered_production + salvage);
 }
 
 #[test]
@@ -2371,7 +2430,7 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
     let mut model = GameModel::new(
         [17; 32],
         GameRules {
-            player_count: 2,
+            player_count: 3,
             practice_mode: true,
             ..GameRules::default()
         },
@@ -2440,7 +2499,11 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
     let turn = model.turn;
     resolve_turn(
         &mut model,
-        &[TurnSubmission::new(1, turn, commands), TurnSubmission::new(2, turn, Vec::new())],
+        &[
+            TurnSubmission::new(1, turn, commands),
+            TurnSubmission::new(2, turn, Vec::new()),
+            TurnSubmission::new(3, turn, Vec::new()),
+        ],
     )
     .unwrap();
 }

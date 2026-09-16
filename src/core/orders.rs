@@ -24,21 +24,39 @@ pub enum OrderError {
     /// One or more resource balances are insufficient.
     #[error("Not enough resources.")]
     Resources,
-    /// A structure has reached its maximum level or is already queued.
-    #[error("Building is at its maximum level or already queued.")]
-    Building,
+    /// A structure has reached its maximum permitted level.
+    #[error("Building is already at maximum level.")]
+    BuildingAtMaximumLevel,
+    /// A structure can only be upgraded once per turn.
+    #[error("Building is already queued.")]
+    BuildingAlreadyQueued,
     /// A lunar construction requires another field.
     #[error("No lunar field is available.")]
     Fields,
-    /// Required infrastructure or remaining production is insufficient.
-    #[error("Required production level or capacity is unavailable.")]
-    Production,
+    /// An orbital or ship needs a higher completed Shipyard level.
+    #[error("Requires Shipyard level {0}.")]
+    ShipyardLevel(usize),
+    /// A ground defense needs a higher completed Factory level.
+    #[error("Requires Factory level {0}.")]
+    FactoryLevel(usize),
+    /// A missile needs a higher completed Missile Silo level.
+    #[error("Requires Missile Silo level {0}.")]
+    MissileSiloLevel(usize),
+    /// Queued ships have consumed the available fleet production.
+    #[error("Not enough fleet production.")]
+    FleetProduction,
+    /// Queued defenses have consumed the available defense production.
+    #[error("Not enough defense production.")]
+    DefenseProduction,
     /// Stationed and queued missiles occupy every silo slot.
-    #[error("Missile silo is full.")]
-    Missiles,
-    /// A space dock is already stationed or queued.
-    #[error("Only one Space Dock is allowed.")]
-    SpaceDock,
+    #[error("Not enough Missile Silo capacity.")]
+    MissileCapacity,
+    /// A space dock is already stationed.
+    #[error("Space Dock is already built.")]
+    SpaceDockAlreadyBuilt,
+    /// A space dock is already queued.
+    #[error("Space Dock is already queued.")]
+    SpaceDockAlreadyQueued,
     /// The Senate is restricted to the home world and its match-specific level cap.
     #[error("The Senate can only be built on the home planet up to this match's level limit.")]
     Senate,
@@ -92,15 +110,6 @@ pub fn purchase_limit(
     if !unit.valid_on(planet.is_moon()) {
         return Err(OrderError::Unit);
     }
-    let affordable = (player.resources / unit.price()).min();
-    if affordable == 0 {
-        return Err(OrderError::Resources);
-    }
-    if orbitals::production_level(unit)
-        .is_some_and(|required| planet.army.amount(&Unit::Building(Building::Shipyard)) < required)
-    {
-        return Err(OrderError::Production);
-    }
     let capacity = match unit {
         Unit::Building(building) => {
             if building == Building::ColonialAdministration && planet.id == player.home_planet {
@@ -116,8 +125,11 @@ pub fn purchase_limit(
             {
                 return Err(OrderError::Senate);
             }
-            if planet.army.amount(&unit) >= maximum || planet.buy.contains(&unit) {
-                return Err(OrderError::Building);
+            if planet.army.amount(&unit) >= maximum {
+                return Err(OrderError::BuildingAtMaximumLevel);
+            }
+            if planet.buy.contains(&unit) {
+                return Err(OrderError::BuildingAlreadyQueued);
             }
             if planet.is_moon()
                 && unit.consumes_field()
@@ -125,46 +137,73 @@ pub fn purchase_limit(
             {
                 return Err(OrderError::Fields);
             }
+            if let Some(required) = orbitals::production_level(unit) {
+                if planet.army.amount(&Unit::Building(Building::Shipyard)) < required {
+                    return Err(OrderError::ShipyardLevel(required));
+                }
+            }
             1
         },
         Unit::Ship(ship) => {
-            if ship.production() > planet.army.amount(&Unit::Building(Building::Shipyard)) {
-                return Err(OrderError::Production);
+            let required = ship.production();
+            if required > planet.army.amount(&Unit::Building(Building::Shipyard)) {
+                return Err(OrderError::ShipyardLevel(required));
             }
-            senate.fleet_capacity(planet).saturating_sub(planet.fleet_production())
-                / ship.production()
+            let capacity =
+                senate.fleet_capacity(planet).saturating_sub(planet.fleet_production()) / required;
+            if capacity == 0 {
+                return Err(OrderError::FleetProduction);
+            }
+            capacity
         },
         Unit::Defense(defense) => {
             if unit == Unit::space_dock() {
-                if planet.has(&unit) || planet.buy.contains(&unit) {
-                    return Err(OrderError::SpaceDock);
+                if planet.has(&unit) {
+                    return Err(OrderError::SpaceDockAlreadyBuilt);
                 }
-                return Ok(affordable.min(1));
-            }
-            let building = if defense.is_missile() {
-                Building::MissileSilo
-            } else {
-                Building::Factory
-            };
-            if defense.production() > planet.army.amount(&Unit::Building(building)) {
-                return Err(OrderError::Production);
-            }
-            let capacity =
-                senate.defense_capacity(planet).saturating_sub(planet.battery_production())
-                    / defense.production();
-            if defense.is_missile() {
-                let remaining = planet.remaining_missile_capacity();
-                if remaining == 0 {
-                    return Err(OrderError::Missiles);
+                if planet.buy.contains(&unit) {
+                    return Err(OrderError::SpaceDockAlreadyQueued);
                 }
-                capacity.min(remaining)
+                let required = orbitals::production_level(unit).unwrap_or(defense.production());
+                if planet.army.amount(&Unit::Building(Building::Shipyard)) < required {
+                    return Err(OrderError::ShipyardLevel(required));
+                }
+                1
             } else {
-                capacity
+                let required = defense.production();
+                let infrastructure = if defense.is_missile() {
+                    Building::MissileSilo
+                } else {
+                    Building::Factory
+                };
+                if required > planet.army.amount(&Unit::Building(infrastructure)) {
+                    return Err(if defense.is_missile() {
+                        OrderError::MissileSiloLevel(required)
+                    } else {
+                        OrderError::FactoryLevel(required)
+                    });
+                }
+                let capacity =
+                    senate.defense_capacity(planet).saturating_sub(planet.battery_production())
+                        / required;
+                if capacity == 0 {
+                    return Err(OrderError::DefenseProduction);
+                }
+                if defense.is_missile() {
+                    let remaining = planet.remaining_missile_capacity();
+                    if remaining == 0 {
+                        return Err(OrderError::MissileCapacity);
+                    }
+                    capacity.min(remaining)
+                } else {
+                    capacity
+                }
             }
         },
     };
-    if capacity == 0 {
-        return Err(OrderError::Production);
+    let affordable = (player.resources / unit.price()).min();
+    if affordable == 0 {
+        return Err(OrderError::Resources);
     }
     Ok(affordable.min(capacity))
 }

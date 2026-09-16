@@ -2256,7 +2256,7 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_with_o
     };
     let hit = HitData::new(camera, 0.0, None, None);
     for (planet, button, has_own_post, expected_open) in [
-        (home, PointerButton::Primary, true, None),
+        (home, PointerButton::Primary, true, Some(home)),
         (enemy, PointerButton::Secondary, true, None),
         (enemy, PointerButton::Primary, true, Some(enemy)),
         (enemy, PointerButton::Primary, false, None),
@@ -2295,11 +2295,7 @@ fn trading_post_pointer_events_preview_both_owners_and_open_foreign_posts_with_o
         );
         assert_eq!(
             app.world().get::<CursorIcon>(window),
-            Some(&CursorIcon::from(if planet == home {
-                SystemCursorIcon::Default
-            } else {
-                SystemCursorIcon::Pointer
-            }))
+            Some(&CursorIcon::from(SystemCursorIcon::Pointer))
         );
         app.world_mut().trigger(Pointer::new(
             PointerId::Mouse,
@@ -3348,6 +3344,107 @@ fn jump_gate_hover_links_owned_and_permitted_enemy_gates() {
     app.update();
     assert_eq!(app.world_mut().query::<&JumpGateLinkCmp>().iter(app.world()).count(), 0);
     assert!(!app.world().get::<Pickable>(markers[&enemy]).unwrap().is_hoverable);
+}
+
+#[test]
+fn trading_post_hover_links_visible_adjacent_counterparties_in_both_directions() {
+    let mut model = GameModel::new(
+        [74; 32],
+        GameRules {
+            player_count: 3,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let player_id = player.id;
+    let home = player.home_planet;
+    let own = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| {
+            !planet.is_moon()
+                && !model.players.iter().any(|candidate| candidate.home_planet == planet.id)
+        })
+        .unwrap()
+        .id;
+    let enemy = model.players[1].home_planet;
+    let hidden_enemy = model.players[2].home_planet;
+    model.map.get_mut(home).position = Vec2::ZERO;
+    model.map.get_mut(own).position = Vec2::Y * Planet::SIZE;
+    model.map.get_mut(enemy).position = Vec2::new(2.0, 0.25) * Planet::SIZE;
+    model.map.get_mut(hidden_enemy).position = Vec2::X * Planet::SIZE * 10.0;
+    model.map.get_mut(own).owned = Some(player_id);
+    model.map.get_mut(own).controlled = Some(player_id);
+    for id in [home, own] {
+        model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 2);
+    }
+    for id in [enemy, hidden_enemy] {
+        model.map.get_mut(id).army.insert(Unit::Building(Building::TradingPost), 1);
+    }
+
+    let offset = Vec2::new(-18.0, 26.0);
+    let session = MultiplayerSession::default();
+    let expected_link = |map: &Map, local: PlanetId, foreign: PlanetId| {
+        trade_post_link_particles(
+            map.get(local).position + offset,
+            map.get(foreign).position + offset,
+            session.player_color(player_id).color(),
+            session.player_color(map.get(foreign).owned.unwrap()).color(),
+            0.0,
+            0.0,
+        )
+        .len()
+    };
+    let home_to_enemy = expected_link(&model.map, home, enemy);
+    let own_to_enemy = expected_link(&model.map, own, enemy);
+    assert!(home_to_enemy > 0 && own_to_enemy > 0);
+
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(session)
+        .insert_resource(UiState {
+            range_preview: Some(MapRangePreview::TradingPost(home)),
+            ..default()
+        })
+        .add_systems(Update, update_trade_post_links);
+    for planet in [home, own, enemy, hidden_enemy] {
+        app.world_mut().spawn((
+            Transform::from_translation(offset.extend(TRADING_POST_DEPTH)),
+            TradingPostCmp {
+                planet,
+            },
+        ));
+    }
+
+    app.update();
+    assert_eq!(
+        app.world_mut().query::<&TradePostLinkCmp>().iter(app.world()).count(),
+        home_to_enemy,
+        "an owned post fans out only to visible enemy posts that can trade"
+    );
+
+    app.world_mut().resource_mut::<UiState>().range_preview =
+        Some(MapRangePreview::TradingPost(enemy));
+    app.update();
+    assert_eq!(
+        app.world_mut().query::<&TradePostLinkCmp>().iter(app.world()).count(),
+        home_to_enemy + own_to_enemy,
+        "an enemy post links back to every eligible owned post"
+    );
+
+    app.world_mut().resource_mut::<UiState>().range_preview =
+        Some(MapRangePreview::TradingPost(hidden_enemy));
+    app.update();
+    assert_eq!(app.world_mut().query::<&TradePostLinkCmp>().iter(app.world()).count(), 0);
+
+    app.world_mut().resource_mut::<UiState>().range_preview = None;
+    app.update();
+    assert_eq!(app.world_mut().query::<&TradePostLinkCmp>().iter(app.world()).count(), 0);
 }
 
 #[test]

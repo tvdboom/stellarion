@@ -257,24 +257,15 @@ fn opening_a_modal_menu_preserves_the_cursor_over_an_egui_button() {
     );
 }
 
-#[cfg(debug_assertions)]
 #[test]
-fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_practice_planets() {
+fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_online_planets() {
     use crate::core::identity::{GameCode, GameId};
     use crate::core::messages::MessageMsg;
     use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
     use crate::core::units::{buildings::Building, Amount, Unit};
     use crate::multiplayer::model::GameRecord;
 
-    let mut model = GameModel::new(
-        [9; 32],
-        GameRules {
-            player_count: 1,
-            practice_mode: true,
-            ..GameRules::default()
-        },
-    )
-    .unwrap();
+    let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let home = model.players[0].home_planet;
     let mut other_planets = model
@@ -309,7 +300,7 @@ fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_practice_planets() {
         members: Vec::new(),
         submitted_players: Vec::new(),
     });
-    session.local_practice = true;
+    assert!(!session.local_practice);
 
     let mut app = App::new();
     app.insert_resource(keyboard)
@@ -321,7 +312,7 @@ fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_practice_planets() {
             ..default()
         })
         .add_message::<MessageMsg>();
-    app.world_mut().run_system_once(debug_cheat_keys).unwrap();
+    app.world_mut().run_system_once(testing_boost_keys).unwrap();
     assert!(app.world().resource::<PendingTurnCommands>().commands.is_empty());
     assert_eq!(app.world().resource::<Player>().resources, initial_resources);
 
@@ -330,7 +321,7 @@ fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_practice_planets() {
     keyboard.press(KeyCode::ShiftLeft);
     keyboard.press(KeyCode::ArrowUp);
     app.insert_resource(keyboard);
-    app.world_mut().run_system_once(debug_cheat_keys).unwrap();
+    app.world_mut().run_system_once(testing_boost_keys).unwrap();
 
     let pending = app.world().resource::<PendingTurnCommands>();
     assert!(matches!(pending.commands.as_slice(), [TurnCommand::PracticeBoost]));

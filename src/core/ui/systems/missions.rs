@@ -117,6 +117,19 @@ pub(super) fn mission_arrival_tooltip(current_turn: usize, duration: usize) -> S
     format!("The fleet will arrive at turn {}.", mission_arrival_turn(current_turn, duration))
 }
 
+/// Returns whether an objective can be selected for the current origin and destination.
+fn mission_objective_available(
+    objective: Icon,
+    origin_army: &Army,
+    destination: &Planet,
+    n_owned: usize,
+    n_max_owned: usize,
+) -> bool {
+    objective.condition_for_army(origin_army)
+        && !(destination.is_moon() && objective.on_planet_only())
+        && !(objective == Icon::Colonize && n_owned >= n_max_owned)
+}
+
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
 fn mission_row_layout(available_width: f32) -> (f32, f32) {
     let centered_row_width = (available_width - 2.0 * MISSION_ROW_HORIZONTAL_INSET).max(0.0);
@@ -710,6 +723,16 @@ fn sync_allied_mission(
     if !session.has_active_game() {
         return true;
     }
+    if !session.joint_attacks_enabled() {
+        state.joint_attack_invitees.clear();
+        state.joint_attack_invite_panel_rect = None;
+        state.allied_mission = false;
+        state.joint_attack_draft_id = None;
+        state.joint_attack_owner_draft = None;
+        state.joint_attack_owner_shared_route = None;
+        state.joint_attack_owner_withdrawal = None;
+        return true;
+    }
     if !eligible {
         if invitation.is_some() {
             // An unsupported local objective is still just an unsent draft. Keep the
@@ -958,13 +981,15 @@ fn draw_new_mission(
 ) {
     // Keep the footer inside the original panel even when a wide route or fleet needs scrolling.
     let panel_rect = ui.max_rect().intersect(ui.ctx().content_rect());
+    let joint_attacks_enabled = session.joint_attacks_enabled();
     if state.joint_attack_draft_id.is_some() {
         if let Some(draft) = &state.joint_attack_owner_draft {
             state.mission_info = draft.clone();
         }
     }
-    let active_invitation = state
-        .joint_attack_draft_id
+    let active_invitation = joint_attacks_enabled
+        .then_some(state.joint_attack_draft_id)
+        .flatten()
         .and_then(|id| {
             session.joint_attacks.iter().find(|invitation| {
                 invitation.id == id && !invitation.canceled && !invitation.launched
@@ -1043,16 +1068,25 @@ fn draw_new_mission(
 
     // Keep an invited Protect draft selected even when its origin has no ships left.
     // Opening a gate shortcut must not silently turn it into a hostile mission.
-    if (!state.mission_info.objective.condition_for_army(&origin_army)
-        && state.mission_info.objective != Icon::Protect)
-        || (destination.is_moon() && state.mission_info.objective.on_planet_only())
+    if !mission_objective_available(
+        state.mission_info.objective,
+        &origin_army,
+        destination,
+        n_owned,
+        n_max_owned,
+    ) && state.mission_info.objective != Icon::Protect
     {
         state.mission_info.objective = objectives
             .iter()
             .copied()
-            .find(|i| {
-                i.condition_for_army(&origin_army)
-                    && (!destination.is_moon() || !i.on_planet_only())
+            .find(|objective| {
+                mission_objective_available(
+                    *objective,
+                    &origin_army,
+                    destination,
+                    n_owned,
+                    n_max_owned,
+                )
             })
             .unwrap_or_else(|| objectives.first().copied().unwrap_or_default());
     }
@@ -1166,7 +1200,7 @@ fn draw_new_mission(
     let mut proposal_sent = false;
     {
         let body_width = panel_rect.width();
-        let stacked_footer = session.has_active_game() && body_width < 620.0;
+        let stacked_footer = joint_attacks_enabled && body_width < 620.0;
         let roster_content_width = joint_attack_roster_content_width(
             ui,
             active_invitation.as_ref(),
@@ -1175,7 +1209,7 @@ fn draw_new_mission(
             player.id,
         );
         let desired_invite_width = MISSION_INVITE_ICON_SIZE + 28.0 + roster_content_width;
-        let invite_width = if !session.has_active_game() {
+        let invite_width = if !joint_attacks_enabled {
             0.0
         } else if stacked_footer {
             body_width - 20.0
@@ -1202,7 +1236,7 @@ fn draw_new_mission(
             50.0
         };
         // Reserve all three guest rows so invitations never move the footer or its actions.
-        let roster_height = if session.has_active_game() {
+        let roster_height = if joint_attacks_enabled {
             60.0
         } else {
             0.0
@@ -1294,8 +1328,13 @@ fn draw_new_mission(
                                 destination.blocks_hostile_action_by(player.id),
                             ) {
                                 ui.add_enabled_ui(
-                                    !(destination.is_moon() && icon.on_planet_only()
-                                        || icon == Icon::Colonize && n_owned >= n_max_owned),
+                                    mission_objective_available(
+                                        icon,
+                                        &origin_army,
+                                        destination,
+                                        n_owned,
+                                        n_max_owned,
+                                    ),
                                     |ui| {
                                         let button = ui
                                             .add(
@@ -1420,7 +1459,7 @@ fn draw_new_mission(
             active_invitation.as_ref(),
             None,
         );
-        if session.has_active_game() {
+        if joint_attacks_enabled {
             let eligible = matches!(
                 state.mission_info.objective,
                 Icon::Colonize | Icon::Attack | Icon::Destroy,
@@ -3549,6 +3588,12 @@ pub(super) fn draw_joint_attack_notifications(
     messages: &mut MessageWriter<MessageMsg>,
     images: &ImageIds,
 ) {
+    if !session.joint_attacks_enabled() {
+        state.joint_attack_open = None;
+        state.joint_attack_loaded = None;
+        state.joint_attack_proposal_notice = false;
+        return;
+    }
     if std::mem::take(&mut state.joint_attack_proposal_notice) {
         messages.write(
             MessageMsg::info("Joint attack proposal sent.").with_duration(
