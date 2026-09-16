@@ -106,6 +106,16 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Returns whether this report records combat against neutral space fauna.
+    pub fn is_space_fauna_encounter(&self) -> bool {
+        self.planet.army.combined().keys().any(Unit::is_fauna)
+    }
+
+    /// Returns the encounter formation's generated title.
+    pub fn space_fauna_name(&self) -> Option<&str> {
+        self.is_space_fauna_encounter().then_some(self.planet.name.as_str())
+    }
+
     /// Initial hull used by this report, including the defending Space Dock's mode.
     pub fn unit_hull(&self, unit: Unit, side: &Side) -> usize {
         if *side == Side::Defender {
@@ -286,6 +296,11 @@ impl MissionReport {
 
     /// Returns the winning combat side when the report is decisive.
     pub fn winner(&self) -> Option<PlayerId> {
+        if self.is_space_fauna_encounter() {
+            let attacker_survives = self.surviving_attacker.has_army();
+            let fauna_survives = self.surviving_defender.has_army();
+            return (attacker_survives && !fauna_survives).then_some(self.mission.owner);
+        }
         match self.mission.objective {
             Icon::Spy if self.scout_probes > 0 => None,
             Icon::MissileStrike => {
@@ -323,7 +338,8 @@ impl MissionReport {
 
     /// Both combat armies remain after the bounded round limit; neither side conquered the world.
     pub fn is_stalemate(&self) -> bool {
-        matches!(self.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+        (self.is_space_fauna_encounter()
+            || matches!(self.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy))
             && self.surviving_attacker.iter().any(|(unit, count)| {
                 *unit != Unit::colony_ship()
                     && *count
@@ -343,7 +359,9 @@ impl MissionReport {
 
     /// Returns the user-facing status of this combat side.
     pub fn status(&self, player: &Player) -> &'static str {
-        if self.winner().is_none() {
+        if self.is_space_fauna_encounter() && !self.surviving_attacker.has_army() {
+            "defeat"
+        } else if self.winner().is_none() {
             "draw"
         } else if self.won_by(player.id) {
             "victory"
@@ -371,7 +389,13 @@ impl MissionReport {
                     || self.won_by(player_id)
                     || matches!(self.mission.objective, Icon::Spy | Icon::MissileStrike)
             },
-            Side::Defender => self.is_defender(player_id) || self.won_by(player_id),
+            Side::Defender => {
+                if self.is_space_fauna_encounter() {
+                    self.is_attacker(player_id)
+                } else {
+                    self.is_defender(player_id) || self.won_by(player_id)
+                }
+            },
         }
     }
 }

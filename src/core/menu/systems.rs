@@ -549,7 +549,7 @@ fn local_practice_screen(
                 &mut form.practice_player_count,
                 &[(1, "1"), (2, "2"), (3, "3"), (4, "4")],
             );
-            map_rule_rows(ui, settings);
+            map_rule_rows(ui, settings, &mut form.space_fauna_percent);
         });
     });
     let (back_clicked, start_clicked) =
@@ -562,6 +562,7 @@ fn local_practice_screen(
                 planets_per_player: settings.n_planets,
                 colonizable_percent: settings.p_colonizable,
                 moons_percent: settings.p_moons,
+                space_fauna_percent: form.space_fauna_percent,
                 player_count: form.practice_player_count,
                 practice_mode: true,
             },
@@ -582,7 +583,7 @@ fn create_screen(
     menu_form(ui, "stellarion_create_form", "Create Game", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
             player_name_field(ui, &mut form.display_name);
-            map_rule_rows(ui, settings);
+            map_rule_rows(ui, settings, &mut form.space_fauna_percent);
         });
     });
     let can_create = !busy && valid_name(&form.display_name);
@@ -597,6 +598,7 @@ fn create_screen(
                 planets_per_player: settings.n_planets,
                 colonizable_percent: settings.p_colonizable,
                 moons_percent: settings.p_moons,
+                space_fauna_percent: form.space_fauna_percent,
                 player_count: MAX_MULTIPLAYER_PLAYERS,
                 practice_mode: false,
             },
@@ -2516,7 +2518,7 @@ fn paint_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
 }
 
 /// Draws map-generation settings with the same discrete values as the original menu.
-fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings) {
+fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings, space_fauna_percent: &mut usize) {
     choice_row(
         ui,
         "Planets per player",
@@ -2537,6 +2539,13 @@ fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings) {
         "Sets the number of moons generated as a percentage of the planet count.",
         &mut settings.p_moons,
         &[(0, "0%"), (30, "30%"), (60, "60%")],
+    );
+    choice_row(
+        ui,
+        "Space fauna encounters",
+        "Each eligible turn between launch and arrival has this chance to trigger one space-fauna battle. A mission can encounter fauna only once.",
+        space_fauna_percent,
+        &[(0, "0%"), (15, "15%"), (30, "30%")],
     );
 }
 

@@ -1,9 +1,13 @@
 use super::*;
 use crate::core::constants::{MIN_SPY_PROBES, ORBITAL_RAILGUN_FIRE_ENERGY_COST};
 use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::core::units::Combat;
 use bevy::math::Vec2;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use strum::IntoEnumIterator;
 
 #[path = "spy_missions.rs"]
 mod spy_missions;
@@ -288,6 +292,113 @@ fn started_model(player_count: u8) -> GameModel {
     .unwrap();
     model.start().unwrap();
     model
+}
+
+#[test]
+fn space_fauna_are_shieldless_high_hull_combatants() {
+    let fauna = SpaceFauna::iter().collect::<Vec<_>>();
+    assert_eq!(fauna.len(), 15);
+    for creature in fauna {
+        assert_eq!(creature.shield(), 0);
+        assert!(creature.hull() > creature.damage() * 5);
+        assert!(creature.damage() > 0);
+    }
+}
+
+#[test]
+fn fauna_formations_include_adult_and_offspring_variants() {
+    let pairs = [
+        (SpaceFauna::VoidManta, SpaceFauna::VoidMantaCalf),
+        (SpaceFauna::CrystalLeviathan, SpaceFauna::CrystalShardling),
+        (SpaceFauna::StarKraken, SpaceFauna::StarKrakenSpawn),
+        (SpaceFauna::NebulaGrazer, SpaceFauna::NebulaGrazerCalf),
+        (SpaceFauna::ElderStarDragon, SpaceFauna::StarDragonWyrmling),
+    ];
+    let mut found = [false; 5];
+
+    for turn in [5, 10, 17, 30] {
+        for seed in 0..512 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let (_, army) = encounter_formation(turn, &mut rng);
+            for (index, (adult, offspring)) in pairs.iter().enumerate() {
+                found[index] |= army.get(&Unit::Fauna(*adult)).copied().unwrap_or(0) == 1
+                    && army.get(&Unit::Fauna(*offspring)).copied().unwrap_or(0) >= 2;
+            }
+        }
+    }
+
+    assert!(found.into_iter().all(|present| present));
+}
+
+#[test]
+fn fauna_encounters_skip_launch_and_arrival_and_happen_only_once() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 30;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(destination).position = origin_position + Vec2::X * Planet::SIZE * 40.0;
+    let mut mission = Mission::new_with_id(
+        91,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 50)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = origin_position + Vec2::X * Planet::SIZE;
+    model.missions.push(mission);
+    let mut rng = StdRng::seed_from_u64(0xFA_u64);
+    let turn = model.turn as usize;
+
+    for _ in 0..100 {
+        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+    }
+    assert!(model.players[0].reports.is_empty(), "launch turn must be safe");
+
+    model.missions[0].travel_turns = 1;
+    for _ in 0..100 {
+        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+        if model.missions[0].fauna_encountered {
+            break;
+        }
+    }
+    assert!(model.missions[0].fauna_encountered);
+    let reports = model.players[0]
+        .reports
+        .iter()
+        .filter(|report| report.is_space_fauna_encounter())
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].surviving_attacker.has_army());
+
+    for _ in 0..100 {
+        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+    }
+    assert_eq!(
+        model.players[0].reports.iter().filter(|report| report.is_space_fauna_encounter()).count(),
+        1
+    );
+
+    let destination_position = model.map.get(destination).position;
+    let mission = &mut model.missions[0];
+    mission.fauna_encountered = false;
+    mission.position = destination_position - Vec2::X * Planet::SIZE;
+    assert_eq!(mission.turns_to_destination(&model.map), 1);
+    for _ in 0..100 {
+        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+    }
+    assert_eq!(
+        model.players[0].reports.iter().filter(|report| report.is_space_fauna_encounter()).count(),
+        1,
+        "arrival turn must be safe"
+    );
 }
 
 #[test]
@@ -1019,6 +1130,7 @@ fn testing_boost_affects_owned_planets_and_all_buildings_on_controlled_moons() {
                     Unit::Ship(_) | Unit::Defense(_) => {
                         model.map.get(planet_id).army.amount(&unit) + 3
                     },
+                    Unit::Fauna(_) => 0,
                 }
             } else {
                 0
@@ -2685,6 +2797,7 @@ fn moons_destroyed_worlds_and_eliminated_empires_cannot_supply_victory() {
 #[test]
 fn accelerated_arrival_resolves_on_the_displayed_turn() {
     let mut model = started_model(2);
+    model.rules.space_fauna_percent = 0;
     let origin = model.players[0].home_planet;
     let destination =
         model.map.planets.iter().find(|p| !p.is_moon() && p.controlled.is_none()).unwrap().id;

@@ -10,7 +10,7 @@ use crate::core::camera::MainCamera;
 use crate::core::combat::report::{MissionReport, Side};
 use crate::core::constants::EXPLOSION_Z;
 use crate::core::identity::PlayerId;
-use crate::core::map::battle::BattleEffect;
+use crate::core::map::battle::{BattleEffect, FaunaEffect};
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::orbital_railgun::OrbitalStrikeEffect;
@@ -26,7 +26,7 @@ use crate::core::simulation::GameModel;
 use crate::core::states::GameState;
 use crate::core::systems::GameplayInputBlocker;
 use crate::core::ui::systems::{known_planet_counts, MissionTab, UiState};
-use crate::core::units::Unit;
+use crate::core::units::{Amount, Unit};
 use crate::multiplayer::client::{
     MultiplayerRequest, MultiplayerSession, PendingTurnCommands, SubmissionState,
 };
@@ -83,7 +83,7 @@ pub(crate) fn end_game_presentation_inactive(presentation: Res<EndGamePresentati
 pub(crate) fn finish_end_game_presentation(
     presentation: Res<EndGamePresentation>,
     orbital_strikes: Query<(), With<OrbitalStrikeEffect>>,
-    battle_aftermath: Query<(), With<BattleEffect>>,
+    battle_aftermath: Query<(), Or<(With<BattleEffect>, With<FaunaEffect>)>>,
     planet_destructions: Query<(), With<ExplosionCmp>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
@@ -172,6 +172,21 @@ fn report_notification(
     origin: &Planet,
     destination: &Planet,
 ) -> MessageMsg {
+    if report.is_space_fauna_encounter() {
+        let formation = report.space_fauna_name().unwrap_or("space fauna");
+        let notification = if !report.surviving_attacker.has_army() {
+            MessageMsg::warning(format!(
+                "Mission destroyed by {formation} during a deep-space encounter."
+            ))
+        } else if report.winner() == Some(player.id) {
+            MessageMsg::info(format!("Mission defeated {formation} in deep space."))
+        } else {
+            MessageMsg::warning(format!(
+                "Mission survived an unresolved encounter with {formation}."
+            ))
+        };
+        return notification.with_action(MessageAction::FocusSpaceEncounter(report.mission.id));
+    }
     let local_victory = report.won_by(player.id);
     let notification = match report.mission.objective {
         Icon::Deploy if report.mission.is_returning() => {

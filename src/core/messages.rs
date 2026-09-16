@@ -13,7 +13,7 @@ use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::select_planet;
-use crate::core::missions::{Mission, MissionId};
+use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{resource_bar_bottom, viewport_ui_scale, MissionTab, UiState};
@@ -110,6 +110,8 @@ pub enum MessageAction {
     FocusRailgunTarget(PlanetId),
     /// Centers the strategic map on a destroyed world without opening hidden information.
     FocusDestroyedPlanet(PlanetId),
+    /// Centers the strategic map on an in-flight space-fauna encounter.
+    FocusSpaceEncounter(MissionId),
 }
 
 /// Requests a transient notification.
@@ -206,6 +208,7 @@ impl Messages {
                                 | MessageAction::FocusPlanet(_)
                                 | MessageAction::FocusRailgunTarget(_)
                                 | MessageAction::FocusDestroyedPlanet(_)
+                                | MessageAction::FocusSpaceEncounter(_)
                         )
                     ) {
                         10.0
@@ -239,6 +242,7 @@ fn check_messages(
     mut state: Option<ResMut<UiState>>,
     map: Option<Res<Map>>,
     player: Option<Res<Player>>,
+    missions: Option<Res<Missions>>,
     app_state: Option<Res<State<AppState>>>,
     game_state: Option<Res<State<GameState>>>,
     session: Option<Res<MultiplayerSession>>,
@@ -324,6 +328,9 @@ fn check_messages(
             Some(MessageAction::FocusDestroyedPlanet(id)) => map
                 .as_ref()
                 .is_some_and(|map| map.try_get(id).is_some_and(|planet| planet.is_destroyed)),
+            Some(MessageAction::FocusSpaceEncounter(id)) => player.as_ref().is_some_and(|player| {
+                space_encounter_position(id, missions.as_deref(), player).is_some()
+            }),
             _ => true,
         };
         if matches!(
@@ -334,6 +341,7 @@ fn check_messages(
                     | MessageAction::OpenRevokedProtectionMission(_)
                     | MessageAction::FocusRailgunTarget(_)
                     | MessageAction::FocusDestroyedPlanet(_)
+                    | MessageAction::FocusSpaceEncounter(_)
             )
         ) {
             if !in_game || !actionable_planet_is_valid {
@@ -421,6 +429,13 @@ fn check_messages(
                     if playing {
                         if let Some(map) = &map {
                             focus_destroyed_planet(planet_id, map, state);
+                        }
+                    }
+                },
+                MessageAction::FocusSpaceEncounter(mission_id) => {
+                    if playing {
+                        if let Some(player) = &player {
+                            focus_space_encounter(mission_id, missions.as_deref(), player, state);
                         }
                     }
                 },
@@ -517,6 +532,7 @@ fn draw_notifications(
                                 | MessageAction::OpenRevokedProtectionMission(_)
                                 | MessageAction::FocusRailgunTarget(_)
                                 | MessageAction::FocusDestroyedPlanet(_)
+                                | MessageAction::FocusSpaceEncounter(_)
                         )
                     )
                 {
@@ -601,6 +617,7 @@ fn focus_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -> bool {
     };
     state.planet_selected = None;
     state.focus_planet = Some(planet.id);
+    state.focus_position = None;
     state.focus_zoom = None;
     state.to_selected = true;
     state.mission = false;
@@ -615,6 +632,7 @@ fn focus_railgun_target(planet_id: PlanetId, map: &Map, state: &mut UiState) -> 
     };
     state.planet_selected = None;
     state.focus_planet = Some(planet.id);
+    state.focus_position = None;
     state.focus_zoom = Some(MAX_ZOOM);
     state.to_selected = true;
     state.mission = false;
@@ -629,6 +647,43 @@ fn focus_destroyed_planet(planet_id: PlanetId, map: &Map, state: &mut UiState) -
     };
     state.planet_selected = None;
     state.focus_planet = Some(planet.id);
+    state.focus_position = None;
+    state.focus_zoom = Some(MAX_ZOOM);
+    state.to_selected = true;
+    state.mission = false;
+    state.combat_report = None;
+    true
+}
+
+fn space_encounter_position(
+    mission_id: MissionId,
+    missions: Option<&Missions>,
+    player: &Player,
+) -> Option<Vec2> {
+    missions.and_then(|missions| missions.get(mission_id)).map(|mission| mission.position).or_else(
+        || {
+            player
+                .reports
+                .iter()
+                .rev()
+                .find(|report| report.mission.id == mission_id && report.is_space_fauna_encounter())
+                .map(|report| report.mission.position)
+        },
+    )
+}
+
+fn focus_space_encounter(
+    mission_id: MissionId,
+    missions: Option<&Missions>,
+    player: &Player,
+    state: &mut UiState,
+) -> bool {
+    let Some(position) = space_encounter_position(mission_id, missions, player) else {
+        return false;
+    };
+    state.planet_selected = None;
+    state.focus_planet = None;
+    state.focus_position = Some(position);
     state.focus_zoom = Some(MAX_ZOOM);
     state.to_selected = true;
     state.mission = false;

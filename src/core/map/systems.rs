@@ -2134,6 +2134,7 @@ fn spawn_solar_star(commands: &mut Commands, assets: &WorldAssets, map: &Map) {
 pub(crate) fn select_planet(planet: &Planet, state: &mut UiState, player: &Player) {
     state.planet_selected = Some(planet.id);
     state.focus_planet = None;
+    state.focus_position = None;
     state.focus_zoom = None;
     state.to_selected = false;
     state.mission = false;
@@ -2185,6 +2186,7 @@ pub fn draw_map(
                 if event.button == PointerButton::Primary {
                     state.planet_selected = None;
                     state.focus_planet = None;
+                    state.focus_position = None;
                     state.focus_zoom = None;
                     state.to_selected = false;
                     commands.entity(*window_e).insert(CursorIcon::from(SystemCursorIcon::Grabbing));
@@ -2219,6 +2221,7 @@ pub fn draw_map(
                         .extend(camera_t.translation.z);
                         state.to_selected = false;
                         state.focus_planet = None;
+                        state.focus_position = None;
                         state.focus_zoom = None;
                     }
                 }

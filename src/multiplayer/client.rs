@@ -123,6 +123,8 @@ pub struct MultiplayerForm {
     pub game_code: String,
     /// High-entropy recovery code entered on a replacement device.
     pub recovery_code: String,
+    /// Per eligible travel turn chance configured for the next game.
+    pub space_fauna_percent: usize,
     /// Number of locally controlled empires in the next practice match.
     #[cfg(debug_assertions)]
     pub practice_player_count: u8,
@@ -144,6 +146,7 @@ impl Default for MultiplayerForm {
             saved_display_name: None,
             game_code: String::new(),
             recovery_code: String::new(),
+            space_fauna_percent: 15,
             #[cfg(debug_assertions)]
             practice_player_count: 2,
         }

@@ -18,8 +18,10 @@ use strum_macros::EnumIter;
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, SoundEffect};
 #[cfg(test)]
-use crate::core::combat::report::{combat_fleet_strength, RoundReport};
-use crate::core::combat::report::{combat_strength_ranges, MissionReport, ReportId, Side};
+use crate::core::combat::report::RoundReport;
+use crate::core::combat::report::{
+    combat_fleet_strength, combat_strength_ranges, MissionReport, ReportId, Side,
+};
 #[cfg(test)]
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::combat::stats::CombatStats;
@@ -56,6 +58,7 @@ use crate::core::ui::dark::NordDark;
 use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
 use crate::multiplayer::client::{
@@ -166,6 +169,8 @@ pub struct UiState {
     pub(crate) resource_hub_term: ResourceLoanTerm,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
+    /// Camera-only coordinate focus used by transient in-flight encounter notifications.
+    pub(crate) focus_position: Option<Vec2>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
     pub(crate) focus_zoom: Option<f32>,
     pub to_selected: bool,
@@ -4503,6 +4508,13 @@ fn combat_side_participants(
     side: &Side,
     session: &MultiplayerSession,
 ) -> Vec<CombatParticipant> {
+    if *side == Side::Defender && report.is_space_fauna_encounter() {
+        return vec![CombatParticipant {
+            name: report.planet.name.clone(),
+            color: Color32::from_rgb(229, 166, 78),
+            strength: combat_fleet_strength(&report.planet.army.combined()),
+        }];
+    }
     let players = match side {
         Side::Attacker => report.attacker_players(),
         Side::Defender => report.defender_players(),
@@ -4666,9 +4678,13 @@ fn draw_combat_report(
 
         ui.add_space(25.);
 
-        ui.small(&destination.name);
+        ui.small(if report.is_space_fauna_encounter() {
+            &report.planet.name
+        } else {
+            &destination.name
+        });
         ui.add_space(5.);
-        let resp = ui.add_image(images.get(destination.image()), [35., 35.]);
+        let resp = ui.add_image(images.get(combat_selection_planet_image(report)), [35., 35.]);
 
         let size = [15., 15.];
         let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
@@ -4837,7 +4853,15 @@ fn draw_combat_report(
         });
         ui.vertical(|ui| {
             ui.set_width(defender_w);
-            draw_colored_combat_heading(ui, "Defender", &defenders);
+            draw_colored_combat_heading(
+                ui,
+                if report.is_space_fauna_encounter() {
+                    "Space Fauna"
+                } else {
+                    "Defender"
+                },
+                &defenders,
+            );
             draw_combat_strength_bar(ui, &defenders);
         });
     });
@@ -4903,7 +4927,11 @@ fn draw_combat_report(
                                         "combat_defender1",
                                         state,
                                         &round,
-                                        Unit::ships(),
+                                        if report.is_space_fauna_encounter() {
+                                            SpaceFauna::iter().map(Unit::Fauna).collect()
+                                        } else {
+                                            Unit::ships()
+                                        },
                                         Side::Defender,
                                         report.planet.shield_overload.is_overloaded(),
                                         report.planet.operations.space_dock,
@@ -5279,7 +5307,24 @@ fn mission_objective_label(objective: Icon) -> String {
 
 /// Uses the pre-mission world artwork so selection cannot reveal the resolved outcome.
 fn combat_selection_planet_image(report: &MissionReport) -> String {
-    report.planet.image()
+    report
+        .planet
+        .army
+        .combined()
+        .iter()
+        .find_map(|(unit, count)| match unit {
+            Unit::Fauna(fauna) if *count > 0 => Some(fauna.to_lowername()),
+            _ => None,
+        })
+        .unwrap_or_else(|| report.planet.image())
+}
+
+fn combat_selection_title(report: &MissionReport, map: &Map) -> String {
+    if report.is_space_fauna_encounter() {
+        format!("Deep-space encounter: {}", report.planet.name)
+    } else {
+        format!("Battle of {}", map.get(report.mission.destination).name)
+    }
 }
 
 const COMBAT_SELECTION_MIN_WIDTH: f32 = 380.0;
@@ -5351,7 +5396,14 @@ fn combat_selection_matchup(
     append(" vs ", Color32::WHITE);
     let defenders = report.defender_players();
     if defenders.is_empty() {
-        append("Neutral", Color32::WHITE);
+        append(
+            report.space_fauna_name().unwrap_or("Neutral"),
+            if report.is_space_fauna_encounter() {
+                Color32::from_rgb(229, 166, 78)
+            } else {
+                Color32::WHITE
+            },
+        );
     }
     for (index, id) in defenders.into_iter().enumerate() {
         if index > 0 {
@@ -5373,7 +5425,7 @@ fn combat_selection_panel_width(
 ) -> f32 {
     let title_font = TextStyle::Body.resolve(&context.style_of(context.theme()));
     let text_width = reports.iter().fold(0.0_f32, |width, report| {
-        let title = format!("Battle of {}", map.get(report.mission.destination).name);
+        let title = combat_selection_title(report, map);
         let title_width = context.fonts_mut(|fonts| {
             fonts.layout_no_wrap(title, title_font.clone(), Color32::WHITE).size().x
         });
@@ -5415,11 +5467,10 @@ fn draw_combat_selection(
             ui.spacing_mut().item_spacing.y = 8.;
 
             for report in reports.iter().rev() {
-                let destination = map.get(report.mission.destination);
                 let text_width =
                     (ui.available_width() - COMBAT_SELECTION_ROW_TEXT_RESERVE).max(1.0);
                 let mut title_job = egui::text::LayoutJob::simple_singleline(
-                    format!("Battle of {}", destination.name),
+                    combat_selection_title(report, map),
                     TextStyle::Body.resolve(ui.style()),
                     Color32::WHITE,
                 );

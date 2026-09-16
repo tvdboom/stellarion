@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rules = GameRules {
         planets_per_player: 5,
         moons_percent: 0,
+        space_fauna_percent: 15,
         colonizable_percent: 50,
         player_count: 4,
         practice_mode: false,

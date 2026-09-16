@@ -10,11 +10,13 @@ use crate::core::combat::stats::CombatStats;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::utils::NameFromEnum;
 
 pub mod buildings;
 pub mod defense;
+pub mod fauna;
 pub mod operations;
 pub mod orbitals;
 pub mod ships;
@@ -98,6 +100,8 @@ pub enum Unit {
     Ship(Ship),
     /// The defense value.
     Defense(Defense),
+    /// An unconstructible space-fauna combatant.
+    Fauna(SpaceFauna),
 }
 
 impl Serialize for Unit {
@@ -140,6 +144,9 @@ impl<'de> Visitor<'de> for UnitVisitor {
             }
             if let Some(name) = body.strip_prefix("Defense(") {
                 return Defense::deserialize(StrDeserializer::<E>::new(name)).map(Unit::Defense);
+            }
+            if let Some(name) = body.strip_prefix("Fauna(") {
+                return SpaceFauna::deserialize(StrDeserializer::<E>::new(name)).map(Unit::Fauna);
             }
         }
         Err(E::custom(format!("unknown unit identifier: {encoded}")))
@@ -259,6 +266,7 @@ impl Unit {
         match self {
             Self::Ship(_) => true,
             Self::Defense(_) => !is_moon,
+            Self::Fauna(_) => false,
             Self::Building(_) => {
                 if is_moon {
                     Self::LUNAR_BUILDINGS.contains(&self)
@@ -274,6 +282,7 @@ impl Unit {
     pub fn all_firing_order() -> Vec<Self> {
         Ship::iter()
             .map(Unit::Ship)
+            .chain(SpaceFauna::iter().map(Unit::Fauna))
             .chain(std::iter::once(Unit::space_dock()))
             .chain(Defense::iter().map(Unit::Defense).filter(|u| {
                 *u != Unit::crawler() && *u != Unit::repair_truck() && *u != Unit::space_dock()
@@ -347,7 +356,12 @@ impl Unit {
 
     /// Returns whether this value ship.
     pub fn is_ship(&self) -> bool {
-        matches!(self, Unit::Ship(_))
+        matches!(self, Unit::Ship(_) | Unit::Fauna(_))
+    }
+
+    /// Returns whether this unit is an unconstructible space creature.
+    pub fn is_fauna(&self) -> bool {
+        matches!(self, Unit::Fauna(_))
     }
 
     /// Returns whether this value defense.
@@ -387,7 +401,11 @@ impl Unit {
 
     /// Returns whether this value combat ship.
     pub fn is_combat_ship(&self) -> bool {
-        matches!(self, Unit::Ship(s) if !matches!(s, Ship::Probe | Ship::ColonyShip))
+        match self {
+            Unit::Fauna(_) => true,
+            Unit::Ship(ship) => !matches!(ship, Ship::Probe | Ship::ColonyShip),
+            Unit::Building(_) | Unit::Defense(_) => false,
+        }
     }
 
     /// Returns the production-time/value score shared by economy and combat ordering.
@@ -400,6 +418,7 @@ impl Unit {
             Unit::Building(building) => building.production(),
             Unit::Ship(s) => s.production(),
             Unit::Defense(d) => d.production(),
+            Unit::Fauna(fauna) => fauna.production(),
         }
     }
 
@@ -420,6 +439,7 @@ impl Unit {
             Unit::Building(building) => Some(building.production()),
             Unit::Ship(ship) => Some(ship.production()),
             Unit::Defense(defense) => Some(defense.production()),
+            Unit::Fauna(_) => None,
         }
     }
 
@@ -506,6 +526,7 @@ impl Unit {
             Unit::Building(b) => b.to_name(),
             Unit::Ship(s) => s.to_name(),
             Unit::Defense(d) => d.to_name(),
+            Unit::Fauna(fauna) => fauna.to_name(),
         }
     }
 
@@ -515,6 +536,7 @@ impl Unit {
             Unit::Building(b) => b.to_lowername(),
             Unit::Ship(s) => s.to_lowername(),
             Unit::Defense(d) => d.to_lowername(),
+            Unit::Fauna(fauna) => fauna.to_lowername(),
         }
     }
 }
@@ -526,6 +548,7 @@ impl Description for Unit {
             Unit::Building(b) => b.description(),
             Unit::Ship(s) => s.description(),
             Unit::Defense(d) => d.description(),
+            Unit::Fauna(fauna) => fauna.description(),
         }
     }
 }
@@ -537,6 +560,7 @@ impl Price for Unit {
             Unit::Building(b) => b.price(),
             Unit::Ship(s) => s.price(),
             Unit::Defense(d) => d.price(),
+            Unit::Fauna(_) => Resources::default(),
         }
     }
 }
@@ -548,6 +572,7 @@ impl Combat for Unit {
             Unit::Building(_) => 0,
             Unit::Ship(s) => s.hull(),
             Unit::Defense(d) => d.hull(),
+            Unit::Fauna(fauna) => fauna.hull(),
         }
     }
 
@@ -557,6 +582,7 @@ impl Combat for Unit {
             Unit::Building(_) => 0,
             Unit::Ship(s) => s.shield(),
             Unit::Defense(d) => d.shield(),
+            Unit::Fauna(fauna) => fauna.shield(),
         }
     }
 
@@ -566,6 +592,7 @@ impl Combat for Unit {
             Unit::Building(_) => 0,
             Unit::Ship(s) => s.damage(),
             Unit::Defense(d) => d.damage(),
+            Unit::Fauna(fauna) => fauna.damage(),
         }
     }
 
@@ -575,6 +602,7 @@ impl Combat for Unit {
             Unit::Building(_) => HashMap::new(),
             Unit::Ship(s) => s.rapid_fire(),
             Unit::Defense(d) => d.rapid_fire(),
+            Unit::Fauna(fauna) => fauna.rapid_fire(),
         }
     }
 
@@ -584,6 +612,7 @@ impl Combat for Unit {
             Unit::Building(_) => 0.,
             Unit::Ship(s) => s.speed(),
             Unit::Defense(d) => d.speed(),
+            Unit::Fauna(_) => 0.0,
         }
     }
 
@@ -593,6 +622,7 @@ impl Combat for Unit {
             Unit::Building(_) => 0,
             Unit::Ship(s) => s.fuel_consumption(),
             Unit::Defense(d) => d.fuel_consumption(),
+            Unit::Fauna(_) => 0,
         }
     }
 }

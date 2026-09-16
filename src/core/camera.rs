@@ -196,6 +196,7 @@ pub fn move_camera(
                     projection.scale = new_scale;
                     state.to_selected = false;
                     state.focus_planet = None;
+                    state.focus_position = None;
                     state.focus_zoom = None;
                 }
             }
@@ -208,7 +209,15 @@ pub fn move_camera(
     let mut shortcut_target = None;
     let mut shortcut_zoom_complete = true;
     if state.to_selected {
-        if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
+        if let Some(target_position) = state.focus_position {
+            if let Some(target_scale) = state.focus_zoom {
+                (projection.scale, shortcut_zoom_complete) =
+                    advance_focus_zoom(projection.scale, target_scale);
+            }
+            let target = map_camera_target(&map, target_position).unwrap_or(target_position);
+            position = position.lerp(target, LERP_FACTOR);
+            shortcut_target = Some(target);
+        } else if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
                 if let Some(target_scale) = state.focus_zoom {
                     (projection.scale, shortcut_zoom_complete) =
@@ -230,6 +239,7 @@ pub fn move_camera(
     {
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_position = None;
         state.focus_zoom = None;
     }
 }
@@ -298,24 +308,28 @@ pub fn move_camera_keyboard(
         camera_t.translation.x -= transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_position = None;
         state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyD) {
         camera_t.translation.x += transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_position = None;
         state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyW) {
         camera_t.translation.y += transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_position = None;
         state.focus_zoom = None;
     }
     if keyboard.pressed(KeyCode::KeyS) {
         camera_t.translation.y -= transform;
         state.to_selected = false;
         state.focus_planet = None;
+        state.focus_position = None;
         state.focus_zoom = None;
     }
 }

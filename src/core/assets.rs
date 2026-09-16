@@ -160,6 +160,11 @@ impl WorldAssets {
             "shield impact",
             "laser fire",
             "missile fire",
+            "fauna electric",
+            "fauna pulse",
+            "fauna acid",
+            "fauna roar",
+            "fauna dragon",
         ] {
             load_audio(server, &mut self.audio, &mut self.gameplay_handles, name);
         }
@@ -231,7 +236,11 @@ impl WorldAssets {
             self.gameplay_handles.push(handle.clone().untyped());
             self.images.insert(name.to_string(), handle);
         }
-        self.load_gameplay_images(server, "bg", &["bg", "combat"]);
+        self.load_gameplay_images(
+            server,
+            "bg",
+            &["bg", "combat", "fauna combat blue", "fauna combat violet", "fauna combat amber"],
+        );
         // Result lettering scales throughout its entrance animation; nearest sampling aliases
         // the gold outlines even though the source artwork has enough resolution.
         for name in ["victory", "defeat", "draw"] {
@@ -381,6 +390,27 @@ impl WorldAssets {
                 "battleship",
                 "dreadnought",
                 "war sun",
+            ],
+        );
+        self.load_gameplay_images(
+            server,
+            "fauna",
+            &[
+                "aether ray",
+                "ion wisp",
+                "void manta",
+                "void manta calf",
+                "crystal leviathan",
+                "crystal shardling",
+                "gravemaw",
+                "star kraken",
+                "star kraken spawn",
+                "nebula grazer",
+                "nebula grazer calf",
+                "rift serpent",
+                "solar roc",
+                "elder star dragon",
+                "star dragon wyrmling",
             ],
         );
         self.load_gameplay_images(

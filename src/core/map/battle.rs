@@ -20,6 +20,7 @@ use crate::core::missions::{MissionId, Missions, SuppressedReturningSpies};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
+use crate::core::units::Amount;
 
 const AFTERMATH_SECONDS: f32 = 4.2;
 const EXPLOSION_SECONDS: f32 = 1.55;
@@ -57,6 +58,9 @@ impl Outcome {
         // Territory headlines take precedence whenever this player's ownership or
         // control changes. Colonization has its own presentation system; captures
         // and losses are handled by `TerritoryOutcome` below.
+        if report.is_space_fauna_encounter() {
+            return None;
+        }
         let ownership_changed = (report.planet.owned == Some(player.id))
             != (report.destination_owned == Some(player.id));
         let control_changed = (report.planet.controlled == Some(player.id))
@@ -390,6 +394,16 @@ struct BattleSites {
     observed: BTreeSet<ReportId>,
     outcomes: BTreeMap<PlanetId, SiteOutcome>,
     pending: BTreeSet<PlanetId>,
+    fauna_outcomes: BTreeMap<ReportId, FaunaPresentation>,
+    fauna_pending: BTreeSet<ReportId>,
+}
+
+#[derive(Clone, Debug)]
+struct FaunaPresentation {
+    mission: MissionId,
+    position: Vec2,
+    destroyed: bool,
+    label: &'static str,
 }
 
 impl BattleSites {
@@ -402,6 +416,34 @@ impl BattleSites {
         }
         let mut added = false;
         for report in player.reports.iter().filter(|report| report.turn == turn) {
+            if report.is_space_fauna_encounter()
+                && !report.hidden
+                && report.mission.owner == player.id
+            {
+                if !self.observed.insert(report.id) {
+                    continue;
+                }
+                let destroyed = !report.surviving_attacker.has_army();
+                let label = if destroyed {
+                    "MISSION LOST TO SPACE FAUNA"
+                } else if report.winner() == Some(player.id) {
+                    "SPACE FAUNA DEFEATED"
+                } else {
+                    "SPACE FAUNA ENCOUNTER"
+                };
+                self.fauna_outcomes.insert(
+                    report.id,
+                    FaunaPresentation {
+                        mission: report.mission.id,
+                        position: report.mission.position,
+                        destroyed,
+                        label,
+                    },
+                );
+                self.fauna_pending.insert(report.id);
+                added = true;
+                continue;
+            }
             let planet_destroyed = planet_destruction_visible(report, player);
             let battle = Outcome::from_report(report, player);
             let territory = TerritoryOutcome::from_report(report, player);
@@ -479,6 +521,13 @@ pub(crate) struct BattleEffect {
     timer: Timer,
 }
 
+#[derive(Component)]
+pub(crate) struct FaunaEffect {
+    report: ReportId,
+    turn: usize,
+    timer: Timer,
+}
+
 #[derive(Clone, Copy)]
 struct ReturningSpy {
     id: MissionId,
@@ -530,6 +579,7 @@ enum EffectPart {
     Label {
         y: f32,
     },
+    FaunaMission,
 }
 
 fn show_battles(
@@ -542,6 +592,7 @@ fn show_battles(
     missions: Res<Missions>,
     mut suppressed: ResMut<SuppressedReturningSpies>,
     effects: Query<(Entity, &BattleEffect)>,
+    fauna_effects: Query<(Entity, &FaunaEffect)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     assets: Res<WorldAssets>,
@@ -616,6 +667,138 @@ fn show_battles(
     if exploded {
         audio.write(PlayAudioMsg::new("short explosion"));
     }
+
+    let fauna_color = Color::srgb_u8(229, 166, 78);
+    for report_id in std::mem::take(&mut sites.fauna_pending) {
+        let Some(outcome) = sites.fauna_outcomes.get(&report_id).cloned() else {
+            continue;
+        };
+        for (entity, effect) in &fauna_effects {
+            if effect.report == report_id {
+                commands.entity(entity).despawn();
+            }
+        }
+        let position =
+            missions.get(outcome.mission).map_or(outcome.position, |mission| mission.position);
+        spawn_fauna_aftermath(
+            &mut commands,
+            report_id,
+            settings.turn,
+            position,
+            &outcome,
+            player.color().color(),
+            fauna_color,
+            &assets,
+            &mut meshes,
+            &mut materials,
+        );
+        if outcome.destroyed {
+            audio.write(PlayAudioMsg::new("large explosion"));
+        } else {
+            audio.write(PlayAudioMsg::new("short explosion"));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_fauna_aftermath(
+    commands: &mut Commands,
+    report: ReportId,
+    turn: usize,
+    position: Vec2,
+    outcome: &FaunaPresentation,
+    player_color: Color,
+    fauna_color: Color,
+    assets: &WorldAssets,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+) {
+    const SIZE: f32 = 82.0;
+    let texture = assets.texture("explosion");
+    commands
+        .spawn((
+            Transform::from_translation(position.extend(EXPLOSION_Z)),
+            Visibility::Inherited,
+            Pickable::IGNORE,
+            MapCmp,
+            FaunaEffect {
+                report,
+                turn,
+                timer: Timer::from_seconds(AFTERMATH_SECONDS, TimerMode::Once),
+            },
+        ))
+        .with_children(|parent| {
+            if outcome.destroyed {
+                parent.spawn((
+                    Sprite {
+                        image: assets.image("mission"),
+                        custom_size: Some(Vec2::splat(SIZE * 0.72)),
+                        color: player_color,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.08),
+                    Pickable::IGNORE,
+                    EffectPart::FaunaMission,
+                ));
+            }
+            let offsets = if outcome.destroyed {
+                vec![Vec2::new(-0.18, 0.08), Vec2::new(0.2, -0.14), Vec2::new(0.1, 0.2)]
+            } else {
+                vec![Vec2::ZERO]
+            };
+            for (index, offset) in offsets.into_iter().enumerate() {
+                parent.spawn((
+                    Sprite {
+                        image: texture.image.clone(),
+                        texture_atlas: Some(texture.atlas.clone()),
+                        custom_size: Some(Vec2::splat(
+                            SIZE * if outcome.destroyed {
+                                1.1
+                            } else {
+                                0.65
+                            },
+                        )),
+                        color: fauna_color.with_alpha(0.0),
+                        ..default()
+                    },
+                    Transform::from_translation((offset * SIZE).extend(0.12)),
+                    Pickable::IGNORE,
+                    EffectPart::Explosion {
+                        delay: index as f32 * 0.24,
+                        last_index: texture.last_index,
+                    },
+                ));
+            }
+            let ripple = meshes.add(Annulus::new(0.98, 1.0));
+            for index in 0..RIPPLE_COUNT {
+                let radius = SIZE * 0.55;
+                parent.spawn((
+                    Mesh2d(ripple.clone()),
+                    MeshMaterial2d(materials.add(fauna_color.with_alpha(0.0))),
+                    Transform::from_scale(Vec3::splat(radius)),
+                    Pickable::IGNORE,
+                    EffectPart::Ripple {
+                        delay: index as f32 * RIPPLE_INTERVAL_SECONDS,
+                        radius,
+                    },
+                ));
+            }
+            let y = super::aftermath_label_y(SIZE, 0);
+            parent.spawn((
+                Text2d::new(outcome.label),
+                TextFont {
+                    font: assets.font("bold").into(),
+                    font_size: 17.0.into(),
+                    ..default()
+                },
+                TextColor(fauna_color.with_alpha(0.0)),
+                Transform::from_xyz(0.0, y, 0.2),
+                Pickable::IGNORE,
+                EffectPart::Label {
+                    y,
+                },
+            ));
+        });
 }
 
 fn returning_spies_for(
@@ -1180,6 +1363,110 @@ fn animate_battles(
                         text.0.set_alpha(((elapsed - 0.3) / 0.4).clamp(0.0, 1.0) * (1.0 - settle));
                     }
                 },
+                EffectPart::FaunaMission => {},
+            }
+        }
+    }
+}
+
+fn animate_fauna_aftermath(
+    mut commands: Commands,
+    time: Res<Time>,
+    game_state: Res<State<GameState>>,
+    settings: Res<Settings>,
+    mut effects: Query<(Entity, &mut FaunaEffect, &Children, &mut Visibility)>,
+    mut parts: Query<(
+        Entity,
+        &EffectPart,
+        &mut Transform,
+        Option<&mut Sprite>,
+        Option<&MeshMaterial2d<ColorMaterial>>,
+        Option<&mut TextColor>,
+    )>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (entity, mut effect, children, mut visibility) in &mut effects {
+        if effect.turn != settings.turn {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let playing = *game_state.get() == GameState::Playing;
+        *visibility = if playing {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if !playing {
+            continue;
+        }
+        effect.timer.tick(time.delta());
+        if effect.timer.is_finished() {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let elapsed = effect.timer.elapsed_secs();
+        let settle = ((elapsed - 2.8) / (AFTERMATH_SECONDS - 2.8)).clamp(0.0, 1.0);
+        for child in children.iter() {
+            let Ok((entity, part, mut transform, sprite, material, text)) = parts.get_mut(child)
+            else {
+                continue;
+            };
+            match part {
+                EffectPart::Explosion {
+                    delay,
+                    last_index,
+                } => {
+                    let progress = (elapsed - delay) / EXPLOSION_SECONDS;
+                    if progress >= 1.0 {
+                        commands.entity(entity).despawn();
+                    } else if let Some(mut sprite) = sprite {
+                        sprite.color.set_alpha(if progress >= 0.0 {
+                            0.95
+                        } else {
+                            0.0
+                        });
+                        if let Some(atlas) = &mut sprite.texture_atlas {
+                            atlas.index = ((progress.max(0.0) * (*last_index + 1) as f32) as usize)
+                                .min(*last_index);
+                        }
+                    }
+                },
+                EffectPart::Ripple {
+                    delay,
+                    radius,
+                } => {
+                    let progress = (elapsed - delay) / RIPPLE_SECONDS;
+                    if progress >= 1.0 {
+                        commands.entity(entity).despawn();
+                    } else if progress > 0.0 {
+                        let outward = 1.0 - (1.0 - progress).powi(2);
+                        transform.scale = Vec3::splat(radius * (1.0 + 2.3 * outward));
+                        if let Some(mut material) =
+                            material.and_then(|handle| materials.get_mut(&handle.0))
+                        {
+                            let fade_in = (progress / 0.08).min(1.0);
+                            material.color.set_alpha(0.8 * fade_in * (1.0 - progress).powf(1.2));
+                        }
+                    }
+                },
+                EffectPart::Label {
+                    y,
+                } => {
+                    transform.scale = Vec3::splat(1.0 - 0.12 * settle);
+                    transform.translation.y = *y + 5.0 * (1.0 - settle);
+                    if let Some(mut text) = text {
+                        text.0
+                            .set_alpha(((elapsed - 0.25) / 0.35).clamp(0.0, 1.0) * (1.0 - settle));
+                    }
+                },
+                EffectPart::FaunaMission => {
+                    if let Some(mut sprite) = sprite {
+                        let progress = (elapsed / 0.9).clamp(0.0, 1.0);
+                        sprite.color.set_alpha((1.0 - progress).powf(1.4));
+                        transform.scale = Vec3::splat(1.0 + progress * 0.42);
+                    }
+                },
+                _ => {},
             }
         }
     }
@@ -1197,7 +1484,7 @@ impl Plugin for BattleAftermathPlugin {
             .add_systems(OnEnter(AppState::Game), initialize_battles.after(draw_map))
             .add_systems(
                 Update,
-                (show_battles, animate_battles)
+                (show_battles, animate_battles, animate_fauna_aftermath)
                     .chain()
                     .in_set(BattleAftermathSet)
                     .after(refresh_gameplay_projection)

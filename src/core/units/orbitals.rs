@@ -29,7 +29,7 @@ pub const fn production_level(unit: Unit) -> Option<usize> {
         Unit::Building(Building::TradingPost | Building::SensorPhalanx) => Some(3),
         Unit::Building(Building::JumpGate) => Some(4),
         Unit::Building(Building::OrbitalRailgun) | Unit::Defense(Defense::SpaceDock) => Some(5),
-        Unit::Building(_) | Unit::Ship(_) | Unit::Defense(_) => None,
+        Unit::Building(_) | Unit::Ship(_) | Unit::Defense(_) | Unit::Fauna(_) => None,
     }
 }
 

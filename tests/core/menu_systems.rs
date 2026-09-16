@@ -2090,6 +2090,26 @@ fn enter_submits_forms_but_respects_validation_and_busy_state() {
 }
 
 #[test]
+fn new_game_form_submits_its_space_fauna_rule() {
+    let mut form = MultiplayerForm {
+        display_name: "Commander".to_string(),
+        space_fauna_percent: 30,
+        ..default()
+    };
+    let mut settings = Settings::default();
+    let mut next = NextState::default();
+
+    let requests = submit_menu(|ui, requests| {
+        create_screen(ui, &mut form, &mut settings, false, requests, &mut next);
+    });
+
+    assert!(matches!(
+        requests.as_slice(),
+        [MultiplayerRequest::CreateGame { rules, .. }] if rules.space_fauna_percent == 30
+    ));
+}
+
+#[test]
 fn busy_lobby_always_allows_leaving_for_both_roles() {
     for host in [true, false] {
         let context = egui::Context::default();

@@ -18,6 +18,7 @@ use crate::core::camera::MainCamera;
 use crate::core::constants::{COMBAT_BACKGROUND_Z, COMBAT_EXPLOSION_Z};
 use crate::core::settings::Settings;
 use crate::core::units::defense::Defense;
+use crate::core::units::fauna::FaunaAttack;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
 
@@ -55,6 +56,12 @@ enum Weapon {
     Lance,
     Solar,
     Siege,
+    FaunaSonic,
+    FaunaLightning,
+    FaunaBioPlasma,
+    FaunaGravity,
+    FaunaVoid,
+    FaunaFire,
     Repair,
 }
 
@@ -84,6 +91,14 @@ impl Weapon {
                 | Defense::AntiballisticMissile
                 | Defense::InterplanetaryMissile => Self::Missile,
             },
+            Unit::Fauna(fauna) => match fauna.attack() {
+                FaunaAttack::SonicPulse => Self::FaunaSonic,
+                FaunaAttack::Lightning => Self::FaunaLightning,
+                FaunaAttack::BioPlasma => Self::FaunaBioPlasma,
+                FaunaAttack::GravityPulse => Self::FaunaGravity,
+                FaunaAttack::VoidLance => Self::FaunaVoid,
+                FaunaAttack::StellarFire => Self::FaunaFire,
+            },
             Unit::Building(_) => Self::Laser,
         }
     }
@@ -99,6 +114,12 @@ impl Weapon {
             Self::Lance => VIOLET,
             Self::Solar => Color::srgb(1.0, 0.82, 0.3),
             Self::Siege => Color::srgb(1.0, 0.2, 0.65),
+            Self::FaunaSonic => Color::srgb(0.2, 0.95, 0.92),
+            Self::FaunaLightning => Color::srgb(0.46, 0.78, 1.0),
+            Self::FaunaBioPlasma => Color::srgb(0.42, 1.0, 0.18),
+            Self::FaunaGravity => Color::srgb(0.55, 0.18, 0.9),
+            Self::FaunaVoid => Color::srgb(0.86, 0.25, 1.0),
+            Self::FaunaFire => Color::srgb(1.0, 0.35, 0.08),
             Self::Repair => MINT,
         }
     }
@@ -114,16 +135,26 @@ impl Weapon {
             Self::Plasma | Self::Ion => 0.42,
             Self::Lance => 0.5,
             Self::Solar | Self::Siege => 0.62,
+            Self::FaunaSonic => 0.7,
+            Self::FaunaLightning => 0.3,
+            Self::FaunaBioPlasma => 0.58,
+            Self::FaunaGravity => 0.82,
+            Self::FaunaVoid => 0.52,
+            Self::FaunaFire => 0.74,
             Self::Repair => 1.6,
         }
     }
 
     fn charge(self) -> f32 {
         match self {
-            Self::Plasma | Self::Ion => 0.16,
+            Self::Plasma | Self::Ion | Self::FaunaLightning | Self::FaunaBioPlasma => 0.16,
             Self::Lance => 0.3,
             Self::Solar => 0.58,
             Self::Siege => 0.45,
+            Self::FaunaSonic => 0.32,
+            Self::FaunaGravity => 0.48,
+            Self::FaunaVoid => 0.35,
+            Self::FaunaFire => 0.54,
             _ => 0.,
         }
     }
@@ -135,13 +166,17 @@ impl Weapon {
             Self::Lance => Some(0.17),
             Self::Solar => Some(0.42),
             Self::Siege => Some(0.14),
+            Self::FaunaLightning => Some(0.055),
+            Self::FaunaGravity => Some(0.3),
+            Self::FaunaVoid => Some(0.13),
+            Self::FaunaFire => Some(0.34),
             _ => None,
         }
     }
 
     fn barrels(self) -> usize {
         match self {
-            Self::TwinLaser | Self::Broadside | Self::Siege => 2,
+            Self::TwinLaser | Self::Broadside | Self::Siege | Self::FaunaLightning => 2,
             Self::Repeater => 3,
             _ => 1,
         }
@@ -149,7 +184,14 @@ impl Weapon {
 
     fn salvo_limit(self) -> usize {
         match self {
-            Self::Solar | Self::Siege | Self::Bomb | Self::Repair => 1,
+            Self::Solar
+            | Self::Siege
+            | Self::Bomb
+            | Self::FaunaSonic
+            | Self::FaunaGravity
+            | Self::FaunaVoid
+            | Self::FaunaFire
+            | Self::Repair => 1,
             Self::Plasma | Self::Ion | Self::Lance => 2,
             _ => 3,
         }
@@ -178,8 +220,18 @@ impl Weapon {
             Self::Missile => Vec2::new(0.30, 0.11),
             Self::Bomb => Vec2::new(0.48, 0.20),
             Self::Broadside => Vec2::new(0.65, 0.10),
+            Self::FaunaSonic => Vec2::new(0.46, 0.28),
+            Self::FaunaBioPlasma => Vec2::new(0.38, 0.24),
             Self::Repair => Vec2::splat(0.15),
-            Self::Plasma | Self::Ion | Self::Lance | Self::Solar | Self::Siege => Vec2::ONE,
+            Self::Plasma
+            | Self::Ion
+            | Self::Lance
+            | Self::Solar
+            | Self::Siege
+            | Self::FaunaLightning
+            | Self::FaunaGravity
+            | Self::FaunaVoid
+            | Self::FaunaFire => Vec2::ONE,
         }
     }
 
@@ -200,6 +252,12 @@ impl Weapon {
             Self::Lance => Some(PlayAudioMsg::new("beam fire").rate(1.1).gain(-8.0)),
             Self::Solar => Some(PlayAudioMsg::new("beam fire").rate(0.76).gain(-5.0)),
             Self::Siege => Some(PlayAudioMsg::new("beam fire").rate(0.86).gain(-6.0)),
+            Self::FaunaSonic => Some(PlayAudioMsg::new("fauna pulse").gain(-8.0)),
+            Self::FaunaLightning => Some(PlayAudioMsg::new("fauna electric").gain(-7.0)),
+            Self::FaunaBioPlasma => Some(PlayAudioMsg::new("fauna acid").gain(-7.0)),
+            Self::FaunaGravity => Some(PlayAudioMsg::new("fauna roar").rate(0.72).gain(-5.0)),
+            Self::FaunaVoid => Some(PlayAudioMsg::new("fauna roar").rate(1.2).gain(-7.0)),
+            Self::FaunaFire => Some(PlayAudioMsg::new("fauna dragon").gain(-5.0)),
             _ => None,
         }
     }
@@ -967,7 +1025,10 @@ pub fn run_combat_animations(
     }
     for (_, impact) in grouped {
         let color = impact.weapon.color();
-        let massive = matches!(impact.weapon, Weapon::Solar | Weapon::Siege);
+        let massive = matches!(
+            impact.weapon,
+            Weapon::Solar | Weapon::Siege | Weapon::FaunaGravity | Weapon::FaunaFire
+        );
         if impact.weapon.charge() > 0. {
             let radius = impact.size
                 * if massive {
@@ -1164,7 +1225,7 @@ pub fn run_combat_animations(
                         0.12,
                     );
                 },
-                Weapon::Ion => {
+                Weapon::Ion | Weapon::FaunaLightning => {
                     // A segmented electrical filament distinguishes ion fire from plasma.
                     let normal = Vec3::new(-direction.y, direction.x, 0.).normalize_or_zero();
                     let mut previous = impact.origin;
@@ -1192,6 +1253,42 @@ pub fn run_combat_animations(
                         impact.weapon.color().with_alpha(0.6),
                         0.13,
                     );
+                },
+                Weapon::FaunaSonic => {
+                    painter.ring(
+                        position,
+                        impact.size * (0.3 + p * 0.45),
+                        impact.weapon.color().with_alpha(0.55),
+                        0.2,
+                    );
+                },
+                Weapon::FaunaBioPlasma => {
+                    painter.glow(
+                        position,
+                        impact.size * 0.3,
+                        impact.weapon.color().with_alpha(0.7),
+                        0.2,
+                    );
+                },
+                Weapon::FaunaGravity => {
+                    painter.ring(
+                        position,
+                        impact.size * 0.72,
+                        impact.weapon.color().with_alpha(0.45),
+                        0.28,
+                    );
+                },
+                Weapon::FaunaVoid => {
+                    painter.sparks(position, impact.size * 0.38, impact.weapon.color(), 4, false);
+                },
+                Weapon::FaunaFire => {
+                    painter.glow(
+                        position,
+                        impact.size * 0.55,
+                        impact.weapon.color().with_alpha(0.7),
+                        0.18,
+                    );
+                    painter.sparks(position, impact.size * 0.45, GOLD, 3, false);
                 },
                 Weapon::Laser
                 | Weapon::HeavyLaser
@@ -1314,7 +1411,10 @@ pub fn run_combat_animations(
             ));
             continue;
         }
-        if matches!(impact.weapon, Weapon::Solar | Weapon::Siege) {
+        if matches!(
+            impact.weapon,
+            Weapon::Solar | Weapon::Siege | Weapon::FaunaGravity | Weapon::FaunaFire
+        ) {
             painter.ring(
                 impact.destination,
                 impact.size * 2.0,

@@ -17,6 +17,7 @@ use crate::core::energy::EnergyGrid;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Garrison, Planet};
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
 
@@ -33,8 +34,12 @@ pub const BOMBING_HIT_CHANCE: f32 = 0.25;
 pub const MAX_BOMBING_LEVELS_PER_BUILDING: usize = 3;
 
 /// Unit statistics are immutable; build the rapid-fire tables once instead of once per shot.
-static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> =
-    LazyLock::new(|| Unit::iter().map(|unit| (unit, unit.rapid_fire())).collect());
+static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> = LazyLock::new(|| {
+    Unit::iter()
+        .chain(SpaceFauna::iter().map(Unit::Fauna))
+        .map(|unit| (unit, unit.rapid_fire()))
+        .collect()
+});
 
 #[derive(Component, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

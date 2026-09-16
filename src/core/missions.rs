@@ -233,6 +233,8 @@ pub struct Mission {
     pub deep_cover: bool,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: bool,
+    /// Whether this fleet has already fought space fauna during its current mission.
+    pub fauna_encountered: bool,
     /// Append-only human-readable mission history.
     pub logs: String,
     /// Shared-assault identity and timing when this is one contingent of a joint mission.
@@ -396,6 +398,7 @@ impl Mission {
             bombing,
             combat_probes,
             jump_gate,
+            fauna_encountered: false,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
             deep_cover: false,
             joint_attack: None,
@@ -784,6 +787,7 @@ impl Mission {
         }
 
         self.combat_probes = other.combat_probes || self.combat_probes;
+        self.fauna_encountered |= other.fauna_encountered;
 
         self.logs.push_str(
             format!("\n- Merged with other mission with objective {}.", other.objective.to_name())

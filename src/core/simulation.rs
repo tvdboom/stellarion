@@ -33,6 +33,7 @@ use crate::core::trading::{
     TradeAgreement, TRADE_RESOURCES_PER_LEVEL,
 };
 use crate::core::units::buildings::{Building, FleetWithdrawal};
+use crate::core::units::fauna::encounter_formation;
 use crate::core::units::operations::{mine_building, MineMode, SenatePolicy, SpaceDockMode};
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
@@ -57,6 +58,9 @@ const NO_UNIQUE_MISSION_ID: &str = "no unique mission identifier is available";
 /// Supported per-player planet ownership percentages shown by match setup.
 pub const COLONIZABLE_PERCENT_OPTIONS: [usize; 3] = [25, 35, 50];
 
+/// Supported per-travel-turn space-fauna encounter percentages.
+pub const SPACE_FAUNA_PERCENT_OPTIONS: [usize; 3] = [0, 15, 30];
+
 /// Gameplay settings that affect deterministic state transitions.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +71,8 @@ pub struct GameRules {
     pub colonizable_percent: usize,
     /// Number of moons as a percentage of non-moon planets.
     pub moons_percent: usize,
+    /// Chance that an eligible in-flight mission meets fauna on a travel turn.
+    pub space_fauna_percent: usize,
     /// Number of generated player slots in this snapshot.
     pub player_count: u8,
     /// Allows the debug-only local practice flow to remain active without a victory condition.
@@ -97,6 +103,11 @@ impl GameRules {
         if self.moons_percent > 100 {
             return Err(GameError::InvalidSettings("moons_percent must be in 0..=100".to_string()));
         }
+        if !SPACE_FAUNA_PERCENT_OPTIONS.contains(&self.space_fauna_percent) {
+            return Err(GameError::InvalidSettings(
+                "space_fauna_percent must be 0, 15, or 30".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -108,6 +119,7 @@ impl Default for GameRules {
             planets_per_player: 10,
             colonizable_percent: 25,
             moons_percent: 30,
+            space_fauna_percent: 15,
             player_count: 2,
             practice_mode: false,
         }
@@ -1871,6 +1883,7 @@ fn apply_testing_boost(model: &mut GameModel, player_id: PlayerId) -> Result<(),
                 Unit::Defense(crate::core::units::defense::Defense::SpaceDock) => *amount = 1,
                 Unit::Building(_) => *amount = Building::MAX_LEVEL,
                 Unit::Ship(_) | Unit::Defense(_) => *amount = amount.saturating_add(3),
+                Unit::Fauna(_) => {},
             }
         }
     }
@@ -2773,6 +2786,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let mut used_mission_ids = model.missions.iter().map(|mission| mission.id).collect();
 
     check_missions(model, turn)?;
+    resolve_space_fauna_encounters(model, turn, &mut rng);
     recall_unpermitted_protecting_fleets(
         model,
         turn,
@@ -3309,6 +3323,120 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         }
     }
     Ok(())
+}
+
+/// Rolls and resolves at most one fauna encounter for each eligible in-flight mission.
+///
+/// Launch and arrival turns are deliberately excluded. A mission must have completed at least
+/// one movement step and still be more than one turn from its destination. This also makes every
+/// one-turn mission immune, as promised by the match setting.
+fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
+    model: &mut GameModel,
+    turn: usize,
+    rng: &mut R,
+) {
+    let chance = model.rules.space_fauna_percent;
+    if chance == 0 {
+        return;
+    }
+
+    let mut eligible = model
+        .missions
+        .iter()
+        .filter(|mission| {
+            !mission.fauna_encountered
+                && mission.travel_turns > 0
+                && mission.turns_to_destination(&model.map) > 1
+                && mission.army.has_army()
+        })
+        .map(|mission| mission.id)
+        .collect::<Vec<_>>();
+    eligible.sort_unstable();
+
+    for mission_id in eligible {
+        if rng.random_range(0..100) >= chance {
+            continue;
+        }
+        let Some(index) = model.missions.iter().position(|mission| mission.id == mission_id) else {
+            continue;
+        };
+        let mut original = model.missions[index].clone();
+        original.fauna_encountered = true;
+
+        let (formation_name, fauna_army) = encounter_formation(turn, rng);
+        let mut fauna_site = model.map.get(original.destination).clone();
+        fauna_site.name.clone_from(&formation_name);
+        fauna_site.position = original.position;
+        fauna_site.resources = Resources::default();
+        fauna_site.operations = Default::default();
+        fauna_site.terraformer_focus = None;
+        fauna_site.command_relay_active = true;
+        fauna_site.shield_overload = ShieldOverloadState::Ready;
+        fauna_site.fleet_withdrawal = FleetWithdrawal::Off;
+        fauna_site.is_destroyed = false;
+        fauna_site.owned = None;
+        // A temporary controller lets the shared resolver retain neutral survivors. It is
+        // removed from the persisted report immediately after resolution.
+        fauna_site.controlled = Some(0);
+        fauna_site.army = fauna_army.into();
+        fauna_site.protection_permissions.clear();
+        fauna_site.buy.clear();
+        fauna_site.surface_build_order = [None; 4];
+
+        let mut battle_mission = original.clone();
+        battle_mission.objective = Icon::Attack;
+        battle_mission.protected_player = None;
+        battle_mission.return_objective = None;
+        battle_mission.bombing = BombingRaid::None;
+        battle_mission.deep_cover = false;
+        // A coordinated assault meets fauna one travelling contingent at a time.
+        battle_mission.joint_attack = None;
+
+        let mut report = resolve_combat_with_retreat_with_rng(
+            turn,
+            &battle_mission,
+            &fauna_site,
+            EnergyGrid {
+                supply: 1,
+                demand: 1,
+            },
+            None,
+            rng,
+        );
+        report.mission = original.clone();
+        report.planet.owned = None;
+        report.planet.controlled = None;
+        report.destination_owned = None;
+        report.destination_controlled = None;
+        if let Some(combat) = &mut report.combat_report {
+            for unit in combat.rounds.iter_mut().flat_map(|round| &mut round.defender) {
+                unit.owner = None;
+            }
+        }
+
+        let player_survived = report.surviving_attacker.has_army();
+        let outcome = if !player_survived {
+            "was destroyed"
+        } else if report.surviving_defender.has_army() {
+            "survived after the creatures withdrew"
+        } else {
+            "defeated the creatures"
+        };
+        report.mission.logs.push_str(&format!(
+            "\n- ({turn}) Encountered {formation_name} in deep space and {outcome}."
+        ));
+
+        if let Some(player) = model.players.iter_mut().find(|player| player.id == original.owner) {
+            player.push_report(report.clone());
+        }
+        if player_survived {
+            original.army = report.surviving_attacker;
+            original.logs = report.mission.logs;
+            model.missions[index] = original;
+        } else {
+            model.missions.remove(index);
+        }
+    }
 }
 
 /// Deducts a due loan only when its complete fixed bundle is available. An unaffordable loan

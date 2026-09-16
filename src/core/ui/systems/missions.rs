@@ -2521,8 +2521,6 @@ fn draw_mission_reports(
                 ui.add_space(MISSION_REPORT_LIST_TOP_PADDING);
 
                 for report in reports.iter().rev() {
-                    let destination = map.get(report.mission.destination);
-
                     let (rect, mut response) =
                         ui.allocate_exact_size([160., 50.].into(), Sense::click());
 
@@ -2558,7 +2556,10 @@ fn draw_mission_reports(
                                 ui.small(report.turn.to_string());
                             });
 
-                            let resp = ui.add_image(images.get(destination.image()), [40.; 2]);
+                            let resp = ui.add_image(
+                                images.get(combat_selection_planet_image(report)),
+                                [40.; 2],
+                            );
 
                             if report.combat_report.is_some() {
                                 let size = [20.; 2];
@@ -2697,13 +2698,17 @@ fn draw_mission_reports(
                     });
 
                     let resp3 = ui.cell(100., |ui| {
-                        ui.small(&destination.name)
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
+                        ui.small(if report.is_space_fauna_encounter() {
+                            &report.planet.name
+                        } else {
+                            &destination.name
+                        })
+                        .interact(Sense::click())
+                        .on_hover_cursor(CursorIcon::PointingHand)
                     });
 
                     let resp4 = ui.cell(70., |ui| {
-                        ui.add_image(images.get(destination.image()), [60.; 2])
+                        ui.add_image(images.get(combat_selection_planet_image(report)), [60.; 2])
                             .interact(Sense::click())
                             .on_hover_cursor(CursorIcon::PointingHand)
                     });
@@ -2712,15 +2717,17 @@ fn draw_mission_reports(
                         ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
                     }
 
-                    handle_mission_planet_link(
-                        &resp3,
-                        &resp4,
-                        destination,
-                        &mut changed_hover,
-                        state,
-                        map,
-                        player,
-                    );
+                    if !report.is_space_fauna_encounter() {
+                        handle_mission_planet_link(
+                            &resp3,
+                            &resp4,
+                            destination,
+                            &mut changed_hover,
+                            state,
+                            map,
+                            player,
+                        );
+                    }
 
                     // If not hovering anything, reset all hover selections
                     if is_hovered && !changed_hover {
@@ -2775,7 +2782,16 @@ fn draw_mission_reports(
 
                         let destination = map.get(report.mission.destination);
 
-                        if !report.planet.army.has_army() {
+                        if report.is_space_fauna_encounter() {
+                            draw_army_grid(
+                                ui,
+                                "defender_fauna",
+                                &SpaceFauna::iter().map(Unit::Fauna).collect::<Vec<_>>(),
+                                report,
+                                player,
+                                images,
+                            );
+                        } else if !report.planet.army.has_army() {
                             ui.label(format!(
                                 "Empty {}.",
                                 if destination.is_moon() {

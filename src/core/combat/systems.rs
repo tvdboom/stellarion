@@ -17,7 +17,7 @@ pub use crate::core::combat::effects::{
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
 use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
 use crate::core::combat::report::{
-    combat_strength_ranges, CombatReport, MissionReport, RoundReport, Side,
+    combat_fleet_strength, combat_strength_ranges, CombatReport, MissionReport, RoundReport, Side,
 };
 use crate::core::combat::resolution::ShotReport;
 use crate::core::constants::{
@@ -39,6 +39,7 @@ use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{UiCmp, UiState};
+use crate::core::units::fauna::{FaunaAttack, SpaceFauna};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Combat, Unit};
 use crate::multiplayer::client::MultiplayerSession;
@@ -726,9 +727,26 @@ pub fn setup_combat(
         return;
     };
 
+    let background = report
+        .planet
+        .army
+        .combined()
+        .iter()
+        .find_map(|(unit, count)| match unit {
+            Unit::Fauna(fauna) if *count > 0 => Some(match fauna.attack() {
+                FaunaAttack::SonicPulse | FaunaAttack::Lightning => "fauna combat blue",
+                FaunaAttack::BioPlasma | FaunaAttack::VoidLance | FaunaAttack::GravityPulse => {
+                    "fauna combat violet"
+                },
+                FaunaAttack::StellarFire => "fauna combat amber",
+            }),
+            _ => None,
+        })
+        .map_or_else(|| format!("{} large", destination.kind.to_lowername()), str::to_owned);
+
     commands.spawn((
         Sprite {
-            image: assets.image(format!("{} large", destination.kind.to_lowername())),
+            image: assets.image(background),
             custom_size: Some(Vec2::new(width, height)),
             ..default()
         },
@@ -932,20 +950,28 @@ pub fn setup_combat(
             )
         })
         .collect::<Vec<_>>();
-    let defenders = report
-        .defender_players()
-        .into_iter()
-        .map(|id| {
-            (
-                session
-                    .player_name(id)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Player {id}")),
-                session.player_color(id).color(),
-                report.participant_fleet_strength(&Side::Defender, id),
-            )
-        })
-        .collect::<Vec<_>>();
+    let defenders = if report.is_space_fauna_encounter() {
+        vec![(
+            report.planet.name.clone(),
+            Color::srgb_u8(218, 157, 75),
+            combat_fleet_strength(&report.planet.army.combined()),
+        )]
+    } else {
+        report
+            .defender_players()
+            .into_iter()
+            .map(|id| {
+                (
+                    session
+                        .player_name(id)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("Player {id}")),
+                    session.player_color(id).color(),
+                    report.participant_fleet_strength(&Side::Defender, id),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
 
     spawn_combat_identity(
         &mut commands,
@@ -959,7 +985,11 @@ pub fn setup_combat(
     );
     spawn_combat_identity(
         &mut commands,
-        "Defender",
+        if report.is_space_fauna_encounter() {
+            "Space Fauna"
+        } else {
+            "Defender"
+        },
         &defenders,
         defend_c,
         None,
@@ -1007,6 +1037,7 @@ pub fn setup_combat(
         Unit::ships()
             .into_iter()
             .chain(vec![Unit::space_dock()])
+            .chain(SpaceFauna::iter().map(Unit::Fauna))
             .filter_map(|u| {
                 let amount = defending_army.amount(&u);
                 (u != Unit::colony_ship() && amount > 0).then_some((u, amount))

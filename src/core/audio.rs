@@ -44,6 +44,8 @@ impl SoundEffect {
             Unit::Building(_) => Self::BuildingQueued,
             Unit::Ship(_) => Self::ShipPurchased,
             Unit::Defense(_) => Self::DefensePurchased,
+            // Fauna are never purchasable; this keeps presentation total for external values.
+            Unit::Fauna(_) => Self::ShipPurchased,
         }
     }
 

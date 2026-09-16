@@ -352,6 +352,7 @@ declare
     v_planets_per_player integer;
     v_colonizable_percent integer;
     v_moons_percent integer;
+    v_space_fauna_percent integer;
     v_planets jsonb;
     v_missions jsonb;
     v_orbital_strikes jsonb;
@@ -382,6 +383,7 @@ begin
     v_planets_per_player := (p_persisted #>> '{state,rules,planets_per_player}')::integer;
     v_colonizable_percent := (p_persisted #>> '{state,rules,colonizable_percent}')::integer;
     v_moons_percent := (p_persisted #>> '{state,rules,moons_percent}')::integer;
+    v_space_fauna_percent := (p_persisted #>> '{state,rules,space_fauna_percent}')::integer;
     v_planets := p_persisted #> '{state,map,planets}';
     v_missions := p_persisted #> '{state,missions}';
     v_orbital_strikes := p_persisted #> '{state,orbital_strikes}';
@@ -415,13 +417,14 @@ begin
     end if;
     if jsonb_typeof(p_persisted #> '{state,rules}') is distinct from 'object'
        or not ((p_persisted #> '{state,rules}') ?&
-           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'player_count', 'practice_mode'])
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'player_count', 'practice_mode'])
        or (p_persisted #> '{state,rules}') -
-           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'player_count', 'practice_mode'] <> '{}'::jsonb
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'player_count', 'practice_mode'] <> '{}'::jsonb
        or p_persisted #> '{state,rules,practice_mode}' is distinct from 'false'::jsonb
        or v_planets_per_player is null or v_planets_per_player not between 5 and 20
        or v_colonizable_percent is null or v_colonizable_percent not in (25, 35, 50)
-       or v_moons_percent is null or v_moons_percent not between 0 and 100 then
+       or v_moons_percent is null or v_moons_percent not between 0 and 100
+       or v_space_fauna_percent is null or v_space_fauna_percent not in (0, 15, 30) then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:rules';
     end if;
     if jsonb_typeof(v_players) is distinct from 'array' then

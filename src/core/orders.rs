@@ -200,6 +200,7 @@ pub fn purchase_limit(
                 }
             }
         },
+        Unit::Fauna(_) => return Err(OrderError::Unit),
     };
     let affordable = (player.resources / unit.price()).min();
     if affordable == 0 {
