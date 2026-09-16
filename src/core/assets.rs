@@ -411,6 +411,29 @@ impl WorldAssets {
                 "solar roc",
                 "elder star dragon",
                 "star dragon wyrmling",
+                "nullstar behemoth",
+            ],
+        );
+        self.load_gameplay_images(
+            server,
+            "fauna-map",
+            &[
+                "map aether ray",
+                "map ion wisp",
+                "map void manta",
+                "map void manta calf",
+                "map crystal leviathan",
+                "map crystal shardling",
+                "map gravemaw",
+                "map star kraken",
+                "map star kraken spawn",
+                "map nebula grazer",
+                "map nebula grazer calf",
+                "map rift serpent",
+                "map solar roc",
+                "map elder star dragon",
+                "map star dragon wyrmling",
+                "map nullstar behemoth",
             ],
         );
         self.load_gameplay_images(

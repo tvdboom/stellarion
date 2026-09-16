@@ -23,6 +23,8 @@ pub enum FaunaAttack {
     VoidLance,
     /// A broad stream of stellar fire.
     StellarFire,
+    /// A slow-charging white-violet beam that annihilates all but the heaviest ships.
+    ExtinctionRay,
 }
 
 #[derive(
@@ -60,6 +62,8 @@ pub enum SpaceFauna {
     ElderStarDragon,
     /// Dangerous juvenile of the elder star dragon's vacuum-adapted lineage.
     StarDragonWyrmling,
+    /// Colossal solitary hunter that collapses prey with a focused null-energy beam.
+    NullstarBehemoth,
 }
 
 impl SpaceFauna {
@@ -77,6 +81,7 @@ impl SpaceFauna {
             Self::StarKraken | Self::RiftSerpent => 4,
             Self::SolarRoc => 5,
             Self::ElderStarDragon => 6,
+            Self::NullstarBehemoth => 7,
         }
     }
 
@@ -97,6 +102,7 @@ impl SpaceFauna {
             Self::SolarRoc | Self::ElderStarDragon | Self::StarDragonWyrmling => {
                 FaunaAttack::StellarFire
             },
+            Self::NullstarBehemoth => FaunaAttack::ExtinctionRay,
         }
     }
 }
@@ -149,6 +155,9 @@ impl Description for SpaceFauna {
             Self::StarDragonWyrmling => {
                 "A juvenile vacuum leviathan whose solar sails have not fully opened. It follows an elder into battle and vents focused stellar heat from an unshielded armored body."
             },
+            Self::NullstarBehemoth => {
+                "A moon-sized solitary hunter sheathed in obsidian plates. Its maw compresses null energy into an Extinction Ray that destroys any conventional ship in one hit; even a War Sun can endure only the first strike."
+            },
         }
     }
 }
@@ -171,6 +180,7 @@ impl Combat for SpaceFauna {
             Self::SolarRoc => 1_550,
             Self::ElderStarDragon => 3_200,
             Self::StarDragonWyrmling => 620,
+            Self::NullstarBehemoth => 6_000,
         }
     }
 
@@ -180,50 +190,167 @@ impl Combat for SpaceFauna {
 
     fn damage(&self) -> usize {
         match self {
-            Self::AetherRay => 12,
-            Self::IonWisp => 22,
-            Self::VoidManta => 38,
-            Self::VoidMantaCalf => 18,
-            Self::CrystalLeviathan => 58,
-            Self::CrystalShardling => 24,
-            Self::Gravemaw => 72,
-            Self::StarKraken => 98,
-            Self::StarKrakenSpawn => 30,
-            Self::NebulaGrazer => 48,
-            Self::NebulaGrazerCalf => 20,
-            Self::RiftSerpent => 118,
-            Self::SolarRoc => 155,
-            Self::ElderStarDragon => 235,
-            Self::StarDragonWyrmling => 78,
+            Self::AetherRay => 25,
+            Self::IonWisp => 40,
+            Self::VoidManta => 70,
+            Self::VoidMantaCalf => 35,
+            Self::CrystalLeviathan => 110,
+            Self::CrystalShardling => 50,
+            Self::Gravemaw => 160,
+            Self::StarKraken => 220,
+            Self::StarKrakenSpawn => 65,
+            Self::NebulaGrazer => 100,
+            Self::NebulaGrazerCalf => 45,
+            Self::RiftSerpent => 260,
+            Self::SolarRoc => 350,
+            Self::ElderStarDragon => 500,
+            Self::StarDragonWyrmling => 180,
+            Self::NullstarBehemoth => 800,
         }
     }
 
     fn rapid_fire(&self) -> HashMap<Unit, usize> {
-        use crate::core::units::ships::Ship;
+        HashMap::new()
+    }
+}
 
-        match self {
-            Self::AetherRay
-            | Self::IonWisp
-            | Self::VoidMantaCalf
-            | Self::CrystalShardling
-            | Self::StarKrakenSpawn
-            | Self::NebulaGrazer
-            | Self::NebulaGrazerCalf => HashMap::new(),
-            Self::VoidManta | Self::CrystalLeviathan | Self::Gravemaw => {
-                HashMap::from([(Unit::Ship(Ship::Probe), 70), (Unit::Ship(Ship::LightFighter), 35)])
-            },
-            Self::StarKraken | Self::RiftSerpent => HashMap::from([
-                (Unit::Ship(Ship::Probe), 80),
-                (Unit::Ship(Ship::LightFighter), 55),
-                (Unit::Ship(Ship::HeavyFighter), 35),
-            ]),
-            Self::SolarRoc | Self::ElderStarDragon | Self::StarDragonWyrmling => HashMap::from([
-                (Unit::Ship(Ship::Probe), 80),
-                (Unit::Ship(Ship::LightFighter), 70),
-                (Unit::Ship(Ship::HeavyFighter), 55),
-                (Unit::Ship(Ship::Destroyer), 35),
-            ]),
+/// Relative formation cost based on the larger of a creature's hull and damage compared with a
+/// Light Fighter. Apex creatures consume most of the capped budget so late encounters can include
+/// their related fauna without multiplying the apex itself.
+pub(crate) const fn encounter_threat(creature: SpaceFauna) -> usize {
+    use SpaceFauna::*;
+
+    match creature {
+        AetherRay => 2,
+        IonWisp | VoidMantaCalf => 3,
+        CrystalShardling | StarKrakenSpawn => 4,
+        NebulaGrazerCalf => 5,
+        VoidManta => 6,
+        CrystalLeviathan => 10,
+        NebulaGrazer => 10,
+        StarDragonWyrmling => 10,
+        Gravemaw => 14,
+        StarKraken => 18,
+        RiftSerpent => 22,
+        SolarRoc | ElderStarDragon => 30,
+        NullstarBehemoth => 50,
+    }
+}
+
+/// Returns the encounter threat budget for a turn.
+///
+/// The opening four turns deliberately stay gentle. Strength rises quickly through turn ten,
+/// reaches its former late-game level at turn fifty, then continues climbing gradually to a higher
+/// permanent cap at turn one hundred. Turn zero is treated as turn one so setup and first-turn
+/// previews use the same opening formation strength.
+pub(crate) const fn encounter_threat_budget(turn: usize) -> usize {
+    let turn = if turn == 0 {
+        1
+    } else {
+        turn
+    };
+    let uncapped = if turn <= 4 {
+        turn.saturating_add(1)
+    } else if turn <= 10 {
+        5_usize.saturating_add((turn - 4).saturating_mul(3))
+    } else if turn <= 50 {
+        23_usize.saturating_add((turn - 10).saturating_mul(27) / 40)
+    } else {
+        50_usize.saturating_add((turn - 50).saturating_mul(20) / 50)
+    };
+    if uncapped > 70 {
+        70
+    } else {
+        uncapped
+    }
+}
+
+fn encounter_name(reinforcement_pattern: &[SpaceFauna], army: &Army) -> String {
+    use SpaceFauna::*;
+
+    let total = army.values().copied().sum::<usize>();
+    let mut present = Vec::new();
+    for creature in reinforcement_pattern {
+        if army.contains_key(&Unit::Fauna(*creature)) && !present.contains(creature) {
+            present.push(*creature);
         }
+    }
+    for unit in army.keys() {
+        let Unit::Fauna(creature) = unit else {
+            continue;
+        };
+        if !present.contains(creature) {
+            present.push(*creature);
+        }
+    }
+
+    let Some(primary) = present.first().copied() else {
+        return "Deep-Space Encounter".to_string();
+    };
+    let primary_name = Unit::Fauna(primary).to_name();
+    if total == 1 {
+        return format!("Lone {primary_name}");
+    }
+    if total == 2 {
+        if present.len() == 1 {
+            return format!("{primary_name} Pair");
+        }
+        return format!("{primary_name} and {}", Unit::Fauna(present[1]).to_name());
+    }
+
+    let amount = |creature| army.get(&Unit::Fauna(creature)).copied().unwrap_or(0);
+    let related = |adult, young| amount(adult).saturating_add(amount(young));
+    match primary {
+        AetherRay => {
+            if amount(AetherRay) == total {
+                if total <= 4 {
+                    "Aether Ray Shoal".to_string()
+                } else {
+                    "Aether Ray Swarm".to_string()
+                }
+            } else {
+                "Aether Rays and Companions".to_string()
+            }
+        },
+        IonWisp => {
+            if amount(IonWisp) == total {
+                if total <= 4 {
+                    "Ion Wisp Drift".to_string()
+                } else {
+                    "Ion Storm".to_string()
+                }
+            } else {
+                "Ion Wisps and Companions".to_string()
+            }
+        },
+        VoidManta | VoidMantaCalf if related(VoidManta, VoidMantaCalf) >= 2 => {
+            "Void Manta Nursery".to_string()
+        },
+        CrystalLeviathan | CrystalShardling if related(CrystalLeviathan, CrystalShardling) >= 2 => {
+            "Crystal Leviathan Cluster".to_string()
+        },
+        StarKraken | StarKrakenSpawn if related(StarKraken, StarKrakenSpawn) >= 2 => {
+            "Star Kraken Brood".to_string()
+        },
+        NebulaGrazer | NebulaGrazerCalf if related(NebulaGrazer, NebulaGrazerCalf) >= 2 => {
+            let grazers = related(NebulaGrazer, NebulaGrazerCalf);
+            if grazers <= 3 {
+                "Nebula Grazer Family".to_string()
+            } else if grazers <= 6 {
+                "Nebula Grazer Herd".to_string()
+            } else {
+                "Nebula Grazer Migration".to_string()
+            }
+        },
+        ElderStarDragon | StarDragonWyrmling
+            if related(ElderStarDragon, StarDragonWyrmling) >= 2 =>
+        {
+            "Star Dragon Brood".to_string()
+        },
+        Gravemaw if amount(Gravemaw) >= 2 => "Gravemaw Hunting Pack".to_string(),
+        RiftSerpent if amount(RiftSerpent) >= 2 => "Rift Serpent Procession".to_string(),
+        SolarRoc if amount(SolarRoc) >= 2 => "Solar Roc Convocation".to_string(),
+        _ => format!("{primary_name} and Companions"),
     }
 }
 
@@ -231,125 +358,83 @@ impl Combat for SpaceFauna {
 pub(crate) fn encounter_formation<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> (String, Army) {
     use SpaceFauna::*;
 
+    let target = encounter_threat_budget(turn);
+    let candidates: &[&[SpaceFauna]] = match turn {
+        0..=4 => &[&[AetherRay], &[IonWisp, AetherRay]],
+        5..=6 => &[&[AetherRay], &[IonWisp, AetherRay], &[VoidManta, VoidMantaCalf, AetherRay]],
+        7..=11 => &[
+            &[AetherRay],
+            &[IonWisp, AetherRay],
+            &[VoidManta, VoidMantaCalf, AetherRay],
+            &[NebulaGrazer, NebulaGrazerCalf, AetherRay],
+            &[CrystalLeviathan, CrystalShardling, AetherRay],
+            &[StarKraken, StarKrakenSpawn, AetherRay],
+        ],
+        12..=20 => &[
+            &[CrystalLeviathan, CrystalShardling, AetherRay],
+            &[Gravemaw, AetherRay],
+            &[StarKraken, StarKrakenSpawn, AetherRay],
+            &[RiftSerpent, CrystalShardling, AetherRay],
+            &[NebulaGrazer, NebulaGrazerCalf, AetherRay],
+            &[StarDragonWyrmling, AetherRay],
+        ],
+        21..=49 => &[
+            &[SolarRoc, IonWisp, AetherRay],
+            &[ElderStarDragon, StarDragonWyrmling, StarDragonWyrmling, AetherRay],
+            &[StarKraken, StarKrakenSpawn, AetherRay],
+            &[RiftSerpent, CrystalLeviathan, AetherRay],
+            &[Gravemaw, VoidManta, VoidMantaCalf, AetherRay],
+            &[NebulaGrazer, NebulaGrazerCalf, AetherRay],
+        ],
+        _ => &[
+            &[NullstarBehemoth],
+            &[SolarRoc, IonWisp, AetherRay],
+            &[ElderStarDragon, StarDragonWyrmling, StarDragonWyrmling, AetherRay],
+            &[StarKraken, StarKrakenSpawn, AetherRay],
+            &[RiftSerpent, CrystalLeviathan, AetherRay],
+            &[Gravemaw, VoidManta, VoidMantaCalf, AetherRay],
+            &[NebulaGrazer, NebulaGrazerCalf, AetherRay],
+        ],
+    };
+
+    let eligible = candidates
+        .iter()
+        .copied()
+        .filter(|pattern| encounter_threat(pattern[0]) <= target)
+        .collect::<Vec<_>>();
+    let selected = rng.random_range(0..eligible.len());
+    let reinforcement_pattern = eligible[selected];
+    if reinforcement_pattern == [NullstarBehemoth] {
+        return (
+            "Lone Nullstar Behemoth".to_string(),
+            Army::from([(Unit::Fauna(NullstarBehemoth), 1)]),
+        );
+    }
+    let mut threat = 0_usize;
     let mut army = Army::new();
-    let mut add = |kind, count| {
-        army.insert(Unit::Fauna(kind), count);
-    };
+    while threat < target {
+        let threat_before_reinforcements = threat;
+        for creature in reinforcement_pattern {
+            let creature_threat = encounter_threat(*creature);
+            let remaining = target - threat;
+            if creature_threat > remaining || remaining.saturating_sub(creature_threat) == 1 {
+                continue;
+            }
+            let unit = Unit::Fauna(*creature);
+            army.entry(unit).and_modify(|count| *count = count.saturating_add(1)).or_insert(1);
+            threat = threat.saturating_add(creature_threat);
+            if threat >= target {
+                break;
+            }
+        }
+        if threat == threat_before_reinforcements {
+            debug_assert_eq!(target - threat, 3);
+            army.entry(Unit::Fauna(IonWisp))
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
+            threat = threat.saturating_add(encounter_threat(IonWisp));
+        }
+    }
 
-    let name = match turn {
-        0..=5 => match rng.random_range(0..4) {
-            0 => {
-                add(AetherRay, rng.random_range(1..=3));
-                "Aether Ray Shoal"
-            },
-            1 => {
-                add(IonWisp, rng.random_range(1..=2));
-                "Ion Wisp Drift"
-            },
-            2 => {
-                add(VoidManta, 1);
-                "Lone Void Manta"
-            },
-            _ => {
-                add(VoidManta, 1);
-                add(VoidMantaCalf, 2);
-                "Void Manta Nursery"
-            },
-        },
-        6..=12 => match rng.random_range(0..6) {
-            0 => {
-                add(AetherRay, rng.random_range(3..=6));
-                "Aether Ray Shoal"
-            },
-            1 => {
-                add(IonWisp, rng.random_range(2..=4));
-                "Ion Storm"
-            },
-            2 => {
-                add(VoidManta, 1);
-                add(VoidMantaCalf, rng.random_range(2..=3));
-                "Void Manta Nursery"
-            },
-            3 => {
-                add(NebulaGrazer, 1);
-                add(NebulaGrazerCalf, rng.random_range(2..=3));
-                "Nebula Grazer Family"
-            },
-            4 => {
-                add(CrystalLeviathan, 1);
-                "Crystal Leviathan"
-            },
-            _ => {
-                add(CrystalLeviathan, 1);
-                add(CrystalShardling, 3);
-                "Crystal Leviathan Cluster"
-            },
-        },
-        13..=20 => match rng.random_range(0..6) {
-            0 => {
-                add(CrystalLeviathan, 1);
-                add(CrystalShardling, rng.random_range(3..=4));
-                "Crystal Leviathan Cluster"
-            },
-            1 => {
-                add(Gravemaw, 1);
-                add(AetherRay, rng.random_range(2..=4));
-                "Gravemaw Hunting Pack"
-            },
-            2 => {
-                add(StarKraken, 1);
-                add(StarKrakenSpawn, rng.random_range(3..=4));
-                "Star Kraken Brood"
-            },
-            3 => {
-                add(RiftSerpent, 1);
-                "Rift Serpent"
-            },
-            4 => {
-                add(NebulaGrazer, 1);
-                add(NebulaGrazerCalf, rng.random_range(3..=4));
-                "Nebula Grazer Migration"
-            },
-            _ => {
-                add(StarDragonWyrmling, 1);
-                "Rogue Star Dragon Wyrmling"
-            },
-        },
-        _ => match rng.random_range(0..6) {
-            0 => {
-                add(SolarRoc, 1);
-                add(IonWisp, 2);
-                "Solar Roc Aerie"
-            },
-            1 => {
-                add(ElderStarDragon, 1);
-                add(StarDragonWyrmling, 3);
-                "Star Dragon Brood"
-            },
-            2 => {
-                add(StarKraken, 1);
-                add(StarKrakenSpawn, 4);
-                "Star Kraken Brood"
-            },
-            3 => {
-                add(RiftSerpent, 1);
-                add(CrystalLeviathan, 2);
-                "Rift Serpent Procession"
-            },
-            4 => {
-                add(VoidManta, 1);
-                add(VoidMantaCalf, 3);
-                add(Gravemaw, 1);
-                "Void Manta Hunting Nursery"
-            },
-            _ => {
-                add(SolarRoc, 1);
-                add(NebulaGrazer, 1);
-                add(NebulaGrazerCalf, 3);
-                "Solar Roc Migration"
-            },
-        },
-    };
-
-    (name.to_string(), army)
+    (encounter_name(reinforcement_pattern, &army), army)
 }

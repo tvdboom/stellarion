@@ -680,6 +680,8 @@ fn missiles_use_a_slower_shallower_flight() {
 
     let impact = PendingImpact {
         target: Entity::PLACEHOLDER,
+        group_target: Entity::PLACEHOLDER,
+        individual_outcomes: Vec::new(),
         source: None,
         origin: Vec3::new(0., 200., 0.),
         destination: Vec3::ZERO,

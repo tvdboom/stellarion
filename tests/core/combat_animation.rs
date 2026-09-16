@@ -2,6 +2,7 @@
 
 use bevy::ecs::system::RunSystemOnce;
 use bevy_tweening::CycleCompletedEvent;
+use std::collections::BTreeSet;
 
 use super::*;
 use crate::core::combat::report::MissionReport;
@@ -165,6 +166,22 @@ fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
     };
     app.world_mut().run_system_once(setup_combat).unwrap();
 
+    let identity_nodes = app
+        .world_mut()
+        .query_filtered::<&Node, With<CombatIdentityCmp>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    assert_eq!(identity_nodes.len(), 2);
+    assert!(identity_nodes
+        .iter()
+        .all(|node| node.width == Val::Auto && node.min_width == Val::Px(220.0)));
+    assert!(app
+        .world_mut()
+        .query::<(&Text, &TextLayout)>()
+        .iter(app.world())
+        .filter(|(text, _)| text.as_str().contains("Player"))
+        .all(|(_, layout)| layout.linebreak == LineBreak::NoWrap));
+
     let segments = app
         .world_mut()
         .query_filtered::<(&Node, &BackgroundColor), With<CombatIdentityAccentSegmentCmp>>()
@@ -196,6 +213,283 @@ fn joint_attack_badge_keeps_every_count_in_order_and_fits_crowded_fleets() {
     assert_eq!(others, vec![(1, 99), (2, 99), (4, 99)]);
     let badge_width = combat_count_badge_width(UNIT_SIZE, count, &others);
     assert!(combat_count_font_size(badge_width, 1.0, count, &others) < COMBAT_COUNT_FONT_SIZE);
+}
+
+#[test]
+fn individual_formation_fits_sixty_ships_and_keeps_capital_ships_behind_fodder() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let destroyer = Unit::Ship(Ship::Destroyer);
+    let war_sun = Unit::Ship(Ship::WarSun);
+    let units = std::iter::repeat_n(fighter, 40)
+        .chain(std::iter::repeat_n(destroyer, 10))
+        .chain(std::iter::repeat_n(war_sun, 10))
+        .collect::<Vec<_>>();
+
+    let layout = individual_formation_layout(&units, 0.0, 1_280.0, 80.0, 300.0, true, UNIT_SIZE);
+
+    assert_eq!(layout.len(), 60);
+    for (position, size) in &layout {
+        assert!(position.x - size * 0.5 >= -640.1);
+        assert!(position.x + size * 0.5 <= 640.1);
+        assert!(position.y - size * 0.75 >= 79.9);
+        assert!(position.y + size * 0.5 <= 300.1);
+    }
+    let average_y = |unit| {
+        let positions = units
+            .iter()
+            .zip(&layout)
+            .filter_map(|(candidate, (position, _))| (*candidate == unit).then_some(position.y));
+        let positions = positions.collect::<Vec<_>>();
+        positions.iter().sum::<f32>() / positions.len() as f32
+    };
+    let average_size = |unit| {
+        let sizes = units
+            .iter()
+            .zip(&layout)
+            .filter_map(|(candidate, (_, size))| (*candidate == unit).then_some(*size));
+        let sizes = sizes.collect::<Vec<_>>();
+        sizes.iter().sum::<f32>() / sizes.len() as f32
+    };
+    assert!(average_y(war_sun) > average_y(destroyer));
+    assert!(average_y(destroyer) > average_y(fighter));
+    assert!(average_size(war_sun) > average_size(destroyer));
+    assert!(average_size(destroyer) > average_size(fighter));
+
+    let defender_layout =
+        individual_formation_layout(&units, 0.0, 1_280.0, -300.0, -80.0, false, UNIT_SIZE);
+    for (position, size) in &defender_layout {
+        assert!(position.y - size * 0.75 >= -300.1);
+        assert!(position.y + size * 0.5 <= -79.9);
+    }
+    let defender_average_y = |unit| {
+        let positions = units
+            .iter()
+            .zip(&defender_layout)
+            .filter_map(|(candidate, (position, _))| (*candidate == unit).then_some(position.y))
+            .collect::<Vec<_>>();
+        positions.iter().sum::<f32>() / positions.len() as f32
+    };
+    assert!(defender_average_y(war_sun) < defender_average_y(destroyer));
+    assert!(defender_average_y(destroyer) < defender_average_y(fighter));
+}
+
+#[test]
+fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
+    let mut app = App::new();
+    app.init_resource::<Settings>().init_resource::<Time>();
+    let unit = Unit::Ship(Ship::Destroyer);
+    let group = app
+        .world_mut()
+        .spawn((
+            Transform::default(),
+            Visibility::Inherited,
+            GroupedCombatUnitCmp,
+            CombatUnitCmp {
+                unit,
+                side: Side::Attacker,
+                fire: FireState::Idle,
+                shield: unit.shield(),
+                max_shield: unit.shield(),
+                hull: unit.hull(),
+                max_hull: unit.hull(),
+                outcome_visible: false,
+            },
+        ))
+        .id();
+    let individual = app
+        .world_mut()
+        .spawn((
+            Transform::default(),
+            Visibility::Hidden,
+            IndividualCombatUnitCmp {
+                id: Some(7),
+                owner: Some(1),
+                unit,
+                side: Side::Attacker,
+                group,
+                home: Vec3::new(100.0, 40.0, COMBAT_SHIP_Z),
+                display_size: 70.0,
+                transition_start: Vec3::ZERO,
+                shield: unit.shield(),
+                max_shield: unit.shield(),
+                hull: unit.hull(),
+                max_hull: unit.hull(),
+            },
+        ))
+        .id();
+    app.insert_resource(CombatFormationState::new(false));
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
+    app.world_mut().run_system_once(update_combat_formation).unwrap();
+    let midpoint = app.world().get::<Transform>(individual).unwrap().translation;
+    assert!(midpoint.x > 0.0 && midpoint.x < 100.0);
+    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Inherited);
+    assert_eq!(*app.world().get::<Visibility>(individual).unwrap(), Visibility::Inherited);
+
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
+    app.world_mut().run_system_once(update_combat_formation).unwrap();
+    assert_eq!(app.world().get::<Transform>(individual).unwrap().translation.x, 100.0);
+    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Hidden);
+
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = false;
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS));
+    app.world_mut().run_system_once(update_combat_formation).unwrap();
+    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Inherited);
+    assert_eq!(*app.world().get::<Visibility>(individual).unwrap(), Visibility::Hidden);
+    assert_eq!(app.world().get::<Transform>(individual).unwrap().translation, Vec3::ZERO);
+}
+
+#[test]
+fn individual_mode_spawns_one_visible_card_for_every_recorded_combatant() {
+    let report = report(5, 0, true, 61);
+    let round = report.combat_report.as_ref().unwrap().rounds[0].clone();
+    let expected = round.attacker.len() + round.defender.len();
+    let mut rng = DeterministicRngState::from_u64(61).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    let map = Map {
+        rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let cards = app
+        .world_mut()
+        .query::<(&Sprite, &Visibility, &IndividualCombatUnitCmp)>()
+        .iter(app.world())
+        .map(|(sprite, visibility, _)| (sprite.custom_size, *visibility))
+        .collect::<Vec<_>>();
+    assert_eq!(cards.len(), expected);
+    assert!(cards.iter().all(|(_, visibility)| *visibility == Visibility::Inherited));
+    assert!(cards
+        .iter()
+        .all(|(size, _)| { size.is_some_and(|size| size.x < UNIT_SIZE && size.x > 0.0) }));
+    assert!(app
+        .world_mut()
+        .query_filtered::<&Visibility, With<GroupedCombatUnitCmp>>()
+        .iter(app.world())
+        .all(|visibility| *visibility == Visibility::Hidden));
+}
+
+#[test]
+fn individual_fire_uses_each_shooter_and_updates_the_recorded_target() {
+    let report = report(5, 0, true, 67);
+    let round = report.combat_report.as_ref().unwrap().rounds[0].clone();
+    let mut app = playback_app(report.clone(), 0, CombatState::Fire);
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    app.insert_resource(CombatFormationState::new(true));
+
+    let bomber = Unit::Ship(Ship::Bomber);
+    let gauss = Unit::Defense(Defense::GaussCannon);
+    let bomber_group = spawn_unit(
+        &mut app,
+        bomber,
+        round.attacker.iter().filter(|unit| unit.unit == bomber).count(),
+        Side::Attacker,
+        FireState::Firing,
+    );
+    let gauss_count = round.defender.iter().filter(|unit| unit.unit == gauss).count();
+    let gauss_group = spawn_unit(&mut app, gauss, gauss_count, Side::Defender, FireState::Idle);
+
+    for (index, combatant) in round.attacker.iter().filter(|unit| unit.unit == bomber).enumerate() {
+        app.world_mut().spawn((
+            Sprite {
+                custom_size: Some(Vec2::splat(60.0)),
+                ..default()
+            },
+            Transform::from_xyz(-250.0 + index as f32 * 80.0, 180.0, COMBAT_SHIP_Z),
+            IndividualCombatUnitCmp {
+                id: Some(combatant.id),
+                owner: combatant.owner,
+                unit: bomber,
+                side: Side::Attacker,
+                group: bomber_group,
+                home: Vec3::ZERO,
+                display_size: 60.0,
+                transition_start: Vec3::ZERO,
+                shield: report.unit_shield(bomber, &Side::Attacker),
+                max_shield: report.unit_shield(bomber, &Side::Attacker),
+                hull: report.unit_hull(bomber, &Side::Attacker),
+                max_hull: report.unit_hull(bomber, &Side::Attacker),
+            },
+        ));
+    }
+    for (index, combatant) in round.defender.iter().filter(|unit| unit.unit == gauss).enumerate() {
+        app.world_mut().spawn((
+            Sprite {
+                custom_size: Some(Vec2::splat(54.0)),
+                ..default()
+            },
+            Transform::from_xyz(-300.0 + index as f32 * 55.0, -120.0, COMBAT_SHIP_Z),
+            IndividualCombatUnitCmp {
+                id: Some(combatant.id),
+                owner: combatant.owner,
+                unit: gauss,
+                side: Side::Defender,
+                group: gauss_group,
+                home: Vec3::ZERO,
+                display_size: 54.0,
+                transition_start: Vec3::ZERO,
+                shield: report.unit_shield(gauss, &Side::Defender),
+                max_shield: report.unit_shield(gauss, &Side::Defender),
+                hull: report.unit_hull(gauss, &Side::Defender),
+                max_hull: report.unit_hull(gauss, &Side::Defender),
+            },
+        ));
+    }
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    let messages =
+        app.world_mut().resource_mut::<Messages<SpawnShotMsg>>().drain().collect::<Vec<_>>();
+    assert!(!messages.is_empty());
+    let source_ids = messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .source
+                .and_then(|(entity, _, _)| app.world().get::<IndividualCombatUnitCmp>(entity))
+                .and_then(|unit| unit.id)
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_sources = round
+        .attacker
+        .iter()
+        .filter(|unit| unit.unit == bomber && unit.shots.iter().any(|shot| !shot.is_bombing()))
+        .map(|unit| unit.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(source_ids, expected_sources);
+    assert!(messages.iter().all(|message| message.shot.target_id.is_some()));
+
+    for message in messages {
+        app.world_mut().resource_mut::<Messages<SpawnShotMsg>>().write(message);
+    }
+    app.add_systems(Update, run_combat_animations);
+    app.update();
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(5));
+    app.update();
+
+    for (_, individual) in app
+        .world_mut()
+        .query::<(Entity, &IndividualCombatUnitCmp)>()
+        .iter(app.world())
+        .filter(|(_, unit)| unit.side == Side::Defender && unit.unit == gauss)
+    {
+        let recorded =
+            round.defender.iter().find(|record| Some(record.id) == individual.id).unwrap();
+        assert_eq!(individual.hull, recorded.hull);
+        assert_eq!(individual.shield, recorded.shield);
+    }
 }
 
 #[test]
@@ -651,6 +945,63 @@ fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
 }
 
 #[test]
+fn shieldless_fauna_put_their_hull_bar_directly_below_the_image() {
+    let fauna = Unit::Fauna(SpaceFauna::VoidManta);
+    let mut report = report(1, 0, true, 43);
+    report.planet.name = "Void Manta Nursery".into();
+    report.planet.army.clear();
+    report.planet.army.insert(fauna, 2);
+    let mut rng = DeterministicRngState::from_u64(43).next_rng();
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
+    let map = Map {
+        rect: Rect::new(-100., -100., 100., 100.),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let background = app
+        .world_mut()
+        .query_filtered::<&Sprite, (With<BackgroundImageCmp>, With<CombatCmp>)>()
+        .single(app.world())
+        .unwrap();
+    assert_eq!(background.color, SPACE_FAUNA_BACKGROUND_TINT);
+
+    assert!(app
+        .world_mut()
+        .query_filtered::<&BackgroundColor, With<CombatIdentityAccentSegmentCmp>>()
+        .iter(app.world())
+        .any(|color| color.0 == Color::srgb_u8(190, 198, 210)));
+
+    let card = app
+        .world_mut()
+        .query::<(Entity, &CombatUnitCmp)>()
+        .iter(app.world())
+        .find_map(|(entity, card)| (card.unit == fauna).then_some(entity))
+        .expect("fauna combat card");
+    let card_size = app.world().get::<Sprite>(card).unwrap().custom_size.unwrap().x;
+    let descendants = app
+        .world_mut()
+        .run_system_once(move |children: Query<&Children>| {
+            children.iter_descendants(card).collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert!(descendants.iter().all(|&entity| app.world().get::<ShieldCmp>(entity).is_none()));
+    assert!(descendants.iter().all(|&entity| app.world().get::<EmptyShieldCmp>(entity).is_none()));
+
+    let hull_fill = descendants
+        .iter()
+        .copied()
+        .find(|&entity| app.world().get::<HullCmp>(entity).is_some())
+        .expect("fauna hull fill");
+    let hull_frame = app.world().get::<ChildOf>(hull_fill).unwrap().parent();
+    let hull_y = app.world().get::<Transform>(hull_frame).unwrap().translation.y;
+    assert!((hull_y + card_size * 0.57).abs() < 0.01);
+}
+
+#[test]
 fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
     let mut report = report(5, 3, true, 11);
     for unit in Unit::ships().into_iter().filter(|unit| *unit != Unit::colony_ship()) {
@@ -974,6 +1325,62 @@ fn surviving_probes_play_one_flyaway_cue_when_their_retreat_begins() {
     app.world_mut().insert_resource(NextState::<CombatState>::Unchanged);
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert!(app.world().resource::<Messages<PlayAudioMsg>>().is_empty());
+}
+
+#[test]
+fn probes_do_not_fly_away_during_space_fauna_playback() {
+    let mut report = report(12, 5, true, 2);
+    assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
+    report.planet.army.insert(Unit::Fauna(crate::core::units::fauna::SpaceFauna::VoidManta), 1);
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    let probe = spawn_unit(&mut app, Unit::probe(), 3, Side::Attacker, FireState::Fired);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<ProbeRetreatCmp>(probe).is_none());
+    assert!(app.world().get::<TweenAnim>(probe).is_none());
+    assert!(app.world().resource::<Messages<PlayAudioMsg>>().is_empty());
+}
+
+#[test]
+fn extinction_ray_uses_a_long_single_charge_before_impact() {
+    let mut app = playback_app(report(1, 0, false, 51), 0, CombatState::Fire);
+    let behemoth = Unit::Fauna(SpaceFauna::NullstarBehemoth);
+    let source = spawn_unit(&mut app, behemoth, 1, Side::Defender, FireState::Fired);
+    spawn_unit(&mut app, Unit::war_sun(), 1, Side::Attacker, FireState::Fired);
+    app.world_mut().resource_mut::<Messages<SpawnShotMsg>>().write(SpawnShotMsg {
+        shot: ShotReport {
+            unit: Some(Unit::war_sun()),
+            target_id: Some(1),
+            shield_damage: Unit::war_sun().shield(),
+            hull_damage: SpaceFauna::NullstarBehemoth.damage() - Unit::war_sun().shield(),
+            ..default()
+        },
+        repair: false,
+        side: Side::Attacker,
+        source: Some((source, behemoth, Vec3::new(-300., 0., 0.))),
+    });
+    app.add_systems(Update, run_combat_animations);
+
+    app.update();
+    assert_eq!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count(), 1);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+    app.update();
+    assert!(app.world().resource::<Messages<PlayAudioMsg>>().is_empty());
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(400));
+    app.update();
+    let sounds =
+        app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(sounds[0].name, "fauna roar");
+    assert_eq!(sounds[0].playback_rate, 0.52);
+    assert_eq!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count(), 1);
+
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(1_100));
+    app.update();
+    assert_eq!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count(), 0);
 }
 
 #[test]

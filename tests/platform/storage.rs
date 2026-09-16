@@ -24,6 +24,7 @@ fn profile_round_trips_in_memory() {
         combat_preferences: crate::core::settings::CombatPreferences {
             speed: 4.0,
             volley_fire: true,
+            individual_units: true,
         },
         ..ClientProfile::default()
     };
@@ -35,6 +36,7 @@ fn profile_round_trips_in_memory() {
     assert_eq!(loaded.recent_games, vec![GameId::new("game-1")]);
     assert_eq!(loaded.combat_preferences.speed, 4.0);
     assert!(loaded.combat_preferences.volley_fire);
+    assert!(loaded.combat_preferences.individual_units);
     assert_eq!(loaded.session.unwrap().user_id, UserId::new("user"));
 }
 
@@ -47,6 +49,22 @@ fn older_profiles_receive_default_combat_preferences() {
 
     let profile = load_profile(&storage).unwrap();
     assert_eq!(profile.combat_preferences, crate::core::settings::CombatPreferences::default());
+}
+
+#[test]
+fn older_combat_preferences_default_to_grouped_units() {
+    let storage = MemoryStorage::default();
+    storage
+        .store(
+            "client-profile",
+            r#"{"session":null,"recent_games":[],"display_name":"Nova","combat_preferences":{"speed":2.0,"volley_fire":true}}"#,
+        )
+        .unwrap();
+
+    let profile = load_profile(&storage).unwrap();
+    assert_eq!(profile.combat_preferences.speed, 2.0);
+    assert!(profile.combat_preferences.volley_fire);
+    assert!(!profile.combat_preferences.individual_units);
 }
 
 #[test]

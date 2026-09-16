@@ -58,6 +58,10 @@ planet is owned, it is also controlled by the owner. If a player attacks and win
 but doesn't colonize it, he gains controls over that planet and the previous owner loses both 
 ownership and control.
 
+When Independent Populations are enabled, first contact with an unclaimed planet has an 80% chance
+to reveal a small neutral population and its fixed garrison. The garrison's strength scales with the
+turn on which it's discovered and must be defeated in normal combat before the planet can be claimed.
+
 An owned planet produces resources for its owner. Buildings can only be build and used on owned 
 planets. For example, a player controlling (but not owning) a planet, cannot use the Phalanx to 
 see incoming attacks nor use the Jump Gate to move its fleet. Combat on an owned planet always 
@@ -88,23 +92,27 @@ defenses.
   access the attacker had there.
 - **Colonize:** Send ships including at least one Colony Ship to gain ownership of a planet.
   The Colony Ship is consumed, placing a level-one Metal, Crystal, and Deuterium mine on the
-  planet.
+  planet. Colony Ships travelling alone or only with Probes automatically lose any space-fauna
+  encounter.
 - **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
   control, but not ownership. The previous owner loses both ownership and control. Surviving
   buildings remain.
 - **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
   probes is required for a spy mission. The more Probes that return, the more intelligence is
-  revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin.
+  revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin. If
+  Probes encounter space fauna en route, survivors withdraw after one combat round and continue.
   **Deep Cover** requires a completed Command Relay at the origin and adds 10 deuterium per Probe
   to the launch cost, without a Reactor discount. If the origin's completed relay level is higher
   than the destination's on arrival, all Probes scan and return without combat, and the defender
   receives no report or notification. Equal or lower levels trigger normal one-round Spy combat;
-  the extra fuel is still spent. Both relay levels count even with deception disabled. Relay
-  deception continues to divert small groups sent without Deep Cover.
+  the extra fuel is still spent. Deep Cover missions never encounter space fauna. Both relay levels
+  count even with deception disabled. Relay deception continues to divert small groups sent without
+  Deep Cover.
 - **Missile Strike:** Launch Interplanetary Missiles against a planet. They bypass ships and the
   Planetary Shield to hit defenses directly. Surviving missiles are consumed. A strike always
   hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
   intelligence, cannot be detected by a Sensor Phalanx, and do not reveal their origin.
+  They never encounter space fauna.
 - **Destroy:** Attack with combat ships including at least one War Sun. After each round with no
   enemy ships or Space Dock remaining, every War Sun has an initial 10% chance plus the planet's
   −2% to +2% Death Ray size modifier (the chance falls by 1% in later combat rounds). The fleet
@@ -140,6 +148,10 @@ after `t` turns is `s * t * (t + 2) / 3` AU. The first turn covers the same dist
 each subsequent turn covers an additional `2s/3` AU. Fleets use their slowest unit's rating. 
 Owned missions (except a Missile Strike) that are not already returning and not part of an allied
 attack can be recalled for no additional cost.
+
+On each full turn spent between launch and arrival, fleets have a chance to encounter space fauna
+and be drawn into battle. Launch and arrival turns are safe. Escort vulnerable Colony Ships rather
+than sending them through deep space alone.
 
 
 ### Combat

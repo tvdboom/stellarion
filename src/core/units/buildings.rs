@@ -221,7 +221,8 @@ impl Description for Building {
                 intelligence normally. A Command Relay also enables Deep Cover for outgoing Spy \
                 missions. If its completed level exceeds the target's relay level on arrival, \
                 the Probes scan undetected without combat. Otherwise, they face one round of combat. \
-                Relay levels count for Deep Cover even when deception is switched off."
+                Relay levels count for Deep Cover even when deception is switched off. Deep Cover \
+                missions never encounter space fauna."
             },
             Building::TradingPost => {
                 "A Trading Post lets you borrow resources from the galactic resource Market. It \

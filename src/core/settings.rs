@@ -13,6 +13,9 @@ pub struct CombatPreferences {
     pub speed: f32,
     /// Whether each side presents all firing unit kinds together.
     pub volley_fire: bool,
+    /// Whether combat renders every combatant instead of one aggregated card per unit kind.
+    #[serde(default)]
+    pub individual_units: bool,
 }
 
 impl Default for CombatPreferences {
@@ -20,6 +23,7 @@ impl Default for CombatPreferences {
         Self {
             speed: 1.0,
             volley_fire: false,
+            individual_units: false,
         }
     }
 }
@@ -47,6 +51,9 @@ pub struct Settings {
     pub combat_speed: f32,
     /// Plays each side's combat cards as one presentation volley instead of one kind at a time.
     pub combat_volley_fire: bool,
+    /// Renders each combatant as its own card rather than aggregating equal unit kinds.
+    #[serde(default)]
+    pub combat_individual_units: bool,
     pub turn: usize,
 }
 
@@ -56,6 +63,7 @@ impl Settings {
         CombatPreferences {
             speed: self.combat_speed,
             volley_fire: self.combat_volley_fire,
+            individual_units: self.combat_individual_units,
         }
     }
 
@@ -67,6 +75,7 @@ impl Settings {
             CombatPreferences::default().speed
         };
         self.combat_volley_fire = preferences.volley_fire;
+        self.combat_individual_units = preferences.individual_units;
     }
 
     /// Changes audio mode while preserving the level and mode across mute.
@@ -144,6 +153,7 @@ impl Default for Settings {
             combat_paused: false,
             combat_speed: 1.0,
             combat_volley_fire: false,
+            combat_individual_units: false,
             turn: 1,
         }
     }

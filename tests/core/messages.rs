@@ -370,6 +370,33 @@ fn space_dock_notification_fits_on_one_line_at_normal_game_width() {
 }
 
 #[test]
+fn deep_space_notification_fits_on_one_line_at_normal_game_width() {
+    let context = egui::Context::default();
+    context.style_mut_of(egui::Theme::Dark, |style| {
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(18.0, egui::FontFamily::Proportional),
+        );
+    });
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+    let mut encounter = Messages::default();
+    encounter.push(&MessageMsg::info("Mission successful during a deep-space encounter."));
+    for _ in 0..3 {
+        notification_frame(&context, &encounter, screen, vec![]);
+    }
+    let encounter = notification_frame(&context, &encounter, screen, vec![])[0];
+
+    let mut short = Messages::default();
+    short.push(&MessageMsg::info("Turn 2 started."));
+    for _ in 0..3 {
+        notification_frame(&context, &short, screen, vec![]);
+    }
+    let single_line = notification_frame(&context, &short, screen, vec![])[0];
+
+    assert_eq!(encounter.height(), single_line.height());
+}
+
+#[test]
 fn public_world_toast_centers_planets_and_moons_without_opening_hidden_information() {
     let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
     model.start().unwrap();

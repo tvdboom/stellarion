@@ -125,6 +125,8 @@ pub struct MultiplayerForm {
     pub recovery_code: String,
     /// Per eligible travel turn chance configured for the next game.
     pub space_fauna_percent: usize,
+    /// Whether unclaimed planets can contain fixed neutral defenders on first contact.
+    pub independent_populations: bool,
     /// Number of locally controlled empires in the next practice match.
     #[cfg(debug_assertions)]
     pub practice_player_count: u8,
@@ -147,6 +149,7 @@ impl Default for MultiplayerForm {
             game_code: String::new(),
             recovery_code: String::new(),
             space_fauna_percent: 15,
+            independent_populations: true,
             #[cfg(debug_assertions)]
             practice_player_count: 2,
         }

@@ -1,6 +1,12 @@
 use super::*;
 
 #[test]
+fn space_fauna_report_destinations_use_the_default_cursor() {
+    assert_eq!(mission_report_destination_cursor(true), CursorIcon::Default);
+    assert_eq!(mission_report_destination_cursor(false), CursorIcon::PointingHand);
+}
+
+#[test]
 fn mission_objectives_require_their_origin_units_before_selection() {
     let destination = Planet::new(2, "Target".into(), Vec2::ZERO, false, 1.0);
     let fighter = Unit::Ship(Ship::LightFighter);

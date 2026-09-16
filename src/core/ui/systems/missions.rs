@@ -61,6 +61,14 @@ const FLEET_MOVEMENT_TOOLTIP: &str = "Distance the fleet will travel next turn. 
 const JUMP_GATE_MOVEMENT_TOOLTIP: &str =
     "A Jump Gate bypasses normal fleet movement and delivers the fleet in one turn.";
 
+const fn mission_report_destination_cursor(is_space_fauna_encounter: bool) -> CursorIcon {
+    if is_space_fauna_encounter {
+        CursorIcon::Default
+    } else {
+        CursorIcon::PointingHand
+    }
+}
+
 /// Keeps the cover option tied to a completed origin relay without revealing target levels.
 fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
     let available =
@@ -93,7 +101,8 @@ fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
         .on_hover_small(format!(
             "Costs {} extra deuterium per Probe. If the origin's completed Command Relay level is \
         higher than the destination's when the mission arrives, all Probes scan and return \
-        without combat or alerting the defender. Otherwise, the Probes face normal Spy combat.",
+        without combat or alerting the defender. Otherwise, the Probes face normal Spy combat. \
+        Deep Cover missions never encounter space fauna.",
             crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE,
         ))
         .on_disabled_hover_small("Build a Command Relay at the origin to enable Deep Cover.");
@@ -2556,10 +2565,8 @@ fn draw_mission_reports(
                                 ui.small(report.turn.to_string());
                             });
 
-                            let resp = ui.add_image(
-                                images.get(combat_selection_planet_image(report)),
-                                [40.; 2],
-                            );
+                            let resp =
+                                add_combat_report_destination_image(ui, report, images, 40.0);
 
                             if report.combat_report.is_some() {
                                 let size = [20.; 2];
@@ -2697,20 +2704,53 @@ fn draw_mission_reports(
                         });
                     });
 
-                    let resp3 = ui.cell(100., |ui| {
-                        ui.small(if report.is_space_fauna_encounter() {
-                            &report.planet.name
-                        } else {
-                            &destination.name
-                        })
-                        .interact(Sense::click())
-                        .on_hover_cursor(CursorIcon::PointingHand)
+                    let destination_name = mission_report_destination_name(report, destination);
+                    let destination_name_color = if report.is_space_fauna_encounter() {
+                        NEUTRAL_COMBAT_COLOR
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    let destination_name_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            destination_name.to_owned(),
+                            TextStyle::Small.resolve(ui.style()),
+                            destination_name_color,
+                        )
+                        .size()
+                        .x
+                        .max(100.0);
+                    let resp3 = ui.cell(destination_name_width, |ui| {
+                        let response = ui.add(
+                            egui::Label::new(
+                                RichText::new(destination_name)
+                                    .small()
+                                    .color(destination_name_color),
+                            )
+                            .sense(if report.is_space_fauna_encounter() {
+                                Sense::hover()
+                            } else {
+                                Sense::click()
+                            })
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                        );
+                        response.on_hover_cursor(mission_report_destination_cursor(
+                            report.is_space_fauna_encounter(),
+                        ))
                     });
 
                     let resp4 = ui.cell(70., |ui| {
-                        ui.add_image(images.get(combat_selection_planet_image(report)), [60.; 2])
-                            .interact(Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand)
+                        let response = add_combat_report_destination_image(
+                            ui, report, images, 60.0,
+                        )
+                        .interact(if report.is_space_fauna_encounter() {
+                            Sense::hover()
+                        } else {
+                            Sense::click()
+                        });
+                        response.on_hover_cursor(mission_report_destination_cursor(
+                            report.is_space_fauna_encounter(),
+                        ))
                     });
 
                     if report.combat_report.is_some() {
@@ -2786,7 +2826,7 @@ fn draw_mission_reports(
                             draw_army_grid(
                                 ui,
                                 "defender_fauna",
-                                &SpaceFauna::iter().map(Unit::Fauna).collect::<Vec<_>>(),
+                                &combat_report_fauna_units(report),
                                 report,
                                 player,
                                 images,

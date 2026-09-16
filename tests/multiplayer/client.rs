@@ -1435,6 +1435,7 @@ fn combat_preferences_are_copied_into_the_local_player_profile() {
     app.insert_resource(crate::core::settings::Settings {
         combat_speed: 8.0,
         combat_volley_fire: true,
+        combat_individual_units: true,
         ..default()
     })
     .insert_resource(ClientRuntime {
@@ -1451,6 +1452,7 @@ fn combat_preferences_are_copied_into_the_local_player_profile() {
     let profile = &app.world().resource::<ClientRuntime>().profile;
     assert_eq!(profile.combat_preferences.speed, 8.0);
     assert!(profile.combat_preferences.volley_fire);
+    assert!(profile.combat_preferences.individual_units);
 }
 
 #[test]

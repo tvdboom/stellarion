@@ -21,7 +21,9 @@ use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::planet::{Garrison, Planet, PlanetId, ShieldOverloadState};
+use crate::core::map::planet::{
+    Garrison, IndependentPopulation, Planet, PlanetId, ShieldOverloadState,
+};
 use crate::core::missions::{BombingRaid, FleetCombatOrders, JointAttackMission, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
@@ -33,8 +35,10 @@ use crate::core::trading::{
     TradeAgreement, TRADE_RESOURCES_PER_LEVEL,
 };
 use crate::core::units::buildings::{Building, FleetWithdrawal};
+use crate::core::units::defense::Defense;
 use crate::core::units::fauna::encounter_formation;
 use crate::core::units::operations::{mine_building, MineMode, SenatePolicy, SpaceDockMode};
+use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Price, Unit};
 use crate::utils::NameFromEnum;
 
@@ -73,9 +77,12 @@ pub struct GameRules {
     pub moons_percent: usize,
     /// Chance that an eligible in-flight mission meets fauna on a travel turn.
     pub space_fauna_percent: usize,
+    /// Whether unclaimed planets may reveal a fixed independent garrison on first contact.
+    #[serde(default)]
+    pub independent_populations: bool,
     /// Number of generated player slots in this snapshot.
     pub player_count: u8,
-    /// Allows the debug-only local practice flow to remain active without a victory condition.
+    /// Allows the debug-only local practice flow, including a solo game without a victory condition.
     pub practice_mode: bool,
 }
 
@@ -120,6 +127,7 @@ impl Default for GameRules {
             colonizable_percent: 25,
             moons_percent: 30,
             space_fauna_percent: 15,
+            independent_populations: false,
             player_count: 2,
             practice_mode: false,
         }
@@ -201,7 +209,7 @@ impl GameModel {
 
     /// Returns a surviving empire that has reached the territorial target.
     pub fn territorial_winner(&self) -> Option<PlayerId> {
-        if self.rules.practice_mode {
+        if self.rules.practice_mode && self.rules.player_count == 1 {
             return None;
         }
         let target = self.planets_to_win();
@@ -251,6 +259,13 @@ impl GameModel {
             let player_id = (slot + 1) as u64;
             map.get_mut(planet_id).make_home_planet(player_id);
             players.push(Player::new(player_id, planet_id));
+        }
+        if rules.independent_populations {
+            for planet in
+                map.planets.iter_mut().filter(|planet| !planet.is_moon() && planet.owned.is_none())
+            {
+                planet.independent_population = IndependentPopulation::Unrevealed;
+            }
         }
 
         let model = Self {
@@ -582,6 +597,26 @@ impl GameModel {
         let protection_enabled =
             self.players.iter().filter(|player| !player.spectator).count() >= 3;
         for planet in &self.map.planets {
+            let independent_state_valid = match planet.independent_population {
+                IndependentPopulation::Empty => true,
+                IndependentPopulation::Unrevealed => {
+                    !planet.is_moon()
+                        && !planet.is_destroyed
+                        && planet.owned.is_none()
+                        && planet.controlled.is_none()
+                        && planet.army.is_empty()
+                        && planet.buy.is_empty()
+                },
+                IndependentPopulation::Inhabited => {
+                    !planet.is_moon()
+                        && !planet.is_destroyed
+                        && planet.owned.is_none()
+                        && planet.controlled.is_none()
+                        && planet.army.protector_ids().next().is_none()
+                        && planet.buy.is_empty()
+                        && independent_population_army_is_valid(planet.army.controller())
+                },
+            };
             if planet
                 .operations
                 .mines
@@ -614,6 +649,12 @@ impl GameModel {
             });
             let protecting_fleets_valid =
                 valid_protection_fleets(&planet.army, planet.controlled, &player_ids);
+            if !independent_state_valid {
+                return Err(GameError::MalformedState(format!(
+                    "planet {} contains invalid independent population state",
+                    planet.id
+                )));
+            }
             if !permissions_valid
                 || !protecting_fleets_valid
                 || (!protection_enabled
@@ -738,6 +779,43 @@ fn valid_protection_fleets(
             && army.iter().all(|(unit, count)| unit.is_ship() && *count > 0)
     });
     fleets_are_valid && (!has_protector || controller.is_some())
+}
+
+/// Restricts generated inhabitants to their four level-one colony buildings, combat ships no
+/// stronger than Cruisers, and ground units no stronger than Gauss Cannons.
+fn independent_population_army_is_valid(army: &Army) -> bool {
+    let mut has_combat_unit = false;
+    army.iter().all(|(unit, count)| {
+        if *count == 0 {
+            return false;
+        }
+        match unit {
+            Unit::Building(
+                Building::MetalMine
+                | Building::CrystalMine
+                | Building::DeuteriumSynthesizer
+                | Building::Reactor,
+            ) => *count == 1,
+            Unit::Ship(
+                Ship::LightFighter | Ship::HeavyFighter | Ship::Destroyer | Ship::Cruiser,
+            ) => {
+                has_combat_unit = true;
+                true
+            },
+            Unit::Defense(
+                Defense::Crawler
+                | Defense::RepairTruck
+                | Defense::RocketLauncher
+                | Defense::LightLaser
+                | Defense::HeavyLaser
+                | Defense::GaussCannon,
+            ) => {
+                has_combat_unit = true;
+                true
+            },
+            _ => false,
+        }
+    }) && has_combat_unit
 }
 
 /// Validated snapshot stored in the database JSON column.
@@ -2694,6 +2772,121 @@ fn resolution_energy_grid(
     grid.with_action_demand(action_energy_demand.get(&player.id).copied().unwrap_or_default())
 }
 
+const INDEPENDENT_POPULATION_EMPTY_PERCENT: usize = 20;
+
+/// Resolves one planet's first-contact roll. The result is stored on the planet before combat, so
+/// every later observer sees the same inhabitants and combat casualties remain authoritative.
+fn reveal_independent_population<R: Rng + ?Sized>(
+    turn: usize,
+    objective: Icon,
+    planet: &mut Planet,
+    rng: &mut R,
+) {
+    if planet.independent_population != IndependentPopulation::Unrevealed
+        || !matches!(objective, Icon::Spy | Icon::Colonize | Icon::Attack)
+    {
+        return;
+    }
+
+    if rng.random_range(0..100) < INDEPENDENT_POPULATION_EMPTY_PERCENT {
+        planet.independent_population = IndependentPopulation::Empty;
+        return;
+    }
+
+    planet.independent_population = IndependentPopulation::Inhabited;
+    planet.record_surface_building(Building::MetalMine);
+    planet.army = independent_population_garrison(turn, rng).into();
+}
+
+/// Generates bounded neutral formations. Five-turn tiers improve the mix until turn 21, while
+/// hard caps keep the strongest possible units at Cruiser and Gauss Cannon.
+fn independent_population_garrison<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> Army {
+    let tier = turn.saturating_sub(1).div_euclid(5).min(4);
+    let mut army = Army::from([
+        (Unit::Building(Building::MetalMine), 1),
+        (Unit::Building(Building::CrystalMine), 1),
+        (Unit::Building(Building::DeuteriumSynthesizer), 1),
+        (Unit::Building(Building::Reactor), 1),
+    ]);
+    let formation = rng.random_range(0..6);
+    let mut add = |unit: Unit, base: usize, per_tier: usize, spread: usize| {
+        let count = base
+            .saturating_add(tier.saturating_mul(per_tier))
+            .saturating_add(rng.random_range(0..=spread));
+        army.insert(unit, count);
+    };
+
+    match formation {
+        0 => {
+            add(Unit::Ship(Ship::LightFighter), 3, 2, 3);
+            add(Unit::Defense(Defense::RocketLauncher), 4, 2, 4);
+            add(Unit::Defense(Defense::Crawler), 1, 1, 2);
+        },
+        1 => {
+            add(Unit::Ship(Ship::LightFighter), 2, 1, 2);
+            add(Unit::Ship(Ship::HeavyFighter), 1, 1, 1);
+            add(Unit::Defense(Defense::RocketLauncher), 2, 1, 2);
+            add(Unit::Defense(Defense::LightLaser), 2, 1, 2);
+        },
+        2 => {
+            add(Unit::Ship(Ship::LightFighter), 2, 1, 2);
+            if tier == 0 {
+                add(Unit::Ship(Ship::HeavyFighter), 1, 0, 1);
+            } else {
+                add(Unit::Ship(Ship::Destroyer), 1, 0, usize::from(tier >= 3));
+            }
+            add(Unit::Defense(Defense::RocketLauncher), 3, 1, 3);
+            if tier > 0 {
+                add(Unit::Defense(Defense::HeavyLaser), 1, 0, 1);
+            }
+        },
+        3 => {
+            add(Unit::Ship(Ship::LightFighter), 1, 1, 2);
+            add(Unit::Defense(Defense::RocketLauncher), 5, 2, 3);
+            add(Unit::Defense(Defense::LightLaser), 2, 1, 2);
+            if tier > 0 {
+                add(Unit::Defense(Defense::HeavyLaser), 1, 1, 1);
+            }
+            if tier >= 2 {
+                add(Unit::Defense(Defense::GaussCannon), 1, 0, usize::from(tier >= 4));
+            }
+        },
+        4 => {
+            if tier >= 2 {
+                add(Unit::Ship(Ship::Cruiser), 1, 0, usize::from(tier >= 4));
+            } else if tier == 1 {
+                add(Unit::Ship(Ship::Destroyer), 1, 0, 1);
+            } else {
+                add(Unit::Ship(Ship::HeavyFighter), 1, 0, 1);
+            }
+            add(Unit::Ship(Ship::LightFighter), 2, 1, 2);
+            add(Unit::Defense(Defense::RocketLauncher), 2, 1, 2);
+            if tier >= 2 {
+                add(Unit::Defense(Defense::GaussCannon), 1, 0, 1);
+            } else {
+                add(Unit::Defense(Defense::LightLaser), 1, 1, 1);
+            }
+        },
+        _ => {
+            add(Unit::Ship(Ship::LightFighter), 2, 1, 2);
+            add(Unit::Ship(Ship::HeavyFighter), 1, 1, 1);
+            if tier >= 1 {
+                add(Unit::Ship(Ship::Destroyer), 1, 0, usize::from(tier >= 4));
+            }
+            if tier >= 3 {
+                add(Unit::Ship(Ship::Cruiser), 1, 0, 0);
+            }
+            add(Unit::Defense(Defense::RocketLauncher), 3, 1, 2);
+            add(Unit::Defense(Defense::LightLaser), 1, 1, 1);
+            if tier >= 2 {
+                add(Unit::Defense(Defense::GaussCannon), 1, 0, 0);
+            }
+            add(Unit::Defense(Defense::RepairTruck), 1, 0, usize::from(tier >= 3));
+        },
+    }
+    army
+}
+
 /// Advances production, missions, combat, reports, and victory state by one turn.
 fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let recycling_turn = simulation_turn(model.turn)?;
@@ -2846,6 +3039,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         .army
                         .amount(&Unit::Building(Building::CommandRelay));
                     let destination = model.map.get_mut(mission.destination);
+                    reveal_independent_population(turn, mission.objective, destination, &mut rng);
                     let deep_cover_succeeds = mission.objective == Icon::Spy
                         && mission.deep_cover
                         && origin_relay
@@ -3158,6 +3352,17 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         destination.army = report.surviving_defender.clone();
                     }
 
+                    if destination.has_independent_population() {
+                        destination.army.retain(|_, count| *count > 0);
+                    }
+                    if destination.has_independent_population()
+                        && !destination.army.iter().any(|(unit, count)| {
+                            *count > 0 && !unit.is_building() && !unit.is_missile()
+                        })
+                    {
+                        destination.independent_population = IndependentPopulation::Empty;
+                    }
+
                     let defender_salvage = report.defender_salvage();
                     if defender_salvage != Resources::default() {
                         report.mission.logs.push_str(&format!(
@@ -3280,7 +3485,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
         }
     }
     let territory_won = model.territorial_winner().is_some();
-    if !territory_won && (playing.len() > 1 || (model.rules.practice_mode && playing.len() == 1)) {
+    let solo_practice = model.rules.practice_mode && model.rules.player_count == 1;
+    if !territory_won && (playing.len() > 1 || (solo_practice && playing.len() == 1)) {
         let eliminated = model
             .players
             .iter()
@@ -3325,11 +3531,12 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     Ok(())
 }
 
-/// Rolls and resolves at most one fauna encounter for each eligible in-flight mission.
+/// Independently rolls and resolves a fauna encounter for each eligible in-flight mission.
 ///
-/// Launch and arrival turns are deliberately excluded. A mission must have completed at least
-/// one movement step and still be more than one turn from its destination. This also makes every
-/// one-turn mission immune, as promised by the match setting.
+/// Launch and arrival turns are deliberately excluded. A mission must have completed at least one
+/// movement step and still be more than one turn from its destination, so only complete turns spent
+/// between launch and arrival can trigger an encounter. Missile Strikes and Deep Cover missions are
+/// always exempt.
 fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
     model: &mut GameModel,
     turn: usize,
@@ -3344,10 +3551,11 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         .missions
         .iter()
         .filter(|mission| {
-            !mission.fauna_encountered
-                && mission.travel_turns > 0
+            mission.travel_turns > 0
                 && mission.turns_to_destination(&model.map) > 1
                 && mission.army.has_army()
+                && mission.objective != Icon::MissileStrike
+                && !mission.deep_cover
         })
         .map(|mission| mission.id)
         .collect::<Vec<_>>();
@@ -3361,7 +3569,6 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
             continue;
         };
         let mut original = model.missions[index].clone();
-        original.fauna_encountered = true;
 
         let (formation_name, fauna_army) = encounter_formation(turn, rng);
         let mut fauna_site = model.map.get(original.destination).clone();
@@ -3383,11 +3590,25 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         fauna_site.buy.clear();
         fauna_site.surface_build_order = [None; 4];
 
+        let spying = original.objective == Icon::Spy;
+        let defenseless_colony = original.objective == Icon::Colonize
+            && !original.army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship());
         let mut battle_mission = original.clone();
-        battle_mission.objective = Icon::Attack;
+        battle_mission.objective = if spying {
+            Icon::Spy
+        } else {
+            Icon::Attack
+        };
         battle_mission.protected_player = None;
         battle_mission.return_objective = None;
         battle_mission.bombing = BombingRaid::None;
+        // Dedicated Spy missions withdraw their surviving Probes after the first round and keep
+        // travelling. Probes attached to other objectives remain with their fleet for the battle.
+        battle_mission.combat_probes = !spying;
+        if defenseless_colony {
+            // Probes cannot turn an otherwise unescorted Colony Ship into a viable combat fleet.
+            battle_mission.army.retain(|unit, _| *unit == Unit::colony_ship());
+        }
         battle_mission.deep_cover = false;
         // A coordinated assault meets fauna one travelling contingent at a time.
         battle_mission.joint_attack = None;
@@ -3417,6 +3638,8 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         let player_survived = report.surviving_attacker.has_army();
         let outcome = if !player_survived {
             "was destroyed"
+        } else if spying {
+            "withdrew after one combat round"
         } else if report.surviving_defender.has_army() {
             "survived after the creatures withdrew"
         } else {

@@ -668,6 +668,7 @@ fn combat_settings_hover_panel_stays_on_screen_and_defaults_to_sequential_fire()
     assert!(panel.top() >= 0.0 && panel.bottom() <= 260.0);
     assert_eq!(combat_speed_step(settings.combat_speed), 0);
     assert!(!settings.combat_volley_fire);
+    assert!(!settings.combat_individual_units);
 }
 
 #[test]

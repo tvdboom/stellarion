@@ -46,6 +46,7 @@ use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
 
 const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
+const SPACE_FAUNA_BACKGROUND_TINT: Color = Color::srgb(0.72, 0.72, 0.72);
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
@@ -68,6 +69,9 @@ const SALVAGE_PICKUP_TIME_MS: u64 =
     SALVAGE_PICKUP_REVEAL_TIME_MS * 2 + SALVAGE_PICKUP_DRIFT_TIME_MS;
 const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
+const COMBAT_FORMATION_TRANSITION_SECS: f32 = 0.7;
+const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.64;
+const INDIVIDUAL_CARD_MIN_FACTOR: f32 = 0.12;
 
 /// Both status overlays use this viewport anchor so pausing never moves the label.
 fn combat_status_node() -> Node {
@@ -107,6 +111,10 @@ pub struct CombatCmp;
 #[derive(Component)]
 /// One player-colored segment in a combat identity card's accent line.
 struct CombatIdentityAccentSegmentCmp;
+
+#[derive(Component)]
+/// Background card naming one side of the current combat.
+struct CombatIdentityCmp;
 
 #[derive(Component)]
 /// Marks cards whose firing highlight must be reversed after firing.
@@ -183,6 +191,218 @@ pub struct CombatUnitCmp {
     pub max_hull: usize,
     /// Whether this round's casualties should be reflected by the count presentation.
     pub outcome_visible: bool,
+}
+
+#[derive(Component)]
+/// Marks an aggregated combat card that can split into its individual combatants.
+pub struct GroupedCombatUnitCmp;
+
+#[derive(Component, Clone)]
+/// Exact presentation state for one independently rendered combatant.
+pub struct IndividualCombatUnitCmp {
+    /// Stable report identifier. Immediate-retreat stand-ins have no recorded combat ID.
+    pub id: Option<u64>,
+    /// Player who supplied this combatant.
+    pub owner: Option<PlayerId>,
+    /// Unit kind represented by this card.
+    pub unit: Unit,
+    /// Combat side to which this card belongs.
+    pub side: Side,
+    /// Aggregate card into which this card combines.
+    group: Entity,
+    /// Responsive destination in the expanded formation.
+    home: Vec3,
+    /// Rendered image width used by impacts and destruction choreography.
+    display_size: f32,
+    /// Position captured when a formation transition begins.
+    transition_start: Vec3,
+    /// Shield points remaining on this exact combatant.
+    pub shield: usize,
+    /// Full shield value used to scale this card's bar.
+    pub max_shield: usize,
+    /// Hull points remaining on this exact combatant.
+    pub hull: usize,
+    /// Full hull value used to scale this card's bar.
+    pub max_hull: usize,
+}
+
+#[derive(Resource, Clone, Copy, Debug)]
+/// Current grouped/individual projection and any animated transition between them.
+pub struct CombatFormationState {
+    individual: bool,
+    transition: Option<CombatFormationTransition>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CombatFormationTransition {
+    to_individual: bool,
+    elapsed: f32,
+}
+
+impl CombatFormationState {
+    fn new(individual: bool) -> Self {
+        Self {
+            individual,
+            transition: None,
+        }
+    }
+
+    fn is_transitioning(&self) -> bool {
+        self.transition.is_some()
+    }
+
+    pub(super) fn individual(&self) -> bool {
+        self.individual
+    }
+}
+
+#[derive(Clone)]
+struct IndividualCardSeed {
+    id: Option<u64>,
+    owner: Option<PlayerId>,
+    unit: Unit,
+    side: Side,
+    group: Entity,
+    group_home: Vec3,
+    hull: usize,
+    max_hull: usize,
+    shield: usize,
+    max_shield: usize,
+}
+
+/// Higher-tier units keep a stronger silhouette without letting one capital ship dictate the grid.
+fn individual_unit_scale(unit: Unit) -> f32 {
+    0.72 + 0.08 * unit.production().saturating_sub(1).min(6) as f32
+}
+
+/// Packs one side into as many centered rows as its viewport band can support.
+///
+/// Inputs are returned in their original order. Placement order is strength-descending, so the
+/// strongest cards occupy the rear rows while weaker fodder screens the front.
+fn individual_formation_layout(
+    units: &[Unit],
+    center_x: f32,
+    width: f32,
+    y_min: f32,
+    y_max: f32,
+    attacker: bool,
+    grouped_size: f32,
+) -> Vec<(Vec3, f32)> {
+    if units.is_empty() {
+        return Vec::new();
+    }
+
+    let count = units.len();
+    let (mut y_min, mut y_max) = if y_min <= y_max {
+        (y_min, y_max)
+    } else {
+        let middle = (y_min + y_max) * 0.5;
+        (middle - grouped_size * 0.2, middle + grouped_size * 0.2)
+    };
+    let width = width.max(grouped_size * 0.5);
+    let minimum_height = grouped_size * 0.35;
+    if y_max - y_min < minimum_height {
+        let middle = (y_min + y_max) * 0.5;
+        y_min = middle - minimum_height * 0.5;
+        y_max = middle + minimum_height * 0.5;
+    }
+    let height = y_max - y_min;
+    let max_weight = units.iter().copied().map(individual_unit_scale).fold(1.0_f32, f32::max);
+    let cap = grouped_size * INDIVIDUAL_CARD_MAX_FACTOR;
+    let floor = grouped_size * INDIVIDUAL_CARD_MIN_FACTOR;
+
+    let mut columns = 1;
+    let mut base_size = 0.0_f32;
+    for candidate in 1..=count {
+        let rows = count.div_ceil(candidate);
+        let cell_width = width / candidate as f32;
+        let cell_height = height / rows as f32;
+        let fitted =
+            (cell_width / (max_weight * 1.08)).min(cell_height / (max_weight * 1.55)).min(cap);
+        if fitted > base_size {
+            base_size = fitted;
+            columns = candidate;
+        }
+    }
+    base_size = base_size.max(floor.min(cap));
+    let rows = count.div_ceil(columns);
+    let cell_width = width / columns as f32;
+    let cell_height = height / rows as f32;
+
+    let mut order = (0..count).collect::<Vec<_>>();
+    order.sort_by(|left, right| {
+        units[*right]
+            .production()
+            .cmp(&units[*left].production())
+            .then_with(|| units[*left].cmp(&units[*right]))
+            .then_with(|| left.cmp(right))
+    });
+
+    // Offset mixed-strength cards within a row without letting the larger rear cards hit the
+    // band edge first. Clamping every card independently can otherwise invert the formation:
+    // a capital ship needs more edge clearance than the smaller screen beside it.
+    let row_baselines = (0..rows)
+        .map(|row| {
+            let row_start = row * columns;
+            let row_end = (row_start + columns).min(count);
+            let nominal = if attacker {
+                y_max - (row as f32 + 0.5) * cell_height
+            } else {
+                y_min + (row as f32 + 0.5) * cell_height
+            };
+            let (minimum, maximum) = order[row_start..row_end].iter().fold(
+                (f32::NEG_INFINITY, f32::INFINITY),
+                |(minimum, maximum), input_index| {
+                    let display_size = base_size * individual_unit_scale(units[*input_index]);
+                    let strength_offset =
+                        unit_display_rank(units[*input_index]) * cell_height * 0.1;
+                    if attacker {
+                        (
+                            minimum.max(y_min + display_size * 0.75 - strength_offset),
+                            maximum.min(y_max - display_size * 0.5 - strength_offset),
+                        )
+                    } else {
+                        (
+                            minimum.max(y_min + display_size * 0.75 + strength_offset),
+                            maximum.min(y_max - display_size * 0.5 + strength_offset),
+                        )
+                    }
+                },
+            );
+            if minimum <= maximum {
+                nominal.clamp(minimum, maximum)
+            } else {
+                nominal
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut result = vec![(Vec3::ZERO, base_size); count];
+    for (slot, input_index) in order.into_iter().enumerate() {
+        let row = slot / columns;
+        let column = slot % columns;
+        let row_start = row * columns;
+        let row_count = (count - row_start).min(columns);
+        let x = center_x + (column as f32 - (row_count as f32 - 1.0) * 0.5) * cell_width;
+        let row_y = row_baselines[row];
+        let strength_offset = unit_display_rank(units[input_index]) * cell_height * 0.1;
+        let display_size = base_size * individual_unit_scale(units[input_index]);
+        let y = (row_y
+            + if attacker {
+                strength_offset
+            } else {
+                -strength_offset
+            })
+        .clamp(y_min + display_size * 0.75, y_max - display_size * 0.5);
+        // Later rows are closer to the opposing fleet and render over the rear ranks.
+        let z = COMBAT_SHIP_Z + row as f32 * 0.01;
+        result[input_index] = (Vec3::new(x, y, z), display_size);
+    }
+    result
+}
+
+fn unit_display_rank(unit: Unit) -> f32 {
+    unit.production().saturating_sub(1).min(6) as f32 / 6.0
 }
 
 #[derive(Component)]
@@ -406,7 +626,7 @@ pub struct SalvagePickupCmp {
     pub amount: usize,
 }
 
-#[derive(Message)]
+#[derive(Clone, Message)]
 /// Bevy message requesting one visible projectile or beam animation.
 pub struct SpawnShotMsg {
     pub(super) shot: ShotReport,
@@ -431,7 +651,8 @@ fn spawn_combat_identity(
     let mut node = Node {
         position_type: PositionType::Absolute,
         left: Val::Px(18.0),
-        width: Val::Px(if has_name {
+        width: Val::Auto,
+        min_width: Val::Px(if has_name {
             220.0
         } else {
             132.0
@@ -461,6 +682,7 @@ fn spawn_combat_identity(
             Pickable::IGNORE,
             ZIndex(5),
             CombatCmp,
+            CombatIdentityCmp,
         ))
         .with_children(|parent| {
             parent
@@ -523,6 +745,7 @@ fn spawn_combat_identity(
                             assets,
                             window,
                         ),
+                        TextLayout::no_wrap(),
                         TextColor(if has_name {
                             Color::srgb_u8(166, 188, 211)
                         } else {
@@ -532,6 +755,7 @@ fn spawn_combat_identity(
                     for (name, participant_color, _) in participants {
                         content.spawn((
                             add_text(name, "medium", 9.0, assets, window),
+                            TextLayout::no_wrap(),
                             TextColor(*participant_color),
                         ));
                     }
@@ -739,6 +963,7 @@ pub fn setup_combat(
                     "fauna combat violet"
                 },
                 FaunaAttack::StellarFire => "fauna combat amber",
+                FaunaAttack::ExtinctionRay => "fauna combat violet",
             }),
             _ => None,
         })
@@ -748,6 +973,11 @@ pub fn setup_combat(
         Sprite {
             image: assets.image(background),
             custom_size: Some(Vec2::new(width, height)),
+            color: if report.is_space_fauna_encounter() {
+                SPACE_FAUNA_BACKGROUND_TINT
+            } else {
+                Color::WHITE
+            },
             ..default()
         },
         Transform::from_xyz(pos.x, pos.y, COMBAT_BACKGROUND_Z),
@@ -764,13 +994,14 @@ pub fn setup_combat(
     let spacing = size * 1.2;
     let attacker_id = report.mission.owner;
     let defender_id = report.planet.controlled.or(report.planet.owned);
+    let mut grouped_cards = Vec::<(Side, Unit, Entity, Vec3)>::new();
 
-    let spawn_row = |commands: &mut Commands,
-                     units: Vec<(Unit, usize)>,
-                     side: Side,
-                     x_center: f32,
-                     y_start: f32,
-                     y_end: f32| {
+    let mut spawn_row = |commands: &mut Commands,
+                         units: Vec<(Unit, usize)>,
+                         side: Side,
+                         x_center: f32,
+                         y_start: f32,
+                         y_end: f32| {
         let total = units.len() as f32;
         let total_width = spacing * (total - 1.0);
         let has_multiple_players = match &side {
@@ -778,7 +1009,9 @@ pub fn setup_combat(
             Side::Defender => report.defender_players().len() > 1,
         };
         let count_color = |owner: Option<PlayerId>| {
-            if has_multiple_players {
+            if owner.is_none() && report.is_independent_population_encounter() {
+                Color::srgb_u8(190, 198, 210)
+            } else if has_multiple_players {
                 owner.map_or(WHITE.into(), |player_id| session.player_color(player_id).color())
             } else {
                 WHITE.into()
@@ -793,143 +1026,151 @@ pub fn setup_combat(
                 combat_count_font_size(w, projection.scale, owner_count, &protection);
             let h = size * 0.3;
             let hull = c * report.unit_hull(*u, &side);
+            let home = Vec3::new(x_center + x, y_end, COMBAT_SHIP_Z);
 
-            commands
-                .spawn((
-                    Sprite {
-                        image: assets.image(u.to_lowername()),
-                        custom_size: Some(Vec2::splat(size)),
-                        ..default()
+            let mut card = commands.spawn((
+                Sprite {
+                    image: assets.image(u.to_lowername()),
+                    custom_size: Some(Vec2::splat(size)),
+                    ..default()
+                },
+                Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
+                CombatCardHome(home),
+                CombatUnitCmp {
+                    unit: *u,
+                    side: side.clone(),
+                    fire: FireState::Idle,
+                    shield: c * report.unit_shield(*u, &side),
+                    max_shield: c * report.unit_shield(*u, &side),
+                    hull,
+                    max_hull: hull,
+                    outcome_visible: false,
+                },
+                GroupedCombatUnitCmp,
+                if settings.combat_individual_units {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                },
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_secs(SETUP_TIME),
+                    TransformPositionLens {
+                        start: Vec3::new(pos.x, y_start, COMBAT_SHIP_Z),
+                        end: home,
                     },
-                    Transform::from_xyz(pos.x, y_start, COMBAT_SHIP_Z),
-                    CombatCardHome(Vec3::new(x_center + x, y_end, COMBAT_SHIP_Z)),
-                    CombatUnitCmp {
-                        unit: *u,
-                        side: side.clone(),
-                        fire: FireState::Idle,
-                        shield: c * report.unit_shield(*u, &side),
-                        max_shield: c * report.unit_shield(*u, &side),
-                        hull,
-                        max_hull: hull,
-                        outcome_visible: false,
-                    },
-                    TweenAnim::new(Tween::new(
-                        EaseFunction::QuadraticInOut,
-                        Duration::from_secs(SETUP_TIME),
-                        TransformPositionLens {
-                            start: Vec3::new(pos.x, y_start, COMBAT_SHIP_Z),
-                            end: Vec3::new(x_center + x, y_end, COMBAT_SHIP_Z),
+                )),
+                Pickable::IGNORE,
+                CombatCmp,
+            ));
+            let card_entity = card.id();
+            card.with_children(|parent| {
+                parent
+                    .spawn((
+                        Sprite {
+                            color: Color::BLACK.with_alpha(0.5),
+                            custom_size: Some(Vec2::new(w, h)),
+                            ..default()
                         },
-                    )),
-                    Pickable::IGNORE,
-                    CombatCmp,
-                ))
-                .with_children(|parent| {
-                    parent
-                        .spawn((
-                            Sprite {
-                                color: Color::BLACK.with_alpha(0.5),
-                                custom_size: Some(Vec2::new(w, h)),
-                                ..default()
-                            },
-                            Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + h * 0.5, 0.1),
-                        ))
-                        .with_children(|badge| {
-                            badge
-                                .spawn((
-                                    Text2d::new(owner_count.to_string()),
-                                    TextFont {
-                                        font: assets.font("bold").into(),
-                                        font_size: count_font_size.into(),
-                                        ..default()
-                                    },
-                                    TextColor(count_color(owner)),
-                                    Transform::from_scale(Vec3::splat(0.05)),
-                                    CountCmp {
-                                        owner,
-                                    },
-                                ))
-                                .with_children(|text| {
-                                    for (player_id, count) in &protection {
-                                        text.spawn((
-                                            TextSpan::new(format!(
-                                                "{COMBAT_COUNT_SEPARATOR}{count}"
-                                            )),
-                                            TextFont {
-                                                font: assets.font("bold").into(),
-                                                font_size: count_font_size.into(),
-                                                ..default()
-                                            },
-                                            TextColor(count_color(Some(*player_id))),
-                                            CountCmp {
-                                                owner: Some(*player_id),
-                                            },
-                                        ));
-                                    }
-                                });
-                        });
-
-                    // Unshielded support units keep the same two-slot card layout as shielded
-                    // units, using the depleted shield-track color for the empty slot. Missile
-                    // cards still omit stats they do not have.
-                    if u.shield() > 0
-                        || *u == Unit::probe()
-                        || *u == Unit::crawler()
-                        || *u == Unit::repair_truck()
-                    {
-                        let has_shield = u.shield() > 0;
-                        parent
+                        Transform::from_xyz(-size * 0.5 + w * 0.5, -size * 0.5 + h * 0.5, 0.1),
+                    ))
+                    .with_children(|badge| {
+                        badge
                             .spawn((
-                                Sprite {
-                                    color: BG2_COLOR,
-                                    custom_size: Some(Vec2::new(size, size * 0.14)),
+                                Text2d::new(owner_count.to_string()),
+                                TextFont {
+                                    font: assets.font("bold").into(),
+                                    font_size: count_font_size.into(),
                                     ..default()
                                 },
-                                Transform::from_xyz(0., -size * 0.57, 0.1),
+                                TextColor(count_color(owner)),
+                                Transform::from_scale(Vec3::splat(0.05)),
+                                CountCmp {
+                                    owner,
+                                },
                             ))
-                            .with_children(|bar| {
-                                let fill = (
-                                    Sprite {
-                                        color: if has_shield {
-                                            SHIELD_COLOR
-                                        } else {
-                                            BG2_COLOR
+                            .with_children(|text| {
+                                for (player_id, count) in &protection {
+                                    text.spawn((
+                                        TextSpan::new(format!("{COMBAT_COUNT_SEPARATOR}{count}")),
+                                        TextFont {
+                                            font: assets.font("bold").into(),
+                                            font_size: count_font_size.into(),
+                                            ..default()
                                         },
-                                        custom_size: Some(Vec2::new(
-                                            size * 0.96,
-                                            size * 0.14 * 0.75,
-                                        )),
-                                        ..default()
-                                    },
-                                    Transform::from_xyz(0., 0., 0.2),
-                                );
-                                if has_shield {
-                                    bar.spawn((fill, ShieldCmp));
-                                } else {
-                                    bar.spawn((fill, EmptyShieldCmp));
+                                        TextColor(count_color(Some(*player_id))),
+                                        CountCmp {
+                                            owner: Some(*player_id),
+                                        },
+                                    ));
                                 }
                             });
-                    }
-                    if u.hull() > 0 {
-                        parent.spawn((
+                    });
+
+                // Unshielded support units keep the same two-slot card layout as shielded
+                // units, using the depleted shield-track color for the empty slot. Missile
+                // cards still omit stats they do not have.
+                if u.shield() > 0
+                    || *u == Unit::probe()
+                    || *u == Unit::crawler()
+                    || *u == Unit::repair_truck()
+                {
+                    let has_shield = u.shield() > 0;
+                    parent
+                        .spawn((
                             Sprite {
                                 color: BG2_COLOR,
                                 custom_size: Some(Vec2::new(size, size * 0.14)),
                                 ..default()
                             },
-                            Transform::from_xyz(0., -size * 0.69, 0.1),
-                            children![(
+                            Transform::from_xyz(0., -size * 0.57, 0.1),
+                        ))
+                        .with_children(|bar| {
+                            let fill = (
                                 Sprite {
-                                    color: HEALTH_COLOR,
+                                    color: if has_shield {
+                                        SHIELD_COLOR
+                                    } else {
+                                        BG2_COLOR
+                                    },
                                     custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
                                     ..default()
                                 },
                                 Transform::from_xyz(0., 0., 0.2),
-                                HullCmp,
-                            )],
-                        ));
-                    }
-                });
+                            );
+                            if has_shield {
+                                bar.spawn((fill, ShieldCmp));
+                            } else {
+                                bar.spawn((fill, EmptyShieldCmp));
+                            }
+                        });
+                }
+                if u.hull() > 0 {
+                    let hull_y = if u.is_fauna() {
+                        -size * 0.57
+                    } else {
+                        -size * 0.69
+                    };
+                    parent.spawn((
+                        Sprite {
+                            color: BG2_COLOR,
+                            custom_size: Some(Vec2::new(size, size * 0.14)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0., hull_y, 0.1),
+                        children![(
+                            Sprite {
+                                color: HEALTH_COLOR,
+                                custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
+                                ..default()
+                            },
+                            Transform::from_xyz(0., 0., 0.2),
+                            HullCmp,
+                        )],
+                    ));
+                }
+            });
+            grouped_cards.push((side.clone(), *u, card_entity, home));
         }
     };
 
@@ -953,7 +1194,7 @@ pub fn setup_combat(
     let defenders = if report.is_space_fauna_encounter() {
         vec![(
             report.planet.name.clone(),
-            Color::srgb_u8(218, 157, 75),
+            Color::srgb_u8(190, 198, 210),
             combat_fleet_strength(&report.planet.army.combined()),
         )]
     } else {
@@ -1129,6 +1370,261 @@ pub fn setup_combat(
         defense_row_y,
     );
     spawn_row(&mut commands, defending_ships, Side::Defender, pos.x, pos.y - height * 0.7, ship_y);
+
+    // Build the exact per-combatant projection once. Grouped cards remain authoritative for the
+    // existing playback state machine; these cards mirror exact IDs, damage and firing origins.
+    let mut individual_seeds = Vec::<IndividualCardSeed>::new();
+    if let Some(combat) = report.combat_report.as_ref() {
+        if let Some(round) = combat.rounds.get(state.combat_round) {
+            let previous =
+                state.combat_round.checked_sub(1).and_then(|index| combat.rounds.get(index));
+            for (side, unit, group, group_home) in &grouped_cards {
+                for combatant in round.units(side).iter().filter(|record| record.unit == *unit) {
+                    let max_hull = report.unit_hull(*unit, side);
+                    let max_shield = report.unit_shield(*unit, side);
+                    let hull = previous
+                        .and_then(|snapshot| {
+                            snapshot.units(side).iter().find(|record| record.id == combatant.id)
+                        })
+                        .map_or(max_hull, |record| record.hull);
+                    individual_seeds.push(IndividualCardSeed {
+                        id: Some(combatant.id),
+                        owner: combatant.owner,
+                        unit: *unit,
+                        side: side.clone(),
+                        group: *group,
+                        group_home: *group_home,
+                        hull,
+                        max_hull,
+                        shield: max_shield,
+                        max_shield,
+                    });
+                }
+
+                // An immediate level-five withdrawal is intentionally absent from round zero.
+                // Give those ships visual stand-ins so individual mode can show their flyaway.
+                if state.combat_round == 0 && *side == Side::Defender && unit.is_ship() {
+                    let withdrawn = combat
+                        .defender_retreat
+                        .as_ref()
+                        .filter(|retreat| retreat.after_round.is_none())
+                        .map_or(0, |retreat| retreat.ships.amount(unit));
+                    for _ in 0..withdrawn {
+                        let max_hull = report.unit_hull(*unit, side);
+                        let max_shield = report.unit_shield(*unit, side);
+                        individual_seeds.push(IndividualCardSeed {
+                            id: None,
+                            owner: defender_id,
+                            unit: *unit,
+                            side: side.clone(),
+                            group: *group,
+                            group_home: *group_home,
+                            hull: max_hull,
+                            max_hull,
+                            shield: max_shield,
+                            max_shield,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let attacker_indices = individual_seeds
+        .iter()
+        .enumerate()
+        .filter_map(|(index, seed)| (seed.side == Side::Attacker).then_some(index))
+        .collect::<Vec<_>>();
+    let defender_ship_indices = individual_seeds
+        .iter()
+        .enumerate()
+        .filter_map(|(index, seed)| {
+            (seed.side == Side::Defender
+                && (seed.unit.is_ship() || seed.unit == Unit::space_dock()))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let defender_ground_indices = individual_seeds
+        .iter()
+        .enumerate()
+        .filter_map(|(index, seed)| {
+            (seed.side == Side::Defender && !seed.unit.is_ship() && seed.unit != Unit::space_dock())
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let mut individual_layout = vec![None; individual_seeds.len()];
+    let mut place_band = |indices: &[usize],
+                          center_x: f32,
+                          band_width: f32,
+                          y_min: f32,
+                          y_max: f32,
+                          attacker: bool| {
+        let units = indices.iter().map(|index| individual_seeds[*index].unit).collect::<Vec<_>>();
+        for (index, layout) in indices.iter().copied().zip(individual_formation_layout(
+            &units, center_x, band_width, y_min, y_max, attacker, size,
+        )) {
+            individual_layout[index] = Some(layout);
+        }
+    };
+
+    let horizontal_room = width * 0.86;
+    place_band(
+        &attacker_indices,
+        pos.x,
+        horizontal_room,
+        pos.y + height * 0.06,
+        pos.y + height * 0.5 - size * 0.82,
+        true,
+    );
+    let ground_width = if buildings.is_empty() {
+        horizontal_room
+    } else {
+        width * 0.58
+    };
+    let ground_center = if buildings.is_empty() {
+        pos.x
+    } else {
+        pos.x - width * 0.12
+    };
+    let shield_top = shield_y + shield_height * 0.5;
+    let shield_bottom = shield_y - shield_height * 0.5;
+    let defender_front = pos.y + height * 0.055;
+    let defender_ship_rear = if draw_ps || !defender_ground_indices.is_empty() {
+        shield_top + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+    } else {
+        control_top + size * 0.45
+    };
+    place_band(
+        &defender_ship_indices,
+        pos.x,
+        horizontal_room,
+        defender_ship_rear.min(defender_front - size * 0.25),
+        defender_front,
+        false,
+    );
+    let ground_top = if draw_ps {
+        shield_bottom - COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+    } else {
+        pos.y - height * 0.1
+    };
+    place_band(
+        &defender_ground_indices,
+        ground_center,
+        ground_width,
+        control_top + size * 0.2,
+        ground_top,
+        false,
+    );
+
+    for (seed, layout) in individual_seeds.into_iter().zip(individual_layout) {
+        let Some((home, card_size)) = layout else {
+            continue;
+        };
+        let initial_position = seed.group_home;
+        let show_owner = match &seed.side {
+            Side::Attacker => report.attacker_players().len() > 1,
+            Side::Defender => report.defender_players().len() > 1,
+        };
+        let owner_color = seed
+            .owner
+            .map_or(Color::srgb_u8(190, 198, 210), |owner| session.player_color(owner).color());
+        let mut card = commands.spawn((
+            Sprite {
+                image: assets.image(seed.unit.to_lowername()),
+                custom_size: Some(Vec2::splat(card_size)),
+                ..default()
+            },
+            Transform::from_translation(initial_position),
+            IndividualCombatUnitCmp {
+                id: seed.id,
+                owner: seed.owner,
+                unit: seed.unit,
+                side: seed.side.clone(),
+                group: seed.group,
+                home,
+                display_size: card_size,
+                transition_start: initial_position,
+                shield: seed.shield,
+                max_shield: seed.max_shield,
+                hull: seed.hull,
+                max_hull: seed.max_hull,
+            },
+            if settings.combat_individual_units {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            },
+            Pickable::IGNORE,
+            CombatCmp,
+        ));
+        if settings.combat_individual_units {
+            card.insert(TweenAnim::new(Tween::new(
+                EaseFunction::QuadraticInOut,
+                Duration::from_secs(SETUP_TIME),
+                TransformPositionLens {
+                    start: seed.group_home,
+                    end: home,
+                },
+            )));
+        }
+        card.with_children(|parent| {
+            let bar_height = (card_size * 0.11).max(2.0 * projection.scale);
+            if show_owner {
+                parent.spawn((
+                    Sprite {
+                        color: owner_color,
+                        custom_size: Some(Vec2::new(card_size * 0.38, bar_height * 0.5)),
+                        ..default()
+                    },
+                    Transform::from_xyz(-card_size * 0.29, card_size * 0.47, 0.2),
+                ));
+            }
+            if seed.max_shield > 0 {
+                parent.spawn((
+                    Sprite {
+                        color: BG2_COLOR,
+                        custom_size: Some(Vec2::new(card_size, bar_height)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, -card_size * 0.56, 0.1),
+                    children![(
+                        Sprite {
+                            color: SHIELD_COLOR,
+                            custom_size: Some(Vec2::new(card_size * 0.96, bar_height * 0.72)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, 0.2),
+                        ShieldCmp,
+                    )],
+                ));
+            }
+            if seed.max_hull > 0 {
+                let hull_y = if seed.max_shield > 0 {
+                    -0.69
+                } else {
+                    -0.57
+                };
+                parent.spawn((
+                    Sprite {
+                        color: BG2_COLOR,
+                        custom_size: Some(Vec2::new(card_size, bar_height)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, card_size * hull_y, 0.1),
+                    children![(
+                        Sprite {
+                            color: HEALTH_COLOR,
+                            custom_size: Some(Vec2::new(card_size * 0.96, bar_height * 0.72)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, 0.2),
+                        HullCmp,
+                    )],
+                ));
+            }
+        });
+    }
+    commands.insert_resource(CombatFormationState::new(settings.combat_individual_units));
 
     // Keep the bar's established right edge while reserving a separate slot for the shield image
     // at the left. This prevents the image from covering the first defense card.
@@ -1320,11 +1816,142 @@ pub fn setup_combat(
         });
 }
 
+/// Animates every exact combatant between its responsive slot and its aggregate type card.
+/// Playback waits for this short presentation-only movement, so a shot can never change visual
+/// targets halfway through its flight.
+pub fn update_combat_formation(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    formation: Option<ResMut<CombatFormationState>>,
+    time: Res<Time>,
+    pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
+    grouped_state_q: Query<&CombatUnitCmp, With<GroupedCombatUnitCmp>>,
+    mut grouped_q: Query<
+        (Entity, &Transform, &mut Visibility),
+        (
+            With<GroupedCombatUnitCmp>,
+            Without<IndividualCombatUnitCmp>,
+            Without<FleetRetreatCmp>,
+            Without<ProbeRetreatCmp>,
+        ),
+    >,
+    mut individual_q: Query<
+        (Entity, &mut Transform, &mut Visibility, &mut IndividualCombatUnitCmp),
+        (Without<GroupedCombatUnitCmp>, Without<FleetRetreatCmp>, Without<ProbeRetreatCmp>),
+    >,
+) {
+    let Some(mut formation) = formation else {
+        return;
+    };
+    let desired = settings.combat_individual_units;
+    if formation.transition.is_none() && desired != formation.individual {
+        let firing = grouped_state_q
+            .iter()
+            .any(|card| !matches!(card.fire, FireState::Idle | FireState::Fired));
+        if firing || !pending_q.is_empty() {
+            return;
+        }
+
+        let group_positions = grouped_q
+            .iter_mut()
+            .map(|(entity, transform, _)| (entity, transform.translation))
+            .collect::<Vec<_>>();
+        for (entity, mut transform, mut visibility, mut individual) in &mut individual_q {
+            individual.transition_start = if desired {
+                group_positions
+                    .iter()
+                    .find_map(|(entity, position)| {
+                        (*entity == individual.group).then_some(*position)
+                    })
+                    .unwrap_or(transform.translation)
+            } else {
+                transform.translation
+            };
+            if desired {
+                transform.translation = individual.transition_start;
+            }
+            *visibility = Visibility::Inherited;
+            commands.entity(entity).remove::<TweenAnim>();
+        }
+        // The aggregate remains underneath a split and appears only after a completed combine.
+        for (_, _, mut visibility) in &mut grouped_q {
+            *visibility = if desired {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+        formation.transition = Some(CombatFormationTransition {
+            to_individual: desired,
+            elapsed: 0.0,
+        });
+    }
+
+    let Some(mut transition) = formation.transition else {
+        return;
+    };
+    transition.elapsed += time.delta_secs() * settings.speed();
+    let progress = (transition.elapsed / COMBAT_FORMATION_TRANSITION_SECS).clamp(0.0, 1.0);
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    let group_positions = grouped_q
+        .iter_mut()
+        .map(|(entity, transform, _)| (entity, transform.translation))
+        .collect::<Vec<_>>();
+    for (_, mut transform, _, individual) in &mut individual_q {
+        let group_position = group_positions
+            .iter()
+            .find_map(|(entity, position)| (*entity == individual.group).then_some(*position))
+            .unwrap_or(individual.transition_start);
+        let destination = if transition.to_individual {
+            individual.home
+        } else {
+            group_position
+        };
+        transform.translation = individual.transition_start.lerp(destination, eased);
+        let scale = if transition.to_individual {
+            0.82 + 0.18 * eased
+        } else {
+            1.0 - 0.18 * eased
+        };
+        transform.scale = Vec3::splat(scale);
+    }
+
+    if progress < 1.0 {
+        formation.transition = Some(transition);
+        return;
+    }
+
+    formation.individual = transition.to_individual;
+    formation.transition = None;
+    for (_, _, mut visibility) in &mut grouped_q {
+        *visibility = if formation.individual {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
+    for (_, mut transform, mut visibility, individual) in &mut individual_q {
+        if formation.individual {
+            transform.translation = individual.home;
+            transform.scale = Vec3::ONE;
+            *visibility = Visibility::Inherited;
+        } else {
+            transform.scale = Vec3::ONE;
+            *visibility = Visibility::Hidden;
+        }
+    }
+}
+
 /// Flies only escaped defending ships offscreen; ground units keep their positions and state.
 fn start_fleet_retreat(
     commands: &mut Commands,
     units: &mut Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+    individuals: &mut Query<
+        (Entity, &Transform, &mut IndividualCombatUnitCmp),
+        Without<CombatUnitCmp>,
+    >,
     ships: &crate::core::units::Army,
+    owner: Option<PlayerId>,
     center: Vec3,
     width: f32,
     height: f32,
@@ -1333,6 +1960,36 @@ fn start_fleet_retreat(
         if unit.side == Side::Defender
             && unit.unit != Unit::colony_ship()
             && unit.hull > 0
+            && ships.amount(&unit.unit) > 0
+        {
+            let horizontal_direction = if transform.translation.x < center.x {
+                -1.0
+            } else {
+                1.0
+            };
+            commands.entity(entity).insert((
+                FleetRetreatCmp,
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticIn,
+                    Duration::from_millis(FLEET_RETREAT_TIME_MS),
+                    TransformPositionLens {
+                        start: transform.translation,
+                        end: Vec3::new(
+                            center.x + horizontal_direction * width * 0.7,
+                            center.y + height * 0.8,
+                            COMBAT_SHIP_Z + 0.9,
+                        ),
+                    },
+                )),
+            ));
+        }
+    }
+    for (entity, transform, unit) in individuals.iter_mut() {
+        if unit.side == Side::Defender
+            && unit.unit != Unit::colony_ship()
+            && unit.unit.is_ship()
+            && unit.hull > 0
+            && unit.owner == owner
             && ships.amount(&unit.unit) > 0
         {
             let horizontal_direction = if transform.translation.x < center.x {
@@ -1379,7 +2036,10 @@ pub fn animate_combat(
     mut commands: Commands,
     bg_q: Single<&mut Sprite, With<BackgroundImageCmp>>,
     text_q: Option<Single<Entity, With<DisplayTextCmp>>>,
-    mut unit_q: Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+    combatants: (
+        Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+        Query<(Entity, &Transform, &mut IndividualCombatUnitCmp), Without<CombatUnitCmp>>,
+    ),
     phase_entities: (
         Query<(), With<ProbeRetreatCmp>>,
         Query<Entity, With<DeathRayCmp>>,
@@ -1400,10 +2060,16 @@ pub fn animate_combat(
     mut play_audio_msg: MessageWriter<PlayAudioMsg>,
     completion: (MessageReader<AnimCompletedEvent>, Local<Vec<Entity>>),
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
-    presentation: (Res<WorldAssets>, Single<&Window>, Option<Res<CombatRoundJump>>),
+    presentation: (
+        Res<WorldAssets>,
+        Single<&Window>,
+        Option<Res<CombatRoundJump>>,
+        Option<Res<CombatFormationState>>,
+    ),
     pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
     settings: Res<Settings>,
 ) {
+    let (mut unit_q, mut individual_q) = combatants;
     let (
         retreating_probe_q,
         death_ray_q,
@@ -1416,11 +2082,12 @@ pub fn animate_combat(
         volley_pause_q,
         all_entities,
     ) = phase_entities;
-    let (assets, window, round_jump) = presentation;
+    let (assets, window, round_jump, formation) = presentation;
     let (mut anim_completed_msg, mut deferred_completions) = completion;
     deferred_completions.extend(anim_completed_msg.read().map(|message| message.anim_entity));
     deferred_completions.retain(|entity| all_entities.contains(*entity));
     if settings.combat_paused
+        || formation.as_ref().is_some_and(|state| state.is_transitioning())
         || (round_jump.is_some() && !matches!(*next_combat_state, NextState::Unchanged))
     {
         return;
@@ -1443,6 +2110,8 @@ pub fn animate_combat(
 
     let size = UNIT_SIZE * projection.scale;
     let volley_fire = settings.combat_volley_fire && *combat_state.get() == CombatState::Fire;
+    let individual_mode =
+        formation.as_ref().map_or(settings.combat_individual_units, |state| state.individual);
 
     if let Some((timer, mut playback)) = fleet_retreat_q.iter_mut().next() {
         if !playback.complete {
@@ -1468,7 +2137,9 @@ pub fn animate_combat(
             start_fleet_retreat(
                 &mut commands,
                 &mut unit_q,
+                &mut individual_q,
                 &retreat.ships,
+                report.planet.controlled.or(report.planet.owned),
                 pos,
                 projection.area.width(),
                 projection.area.height(),
@@ -1562,8 +2233,36 @@ pub fn animate_combat(
                     || round.antiballistic_fired >= round.n_antiballistic())
             {
                 destroying = true;
-                commands.entity(unit_e).insert(Wreck::new(unit_t.translation, size, cu.unit));
-                // The wreck sequence owns removal after its staggered secondary blasts.
+                if individual_mode
+                    && matches!(cu.unit, Unit::Ship(_) | Unit::Defense(_) | Unit::Fauna(_))
+                {
+                    commands.entity(unit_e).despawn();
+                } else {
+                    commands.entity(unit_e).insert(Wreck::new(unit_t.translation, size, cu.unit));
+                    // The wreck sequence owns removal after its staggered secondary blasts.
+                }
+            }
+        }
+        for (unit_e, unit_t, cu) in &mut individual_q {
+            let missile_consumed = cu.unit.is_missile()
+                && cu.id.is_some_and(|id| {
+                    round.units(&cu.side).iter().any(|record| {
+                        record.id == id
+                            && (record.unit == Unit::interplanetary_missile()
+                                || !record.shots.is_empty())
+                    })
+                });
+            if cu.hull == 0 && (!cu.unit.is_missile() || missile_consumed) {
+                destroying = true;
+                if individual_mode && !cu.unit.is_missile() {
+                    commands.entity(unit_e).insert(Wreck::new(
+                        unit_t.translation,
+                        cu.display_size,
+                        cu.unit,
+                    ));
+                } else {
+                    commands.entity(unit_e).despawn();
+                }
             }
         }
         if destroying {
@@ -1595,8 +2294,13 @@ pub fn animate_combat(
             }
         }
 
-        // Scout probes fly away
-        if state.combat_round == 0 && combat.rounds.len() > 1 && retreating_probe_q.is_empty() {
+        // Scout probes fly away after ordinary battles. During a fauna encounter they remain
+        // committed to the fleet for the entire fight, matching deterministic resolution.
+        if state.combat_round == 0
+            && combat.rounds.len() > 1
+            && !report.is_space_fauna_encounter()
+            && retreating_probe_q.is_empty()
+        {
             if let Some((unit_e, unit_t, _)) = unit_q.iter_mut().find(|(_, _, cu)| {
                 cu.hull > 0 && cu.unit == Unit::probe() && cu.side == Side::Attacker
             }) {
@@ -1615,6 +2319,26 @@ pub fn animate_combat(
                     )),
                     ProbeRetreatCmp,
                 ));
+                for (probe_e, probe_t, probe) in &mut individual_q {
+                    if probe.hull > 0 && probe.unit == Unit::probe() && probe.side == Side::Attacker
+                    {
+                        commands.entity(probe_e).insert((
+                            TweenAnim::new(Tween::new(
+                                EaseFunction::QuadraticIn,
+                                Duration::from_secs(SETUP_TIME),
+                                TransformPositionLens {
+                                    start: probe_t.translation,
+                                    end: Vec3::new(
+                                        pos.x,
+                                        pos.y + projection.area.height() * 0.9,
+                                        COMBAT_SHIP_Z + 0.9,
+                                    ),
+                                },
+                            )),
+                            ProbeRetreatCmp,
+                        ));
+                    }
+                }
                 play_audio_msg.write(PlayAudioMsg::new("probe retreat").rate(1.2));
             }
         }
@@ -1661,7 +2385,9 @@ pub fn animate_combat(
                 start_fleet_retreat(
                     &mut commands,
                     &mut unit_q,
+                    &mut individual_q,
                     &retreat.ships,
+                    report.planet.controlled.or(report.planet.owned),
                     pos,
                     projection.area.width(),
                     projection.area.height(),
@@ -1788,6 +2514,9 @@ pub fn animate_combat(
                         cu.outcome_visible = false;
                     }
                 });
+                for (_, _, mut individual) in &mut individual_q {
+                    individual.shield = individual.max_shield;
+                }
 
                 if combat.rounds.len() == 1 {
                     next_combat_state.set(CombatState::Fire);
@@ -1870,6 +2599,63 @@ pub fn animate_combat(
                     FireState::Select => {
                         if volley_fire {
                             cu.fire = FireState::Firing;
+                        } else if individual_mode {
+                            let bombing = *combat_state.get() == CombatState::Bomb;
+                            let shooter_ids = round
+                                .units(&cu.side)
+                                .iter()
+                                .filter(|shooter| {
+                                    shooter.unit == cu.unit
+                                        && (matches!(
+                                            *combat_state.get(),
+                                            CombatState::Repair | CombatState::DeathRay
+                                        ) || shooter
+                                            .shots
+                                            .iter()
+                                            .any(|shot| shot.is_bombing() == bombing))
+                                })
+                                .map(|shooter| shooter.id)
+                                .collect::<Vec<_>>();
+                            let mut highlighted = false;
+                            for (individual_e, individual_t, individual) in &mut individual_q {
+                                if individual.side == cu.side
+                                    && individual.unit == cu.unit
+                                    && (individual.id.is_some_and(|id| shooter_ids.contains(&id))
+                                        || matches!(
+                                            *combat_state.get(),
+                                            CombatState::Repair | CombatState::DeathRay
+                                        ) && individual.hull > 0)
+                                {
+                                    commands.entity(individual_e).insert((
+                                        TweenAnim::new(Tween::new(
+                                            EaseFunction::QuadraticInOut,
+                                            Duration::from_millis(500),
+                                            TransformScaleLens {
+                                                start: individual_t.scale,
+                                                end: individual_t.scale * 1.18,
+                                            },
+                                        )),
+                                        CombatFireHighlight,
+                                    ));
+                                    highlighted = true;
+                                }
+                            }
+                            if highlighted {
+                                cu.fire = FireState::PreFire;
+                            } else {
+                                commands.entity(unit_e).insert((
+                                    TweenAnim::new(Tween::new(
+                                        EaseFunction::QuadraticInOut,
+                                        Duration::from_millis(500),
+                                        TransformScaleLens {
+                                            start: unit_t.scale,
+                                            end: unit_t.scale * 1.3,
+                                        },
+                                    )),
+                                    CombatFireHighlight,
+                                ));
+                                cu.fire = FireState::PreFire;
+                            }
                         } else {
                             commands.entity(unit_e).insert((
                                 TweenAnim::new(Tween::new(
@@ -1886,7 +2672,25 @@ pub fn animate_combat(
                         }
                     },
                     FireState::PreFire => {
-                        if completed.contains(&unit_e) {
+                        let individual_highlights = if individual_mode {
+                            individual_q
+                                .iter()
+                                .filter_map(|(entity, _, individual)| {
+                                    (individual.side == cu.side
+                                        && individual.unit == cu.unit
+                                        && highlighted_q.contains(entity))
+                                    .then_some(entity)
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if completed.contains(&unit_e)
+                            || (!individual_highlights.is_empty()
+                                && individual_highlights
+                                    .iter()
+                                    .all(|entity| completed.contains(entity)))
+                        {
                             cu.fire = FireState::Firing;
                         }
                     },
@@ -1894,20 +2698,34 @@ pub fn animate_combat(
                         let repaired = round
                             .units(&cu.side)
                             .iter()
-                            .flat_map(|cu2| cu2.repairs.iter().map(move |r| (cu2.unit, r)))
+                            .flat_map(|cu2| cu2.repairs.iter().map(move |r| (cu2.id, cu2.unit, r)))
                             .collect::<Vec<_>>();
 
-                        for (unit, repair) in repaired {
+                        let individual_source = individual_mode.then(|| {
+                            individual_q.iter().find_map(|(entity, transform, individual)| {
+                                (individual.side == cu.side
+                                    && individual.unit == cu.unit
+                                    && individual.hull > 0)
+                                    .then_some((entity, individual.unit, transform.translation))
+                            })
+                        });
+
+                        for (target_id, unit, repair) in repaired {
                             // Hack the repair info into the shot report for code simplicity
                             spawn_shot_msg.write(SpawnShotMsg {
                                 shot: ShotReport {
+                                    target_id: Some(target_id),
                                     unit: Some(unit),
                                     hull_damage: *repair,
                                     ..default()
                                 },
                                 repair: true,
                                 side: cu.side.clone(),
-                                source: Some((unit_e, cu.unit, unit_t.translation)),
+                                source: individual_source.flatten().or(Some((
+                                    unit_e,
+                                    cu.unit,
+                                    unit_t.translation,
+                                ))),
                             });
                         }
 
@@ -1926,9 +2744,22 @@ pub fn animate_combat(
                                 }
                             }
                         } else {
+                            let origin = if individual_mode {
+                                individual_q
+                                    .iter()
+                                    .find_map(|(_, transform, individual)| {
+                                        (individual.side == cu.side
+                                            && individual.unit == cu.unit
+                                            && individual.hull > 0)
+                                            .then_some(transform.translation)
+                                    })
+                                    .unwrap_or(unit_t.translation)
+                            } else {
+                                unit_t.translation
+                            };
                             commands.spawn((
                                 Cinematic::new(
-                                    unit_t.translation,
+                                    origin,
                                     pos,
                                     projection.area.size(),
                                     size,
@@ -1953,29 +2784,64 @@ pub fn animate_combat(
                         }
                     },
                     FireState::Firing => {
-                        let shots = round
-                            .units(&cu.side)
-                            .iter()
-                            .filter(|cu2| cu.unit == cu2.unit)
-                            .flat_map(|cu2| &cu2.shots)
-                            .filter(|s| {
-                                s.is_bombing() == (*combat_state.get() == CombatState::Bomb)
-                            })
-                            .collect::<Vec<_>>();
-
-                        for shot in shots {
-                            spawn_shot_msg.write(SpawnShotMsg {
-                                shot: shot.clone(),
-                                repair: false,
-                                side: cu.side.opposite(),
-                                source: Some((unit_e, cu.unit, unit_t.translation)),
+                        for shooter in
+                            round.units(&cu.side).iter().filter(|shooter| cu.unit == shooter.unit)
+                        {
+                            let individual_source = individual_mode.then(|| {
+                                individual_q.iter().find_map(|(entity, transform, individual)| {
+                                    (individual.id == Some(shooter.id)).then_some((
+                                        entity,
+                                        individual.unit,
+                                        transform.translation,
+                                    ))
+                                })
                             });
+                            let source = individual_source.flatten().unwrap_or((
+                                unit_e,
+                                cu.unit,
+                                unit_t.translation,
+                            ));
+                            for shot in shooter.shots.iter().filter(|shot| {
+                                shot.is_bombing() == (*combat_state.get() == CombatState::Bomb)
+                            }) {
+                                spawn_shot_msg.write(SpawnShotMsg {
+                                    shot: shot.clone(),
+                                    repair: false,
+                                    side: cu.side.opposite(),
+                                    source: Some(source),
+                                });
+                            }
                         }
 
                         cu.fire = FireState::Deselect;
                     },
                     FireState::Deselect => {
-                        if highlighted_q.contains(unit_e) {
+                        let individual_highlights = if individual_mode {
+                            individual_q
+                                .iter()
+                                .filter_map(|(entity, transform, individual)| {
+                                    (individual.side == cu.side
+                                        && individual.unit == cu.unit
+                                        && highlighted_q.contains(entity))
+                                    .then_some((entity, transform.scale))
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if !individual_highlights.is_empty() {
+                            for (entity, scale) in individual_highlights {
+                                commands.entity(entity).insert(TweenAnim::new(Tween::new(
+                                    EaseFunction::QuarticIn,
+                                    Duration::from_millis(900),
+                                    TransformScaleLens {
+                                        start: scale,
+                                        end: scale / 1.18,
+                                    },
+                                )));
+                            }
+                            cu.fire = FireState::AfterFire;
+                        } else if highlighted_q.contains(unit_e) {
                             commands.entity(unit_e).insert(TweenAnim::new(Tween::new(
                                 EaseFunction::QuarticIn,
                                 Duration::from_millis(1500),
@@ -1991,9 +2857,32 @@ pub fn animate_combat(
                             cu.fire = FireState::Fired;
                         }
                     },
-                    FireState::AfterFire if completed.contains(&unit_e) => {
-                        commands.entity(unit_e).remove::<CombatFireHighlight>();
-                        cu.fire = FireState::Fired;
+                    FireState::AfterFire => {
+                        let individual_highlights = if individual_mode {
+                            individual_q
+                                .iter()
+                                .filter_map(|(entity, _, individual)| {
+                                    (individual.side == cu.side
+                                        && individual.unit == cu.unit
+                                        && highlighted_q.contains(entity))
+                                    .then_some(entity)
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if completed.contains(&unit_e)
+                            || (!individual_highlights.is_empty()
+                                && individual_highlights
+                                    .iter()
+                                    .all(|entity| completed.contains(entity)))
+                        {
+                            commands.entity(unit_e).remove::<CombatFireHighlight>();
+                            for entity in individual_highlights {
+                                commands.entity(entity).remove::<CombatFireHighlight>();
+                            }
+                            cu.fire = FireState::Fired;
+                        }
                     },
                     _ => (),
                 }
@@ -2024,7 +2913,15 @@ pub fn animate_combat(
                 if crawler.phase == SalvageCrawlerPhase::Highlighting
                     && completed.contains(&crawler_e)
                 {
-                    let Ok((_, crawler_t, _)) = unit_q.get(crawler_e) else {
+                    let crawler_transform = unit_q
+                        .get(crawler_e)
+                        .map(|(_, transform, _)| (*transform, size))
+                        .or_else(|_| {
+                            individual_q
+                                .get(crawler_e)
+                                .map(|(_, transform, card)| (*transform, card.display_size))
+                        });
+                    let Ok((crawler_t, crawler_size)) = crawler_transform else {
                         next_combat_state.set(CombatState::EndCombat);
                         return;
                     };
@@ -2045,7 +2942,7 @@ pub fn animate_combat(
                     spawn_salvage_pickups(
                         &mut commands,
                         crawler_t.translation,
-                        size,
+                        crawler_size,
                         salvage,
                         &assets,
                     );
@@ -2067,9 +2964,18 @@ pub fn animate_combat(
                 return;
             }
 
-            let Some((crawler_e, crawler_t, _)) = unit_q.iter().find(|(_, _, unit)| {
-                unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0
-            }) else {
+            let individual_crawler = individual_mode.then(|| {
+                individual_q.iter().find_map(|(entity, transform, unit)| {
+                    (unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0)
+                        .then_some((entity, *transform))
+                })
+            });
+            let grouped_crawler = unit_q.iter().find_map(|(entity, transform, unit)| {
+                (unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0)
+                    .then_some((entity, *transform))
+            });
+            let Some((crawler_e, crawler_t)) = individual_crawler.flatten().or(grouped_crawler)
+            else {
                 next_combat_state.set(CombatState::EndCombat);
                 return;
             };
@@ -2095,6 +3001,10 @@ pub fn animate_combat(
 /// Updates combat stats from the current canonical ECS projection.
 pub fn update_combat_stats(
     unit_q: Query<(Entity, &CombatUnitCmp, Option<&FleetRetreatCmp>)>,
+    individual_q: Query<
+        (Entity, &Sprite, &IndividualCombatUnitCmp),
+        (Without<CombatUnitCmp>, Without<PendingImpact>, Without<ShieldCmp>, Without<HullCmp>),
+    >,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
     mut count_q: Query<(&CountCmp, Option<&mut Text2d>, Option<&mut TextSpan>)>,
     mut shield_q: Query<
@@ -2204,6 +3114,32 @@ pub fn update_combat_stats(
             }
         }
     }
+
+    for (unit_e, sprite, cu) in &individual_q {
+        let card_size = sprite.custom_size.unwrap_or(Vec2::splat(size)).x;
+        for child in children_q.iter_descendants(unit_e) {
+            if let Ok((mut shield_t, mut shield_s, _)) = shield_q.get_mut(child) {
+                if let Some(shield_size) = shield_s.custom_size.as_mut() {
+                    let full_size = card_size * 0.96;
+                    shield_size.x = shield_size
+                        .x
+                        .lerp(full_size * cu.shield as f32 / cu.max_shield.max(1) as f32, speed)
+                        .clamp(0.0, full_size);
+                    shield_t.translation.x = (shield_size.x - full_size) * 0.5;
+                }
+            }
+            if let Ok((mut hull_t, mut hull_s)) = hull_q.get_mut(child) {
+                if let Some(hull_size) = hull_s.custom_size.as_mut() {
+                    let full_size = card_size * 0.96;
+                    hull_size.x = hull_size
+                        .x
+                        .lerp(full_size * cu.hull as f32 / cu.max_hull.max(1) as f32, speed)
+                        .clamp(0.0, full_size);
+                    hull_t.translation.x = (hull_size.x - full_size) * 0.5;
+                }
+            }
+        }
+    }
 }
 
 /// Cleans up combat state and retained entities on state exit.
@@ -2214,6 +3150,7 @@ pub fn exit_combat(
     mut mute_audio_msg: MessageWriter<MuteAudioMsg>,
 ) {
     commands.remove_resource::<CombatRoundJump>();
+    commands.remove_resource::<CombatFormationState>();
     state.combat_round = 0;
     mute_audio_msg.write(MuteAudioMsg);
     next_combat_state.set(CombatState::default());

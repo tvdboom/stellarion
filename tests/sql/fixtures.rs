@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         planets_per_player: 5,
         moons_percent: 0,
         space_fauna_percent: 15,
+        independent_populations: false,
         colonizable_percent: 50,
         player_count: 4,
         practice_mode: false,

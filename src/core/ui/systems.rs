@@ -4503,6 +4503,49 @@ struct CombatParticipant {
     strength: u128,
 }
 
+const NEUTRAL_COMBAT_COLOR: Color32 = Color32::from_rgb(190, 198, 210);
+
+/// Returns only the fauna kinds that were present when this encounter began.
+fn combat_report_fauna_units(report: &MissionReport) -> Vec<Unit> {
+    let mut fauna = SpaceFauna::iter()
+        .map(Unit::Fauna)
+        .filter(|unit| report.planet.army.combined_amount(unit) > 0)
+        .collect::<Vec<_>>();
+    fauna.sort_by_key(|unit| (unit.production(), unit.hull(), unit.damage(), *unit));
+    fauna
+}
+
+fn encounter_image_corner_radius(report: &MissionReport, size: f32) -> egui::CornerRadius {
+    if report.is_space_fauna_encounter() {
+        egui::CornerRadius::same((size * 0.5).round() as u8)
+    } else {
+        egui::CornerRadius::ZERO
+    }
+}
+
+fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a Planet) -> &'a str {
+    if report.is_space_fauna_encounter() {
+        "Space Encounter"
+    } else {
+        &destination.name
+    }
+}
+
+fn add_combat_report_destination_image(
+    ui: &mut Ui,
+    report: &MissionReport,
+    images: &ImageIds,
+    size: f32,
+) -> Response {
+    ui.add(
+        egui::Image::new(SizedTexture::new(
+            images.get(combat_selection_planet_image(report)),
+            egui::Vec2::splat(size),
+        ))
+        .corner_radius(encounter_image_corner_radius(report, size)),
+    )
+}
+
 fn combat_side_participants(
     report: &MissionReport,
     side: &Side,
@@ -4511,7 +4554,16 @@ fn combat_side_participants(
     if *side == Side::Defender && report.is_space_fauna_encounter() {
         return vec![CombatParticipant {
             name: report.planet.name.clone(),
-            color: Color32::from_rgb(229, 166, 78),
+            color: NEUTRAL_COMBAT_COLOR,
+            strength: combat_fleet_strength(&report.planet.army.combined()),
+        }];
+    }
+    if *side == Side::Defender && report.is_independent_population_encounter() {
+        return vec![CombatParticipant {
+            name: report
+                .independent_population_name()
+                .unwrap_or_else(|| "Independent Population".to_owned()),
+            color: NEUTRAL_COMBAT_COLOR,
             strength: combat_fleet_strength(&report.planet.army.combined()),
         }];
     }
@@ -4678,13 +4730,23 @@ fn draw_combat_report(
 
         ui.add_space(25.);
 
-        ui.small(if report.is_space_fauna_encounter() {
+        let destination_name = if report.is_space_fauna_encounter() {
             &report.planet.name
         } else {
             &destination.name
-        });
+        };
+        ui.add(
+            egui::Label::new(RichText::new(destination_name).small().color(
+                if report.is_space_fauna_encounter() {
+                    NEUTRAL_COMBAT_COLOR
+                } else {
+                    ui.visuals().text_color()
+                },
+            ))
+            .wrap_mode(egui::TextWrapMode::Extend),
+        );
         ui.add_space(5.);
-        let resp = ui.add_image(images.get(combat_selection_planet_image(report)), [35., 35.]);
+        let resp = add_combat_report_destination_image(ui, report, images, 35.0);
 
         let size = [15., 15.];
         let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
@@ -4928,7 +4990,7 @@ fn draw_combat_report(
                                         state,
                                         &round,
                                         if report.is_space_fauna_encounter() {
-                                            SpaceFauna::iter().map(Unit::Fauna).collect()
+                                            combat_report_fauna_units(report)
                                         } else {
                                             Unit::ships()
                                         },
@@ -5321,7 +5383,7 @@ fn combat_selection_planet_image(report: &MissionReport) -> String {
 
 fn combat_selection_title(report: &MissionReport, map: &Map) -> String {
     if report.is_space_fauna_encounter() {
-        format!("Deep-space encounter: {}", report.planet.name)
+        "Deep Space Encounter".to_owned()
     } else {
         format!("Battle of {}", map.get(report.mission.destination).name)
     }
@@ -5396,10 +5458,14 @@ fn combat_selection_matchup(
     append(" vs ", Color32::WHITE);
     let defenders = report.defender_players();
     if defenders.is_empty() {
+        let neutral_name = report
+            .independent_population_name()
+            .or_else(|| report.space_fauna_name().map(str::to_owned))
+            .unwrap_or_else(|| "Neutral".to_owned());
         append(
-            report.space_fauna_name().unwrap_or("Neutral"),
-            if report.is_space_fauna_encounter() {
-                Color32::from_rgb(229, 166, 78)
+            &neutral_name,
+            if report.is_space_fauna_encounter() || report.is_independent_population_encounter() {
+                NEUTRAL_COMBAT_COLOR
             } else {
                 Color32::WHITE
             },
@@ -5522,14 +5588,12 @@ fn draw_combat_selection(
 
                 let center_y = rect.center().y;
                 let (planet_rect, text_rect) = combat_selection_row_content_rects(rect);
-                let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1., 1.));
-
-                ui.painter().image(
+                egui::Image::new(SizedTexture::new(
                     images.get(combat_selection_planet_image(report)),
-                    planet_rect,
-                    uv,
-                    Color32::WHITE,
-                );
+                    planet_rect.size(),
+                ))
+                .corner_radius(encounter_image_corner_radius(report, planet_rect.width()))
+                .paint_at(ui, planet_rect);
 
                 let text_painter = ui.painter().with_clip_rect(text_rect);
                 let text_top = center_y - text_height * 0.5;

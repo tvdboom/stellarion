@@ -333,9 +333,12 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                 }
                 // Intercept incoming missiles before resolving damage
                 if unit.unit == Unit::interplanetary_missile()
-                    && intercept_incoming_missile(enemy_army, &mut used_antiballistic, || {
-                        rng.random::<f32>()
-                    })
+                    && intercept_incoming_missile(
+                        enemy_army,
+                        &mut used_antiballistic,
+                        unit.id,
+                        || rng.random::<f32>(),
+                    )
                 {
                     continue 'unit;
                 }
@@ -797,6 +800,7 @@ fn combat_target_priority(attacker: Unit, target: Unit) -> u8 {
 fn intercept_incoming_missile(
     defenders: &mut [CombatUnit],
     used_antiballistic: &mut Vec<u64>,
+    target_id: u64,
     mut roll: impl FnMut() -> f32,
 ) -> bool {
     for defender in defenders {
@@ -808,6 +812,7 @@ fn intercept_incoming_missile(
         used_antiballistic.push(defender.id);
         let intercepted = roll() < 0.5;
         defender.shots.push(ShotReport {
+            target_id: Some(target_id),
             unit: Some(Unit::interplanetary_missile()),
             missed: !intercepted,
             killed: intercepted,

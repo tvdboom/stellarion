@@ -82,7 +82,7 @@ fn presentation_app() -> (App, Planet) {
         .init_resource::<Time>()
         .add_message::<PlayAudioMsg>()
         .add_systems(Startup, initialize_battles)
-        .add_systems(Update, (show_battles, animate_battles).chain());
+        .add_systems(Update, (show_battles, animate_battles, animate_fauna_aftermath).chain());
     app.world_mut()
         .run_system_once(
             |mut assets: ResMut<WorldAssets>,
@@ -766,6 +766,189 @@ fn planet_aftermath_uses_the_viewing_players_color_for_every_part() {
             let actual =
                 app.world().resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color;
             assert_same_rgb(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn fauna_aftermath_uses_the_viewing_players_color_for_wins_and_losses() {
+    for (id, outcome) in [(1, Outcome::Victory), (2, Outcome::Defeat)] {
+        let (mut app, planet) = presentation_app();
+        let viewer_color = PlayerColor::new(4).unwrap();
+        app.world_mut().resource_mut::<Player>().color = viewer_color;
+
+        let mut report = battle_report(id, &planet, outcome);
+        report.planet.name = "Rift Serpent".into();
+        report.planet.army.clear();
+        report
+            .planet
+            .army
+            .insert(Unit::Fauna(crate::core::units::fauna::SpaceFauna::RiftSerpent), 1);
+        app.world_mut().resource_mut::<Player>().reports.push(report);
+        app.update();
+        app.update();
+
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<FaunaEffect>>()
+            .single(app.world())
+            .unwrap();
+        let expected = viewer_color.color();
+        for &child in app.world().get::<Children>(entity).unwrap() {
+            if let Some(sprite) = app.world().get::<Sprite>(child) {
+                if matches!(
+                    app.world().get::<EffectPart>(child),
+                    Some(EffectPart::FaunaCreature { .. })
+                ) {
+                    assert_same_rgb(sprite.color, Color::srgb(0.92, 0.94, 0.96));
+                } else {
+                    assert_same_rgb(sprite.color, expected);
+                }
+            }
+            if let Some(text) = app.world().get::<TextColor>(child) {
+                assert_same_rgb(text.0, expected);
+            }
+            if let Some(material) = app.world().get::<MeshMaterial2d<ColorMaterial>>(child) {
+                if !matches!(
+                    app.world().get::<EffectPart>(child),
+                    Some(EffectPart::FaunaBeam { .. })
+                ) {
+                    let actual = app
+                        .world()
+                        .resource::<Assets<ColorMaterial>>()
+                        .get(&material.0)
+                        .unwrap()
+                        .color;
+                    assert_same_rgb(actual, expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fauna_map_miniatures_follow_the_actual_formation_size_and_variety() {
+    use crate::core::units::fauna::SpaceFauna::{AetherRay, RiftSerpent, StarKraken};
+
+    let (app, planet) = presentation_app();
+    let mut report = battle_report(1, &planet, Outcome::Victory);
+    report.planet.army.clear();
+    report.planet.army.extend([
+        (Unit::Fauna(AetherRay), 4),
+        (Unit::Fauna(StarKraken), 2),
+        (Unit::Fauna(RiftSerpent), 1),
+    ]);
+
+    let displayed = fauna_display_creatures(&report);
+    assert_eq!(displayed.len(), 3);
+    assert!(displayed.contains(&AetherRay));
+    assert!(displayed.contains(&StarKraken));
+    assert!(displayed.contains(&RiftSerpent));
+
+    report.planet.army = Army::from([(Unit::Fauna(AetherRay), 2)]).into();
+    assert_eq!(fauna_display_creatures(&report), vec![AetherRay, AetherRay]);
+    report.planet.army = Army::from([(Unit::Fauna(AetherRay), 1)]).into();
+    assert_eq!(fauna_display_creatures(&report), vec![AetherRay]);
+
+    drop(app);
+}
+
+#[test]
+fn fauna_miniatures_fade_in_circle_and_then_leave_after_the_attack() {
+    use crate::core::units::fauna::SpaceFauna::{AetherRay, IonWisp, RiftSerpent};
+
+    for (id, outcome) in [(1, Outcome::Victory), (2, Outcome::Defeat)] {
+        let (mut app, planet) = presentation_app();
+        let mut report = battle_report(id, &planet, outcome);
+        report.planet.army = Army::from([
+            (Unit::Fauna(AetherRay), 1),
+            (Unit::Fauna(IonWisp), 1),
+            (Unit::Fauna(RiftSerpent), 1),
+        ])
+        .into();
+        app.world_mut().resource_mut::<Player>().reports.push(report);
+        app.update();
+        app.update();
+
+        let effect = app
+            .world_mut()
+            .query_filtered::<Entity, With<FaunaEffect>>()
+            .single(app.world())
+            .unwrap();
+        let explosion_count = app
+            .world()
+            .get::<Children>(effect)
+            .unwrap()
+            .iter()
+            .filter(|child| {
+                matches!(app.world().get::<EffectPart>(*child), Some(EffectPart::Explosion { .. }))
+            })
+            .count();
+        assert_eq!(
+            explosion_count,
+            if outcome == Outcome::Defeat {
+                3
+            } else {
+                0
+            }
+        );
+        let creature = app
+            .world()
+            .get::<Children>(effect)
+            .unwrap()
+            .iter()
+            .find(|child| {
+                matches!(
+                    app.world().get::<EffectPart>(*child),
+                    Some(EffectPart::FaunaCreature { .. })
+                )
+            })
+            .unwrap();
+        let start = app.world().get::<Transform>(creature).unwrap().translation;
+        assert_eq!(app.world().get::<Sprite>(creature).unwrap().color.alpha(), 0.0);
+
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.55));
+        app.update();
+        let approaching = app.world().get::<Transform>(creature).unwrap().translation;
+        assert_ne!(approaching, start);
+        assert!(app.world().get::<Sprite>(creature).unwrap().color.alpha() > 0.0);
+        let body_scale = app.world().get::<Transform>(creature).unwrap().scale;
+        assert_ne!(body_scale.x, body_scale.y, "the creature art should deform as it flies");
+
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(1.0));
+        app.update();
+        let circling = app.world().get::<Transform>(creature).unwrap().translation;
+        assert_ne!(circling, approaching);
+
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.5));
+        app.update();
+        let visible_beams = app
+            .world()
+            .get::<Children>(effect)
+            .unwrap()
+            .iter()
+            .filter(|child| {
+                matches!(app.world().get::<EffectPart>(*child), Some(EffectPart::FaunaBeam { .. }))
+                    && app
+                        .world()
+                        .get::<MeshMaterial2d<ColorMaterial>>(*child)
+                        .and_then(|handle| {
+                            app.world().resource::<Assets<ColorMaterial>>().get(&handle.0)
+                        })
+                        .is_some_and(|material| material.color.alpha() > 0.0)
+            })
+            .count();
+        assert!(visible_beams > 0, "fauna should fire before the result resolves");
+
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(1.15));
+        app.update();
+        let after_attack = app.world().get::<Transform>(creature).unwrap().translation;
+        assert_ne!(after_attack, circling);
+        let alpha = app.world().get::<Sprite>(creature).unwrap().color.alpha();
+        if outcome == Outcome::Victory {
+            assert!(alpha < 0.1, "defeated fauna should disappear");
+        } else {
+            assert!(alpha > 0.0, "victorious fauna should retreat visibly");
         }
     }
 }

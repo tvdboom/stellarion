@@ -260,19 +260,23 @@ impl Description for Icon {
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \
                 If the planet is empty, a level 1 Metal Mine, Crystal Mine and Deuterium Synthesizer \
                 are automatically built. An owned planet produces resources and can be developed \
-                with buildings."
+                with buildings. In games with Independent Populations, first contact can instead \
+                reveal a neutral garrison that must be defeated in normal combat. Colony Ships \
+                travelling alone or only with Probes automatically lose space-fauna encounters."
             },
             Icon::Attack => {
                 "Attack a planet with your combat ships. If the attack is successful, the ships \
                 remain on the conquered planet, gaining control, but not ownership over it. If \
                 the planet was owned by another player, they lose ownership. Buildings on the \
-                target planet remain."
+                target planet remain. Unclaimed planets can reveal Independent Populations when \
+                that game setting is enabled."
             },
             Icon::Spy => {
-                "Send at least 5 Probes to gather intelligence on an enemy planet. Probes leave \
-                combat after the first round and report on enemy units. Every 5 returning probes \
+                "Send at least 5 Probes to gather intelligence on a target planet. Probes leave \
+                combat after the first round and report on enemy or independent units. Every 5 returning probes \
                 reveals one more level of intelligence. Spy missions aren't detected by the \
-                Sensor Phalanx and don't reveal the planet of origin."
+                Sensor Phalanx and don't reveal the planet of origin. If they encounter space \
+                fauna en route, surviving Probes withdraw after the first round and continue."
             },
             Icon::MissileStrike => {
                 "Launch an Interplanetary Missile strike against an enemy planet. Missiles can \
@@ -282,7 +286,7 @@ impl Description for Icon {
                 even if it has been colonized by the player. At the end of combat, all surviving \
                 missiles are destroyed. Missile Strikes don't report any intelligence about the \
                 enemy units. They cannot be detected by the Sensor Phalanx and don't reveal the \
-                planet of origin."
+                planet of origin. Missile Strikes never encounter space fauna."
             },
             Icon::Destroy => {
                 "Attack a planet with your combat ships. After every round of the attack, and only \

@@ -173,17 +173,12 @@ fn report_notification(
     destination: &Planet,
 ) -> MessageMsg {
     if report.is_space_fauna_encounter() {
-        let formation = report.space_fauna_name().unwrap_or("space fauna");
         let notification = if !report.surviving_attacker.has_army() {
-            MessageMsg::warning(format!(
-                "Mission destroyed by {formation} during a deep-space encounter."
-            ))
+            MessageMsg::warning("Mission destroyed during a deep-space encounter.")
         } else if report.winner() == Some(player.id) {
-            MessageMsg::info(format!("Mission defeated {formation} in deep space."))
+            MessageMsg::info("Mission successful during a deep-space encounter.")
         } else {
-            MessageMsg::warning(format!(
-                "Mission survived an unresolved encounter with {formation}."
-            ))
+            MessageMsg::warning("Mission survived an unresolved deep-space encounter.")
         };
         return notification.with_action(MessageAction::FocusSpaceEncounter(report.mission.id));
     }

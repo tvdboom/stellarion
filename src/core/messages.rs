@@ -22,7 +22,7 @@ use crate::multiplayer::client::MultiplayerSession;
 
 const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
-const MAX_NOTIFICATION_WIDTH: f32 = 440.0;
+const MAX_NOTIFICATION_WIDTH: f32 = 560.0;
 const NOTIFICATION_SPACING: f32 = 6.0;
 
 pub(crate) fn notification_scale(viewport: egui::Vec2) -> f32 {

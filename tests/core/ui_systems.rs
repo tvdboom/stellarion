@@ -237,6 +237,123 @@ fn combat_detail_participants_keep_defender_controller_first_and_match_strength_
 }
 
 #[test]
+fn independent_population_uses_its_planet_name_and_neutral_gray_in_combat() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut planet = Planet::new(0, "Darian".into(), Vec2::ZERO, false, 1.0);
+    planet.independent_population = crate::core::map::planet::IndependentPopulation::Inhabited;
+    planet.army.insert(fighter, 4);
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            army: Army::from([(fighter, 2)]),
+            ..default()
+        },
+        planet,
+    );
+    let session = MultiplayerSession::default();
+    let neutral = Color32::from_rgb(190, 198, 210);
+
+    let defenders = combat_side_participants(&report, &Side::Defender, &session);
+    assert_eq!(defenders.len(), 1);
+    assert_eq!(defenders[0].name, "Darian Population");
+    assert_eq!(defenders[0].color, neutral);
+    assert_eq!(defenders[0].strength, combat_fleet_strength(&report.planet.army.combined()));
+
+    let matchup = combat_selection_matchup(&report, &session);
+    assert_eq!(matchup.text, "Player 1 vs Darian Population");
+    assert_eq!(matchup.sections.last().unwrap().format.color, neutral);
+}
+
+#[test]
+fn defeated_independent_population_attack_uses_normal_returning_probe_visibility() {
+    let owner = 1;
+    let rocket = Unit::Defense(Defense::RocketLauncher);
+    let heavy_laser = Unit::Defense(Defense::HeavyLaser);
+    let gauss = Unit::Defense(Defense::GaussCannon);
+    let mut planet = Planet::new(0, "Darian".into(), Vec2::ZERO, false, 1.0);
+    planet.independent_population = crate::core::map::planet::IndependentPopulation::Inhabited;
+    planet.army = Army::from([(rocket, 8), (heavy_laser, 4), (gauss, 2)]).into();
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            owner,
+            objective: Icon::Attack,
+            army: Army::from([(Unit::probe(), 30)]),
+            ..default()
+        },
+        planet,
+    );
+    report.turn = 7;
+    report.scout_probes = 6;
+    report.surviving_attacker = Army::from([(Unit::probe(), 6)]);
+    report.surviving_defender = report.planet.army.clone();
+    report.combat_report = Some(crate::core::combat::report::CombatReport {
+        rounds: vec![RoundReport::default()],
+        ..default()
+    });
+
+    assert!(!report.can_see(&Side::Defender, owner));
+    assert!(mission_report_unit_is_visible(&report, owner, &Side::Defender, &rocket));
+    assert!(mission_report_unit_is_visible(&report, owner, &Side::Defender, &heavy_laser));
+    assert!(!mission_report_unit_is_visible(&report, owner, &Side::Defender, &gauss));
+
+    let mut player = Player::new(owner, 1);
+    player.reports.push(report);
+    assert!(combat_selection_reports(&player, 7).is_empty());
+}
+
+#[test]
+fn deep_space_selection_uses_a_generic_title_and_gray_enemy_name() {
+    let mut planet = Planet::new(0, "Void Manta Nursery".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::Fauna(SpaceFauna::VoidManta), 1);
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            ..default()
+        },
+        planet,
+    );
+    let map = Map {
+        rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![report.planet.clone()],
+    };
+    let session = MultiplayerSession::default();
+    let neutral = Color32::from_rgb(190, 198, 210);
+
+    assert_eq!(combat_selection_title(&report, &map), "Deep Space Encounter");
+    assert_eq!(mission_report_destination_name(&report, map.get(0)), "Space Encounter");
+    assert_eq!(combat_report_fauna_units(&report), vec![Unit::Fauna(SpaceFauna::VoidManta)]);
+    assert_eq!(encounter_image_corner_radius(&report, 60.0), egui::CornerRadius::same(30));
+
+    let defenders = combat_side_participants(&report, &Side::Defender, &session);
+    assert_eq!(defenders.len(), 1);
+    assert_eq!(defenders[0].name, "Void Manta Nursery");
+    assert_eq!(defenders[0].color, neutral);
+
+    let matchup = combat_selection_matchup(&report, &session);
+    assert_eq!(matchup.text, "Player 1 vs Void Manta Nursery");
+    assert_eq!(matchup.sections.last().unwrap().format.color, neutral);
+}
+
+#[test]
+fn combat_report_orders_space_fauna_from_weakest_to_strongest() {
+    let mut planet = Planet::new(0, "Star Kraken Brood".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(Unit::Fauna(SpaceFauna::StarKraken), 1);
+    planet.army.insert(Unit::Fauna(SpaceFauna::AetherRay), 2);
+    planet.army.insert(Unit::Fauna(SpaceFauna::StarKrakenSpawn), 3);
+    let report = crate::test_support::empty_report(Mission::default(), planet);
+
+    assert_eq!(
+        combat_report_fauna_units(&report),
+        vec![
+            Unit::Fauna(SpaceFauna::AetherRay),
+            Unit::Fauna(SpaceFauna::StarKrakenSpawn),
+            Unit::Fauna(SpaceFauna::StarKraken),
+        ]
+    );
+}
+
+#[test]
 fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let owner = 3;

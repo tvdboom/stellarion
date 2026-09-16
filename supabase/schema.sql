@@ -417,10 +417,11 @@ begin
     end if;
     if jsonb_typeof(p_persisted #> '{state,rules}') is distinct from 'object'
        or not ((p_persisted #> '{state,rules}') ?&
-           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'player_count', 'practice_mode'])
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'independent_populations', 'player_count', 'practice_mode'])
        or (p_persisted #> '{state,rules}') -
-           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'player_count', 'practice_mode'] <> '{}'::jsonb
+           array['planets_per_player', 'colonizable_percent', 'moons_percent', 'space_fauna_percent', 'independent_populations', 'player_count', 'practice_mode'] <> '{}'::jsonb
        or p_persisted #> '{state,rules,practice_mode}' is distinct from 'false'::jsonb
+       or jsonb_typeof(p_persisted #> '{state,rules,independent_populations}') is distinct from 'boolean'
        or v_planets_per_player is null or v_planets_per_player not between 5 and 20
        or v_colonizable_percent is null or v_colonizable_percent not in (25, 35, 50)
        or v_moons_percent is null or v_moons_percent not between 0 and 100

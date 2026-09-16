@@ -25,7 +25,11 @@ use crate::TITLE;
 const MENU_CONTROL_HEIGHT: f32 = 36.0;
 const MENU_ACTION_WIDTH: f32 = 308.0;
 const MENU_ACTION_HEIGHT: f32 = 55.0;
-const MENU_ACTION_TEXT_SIZE: f32 = 21.6;
+const MENU_ACTION_TEXT_SIZE: f32 = 23.0;
+const MENU_TITLE_TEXT_SIZE: f32 = 38.0;
+const MENU_CARD_LABEL_TEXT_SIZE: f32 = 17.0;
+const MENU_CONTROL_TEXT_SIZE: f32 = 20.0;
+const MENU_TOOLTIP_TEXT_SIZE: f32 = 15.0;
 // Form width stays independent of the larger standalone navigation buttons.
 const MENU_CONTENT_WIDTH: f32 = 452.0;
 const RESUME_MENU_WIDTH: f32 = 560.0;
@@ -549,7 +553,12 @@ fn local_practice_screen(
                 &mut form.practice_player_count,
                 &[(1, "1"), (2, "2"), (3, "3"), (4, "4")],
             );
-            map_rule_rows(ui, settings, &mut form.space_fauna_percent);
+            map_rule_rows(
+                ui,
+                settings,
+                &mut form.space_fauna_percent,
+                &mut form.independent_populations,
+            );
         });
     });
     let (back_clicked, start_clicked) =
@@ -563,6 +572,7 @@ fn local_practice_screen(
                 colonizable_percent: settings.p_colonizable,
                 moons_percent: settings.p_moons,
                 space_fauna_percent: form.space_fauna_percent,
+                independent_populations: form.independent_populations,
                 player_count: form.practice_player_count,
                 practice_mode: true,
             },
@@ -583,7 +593,12 @@ fn create_screen(
     menu_form(ui, "stellarion_create_form", "Create Game", 1, |ui| {
         ui.add_enabled_ui(!busy, |ui| {
             player_name_field(ui, &mut form.display_name);
-            map_rule_rows(ui, settings, &mut form.space_fauna_percent);
+            map_rule_rows(
+                ui,
+                settings,
+                &mut form.space_fauna_percent,
+                &mut form.independent_populations,
+            );
         });
     });
     let can_create = !busy && valid_name(&form.display_name);
@@ -599,6 +614,7 @@ fn create_screen(
                 colonizable_percent: settings.p_colonizable,
                 moons_percent: settings.p_moons,
                 space_fauna_percent: form.space_fauna_percent,
+                independent_populations: form.independent_populations,
                 player_count: MAX_MULTIPLAYER_PLAYERS,
                 practice_mode: false,
             },
@@ -1223,7 +1239,7 @@ fn code_card_heading(ui: &mut egui::Ui, label: &str, tooltip: &str, copy_value: 
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.label(
                     egui::RichText::new(label.to_uppercase())
-                        .size(16.0)
+                        .size(MENU_CARD_LABEL_TEXT_SIZE)
                         .strong()
                         .color(egui::Color32::from_rgb(145, 184, 226)),
                 );
@@ -1302,9 +1318,9 @@ fn editable_form_card(
             .horizontal_align(egui::Align::Center)
             .vertical_align(egui::Align::Center)
             .interactive(ui.is_enabled())
-            .font(egui::FontId::proportional(18.0))
+            .font(egui::FontId::proportional(MENU_CONTROL_TEXT_SIZE))
             .password(private)
-            .hint_text(egui::RichText::new(hint).size(18.0))
+            .hint_text(egui::RichText::new(hint).size(MENU_CONTROL_TEXT_SIZE))
             .margin(egui::vec2(12.0, 6.0));
         if let Some(limit) = char_limit {
             editor = editor.char_limit(limit);
@@ -1431,7 +1447,7 @@ fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
     );
     response.on_hover_ui(|ui| {
         ui.set_max_width(300.0);
-        ui.label(egui::RichText::new(tooltip).size(13.0));
+        ui.label(egui::RichText::new(tooltip).size(MENU_TOOLTIP_TEXT_SIZE));
     });
 }
 
@@ -1828,7 +1844,7 @@ fn loading_screen(
     }
     ui.add(egui::Spinner::new().size(42.0));
     ui.add_space(14.0);
-    ui.label(egui::RichText::new("Starting game…").size(36.0).strong());
+    ui.label(egui::RichText::new("Starting game…").size(MENU_TITLE_TEXT_SIZE).strong());
 }
 
 /// Keeps the asset failure title on one centered line, shrinking it on narrow viewports.
@@ -1892,7 +1908,7 @@ fn menu_form(
         .max_height((height - actions_height - FORM_ACTION_GAP).max(80.0))
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.heading(egui::RichText::new(title).size(36.0));
+                ui.heading(egui::RichText::new(title).size(MENU_TITLE_TEXT_SIZE));
                 ui.add_space(FORM_TITLE_GAP);
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.y = FORM_CARD_GAP;
@@ -2025,7 +2041,10 @@ pub fn draw_game_overlay(
                 main_menu_button(ui, "Back", || next_game_state.set(GameState::GameMenu));
             },
             GameState::EndGame => {
-                ui.heading(egui::RichText::new(local_end_game_heading(&session)).size(36.0));
+                ui.heading(
+                    egui::RichText::new(local_end_game_heading(&session))
+                        .size(MENU_TITLE_TEXT_SIZE),
+                );
                 ui.add_space(28.0);
                 main_menu_button(ui, "Spectate", || next_game_state.set(GameState::Playing));
                 main_menu_button(ui, "Return to Main Menu", || {
@@ -2424,10 +2443,13 @@ fn paint_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
     } else {
         0.0
     };
-    let measured =
-        painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(18.0), color);
-    let font_size =
-        18.0 * ((rect.width() - 12.0 - icon_space).max(1.0) / measured.size().x).min(1.0);
+    let measured = painter.layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(MENU_CONTROL_TEXT_SIZE),
+        color,
+    );
+    let font_size = MENU_CONTROL_TEXT_SIZE
+        * ((rect.width() - 12.0 - icon_space).max(1.0) / measured.size().x).min(1.0);
     let font = egui::FontId::proportional(font_size);
     let label_galley = painter.layout_no_wrap(label.to_owned(), font, color);
     let Some(icon) = icon else {
@@ -2518,7 +2540,12 @@ fn paint_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
 }
 
 /// Draws map-generation settings with the same discrete values as the original menu.
-fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings, space_fauna_percent: &mut usize) {
+fn map_rule_rows(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    space_fauna_percent: &mut usize,
+    independent_populations: &mut bool,
+) {
     choice_row(
         ui,
         "Planets per player",
@@ -2543,9 +2570,16 @@ fn map_rule_rows(ui: &mut egui::Ui, settings: &mut Settings, space_fauna_percent
     choice_row(
         ui,
         "Space fauna encounters",
-        "Each eligible turn between launch and arrival has this chance to trigger one space-fauna battle. A mission can encounter fauna only once.",
+        "Each full turn spent between launch and arrival independently rolls this chance to trigger a space-fauna battle. Launch and arrival turns are safe; Deep Cover and Missile Strike missions are exempt.",
         space_fauna_percent,
         &[(0, "0%"), (15, "15%"), (30, "30%")],
+    );
+    choice_row(
+        ui,
+        "Independent populations",
+        "When enabled, first contact with an unclaimed planet has an 80% chance to reveal a fixed neutral garrison. Its strength scales with the discovery turn.",
+        independent_populations,
+        &[(false, "Disabled"), (true, "Enabled")],
     );
 }
 

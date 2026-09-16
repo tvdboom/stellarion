@@ -10,7 +10,8 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use super::report::Side;
 use super::systems::{
-    BackgroundImageCmp, CombatCmp, CombatUnitCmp, PSCombatImageCmp, SpawnShotMsg,
+    BackgroundImageCmp, CombatCmp, CombatFormationState, CombatUnitCmp, IndividualCombatUnitCmp,
+    PSCombatImageCmp, SpawnShotMsg,
 };
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
@@ -62,6 +63,7 @@ enum Weapon {
     FaunaGravity,
     FaunaVoid,
     FaunaFire,
+    FaunaExtinction,
     Repair,
 }
 
@@ -98,6 +100,7 @@ impl Weapon {
                 FaunaAttack::GravityPulse => Self::FaunaGravity,
                 FaunaAttack::VoidLance => Self::FaunaVoid,
                 FaunaAttack::StellarFire => Self::FaunaFire,
+                FaunaAttack::ExtinctionRay => Self::FaunaExtinction,
             },
             Unit::Building(_) => Self::Laser,
         }
@@ -120,6 +123,7 @@ impl Weapon {
             Self::FaunaGravity => Color::srgb(0.55, 0.18, 0.9),
             Self::FaunaVoid => Color::srgb(0.86, 0.25, 1.0),
             Self::FaunaFire => Color::srgb(1.0, 0.35, 0.08),
+            Self::FaunaExtinction => Color::srgb(0.82, 0.48, 1.0),
             Self::Repair => MINT,
         }
     }
@@ -141,6 +145,7 @@ impl Weapon {
             Self::FaunaGravity => 0.82,
             Self::FaunaVoid => 0.52,
             Self::FaunaFire => 0.74,
+            Self::FaunaExtinction => 1.05,
             Self::Repair => 1.6,
         }
     }
@@ -155,6 +160,7 @@ impl Weapon {
             Self::FaunaGravity => 0.48,
             Self::FaunaVoid => 0.35,
             Self::FaunaFire => 0.54,
+            Self::FaunaExtinction => 1.25,
             _ => 0.,
         }
     }
@@ -170,6 +176,7 @@ impl Weapon {
             Self::FaunaGravity => Some(0.3),
             Self::FaunaVoid => Some(0.13),
             Self::FaunaFire => Some(0.34),
+            Self::FaunaExtinction => Some(0.72),
             _ => None,
         }
     }
@@ -191,6 +198,7 @@ impl Weapon {
             | Self::FaunaGravity
             | Self::FaunaVoid
             | Self::FaunaFire
+            | Self::FaunaExtinction
             | Self::Repair => 1,
             Self::Plasma | Self::Ion | Self::Lance => 2,
             _ => 3,
@@ -231,7 +239,8 @@ impl Weapon {
             | Self::FaunaLightning
             | Self::FaunaGravity
             | Self::FaunaVoid
-            | Self::FaunaFire => Vec2::ONE,
+            | Self::FaunaFire
+            | Self::FaunaExtinction => Vec2::ONE,
         }
     }
 
@@ -258,6 +267,7 @@ impl Weapon {
             Self::FaunaGravity => Some(PlayAudioMsg::new("fauna roar").rate(0.72).gain(-5.0)),
             Self::FaunaVoid => Some(PlayAudioMsg::new("fauna roar").rate(1.2).gain(-7.0)),
             Self::FaunaFire => Some(PlayAudioMsg::new("fauna dragon").gain(-5.0)),
+            Self::FaunaExtinction => Some(PlayAudioMsg::new("fauna roar").rate(0.52).gain(-3.0)),
             _ => None,
         }
     }
@@ -267,7 +277,12 @@ impl Weapon {
 /// bound than other weapons, while every recorded outcome is accumulated into the visible effects.
 #[derive(Component)]
 pub struct PendingImpact {
+    /// Entity whose artwork receives this visible effect.
     target: Entity,
+    /// Aggregate type card updated for legacy/grouped playback and round progression.
+    group_target: Entity,
+    /// Exact cards whose recorded state changes are carried by this visible projectile.
+    individual_outcomes: Vec<IndividualImpact>,
     source: Option<Entity>,
     origin: Vec3,
     destination: Vec3,
@@ -284,6 +299,13 @@ pub struct PendingImpact {
     launched: bool,
     readout_shown: bool,
     trail_clock: f32,
+}
+
+#[derive(Clone, Copy)]
+struct IndividualImpact {
+    target: Entity,
+    hull: usize,
+    shield: usize,
 }
 
 impl PendingImpact {
@@ -851,13 +873,31 @@ pub fn run_combat_animations(
         (Entity, &mut PendingImpact, &mut Sprite, &mut Transform, &mut Visibility),
         Without<CombatUnitCmp>,
     >,
-    mut units: Query<
-        (Entity, &mut Sprite, &mut Transform, &mut CombatUnitCmp, Option<&mut UnitMotion>),
-        (Without<PendingImpact>, Without<Particle>),
-    >,
+    combatants: (
+        Query<
+            (Entity, &mut Sprite, &mut Transform, &mut CombatUnitCmp, Option<&mut UnitMotion>),
+            (Without<IndividualCombatUnitCmp>, Without<PendingImpact>, Without<Particle>),
+        >,
+        Query<
+            (
+                Entity,
+                &mut Sprite,
+                &mut Transform,
+                &mut IndividualCombatUnitCmp,
+                Option<&mut UnitMotion>,
+            ),
+            (Without<CombatUnitCmp>, Without<PendingImpact>, Without<Particle>),
+        >,
+    ),
     shields: Query<
         (&Sprite, &GlobalTransform),
-        (With<PSCombatImageCmp>, Without<CombatUnitCmp>, Without<PendingImpact>, Without<Particle>),
+        (
+            With<PSCombatImageCmp>,
+            Without<CombatUnitCmp>,
+            Without<IndividualCombatUnitCmp>,
+            Without<PendingImpact>,
+            Without<Particle>,
+        ),
     >,
     mut particles: Query<
         (
@@ -874,8 +914,7 @@ pub fn run_combat_animations(
     mut cinematics: Query<&mut Cinematic>,
     mut textures: Local<EffectTextures>,
     mut images: ResMut<Assets<Image>>,
-    settings: Res<Settings>,
-    time: Res<Time>,
+    playback: (Res<Settings>, Option<Res<CombatFormationState>>, Res<Time>),
     mut audio: MessageWriter<PlayAudioMsg>,
     presentation: (
         Option<Res<WorldAssets>>,
@@ -885,6 +924,7 @@ pub fn run_combat_animations(
                 With<BackgroundImageCmp>,
                 Without<PSCombatImageCmp>,
                 Without<CombatUnitCmp>,
+                Without<IndividualCombatUnitCmp>,
                 Without<PendingImpact>,
                 Without<Particle>,
             ),
@@ -892,10 +932,17 @@ pub fn run_combat_animations(
     ),
     mut readouts: Query<
         (Entity, &mut CombatReadout, &mut TextColor, &mut Transform),
-        (Without<CombatUnitCmp>, Without<PendingImpact>, Without<Particle>),
+        (
+            Without<CombatUnitCmp>,
+            Without<IndividualCombatUnitCmp>,
+            Without<PendingImpact>,
+            Without<Particle>,
+        ),
     >,
     mut sound_cooldowns: Local<BTreeMap<&'static str, f32>>,
 ) {
+    let (mut units, mut individuals) = combatants;
+    let (settings, formation, time) = playback;
     let (art, mut backdrops) = presentation;
     textures.initialize(&mut images);
     // Audio remains at normal pitch/speed. Limit cues in real seconds so fast-forward
@@ -916,15 +963,39 @@ pub fn run_combat_animations(
     // BTreeMap gives stable launch ordering and accumulated outcomes preserve combat results.
     let mut grouped = BTreeMap::<(Entity, Option<Entity>, bool, bool, usize), PendingImpact>::new();
     let mut counts = BTreeMap::new();
+    let individual_mode =
+        formation.as_ref().map_or(settings.combat_individual_units, |state| state.individual());
     for message in shots.read() {
-        let Some((target, sprite, transform, cu, _)) = units
+        let Some((group_target, group_unit, group_position, group_dimensions)) = units
             .iter()
             .find(|(_, _, _, cu, _)| Some(cu.unit) == message.shot.unit && cu.side == message.side)
+            .map(|(entity, sprite, transform, cu, _)| {
+                (
+                    entity,
+                    cu.unit,
+                    transform.translation,
+                    sprite.custom_size.unwrap_or(Vec2::splat(120.)),
+                )
+            })
         else {
             continue;
         };
-        let target_dimensions = sprite.custom_size.unwrap_or(Vec2::splat(120.));
-        let (mut destination, size) = if cu.unit == Unit::planetary_shield() {
+        let exact_target = message.shot.target_id.and_then(|target_id| {
+            individuals
+                .iter()
+                .find(|(_, _, _, individual, _)| {
+                    individual.id == Some(target_id) && individual.side == message.side
+                })
+                .map(|(entity, sprite, transform, _, _)| {
+                    (entity, transform.translation, sprite.custom_size.unwrap_or(Vec2::splat(120.)))
+                })
+        });
+        let (target, target_position, target_dimensions) = if individual_mode {
+            exact_target.unwrap_or((group_target, group_position, group_dimensions))
+        } else {
+            (group_target, group_position, group_dimensions)
+        };
+        let (mut destination, size) = if group_unit == Unit::planetary_shield() {
             shields
                 .iter()
                 .next()
@@ -937,9 +1008,9 @@ pub fn run_combat_animations(
                     };
                     (t.translation(), effect_size)
                 })
-                .unwrap_or((transform.translation, 120.))
+                .unwrap_or((group_position, 120.))
         } else {
-            (transform.translation, target_dimensions.x)
+            (target_position, target_dimensions.x)
         };
         let source = message.source.map(|s| s.0);
         let key = (target, source, message.repair, message.shot.missed);
@@ -988,6 +1059,8 @@ pub fn run_combat_animations(
             .entry((target, source, message.repair, message.shot.missed, projectile_index))
             .or_insert(PendingImpact {
                 target,
+                group_target,
+                individual_outcomes: Vec::new(),
                 source,
                 origin,
                 destination,
@@ -1022,12 +1095,30 @@ pub fn run_combat_animations(
         impact.shield = impact.shield.saturating_add(message.shot.shield_damage);
         impact.planetary = impact.planetary.saturating_add(message.shot.planetary_shield_damage);
         impact.levels = impact.levels.saturating_add(usize::from(message.shot.killed));
+        if let Some((target, _, _)) = exact_target {
+            if let Some(outcome) =
+                impact.individual_outcomes.iter_mut().find(|outcome| outcome.target == target)
+            {
+                outcome.hull = outcome.hull.saturating_add(message.shot.hull_damage);
+                outcome.shield = outcome.shield.saturating_add(message.shot.shield_damage);
+            } else {
+                impact.individual_outcomes.push(IndividualImpact {
+                    target,
+                    hull: message.shot.hull_damage,
+                    shield: message.shot.shield_damage,
+                });
+            }
+        }
     }
     for (_, impact) in grouped {
         let color = impact.weapon.color();
         let massive = matches!(
             impact.weapon,
-            Weapon::Solar | Weapon::Siege | Weapon::FaunaGravity | Weapon::FaunaFire
+            Weapon::Solar
+                | Weapon::Siege
+                | Weapon::FaunaGravity
+                | Weapon::FaunaFire
+                | Weapon::FaunaExtinction
         );
         if impact.weapon.charge() > 0. {
             let radius = impact.size
@@ -1056,6 +1147,16 @@ pub fn run_combat_animations(
                             spin: 0.,
                             sustained: false,
                         },
+                    );
+                }
+            }
+            if impact.weapon == Weapon::FaunaExtinction {
+                for radius in [0.7, 1.1, 1.55] {
+                    painter.ring(
+                        impact.origin,
+                        impact.size * radius,
+                        impact.weapon.color().with_alpha(0.7),
+                        impact.delay,
                     );
                 }
             }
@@ -1143,6 +1244,12 @@ pub fn run_combat_animations(
             }
             if let Some(source) = impact.source {
                 if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(source) {
+                    if impact.weapon != Weapon::Repair {
+                        motion.impulse += (impact.origin - impact.destination).normalize_or_zero()
+                            * impact.size
+                            * 0.06;
+                    }
+                } else if let Ok((_, _, _, _, Some(mut motion))) = individuals.get_mut(source) {
                     if impact.weapon != Weapon::Repair {
                         motion.impulse += (impact.origin - impact.destination).normalize_or_zero()
                             * impact.size
@@ -1290,6 +1397,16 @@ pub fn run_combat_animations(
                     );
                     painter.sparks(position, impact.size * 0.45, GOLD, 3, false);
                 },
+                Weapon::FaunaExtinction => {
+                    painter.ring(
+                        position,
+                        impact.size * (0.48 + p * 0.72),
+                        impact.weapon.color().with_alpha(0.58),
+                        0.22,
+                    );
+                    painter.glow(position, impact.size * 0.78, Color::WHITE, 0.16);
+                    painter.sparks(position, impact.size * 0.55, impact.weapon.color(), 5, false);
+                },
                 Weapon::Laser
                 | Weapon::HeavyLaser
                 | Weapon::TwinLaser
@@ -1351,12 +1468,17 @@ pub fn run_combat_animations(
             }
         }
         painter.commands.entity(entity).despawn();
-        let Ok((_, _, target_t, mut cu, motion)) = units.get_mut(impact.target) else {
-            continue;
-        };
         if impact.weapon == Weapon::Repair {
-            cu.hull = cu.hull.saturating_add(impact.hull).min(cu.max_hull);
-            painter.ring(target_t.translation, impact.size * 0.85, MINT.with_alpha(0.6), 0.5);
+            if let Ok((_, _, _, mut group, _)) = units.get_mut(impact.group_target) {
+                group.hull = group.hull.saturating_add(impact.hull).min(group.max_hull);
+            }
+            for outcome in &impact.individual_outcomes {
+                if let Ok((_, _, _, mut individual, _)) = individuals.get_mut(outcome.target) {
+                    individual.hull =
+                        individual.hull.saturating_add(outcome.hull).min(individual.max_hull);
+                }
+            }
+            painter.ring(impact.destination, impact.size * 0.85, MINT.with_alpha(0.6), 0.5);
             continue;
         }
         if impact.missed {
@@ -1370,12 +1492,22 @@ pub fn run_combat_animations(
                 painter.ring(impact.destination, impact.size * 0.55, GOLD.with_alpha(0.42), 0.45);
                 painter.sparks(impact.destination, impact.size * 0.35, GOLD, 5, false);
             }
-            if let Some(mut motion) = motion {
-                if motion.miss_cooldown > 0. {
-                    continue;
+            let mut on_cooldown = false;
+            if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(impact.target) {
+                on_cooldown = motion.miss_cooldown > 0.;
+                if !on_cooldown {
+                    motion.miss_flash = 0.4;
+                    motion.miss_cooldown = 1.15;
                 }
-                motion.miss_flash = 0.4;
-                motion.miss_cooldown = 1.15;
+            } else if let Ok((_, _, _, _, Some(mut motion))) = individuals.get_mut(impact.target) {
+                on_cooldown = motion.miss_cooldown > 0.;
+                if !on_cooldown {
+                    motion.miss_flash = 0.4;
+                    motion.miss_cooldown = 1.15;
+                }
+            }
+            if on_cooldown {
+                continue;
             }
             let center = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5);
             let color = Color::srgb(0.9, 0.95, 1.0);
@@ -1413,7 +1545,11 @@ pub fn run_combat_animations(
         }
         if matches!(
             impact.weapon,
-            Weapon::Solar | Weapon::Siege | Weapon::FaunaGravity | Weapon::FaunaFire
+            Weapon::Solar
+                | Weapon::Siege
+                | Weapon::FaunaGravity
+                | Weapon::FaunaFire
+                | Weapon::FaunaExtinction
         ) {
             painter.ring(
                 impact.destination,
@@ -1423,31 +1559,70 @@ pub fn run_combat_animations(
             );
             painter.glow(impact.destination, impact.size * 1.25, impact.weapon.color(), 0.3);
         }
-        let old_shield = cu.shield;
-        if cu.unit == Unit::planetary_shield() {
-            cu.shield = cu.shield.saturating_sub(impact.planetary);
-        } else if cu.unit.is_building() {
-            cu.hull = cu.hull.saturating_sub(impact.levels);
-        } else {
-            cu.shield = cu.shield.saturating_sub(impact.shield);
-            cu.hull = cu.hull.saturating_sub(impact.hull);
+        if impact.weapon == Weapon::FaunaExtinction {
+            painter.blast(impact.destination, impact.size * 1.9, 0.8);
+            painter.ring(
+                impact.destination,
+                impact.size * 3.4,
+                impact.weapon.color().with_alpha(0.9),
+                0.95,
+            );
+            painter.ring(
+                impact.destination,
+                impact.size * 2.45,
+                Color::WHITE.with_alpha(0.8),
+                0.62,
+            );
+            painter.sparks(impact.destination, impact.size * 1.8, impact.weapon.color(), 24, true);
+        }
+        let mut group_unit = None;
+        let mut visual_shield_before = 0;
+        let mut visual_shield_after = 0;
+        if let Ok((_, _, _, mut group, _)) = units.get_mut(impact.group_target) {
+            group_unit = Some(group.unit);
+            if impact.target == impact.group_target {
+                visual_shield_before = group.shield;
+            }
+            if group.unit == Unit::planetary_shield() {
+                group.shield = group.shield.saturating_sub(impact.planetary);
+            } else if group.unit.is_building() {
+                group.hull = group.hull.saturating_sub(impact.levels);
+            } else {
+                group.shield = group.shield.saturating_sub(impact.shield);
+                group.hull = group.hull.saturating_sub(impact.hull);
+            }
+            if impact.target == impact.group_target {
+                visual_shield_after = group.shield;
+            }
+        }
+        for outcome in &impact.individual_outcomes {
+            if let Ok((_, _, _, mut individual, _)) = individuals.get_mut(outcome.target) {
+                if impact.target == outcome.target {
+                    visual_shield_before = individual.shield;
+                }
+                individual.shield = individual.shield.saturating_sub(outcome.shield);
+                individual.hull = individual.hull.saturating_sub(outcome.hull);
+                if impact.target == outcome.target {
+                    visual_shield_after = individual.shield;
+                }
+            }
         }
         let hull_was_hit = impact.hull > 0 || impact.levels > 0;
-        if old_shield > cu.shield {
+        if visual_shield_before > visual_shield_after {
             // A penetrating hit reads as a hull impact; do not layer the shield cue over it.
             shield_hit_sound |= !hull_was_hit;
             painter.ring(impact.destination, impact.size * 1.15, ICE.with_alpha(0.8), 0.4);
-            if cu.shield == 0 {
+            if visual_shield_after == 0 {
                 painter.ring(impact.destination, impact.size * 1.8, ICE, 0.65);
                 painter.sparks(impact.destination, impact.size, ICE, 16, true);
-                if cu.unit == Unit::planetary_shield() {
+                if group_unit == Some(Unit::planetary_shield()) {
                     // The shield entity is centered on its long health bar, while the impact
                     // destination follows the image child. Keep the entire destruction sequence
                     // on the visible shield installation rather than exploding empty bar space.
-                    painter.commands.entity(impact.target).insert(Wreck::new(
+                    painter.commands.entity(impact.group_target).insert(Wreck::new(
                         impact.destination,
                         impact.size,
-                        cu.unit,
+                        Unit::planetary_shield(),
                     ));
                 }
             }
@@ -1462,14 +1637,16 @@ pub fn run_combat_animations(
             painter.glow(impact.destination, impact.size * 0.62, GOLD, 0.24);
             painter.glow(impact.destination, impact.size * 0.28, Color::WHITE, 0.1);
             painter.sparks(impact.destination, impact.size * 0.65, GOLD, 7, false);
-            if let Some(mut motion) = motion {
+            if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(impact.target) {
+                motion.flash = 0.18;
+            } else if let Ok((_, _, _, _, Some(mut motion))) = individuals.get_mut(impact.target) {
                 motion.flash = 0.18;
             }
             if impact.weapon == Weapon::Bomb && impact.levels > 0 {
                 painter.blast(impact.destination, impact.size * 1.4, 0.7);
                 painter.ring(impact.destination, impact.size * 1.7, GOLD.with_alpha(0.6), 0.7);
                 painter.sparks(impact.destination, impact.size * 1.4, GOLD, 18, true);
-                let origin = target_t.translation.truncate().extend(COMBAT_EXPLOSION_Z + 0.5)
+                let origin = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5)
                     + Vec3::Y * impact.size * 0.65;
                 painter.commands.spawn((
                     Text2d::new(format!(
@@ -1552,7 +1729,51 @@ pub fn run_combat_animations(
                 base.alpha,
             )
         };
-        if dt == 0. || cu.hull == 0 || damage < 0.2 {
+        if individual_mode || dt == 0. || cu.hull == 0 || damage < 0.2 {
+            continue;
+        }
+        motion.sparks += dt;
+        if motion.sparks > 0.65 + (1. - damage) * 1.2 {
+            motion.sparks = 0.;
+            let size = sprite.custom_size.unwrap_or(Vec2::splat(120.)).x;
+            let origin = transform.translation + Vec3::new(size * 0.22, -size * 0.12, 0.);
+            painter.sparks(origin, size * 0.3, GOLD.with_alpha(0.65), 3, false);
+        }
+    }
+
+    for (entity, mut sprite, mut transform, cu, motion) in &mut individuals {
+        let Some(mut motion) = motion else {
+            painter.commands.entity(entity).insert(UnitMotion {
+                base_color: sprite.color,
+                ..default()
+            });
+            continue;
+        };
+        transform.translation -= motion.offset;
+        motion.impulse = motion
+            .impulse
+            .clamp_length_max(sprite.custom_size.unwrap_or(Vec2::splat(120.)).x * 0.18);
+        motion.impulse *= (-dt * 9.).exp();
+        motion.offset = motion.impulse;
+        transform.translation += motion.offset;
+        motion.flash = (motion.flash - dt).max(0.);
+        motion.miss_flash = (motion.miss_flash - dt).max(0.);
+        motion.miss_cooldown = (motion.miss_cooldown - dt).max(0.);
+        let damage = 1. - cu.hull as f32 / cu.max_hull.max(1) as f32;
+        let tint = 1. - damage * 0.25;
+        let base = motion.base_color.to_srgba();
+        sprite.color = if motion.flash > 0. {
+            Color::srgb(1.5, 1.25, 1.1)
+        } else {
+            let shimmer = (motion.miss_flash / 0.4 * std::f32::consts::PI).sin() * 0.4;
+            Color::srgba(
+                base.red * tint + shimmer,
+                base.green * tint + shimmer,
+                base.blue * tint + shimmer,
+                base.alpha,
+            )
+        };
+        if !individual_mode || dt == 0. || cu.hull == 0 || damage < 0.2 {
             continue;
         }
         motion.sparks += dt;
@@ -1576,6 +1797,10 @@ pub fn run_combat_animations(
         };
         if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(entity) {
             if wreck.stage == 0 && wreck.unit != Unit::planetary_shield() {
+                motion.flash = 0.2;
+            }
+        } else if let Ok((_, _, _, _, Some(mut motion))) = individuals.get_mut(entity) {
+            if wreck.stage == 0 {
                 motion.flash = 0.2;
             }
         }

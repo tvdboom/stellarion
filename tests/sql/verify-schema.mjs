@@ -277,7 +277,7 @@ unsupportedColonization.state.rules.colonizable_percent = 100;
 await assert.rejects(create(host, "ABCDEJ", "authenticated", unsupportedColonization), /STLR_INVALID_DATA:rules/);
 const unsupportedSpaceFauna = structuredClone(fixtures.lobby);
 unsupportedSpaceFauna.state.rules.space_fauna_percent = 20;
-await assert.rejects(create(host, "ABCDEO", "authenticated", unsupportedSpaceFauna), /STLR_INVALID_DATA:rules/);
+await assert.rejects(create(host, "ABCDEQ", "authenticated", unsupportedSpaceFauna), /STLR_INVALID_DATA:rules/);
 const snapshotWithRemovedField = structuredClone(fixtures.lobby);
 snapshotWithRemovedField.removed_field = true;
 await assert.rejects(create(host, "ABCDEH", "authenticated", snapshotWithRemovedField), /STLR_INVALID_DATA:persisted object/);

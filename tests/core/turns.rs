@@ -649,6 +649,38 @@ fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
 }
 
 #[test]
+fn deep_space_notifications_do_not_disclose_the_fauna_formation_name() {
+    let player = Player::default();
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let mut encounter = Planet::new(1, "Rift Serpent Procession".into(), Vec2::X, false, 1.0);
+    let fauna = Unit::Fauna(crate::core::units::fauna::SpaceFauna::RiftSerpent);
+    encounter.army.insert(fauna, 1);
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            id: 27,
+            owner: player.id,
+            army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+            ..default()
+        },
+        encounter.clone(),
+    );
+
+    let destroyed = report_notification(&report, &player, &origin, &encounter);
+    assert_eq!(destroyed.message, "Mission destroyed during a deep-space encounter.");
+    assert!(!destroyed.message.contains(&encounter.name));
+
+    report.surviving_attacker = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
+    let successful = report_notification(&report, &player, &origin, &encounter);
+    assert_eq!(successful.message, "Mission successful during a deep-space encounter.");
+    assert!(!successful.message.contains(&encounter.name));
+
+    report.surviving_defender = Army::from([(fauna, 1)]).into();
+    let unresolved = report_notification(&report, &player, &origin, &encounter);
+    assert_eq!(unresolved.message, "Mission survived an unresolved deep-space encounter.");
+    assert!(!unresolved.message.contains(&encounter.name));
+}
+
+#[test]
 fn only_colonize_objectives_and_their_returns_use_the_colony_icon() {
     let player = Player::default();
     let mut mission = Mission {

@@ -116,6 +116,17 @@ impl MissionReport {
         self.is_space_fauna_encounter().then_some(self.planet.name.as_str())
     }
 
+    /// Returns whether this battle began against an unclaimed planet's fixed inhabitants.
+    pub fn is_independent_population_encounter(&self) -> bool {
+        self.planet.has_independent_population()
+    }
+
+    /// Returns the gray neutral side's user-facing combat name.
+    pub fn independent_population_name(&self) -> Option<String> {
+        self.is_independent_population_encounter()
+            .then(|| format!("{} Population", self.planet.name))
+    }
+
     /// Initial hull used by this report, including the defending Space Dock's mode.
     pub fn unit_hull(&self, unit: Unit, side: &Side) -> usize {
         if *side == Side::Defender {
@@ -359,7 +370,12 @@ impl MissionReport {
 
     /// Returns the user-facing status of this combat side.
     pub fn status(&self, player: &Player) -> &'static str {
-        if self.is_space_fauna_encounter() && !self.surviving_attacker.has_army() {
+        let neutral_defeat = (self.is_space_fauna_encounter()
+            && !self.surviving_attacker.has_army())
+            || (self.is_independent_population_encounter()
+                && !self.is_stalemate()
+                && self.winner().is_none());
+        if neutral_defeat {
             "defeat"
         } else if self.winner().is_none() {
             "draw"

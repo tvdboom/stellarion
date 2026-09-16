@@ -10,7 +10,7 @@ use super::effects::{PendingImpact, Wreck};
 use super::report::{MissionReport, Side};
 use super::systems::{
     restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatUnitCmp, FireState,
-    SpawnShotMsg,
+    IndividualCombatUnitCmp, SpawnShotMsg,
 };
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
@@ -278,6 +278,32 @@ fn seek(
                 .remove::<TweenAnim>();
         } else {
             world.despawn(entity);
+        }
+    }
+    if finished {
+        if let Some(round) =
+            report.combat_report.as_ref().and_then(|combat| combat.rounds.get(index))
+        {
+            let individuals = world
+                .query::<(Entity, &IndividualCombatUnitCmp)>()
+                .iter(world)
+                .map(|(entity, card)| (entity, card.id, card.side.clone()))
+                .collect::<Vec<_>>();
+            for (entity, id, side) in individuals {
+                let Some(record) =
+                    id.and_then(|id| round.units(&side).iter().find(|record| record.id == id))
+                else {
+                    continue;
+                };
+                if record.hull == 0 && !record.unit.is_missile() {
+                    world.despawn(entity);
+                    continue;
+                }
+                if let Some(mut card) = world.get_mut::<IndividualCombatUnitCmp>(entity) {
+                    card.hull = record.hull;
+                    card.shield = record.shield;
+                }
+            }
         }
     }
     if ending_phase == CombatState::EndCombat && report.planet_destroyed {

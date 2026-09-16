@@ -5,6 +5,99 @@ use crate::core::map::planet::PlanetKind;
 use crate::core::resources::Resources;
 
 #[test]
+fn elder_star_dragon_kills_an_unscreened_war_sun_without_rapid_fire() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let mut encounter = Planet::new(1, "Lone Elder Star Dragon".into(), Vec2::X, false, 1.0);
+    encounter.army.insert(Unit::Fauna(SpaceFauna::ElderStarDragon), 1);
+    let mission = Mission::new_with_id(
+        1,
+        30,
+        1,
+        &origin,
+        &encounter,
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+
+    let report = resolve_combat_with_rng(
+        30,
+        &mission,
+        &encounter,
+        &mut rand_chacha::ChaCha8Rng::from_seed([31; 32]),
+    );
+
+    assert_eq!(report.surviving_attacker.amount(&Unit::war_sun()), 0);
+    let combat = report.combat_report.unwrap();
+    assert!(combat.rounds.iter().all(|round| {
+        round
+            .defender
+            .iter()
+            .filter(|unit| unit.unit == Unit::Fauna(SpaceFauna::ElderStarDragon))
+            .all(|unit| unit.shots.len() <= 1)
+    }));
+}
+
+#[test]
+fn nullstar_behemoth_destroys_a_war_sun_in_exactly_two_single_shots() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let mut encounter = Planet::new(1, "Lone Nullstar Behemoth".into(), Vec2::X, false, 1.0);
+    let behemoth = Unit::Fauna(SpaceFauna::NullstarBehemoth);
+    encounter.army.insert(behemoth, 1);
+    let mission = Mission::new_with_id(
+        1,
+        50,
+        1,
+        &origin,
+        &encounter,
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+
+    let report = resolve_combat_with_rng(
+        50,
+        &mission,
+        &encounter,
+        &mut rand_chacha::ChaCha8Rng::from_seed([50; 32]),
+    );
+    let combat = report.combat_report.unwrap();
+    let shots = combat
+        .rounds
+        .iter()
+        .flat_map(|round| &round.defender)
+        .filter(|unit| unit.unit == behemoth)
+        .flat_map(|unit| &unit.shots)
+        .filter(|shot| shot.unit == Some(Unit::war_sun()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(combat.rounds.len(), 2);
+    assert_eq!(shots.len(), 2);
+    assert_eq!(shots[0].shield_damage, Unit::war_sun().shield());
+    assert!(!shots[0].killed);
+    assert!(shots[1].killed);
+    assert!(shots.iter().all(|shot| !shot.rapid_fire));
+    assert_eq!(report.surviving_attacker.amount(&Unit::war_sun()), 0);
+}
+
+#[test]
+fn nullstar_behemoth_one_shots_every_conventional_spaceship() {
+    for ship in Ship::iter().filter(|ship| *ship != Ship::ColonyShip && *ship != Ship::WarSun) {
+        let unit = Unit::Ship(ship);
+        assert!(
+            SpaceFauna::NullstarBehemoth.damage() >= unit.hull() + unit.shield(),
+            "{ship:?} survived the Extinction Ray stat line"
+        );
+    }
+}
+
+#[test]
 fn bastion_statistics_apply_to_every_combat_round_and_survive_reports() {
     use crate::core::units::operations::SpaceDockMode;
     let mut destination = Planet::new(1, "Bastion".into(), Vec2::X, false, 1.0);
@@ -79,6 +172,7 @@ fn zero_damage_stalemate_terminates() {
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
+        independent_population: Default::default(),
         army: Army::from([(Unit::probe(), 1)]).into(),
         protection_permissions: Default::default(),
         buy: Vec::new(),
@@ -274,15 +368,27 @@ fn antiballistic_missiles_fire_one_at_a_time_and_stop_after_each_interception() 
     let mut used = Vec::new();
     let mut rolls = [0.75, 0.25, 0.75, 0.25].into_iter();
 
-    assert!(intercept_incoming_missile(&mut defenders, &mut used, || rolls.next().unwrap()));
+    assert!(intercept_incoming_missile(&mut defenders, &mut used, 101, || {
+        rolls.next().unwrap()
+    }));
     assert_eq!(used, [1, 2]);
     assert_eq!(defenders.iter().map(|unit| unit.shots.len()).collect::<Vec<_>>(), [1, 1, 0, 0]);
+    assert!(defenders[..2]
+        .iter()
+        .flat_map(|unit| &unit.shots)
+        .all(|shot| shot.target_id == Some(101)));
 
-    assert!(intercept_incoming_missile(&mut defenders, &mut used, || rolls.next().unwrap()));
+    assert!(intercept_incoming_missile(&mut defenders, &mut used, 102, || {
+        rolls.next().unwrap()
+    }));
     assert_eq!(used, [1, 2, 3, 4]);
     assert_eq!(defenders.iter().map(|unit| unit.shots.len()).collect::<Vec<_>>(), [1, 1, 1, 1]);
+    assert!(defenders[2..]
+        .iter()
+        .flat_map(|unit| &unit.shots)
+        .all(|shot| shot.target_id == Some(102)));
 
-    assert!(!intercept_incoming_missile(&mut defenders, &mut used, || {
+    assert!(!intercept_incoming_missile(&mut defenders, &mut used, 103, || {
         panic!("no roll should be made after every interceptor has been used")
     }));
 }
@@ -509,6 +615,7 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
+        independent_population: Default::default(),
         army: Army::from([
             (Unit::crawler(), surviving_crawlers + 10),
             (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 10),

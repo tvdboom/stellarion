@@ -2090,7 +2090,7 @@ fn enter_submits_forms_but_respects_validation_and_busy_state() {
 }
 
 #[test]
-fn new_game_form_submits_its_space_fauna_rule() {
+fn new_game_form_submits_its_encounter_rules() {
     let mut form = MultiplayerForm {
         display_name: "Commander".to_string(),
         space_fauna_percent: 30,
@@ -2105,7 +2105,8 @@ fn new_game_form_submits_its_space_fauna_rule() {
 
     assert!(matches!(
         requests.as_slice(),
-        [MultiplayerRequest::CreateGame { rules, .. }] if rules.space_fauna_percent == 30
+        [MultiplayerRequest::CreateGame { rules, .. }]
+            if rules.space_fauna_percent == 30 && rules.independent_populations
     ));
 }
 

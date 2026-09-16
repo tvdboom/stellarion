@@ -23,6 +23,23 @@ use crate::core::units::{Amount, Army, Combat, Unit};
 /// Stable index identifying a planet inside one persisted map.
 pub type PlanetId = usize;
 
+/// Persisted discovery state for an unclaimed planet's independent inhabitants.
+///
+/// `Unrevealed` planets are resolved exactly once when a Spy, Colonize, or Attack
+/// mission first reaches them. `Inhabited` forces are neutral: they never produce, move, or
+/// reinforce, and surviving units remain on the planet until another mission fights them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndependentPopulation {
+    /// This game's optional first-contact roll has not happened yet.
+    Unrevealed,
+    /// The planet was empty, or its former independent population was defeated.
+    #[default]
+    Empty,
+    /// A fixed neutral garrison was generated on first contact.
+    Inhabited,
+}
+
 /// Every force stationed on one world, partitioned by the player who may command it.
 ///
 /// Keeping this ownership detail behind one type prevents callers from maintaining a flat army
@@ -439,6 +456,9 @@ pub struct Planet {
     /// Player with current military control, if any.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub controlled: Option<PlayerId>,
+    /// First-contact state of this unclaimed planet's optional independent population.
+    #[serde(default)]
+    pub independent_population: IndependentPopulation,
     /// All controller and protection forces stationed here, indexed internally by commander.
     pub army: Garrison,
     /// Players currently allowed by this world's controller to send a Protect mission here.
@@ -563,6 +583,7 @@ impl Planet {
             is_destroyed: false,
             owned: None,
             controlled: None,
+            independent_population: IndependentPopulation::Empty,
             army: Garrison::default(),
             protection_permissions: BTreeSet::new(),
             buy: vec![],
@@ -638,6 +659,7 @@ impl Planet {
         self.fleet_withdrawal = FleetWithdrawal::Off;
         self.owned = None;
         self.controlled = None;
+        self.independent_population = IndependentPopulation::Empty;
         self.protection_permissions.clear();
         self.army.retain(|u, _| u.is_building());
         self.buy = Vec::new();
@@ -647,6 +669,7 @@ impl Planet {
     pub fn colonize(&mut self, player_id: PlayerId) {
         self.owned = Some(player_id);
         self.controlled = Some(player_id);
+        self.independent_population = IndependentPopulation::Empty;
         if !self.is_moon() && !self.has_buildings() {
             self.record_surface_building(Building::MetalMine);
             for building in [
@@ -667,6 +690,7 @@ impl Planet {
             self.protection_permissions.clear();
         }
         self.controlled = Some(player_id);
+        self.independent_population = IndependentPopulation::Empty;
         if self.owned != Some(player_id) {
             self.owned = None;
         }
@@ -945,6 +969,13 @@ impl Planet {
         self.army.iter().any(|(u, c)| u.is_ship() && *c > 0)
     }
 
+    /// Returns whether this unclaimed planet is defended by its generated inhabitants.
+    pub fn has_independent_population(&self) -> bool {
+        self.independent_population == IndependentPopulation::Inhabited
+            && self.owned.is_none()
+            && self.controlled.is_none()
+    }
+
     /// Returns the units associated with this player at this world.
     ///
     /// A controller uses the ordinary planet army. A foreign protector can dispatch only their
@@ -1024,6 +1055,7 @@ impl Planet {
     pub fn destroy(&mut self) {
         self.owned = None;
         self.controlled = None;
+        self.independent_population = IndependentPopulation::Empty;
         self.army.clear();
         self.protection_permissions.clear();
         self.buy = Vec::new();

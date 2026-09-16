@@ -550,7 +550,7 @@ fn combat_speed_step(speed: f32) -> i32 {
     speed.max(0.25).log2().round().clamp(-2.0, 6.0) as i32
 }
 
-/// Opens the two presentation preferences while either the gear or panel remains hovered.
+/// Opens combat presentation preferences while either the gear or panel remains hovered.
 fn combat_settings_popover(
     button: &egui::Response,
     settings: &mut Settings,
@@ -612,6 +612,28 @@ fn combat_settings_popover(
             })
             .inner;
         if volley_changed {
+            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+        }
+
+        ui.add_space(6.0);
+        let individuals_changed = ui
+            .horizontal(|ui| {
+                let label = ui
+                    .add(
+                        egui::Label::new(egui::RichText::new("Individual units").size(16.0))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Show every ship and defense separately")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if label.clicked() {
+                    settings.combat_individual_units = !settings.combat_individual_units;
+                }
+                let toggle =
+                    ui.add(crate::core::ui::utils::toggle(&mut settings.combat_individual_units));
+                label.clicked() || toggle.changed()
+            })
+            .inner;
+        if individuals_changed {
             set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
         }
         ui.ctx().data_mut(|data| data.insert_temp(id.with("dragging"), speed.dragged()));

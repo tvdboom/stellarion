@@ -9,6 +9,8 @@ use bevy_egui::egui::*;
 use crate::core::constants::BG_COLOR;
 use crate::utils::ToColor32;
 
+const HOVER_TOOLTIP_TEXT_SIZE: f32 = 20.0;
+
 #[derive(Resource, Default)]
 /// Egui texture identifiers registered from Bevy image handles.
 pub struct ImageIds(pub HashMap<String, TextureId>);
@@ -74,7 +76,7 @@ impl CustomResponse for Response {
     /// Handles the hover small interaction.
     fn on_hover_small(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
-            ui.small(text);
+            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
         })
     }
 
@@ -82,14 +84,14 @@ impl CustomResponse for Response {
     fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-            ui.small(text);
+            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
         })
     }
 
     /// Handles the disabled hover small interaction.
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
-            ui.small(text);
+            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
         })
     }
 
@@ -97,7 +99,7 @@ impl CustomResponse for Response {
     fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-            ui.small(text);
+            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
         })
     }
 }

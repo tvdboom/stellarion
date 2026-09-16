@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::constants::{MIN_SPY_PROBES, ORBITAL_RAILGUN_FIRE_ENERGY_COST};
 use crate::core::units::defense::Defense;
-use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::fauna::{encounter_threat, encounter_threat_budget, SpaceFauna};
 use crate::core::units::ships::Ship;
 use crate::core::units::Combat;
 use bevy::math::Vec2;
@@ -295,14 +295,277 @@ fn started_model(player_count: u8) -> GameModel {
 }
 
 #[test]
+fn independent_population_setting_marks_only_unclaimed_planets_for_first_contact() {
+    for enabled in [false, true] {
+        let model = GameModel::new(
+            [81; 32],
+            GameRules {
+                independent_populations: enabled,
+                ..GameRules::default()
+            },
+        )
+        .unwrap();
+        for planet in &model.map.planets {
+            let expected = if enabled && !planet.is_moon() && planet.owned.is_none() {
+                IndependentPopulation::Unrevealed
+            } else {
+                IndependentPopulation::Empty
+            };
+            assert_eq!(planet.independent_population, expected);
+        }
+        model.validate().unwrap();
+    }
+}
+
+#[test]
+fn first_contact_roll_is_fixed_and_uses_the_configured_eighty_percent_chance() {
+    let mut empty = 0;
+    let mut inhabited = 0;
+    for seed in 0..1_000_u64 {
+        let mut planet_rng = StdRng::seed_from_u64(seed ^ 0x5EED);
+        let mut planet = Planet::new_with_rng(
+            4,
+            "First Contact".to_owned(),
+            Vec2::ZERO,
+            false,
+            1.0,
+            &mut planet_rng,
+        );
+        planet.independent_population = IndependentPopulation::Unrevealed;
+        let mut contact_rng = StdRng::seed_from_u64(seed);
+        reveal_independent_population(11, Icon::Spy, &mut planet, &mut contact_rng);
+        match planet.independent_population {
+            IndependentPopulation::Empty => empty += 1,
+            IndependentPopulation::Inhabited => {
+                inhabited += 1;
+                assert!(independent_population_army_is_valid(planet.army.controller()));
+            },
+            IndependentPopulation::Unrevealed => panic!("first contact was not resolved"),
+        }
+
+        let fixed_state = planet.independent_population;
+        let fixed_army = planet.army.clone();
+        let mut later_rng = StdRng::seed_from_u64(seed.wrapping_add(10_000));
+        reveal_independent_population(100, Icon::Attack, &mut planet, &mut later_rng);
+        assert_eq!(planet.independent_population, fixed_state);
+        assert_eq!(planet.army, fixed_army);
+    }
+    assert!((170..=230).contains(&empty), "unexpected empty count: {empty}");
+    assert_eq!(empty + inhabited, 1_000);
+}
+
+#[test]
+fn independent_formations_scale_but_never_exceed_cruisers_or_gauss_cannons() {
+    let mut early_strength = 0_u128;
+    let mut late_strength = 0_u128;
+    let mut saw_cruiser = false;
+    let mut saw_gauss = false;
+    for seed in 0..256_u64 {
+        let mut early_rng = StdRng::seed_from_u64(seed);
+        let early = independent_population_garrison(1, &mut early_rng);
+        let mut late_rng = StdRng::seed_from_u64(seed);
+        let late = independent_population_garrison(30, &mut late_rng);
+        assert!(independent_population_army_is_valid(&early));
+        assert!(independent_population_army_is_valid(&late));
+        for army in [&early, &late] {
+            for building in [
+                Building::MetalMine,
+                Building::CrystalMine,
+                Building::DeuteriumSynthesizer,
+                Building::Reactor,
+            ] {
+                assert_eq!(army.amount(&Unit::Building(building)), 1);
+            }
+        }
+        assert_eq!(early.amount(&Unit::Ship(Ship::Cruiser)), 0);
+        assert_eq!(early.amount(&Unit::Defense(Defense::GaussCannon)), 0);
+        saw_cruiser |= late.amount(&Unit::Ship(Ship::Cruiser)) > 0;
+        saw_gauss |= late.amount(&Unit::Defense(Defense::GaussCannon)) > 0;
+        early_strength += early.total_production() as u128;
+        late_strength += late.total_production() as u128;
+    }
+    assert!(saw_cruiser && saw_gauss);
+    assert!(late_strength > early_strength * 2);
+}
+
+#[test]
+fn conquering_an_independent_population_consumes_the_colony_ship_and_keeps_basic_mines() {
+    let mut model = started_model(2);
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let basic_buildings = [
+        Building::MetalMine,
+        Building::CrystalMine,
+        Building::DeuteriumSynthesizer,
+        Building::Reactor,
+    ];
+    let target_position = model.map.get(target).position;
+    let planet = model.map.get_mut(target);
+    planet.independent_population = IndependentPopulation::Inhabited;
+    planet.army = basic_buildings
+        .into_iter()
+        .map(|building| (Unit::Building(building), 1))
+        .chain([(Unit::Ship(Ship::LightFighter), 1)])
+        .collect::<Army>()
+        .into();
+    let mut mission = Mission::new_with_id(
+        81,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(target),
+        Icon::Colonize,
+        Army::from([(Unit::war_sun(), 8), (Unit::colony_ship(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = target_position;
+    model.missions.push(mission);
+    assert!(independent_population_army_is_valid(model.map.get(target).army.controller()));
+    model.validate().unwrap();
+
+    empty_turn(&mut model);
+
+    let planet = model.map.get(target);
+    assert_eq!((planet.owned, planet.controlled), (Some(owner), Some(owner)));
+    assert_eq!(planet.independent_population, IndependentPopulation::Empty);
+    assert_eq!(planet.army.amount(&Unit::colony_ship()), 0);
+    for building in basic_buildings {
+        assert_eq!(planet.army.amount(&Unit::Building(building)), 1);
+    }
+    let report = model.players[0].reports.last().unwrap();
+    assert!(report.is_independent_population_encounter());
+    assert_eq!(
+        report.independent_population_name(),
+        Some(format!("{} Population", report.planet.name))
+    );
+    assert!(report.planet_colonized);
+    model.validate().unwrap();
+}
+
+#[test]
+fn failed_attack_permanently_removes_independent_population_casualties() {
+    let mut model = started_model(2);
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let initial_combat_units = 38;
+    let target_position = model.map.get(target).position;
+    let planet = model.map.get_mut(target);
+    planet.independent_population = IndependentPopulation::Inhabited;
+    planet.army = Army::from([
+        (Unit::Building(Building::MetalMine), 1),
+        (Unit::Building(Building::CrystalMine), 1),
+        (Unit::Building(Building::DeuteriumSynthesizer), 1),
+        (Unit::Building(Building::Reactor), 1),
+        (Unit::Ship(Ship::Cruiser), 8),
+        (Unit::Defense(Defense::RocketLauncher), 30),
+    ])
+    .into();
+    let mut mission = Mission::new_with_id(
+        82,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(target),
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 10)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = target_position;
+    model.missions.push(mission);
+    assert!(independent_population_army_is_valid(model.map.get(target).army.controller()));
+    model.validate().unwrap();
+
+    empty_turn(&mut model);
+
+    let report = model.players[0].reports.last().unwrap();
+    assert!(report.is_independent_population_encounter());
+    assert_eq!(report.status(&model.players[0]), "defeat");
+    assert!(report.can_see(&crate::core::combat::report::Side::Attacker, owner));
+    assert!(!report.can_see(&crate::core::combat::report::Side::Defender, owner));
+    assert_eq!(report.scout_probes, 0);
+    let planet = model.map.get(target);
+    let intelligence = model.players[0].last_info(planet, &model.missions).unwrap();
+    assert!(intelligence.army.iter().all(|(_, count)| *count == 0));
+    assert_eq!(planet.independent_population, IndependentPopulation::Inhabited);
+    assert_eq!((planet.owned, planet.controlled), (None, None));
+    let remaining_combat_units = planet
+        .army
+        .iter()
+        .filter(|(unit, _)| !unit.is_building())
+        .map(|(_, count)| *count)
+        .sum::<usize>();
+    assert!(remaining_combat_units > 0);
+    assert!(remaining_combat_units < initial_combat_units);
+    let remaining_army = planet.army.clone();
+
+    let loaded = PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
+    let persisted = loaded.state.map.get(target);
+    assert_eq!(persisted.independent_population, IndependentPopulation::Inhabited);
+    assert_eq!(persisted.army, remaining_army);
+}
+
+#[test]
 fn space_fauna_are_shieldless_high_hull_combatants() {
     let fauna = SpaceFauna::iter().collect::<Vec<_>>();
-    assert_eq!(fauna.len(), 15);
+    assert_eq!(fauna.len(), 16);
+    let destroyer_shield = Unit::Ship(Ship::Destroyer).shield();
     for creature in fauna {
         assert_eq!(creature.shield(), 0);
-        assert!(creature.hull() > creature.damage() * 5);
-        assert!(creature.damage() > 0);
+        assert!(creature.hull() > creature.damage() * 2);
+        assert!(creature.damage() > destroyer_shield * 2);
+        assert!(creature.rapid_fire().is_empty());
     }
+    let war_sun_shield = Unit::war_sun().shield();
+    assert!(SpaceFauna::StarDragonWyrmling.damage() > war_sun_shield);
+    assert!(SpaceFauna::SolarRoc.damage() > war_sun_shield * 3);
+    assert!(SpaceFauna::ElderStarDragon.damage() > war_sun_shield * 5);
+
+    let behemoth = SpaceFauna::NullstarBehemoth;
+    let dreadnought = Unit::Ship(Ship::Dreadnought);
+    let war_sun = Unit::war_sun();
+    assert!(behemoth.damage() >= dreadnought.hull() + dreadnought.shield());
+    assert!(behemoth.damage() < war_sun.hull() + war_sun.shield());
+    assert!(behemoth.damage() * 2 >= war_sun.hull() + war_sun.shield());
+}
+
+#[test]
+fn nullstar_behemoths_are_late_game_and_always_encountered_alone() {
+    let behemoth = Unit::Fauna(SpaceFauna::NullstarBehemoth);
+    let mut found = false;
+
+    for turn in 1..=150 {
+        for seed in 0..512_u64 {
+            let (name, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
+            if formation.contains_key(&behemoth) {
+                assert!(turn >= 50, "Nullstar Behemoth appeared on turn {turn}");
+                assert_eq!(name, "Lone Nullstar Behemoth");
+                assert_eq!(formation, Army::from([(behemoth, 1)]));
+                found = true;
+            }
+        }
+    }
+
+    assert!(found, "late-game encounter rolls never selected the Nullstar Behemoth");
 }
 
 #[test]
@@ -316,24 +579,143 @@ fn fauna_formations_include_adult_and_offspring_variants() {
     ];
     let mut found = [false; 5];
 
-    for turn in [5, 10, 17, 30] {
+    for turn in [5, 10, 17, 50] {
         for seed in 0..512 {
             let mut rng = StdRng::seed_from_u64(seed);
             let (_, army) = encounter_formation(turn, &mut rng);
             for (index, (adult, offspring)) in pairs.iter().enumerate() {
-                found[index] |= army.get(&Unit::Fauna(*adult)).copied().unwrap_or(0) == 1
+                found[index] |= army.get(&Unit::Fauna(*adult)).copied().unwrap_or(0) >= 1
                     && army.get(&Unit::Fauna(*offspring)).copied().unwrap_or(0) >= 2;
             }
         }
     }
 
     assert!(found.into_iter().all(|present| present));
+
+    let mut apex_found = [false; 2];
+    for seed in 0..512 {
+        let (_, army) = encounter_formation(50, &mut StdRng::seed_from_u64(seed));
+        apex_found[0] |= army.contains_key(&Unit::Fauna(SpaceFauna::SolarRoc));
+        apex_found[1] |= army.contains_key(&Unit::Fauna(SpaceFauna::ElderStarDragon));
+    }
+    assert!(apex_found.into_iter().all(|present| present));
 }
 
 #[test]
-fn fauna_encounters_skip_launch_and_arrival_and_happen_only_once() {
+fn fauna_formations_stay_gentle_through_turn_four_then_ramp_quickly() {
+    fn combat_profile(army: &Army) -> (usize, usize) {
+        army.iter().fold((0_usize, 0_usize), |(hull, damage), (unit, count)| {
+            (
+                hull.saturating_add(unit.hull().saturating_mul(*count)),
+                damage.saturating_add(unit.damage().saturating_mul(*count)),
+            )
+        })
+    }
+
+    let light_fighter = Unit::Ship(Ship::LightFighter);
+    let cruiser = Unit::Ship(Ship::Cruiser);
+    for seed in 0..512_u64 {
+        let (_, opening) = encounter_formation(1, &mut StdRng::seed_from_u64(seed));
+        assert_eq!(opening.values().sum::<usize>(), 1);
+        assert_eq!(combat_profile(&opening), (90, 25));
+        assert!(combat_profile(&opening).0 < light_fighter.hull() * 2);
+
+        for turn in 1..=4 {
+            let (_, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
+            let threat = formation.iter().fold(0_usize, |total, (unit, count)| {
+                let Unit::Fauna(creature) = unit else {
+                    panic!("encounter formation contained a non-fauna unit");
+                };
+                total + encounter_threat(*creature) * count
+            });
+            assert!(threat <= 5, "turn {turn}, seed {seed}: opening threat was {threat}");
+            assert_eq!(formation.get(&Unit::Fauna(SpaceFauna::NebulaGrazer)), None);
+        }
+
+        let (_, turn_ten) = encounter_formation(10, &mut StdRng::seed_from_u64(seed));
+        let turn_ten_profile = combat_profile(&turn_ten);
+        assert!(
+            turn_ten_profile.0 >= cruiser.hull() && turn_ten_profile.1 >= cruiser.damage(),
+            "seed {seed}: expected turn-ten fauna to reach cruiser strength, got {turn_ten_profile:?}"
+        );
+    }
+}
+
+#[test]
+fn fauna_formation_titles_describe_the_finished_creature_count() {
+    for turn in 1..=100 {
+        for seed in 0..512_u64 {
+            let (name, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
+            let total = formation.values().sum::<usize>();
+            let is_explicit_pair = name.ends_with(" Pair")
+                || (name.contains(" and ") && !name.ends_with(" and Companions"));
+
+            assert_eq!(
+                name.starts_with("Lone "),
+                total == 1,
+                "turn {turn}, seed {seed}: {name:?} described {total} creatures"
+            );
+            assert_eq!(
+                is_explicit_pair,
+                total == 2,
+                "turn {turn}, seed {seed}: {name:?} described {total} creatures"
+            );
+            if name == "Nebula Grazer Family" {
+                let grazers =
+                    formation.get(&Unit::Fauna(SpaceFauna::NebulaGrazer)).copied().unwrap_or(0)
+                        + formation
+                            .get(&Unit::Fauna(SpaceFauna::NebulaGrazerCalf))
+                            .copied()
+                            .unwrap_or(0);
+                assert!((2..=3).contains(&grazers));
+            }
+        }
+    }
+}
+
+#[test]
+fn fauna_formations_follow_the_opening_grace_period_and_late_game_cap() {
+    for seed in 0..512_u64 {
+        for turn in 1..=100 {
+            let (_, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
+            let actual_threat = formation.iter().fold(0_usize, |total, (unit, count)| {
+                let Unit::Fauna(creature) = unit else {
+                    panic!("encounter formation contained a non-fauna unit");
+                };
+                total.saturating_add(encounter_threat(*creature).saturating_mul(*count))
+            });
+            let target = encounter_threat_budget(turn);
+            if formation.contains_key(&Unit::Fauna(SpaceFauna::NullstarBehemoth)) {
+                assert_eq!(actual_threat, encounter_threat(SpaceFauna::NullstarBehemoth));
+                assert!(actual_threat <= target);
+            } else {
+                assert_eq!(actual_threat, target);
+            }
+        }
+    }
+
+    assert_eq!(encounter_threat_budget(1), 2);
+    assert_eq!(encounter_threat_budget(2), 3);
+    assert_eq!(encounter_threat_budget(4), 5);
+    assert_eq!(encounter_threat_budget(5), 8);
+    assert_eq!(encounter_threat_budget(6), 11);
+    assert_eq!(encounter_threat_budget(10), 23);
+    assert_eq!(encounter_threat_budget(20), 29);
+    assert_eq!(encounter_threat_budget(30), 36);
+    assert_eq!(encounter_threat_budget(40), 43);
+    assert_eq!(encounter_threat_budget(49), 49);
+    assert_eq!(encounter_threat_budget(50), 50);
+    assert_eq!(encounter_threat_budget(60), 54);
+    assert_eq!(encounter_threat_budget(75), 60);
+    assert_eq!(encounter_threat_budget(100), 70);
+    assert_eq!(encounter_threat_budget(150), 70);
+}
+
+#[test]
+fn fauna_encounters_roll_on_full_turns_between_launch_and_arrival() {
     let mut model = started_model(2);
-    model.rules.space_fauna_percent = 30;
+    // The resolver accepts a direct percentage; 100 makes this scheduling test deterministic.
+    model.rules.space_fauna_percent = 100;
     let owner = model.players[0].id;
     let origin = model.players[0].home_planet;
     let destination = model.players[1].home_planet;
@@ -355,50 +737,264 @@ fn fauna_encounters_skip_launch_and_arrival_and_happen_only_once() {
     mission.position = origin_position + Vec2::X * Planet::SIZE;
     model.missions.push(mission);
     let mut rng = StdRng::seed_from_u64(0xFA_u64);
-    let turn = model.turn as usize;
+    let first_turn = model.turn as usize;
 
-    for _ in 0..100 {
-        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
-    }
+    resolve_space_fauna_encounters(&mut model, first_turn, &mut rng);
     assert!(model.players[0].reports.is_empty(), "launch turn must be safe");
 
     model.missions[0].travel_turns = 1;
-    for _ in 0..100 {
-        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
-        if model.missions[0].fauna_encountered {
-            break;
-        }
-    }
-    assert!(model.missions[0].fauna_encountered);
+    resolve_space_fauna_encounters(&mut model, first_turn, &mut rng);
+    assert!(model.missions[0].army.has_army());
+
+    model.missions[0].travel_turns = 2;
+    resolve_space_fauna_encounters(&mut model, first_turn + 1, &mut rng);
+    assert!(model.missions[0].army.has_army());
+
     let reports = model.players[0]
         .reports
         .iter()
         .filter(|report| report.is_space_fauna_encounter())
         .collect::<Vec<_>>();
-    assert_eq!(reports.len(), 1);
-    assert!(reports[0].surviving_attacker.has_army());
+    assert_eq!(reports.len(), 2);
+    assert_eq!(
+        reports.iter().map(|report| report.turn).collect::<Vec<_>>(),
+        [first_turn, first_turn + 1]
+    );
+    assert!(reports.iter().all(|report| report.surviving_attacker.has_army()));
 
-    for _ in 0..100 {
-        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
-    }
+    let destination_position = model.map.get(destination).position;
+    let mission = &mut model.missions[0];
+    mission.position = destination_position - Vec2::X * Planet::SIZE;
+    assert_eq!(mission.turns_to_destination(&model.map), 1);
+    resolve_space_fauna_encounters(&mut model, first_turn + 2, &mut rng);
+    assert_eq!(
+        model.players[0].reports.iter().filter(|report| report.is_space_fauna_encounter()).count(),
+        2,
+        "arrival turn must be safe"
+    );
+}
+
+#[test]
+fn next_turn_arrival_has_no_fauna_encounter() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    let army = Army::from([(Unit::war_sun(), 50)]);
+    let speed = Unit::war_sun().speed();
+    model.map.get_mut(destination).position =
+        origin_position + Vec2::X * Planet::SIZE * (speed * 2.0 + 1.4);
+    let mission = Mission::new_with_id(
+        93,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        army,
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(mission.turns_to_destination(&model.map), 2);
+    model.missions.push(mission);
+
+    let turn = model.turn as usize;
+    let mut rng = StdRng::seed_from_u64(0x0FA2);
+    resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+    assert!(model.players[0].reports.is_empty(), "launch turn must be safe");
+
+    model.missions[0].advance(&model.map);
+    assert_eq!(model.missions[0].turns_to_destination(&model.map), 1);
+    resolve_space_fauna_encounters(&mut model, turn + 1, &mut rng);
+    assert!(model.players[0].reports.is_empty(), "arrival turn must be safe");
+}
+
+#[test]
+fn one_full_turn_between_launch_and_arrival_rolls_once() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    let army = Army::from([(Unit::war_sun(), 50)]);
+    let speed = Unit::war_sun().speed();
+    model.map.get_mut(destination).position =
+        origin_position + Vec2::X * Planet::SIZE * (speed * 3.0 + 1.4);
+    let mission = Mission::new_with_id(
+        95,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        army,
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(mission.turns_to_destination(&model.map), 3);
+    model.missions.push(mission);
+
+    let turn = model.turn as usize;
+    let mut rng = StdRng::seed_from_u64(0x0FA4);
+    resolve_space_fauna_encounters(&mut model, turn, &mut rng);
+    assert!(model.players[0].reports.is_empty(), "launch turn must be safe");
+
+    model.missions[0].advance(&model.map);
+    assert_eq!(model.missions[0].turns_to_destination(&model.map), 2);
+    resolve_space_fauna_encounters(&mut model, turn + 1, &mut rng);
     assert_eq!(
         model.players[0].reports.iter().filter(|report| report.is_space_fauna_encounter()).count(),
         1
     );
 
-    let destination_position = model.map.get(destination).position;
-    let mission = &mut model.missions[0];
-    mission.fauna_encountered = false;
-    mission.position = destination_position - Vec2::X * Planet::SIZE;
-    assert_eq!(mission.turns_to_destination(&model.map), 1);
-    for _ in 0..100 {
-        resolve_space_fauna_encounters(&mut model, turn, &mut rng);
-    }
+    model.missions[0].advance(&model.map);
+    assert_eq!(model.missions[0].turns_to_destination(&model.map), 1);
+    resolve_space_fauna_encounters(&mut model, turn + 2, &mut rng);
     assert_eq!(
         model.players[0].reports.iter().filter(|report| report.is_space_fauna_encounter()).count(),
         1,
-        "arrival turn must be safe"
+        "arrival turn must not roll again"
     );
+}
+
+#[test]
+fn spy_probes_withdraw_after_one_fauna_round_and_continue() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(destination).position = origin_position + Vec2::X * Planet::SIZE * 40.0;
+    let mut mission = Mission::new_with_id(
+        92,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Spy,
+        Army::from([(Unit::probe(), 1_000)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = origin_position + Vec2::X * Planet::SIZE;
+    mission.travel_turns = 1;
+    model.missions.push(mission);
+
+    let turn = model.turn as usize;
+    resolve_space_fauna_encounters(&mut model, turn, &mut StdRng::seed_from_u64(0xBEEF));
+
+    let report = model.players[0].reports.last().unwrap();
+    assert!(report.is_space_fauna_encounter());
+    assert!(!report.mission.combat_probes);
+    assert!(report.scout_probes > 0);
+    let combat = report.combat_report.as_ref().unwrap();
+    assert_eq!(combat.rounds.len(), 1);
+    let mission = &model.missions[0];
+    assert_eq!(mission.id, 92);
+    assert_eq!(mission.objective, Icon::Spy);
+    assert_eq!(mission.army.amount(&Unit::probe()), report.scout_probes);
+}
+
+#[test]
+fn deep_cover_and_missile_strikes_never_encounter_space_fauna() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(destination).position = origin_position + Vec2::X * Planet::SIZE * 40.0;
+
+    for (id, objective, army, deep_cover) in [
+        (93, Icon::Spy, Army::from([(Unit::probe(), 20)]), true),
+        (94, Icon::MissileStrike, Army::from([(Unit::interplanetary_missile(), 20)]), false),
+    ] {
+        let mut mission = Mission::new_with_id(
+            id,
+            model.turn as usize,
+            owner,
+            model.map.get(origin),
+            model.map.get(destination),
+            objective,
+            army,
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = origin_position + Vec2::X * Planet::SIZE;
+        mission.travel_turns = 1;
+        mission.deep_cover = deep_cover;
+        model.missions.push(mission);
+    }
+
+    let turn = model.turn as usize;
+    resolve_space_fauna_encounters(&mut model, turn, &mut StdRng::seed_from_u64(0x0FA3));
+
+    assert!(model.players[0].reports.is_empty());
+    assert_eq!(model.missions.len(), 2);
+    assert!(model.missions.iter().any(|mission| mission.id == 93 && mission.deep_cover));
+    assert!(model
+        .missions
+        .iter()
+        .any(|mission| mission.id == 94 && mission.objective == Icon::MissileStrike));
+}
+
+#[test]
+fn colony_ships_without_combat_escorts_always_lose_fauna_encounters() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(destination).position = origin_position + Vec2::X * Planet::SIZE * 40.0;
+
+    for (id, army) in [
+        (96, Army::from([(Unit::colony_ship(), 1)])),
+        (97, Army::from([(Unit::colony_ship(), 2), (Unit::probe(), 1_000)])),
+    ] {
+        let mut mission = Mission::new_with_id(
+            id,
+            model.turn as usize,
+            owner,
+            model.map.get(origin),
+            model.map.get(destination),
+            Icon::Colonize,
+            army,
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        );
+        mission.position = origin_position + Vec2::X * Planet::SIZE;
+        mission.travel_turns = 1;
+        model.missions.push(mission);
+    }
+
+    let turn = model.turn as usize;
+    resolve_space_fauna_encounters(&mut model, turn, &mut StdRng::seed_from_u64(0x0FA5));
+
+    assert!(model.missions.is_empty());
+    let reports = model.players[0]
+        .reports
+        .iter()
+        .filter(|report| report.is_space_fauna_encounter())
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 2);
+    assert!(reports.iter().all(|report| {
+        !report.surviving_attacker.has_army() && report.surviving_defender.has_army()
+    }));
 }
 
 #[test]
@@ -1068,6 +1664,32 @@ fn local_practice_resolves_immediately_and_stays_active() {
 }
 
 #[test]
+/// Multi-player practice uses the normal elimination victory condition.
+fn two_player_local_practice_finishes_when_one_empire_survives() {
+    let mut model = GameModel::new(
+        [2; 32],
+        GameRules {
+            player_count: 2,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let defeated_home = model.players[1].home_planet;
+    let planet = model.map.get_mut(defeated_home);
+    planet.owned = Some(1);
+    planet.controlled = Some(1);
+    model.players[1].spectator = true;
+
+    let result = resolve_turn(&mut model, &[TurnSubmission::new(1, 1, Vec::new())]).unwrap();
+
+    assert!(result.finished);
+    assert_eq!(result.winner, Some(1));
+    assert_eq!(model.status, MatchStatus::Finished);
+}
+
+#[test]
 fn testing_boost_affects_owned_planets_and_all_buildings_on_controlled_moons() {
     let mut model = GameModel::new(
         [1; 32],
@@ -1314,10 +1936,14 @@ fn recycler_salvage_bypasses_empire_grid_brownouts() {
 #[test]
 /// Persists practice mode explicitly and accepts every locally controlled player count.
 fn practice_rules_are_explicit() {
-    let json = serde_json::to_value(GameRules::default()).unwrap();
+    let mut json = serde_json::to_value(GameRules::default()).unwrap();
     assert_eq!(json.get("practice_mode"), Some(&serde_json::json!(false)));
-    let loaded: GameRules = serde_json::from_value(json).unwrap();
+    assert_eq!(json.get("independent_populations"), Some(&serde_json::json!(false)));
+    let loaded: GameRules = serde_json::from_value(json.clone()).unwrap();
     assert!(!loaded.practice_mode);
+    json.as_object_mut().unwrap().remove("independent_populations");
+    let legacy: GameRules = serde_json::from_value(json).unwrap();
+    assert!(!legacy.independent_populations);
     for player_count in 1..=4 {
         assert!(GameModel::new(
             [player_count; 32],
@@ -2766,6 +3392,27 @@ fn territory_wins_on_threshold_without_eliminating_opponents_and_survives_save()
             PersistedGame::from_json(PersistedGame::new(model).to_json().unwrap()).unwrap();
         assert_eq!(loaded.state.winner(), Some(owner));
     }
+}
+
+#[test]
+fn two_player_local_practice_uses_the_normal_territorial_victory_condition() {
+    let mut model = GameModel::new(
+        [92; 32],
+        GameRules {
+            player_count: 2,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let target = model.planets_to_win();
+    give_territory(&mut model, 2, target);
+
+    let result = empty_turn(&mut model);
+
+    assert!(result.finished);
+    assert_eq!(result.winner, Some(2));
 }
 
 #[test]
