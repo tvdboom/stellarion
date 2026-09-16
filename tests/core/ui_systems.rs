@@ -3135,6 +3135,7 @@ fn strategic_hud_panels_scale_with_viewports() {
     let small =
         panel_metrics(egui::vec2(HUD_REFERENCE_WIDTH * 0.9, HUD_REFERENCE_HEIGHT * HUD_MIN_SCALE));
     let large = panel_metrics(egui::vec2(HUD_REFERENCE_WIDTH * 2.0, HUD_REFERENCE_HEIGHT * 2.0));
+    let large_world_scale = 2.0;
 
     assert_eq!(strategic_hud_scale(egui::vec2(800.0, 600.0)), HUD_MIN_SCALE);
     assert_eq!(
@@ -3142,7 +3143,7 @@ fn strategic_hud_panels_scale_with_viewports() {
         HUD_MAX_SCALE
     );
     assert!(
-        (large.0.width() / baseline.0.width() - HUD_MAX_SCALE).abs() < 0.02,
+        (large.0.width() / baseline.0.width() - large_world_scale).abs() < 0.02,
         "world panel did not scale proportionally: baseline={:?}, large={:?}",
         baseline.0,
         large.0
@@ -3164,10 +3165,10 @@ fn strategic_hud_panels_scale_with_viewports() {
     assert!((large.2 - baseline.2 * HUD_MAX_SCALE).length() < 0.01);
     assert_eq!(baseline.3, egui::Vec2::splat(30.0));
     assert_eq!(small.3, baseline.3);
-    assert_eq!(large.3, baseline.3 * HUD_MAX_SCALE);
+    assert_eq!(large.3, baseline.3 * large_world_scale);
     assert_eq!(small.0, baseline.0);
     assert!(small.1.height() < baseline.1.height());
-    let expected_world_position = baseline.0.min * HUD_MAX_SCALE;
+    let expected_world_position = baseline.0.min * large_world_scale;
     assert!((large.0.min.x - expected_world_position.x).abs() < 1.0);
     assert!((large.0.min.y - expected_world_position.y).abs() < 1.0);
     assert!((large.1.top() - RESOURCE_BAR_TOP * HUD_MAX_SCALE).abs() < 1.0);

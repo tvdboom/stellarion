@@ -853,9 +853,9 @@ pub(crate) fn strategic_hud_scale(viewport: egui::Vec2) -> f32 {
         .clamp(HUD_MIN_SCALE, HUD_MAX_SCALE)
 }
 
-/// Keeps the world shortcuts readable on short screens while still growing them on large ones.
+/// Keeps the left-side HUD readable on short screens and proportional on large ones.
 fn owned_worlds_hud_scale(viewport: egui::Vec2) -> f32 {
-    strategic_hud_scale(viewport).max(1.0)
+    (viewport.x / HUD_REFERENCE_WIDTH).min(viewport.y / HUD_REFERENCE_HEIGHT).max(1.0)
 }
 
 /// Matches the clear space between the resource bar and the world shortcuts.
