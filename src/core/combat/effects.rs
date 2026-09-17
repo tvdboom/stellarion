@@ -43,7 +43,7 @@ const REPAIR_READOUT_PROGRESS: f32 = 0.45;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Weapon {
+pub(crate) enum Weapon {
     Laser,
     HeavyLaser,
     TwinLaser,
@@ -68,7 +68,7 @@ enum Weapon {
 }
 
 impl Weapon {
-    fn for_unit(unit: Unit) -> Self {
+    pub(crate) fn for_unit(unit: Unit) -> Self {
         match unit {
             Unit::Ship(ship) => match ship {
                 Ship::Probe | Ship::ColonyShip | Ship::LightFighter => Self::Laser,
@@ -106,7 +106,7 @@ impl Weapon {
         }
     }
 
-    fn color(self) -> Color {
+    pub(crate) fn color(self) -> Color {
         match self {
             Self::Laser | Self::HeavyLaser | Self::TwinLaser => Color::srgb(1.0, 0.22, 0.3),
             Self::Repeater => ICE,
@@ -165,7 +165,7 @@ impl Weapon {
         }
     }
 
-    fn beam_width(self) -> Option<f32> {
+    pub(crate) fn beam_width(self) -> Option<f32> {
         match self {
             Self::Plasma => Some(0.11),
             Self::Ion => Some(0.085),
@@ -218,7 +218,7 @@ impl Weapon {
         }
     }
 
-    fn projectile_size(self, size: f32) -> Vec2 {
+    pub(crate) fn projectile_size(self, size: f32) -> Vec2 {
         size * match self {
             Self::Laser => Vec2::new(0.55, 0.06),
             Self::HeavyLaser => Vec2::new(0.55, 0.09),
@@ -244,7 +244,7 @@ impl Weapon {
         }
     }
 
-    fn launch_cue(self) -> Option<PlayAudioMsg> {
+    pub(crate) fn launch_cue(self) -> Option<PlayAudioMsg> {
         match self {
             // Gain and pitch climb with weapon mass. Small fighters remain the reference;
             // heavier weapons stay at least as forceful even when their source recording is
@@ -270,6 +270,75 @@ impl Weapon {
             Self::FaunaExtinction => Some(PlayAudioMsg::new("fauna roar").rate(0.52).gain(-3.0)),
             _ => None,
         }
+    }
+}
+
+/// Creature weapon accents shared by combat playback and the short strategic-map encounter.
+#[derive(Clone, Copy)]
+pub(crate) enum WeaponTrail {
+    Glow(Vec3, f32, Color, f32),
+    Ring(Vec3, f32, Color, f32),
+    Beam(Vec3, Vec3, f32, Color, f32),
+    Sparks(Vec3, f32, Color, usize),
+}
+
+/// Samples the same electrical filaments, pressure rings, plasma and fire in both views.
+/// The callback keeps per-frame sampling allocation-free.
+pub(crate) fn fauna_weapon_trail(
+    weapon: Weapon,
+    origin: Vec3,
+    position: Vec3,
+    size: f32,
+    elapsed: f32,
+    progress: f32,
+    mut emit: impl FnMut(WeaponTrail),
+) {
+    let color = weapon.color();
+    match weapon {
+        Weapon::Ion | Weapon::FaunaLightning => {
+            let direction = position - origin;
+            let normal = Vec3::new(-direction.y, direction.x, 0.).normalize_or_zero();
+            let mut previous = origin;
+            for i in 1..=7 {
+                let t = i as f32 / 7.;
+                let offset = if i == 7 {
+                    0.
+                } else {
+                    (elapsed * 45. + i as f32 * 2.3).sin() * size * 0.035
+                };
+                let point = origin.lerp(position, t) + normal * offset;
+                emit(WeaponTrail::Beam(previous, point, size * 0.012, ICE, 0.06));
+                previous = point;
+            }
+        },
+        Weapon::FaunaSonic => emit(WeaponTrail::Ring(
+            position,
+            size * (0.3 + progress * 0.45),
+            color.with_alpha(0.55),
+            0.2,
+        )),
+        Weapon::FaunaBioPlasma => {
+            emit(WeaponTrail::Glow(position, size * 0.3, color.with_alpha(0.7), 0.2));
+        },
+        Weapon::FaunaGravity => {
+            emit(WeaponTrail::Ring(position, size * 0.72, color.with_alpha(0.45), 0.28));
+        },
+        Weapon::FaunaVoid => emit(WeaponTrail::Sparks(position, size * 0.38, color, 4)),
+        Weapon::FaunaFire => {
+            emit(WeaponTrail::Glow(position, size * 0.55, color.with_alpha(0.7), 0.18));
+            emit(WeaponTrail::Sparks(position, size * 0.45, GOLD, 3));
+        },
+        Weapon::FaunaExtinction => {
+            emit(WeaponTrail::Ring(
+                position,
+                size * (0.48 + progress * 0.72),
+                color.with_alpha(0.58),
+                0.22,
+            ));
+            emit(WeaponTrail::Glow(position, size * 0.78, Color::WHITE, 0.16));
+            emit(WeaponTrail::Sparks(position, size * 0.55, color, 5));
+        },
+        _ => {},
     }
 }
 
@@ -455,16 +524,16 @@ pub struct CombatReadout {
 /// Shared procedural masks; no downloads or per-frame images.
 #[derive(Default)]
 pub struct EffectTextures {
-    glow: Handle<Image>,
-    ring: Handle<Image>,
-    shard: Handle<Image>,
-    beam: Handle<Image>,
-    missile: Handle<Image>,
+    pub(crate) glow: Handle<Image>,
+    pub(crate) ring: Handle<Image>,
+    pub(crate) shard: Handle<Image>,
+    pub(crate) beam: Handle<Image>,
+    pub(crate) missile: Handle<Image>,
     ready: bool,
 }
 
 impl EffectTextures {
-    fn initialize(&mut self, images: &mut Assets<Image>) {
+    pub(crate) fn initialize(&mut self, images: &mut Assets<Image>) {
         if self.ready {
             return;
         }
@@ -1332,22 +1401,6 @@ pub fn run_combat_animations(
                         0.12,
                     );
                 },
-                Weapon::Ion | Weapon::FaunaLightning => {
-                    // A segmented electrical filament distinguishes ion fire from plasma.
-                    let normal = Vec3::new(-direction.y, direction.x, 0.).normalize_or_zero();
-                    let mut previous = impact.origin;
-                    for i in 1..=7 {
-                        let t = i as f32 / 7.;
-                        let offset = if i == 7 {
-                            0.
-                        } else {
-                            (impact.elapsed * 45. + i as f32 * 2.3).sin() * impact.size * 0.035
-                        };
-                        let point = impact.origin.lerp(position, t) + normal * offset;
-                        painter.beam(previous, point, impact.size * 0.012, ICE, 0.06);
-                        previous = point;
-                    }
-                },
                 Weapon::Solar | Weapon::Siege => {
                     painter.glow(
                         position,
@@ -1361,52 +1414,35 @@ pub fn run_combat_animations(
                         0.13,
                     );
                 },
-                Weapon::FaunaSonic => {
-                    painter.ring(
-                        position,
-                        impact.size * (0.3 + p * 0.45),
-                        impact.weapon.color().with_alpha(0.55),
-                        0.2,
-                    );
-                },
-                Weapon::FaunaBioPlasma => {
-                    painter.glow(
-                        position,
-                        impact.size * 0.3,
-                        impact.weapon.color().with_alpha(0.7),
-                        0.2,
-                    );
-                },
-                Weapon::FaunaGravity => {
-                    painter.ring(
-                        position,
-                        impact.size * 0.72,
-                        impact.weapon.color().with_alpha(0.45),
-                        0.28,
-                    );
-                },
-                Weapon::FaunaVoid => {
-                    painter.sparks(position, impact.size * 0.38, impact.weapon.color(), 4, false);
-                },
-                Weapon::FaunaFire => {
-                    painter.glow(
-                        position,
-                        impact.size * 0.55,
-                        impact.weapon.color().with_alpha(0.7),
-                        0.18,
-                    );
-                    painter.sparks(position, impact.size * 0.45, GOLD, 3, false);
-                },
-                Weapon::FaunaExtinction => {
-                    painter.ring(
-                        position,
-                        impact.size * (0.48 + p * 0.72),
-                        impact.weapon.color().with_alpha(0.58),
-                        0.22,
-                    );
-                    painter.glow(position, impact.size * 0.78, Color::WHITE, 0.16);
-                    painter.sparks(position, impact.size * 0.55, impact.weapon.color(), 5, false);
-                },
+                Weapon::Ion
+                | Weapon::FaunaSonic
+                | Weapon::FaunaLightning
+                | Weapon::FaunaBioPlasma
+                | Weapon::FaunaGravity
+                | Weapon::FaunaVoid
+                | Weapon::FaunaFire
+                | Weapon::FaunaExtinction => fauna_weapon_trail(
+                    impact.weapon,
+                    impact.origin,
+                    position,
+                    impact.size,
+                    impact.elapsed,
+                    p,
+                    |trail| match trail {
+                        WeaponTrail::Glow(at, size, color, life) => {
+                            painter.glow(at, size, color, life)
+                        },
+                        WeaponTrail::Ring(at, size, color, life) => {
+                            painter.ring(at, size, color, life)
+                        },
+                        WeaponTrail::Beam(from, to, width, color, life) => {
+                            painter.beam(from, to, width, color, life)
+                        },
+                        WeaponTrail::Sparks(at, size, color, count) => {
+                            painter.sparks(at, size, color, count, false)
+                        },
+                    },
+                ),
                 Weapon::Laser
                 | Weapon::HeavyLaser
                 | Weapon::TwinLaser

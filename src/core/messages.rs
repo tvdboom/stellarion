@@ -24,6 +24,8 @@ const DEFAULT_NOTIFICATION_TOP: f32 = 70.0;
 const RESOURCE_BAR_NOTIFICATION_GAP: f32 = 12.0;
 const MAX_NOTIFICATION_WIDTH: f32 = 560.0;
 const NOTIFICATION_SPACING: f32 = 6.0;
+/// Close strategic-map framing that still leaves room around a deep-space encounter.
+const SPACE_ENCOUNTER_FOCUS_ZOOM: f32 = 0.65;
 
 pub(crate) fn notification_scale(viewport: egui::Vec2) -> f32 {
     (viewport_ui_scale(viewport) * 1.1).clamp(0.8, 1.35)
@@ -110,7 +112,7 @@ pub enum MessageAction {
     FocusRailgunTarget(PlanetId),
     /// Centers the strategic map on a destroyed world without opening hidden information.
     FocusDestroyedPlanet(PlanetId),
-    /// Centers the strategic map on an in-flight space-fauna encounter.
+    /// Centers the strategic map closely on an in-flight space-fauna encounter.
     FocusSpaceEncounter(MissionId),
 }
 
@@ -684,7 +686,7 @@ fn focus_space_encounter(
     state.planet_selected = None;
     state.focus_planet = None;
     state.focus_position = Some(position);
-    state.focus_zoom = Some(MAX_ZOOM);
+    state.focus_zoom = Some(SPACE_ENCOUNTER_FOCUS_ZOOM);
     state.to_selected = true;
     state.mission = false;
     state.combat_report = None;

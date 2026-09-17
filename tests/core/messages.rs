@@ -512,6 +512,37 @@ fn planet_destruction_toast_focuses_only_a_destroyed_world() {
 }
 
 #[test]
+fn space_encounter_toast_uses_a_close_but_not_maximum_zoom() {
+    let mission_id = 17;
+    let position = Vec2::new(125.0, -80.0);
+    let missions = Missions(vec![Mission {
+        id: mission_id,
+        position,
+        ..default()
+    }]);
+    let player = Player::new(1, 0);
+    let mut state = UiState {
+        planet_selected: Some(4),
+        focus_planet: Some(5),
+        mission: true,
+        combat_report: Some(3),
+        ..default()
+    };
+
+    assert!(focus_space_encounter(mission_id, Some(&missions), &player, &mut state));
+    assert_eq!(state.planet_selected, None);
+    assert_eq!(state.focus_planet, None);
+    assert_eq!(state.focus_position, Some(position));
+    assert_eq!(state.focus_zoom, Some(SPACE_ENCOUNTER_FOCUS_ZOOM));
+    let zoom = state.focus_zoom.unwrap();
+    assert!(zoom > crate::core::constants::MIN_ZOOM);
+    assert!(zoom < MAX_ZOOM);
+    assert!(state.to_selected);
+    assert!(!state.mission);
+    assert_eq!(state.combat_report, None);
+}
+
+#[test]
 fn enemy_detection_toast_opens_the_enemy_missions_panel() {
     let mut state = UiState {
         planet_selected: Some(4),

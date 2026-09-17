@@ -6,32 +6,31 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
+pub(crate) use super::fauna::FaunaEffect;
+use super::fauna::{animate_fauna_aftermath, spawn_fauna_aftermath};
 use super::icon::Icon;
 use super::model::{Map, MapCmp};
 use super::planet::{Planet, PlanetId};
 use super::systems::draw_map;
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
+use crate::core::combat::effects::EffectTextures;
 use crate::core::combat::report::{MissionReport, ReportId};
 use crate::core::constants::EXPLOSION_Z;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
-use crate::core::mission_systems::SPY_MISSION_SIZE;
-use crate::core::missions::{MissionId, Missions, SuppressedReturningSpies};
+use crate::core::mission_systems::{
+    mission_map_direction, mission_map_flip_x, mission_map_flip_y, mission_size,
+    mission_world_rotation, SPY_MISSION_SIZE,
+};
+use crate::core::missions::{MissionId, Missions, SuppressedMapMissions};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
-use crate::core::units::fauna::{FaunaAttack, SpaceFauna};
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::{Amount, Unit};
-use crate::utils::NameFromEnum;
 
 const AFTERMATH_SECONDS: f32 = 4.2;
 const EXPLOSION_SECONDS: f32 = 1.55;
-const FAUNA_AFTERMATH_SECONDS: f32 = 5.2;
-const FAUNA_APPROACH_SECONDS: f32 = 0.9;
-const FAUNA_ORBIT_END_SECONDS: f32 = 1.85;
-const FAUNA_BEAM_SECONDS: f32 = 0.5;
-const FAUNA_IMPACT_SECONDS: f32 = 2.35;
-const FAUNA_RETREAT_END_SECONDS: f32 = 4.15;
 const RIPPLE_COUNT: usize = 4;
 const RIPPLE_INTERVAL_SECONDS: f32 = 0.38;
 const RIPPLE_SECONDS: f32 = 1.35;
@@ -411,13 +410,20 @@ struct BattleSites {
 }
 
 #[derive(Clone, Debug)]
-struct FaunaPresentation {
-    mission: MissionId,
-    position: Vec2,
-    mission_image: String,
-    creatures: Vec<SpaceFauna>,
-    destroyed: bool,
-    label: &'static str,
+pub(super) struct FaunaPresentation {
+    pub(super) mission: MissionId,
+    pub(super) position: Vec2,
+    pub(super) mission_image: String,
+    pub(super) mission_rotation: f32,
+    pub(super) mission_size: f32,
+    pub(super) mission_flip_x: bool,
+    pub(super) mission_flip_y: bool,
+    pub(super) return_fire: Option<Unit>,
+    pub(super) creatures: Vec<SpaceFauna>,
+    pub(super) creature_survivors: Vec<bool>,
+    pub(super) destroyed: bool,
+    pub(super) victory: bool,
+    pub(super) label: &'static str,
 }
 
 /// Picks one miniature for each visible kind first, then repeats creatures until the displayed
@@ -432,7 +438,8 @@ fn fauna_display_creatures(report: &MissionReport) -> Vec<SpaceFauna> {
             _ => None,
         })
         .collect::<Vec<_>>();
-    let target = groups.iter().map(|(_, count)| *count).sum::<usize>().min(3);
+    let target =
+        groups.iter().fold(0usize, |total, (_, count)| total.saturating_add(*count)).min(3);
     let mut displayed = Vec::with_capacity(target);
 
     for (fauna, remaining) in &mut groups {
@@ -479,21 +486,52 @@ impl BattleSites {
                     continue;
                 }
                 let destroyed = !report.surviving_attacker.has_army();
+                let victory = report.winner() == Some(player.id);
                 let label = if destroyed {
                     "MISSION LOST TO SPACE FAUNA"
-                } else if report.winner() == Some(player.id) {
+                } else if victory {
                     "SPACE FAUNA DEFEATED"
                 } else {
                     "SPACE FAUNA ENCOUNTER"
                 };
+                let creatures = fauna_display_creatures(report);
+                let creature_survivors = creatures
+                    .iter()
+                    .enumerate()
+                    .map(|(index, fauna)| {
+                        let earlier =
+                            creatures[..index].iter().filter(|kind| *kind == fauna).count();
+                        report.surviving_defender.amount(&Unit::Fauna(*fauna)) > earlier
+                    })
+                    .collect();
+                let direction = mission_map_direction(&report.mission, map);
+                let mission_image = report.mission.image(player).to_string();
+                let return_fire = report.combat_report.as_ref().and_then(|combat| {
+                    combat
+                        .rounds
+                        .iter()
+                        .flat_map(|round| &round.attacker)
+                        .find(|unit| !unit.shots.is_empty())
+                        .map(|unit| unit.unit)
+                });
                 self.fauna_outcomes.insert(
                     report.id,
                     FaunaPresentation {
                         mission: report.mission.id,
                         position: report.mission.position,
-                        mission_image: report.mission.image(player).to_string(),
-                        creatures: fauna_display_creatures(report),
+                        mission_rotation: mission_world_rotation(
+                            &report.mission,
+                            direction.to_angle(),
+                        ),
+                        mission_size: mission_size(&report.mission, false),
+                        mission_flip_x: mission_map_flip_x(&report.mission),
+                        mission_flip_y: mission_map_flip_y(&mission_image, direction),
+                        mission_image,
+                        return_fire,
+                        creatures,
+                        creature_survivors,
                         destroyed,
+                        victory,
                         label,
                     },
                 );
@@ -558,7 +596,7 @@ impl BattleSites {
 /// Loading a saved turn establishes a baseline instead of replaying historical explosions.
 fn initialize_battles(
     mut sites: ResMut<BattleSites>,
-    mut suppressed: ResMut<SuppressedReturningSpies>,
+    mut suppressed: ResMut<SuppressedMapMissions>,
     player: Res<Player>,
     settings: Res<Settings>,
 ) {
@@ -575,17 +613,6 @@ pub(crate) struct BattleEffect {
     planet: PlanetId,
     turn: usize,
     returning_spies: Vec<MissionId>,
-    timer: Timer,
-}
-
-#[derive(Component)]
-pub(crate) struct FaunaEffect {
-    report: ReportId,
-    turn: usize,
-    destroyed: bool,
-    attack: Option<FaunaAttack>,
-    attack_sound_played: bool,
-    impact_sound_played: bool,
     timer: Timer,
 }
 
@@ -640,45 +667,6 @@ enum EffectPart {
     Label {
         y: f32,
     },
-    FaunaMission,
-    FaunaCreature {
-        start: Vec2,
-        orbit: Vec2,
-        attack: Vec2,
-        retreat: Vec2,
-        delay: f32,
-        motion: FaunaMotion,
-        mission_destroyed: bool,
-    },
-    FaunaBeam {
-        start: Vec2,
-        delay: f32,
-        width: f32,
-        peak_alpha: f32,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum FaunaMotion {
-    Swoop,
-    Drift,
-    Prowl,
-    Loom,
-    Coil,
-    Dive,
-}
-
-impl FaunaMotion {
-    const fn from_attack(attack: FaunaAttack) -> Self {
-        match attack {
-            FaunaAttack::SonicPulse => Self::Swoop,
-            FaunaAttack::Lightning => Self::Drift,
-            FaunaAttack::BioPlasma => Self::Prowl,
-            FaunaAttack::GravityPulse | FaunaAttack::ExtinctionRay => Self::Loom,
-            FaunaAttack::VoidLance => Self::Coil,
-            FaunaAttack::StellarFire => Self::Dive,
-        }
-    }
 }
 
 fn show_battles(
@@ -689,13 +677,15 @@ fn show_battles(
     game_state: Res<State<GameState>>,
     map: Res<Map>,
     missions: Res<Missions>,
-    mut suppressed: ResMut<SuppressedReturningSpies>,
+    mut suppressed: ResMut<SuppressedMapMissions>,
     effects: Query<(Entity, &BattleEffect)>,
     fauna_effects: Query<(Entity, &FaunaEffect)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     assets: Res<WorldAssets>,
     mut audio: MessageWriter<PlayAudioMsg>,
+    mut textures: Local<EffectTextures>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     if (player.is_changed() || sites.turn != settings.turn)
         && sites.observe(&player, &map, settings.turn)
@@ -767,17 +757,22 @@ fn show_battles(
         audio.write(PlayAudioMsg::new("short explosion"));
     }
 
+    if !sites.fauna_pending.is_empty() {
+        textures.initialize(&mut images);
+    }
     for report_id in std::mem::take(&mut sites.fauna_pending) {
         let Some(outcome) = sites.fauna_outcomes.get(&report_id).cloned() else {
             continue;
         };
         for (entity, effect) in &fauna_effects {
             if effect.report == report_id {
+                suppressed.release(effect.mission);
                 commands.entity(entity).despawn();
             }
         }
         let position =
             missions.get(outcome.mission).map_or(outcome.position, |mission| mission.position);
+        suppressed.suppress(outcome.mission);
         spawn_fauna_aftermath(
             &mut commands,
             report_id,
@@ -788,219 +783,8 @@ fn show_battles(
             &assets,
             &mut meshes,
             &mut materials,
+            &textures,
         );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_fauna_aftermath(
-    commands: &mut Commands,
-    report: ReportId,
-    turn: usize,
-    position: Vec2,
-    outcome: &FaunaPresentation,
-    player_color: Color,
-    assets: &WorldAssets,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-) {
-    const SIZE: f32 = 82.0;
-    let texture = assets.texture("explosion");
-    let beam = meshes.add(Rectangle::new(1.0, 1.0));
-    commands
-        .spawn((
-            Transform::from_translation(position.extend(EXPLOSION_Z)),
-            Visibility::Inherited,
-            Pickable::IGNORE,
-            MapCmp,
-            FaunaEffect {
-                report,
-                turn,
-                destroyed: outcome.destroyed,
-                attack: outcome.creatures.first().map(|fauna| fauna.attack()),
-                attack_sound_played: false,
-                impact_sound_played: false,
-                timer: Timer::from_seconds(FAUNA_AFTERMATH_SECONDS, TimerMode::Once),
-            },
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Sprite {
-                    image: assets.image(&outcome.mission_image),
-                    custom_size: Some(Vec2::splat(SIZE * 0.72)),
-                    color: player_color,
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 0.0, 0.08),
-                Pickable::IGNORE,
-                EffectPart::FaunaMission,
-            ));
-
-            let creature_count = outcome.creatures.len();
-            for (index, fauna) in outcome.creatures.iter().copied().enumerate() {
-                let (start, orbit, attack, retreat) =
-                    fauna_flight_path(index, creature_count, SIZE);
-                let attack_family = fauna.attack();
-                parent.spawn((
-                    Sprite {
-                        image: assets.image(format!("map {}", fauna.to_lowername())),
-                        custom_size: Some(Vec2::splat(SIZE * fauna_miniature_scale(fauna))),
-                        color: Color::srgba(0.92, 0.94, 0.96, 0.0),
-                        ..default()
-                    },
-                    Transform::from_translation(start.extend(0.16)),
-                    Pickable::IGNORE,
-                    EffectPart::FaunaCreature {
-                        start,
-                        orbit,
-                        attack,
-                        retreat,
-                        delay: index as f32 * 0.13,
-                        motion: FaunaMotion::from_attack(attack_family),
-                        mission_destroyed: outcome.destroyed,
-                    },
-                ));
-                let beam_delay = FAUNA_ORBIT_END_SECONDS + index as f32 * 0.13;
-                let beam_width = fauna_beam_width(attack_family);
-                for (layer, (color, width, peak_alpha)) in [
-                    (fauna_attack_color(attack_family), beam_width, 0.72),
-                    (Color::WHITE, beam_width * 0.28, 0.94),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    parent.spawn((
-                        Mesh2d(beam.clone()),
-                        MeshMaterial2d(materials.add(color.with_alpha(0.0))),
-                        Transform::from_xyz(0.0, 0.0, 0.14 + layer as f32 * 0.004),
-                        Pickable::IGNORE,
-                        EffectPart::FaunaBeam {
-                            start: orbit,
-                            delay: beam_delay,
-                            width,
-                            peak_alpha,
-                        },
-                    ));
-                }
-            }
-            let offsets = outcome
-                .destroyed
-                .then_some([Vec2::new(-0.18, 0.08), Vec2::new(0.2, -0.14), Vec2::new(0.1, 0.2)])
-                .into_iter()
-                .flatten();
-            for (index, offset) in offsets.into_iter().enumerate() {
-                parent.spawn((
-                    Sprite {
-                        image: texture.image.clone(),
-                        texture_atlas: Some(texture.atlas.clone()),
-                        custom_size: Some(Vec2::splat(
-                            SIZE * if outcome.destroyed {
-                                1.1
-                            } else {
-                                0.65
-                            },
-                        )),
-                        color: player_color.with_alpha(0.0),
-                        ..default()
-                    },
-                    Transform::from_translation((offset * SIZE).extend(0.12)),
-                    Pickable::IGNORE,
-                    EffectPart::Explosion {
-                        delay: FAUNA_IMPACT_SECONDS + index as f32 * 0.24,
-                        last_index: texture.last_index,
-                    },
-                ));
-            }
-            let ripple = meshes.add(Annulus::new(0.98, 1.0));
-            for index in 0..RIPPLE_COUNT {
-                let radius = SIZE * 0.55;
-                parent.spawn((
-                    Mesh2d(ripple.clone()),
-                    MeshMaterial2d(materials.add(player_color.with_alpha(0.0))),
-                    Transform::from_scale(Vec3::splat(radius)),
-                    Pickable::IGNORE,
-                    EffectPart::Ripple {
-                        delay: FAUNA_IMPACT_SECONDS + index as f32 * RIPPLE_INTERVAL_SECONDS,
-                        radius,
-                    },
-                ));
-            }
-            let y = super::aftermath_label_y(SIZE, 0);
-            parent.spawn((
-                Text2d::new(outcome.label),
-                TextFont {
-                    font: assets.font("bold").into(),
-                    font_size: 17.0.into(),
-                    ..default()
-                },
-                TextColor(player_color.with_alpha(0.0)),
-                Transform::from_xyz(0.0, y, 0.2),
-                Pickable::IGNORE,
-                EffectPart::Label {
-                    y,
-                },
-            ));
-        });
-}
-
-fn fauna_miniature_scale(fauna: SpaceFauna) -> f32 {
-    0.3 + 0.035 * fauna.production().min(6) as f32
-}
-
-fn fauna_flight_path(index: usize, count: usize, size: f32) -> (Vec2, Vec2, Vec2, Vec2) {
-    let slot = match (count, index) {
-        (1, _) => 0.0,
-        (2, 0) => -0.72,
-        (2, _) => 0.72,
-        (_, 0) => -1.0,
-        (_, 1) => 0.0,
-        _ => 1.0,
-    };
-    let side = if index.is_multiple_of(2) {
-        -1.0
-    } else {
-        1.0
-    };
-    let start =
-        Vec2::new(side * size * (1.4 + 0.16 * index as f32), size * (0.82 - 0.5 * index as f32));
-    let orbit = Vec2::new(slot * size * 0.58, size * (0.42 - 0.1 * index as f32));
-    let attack = Vec2::new(slot * size * 0.1, size * (0.05 + 0.035 * index as f32));
-    let retreat = Vec2::new(-side * size * 1.55, -size * (0.6 - 0.38 * index as f32));
-    (start, orbit, attack, retreat)
-}
-
-fn fauna_attack_color(attack: FaunaAttack) -> Color {
-    match attack {
-        FaunaAttack::SonicPulse => Color::srgb(0.2, 0.95, 0.92),
-        FaunaAttack::Lightning => Color::srgb(0.46, 0.78, 1.0),
-        FaunaAttack::BioPlasma => Color::srgb(0.42, 1.0, 0.18),
-        FaunaAttack::GravityPulse => Color::srgb(0.55, 0.18, 0.9),
-        FaunaAttack::VoidLance => Color::srgb(0.86, 0.25, 1.0),
-        FaunaAttack::StellarFire => Color::srgb(1.0, 0.35, 0.08),
-        FaunaAttack::ExtinctionRay => Color::srgb(0.82, 0.48, 1.0),
-    }
-}
-
-fn fauna_beam_width(attack: FaunaAttack) -> f32 {
-    match attack {
-        FaunaAttack::Lightning => 1.8,
-        FaunaAttack::SonicPulse | FaunaAttack::VoidLance => 3.8,
-        FaunaAttack::BioPlasma => 4.6,
-        FaunaAttack::GravityPulse => 7.5,
-        FaunaAttack::StellarFire => 8.5,
-        FaunaAttack::ExtinctionRay => 11.0,
-    }
-}
-
-fn fauna_attack_audio(attack: FaunaAttack) -> PlayAudioMsg {
-    match attack {
-        FaunaAttack::SonicPulse => PlayAudioMsg::new("fauna pulse").gain(-8.0),
-        FaunaAttack::Lightning => PlayAudioMsg::new("fauna electric").gain(-7.0),
-        FaunaAttack::BioPlasma => PlayAudioMsg::new("fauna acid").gain(-7.0),
-        FaunaAttack::GravityPulse => PlayAudioMsg::new("fauna roar").rate(0.72).gain(-5.0),
-        FaunaAttack::VoidLance => PlayAudioMsg::new("fauna roar").rate(1.2).gain(-7.0),
-        FaunaAttack::StellarFire => PlayAudioMsg::new("fauna dragon").gain(-5.0),
-        FaunaAttack::ExtinctionRay => PlayAudioMsg::new("fauna roar").rate(0.52).gain(-3.0),
     }
 }
 
@@ -1321,7 +1105,7 @@ fn animate_battles(
     game_state: Res<State<GameState>>,
     settings: Res<Settings>,
     map: Res<Map>,
-    mut suppressed: ResMut<SuppressedReturningSpies>,
+    mut suppressed: ResMut<SuppressedMapMissions>,
     mut effects: Query<(Entity, &mut BattleEffect, &Children, &mut Visibility)>,
     mut parts: Query<(
         Entity,
@@ -1566,305 +1350,8 @@ fn animate_battles(
                         text.0.set_alpha(((elapsed - 0.3) / 0.4).clamp(0.0, 1.0) * (1.0 - settle));
                     }
                 },
-                EffectPart::FaunaMission
-                | EffectPart::FaunaCreature {
-                    ..
-                }
-                | EffectPart::FaunaBeam {
-                    ..
-                } => {},
             }
         }
-    }
-}
-
-fn animate_fauna_aftermath(
-    mut commands: Commands,
-    time: Res<Time>,
-    game_state: Res<State<GameState>>,
-    settings: Res<Settings>,
-    mut effects: Query<(Entity, &mut FaunaEffect, &Children, &mut Visibility)>,
-    mut parts: Query<(
-        Entity,
-        &EffectPart,
-        &mut Transform,
-        Option<&mut Sprite>,
-        Option<&MeshMaterial2d<ColorMaterial>>,
-        Option<&mut TextColor>,
-    )>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut audio: MessageWriter<PlayAudioMsg>,
-) {
-    for (entity, mut effect, children, mut visibility) in &mut effects {
-        if effect.turn != settings.turn {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        let playing = *game_state.get() == GameState::Playing;
-        *visibility = if playing {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if !playing {
-            continue;
-        }
-        effect.timer.tick(time.delta());
-        if !effect.attack_sound_played && effect.timer.elapsed_secs() >= FAUNA_ORBIT_END_SECONDS {
-            if let Some(attack) = effect.attack {
-                audio.write(fauna_attack_audio(attack));
-            }
-            effect.attack_sound_played = true;
-        }
-        if !effect.impact_sound_played && effect.timer.elapsed_secs() >= FAUNA_IMPACT_SECONDS {
-            if effect.destroyed {
-                audio.write(PlayAudioMsg::new("large explosion"));
-            }
-            effect.impact_sound_played = true;
-        }
-        if effect.timer.is_finished() {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        let elapsed = effect.timer.elapsed_secs();
-        let settle = ((elapsed - 4.15) / (FAUNA_AFTERMATH_SECONDS - 4.15)).clamp(0.0, 1.0);
-        for child in children.iter() {
-            let Ok((entity, part, mut transform, sprite, material, text)) = parts.get_mut(child)
-            else {
-                continue;
-            };
-            match part {
-                EffectPart::Explosion {
-                    delay,
-                    last_index,
-                } => {
-                    let progress = (elapsed - delay) / EXPLOSION_SECONDS;
-                    if progress >= 1.0 {
-                        commands.entity(entity).despawn();
-                    } else if let Some(mut sprite) = sprite {
-                        sprite.color.set_alpha(if progress >= 0.0 {
-                            0.95
-                        } else {
-                            0.0
-                        });
-                        if let Some(atlas) = &mut sprite.texture_atlas {
-                            atlas.index = ((progress.max(0.0) * (*last_index + 1) as f32) as usize)
-                                .min(*last_index);
-                        }
-                    }
-                },
-                EffectPart::Ripple {
-                    delay,
-                    radius,
-                } => {
-                    let progress = (elapsed - delay) / RIPPLE_SECONDS;
-                    if progress >= 1.0 {
-                        commands.entity(entity).despawn();
-                    } else if progress > 0.0 {
-                        let outward = 1.0 - (1.0 - progress).powi(2);
-                        transform.scale = Vec3::splat(radius * (1.0 + 2.3 * outward));
-                        if let Some(mut material) =
-                            material.and_then(|handle| materials.get_mut(&handle.0))
-                        {
-                            let fade_in = (progress / 0.08).min(1.0);
-                            material.color.set_alpha(0.8 * fade_in * (1.0 - progress).powf(1.2));
-                        }
-                    }
-                },
-                EffectPart::Label {
-                    y,
-                } => {
-                    transform.scale = Vec3::splat(1.0 - 0.12 * settle);
-                    transform.translation.y = *y + 5.0 * (1.0 - settle);
-                    if let Some(mut text) = text {
-                        text.0.set_alpha(
-                            ((elapsed - FAUNA_IMPACT_SECONDS - 0.12) / 0.35).clamp(0.0, 1.0)
-                                * (1.0 - settle),
-                        );
-                    }
-                },
-                EffectPart::FaunaMission => {
-                    if let Some(mut sprite) = sprite {
-                        let impact = ((elapsed - FAUNA_IMPACT_SECONDS) / 0.86).clamp(0.0, 1.0);
-                        if effect.destroyed {
-                            sprite.color.set_alpha((1.0 - impact).powf(1.4));
-                            transform.scale = Vec3::splat(1.0 + impact * 0.42);
-                            let shake = (elapsed * 54.0).sin() * (1.0 - impact) * 2.4;
-                            transform.translation.x = shake;
-                        } else {
-                            let fade = ((elapsed - 4.1) / 0.72).clamp(0.0, 1.0);
-                            sprite.color.set_alpha(1.0 - fade);
-                            let recoil = (1.0 - ((elapsed - FAUNA_IMPACT_SECONDS) / 0.34).abs())
-                                .clamp(0.0, 1.0);
-                            transform.scale = Vec3::splat(1.0 - recoil * 0.12);
-                        }
-                    }
-                },
-                EffectPart::FaunaBeam {
-                    start,
-                    delay,
-                    width,
-                    peak_alpha,
-                } => {
-                    let progress = (elapsed - delay) / FAUNA_BEAM_SECONDS;
-                    if progress >= 1.0 {
-                        commands.entity(entity).despawn();
-                        continue;
-                    }
-                    let Some(mut material) =
-                        material.and_then(|handle| materials.get_mut(&handle.0))
-                    else {
-                        continue;
-                    };
-                    if progress <= 0.0 {
-                        material.color.set_alpha(0.0);
-                        continue;
-                    }
-                    let reach = smoothstep((progress / 0.42).min(1.0));
-                    let end = start.lerp(Vec2::ZERO, reach);
-                    let delta = end - *start;
-                    transform.translation = ((*start + end) * 0.5).extend(transform.translation.z);
-                    transform.rotation = Quat::from_rotation_z(delta.y.atan2(delta.x));
-                    transform.scale = Vec3::new(
-                        delta.length().max(0.01),
-                        *width * (1.0 + (progress * std::f32::consts::TAU).sin().abs() * 0.22),
-                        1.0,
-                    );
-                    material.color.set_alpha(
-                        peak_alpha
-                            * (progress / 0.12).min(1.0)
-                            * ((1.0 - progress) / 0.28).min(1.0),
-                    );
-                },
-                EffectPart::FaunaCreature {
-                    start,
-                    orbit,
-                    attack,
-                    retreat,
-                    delay,
-                    motion,
-                    mission_destroyed,
-                } => {
-                    let Some(mut sprite) = sprite else {
-                        continue;
-                    };
-                    let local = elapsed - delay;
-                    if local < 0.0 {
-                        sprite.color.set_alpha(0.0);
-                        continue;
-                    }
-
-                    let position;
-                    let alpha;
-                    let scale;
-                    if local < FAUNA_APPROACH_SECONDS {
-                        let progress = smoothstep(local / FAUNA_APPROACH_SECONDS);
-                        position = start.lerp(*orbit, progress);
-                        alpha = (progress / 0.45).min(1.0) * 0.88;
-                        scale = 0.72 + 0.28 * progress;
-                    } else if local < FAUNA_ORBIT_END_SECONDS {
-                        let phase = (local - FAUNA_APPROACH_SECONDS)
-                            / (FAUNA_ORBIT_END_SECONDS - FAUNA_APPROACH_SECONDS);
-                        position = *orbit + fauna_orbit_offset(*motion, phase, *delay);
-                        alpha = 0.88;
-                        scale = fauna_motion_scale(*motion, phase);
-                    } else if local < FAUNA_IMPACT_SECONDS {
-                        let raw = (local - FAUNA_ORBIT_END_SECONDS)
-                            / (FAUNA_IMPACT_SECONDS - FAUNA_ORBIT_END_SECONDS);
-                        let progress = fauna_strike_progress(*motion, raw);
-                        position = orbit.lerp(*attack, progress);
-                        alpha = 0.88;
-                        scale = 1.0 + (raw * std::f32::consts::PI).sin() * 0.14;
-                    } else if *mission_destroyed {
-                        let progress = smoothstep(
-                            (local - FAUNA_IMPACT_SECONDS)
-                                / (FAUNA_RETREAT_END_SECONDS - FAUNA_IMPACT_SECONDS),
-                        );
-                        position = attack.lerp(*retreat, progress);
-                        alpha = 0.88 * (1.0 - progress).powf(0.45);
-                        scale = 1.0 - 0.18 * progress;
-                    } else {
-                        let progress = ((local - FAUNA_IMPACT_SECONDS) / 0.76).clamp(0.0, 1.0);
-                        let scatter = *attack + (*attack - *orbit).normalize_or_zero() * 18.0;
-                        position = attack.lerp(scatter, progress);
-                        alpha = 0.88 * (1.0 - progress).powf(1.35);
-                        scale = 1.0 - 0.72 * progress;
-                    }
-
-                    let previous = transform.translation.truncate();
-                    let direction = position - previous;
-                    let (body_scale, body_rotation) = fauna_body_motion(*motion, local);
-                    transform.translation = position.extend(0.16);
-                    let scale = scale.max(0.05);
-                    transform.scale = Vec3::new(scale * body_scale.x, scale * body_scale.y, scale);
-                    let heading = if direction.length_squared() > 0.01 {
-                        direction.y.atan2(direction.x) * 0.18
-                    } else {
-                        0.0
-                    };
-                    transform.rotation = Quat::from_rotation_z(heading + body_rotation);
-                    sprite.color.set_alpha(alpha);
-                },
-                _ => {},
-            }
-        }
-    }
-}
-
-fn smoothstep(value: f32) -> f32 {
-    let value = value.clamp(0.0, 1.0);
-    value * value * (3.0 - 2.0 * value)
-}
-
-fn fauna_orbit_offset(motion: FaunaMotion, phase: f32, seed: f32) -> Vec2 {
-    let angle = phase * std::f32::consts::TAU + seed * 5.0;
-    match motion {
-        FaunaMotion::Swoop => Vec2::new(angle.cos() * 13.0, angle.sin() * 6.0),
-        FaunaMotion::Drift => Vec2::new(angle.sin() * 5.0, angle.cos() * 13.0),
-        FaunaMotion::Prowl => Vec2::new(angle.sin() * 10.0, (angle * 2.0).sin() * 4.0),
-        FaunaMotion::Loom => Vec2::new(angle.sin() * 3.0, angle.cos() * 3.0),
-        FaunaMotion::Coil => Vec2::new(angle.cos() * 10.0, angle.sin() * 10.0),
-        FaunaMotion::Dive => Vec2::new(angle.sin() * 7.0, angle.cos() * 5.0),
-    }
-}
-
-fn fauna_motion_scale(motion: FaunaMotion, phase: f32) -> f32 {
-    let pulse = (phase * std::f32::consts::TAU).sin();
-    match motion {
-        FaunaMotion::Drift => 0.94 + 0.1 * pulse,
-        FaunaMotion::Loom => 1.04 + 0.08 * pulse,
-        FaunaMotion::Coil => 1.0 + 0.05 * pulse,
-        _ => 1.0 + 0.025 * pulse,
-    }
-}
-
-/// Adds creature-local motion so the art itself stays alive instead of behaving as a rigid token.
-/// The opposing axis scales read as wing beats, bell contractions, tentacle undulation, or a
-/// serpentine flex at strategic-map size without altering the source texture.
-fn fauna_body_motion(motion: FaunaMotion, elapsed: f32) -> (Vec2, f32) {
-    let wave = match motion {
-        FaunaMotion::Swoop | FaunaMotion::Dive => (elapsed * 8.5).sin(),
-        FaunaMotion::Drift => (elapsed * 5.4).sin(),
-        FaunaMotion::Prowl => (elapsed * 6.6).sin(),
-        FaunaMotion::Loom => (elapsed * 3.8).sin(),
-        FaunaMotion::Coil => (elapsed * 7.2).sin(),
-    };
-    match motion {
-        FaunaMotion::Swoop => (Vec2::new(1.0 + 0.035 * wave, 1.0 - 0.11 * wave), 0.018 * wave),
-        FaunaMotion::Drift => (Vec2::new(1.0 + 0.055 * wave, 1.0 - 0.075 * wave), 0.025 * wave),
-        FaunaMotion::Prowl => (Vec2::new(1.0 + 0.065 * wave, 1.0 - 0.035 * wave), 0.055 * wave),
-        FaunaMotion::Loom => (Vec2::new(1.0 + 0.028 * wave, 1.0 + 0.04 * wave), 0.012 * wave),
-        FaunaMotion::Coil => (Vec2::new(1.0 + 0.075 * wave, 1.0 - 0.055 * wave), 0.085 * wave),
-        FaunaMotion::Dive => (Vec2::new(1.0 + 0.045 * wave, 1.0 - 0.14 * wave), 0.032 * wave),
-    }
-}
-
-fn fauna_strike_progress(motion: FaunaMotion, progress: f32) -> f32 {
-    match motion {
-        FaunaMotion::Swoop | FaunaMotion::Dive => progress.powi(2),
-        FaunaMotion::Prowl | FaunaMotion::Coil => smoothstep(progress),
-        FaunaMotion::Drift => progress.powf(1.45),
-        FaunaMotion::Loom => progress.powf(0.72),
     }
 }
 
@@ -1876,7 +1363,7 @@ pub(crate) struct BattleAftermathPlugin;
 impl Plugin for BattleAftermathPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BattleSites>()
-            .init_resource::<SuppressedReturningSpies>()
+            .init_resource::<SuppressedMapMissions>()
             .add_systems(OnEnter(AppState::Game), initialize_battles.after(draw_map))
             .add_systems(
                 Update,

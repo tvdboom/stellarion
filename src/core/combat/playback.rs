@@ -287,12 +287,19 @@ fn seek(
             let individuals = world
                 .query::<(Entity, &IndividualCombatUnitCmp)>()
                 .iter(world)
-                .map(|(entity, card)| (entity, card.id, card.side.clone()))
+                .map(|(entity, card)| (entity, card.id, card.side.clone(), card.home()))
                 .collect::<Vec<_>>();
-            for (entity, id, side) in individuals {
-                let Some(record) =
-                    id.and_then(|id| round.units(&side).iter().find(|record| record.id == id))
-                else {
+            for (entity, id, side, home) in individuals {
+                world
+                    .entity_mut(entity)
+                    .insert(Transform::from_translation(home))
+                    .remove::<TweenAnim>();
+                let Some(id) = id else {
+                    world.despawn(entity);
+                    continue;
+                };
+                let Some(record) = round.units(&side).iter().find(|record| record.id == id) else {
+                    world.despawn(entity);
                     continue;
                 };
                 if record.hull == 0 && !record.unit.is_missile() {

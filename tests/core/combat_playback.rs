@@ -326,6 +326,7 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
         app.world().resource::<Player>().reports[0].combat_report.as_ref().unwrap().rounds.len()
             - 1;
     app.world_mut().resource_mut::<UiState>().combat_round = last;
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
     key(&mut app, KeyCode::ArrowRight, true);
     app.world_mut().run_system_once(control_combat_playback).unwrap();
     assert_eq!(app.world().resource::<UiState>().combat_round, last);
@@ -333,6 +334,13 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::EndCombat)
     ));
+    let individuals = app
+        .world_mut()
+        .query_filtered::<Entity, With<IndividualCombatUnitCmp>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    assert!(!individuals.is_empty());
+    assert!(individuals.iter().all(|entity| app.world().get::<TweenAnim>(*entity).is_none()));
 }
 
 #[test]

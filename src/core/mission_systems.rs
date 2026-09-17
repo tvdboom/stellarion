@@ -19,7 +19,7 @@ use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
     BombingRaid, Mission, MissionRouteStyle, Missions, RecallMissionMsg, RecallProtectionMsg,
-    SendMissionMsg, SuppressedReturningSpies,
+    SendMissionMsg, SuppressedMapMissions,
 };
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -51,7 +51,7 @@ const PROTECTION_NOT_STATIONED_MESSAGE: &str = "This protection fleet is no long
 // aligns with the route's trailing flame without changing the shared source image.
 const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
 
-fn mission_size(mission: &Mission, hovered: bool) -> f32 {
+pub(crate) fn mission_size(mission: &Mission, hovered: bool) -> f32 {
     let image_objective = mission.return_objective.unwrap_or(mission.objective);
     if image_objective == Icon::Colonize {
         return if hovered {
@@ -72,12 +72,12 @@ fn mission_size(mission: &Mission, hovered: bool) -> f32 {
 }
 
 /// Mirrors left-bound colony artwork before route rotation so its habitat stays above the hull.
-fn mission_map_flip_y(image: &str, direction: Vec2) -> bool {
+pub(crate) fn mission_map_flip_y(image: &str, direction: Vec2) -> bool {
     image == "mission colonize" && direction.x < 0.0
 }
 
 /// Keeps a fleet facing along its route when it is already sitting on the destination point.
-fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
+pub(crate) fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
     let destination = map.get(mission.destination);
     let remaining = destination.position - mission.position;
     if remaining.length_squared() > f32::EPSILON {
@@ -95,7 +95,7 @@ fn mission_map_rotation(mission: &Mission) -> f32 {
     }
 }
 
-fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32 {
+pub(crate) fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32 {
     if mission.return_objective == Some(Icon::Spy) {
         0.0
     } else {
@@ -103,7 +103,7 @@ fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32 {
     }
 }
 
-fn mission_map_flip_x(mission: &Mission) -> bool {
+pub(crate) fn mission_map_flip_x(mission: &Mission) -> bool {
     mission.return_objective == Some(Icon::Spy)
 }
 
@@ -211,7 +211,7 @@ pub fn update_missions(
     missions: Res<Missions>,
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
-    suppressed_spies: Option<Res<SuppressedReturningSpies>>,
+    suppressed_missions: Option<Res<SuppressedMapMissions>>,
 ) {
     let player_id = player.id;
     let hovered = state.mission_hover.and_then(|id| missions.get(id));
@@ -243,7 +243,7 @@ pub fn update_missions(
                     ..default()
                 },
                 Pickable::default(),
-                if suppressed_spies.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
+                if suppressed_missions.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
                     Visibility::Hidden
                 } else {
                     Visibility::Inherited
@@ -327,7 +327,7 @@ pub fn update_missions(
 
     for (mission_e, mut mission_s, mut mission_t, mut visibility, mission_c) in &mut mission_q {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
-            *visibility = if suppressed_spies
+            *visibility = if suppressed_missions
                 .as_ref()
                 .is_some_and(|suppressed| suppressed.contains(mission.id))
             {

@@ -31,21 +31,21 @@ pub type MissionId = u64;
 #[derive(Resource, Default)]
 #[doc(hidden)]
 #[cfg(feature = "app")]
-pub struct SuppressedReturningSpies(BTreeSet<MissionId>);
+pub struct SuppressedMapMissions(BTreeSet<MissionId>);
 
 #[cfg(feature = "app")]
-impl SuppressedReturningSpies {
-    /// Returns whether an aftermath animation currently hides this returning spy.
+impl SuppressedMapMissions {
+    /// Returns whether an aftermath animation currently replaces this mission's map sprite.
     pub(crate) fn contains(&self, mission: MissionId) -> bool {
         self.0.contains(&mission)
     }
 
-    /// Hides the returning spy until its aftermath animation completes.
+    /// Hides a mission while its aftermath animation supplies the visible replacement.
     pub(crate) fn suppress(&mut self, mission: MissionId) {
         self.0.insert(mission);
     }
 
-    /// Restores a spy's ordinary map presentation after its animation.
+    /// Restores a mission's ordinary map presentation after its animation.
     pub(crate) fn release(&mut self, mission: MissionId) {
         self.0.remove(&mission);
     }

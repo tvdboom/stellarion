@@ -254,6 +254,14 @@ fn individual_formation_fits_sixty_ships_and_keeps_capital_ships_behind_fodder()
     assert!(average_y(destroyer) > average_y(fighter));
     assert!(average_size(war_sun) > average_size(destroyer));
     assert!(average_size(destroyer) > average_size(fighter));
+    for unit in [fighter, destroyer, war_sun] {
+        let rows = units
+            .iter()
+            .zip(&layout)
+            .filter_map(|(candidate, (position, _))| (*candidate == unit).then_some(position.y))
+            .collect::<Vec<_>>();
+        assert!(rows.iter().all(|y| (*y - rows[0]).abs() < f32::EPSILON));
+    }
 
     let defender_layout =
         individual_formation_layout(&units, 0.0, 1_280.0, -300.0, -80.0, false, UNIT_SIZE);
@@ -274,6 +282,52 @@ fn individual_formation_fits_sixty_ships_and_keeps_capital_ships_behind_fodder()
 }
 
 #[test]
+fn individual_formation_keeps_twelve_of_each_ship_together_with_clear_type_gaps() {
+    let ship_types = [
+        Ship::LightFighter,
+        Ship::HeavyFighter,
+        Ship::Destroyer,
+        Ship::Cruiser,
+        Ship::Bomber,
+        Ship::Battleship,
+        Ship::Dreadnought,
+        Ship::WarSun,
+    ];
+    let units = ship_types
+        .into_iter()
+        .flat_map(|ship| std::iter::repeat_n(Unit::Ship(ship), 12))
+        .collect::<Vec<_>>();
+    let layout = individual_formation_layout(&units, 0.0, 1_280.0, 80.0, 300.0, true, UNIT_SIZE);
+
+    assert_eq!(layout.len(), ship_types.len() * 12);
+    for ship in ship_types {
+        let unit = Unit::Ship(ship);
+        let cards = units
+            .iter()
+            .zip(&layout)
+            .filter_map(|(candidate, layout)| (*candidate == unit).then_some(layout))
+            .collect::<Vec<_>>();
+        assert_eq!(cards.len(), 12);
+        assert!(cards.iter().all(|(position, _)| position.y == cards[0].0.y));
+    }
+
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let cruiser = Unit::Ship(Ship::Cruiser);
+    let war_sun = Unit::Ship(Ship::WarSun);
+    let sample = [fighter, fighter, fighter, cruiser, cruiser, cruiser, war_sun, war_sun, war_sun];
+    let sample_layout =
+        individual_formation_layout(&sample, 0.0, 1_280.0, 0.0, 500.0, true, UNIT_SIZE);
+    let edge_gap = |left: usize, right: usize| {
+        sample_layout[right].0.x
+            - sample_layout[left].0.x
+            - (sample_layout[left].1 + sample_layout[right].1) * 0.5
+    };
+    assert!(edge_gap(2, 3) > edge_gap(0, 1) * 3.0);
+    assert!(sample_layout[3].1 > sample_layout[0].1 * 1.3);
+    assert!(sample_layout[6].1 > sample_layout[3].1 * 1.3);
+}
+
+#[test]
 fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
     let mut app = App::new();
     app.init_resource::<Settings>().init_resource::<Time>();
@@ -281,6 +335,7 @@ fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
     let group = app
         .world_mut()
         .spawn((
+            Sprite::default(),
             Transform::default(),
             Visibility::Inherited,
             GroupedCombatUnitCmp,
@@ -326,7 +381,8 @@ fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
     app.world_mut().run_system_once(update_combat_formation).unwrap();
     let midpoint = app.world().get::<Transform>(individual).unwrap().translation;
     assert!(midpoint.x > 0.0 && midpoint.x < 100.0);
-    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Inherited);
+    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Hidden);
+    assert_eq!(app.world().get::<Sprite>(group).unwrap().color.alpha(), 0.0);
     assert_eq!(*app.world().get::<Visibility>(individual).unwrap(), Visibility::Inherited);
 
     app.world_mut()
@@ -366,20 +422,207 @@ fn individual_mode_spawns_one_visible_card_for_every_recorded_combatant() {
 
     let cards = app
         .world_mut()
-        .query::<(&Sprite, &Visibility, &IndividualCombatUnitCmp)>()
+        .query::<(&Sprite, &Transform, &Visibility, &IndividualCombatUnitCmp)>()
         .iter(app.world())
-        .map(|(sprite, visibility, _)| (sprite.custom_size, *visibility))
+        .map(|(sprite, transform, visibility, individual)| {
+            (
+                sprite.custom_size,
+                transform.translation,
+                *visibility,
+                individual.home,
+                individual.unit,
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(cards.len(), expected);
-    assert!(cards.iter().all(|(_, visibility)| *visibility == Visibility::Inherited));
+    assert!(cards.iter().all(|(_, _, visibility, _, _)| *visibility == Visibility::Inherited));
     assert!(cards
         .iter()
-        .all(|(size, _)| { size.is_some_and(|size| size.x < UNIT_SIZE && size.x > 0.0) }));
+        .all(|(size, _, _, _, _)| { size.is_some_and(|size| size.x < UNIT_SIZE && size.x > 0.0) }));
+    assert!(cards
+        .iter()
+        .all(|(_, position, _, home, _)| { position.x == home.x && position.y != home.y }));
+    let mut bomber_entry_x = cards
+        .iter()
+        .filter_map(|(_, position, _, _, unit)| {
+            (*unit == Unit::Ship(Ship::Bomber)).then_some(position.x)
+        })
+        .collect::<Vec<_>>();
+    bomber_entry_x.sort_by(f32::total_cmp);
+    bomber_entry_x.dedup_by(|left, right| (*left - *right).abs() < f32::EPSILON);
+    assert_eq!(bomber_entry_x.len(), 5);
     assert!(app
         .world_mut()
         .query_filtered::<&Visibility, With<GroupedCombatUnitCmp>>()
         .iter(app.world())
         .all(|visibility| *visibility == Visibility::Hidden));
+}
+
+#[test]
+fn individual_fleets_keep_the_center_clear_and_straddle_the_planetary_shield() {
+    let mut report = report(12, 3, true, 73);
+    report.planet.army.insert(Unit::Ship(Ship::LightFighter), 12);
+    let mut rng = DeterministicRngState::from_u64(73).next_rng();
+    let report = resolve_combat_with_rng(1, &report.mission, &report.planet, &mut rng);
+    let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    let map = Map {
+        rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, report.planet.clone()],
+    };
+    let mut app = playback_app(report, 0, CombatState::Fire);
+    app.insert_resource(map).init_resource::<MultiplayerSession>();
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    let camera =
+        app.world_mut().query_filtered::<Entity, With<MainCamera>>().single(app.world()).unwrap();
+    let mut projection = OrthographicProjection::default_2d();
+    projection.area = Rect::new(-960.0, -540.0, 960.0, 540.0);
+    app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
+    app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let individuals = app
+        .world_mut()
+        .query::<(Entity, &IndividualCombatUnitCmp)>()
+        .iter(app.world())
+        .map(|(entity, card)| (entity, card.unit, card.side.clone(), card.home, card.display_size))
+        .collect::<Vec<_>>();
+    let attacker_bottom = individuals
+        .iter()
+        .filter(|(_, _, side, _, _)| *side == Side::Attacker)
+        .map(|(_, _, _, home, size)| home.y - size * INDIVIDUAL_CARD_LOWER_EXTENT)
+        .fold(f32::INFINITY, f32::min);
+    let defender_ship_top = individuals
+        .iter()
+        .filter(|(_, unit, side, _, _)| *side == Side::Defender && unit.is_ship())
+        .map(|(_, _, _, home, size)| home.y + size * INDIVIDUAL_CARD_UPPER_EXTENT)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        attacker_bottom - defender_ship_top >= 1_080.0 * INDIVIDUAL_FLEET_SEPARATION_FACTOR - 0.1,
+        "the opposing front ranks retain the central combat corridor"
+    );
+
+    let (shield_home, shield_size) = app
+        .world_mut()
+        .query::<(&Sprite, &CombatUnitCmp, &CombatCardHome)>()
+        .iter(app.world())
+        .find_map(|(sprite, card, home)| {
+            (card.unit == Unit::planetary_shield()).then_some((home.0, sprite.custom_size.unwrap()))
+        })
+        .unwrap();
+    let shield_top = shield_home.y + shield_size.y * 0.5;
+    let shield_bottom = shield_home.y - shield_size.y * 0.5;
+    assert!(individuals
+        .iter()
+        .filter(|(_, unit, side, _, _)| *side == Side::Defender && unit.is_ship())
+        .all(|(_, _, _, home, size)| {
+            home.y - size * INDIVIDUAL_CARD_LOWER_EXTENT
+                >= shield_top + COMBAT_SHIELD_DEFENSE_GAP - 0.1
+        }));
+    assert!(individuals
+        .iter()
+        .filter(|(_, unit, side, _, _)| {
+            *side == Side::Defender && !unit.is_ship() && *unit != Unit::space_dock()
+        })
+        .all(|(_, _, _, home, size)| {
+            home.y + size * INDIVIDUAL_CARD_UPPER_EXTENT
+                <= shield_bottom - COMBAT_SHIELD_DEFENSE_GAP + 0.1
+        }));
+
+    let bomber = individuals
+        .iter()
+        .find_map(|(entity, unit, side, _, size)| {
+            (*side == Side::Attacker && *unit == Unit::Ship(Ship::Bomber))
+                .then_some((*entity, *size))
+        })
+        .unwrap();
+    let descendants = app
+        .world_mut()
+        .run_system_once(move |children: Query<&Children>| {
+            children.iter_descendants(bomber.0).collect::<Vec<_>>()
+        })
+        .unwrap();
+    let frame = |marker: fn(&World, Entity) -> bool| {
+        let fill = descendants.iter().copied().find(|entity| marker(app.world(), *entity)).unwrap();
+        let frame = app.world().get::<ChildOf>(fill).unwrap().parent();
+        (
+            app.world().get::<Transform>(frame).unwrap().translation.y,
+            app.world().get::<Sprite>(frame).unwrap().custom_size.unwrap().y,
+        )
+    };
+    let (shield_y, shield_height) = frame(|world, entity| world.get::<ShieldCmp>(entity).is_some());
+    let (hull_y, hull_height) = frame(|world, entity| world.get::<HullCmp>(entity).is_some());
+    assert!((shield_y + shield_height * 0.5 + bomber.1 * 0.5).abs() < 0.01);
+    assert!((hull_y + hull_height * 0.5 - (shield_y - shield_height * 0.5)).abs() < 0.01);
+}
+
+#[test]
+fn undefended_fleets_and_space_fauna_use_the_low_defender_row() {
+    let cases = [
+        (Army::from([(Unit::Ship(Ship::LightFighter), 12)]), BombingRaid::Economic),
+        (Army::from([(Unit::Fauna(SpaceFauna::AetherRay), 12)]), BombingRaid::Economic),
+        (
+            Army::from([(Unit::Ship(Ship::LightFighter), 12), (Unit::planetary_shield(), 1)]),
+            BombingRaid::None,
+        ),
+    ];
+
+    for (case, (defenders, bombing)) in cases.into_iter().enumerate() {
+        let seed = 79 + case as u64;
+        let mut open_field = report(12, 0, false, seed);
+        open_field.planet.army = defenders.into();
+        open_field.mission.bombing = bombing;
+        let mut rng = DeterministicRngState::from_u64(seed).next_rng();
+        let report = resolve_combat_with_rng(1, &open_field.mission, &open_field.planet, &mut rng);
+        let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+        let map = Map {
+            rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: vec![origin, report.planet.clone()],
+        };
+        let mut app = playback_app(report, 0, CombatState::Fire);
+        app.insert_resource(map).init_resource::<MultiplayerSession>();
+        app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<MainCamera>>()
+            .single(app.world())
+            .unwrap();
+        let mut projection = OrthographicProjection::default_2d();
+        projection.area = Rect::new(-960.0, -540.0, 960.0, 540.0);
+        app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
+        app.world_mut().run_system_once(setup_combat).unwrap();
+
+        let individuals = app
+            .world_mut()
+            .query::<&IndividualCombatUnitCmp>()
+            .iter(app.world())
+            .map(|card| (card.unit, card.side.clone(), card.home, card.display_size))
+            .collect::<Vec<_>>();
+        let defender_top = individuals
+            .iter()
+            .filter(|(_, side, _, _)| *side == Side::Defender)
+            .map(|(_, _, home, size)| home.y + size * INDIVIDUAL_CARD_UPPER_EXTENT)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let attacker_bottom = individuals
+            .iter()
+            .filter(|(_, side, _, _)| *side == Side::Attacker)
+            .map(|(_, _, home, size)| home.y - size * INDIVIDUAL_CARD_LOWER_EXTENT)
+            .fold(f32::INFINITY, f32::min);
+        let low_row_top = -540.0
+            + 180.0
+            + UNIT_SIZE * (COMBAT_DEFENDER_Y_OFFSET_FACTOR + INDIVIDUAL_CARD_UPPER_EXTENT);
+
+        assert!(defender_top <= low_row_top + 0.1, "case {case} stays in the low defender band");
+        assert!(
+            attacker_bottom - defender_top > 1_080.0 * 0.25,
+            "case {case} leaves the unused center of the battlefield open"
+        );
+        if case == 1 {
+            assert!(individuals.iter().any(|(unit, side, _, _)| {
+                *side == Side::Defender && *unit == Unit::Fauna(SpaceFauna::AetherRay)
+            }));
+        }
+    }
 }
 
 #[test]
@@ -633,7 +876,13 @@ fn defender_cards_show_spaced_equally_sized_counts_in_each_players_color() {
             let text = app.world().get::<Text2d>(*entity)?;
             let font = app.world().get::<TextFont>(*entity)?;
             let color = app.world().get::<TextColor>(*entity)?;
-            (counter.owner == Some(2)).then_some((text.0.clone(), font.font_size, color.0))
+            let transform = app.world().get::<Transform>(*entity)?;
+            (counter.owner == Some(2)).then_some((
+                text.0.clone(),
+                font.font_size,
+                color.0,
+                transform.scale,
+            ))
         })
         .unwrap();
     let protector = descendants
@@ -649,6 +898,11 @@ fn defender_cards_show_spaced_equally_sized_counts_in_each_players_color() {
 
     assert_eq!(owner.0, "6");
     assert_eq!(owner.2, app.world().resource::<MultiplayerSession>().player_color(2).color());
+    assert!(matches!(
+        owner.1,
+        FontSize::Px(size) if size > 0.0 && size <= COMBAT_COUNT_FONT_SIZE
+    ));
+    assert_eq!(owner.3, Vec3::ONE);
     assert_eq!(protector.0, "  3");
     assert_eq!(protector.1, owner.1);
     assert_eq!(protector.2, app.world().resource::<MultiplayerSession>().player_color(3).color());
@@ -1806,10 +2060,16 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let crawler_home = app.world().get::<Transform>(crawler).unwrap().translation;
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert!(app.world().get::<SalvageCrawlerCmp>(crawler).is_some());
+    let result = app
+        .world_mut()
+        .query_filtered::<Entity, With<DisplayTextCmp>>()
+        .single(app.world())
+        .unwrap();
+    let backdrop = app.world().get::<ChildOf>(result).unwrap().parent();
     assert_eq!(
-        app.world_mut().query_filtered::<Entity, With<DisplayTextCmp>>().iter(app.world()).count(),
-        1,
-        "the result appears while the Crawler animation begins"
+        app.world().get::<BackgroundColor>(backdrop).unwrap().0.alpha(),
+        0.46,
+        "the result darkens the active battlefield behind it"
     );
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);

@@ -145,19 +145,25 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         );
     });
 
-    let mut suppressed = SuppressedReturningSpies::default();
+    let mut suppressed = SuppressedMapMissions::default();
+    suppressed.suppress(2);
     suppressed.suppress(3);
     app.insert_resource(suppressed);
     app.update();
-    let spy_entity = app
+    let mission_entities = app
         .world_mut()
         .query::<(Entity, &MissionCmp)>()
         .iter(app.world())
-        .find_map(|(entity, mission)| (mission.id == 3).then_some(entity))
-        .unwrap();
+        .map(|(entity, mission)| (mission.id, entity))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let fleet_entity = mission_entities[&2];
+    let spy_entity = mission_entities[&3];
+    assert_eq!(*app.world().get::<Visibility>(fleet_entity).unwrap(), Visibility::Hidden);
     assert_eq!(*app.world().get::<Visibility>(spy_entity).unwrap(), Visibility::Hidden);
-    app.world_mut().resource_mut::<SuppressedReturningSpies>().release(3);
+    app.world_mut().resource_mut::<SuppressedMapMissions>().release(2);
+    app.world_mut().resource_mut::<SuppressedMapMissions>().release(3);
     app.update();
+    assert_eq!(*app.world().get::<Visibility>(fleet_entity).unwrap(), Visibility::Inherited);
     assert_eq!(*app.world().get::<Visibility>(spy_entity).unwrap(), Visibility::Inherited);
 
     // Covers the first rendered frame, hover, and switching the inspected player's view.

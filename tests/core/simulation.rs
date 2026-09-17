@@ -647,18 +647,15 @@ fn fauna_formation_titles_describe_the_finished_creature_count() {
         for seed in 0..512_u64 {
             let (name, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
             let total = formation.values().sum::<usize>();
-            let is_explicit_pair = name.ends_with(" Pair")
-                || (name.contains(" and ") && !name.ends_with(" and Companions"));
 
             assert_eq!(
                 name.starts_with("Lone "),
                 total == 1,
                 "turn {turn}, seed {seed}: {name:?} described {total} creatures"
             );
-            assert_eq!(
-                is_explicit_pair,
-                total == 2,
-                "turn {turn}, seed {seed}: {name:?} described {total} creatures"
+            assert!(
+                !name.contains(" and ") && !name.ends_with(" Companions"),
+                "turn {turn}, seed {seed}: {name:?} should describe one encounter archetype"
             );
             if name == "Nebula Grazer Family" {
                 let grazers =

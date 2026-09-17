@@ -9,6 +9,8 @@ pub(crate) mod colonization;
 pub(crate) mod details;
 #[cfg(feature = "app")]
 pub(crate) mod detection;
+#[cfg(feature = "app")]
+pub(crate) mod fauna;
 pub mod icon;
 pub mod model;
 #[cfg(feature = "app")]

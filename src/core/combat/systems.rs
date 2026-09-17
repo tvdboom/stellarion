@@ -50,7 +50,8 @@ const SPACE_FAUNA_BACKGROUND_TINT: Color = Color::srgb(0.72, 0.72, 0.72);
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 const COMBAT_STATUS_OFFSET: f32 = -120.0;
-const COMBAT_COUNT_FONT_SIZE: f32 = 600.0;
+// Use the displayed size directly so Bevy does not allocate a huge glyph atlas and scale it down.
+const COMBAT_COUNT_FONT_SIZE: f32 = 30.0;
 const COMBAT_COUNT_SEPARATOR: &str = "  ";
 const ROUND_BANNER_ENTER_MS: u64 = 250;
 const ROUND_BANNER_HOLD_MS: u64 = 650;
@@ -70,8 +71,14 @@ const SALVAGE_PICKUP_TIME_MS: u64 =
 const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
 const COMBAT_FORMATION_TRANSITION_SECS: f32 = 0.7;
-const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.64;
-const INDIVIDUAL_CARD_MIN_FACTOR: f32 = 0.12;
+const COMBAT_FORMATION_GROUP_FADE_PORTION: f32 = 0.28;
+const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.62;
+const INDIVIDUAL_SAME_TYPE_GAP_FACTOR: f32 = 0.06;
+const INDIVIDUAL_TYPE_GAP_FACTOR: f32 = 0.48;
+const INDIVIDUAL_ROW_GAP_FACTOR: f32 = 0.42;
+const INDIVIDUAL_CARD_UPPER_EXTENT: f32 = 0.5;
+const INDIVIDUAL_CARD_LOWER_EXTENT: f32 = 0.75;
+const INDIVIDUAL_FLEET_SEPARATION_FACTOR: f32 = 0.115;
 
 /// Both status overlays use this viewport anchor so pausing never moves the label.
 fn combat_status_node() -> Node {
@@ -226,6 +233,12 @@ pub struct IndividualCombatUnitCmp {
     pub max_hull: usize,
 }
 
+impl IndividualCombatUnitCmp {
+    pub(super) fn home(&self) -> Vec3 {
+        self.home
+    }
+}
+
 #[derive(Resource, Clone, Copy, Debug)]
 /// Current grouped/individual projection and any animated transition between them.
 pub struct CombatFormationState {
@@ -264,21 +277,75 @@ struct IndividualCardSeed {
     side: Side,
     group: Entity,
     group_home: Vec3,
+    entry_y: f32,
     hull: usize,
     max_hull: usize,
     shield: usize,
     max_shield: usize,
 }
 
-/// Higher-tier units keep a stronger silhouette without letting one capital ship dictate the grid.
-fn individual_unit_scale(unit: Unit) -> f32 {
-    0.72 + 0.08 * unit.production().saturating_sub(1).min(6) as f32
+fn individual_unit_strength(unit: Unit) -> usize {
+    unit.hull().saturating_add(unit.shield()).saturating_add(unit.damage()).max(1)
 }
 
-/// Packs one side into as many centered rows as its viewport band can support.
+/// Gives capital ships a materially stronger silhouette while preserving room for full fleets.
+fn individual_unit_scale(unit: Unit) -> f32 {
+    let war_sun_strength = individual_unit_strength(Unit::war_sun()) as f32;
+    let relative = (individual_unit_strength(unit) as f32 / war_sun_strength).clamp(0.0, 1.0);
+    0.53 + 0.92 * relative.powf(0.65)
+}
+
+#[derive(Clone)]
+struct IndividualTypeGroup {
+    unit: Unit,
+    indices: Vec<usize>,
+    scale: f32,
+    width: f32,
+}
+
+/// Splits ordered, indivisible unit-type groups into balanced contiguous rows.
+fn balanced_type_rows(groups: &[IndividualTypeGroup], rows: usize) -> Vec<(usize, usize)> {
+    let count = groups.len();
+    let rows = rows.clamp(1, count);
+    let mut prefix = vec![0.0_f32; count + 1];
+    for (index, group) in groups.iter().enumerate() {
+        prefix[index + 1] = prefix[index] + group.width;
+    }
+    let row_width = |start: usize, end: usize| {
+        prefix[end] - prefix[start]
+            + INDIVIDUAL_TYPE_GAP_FACTOR * end.saturating_sub(start + 1) as f32
+    };
+
+    let mut best = vec![vec![f32::INFINITY; count + 1]; rows + 1];
+    let mut split = vec![vec![0; count + 1]; rows + 1];
+    best[0][0] = 0.0;
+    for row in 1..=rows {
+        for end in row..=count {
+            for start in row - 1..end {
+                let candidate = best[row - 1][start].max(row_width(start, end));
+                if candidate < best[row][end] {
+                    best[row][end] = candidate;
+                    split[row][end] = start;
+                }
+            }
+        }
+    }
+
+    let mut result = Vec::with_capacity(rows);
+    let mut end = count;
+    for row in (1..=rows).rev() {
+        let start = split[row][end];
+        result.push((start, end));
+        end = start;
+    }
+    result.reverse();
+    result
+}
+
+/// Packs one side into centered rows without ever splitting one unit kind between rows.
 ///
-/// Inputs are returned in their original order. Placement order is strength-descending, so the
-/// strongest cards occupy the rear rows while weaker fodder screens the front.
+/// Inputs are returned in their original order. Unit kinds progress from weak to strong from left
+/// to right and from the front rank to the rear, so capital ships sit behind the smaller screen.
 fn individual_formation_layout(
     units: &[Unit],
     center_x: f32,
@@ -292,7 +359,6 @@ fn individual_formation_layout(
         return Vec::new();
     }
 
-    let count = units.len();
     let (mut y_min, mut y_max) = if y_min <= y_max {
         (y_min, y_max)
     } else {
@@ -307,102 +373,104 @@ fn individual_formation_layout(
         y_max = middle + minimum_height * 0.5;
     }
     let height = y_max - y_min;
-    let max_weight = units.iter().copied().map(individual_unit_scale).fold(1.0_f32, f32::max);
     let cap = grouped_size * INDIVIDUAL_CARD_MAX_FACTOR;
-    let floor = grouped_size * INDIVIDUAL_CARD_MIN_FACTOR;
 
-    let mut columns = 1;
-    let mut base_size = 0.0_f32;
-    for candidate in 1..=count {
-        let rows = count.div_ceil(candidate);
-        let cell_width = width / candidate as f32;
-        let cell_height = height / rows as f32;
-        let fitted =
-            (cell_width / (max_weight * 1.08)).min(cell_height / (max_weight * 1.55)).min(cap);
-        if fitted > base_size {
-            base_size = fitted;
-            columns = candidate;
+    let mut groups = Vec::<IndividualTypeGroup>::new();
+    for (index, unit) in units.iter().copied().enumerate() {
+        if let Some(group) = groups.iter_mut().find(|group| group.unit == unit) {
+            group.indices.push(index);
+        } else {
+            let scale = individual_unit_scale(unit);
+            groups.push(IndividualTypeGroup {
+                unit,
+                indices: vec![index],
+                scale,
+                width: 0.0,
+            });
         }
     }
-    base_size = base_size.max(floor.min(cap));
-    let rows = count.div_ceil(columns);
-    let cell_width = width / columns as f32;
-    let cell_height = height / rows as f32;
-
-    let mut order = (0..count).collect::<Vec<_>>();
-    order.sort_by(|left, right| {
-        units[*right]
-            .production()
-            .cmp(&units[*left].production())
-            .then_with(|| units[*left].cmp(&units[*right]))
-            .then_with(|| left.cmp(right))
+    groups.sort_by(|left, right| {
+        individual_unit_strength(left.unit)
+            .cmp(&individual_unit_strength(right.unit))
+            .then_with(|| left.unit.cmp(&right.unit))
     });
+    for group in &mut groups {
+        group.width = group.indices.len() as f32 * group.scale
+            + group.indices.len().saturating_sub(1) as f32 * INDIVIDUAL_SAME_TYPE_GAP_FACTOR;
+    }
 
-    // Offset mixed-strength cards within a row without letting the larger rear cards hit the
-    // band edge first. Clamping every card independently can otherwise invert the formation:
-    // a capital ship needs more edge clearance than the smaller screen beside it.
-    let row_baselines = (0..rows)
-        .map(|row| {
-            let row_start = row * columns;
-            let row_end = (row_start + columns).min(count);
-            let nominal = if attacker {
-                y_max - (row as f32 + 0.5) * cell_height
-            } else {
-                y_min + (row as f32 + 0.5) * cell_height
-            };
-            let (minimum, maximum) = order[row_start..row_end].iter().fold(
-                (f32::NEG_INFINITY, f32::INFINITY),
-                |(minimum, maximum), input_index| {
-                    let display_size = base_size * individual_unit_scale(units[*input_index]);
-                    let strength_offset =
-                        unit_display_rank(units[*input_index]) * cell_height * 0.1;
-                    if attacker {
-                        (
-                            minimum.max(y_min + display_size * 0.75 - strength_offset),
-                            maximum.min(y_max - display_size * 0.5 - strength_offset),
-                        )
-                    } else {
-                        (
-                            minimum.max(y_min + display_size * 0.75 + strength_offset),
-                            maximum.min(y_max - display_size * 0.5 + strength_offset),
-                        )
-                    }
-                },
-            );
-            if minimum <= maximum {
-                nominal.clamp(minimum, maximum)
-            } else {
-                nominal
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut result = vec![(Vec3::ZERO, base_size); count];
-    for (slot, input_index) in order.into_iter().enumerate() {
-        let row = slot / columns;
-        let column = slot % columns;
-        let row_start = row * columns;
-        let row_count = (count - row_start).min(columns);
-        let x = center_x + (column as f32 - (row_count as f32 - 1.0) * 0.5) * cell_width;
-        let row_y = row_baselines[row];
-        let strength_offset = unit_display_rank(units[input_index]) * cell_height * 0.1;
-        let display_size = base_size * individual_unit_scale(units[input_index]);
-        let y = (row_y
-            + if attacker {
-                strength_offset
-            } else {
-                -strength_offset
+    let mut best_size = 0.0_f32;
+    let mut best_rows = vec![(0, groups.len())];
+    for row_count in 1..=groups.len() {
+        let rows = balanced_type_rows(&groups, row_count);
+        let widest = rows
+            .iter()
+            .map(|(start, end)| {
+                groups[*start..*end].iter().map(|group| group.width).sum::<f32>()
+                    + INDIVIDUAL_TYPE_GAP_FACTOR * end.saturating_sub(start + 1) as f32
             })
-        .clamp(y_min + display_size * 0.75, y_max - display_size * 0.5);
-        // Later rows are closer to the opposing fleet and render over the rear ranks.
-        let z = COMBAT_SHIP_Z + row as f32 * 0.01;
-        result[input_index] = (Vec3::new(x, y, z), display_size);
+            .fold(0.0_f32, f32::max);
+        let row_heights = rows
+            .iter()
+            .map(|(start, end)| {
+                groups[*start..*end].iter().map(|group| group.scale).fold(0.0_f32, f32::max)
+                    * (INDIVIDUAL_CARD_UPPER_EXTENT + INDIVIDUAL_CARD_LOWER_EXTENT)
+            })
+            .sum::<f32>()
+            + INDIVIDUAL_ROW_GAP_FACTOR * row_count.saturating_sub(1) as f32;
+        let fitted = (width / widest).min(height / row_heights).min(cap);
+        let clearer_crowded_rows = best_size < cap - f32::EPSILON
+            && fitted >= best_size * 0.985
+            && row_count > best_rows.len();
+        if fitted > best_size + f32::EPSILON || clearer_crowded_rows {
+            best_size = fitted;
+            best_rows = rows;
+        }
+    }
+    let base_size = best_size.max(f32::EPSILON);
+    let mut result = vec![(Vec3::ZERO, base_size); units.len()];
+
+    // Rows are ordered weak-to-strong. Attackers advance downward and defenders upward, so the
+    // direction changes while both sides retain weak screens in front of their capital ships.
+    let mut y_edge = if attacker {
+        y_min
+    } else {
+        y_max
+    };
+    for (row, (start, end)) in best_rows.iter().copied().enumerate() {
+        let row_scale = groups[start..end].iter().map(|group| group.scale).fold(0.0_f32, f32::max);
+        let row_size = base_size * row_scale;
+        let y = if attacker {
+            y_edge + row_size * INDIVIDUAL_CARD_LOWER_EXTENT
+        } else {
+            y_edge - row_size * INDIVIDUAL_CARD_UPPER_EXTENT
+        };
+        let row_width = groups[start..end].iter().map(|group| group.width).sum::<f32>()
+            + INDIVIDUAL_TYPE_GAP_FACTOR * end.saturating_sub(start + 1) as f32;
+        let mut x_edge = center_x - row_width * base_size * 0.5;
+        for (group_offset, group) in groups[start..end].iter().enumerate() {
+            let display_size = base_size * group.scale;
+            for input_index in &group.indices {
+                let x = x_edge + display_size * 0.5;
+                // Front ranks render over rear ranks when their silhouettes overlap vertically.
+                let z = COMBAT_SHIP_Z + (best_rows.len() - row) as f32 * 0.01;
+                result[*input_index] = (Vec3::new(x, y, z), display_size);
+                x_edge += display_size + base_size * INDIVIDUAL_SAME_TYPE_GAP_FACTOR;
+            }
+            x_edge -= base_size * INDIVIDUAL_SAME_TYPE_GAP_FACTOR;
+            if group_offset + 1 < end - start {
+                x_edge += base_size * INDIVIDUAL_TYPE_GAP_FACTOR;
+            }
+        }
+        let row_extent = row_size * (INDIVIDUAL_CARD_UPPER_EXTENT + INDIVIDUAL_CARD_LOWER_EXTENT);
+        let advance = row_extent + base_size * INDIVIDUAL_ROW_GAP_FACTOR;
+        if attacker {
+            y_edge += advance;
+        } else {
+            y_edge -= advance;
+        }
     }
     result
-}
-
-fn unit_display_rank(unit: Unit) -> f32 {
-    unit.production().saturating_sub(1).min(6) as f32 / 6.0
 }
 
 #[derive(Component)]
@@ -505,8 +573,7 @@ fn combat_count_font_size(
     protection: &[(PlayerId, usize)],
 ) -> f32 {
     let full_size = COMBAT_COUNT_FONT_SIZE * projection_scale;
-    let estimated_width =
-        combat_count_characters(owner_count, protection) * full_size * 0.05 * 0.58;
+    let estimated_width = combat_count_characters(owner_count, protection) * full_size * 0.58;
     if estimated_width <= badge_width * 0.9 {
         full_size
     } else {
@@ -994,7 +1061,7 @@ pub fn setup_combat(
     let spacing = size * 1.2;
     let attacker_id = report.mission.owner;
     let defender_id = report.planet.controlled.or(report.planet.owned);
-    let mut grouped_cards = Vec::<(Side, Unit, Entity, Vec3)>::new();
+    let mut grouped_cards = Vec::<(Side, Unit, Entity, Vec3, f32)>::new();
 
     let mut spawn_row = |commands: &mut Commands,
                          units: Vec<(Unit, usize)>,
@@ -1084,7 +1151,7 @@ pub fn setup_combat(
                                     ..default()
                                 },
                                 TextColor(count_color(owner)),
-                                Transform::from_scale(Vec3::splat(0.05)),
+                                Transform::default(),
                                 CountCmp {
                                     owner,
                                 },
@@ -1170,7 +1237,7 @@ pub fn setup_combat(
                     ));
                 }
             });
-            grouped_cards.push((side.clone(), *u, card_entity, home));
+            grouped_cards.push((side.clone(), *u, card_entity, home, y_start));
         }
     };
 
@@ -1273,6 +1340,7 @@ pub fn setup_combat(
                 .then_some((u, amount))
         })
         .collect::<Vec<_>>();
+    let has_defending_defenses = !defending_def.is_empty();
 
     let defending_ships = if report.mission.objective != Icon::MissileStrike {
         Unit::ships()
@@ -1378,7 +1446,7 @@ pub fn setup_combat(
         if let Some(round) = combat.rounds.get(state.combat_round) {
             let previous =
                 state.combat_round.checked_sub(1).and_then(|index| combat.rounds.get(index));
-            for (side, unit, group, group_home) in &grouped_cards {
+            for (side, unit, group, group_home, entry_y) in &grouped_cards {
                 for combatant in round.units(side).iter().filter(|record| record.unit == *unit) {
                     let max_hull = report.unit_hull(*unit, side);
                     let max_shield = report.unit_shield(*unit, side);
@@ -1394,6 +1462,7 @@ pub fn setup_combat(
                         side: side.clone(),
                         group: *group,
                         group_home: *group_home,
+                        entry_y: *entry_y,
                         hull,
                         max_hull,
                         shield: max_shield,
@@ -1419,6 +1488,7 @@ pub fn setup_combat(
                             side: side.clone(),
                             group: *group,
                             group_home: *group_home,
+                            entry_y: *entry_y,
                             hull: max_hull,
                             max_hull,
                             shield: max_shield,
@@ -1440,7 +1510,7 @@ pub fn setup_combat(
         .enumerate()
         .filter_map(|(index, seed)| {
             (seed.side == Side::Defender
-                && (seed.unit.is_ship() || seed.unit == Unit::space_dock()))
+                && (seed.unit.is_ship() || seed.unit == Unit::space_dock() || seed.unit.is_fauna()))
             .then_some(index)
         })
         .collect::<Vec<_>>();
@@ -1448,8 +1518,11 @@ pub fn setup_combat(
         .iter()
         .enumerate()
         .filter_map(|(index, seed)| {
-            (seed.side == Side::Defender && !seed.unit.is_ship() && seed.unit != Unit::space_dock())
-                .then_some(index)
+            (seed.side == Side::Defender
+                && !seed.unit.is_ship()
+                && seed.unit != Unit::space_dock()
+                && !seed.unit.is_fauna())
+            .then_some(index)
         })
         .collect::<Vec<_>>();
     let mut individual_layout = vec![None; individual_seeds.len()];
@@ -1468,14 +1541,6 @@ pub fn setup_combat(
     };
 
     let horizontal_room = width * 0.86;
-    place_band(
-        &attacker_indices,
-        pos.x,
-        horizontal_room,
-        pos.y + height * 0.06,
-        pos.y + height * 0.5 - size * 0.82,
-        true,
-    );
     let ground_width = if buildings.is_empty() {
         horizontal_room
     } else {
@@ -1488,17 +1553,33 @@ pub fn setup_combat(
     };
     let shield_top = shield_y + shield_height * 0.5;
     let shield_bottom = shield_y - shield_height * 0.5;
-    let defender_front = pos.y + height * 0.055;
-    let defender_ship_rear = if draw_ps || !defender_ground_indices.is_empty() {
-        shield_top + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+    // Fauna and fleets with no active ground-defense layer use the old low defender row. Besides
+    // matching their grouped cards, this keeps a deliberately broad empty field between them and
+    // the attacker instead of spending the unused shield/defense area on a taller formation.
+    let use_lower_defender_fleet =
+        report.is_space_fauna_encounter() || (!has_defending_defenses && !draw_ps);
+    let (defender_ship_rear, defender_front) = if use_lower_defender_fleet {
+        let front = ship_y + size * INDIVIDUAL_CARD_UPPER_EXTENT;
+        ((control_top + size * 0.2).min(front - size * 0.05), front)
     } else {
-        control_top + size * 0.45
+        let rear = if draw_ps || !defender_ground_indices.is_empty() {
+            shield_top + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+        } else {
+            control_top + size * 0.45
+        };
+        let front = (pos.y - height * 0.055).max(rear + size * 0.05);
+        (rear, front)
     };
+    let attacker_rear = pos.y + height * 0.5 - size * 0.82;
+    let attacker_front = (pos.y + height * 0.06)
+        .max(defender_front + height * INDIVIDUAL_FLEET_SEPARATION_FACTOR)
+        .min(attacker_rear - size * 0.05);
+    place_band(&attacker_indices, pos.x, horizontal_room, attacker_front, attacker_rear, true);
     place_band(
         &defender_ship_indices,
         pos.x,
         horizontal_room,
-        defender_ship_rear.min(defender_front - size * 0.25),
+        defender_ship_rear,
         defender_front,
         false,
     );
@@ -1507,11 +1588,12 @@ pub fn setup_combat(
     } else {
         pos.y - height * 0.1
     };
+    let defender_ground_rear = (control_top + size * 0.2).min(ground_top - size * 0.05);
     place_band(
         &defender_ground_indices,
         ground_center,
         ground_width,
-        control_top + size * 0.2,
+        defender_ground_rear,
         ground_top,
         false,
     );
@@ -1520,7 +1602,11 @@ pub fn setup_combat(
         let Some((home, card_size)) = layout else {
             continue;
         };
-        let initial_position = seed.group_home;
+        let initial_position = if settings.combat_individual_units {
+            Vec3::new(home.x, seed.entry_y, home.z)
+        } else {
+            seed.group_home
+        };
         let show_owner = match &seed.side {
             Side::Attacker => report.attacker_players().len() > 1,
             Side::Defender => report.defender_players().len() > 1,
@@ -1562,13 +1648,14 @@ pub fn setup_combat(
                 EaseFunction::QuadraticInOut,
                 Duration::from_secs(SETUP_TIME),
                 TransformPositionLens {
-                    start: seed.group_home,
+                    start: initial_position,
                     end: home,
                 },
             )));
         }
         card.with_children(|parent| {
             let bar_height = (card_size * 0.11).max(2.0 * projection.scale);
+            let first_bar_y = -card_size * 0.5 - bar_height * 0.5;
             if show_owner {
                 parent.spawn((
                     Sprite {
@@ -1586,7 +1673,7 @@ pub fn setup_combat(
                         custom_size: Some(Vec2::new(card_size, bar_height)),
                         ..default()
                     },
-                    Transform::from_xyz(0.0, -card_size * 0.56, 0.1),
+                    Transform::from_xyz(0.0, first_bar_y, 0.1),
                     children![(
                         Sprite {
                             color: SHIELD_COLOR,
@@ -1600,9 +1687,9 @@ pub fn setup_combat(
             }
             if seed.max_hull > 0 {
                 let hull_y = if seed.max_shield > 0 {
-                    -0.69
+                    first_bar_y - bar_height
                 } else {
-                    -0.57
+                    first_bar_y
                 };
                 parent.spawn((
                     Sprite {
@@ -1610,7 +1697,7 @@ pub fn setup_combat(
                         custom_size: Some(Vec2::new(card_size, bar_height)),
                         ..default()
                     },
-                    Transform::from_xyz(0.0, card_size * hull_y, 0.1),
+                    Transform::from_xyz(0.0, hull_y, 0.1),
                     children![(
                         Sprite {
                             color: HEALTH_COLOR,
@@ -1696,11 +1783,11 @@ pub fn setup_combat(
                             Text2d::new(ps.to_string()),
                             TextFont {
                                 font: assets.font("bold").into(),
-                                font_size: (600. * projection.scale).into(),
+                                font_size: (COMBAT_COUNT_FONT_SIZE * projection.scale).into(),
                                 ..default()
                             },
                             TextColor(WHITE.into()),
-                            Transform::from_scale(Vec3::splat(0.05)),
+                            Transform::default(),
                         )]
                     )],
                 )
@@ -1761,11 +1848,11 @@ pub fn setup_combat(
                         Text2d::new(c.to_string()),
                         TextFont {
                             font: assets.font("bold").into(),
-                            font_size: (600. * projection.scale).into(),
+                            font_size: (COMBAT_COUNT_FONT_SIZE * projection.scale).into(),
                             ..default()
                         },
                         TextColor(WHITE.into()),
-                        Transform::from_scale(Vec3::splat(0.05)),
+                        Transform::default(),
                         CountCmp {
                             owner: defender_id,
                         },
@@ -1827,7 +1914,7 @@ pub fn update_combat_formation(
     pending_q: Query<(), Or<(With<PendingImpact>, With<Wreck>)>>,
     grouped_state_q: Query<&CombatUnitCmp, With<GroupedCombatUnitCmp>>,
     mut grouped_q: Query<
-        (Entity, &Transform, &mut Visibility),
+        (Entity, &Transform, &mut Visibility, &mut Sprite),
         (
             With<GroupedCombatUnitCmp>,
             Without<IndividualCombatUnitCmp>,
@@ -1854,7 +1941,7 @@ pub fn update_combat_formation(
 
         let group_positions = grouped_q
             .iter_mut()
-            .map(|(entity, transform, _)| (entity, transform.translation))
+            .map(|(entity, transform, _, _)| (entity, transform.translation))
             .collect::<Vec<_>>();
         for (entity, mut transform, mut visibility, mut individual) in &mut individual_q {
             individual.transition_start = if desired {
@@ -1873,8 +1960,11 @@ pub fn update_combat_formation(
             *visibility = Visibility::Inherited;
             commands.entity(entity).remove::<TweenAnim>();
         }
-        // The aggregate remains underneath a split and appears only after a completed combine.
-        for (_, _, mut visibility) in &mut grouped_q {
+        // A split starts at the aggregate but dismisses that image before the exact ships have
+        // spread far enough to look like duplicates. Combining keeps the aggregate hidden until
+        // the exact cards have returned to it.
+        for (_, _, mut visibility, mut sprite) in &mut grouped_q {
+            sprite.color = sprite.color.with_alpha(1.0);
             *visibility = if desired {
                 Visibility::Inherited
             } else {
@@ -1895,7 +1985,7 @@ pub fn update_combat_formation(
     let eased = progress * progress * (3.0 - 2.0 * progress);
     let group_positions = grouped_q
         .iter_mut()
-        .map(|(entity, transform, _)| (entity, transform.translation))
+        .map(|(entity, transform, _, _)| (entity, transform.translation))
         .collect::<Vec<_>>();
     for (_, mut transform, _, individual) in &mut individual_q {
         let group_position = group_positions
@@ -1915,6 +2005,15 @@ pub fn update_combat_formation(
         };
         transform.scale = Vec3::splat(scale);
     }
+    if transition.to_individual {
+        let alpha = (1.0 - progress / COMBAT_FORMATION_GROUP_FADE_PORTION).clamp(0.0, 1.0);
+        for (_, _, mut visibility, mut sprite) in &mut grouped_q {
+            sprite.color = sprite.color.with_alpha(alpha);
+            if alpha <= f32::EPSILON {
+                *visibility = Visibility::Hidden;
+            }
+        }
+    }
 
     if progress < 1.0 {
         formation.transition = Some(transition);
@@ -1923,7 +2022,8 @@ pub fn update_combat_formation(
 
     formation.individual = transition.to_individual;
     formation.transition = None;
-    for (_, _, mut visibility) in &mut grouped_q {
+    for (_, _, mut visibility, mut sprite) in &mut grouped_q {
+        sprite.color = sprite.color.with_alpha(1.0);
         *visibility = if formation.individual {
             Visibility::Hidden
         } else {
@@ -2436,6 +2536,7 @@ pub fn animate_combat(
         play_audio_msg.write(PlayAudioMsg::new(result));
         commands.spawn((
             add_root_node(false),
+            BackgroundColor(Color::BLACK.with_alpha(0.46)),
             children![(
                 Node {
                     max_width: Val::Vw(90.),

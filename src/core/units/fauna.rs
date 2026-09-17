@@ -269,72 +269,49 @@ fn encounter_name(reinforcement_pattern: &[SpaceFauna], army: &Army) -> String {
     use SpaceFauna::*;
 
     let total = army.values().copied().sum::<usize>();
-    let mut present = Vec::new();
-    for creature in reinforcement_pattern {
-        if army.contains_key(&Unit::Fauna(*creature)) && !present.contains(creature) {
-            present.push(*creature);
-        }
-    }
-    for unit in army.keys() {
-        let Unit::Fauna(creature) = unit else {
-            continue;
-        };
-        if !present.contains(creature) {
-            present.push(*creature);
-        }
-    }
-
-    let Some(primary) = present.first().copied() else {
+    let primary = reinforcement_pattern
+        .iter()
+        .copied()
+        .find(|creature| army.contains_key(&Unit::Fauna(*creature)))
+        .or_else(|| {
+            army.keys().find_map(|unit| match unit {
+                Unit::Fauna(creature) => Some(*creature),
+                _ => None,
+            })
+        });
+    let Some(primary) = primary else {
         return "Deep-Space Encounter".to_string();
     };
     let primary_name = Unit::Fauna(primary).to_name();
     if total == 1 {
         return format!("Lone {primary_name}");
     }
-    if total == 2 {
-        if present.len() == 1 {
-            return format!("{primary_name} Pair");
-        }
-        return format!("{primary_name} and {}", Unit::Fauna(present[1]).to_name());
-    }
 
     let amount = |creature| army.get(&Unit::Fauna(creature)).copied().unwrap_or(0);
     let related = |adult, young| amount(adult).saturating_add(amount(young));
     match primary {
         AetherRay => {
-            if amount(AetherRay) == total {
-                if total <= 4 {
-                    "Aether Ray Shoal".to_string()
-                } else {
-                    "Aether Ray Swarm".to_string()
-                }
+            if total <= 4 {
+                "Aether Ray Shoal".to_string()
             } else {
-                "Aether Rays and Companions".to_string()
+                "Aether Ray Swarm".to_string()
             }
         },
         IonWisp => {
-            if amount(IonWisp) == total {
-                if total <= 4 {
-                    "Ion Wisp Drift".to_string()
-                } else {
-                    "Ion Storm".to_string()
-                }
+            if total <= 4 {
+                "Ion Wisp Drift".to_string()
             } else {
-                "Ion Wisps and Companions".to_string()
+                "Ion Storm".to_string()
             }
         },
-        VoidManta | VoidMantaCalf if related(VoidManta, VoidMantaCalf) >= 2 => {
-            "Void Manta Nursery".to_string()
-        },
-        CrystalLeviathan | CrystalShardling if related(CrystalLeviathan, CrystalShardling) >= 2 => {
-            "Crystal Leviathan Cluster".to_string()
-        },
-        StarKraken | StarKrakenSpawn if related(StarKraken, StarKrakenSpawn) >= 2 => {
-            "Star Kraken Brood".to_string()
-        },
-        NebulaGrazer | NebulaGrazerCalf if related(NebulaGrazer, NebulaGrazerCalf) >= 2 => {
+        VoidManta | VoidMantaCalf => "Void Manta Nursery".to_string(),
+        CrystalLeviathan | CrystalShardling => "Crystal Leviathan Cluster".to_string(),
+        StarKraken | StarKrakenSpawn => "Star Kraken Brood".to_string(),
+        NebulaGrazer | NebulaGrazerCalf => {
             let grazers = related(NebulaGrazer, NebulaGrazerCalf);
-            if grazers <= 3 {
+            if grazers == 1 {
+                "Nebula Grazer Migration".to_string()
+            } else if grazers <= 3 {
                 "Nebula Grazer Family".to_string()
             } else if grazers <= 6 {
                 "Nebula Grazer Herd".to_string()
@@ -342,15 +319,12 @@ fn encounter_name(reinforcement_pattern: &[SpaceFauna], army: &Army) -> String {
                 "Nebula Grazer Migration".to_string()
             }
         },
-        ElderStarDragon | StarDragonWyrmling
-            if related(ElderStarDragon, StarDragonWyrmling) >= 2 =>
-        {
-            "Star Dragon Brood".to_string()
-        },
-        Gravemaw if amount(Gravemaw) >= 2 => "Gravemaw Hunting Pack".to_string(),
-        RiftSerpent if amount(RiftSerpent) >= 2 => "Rift Serpent Procession".to_string(),
-        SolarRoc if amount(SolarRoc) >= 2 => "Solar Roc Convocation".to_string(),
-        _ => format!("{primary_name} and Companions"),
+        ElderStarDragon => "Star Dragon Brood".to_string(),
+        StarDragonWyrmling => "Rogue Star Dragon Wyrmling".to_string(),
+        Gravemaw => "Gravemaw Hunting Pack".to_string(),
+        RiftSerpent => "Rift Serpent Procession".to_string(),
+        SolarRoc => "Solar Roc Aerie".to_string(),
+        NullstarBehemoth => "Lone Nullstar Behemoth".to_string(),
     }
 }
 
