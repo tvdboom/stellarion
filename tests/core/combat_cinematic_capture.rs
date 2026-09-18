@@ -368,6 +368,10 @@ fn render_cinematic_preview() {
                 continue;
             }
             let name = path.file_stem().unwrap().to_string_lossy().to_string();
+            // Exercise the production result loader, including its separate alpha conventions.
+            if directory == "bg" && matches!(name.as_str(), "victory" | "defeat" | "draw") {
+                continue;
+            }
             if (directory == "icons" && name != "planetary shield marker")
                 || (directory == "ui" && name != "long button")
                 || (directory == "resources"
@@ -387,6 +391,22 @@ fn render_cinematic_preview() {
             handles.push((name, handle));
         }
     }
+    handles.extend(
+        app.world_mut()
+            .run_system_once(|server: Res<AssetServer>, mut assets: ResMut<WorldAssets>| {
+                assets.load_combat_result_images(&server);
+                ["victory", "defeat", "draw"]
+                    .into_iter()
+                    .flat_map(|name| {
+                        [
+                            (name.to_string(), assets.ui_images[name].clone()),
+                            (format!("schematic {name}"), assets.image(name)),
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap(),
+    );
     app.insert_resource(CaptureImages(handles));
     let make_target = |app: &mut App, width, height| {
         let mut image = Image::new_uninit(
@@ -437,7 +457,6 @@ fn render_cinematic_preview() {
              mut images: ResMut<ImageIds>,
              handles: Res<CaptureImages>,
              textures: Res<Assets<Image>>,
-             mut assets: ResMut<WorldAssets>,
              mut playback: ResMut<CinematicPlayback>| {
                 // Render settled HUD states without depending on wall-clock fade-in timing.
                 let context = contexts.ctx_mut().unwrap();
@@ -451,9 +470,6 @@ fn render_cinematic_preview() {
                     );
                     let texture = textures.get(handle).unwrap();
                     playback.set_sprite_size(name, texture.width(), texture.height());
-                    if matches!(name.as_str(), "victory" | "defeat" | "draw") {
-                        assets.images.insert(name.clone(), handle.clone());
-                    }
                 }
             },
         )

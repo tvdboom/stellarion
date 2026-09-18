@@ -2068,12 +2068,14 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let backdrop = app.world().get::<ChildOf>(result).unwrap().parent();
     assert_eq!(
         app.world().get::<BackgroundColor>(backdrop).unwrap().0.alpha(),
-        result_banner::BAR_ALPHA as f32 / 255.,
-        "the result uses the same dark center band as cinematic playback"
+        0.,
+        "the dark center band starts transparent with its lettering"
     );
     let band_node = app.world().get::<Node>(backdrop).unwrap();
     assert_eq!(band_node.height, Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.));
     assert_eq!(band_node.overflow, Overflow::clip());
+    assert_eq!(app.world().get::<UiTransform>(result).unwrap().scale, Vec2::ONE);
+    assert_eq!(app.world().get::<ImageNode>(result).unwrap().color.alpha(), 0.);
     let root = app.world().get::<ChildOf>(backdrop).unwrap().parent();
     assert_eq!(app.world().get::<Node>(root).unwrap().height, Val::Percent(100.));
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
@@ -2082,6 +2084,15 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
+    let opacity = result_banner::entrance_opacity(SALVAGE_HIGHLIGHT_TIME_MS as f32 / 1000.);
+    assert!((app.world().get::<ImageNode>(result).unwrap().color.alpha() - opacity).abs() < 0.001);
+    assert!(
+        (app.world().get::<BackgroundColor>(backdrop).unwrap().0.alpha()
+            - opacity * result_banner::BAR_ALPHA as f32 / 255.)
+            .abs()
+            < 0.001
+    );
+    assert_eq!(app.world().get::<UiTransform>(result).unwrap().scale, Vec2::ONE);
     app.world_mut().run_system_once(animate_combat).unwrap();
     let pickups = app
         .world_mut()

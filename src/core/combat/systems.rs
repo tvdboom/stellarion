@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
 use bevy::prelude::*;
-use bevy_tweening::lens::{TextColorLens, TransformPositionLens, TransformScaleLens};
+use bevy_tweening::lens::{
+    TextColorLens, TransformPositionLens, TransformScaleLens, UiBackgroundColorLens,
+};
 use bevy_tweening::{AnimCompletedEvent, Delay, PlaybackState, Tween, TweenAnim};
 use strum::IntoEnumIterator;
 
@@ -124,7 +126,15 @@ pub(crate) fn spawn_combat_result_banner(
                     overflow: Overflow::clip(),
                     ..default()
                 },
-                BackgroundColor(Color::BLACK.with_alpha(result_banner::BAR_ALPHA as f32 / 255.)),
+                BackgroundColor(Color::BLACK.with_alpha(0.)),
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_secs_f32(result_banner::ENTER_SECONDS),
+                    UiBackgroundColorLens {
+                        start: Color::BLACK.with_alpha(0.),
+                        end: Color::BLACK.with_alpha(result_banner::BAR_ALPHA as f32 / 255.),
+                    },
+                )),
                 CombatCmp,
                 children![(
                     Node {
@@ -134,22 +144,21 @@ pub(crate) fn spawn_combat_result_banner(
                         flex_shrink: 0.,
                         ..default()
                     },
-                    ImageNode::new(assets.image(result)),
+                    ImageNode {
+                        color: Color::WHITE.with_alpha(0.),
+                        ..ImageNode::new(assets.image(result))
+                    },
                     UiTransform {
                         translation: Val2::new(
                             Val::ZERO,
                             Val::Percent(artwork.center_offset * 100.)
                         ),
-                        scale: Vec2::ZERO,
                         ..default()
                     },
                     TweenAnim::new(Tween::new(
                         EaseFunction::QuadraticInOut,
                         Duration::from_secs_f32(result_banner::ENTER_SECONDS),
-                        UiTransformScaleLens {
-                            start: Vec2::ZERO,
-                            end: Vec2::ONE,
-                        },
+                        result_banner::ImageFadeLens,
                     )),
                     DisplayTextCmp,
                     CombatCmp,

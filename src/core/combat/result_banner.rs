@@ -33,12 +33,22 @@ pub(crate) fn artwork(status: &str) -> ResultArtwork {
     }
 }
 
-/// Matches the schematic's QuadraticInOut tween, driven by the paused/scaled replay clock.
-pub(crate) fn entrance_scale(elapsed: f32) -> f32 {
+/// Fades the full-sized artwork and belt together on the paused/scaled replay clock.
+pub(crate) fn entrance_opacity(elapsed: f32) -> f32 {
     let t = (elapsed / ENTER_SECONDS).clamp(0.0, 1.0);
     if t < 0.5 {
         2.0 * t * t
     } else {
         1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+    }
+}
+
+/// Changes only opacity so the schematic lettering never grows or moves during its entrance.
+pub(crate) struct ImageFadeLens;
+
+impl bevy_tweening::Lens<bevy::prelude::ImageNode> for ImageFadeLens {
+    fn lerp(&mut self, mut target: bevy::prelude::Mut<bevy::prelude::ImageNode>, ratio: f32) {
+        use bevy::prelude::Alpha;
+        target.color.set_alpha(ratio);
     }
 }

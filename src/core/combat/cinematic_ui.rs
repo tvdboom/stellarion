@@ -485,6 +485,7 @@ pub(crate) fn draw_cinematic(
             );
             if playback.is_finished() {
                 let status = report.map_or("draw", |report| report.status(&player));
+                let opacity = result_banner::entrance_opacity(hud.result_elapsed);
                 let banner = egui::Rect::from_center_size(
                     rect.center(),
                     egui::vec2(
@@ -496,20 +497,21 @@ pub(crate) fn draw_cinematic(
                 ui.painter().rect_filled(
                     banner,
                     0.0,
-                    egui::Color32::from_black_alpha(result_banner::BAR_ALPHA),
+                    egui::Color32::from_black_alpha(
+                        (result_banner::BAR_ALPHA as f32 * opacity).round() as u8,
+                    ),
                 );
                 if let Some(texture) = images.0.get(status) {
                     let art = result_banner::artwork(status);
                     let full_edge = (rect.width() * art.width_fraction).min(art.max_width);
-                    let edge = full_edge * result_banner::entrance_scale(hud.result_elapsed);
                     ui.painter().with_clip_rect(banner).image(
                         *texture,
                         egui::Rect::from_center_size(
                             banner.center() + egui::vec2(0.0, full_edge * art.center_offset),
-                            egui::Vec2::splat(edge),
+                            egui::Vec2::splat(full_edge),
                         ),
                         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
+                        egui::Color32::WHITE.gamma_multiply(opacity),
                     );
                 }
                 if ui

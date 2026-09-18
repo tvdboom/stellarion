@@ -80,6 +80,28 @@ fn smooth_result_banners_preserve_pixels_alpha_and_mips_on_native_and_browser() 
 }
 
 #[test]
+fn cinematic_result_textures_hide_rgb_under_transparent_pixels() {
+    for name in ["victory", "defeat", "draw"] {
+        let image = transcode_basis_texture(
+            &runtime_asset(&format!("images/bg/{name}.basisu.ktx2")),
+            TranscodeTarget::from_features(WgpuFeatures::TEXTURE_COMPRESSION_BC),
+            &BasisTextureSettings {
+                premultiply_alpha: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
+        let pixels = image.data.as_ref().unwrap();
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 200));
+        for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] == 0) {
+            assert_eq!(&pixel[..3], &[0, 0, 0], "{name} must not paint a colored rectangle");
+        }
+    }
+}
+
+#[test]
 fn small_ui_icons_have_smooth_mips() {
     use bevy::image::ImageFilterMode;
 

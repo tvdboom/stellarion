@@ -620,6 +620,10 @@ fn cinematic_hud_blocks_camera_wheel_and_slider_drag() {
 #[test]
 fn cinematic_pause_is_visible_and_completed_banner_returns_to_selection() {
     let (mut app, context) = controls_app();
+    // Isolate the replay-clock fade from egui's independent wall-clock area entrance.
+    let mut style = (*context.global_style()).clone();
+    style.animation_time = 0.0;
+    context.set_global_style(style);
     let victory_texture = egui::TextureId::User(700);
     app.world_mut().resource_mut::<ImageIds>().0.insert("victory".into(), victory_texture);
     app.world_mut().resource_mut::<Settings>().combat_paused = true;
@@ -643,7 +647,7 @@ fn cinematic_pause_is_visible_and_completed_banner_returns_to_selection() {
             .iter()
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Mesh(mesh) if mesh.texture_id == victory_texture => {
-                    Some(mesh.calc_bounds())
+                    Some((mesh.calc_bounds(), mesh.vertices[0].color.a()))
                 },
                 _ => None,
             })
@@ -651,14 +655,16 @@ fn cinematic_pause_is_visible_and_completed_banner_returns_to_selection() {
     };
     let half = artwork_rect(&shapes);
     assert!(
-        (half.width() - 640.0 * result_banner::artwork("victory").width_fraction * 0.5).abs() < 0.1
+        (half.0.width() - 640.0 * result_banner::artwork("victory").width_fraction).abs() < 0.1
     );
+    assert!((half.1 as i16 - 128).abs() <= 1, "halfway artwork opacity: {}", half.1);
     app.world_mut().resource_mut::<Settings>().combat_paused = true;
     let paused = artwork_rect(&controls_frame(&mut app, &context, vec![]));
     assert_eq!(paused, half, "result entrance must freeze with playback");
     app.world_mut().resource_mut::<Settings>().combat_paused = false;
     let full = artwork_rect(&controls_frame(&mut app, &context, vec![]));
-    assert!((full.width() - half.width() * 2.0).abs() < 0.1);
+    assert_eq!(full.0, half.0, "the result must never zoom or shift");
+    assert_eq!(full.1, 255);
     click_control(&mut app, &context, egui::pos2(320.0, 240.0));
     assert!(matches!(
         app.world().resource::<NextState<GameState>>(),

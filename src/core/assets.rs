@@ -313,11 +313,7 @@ impl WorldAssets {
             "bg",
             &["bg", "combat", "fauna combat blue", "fauna combat violet", "fauna combat amber"],
         );
-        // Result lettering scales throughout its entrance animation; nearest sampling aliases
-        // the gold outlines even though the source artwork has enough resolution.
-        for name in ["victory", "defeat", "draw"] {
-            self.load_gameplay_linear_image(server, name, &format!("images/bg/{name}.basisu.ktx2"));
-        }
+        self.load_combat_result_images(server);
         self.load_gameplay_images(server, "ui", &["panel"]);
         self.load_gameplay_images(server, "ambient", &["wreckage"]);
         for name in ["development", "facilities", "gas-development"] {
@@ -680,6 +676,32 @@ impl WorldAssets {
 
     fn load_gameplay_linear_image(&mut self, server: &AssetServer, name: &str, path: &str) {
         load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
+    }
+
+    /// Keeps straight alpha for Bevy and premultiplied alpha for the cinematic egui overlay.
+    pub(crate) fn load_combat_result_images(&mut self, server: &AssetServer) {
+        for name in ["victory", "defeat", "draw"] {
+            let path = format!("images/bg/{name}.basisu.ktx2");
+            for ui in [false, true] {
+                let handle: Handle<Image> = server
+                    .load_builder()
+                    .with_settings(|settings: &mut BasisTextureSettings| {
+                        settings.ui_variant = true;
+                        settings.linear_filtering = true;
+                    })
+                    .load(if ui {
+                        format!("{path}#ui")
+                    } else {
+                        path.clone()
+                    });
+                self.gameplay_handles.push(handle.clone().untyped());
+                if ui {
+                    self.ui_images.insert(name.to_string(), handle);
+                } else {
+                    self.images.insert(name.to_string(), handle);
+                }
+            }
+        }
     }
 
     /// Inserts atlas metadata for an already requested image.
