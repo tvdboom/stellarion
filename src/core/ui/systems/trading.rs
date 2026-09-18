@@ -1,12 +1,12 @@
 //! Trading Post notifications and bilateral resource-negotiation panels.
 
-use super::shop::sized_image_tile_button;
 use super::*;
 use crate::core::messages::show_notification_area;
 use crate::core::messages::MessageAction;
 use crate::core::trading::{
     trading_post_capacity, trading_posts_are_adjacent, visible_trading_post_owner, ResourceLoan,
 };
+use crate::core::ui::utils::sized_image_tile_button;
 use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse};
 
 const TRADE_ACCENT: Color32 = Color32::from_rgb(112, 190, 255);

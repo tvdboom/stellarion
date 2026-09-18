@@ -7,6 +7,7 @@ use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use super::cinematic::CinematicPlayback;
 use super::effects::{wreck_cue, EffectTextures, Weapon};
 use super::report::{combat_strength_ranges, MissionReport, ReportId, Side};
+use super::result_banner;
 use super::systems::combat_identity_participants;
 use crate::core::audio::{set_ui_sound, PlayAudioMsg, SoundEffect};
 use crate::core::constants::BUTTON_TEXT_SIZE;
@@ -163,6 +164,7 @@ pub(crate) fn exit_cinematic(mut commands: Commands) {
 #[derive(Default)]
 pub(crate) struct CinematicHud {
     fonts_installed: bool,
+    result_elapsed: f32,
     report_id: Option<ReportId>,
     attackers: Vec<(String, Color, u128)>,
     defenders: Vec<(String, Color, u128)>,
@@ -325,6 +327,7 @@ pub(crate) fn draw_cinematic(
     state: Res<UiState>,
     player: Res<Player>,
     settings: Res<Settings>,
+    time: Res<Time>,
     mut next: ResMut<NextState<GameState>>,
     session: Option<Res<MultiplayerSession>>,
     mut hud: Local<CinematicHud>,
@@ -374,6 +377,12 @@ pub(crate) fn draw_cinematic(
     });
     let report =
         state.in_combat.and_then(|id| player.reports.iter().find(|report| report.id == id));
+    if !playback.is_finished() || hud.report_id != state.in_combat {
+        hud.result_elapsed = 0.0;
+    } else {
+        hud.result_elapsed = (hud.result_elapsed + time.delta_secs() * settings.speed())
+            .min(result_banner::ENTER_SECONDS);
+    }
     if let Some(report) = report {
         if hud.report_id != Some(report.id)
             || session.as_ref().is_some_and(|session| session.is_changed())
@@ -415,26 +424,34 @@ pub(crate) fn draw_cinematic(
                 egui::Color32::from_rgb(150, 158, 170),
             );
             if playback.is_finished() {
-                let status = report.map_or("Replay complete", |report| report.status(&player));
+                let status = report.map_or("draw", |report| report.status(&player));
                 let banner = egui::Rect::from_center_size(
                     rect.center(),
-                    egui::vec2(rect.width(), (rect.height() * 0.18).clamp(64.0, 140.0)),
+                    egui::vec2(
+                        rect.width(),
+                        (rect.height() * result_banner::BAR_HEIGHT_FRACTION)
+                            .clamp(result_banner::BAR_MIN_HEIGHT, result_banner::BAR_MAX_HEIGHT),
+                    ),
                 );
-                ui.painter().rect_filled(banner, 0.0, egui::Color32::from_black_alpha(190));
-                ui.painter().text(
-                    banner.center() - egui::vec2(0.0, 10.0),
-                    egui::Align2::CENTER_CENTER,
-                    status.to_uppercase(),
-                    egui::FontId::proportional((rect.width() * 0.042).clamp(24.0, 64.0)),
-                    egui::Color32::from_rgb(225, 236, 248),
+                ui.painter().rect_filled(
+                    banner,
+                    0.0,
+                    egui::Color32::from_black_alpha(result_banner::BAR_ALPHA),
                 );
-                ui.painter().text(
-                    banner.center_bottom() - egui::vec2(0.0, 12.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    "Click to return to battle selection · Esc",
-                    egui::FontId::proportional(14.0),
-                    egui::Color32::from_rgb(178, 202, 222),
-                );
+                if let Some(texture) = images.0.get(status) {
+                    let art = result_banner::artwork(status);
+                    let full_edge = (rect.width() * art.width_fraction).min(art.max_width);
+                    let edge = full_edge * result_banner::entrance_scale(hud.result_elapsed);
+                    ui.painter().with_clip_rect(banner).image(
+                        *texture,
+                        egui::Rect::from_center_size(
+                            banner.center() + egui::vec2(0.0, full_edge * art.center_offset),
+                            egui::Vec2::splat(edge),
+                        ),
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
                 if ui
                     .interact(banner, egui::Id::new("cinematic result"), egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -455,7 +472,9 @@ pub(crate) fn draw_cinematic(
     if draw_exit_button(context, &images) {
         next.set(GameState::CombatMenu);
     }
-    if !settings.combat_paused && !playback.is_finished() {
+    if !settings.combat_paused
+        && (!playback.is_finished() || hud.result_elapsed < result_banner::ENTER_SECONDS)
+    {
         context.request_repaint();
     }
 }

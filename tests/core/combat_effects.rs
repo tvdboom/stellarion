@@ -5,6 +5,7 @@ use crate::core::combat::report::Side;
 use crate::core::combat::resolution::ShotReport;
 use crate::core::combat::systems::FireState;
 use crate::core::units::Combat;
+use bevy::color::ColorToComponents;
 
 fn app() -> App {
     let mut app = App::new();
@@ -925,6 +926,87 @@ fn destroyed_target_during_flight_is_safe_and_wrecks_finish_at_low_frame_rates()
     assert_eq!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count(), 0);
     step(&mut app, 4.);
     assert_eq!(app.world_mut().query::<&Particle>().iter(app.world()).count(), 0);
+}
+
+#[test]
+fn cinematic_wreck_samples_match_schematic_particles_and_delayed_debris() {
+    for kind in [Unit::Ship(Ship::LightFighter), Unit::Ship(Ship::WarSun)] {
+        // Exercise an early secondary blast and the final delayed-debris stage through
+        // the real ECS painter, including a frame that crosses the debris delay.
+        for (stage, age) in [(0, 0.05), (3, 0.27)] {
+            let mut app = app();
+            let mut wreck = Wreck::new(Vec3::ZERO, 100.0, kind);
+            let start = WRECK_STAGES[stage] * wreck_scale(kind);
+            wreck.stage = stage;
+            wreck.elapsed = start;
+            app.world_mut().spawn((wreck, CombatCmp));
+            step(&mut app, 0.001);
+            step(&mut app, age);
+
+            let actual = app
+                .world_mut()
+                .query::<(&Sprite, &Transform)>()
+                .iter(app.world())
+                .filter(|(sprite, _)| sprite.color.alpha() > 0.0)
+                .map(|(sprite, transform)| (sprite.custom_size.unwrap(), sprite.color, *transform))
+                .collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            sample_wreck(100.0, kind, start + age, |sample| {
+                // This GPU-free fixture omits the asset registry and hence atlas sprites.
+                if sample.atlas_frame.is_none() && sample.color.alpha() > 0.0 {
+                    expected.push(sample);
+                }
+            });
+            assert_eq!(actual.len(), expected.len(), "unit {kind:?}, stage {stage}");
+            for sample in expected {
+                assert!(
+                    actual.iter().any(|(size, color, transform)| {
+                        size.abs_diff_eq(sample.size, 0.0001)
+                            && color
+                                .to_srgba()
+                                .to_f32_array()
+                                .into_iter()
+                                .zip(sample.color.to_srgba().to_f32_array())
+                                .all(|(a, b)| (a - b).abs() < 0.0001)
+                            && transform
+                                .translation
+                                .truncate()
+                                .abs_diff_eq(sample.center.truncate(), 0.0001)
+                            && transform
+                                .rotation
+                                .abs_diff_eq(Quat::from_rotation_z(sample.rotation), 0.0001)
+                    }),
+                    "cinematic sample must reproduce schematic size, color, trajectory and spin"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn heavy_wreck_atlas_and_sound_share_the_main_flash_time_and_finish_the_debris_tail() {
+    for (unit, scale) in [
+        (Unit::Ship(Ship::LightFighter), 1.0),
+        (Unit::Defense(Defense::SpaceDock), 1.0),
+        (Unit::Ship(Ship::Battleship), 1.5),
+        (Unit::Ship(Ship::Dreadnought), 1.5),
+        (Unit::Ship(Ship::WarSun), 1.5),
+    ] {
+        let (flash, _) = wreck_cue(unit);
+        assert_eq!(flash, 0.43 * scale);
+        let mut samples = Vec::new();
+        sample_wreck(100.0, unit, flash + 0.95 * 0.5, |sample| samples.push(sample));
+        let atlas = samples.iter().find(|sample| sample.atlas_frame.is_some()).unwrap();
+        assert_eq!(atlas.atlas_frame, Some(23));
+        assert!((atlas.size.x - 160.0 * scale * 1.05).abs() < 0.001);
+        assert!(samples.iter().any(|sample| sample.texture == "combat fx shard"));
+
+        let tail = flash + 0.22 + 1.7;
+        let mut last_count = 0;
+        sample_wreck(100.0, unit, tail - 0.001, |_| last_count += 1);
+        assert_eq!(last_count, 18, "debris remains after the atlas and rings fade");
+        sample_wreck(100.0, unit, tail + 0.001, |_| panic!("finished wreck has no effects"));
+    }
 }
 
 #[test]

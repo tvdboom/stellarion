@@ -9,6 +9,11 @@ use crate::core::units::Unit;
 
 /// Minimum spacing for readable, separately animated losses on the same building.
 pub(crate) const LEVEL_LOSS_INTERVAL: f32 = 0.36;
+/// War Sun discharge and collapse times also used by the schematic presentation.
+pub(crate) const DEATH_RAY_DISCHARGE_AT: f32 = 2.0;
+pub(crate) const DEATH_RAY_COLLAPSE_AT: f32 = 3.7;
+/// Includes a heavy wreck's final flash and delayed debris before the result banner.
+pub(crate) const CLOSING_HOLD: f32 = 2.7;
 
 /// One visible combatant, retaining its identity through casualties and reordered snapshots.
 pub(crate) struct CinematicActor {
@@ -110,7 +115,7 @@ impl CinematicTimeline {
             repairs: Vec::new(),
             planet_attacks: Vec::new(),
             level_losses: Vec::new(),
-            entrance_duration: 2.4,
+            entrance_duration: 4.8,
             duration: 4.0,
             initial_planetary_shield,
             planetary_shield: vec![(0.0, initial_planetary_shield)],
@@ -190,7 +195,7 @@ impl CinematicTimeline {
             + if report.planet_destroyed {
                 4.0
             } else {
-                2.0
+                CLOSING_HOLD
             };
         movie.shots.sort_by(|left, right| left.launch_at.total_cmp(&right.launch_at));
         movie
@@ -433,8 +438,8 @@ impl CinematicTimeline {
                 .collect::<Vec<_>>();
             if !suns.is_empty() {
                 let start_at = cursor;
-                let discharge_at = start_at + super::effects::DEATH_RAY_DISCHARGE_AT;
-                let end_at = start_at + super::effects::DEATH_RAY_COLLAPSE_AT;
+                let discharge_at = start_at + DEATH_RAY_DISCHARGE_AT;
+                let end_at = start_at + DEATH_RAY_COLLAPSE_AT;
                 let destroyed = report.planet_destroyed
                     && report
                         .combat_report

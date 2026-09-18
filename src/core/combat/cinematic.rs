@@ -43,7 +43,7 @@ struct ActorVisual {
     texture: String,
     fallback_texture: String,
     aspect: f32,
-    art_rotation: f32,
+    art_heading: f32,
     home: Vec2,
     size: f32,
     phase: f32,
@@ -132,7 +132,7 @@ impl CinematicPlayback {
                 texture,
                 fallback_texture: name,
                 aspect: sprite_aspect(actor.unit),
-                art_rotation: sprite_rotation(actor.unit),
+                art_heading: sprite_heading(actor.unit),
                 home: if group == 2 && counts[4] > 0 {
                     // Turrets protect the upper limb; the settlement occupies the near surface.
                     // Separating these footprints keeps dense defenses off the building roofs.
@@ -314,7 +314,7 @@ impl CinematicPlayback {
                 let age = self.elapsed - death;
                 if (0.0..3.6).contains(&age) {
                     let pose = self.actor_pose(scene, index, death);
-                    explosion(&painter, images, pose.center, pose.size, age, index as u32);
+                    explosion(&painter, images, pose.center, pose.size, age, actor.unit);
                 }
             }
         }
@@ -348,24 +348,17 @@ impl CinematicPlayback {
         painter.rect_filled(scene.rect, 0.0, Color32::from_rgb(3, 6, 15));
         let camera = vec2((self.elapsed * 0.035).sin(), (self.elapsed * 0.025).cos());
         if let Some(texture) = images.0.get("bg") {
+            // Use the strategic map's unaltered star field. Aspect-fill its 3:2 canvas instead
+            // of stretching the image or covering it with an enlarged nebula cutout.
+            let height = scene.rect.height().max(scene.rect.width() / 1.5) + 60.0;
             painter.image(
                 *texture,
-                scene.rect.expand(30.0).translate(camera * 14.0),
+                Rect::from_center_size(
+                    scene.rect.center() + camera * 14.0,
+                    vec2(height * 1.5, height),
+                ),
                 FULL_UV,
-                Color32::from_gray(155),
-            );
-        }
-        if let Some(texture) = images.0.get("nebula") {
-            let center = scene.point(vec2(0.49, 0.43)) + camera * 8.0;
-            rotated_image(
-                painter,
-                *texture,
-                center,
-                vec2(scene.rect.width() * 1.20, scene.rect.height() * 1.65),
-                -0.28,
-                false,
-                FULL_UV,
-                Color32::from_rgba_unmultiplied(185, 193, 255, 115),
+                Color32::WHITE,
             );
         }
         // Stable hashes keep the same stars through pausing, resizing, restarting and seeking.
@@ -584,31 +577,42 @@ impl CinematicPlayback {
             } else {
                 (85.0 / visual.size.max(20.0)).clamp(0.4, 2.0)
             };
-            let flight_time = (time - self.timeline.entrance_duration).max(0.0);
+            let flight_time = time - self.timeline.entrance_duration;
             let amplitude = if visual.orbital {
                 6.0
             } else {
-                28.0
+                36.0
             } * scene.scale;
             center += vec2(
-                (flight_time * 0.22 * agility + phase).sin() * amplitude,
-                (flight_time * 0.33 * agility + phase).cos() * amplitude * 0.7,
+                direction * (flight_time * 0.29 * agility + phase).sin() * amplitude,
+                (flight_time * 0.37 * agility + phase).cos() * amplitude * 0.8,
             );
             if !visual.orbital {
-                center.x += direction * 60.0 * scene.scale * agility * smooth(flight_time / 10.0);
-                // Each ship eases in at its own speed, then continues a banking flight path.
-                let delay = noise(index as u32 + 141) * 0.35;
+                center.x += direction * 72.0 * scene.scale * smooth(flight_time / 18.0);
+                // Sample the ongoing maneuver during arrival too. The cubic offset and its
+                // derivative both reach zero, so the ship never stops or snaps into formation.
+                let delay = noise(index as u32 + 141) * 0.65;
                 let entered =
                     if actor.retreat_at.is_some_and(|at| at < self.timeline.entrance_duration) {
                         // Immediate withdrawals begin at the defended world. Flying in first would
                         // leave their entire outward departure hidden beyond the viewport edge.
                         1.0
                     } else {
-                        smooth((time - delay) / (self.timeline.entrance_duration - 0.35).max(0.1))
+                        ((time - delay) / (self.timeline.entrance_duration - delay).max(0.1))
+                            .clamp(0.0, 1.0)
                     };
-                center.x -= direction * (1.0 - entered) * scene.rect.width() * 0.65;
-                center.y += (1.0 - entered) * size * 0.20;
-                angle = (flight_time * 0.33 * agility + phase).sin() * 0.065 * agility;
+                let remaining = 1.0 - entered;
+                let distance = scene.rect.width() * 0.80;
+                let bend = (phase * 1.7).sin();
+                let from = vec2(-direction * distance, -distance * visual.art_heading.tan());
+                let through =
+                    vec2(-direction * distance * 0.43, from.y * 0.14 + bend * 105.0 * scene.scale);
+                center += from * remaining.powi(3) + through * (3.0 * remaining.powi(2) * entered);
+                // Small banks preserve the source's isometric camera angle. A large fixed
+                // bitmap rotation rolls the entire 3D view rather than turning the vessel.
+                angle = direction
+                    * ((flight_time * 0.37 * agility + phase).sin() * 0.065 * agility
+                        + bend * 0.12 * (entered * PI).sin().powi(2));
             }
         }
         if let Some(retreat_at) = actor.retreat_at {
@@ -668,8 +672,8 @@ impl CinematicPlayback {
                 Color32::from_black_alpha(95),
             ));
         } else if !visual.orbital && !actor.unit.is_fauna() {
-            let engine =
-                pose.center + rotate(vec2(-direction * 0.26, 0.16) * pose.size, pose.angle);
+            let heading = Vec2::angled(visual.art_heading) * vec2(direction, 1.0);
+            let engine = pose.center - rotate(heading * pose.size * 0.32, pose.angle);
             let thrust = (self.elapsed * 18.0 + visual.phase).sin() * 0.10 + 0.9;
             let entering = self.elapsed < self.timeline.entrance_duration;
             let fleeing = actor.retreat_at.is_some_and(|at| self.elapsed > at);
@@ -680,7 +684,7 @@ impl CinematicPlayback {
                     0.23
                 }
                 * thrust;
-            let tail = engine + rotate(vec2(-direction, 0.38) * length, pose.angle);
+            let tail = engine - rotate(heading * length, pose.angle);
             exhaust(painter, engine, tail, pose.size * 0.06);
             glow(painter, engine, pose.size * 0.18, BLUE, 0.35);
         }
@@ -692,22 +696,12 @@ impl CinematicPlayback {
             } else {
                 1.0
             };
-            let correction = if cinematic_texture.is_some() {
-                visual.art_rotation
-                    * if pose.mirror {
-                        -1.0
-                    } else {
-                        1.0
-                    }
-            } else {
-                0.0
-            };
             rotated_image(
                 painter,
                 *texture,
                 pose.center,
                 vec2(pose.size * aspect.min(1.0), pose.size / aspect.max(1.0)),
-                pose.angle + correction,
+                pose.angle,
                 pose.mirror,
                 FULL_UV,
                 Color32::WHITE,
@@ -782,7 +776,7 @@ impl CinematicPlayback {
 
     fn paint_level_losses(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
         let first =
-            self.timeline.level_losses.partition_point(|loss| loss.impact_at < self.elapsed - 2.2);
+            self.timeline.level_losses.partition_point(|loss| loss.impact_at < self.elapsed - 2.4);
         let last =
             self.timeline.level_losses.partition_point(|loss| loss.impact_at <= self.elapsed);
         if first == last {
@@ -797,18 +791,18 @@ impl CinematicPlayback {
         // spacing to that measured height so rapid losses never draw over one another.
         let rise_speed = (52.0 * scene.scale)
             .max((caption.size().y + 2.0 * scene.scale.max(1.0)) / LEVEL_LOSS_INTERVAL);
-        for (offset, loss) in self.timeline.level_losses[first..last].iter().enumerate() {
+        for loss in &self.timeline.level_losses[first..last] {
             let age = self.elapsed - loss.impact_at;
             let pose = self.actor_pose(scene, loss.target, loss.impact_at);
             // A partial loss gets a localized impact; only the final level triggers a full wreck.
-            if loss.remaining_levels > 0 && age < 1.2 {
+            if loss.remaining_levels > 0 {
                 explosion(
                     painter,
                     images,
                     pose.center,
                     pose.size * 0.43,
                     age,
-                    (first + offset) as u32,
+                    self.timeline.actors[loss.target].unit,
                 );
             }
             let position = pose.center
@@ -1107,7 +1101,7 @@ impl CinematicPlayback {
 
     fn paint_planet_attacks(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
         use super::effects::{death_ray_beam_layers, sustained_envelope, DEATH_RAY_FOCUS_AT};
-        for (index, attack) in self.timeline.planet_attacks.iter().enumerate() {
+        for attack in &self.timeline.planet_attacks {
             if self.elapsed < attack.start_at || self.elapsed > attack.end_at + 3.8 {
                 continue;
             }
@@ -1268,7 +1262,7 @@ impl CinematicPlayback {
                     scene.planet,
                     scene.planet_radius * 2.4,
                     self.elapsed - attack.end_at,
-                    index as u32 + 900,
+                    Unit::planetary_shield(),
                 );
             } else {
                 glow(
@@ -1347,17 +1341,15 @@ fn sprite_aspect(unit: Unit) -> f32 {
     }
 }
 
-/// Correct the few source views whose native heading differs from the fleet's NE approach.
-fn sprite_rotation(unit: Unit) -> f32 {
+/// Projected stern-to-bow direction in the original artwork, before the defender's mirror.
+/// Preserve that camera perspective and use it for approach paths and attached engine plumes.
+fn sprite_heading(unit: Unit) -> f32 {
     let degrees: f32 = match unit {
-        Unit::Ship(Ship::Probe) => 12.0,
-        Unit::Ship(Ship::ColonyShip) => -12.0,
-        Unit::Ship(Ship::LightFighter | Ship::Cruiser) => 5.0,
-        Unit::Ship(Ship::HeavyFighter) => -8.0,
-        Unit::Ship(Ship::Destroyer | Ship::WarSun) => 8.0,
-        Unit::Ship(Ship::Bomber) => -50.0,
-        Unit::Ship(Ship::Battleship) => -47.0,
-        Unit::Ship(Ship::Dreadnought) => -2.0,
+        Unit::Ship(Ship::Probe | Ship::Destroyer | Ship::WarSun) => -30.0,
+        Unit::Ship(Ship::ColonyShip | Ship::HeavyFighter) => -15.0,
+        Unit::Ship(Ship::LightFighter | Ship::Cruiser) => -27.0,
+        Unit::Ship(Ship::Bomber | Ship::Battleship) => 25.0,
+        Unit::Ship(Ship::Dreadnought) => -23.0,
         _ => 0.0,
     };
     degrees.to_radians()
@@ -1683,47 +1675,28 @@ fn sparks(
     }
 }
 
-fn explosion(painter: &Painter, images: &ImageIds, center: Pos2, size: f32, age: f32, seed: u32) {
-    let flash = (1.0 - age / 0.35).clamp(0.0, 1.0);
-    glow(painter, center, size * (0.85 + age), GOLD, flash * 0.75);
-    painter.circle_stroke(
-        center,
-        size * (0.20 + age * 1.4),
-        Stroke::new(
-            (1.0 - age / 0.8).max(0.0) * 3.0,
-            alpha(GOLD, (1.0 - age / 0.8).max(0.0) * 0.6),
-        ),
-    );
-    if age < 1.2 {
-        if let Some(texture) = images.0.get("explosion") {
-            let frame = ((age / 1.2) * 47.0).floor() as usize;
-            let uv = Rect::from_min_max(
+fn explosion(painter: &Painter, images: &ImageIds, center: Pos2, size: f32, age: f32, unit: Unit) {
+    super::effects::sample_wreck(size, unit, age, |sample| {
+        let Some(texture) = images.0.get(sample.texture) else {
+            return;
+        };
+        let uv = sample.atlas_frame.map_or(FULL_UV, |frame| {
+            Rect::from_min_max(
                 pos2((frame % 8) as f32 / 8.0, (frame / 8) as f32 / 6.0),
                 pos2((frame % 8 + 1) as f32 / 8.0, (frame / 8 + 1) as f32 / 6.0),
-            );
-            painter.image(
-                *texture,
-                Rect::from_center_size(center, Vec2::splat(size * 1.6)),
-                uv,
-                Color32::WHITE,
-            );
-        } else {
-            glow(painter, center, size * (0.25 + age * 0.35), GOLD, 1.0 - age / 1.2);
-        }
-    }
-    let debris = (1.0 - age / 3.6).max(0.0);
-    sparks(painter, center, age, size * 0.65, seed, GOLD, debris.powi(3));
-    for fragment in 0..7_u32 {
-        let direction = Vec2::angled(noise(seed.wrapping_mul(53).wrapping_add(fragment)) * TAU);
-        let point = center + direction * size * age * (0.18 + noise(fragment + seed) * 0.3);
-        let span = size * (0.025 + noise(fragment + 39) * 0.025);
-        let spin = Vec2::angled(age * 2.0 + fragment as f32) * span;
-        painter.line_segment(
-            [point - spin, point + spin],
-            Stroke::new((size * 0.018).max(0.75), alpha(Color32::from_rgb(110, 112, 124), debris)),
+            )
+        });
+        rotated_image(
+            painter,
+            *texture,
+            center + vec2(sample.center.x, -sample.center.y),
+            vec2(sample.size.x, sample.size.y),
+            -sample.rotation,
+            false,
+            uv,
+            weapon_color(sample.color),
         );
-        glow(painter, point, span * 2.0, GOLD, debris.powi(3) * 0.4);
-    }
+    });
 }
 
 /// Intersects the shot segment with the visible globe's shield before it reaches a surface gun.

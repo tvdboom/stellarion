@@ -498,7 +498,9 @@ fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
                         },
                         |ui| {
                             button =
-                                audio_controls(ui.ctx(), &mut settings, false, false, false).0.rect
+                                audio_controls(ui.ctx(), &mut settings, false, false, false, None)
+                                    .0
+                                    .rect
                         },
                     );
                     output.textures_delta.clear();
@@ -546,7 +548,7 @@ fn map_settings_gear_opens_and_closes_directly_beside_audio() {
             },
             |ui| {
                 let (audio_button, settings_button) =
-                    audio_controls(ui.ctx(), settings, false, show_gear, false);
+                    audio_controls(ui.ctx(), settings, false, show_gear, false, None);
                 *audio = audio_button.rect;
                 *gear = settings_button.as_ref().map(|button| button.rect);
                 *clicked = settings_button.is_some_and(|button| button.clicked());
@@ -672,6 +674,104 @@ fn combat_settings_hover_panel_stays_on_screen_and_defaults_to_sequential_fire()
     assert_eq!(combat_speed_step(settings.combat_speed), 0);
     assert!(!settings.combat_volley_fire);
     assert!(!settings.combat_individual_units);
+}
+
+#[test]
+fn battle_chooser_gear_selects_image_modes_and_yields_to_volume() {
+    fn image_tile(
+        shapes: &[egui::epaint::ClippedShape],
+        texture: egui::TextureId,
+    ) -> Option<(egui::Rect, egui::Color32)> {
+        shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                Some((mesh.calc_bounds(), mesh.vertices.first()?.color))
+            },
+            _ => None,
+        })
+    }
+
+    for size in [egui::vec2(280.0, 240.0), egui::vec2(1280.0, 720.0)] {
+        let context = egui::Context::default();
+        let mut style = (*context.global_style()).clone();
+        style.animation_time = 0.0;
+        context.set_global_style(style);
+        let images = ImageIds(HashMap::from([
+            ("combat schematic".into(), egui::TextureId::User(71)),
+            ("combat cinematic".into(), egui::TextureId::User(72)),
+        ]));
+        let mut state = UiState::default();
+        let mut settings = Settings::default();
+        let frame = |events, state: &mut UiState, settings: &mut Settings| {
+            let mut controls = None;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    controls = Some(audio_controls(
+                        ui.ctx(),
+                        settings,
+                        false,
+                        false,
+                        false,
+                        Some((&mut state.combat_view, &images)),
+                    ));
+                },
+            );
+            output.textures_delta.clear();
+            let (audio, gear) = controls.unwrap();
+            (output, audio.rect, gear.unwrap().rect)
+        };
+        for _ in 0..3 {
+            frame(Vec::new(), &mut state, &mut settings);
+        }
+        let (output, audio, gear) = frame(Vec::new(), &mut state, &mut settings);
+        assert!(gear.right() < audio.left());
+        assert_eq!(gear.size(), audio.size());
+        assert!(image_tile(&output.shapes, egui::TextureId::User(71)).is_none());
+        for _ in 0..2 {
+            frame(vec![egui::Event::PointerMoved(gear.center())], &mut state, &mut settings);
+        }
+        let (output, _, _) = frame(Vec::new(), &mut state, &mut settings);
+        let schematic = image_tile(&output.shapes, egui::TextureId::User(71)).unwrap();
+        let cinematic = image_tile(&output.shapes, egui::TextureId::User(72)).unwrap();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        assert!(viewport.contains_rect(schematic.0));
+        assert!(viewport.contains_rect(cinematic.0));
+        assert!((schematic.0.top() - cinematic.0.top()).abs() < 0.1);
+        assert_eq!(schematic.1, egui::Color32::WHITE);
+        assert_ne!(cinematic.1, egui::Color32::WHITE);
+
+        for (target, expected) in
+            [(cinematic.0, CombatView::Cinematic), (schematic.0, CombatView::Schematic)]
+        {
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(target.center()),
+                        egui::Event::PointerButton {
+                            pos: target.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut state,
+                    &mut settings,
+                );
+            }
+            assert_eq!(state.combat_view, expected);
+            assert!(state.in_combat.is_none(), "choosing a view must not begin combat");
+        }
+        let (output, _, _) =
+            frame(vec![egui::Event::PointerMoved(audio.center())], &mut state, &mut settings);
+        assert!(image_tile(&output.shapes, egui::TextureId::User(71)).is_none());
+        assert!(image_tile(&output.shapes, egui::TextureId::User(72)).is_none());
+        assert_eq!(state.combat_view, CombatView::Schematic);
+        assert_eq!(settings.combat_speed, 1.0);
+    }
 }
 
 #[test]

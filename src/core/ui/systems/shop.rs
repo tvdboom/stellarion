@@ -3,6 +3,7 @@
 use super::*;
 use crate::core::map::planet::ShieldOverloadState;
 use crate::core::orders::conversion_output;
+use crate::core::ui::utils::sized_image_tile_button;
 use crate::core::units::buildings::FleetWithdrawal;
 use crate::core::units::operations::{
     mine_building, MineMode, SenatePolicy, SenateSupport, SpaceDockMode,
@@ -44,56 +45,6 @@ pub(super) fn shop_capacity_summary(
 /// Draws one compact image tile used by building-specific controls.
 fn image_tile_button(ui: &mut Ui, image: egui::TextureId, selected: bool) -> Response {
     sized_image_tile_button(ui, image, selected, egui::vec2(74.0, 50.0))
-}
-
-/// Shares the building-control tile style with resource controls that fit smaller viewports.
-pub(super) fn sized_image_tile_button(
-    ui: &mut Ui,
-    image: egui::TextureId,
-    selected: bool,
-    size: egui::Vec2,
-) -> Response {
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let response = response.on_hover_cursor(CursorIcon::PointingHand);
-    let border = if selected {
-        Color32::from_rgb(116, 211, 245)
-    } else if response.hovered() {
-        Color32::from_rgba_unmultiplied(117, 158, 190, 190)
-    } else {
-        Color32::from_rgba_unmultiplied(100, 128, 151, 105)
-    };
-
-    let tint = if !ui.is_enabled() {
-        Color32::from_rgb(70, 80, 90)
-    } else if selected {
-        Color32::WHITE
-    } else if response.hovered() {
-        Color32::from_rgb(210, 218, 225)
-    } else {
-        Color32::from_rgb(148, 158, 168)
-    };
-    ui.painter().image(
-        image,
-        // Focus art is 3:2, so this inset preserves its aspect ratio exactly.
-        rect.shrink(1.0),
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        tint,
-    );
-
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(6),
-        Stroke::new(
-            if selected {
-                2.0
-            } else {
-                1.0
-            },
-            border,
-        ),
-        StrokeKind::Inside,
-    );
-    response
 }
 
 /// Draws one Terraformer or Laboratory resource tile.

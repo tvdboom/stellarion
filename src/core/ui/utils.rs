@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::Resource;
 use bevy_egui::egui::load::SizedTexture;
-use bevy_egui::egui::*;
+use bevy_egui::egui::{self, *};
 
 use crate::core::constants::BG_COLOR;
 use crate::utils::ToColor32;
@@ -24,6 +24,56 @@ impl ImageIds {
             .copied()
             .unwrap_or(TextureId::Managed(0))
     }
+}
+
+/// Draws the shared mine, dock, resource, and combat-view image tile style.
+pub(crate) fn sized_image_tile_button(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    selected: bool,
+    size: egui::Vec2,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let border = if selected {
+        Color32::from_rgb(116, 211, 245)
+    } else if response.hovered() {
+        Color32::from_rgba_unmultiplied(117, 158, 190, 190)
+    } else {
+        Color32::from_rgba_unmultiplied(100, 128, 151, 105)
+    };
+
+    let tint = if !ui.is_enabled() {
+        Color32::from_rgb(70, 80, 90)
+    } else if selected {
+        Color32::WHITE
+    } else if response.hovered() {
+        Color32::from_rgb(210, 218, 225)
+    } else {
+        Color32::from_rgb(148, 158, 168)
+    };
+    ui.painter().image(
+        image,
+        // Focus art is 3:2, so this inset preserves its aspect ratio exactly.
+        rect.shrink(1.0),
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        tint,
+    );
+
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(6),
+        Stroke::new(
+            if selected {
+                2.0
+            } else {
+                1.0
+            },
+            border,
+        ),
+        StrokeKind::Inside,
+    );
+    response
 }
 
 /// Custom IOS style toggle for UI

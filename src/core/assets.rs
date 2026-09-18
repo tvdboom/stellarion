@@ -360,6 +360,8 @@ impl WorldAssets {
                 "loan long",
                 "dock industrial",
                 "dock bastion",
+                "combat schematic",
+                "combat cinematic",
                 "senate expansion",
                 "senate consolidation",
             ],

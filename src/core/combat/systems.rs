@@ -20,6 +20,7 @@ use crate::core::combat::report::{
     combat_fleet_strength, combat_strength_ranges, CombatReport, MissionReport, RoundReport, Side,
 };
 use crate::core::combat::resolution::ShotReport;
+use crate::core::combat::result_banner;
 use crate::core::constants::{
     BG2_COLOR, COMBAT_BACKGROUND_Z, COMBAT_SHIP_Z, HEALTH_COLOR, PS_WIDTH, SETUP_TIME,
     SHIELD_COLOR, UNIT_SIZE,
@@ -94,6 +95,69 @@ fn combat_status_node() -> Node {
 
 fn combat_status_transform() -> UiTransform {
     UiTransform::from_translation(Val2::new(Val::ZERO, Val::Percent(COMBAT_STATUS_OFFSET)))
+}
+
+/// Spawns the shared centered result artwork without covering the combat controls.
+pub(crate) fn spawn_combat_result_banner(
+    commands: &mut Commands,
+    assets: &WorldAssets,
+    result: &str,
+) -> Entity {
+    let artwork = result_banner::artwork(result);
+    let (mut root, pickable, z_index, ui_cmp) = add_root_node(false);
+    root.height = Val::Percent(100.);
+
+    commands
+        .spawn((
+            root,
+            pickable,
+            z_index,
+            ui_cmp,
+            children![(
+                Node {
+                    width: Val::Percent(100.),
+                    height: Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.),
+                    min_height: Val::Px(result_banner::BAR_MIN_HEIGHT),
+                    max_height: Val::Px(result_banner::BAR_MAX_HEIGHT),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BackgroundColor(Color::BLACK.with_alpha(result_banner::BAR_ALPHA as f32 / 255.)),
+                CombatCmp,
+                children![(
+                    Node {
+                        width: Val::Vw(artwork.width_fraction * 100.),
+                        max_width: Val::Px(artwork.max_width),
+                        aspect_ratio: Some(1.),
+                        flex_shrink: 0.,
+                        ..default()
+                    },
+                    ImageNode::new(assets.image(result)),
+                    UiTransform {
+                        translation: Val2::new(
+                            Val::ZERO,
+                            Val::Percent(artwork.center_offset * 100.)
+                        ),
+                        scale: Vec2::ZERO,
+                        ..default()
+                    },
+                    TweenAnim::new(Tween::new(
+                        EaseFunction::QuadraticInOut,
+                        Duration::from_secs_f32(result_banner::ENTER_SECONDS),
+                        UiTransformScaleLens {
+                            start: Vec2::ZERO,
+                            end: Vec2::ONE,
+                        },
+                    )),
+                    DisplayTextCmp,
+                    CombatCmp,
+                )],
+            )],
+            CombatCmp,
+        ))
+        .id()
 }
 
 /// Resolves the combat report and round selected by the shared presentation state.
@@ -2530,40 +2594,8 @@ pub fn animate_combat(
         && text_q.is_none()
     {
         let result = report.status(&player);
-
         play_audio_msg.write(PlayAudioMsg::new(result));
-        commands.spawn((
-            add_root_node(false),
-            BackgroundColor(Color::BLACK.with_alpha(0.46)),
-            children![(
-                Node {
-                    max_width: Val::Vw(90.),
-                    ..default()
-                },
-                ImageNode::new(assets.image(result)),
-                UiTransform {
-                    translation: Val2::new(Val::ZERO, Val::Percent(-10.)),
-                    scale: Vec2::ZERO,
-                    ..default()
-                },
-                TweenAnim::new(Tween::new(
-                    EaseFunction::QuadraticInOut,
-                    Duration::from_millis(1500),
-                    UiTransformScaleLens {
-                        start: Vec2::ZERO,
-                        end: Vec2::splat(match result {
-                            "victory" => 0.55,
-                            "draw" => 0.4,
-                            "defeat" => 0.6,
-                            _ => 0.5,
-                        }),
-                    },
-                )),
-                DisplayTextCmp,
-                CombatCmp,
-            )],
-            CombatCmp,
-        ));
+        spawn_combat_result_banner(&mut commands, &assets, result);
     }
 
     match combat_state.get() {
@@ -3130,7 +3162,7 @@ pub fn update_combat_stats(
 
     // Apply the speed chosen from the combat settings panel (or keyboard shortcuts).
     anim_q.iter_mut().for_each(|mut t| {
-        if paused {
+        if settings.combat_paused {
             t.playback_state = PlaybackState::Paused;
         } else {
             t.playback_state = PlaybackState::Playing;

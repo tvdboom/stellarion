@@ -309,6 +309,8 @@ fn cinematic_shared_hud_controls_volume_mute_and_speed_without_schematic_options
 #[test]
 fn cinematic_pause_is_visible_and_completed_banner_returns_to_selection() {
     let (mut app, context) = controls_app();
+    let victory_texture = egui::TextureId::User(700);
+    app.world_mut().resource_mut::<ImageIds>().0.insert("victory".into(), victory_texture);
     app.world_mut().resource_mut::<Settings>().combat_paused = true;
     for _ in 0..3 {
         controls_frame(&mut app, &context, vec![]);
@@ -321,8 +323,32 @@ fn cinematic_pause_is_visible_and_completed_banner_returns_to_selection() {
     }
     let shapes = controls_frame(&mut app, &context, vec![]);
     assert!(label_rect(&shapes, "PAUSED").is_none());
-    let victory = label_rect(&shapes, "VICTORY").unwrap();
-    click_control(&mut app, &context, victory.center());
+    assert!(label_rect(&shapes, "Click to return to battle selection · Esc").is_none());
+    app.world_mut().resource_mut::<Settings>().combat_paused = false;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.75));
+    let shapes = controls_frame(&mut app, &context, vec![]);
+    let artwork_rect = |shapes: &[egui::epaint::ClippedShape]| {
+        shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == victory_texture => {
+                    Some(mesh.calc_bounds())
+                },
+                _ => None,
+            })
+            .unwrap()
+    };
+    let half = artwork_rect(&shapes);
+    assert!(
+        (half.width() - 640.0 * result_banner::artwork("victory").width_fraction * 0.5).abs() < 0.1
+    );
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+    let paused = artwork_rect(&controls_frame(&mut app, &context, vec![]));
+    assert_eq!(paused, half, "result entrance must freeze with playback");
+    app.world_mut().resource_mut::<Settings>().combat_paused = false;
+    let full = artwork_rect(&controls_frame(&mut app, &context, vec![]));
+    assert!((full.width() - half.width() * 2.0).abs() < 0.1);
+    click_control(&mut app, &context, egui::pos2(320.0, 240.0));
     assert!(matches!(
         app.world().resource::<NextState<GameState>>(),
         NextState::Pending(GameState::CombatMenu)

@@ -2068,9 +2068,14 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     let backdrop = app.world().get::<ChildOf>(result).unwrap().parent();
     assert_eq!(
         app.world().get::<BackgroundColor>(backdrop).unwrap().0.alpha(),
-        0.46,
-        "the result darkens the active battlefield behind it"
+        result_banner::BAR_ALPHA as f32 / 255.,
+        "the result uses the same dark center band as cinematic playback"
     );
+    let band_node = app.world().get::<Node>(backdrop).unwrap();
+    assert_eq!(band_node.height, Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.));
+    assert_eq!(band_node.overflow, Overflow::clip());
+    let root = app.world().get::<ChildOf>(backdrop).unwrap().parent();
+    assert_eq!(app.world().get::<Node>(root).unwrap().height, Val::Percent(100.));
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
     assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 0);

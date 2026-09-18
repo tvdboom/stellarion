@@ -53,6 +53,89 @@ fn pause_freezes_camera_and_actors_and_speed_scales_the_same_clock() {
 }
 
 #[test]
+fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
+    let movie = replay();
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    let end = movie.timeline.entrance_duration;
+    assert!(end >= 4.0, "Ships need time for a visible approach before weapons fire");
+    let mut banks = Vec::new();
+    for index in 0..24 {
+        let start = movie.actor_pose(scene, index, 0.0);
+        let middle = movie.actor_pose(scene, index, end * 0.5);
+        let arrived = movie.actor_pose(scene, index, end);
+        assert!(start.center.x + start.size < scene.rect.left());
+        assert!(middle.center.x > start.center.x && arrived.center.x > middle.center.x);
+        let chord = arrived.center - start.center;
+        let offset = middle.center - start.center;
+        let distance_from_line = (chord.x * offset.y - chord.y * offset.x).abs() / chord.length();
+        assert!(distance_from_line > 12.0, "Arrival {index} collapsed to a straight translation");
+        banks.push(middle.angle);
+        assert!(
+            (middle.angle - start.angle).abs().max((arrived.angle - middle.angle).abs()) > 0.02,
+            "The sprite must steer visibly during approach"
+        );
+        for tick in 0..200 {
+            let pose = movie.actor_pose(scene, index, tick as f32 * 0.1);
+            assert!(pose.angle.abs() < 0.27, "Banking must retain the isometric view");
+        }
+        let step = 0.01;
+        let before = movie.actor_pose(scene, index, end - step);
+        let after = movie.actor_pose(scene, index, end + step);
+        let incoming = (arrived.center - before.center) / step;
+        let outgoing = (after.center - arrived.center) / step;
+        assert!(
+            (incoming - outgoing).length() < 2.0,
+            "Arrival must blend into the same ongoing flight without a stop or jump"
+        );
+        assert!((after.angle - before.angle).abs() < 0.01);
+        let later = movie.actor_pose(scene, index, end + 2.0);
+        assert!(later.center.distance(arrived.center) > 4.0);
+    }
+    assert!(
+        banks.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+            - banks.iter().copied().fold(f32::INFINITY, f32::min)
+            > 0.1,
+        "A fleet must not all bank in lockstep"
+    );
+}
+
+#[test]
+fn background_preserves_map_art_proportions_and_color_without_an_oversized_nebula() {
+    use bevy_egui::egui;
+    let mut movie = replay();
+    let map_texture = TextureId::User(501);
+    let nebula_texture = TextureId::User(502);
+    let images = ImageIds([("bg".into(), map_texture), ("nebula".into(), nebula_texture)].into());
+    for size in [vec2(1440.0, 820.0), vec2(640.0, 480.0), vec2(450.0, 700.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        movie.elapsed = 22.0;
+        let context = egui::Context::default();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(scene.rect),
+                ..Default::default()
+            },
+            |ui| movie.paint_space(ui.painter(), scene, &images),
+        );
+        output.textures_delta.clear();
+        let meshes: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Mesh(mesh) => Some(mesh),
+                _ => None,
+            })
+            .collect();
+        assert!(!meshes.iter().any(|mesh| mesh.texture_id == nebula_texture));
+        let map = meshes.iter().find(|mesh| mesh.texture_id == map_texture).unwrap();
+        let bounds = map.calc_bounds();
+        assert!(bounds.contains_rect(scene.rect));
+        assert!((bounds.width() / bounds.height() - 1.5).abs() < 0.001);
+        assert!(map.vertices.iter().all(|vertex| vertex.color == Color32::WHITE));
+    }
+}
+
+#[test]
 fn dense_surface_formations_keep_each_turret_on_the_globe() {
     for count in [1, 2, 7, 34, 150, 600] {
         let positions: Vec<_> = (0..count).map(|i| formation_home(2, i, count)).collect();

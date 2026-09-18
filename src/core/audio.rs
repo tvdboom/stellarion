@@ -10,6 +10,7 @@ use bevy_kira_audio::prelude::*;
 
 use crate::core::assets::WorldAssets;
 use crate::core::camera::MainCamera;
+use crate::core::combat::cinematic_ui::CombatView;
 use crate::core::constants::{MAX_ZOOM, MIN_ZOOM};
 use crate::core::map::scenery::CelestialKind;
 use crate::core::map::systems::{CelestialCmp, SolarStarCmp};
@@ -17,6 +18,7 @@ use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::ui::systems::{viewport_ui_scale, UiState};
+use crate::core::ui::utils::{sized_image_tile_button, ImageIds};
 use crate::core::units::Unit;
 
 /// Short feedback cues balanced for repeated menu and gameplay actions.
@@ -645,12 +647,84 @@ fn combat_settings_popover(
     response.map(|response| response.response.rect)
 }
 
+/// Keeps replay mode local to the battle chooser, before any battle begins.
+fn combat_view_popover(
+    button: &egui::Response,
+    view: &mut CombatView,
+    images: &ImageIds,
+    suppressed: bool,
+) -> Option<egui::Rect> {
+    let id = button.id.with("combat view");
+    let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    let popup = egui::Popup::from_response(button)
+        .id(id)
+        .gap(0.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(224.0_f32.min((button.ctx.content_rect().width() - 40.0).max(120.0)));
+    let hovering = popup.get_popup_rect().is_some_and(|rect| {
+        button
+            .ctx
+            .pointer_hover_pos()
+            .is_some_and(|pos| rect.union(button.rect).expand(4.0).contains(pos))
+    });
+    let mut open = !suppressed && (button.hovered() || was_open && hovering);
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(14, 22, 31, 245))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 133, 162)))
+        .corner_radius(6.0)
+        .inner_margin(10);
+    let response = popup.frame(frame).open_bool(&mut open).show(|ui| {
+        ui.label(egui::RichText::new("Combat view").size(18.0).strong());
+        ui.add_space(8.0);
+        ui.horizontal_top(|ui| {
+            let width = ((ui.available_width() - ui.spacing().item_spacing.x) * 0.5).min(96.0);
+            for (mode, label, image) in [
+                (CombatView::Schematic, "Schematic", "combat schematic"),
+                (CombatView::Cinematic, "Cinematic", "combat cinematic"),
+            ] {
+                // Bound each column: an expanding vertical layout otherwise makes the popup
+                // grow and change its anchor while the pointer moves from the gear to a tile.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, (width - 2.0) / 1.5 + 26.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(width);
+                        let selected = *view == mode;
+                        let response = sized_image_tile_button(
+                            ui,
+                            images.get(image),
+                            selected,
+                            egui::vec2(width, (width - 2.0) / 1.5 + 2.0),
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                ui.is_enabled(),
+                                selected,
+                                label,
+                            )
+                        });
+                        if response.on_hover_text(label).clicked() && !selected {
+                            *view = mode;
+                            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+                        }
+                        ui.label(egui::RichText::new(label).size(14.0));
+                    },
+                );
+            }
+        });
+    });
+    button.ctx.data_mut(|data| data.insert_temp(id, open));
+    response.map(|response| response.response.rect)
+}
+
 fn audio_controls(
     context: &egui::Context,
     settings: &mut Settings,
     in_combat: bool,
     show_game_settings: bool,
     cinematic: bool,
+    combat_selection: Option<(&mut CombatView, &ImageIds)>,
 ) -> (egui::Response, Option<egui::Response>) {
     // One inset for both axes, independent of the window aspect ratio and UI button padding.
     let scale = viewport_ui_scale(context.content_rect().size());
@@ -660,29 +734,36 @@ fn audio_controls(
         .show(context, |ui| {
             ui.spacing_mut().item_spacing.x *= scale;
             ui.horizontal(|ui| {
-                let settings_button = (in_combat || show_game_settings).then(|| {
-                    settings_gear_button_scaled(
-                        ui,
-                        if in_combat {
-                            "Combat settings"
-                        } else {
-                            "Game settings"
-                        },
-                        scale,
-                    )
-                });
+                let settings_button =
+                    (in_combat || show_game_settings || combat_selection.is_some()).then(|| {
+                        settings_gear_button_scaled(
+                            ui,
+                            if combat_selection.is_some() {
+                                "Combat view"
+                            } else if in_combat {
+                                "Combat settings"
+                            } else {
+                                "Game settings"
+                            },
+                            scale,
+                        )
+                    });
                 let audio_button = audio_mode_button_scaled(ui, settings.audio, scale);
                 let prefer_settings =
                     settings_button.as_ref().is_some_and(|button| button.hovered());
                 let prefer_volume = audio_button.hovered();
 
-                if let Some(settings_button) = settings_button.as_ref().filter(|_| in_combat) {
-                    let _ = combat_settings_popover(
-                        settings_button,
-                        settings,
-                        prefer_volume,
-                        cinematic,
-                    );
+                if let Some(settings_button) = settings_button.as_ref() {
+                    if let Some((view, images)) = combat_selection {
+                        let _ = combat_view_popover(settings_button, view, images, prefer_volume);
+                    } else if in_combat {
+                        let _ = combat_settings_popover(
+                            settings_button,
+                            settings,
+                            prefer_volume,
+                            cinematic,
+                        );
+                    }
                 }
                 volume_popover(&audio_button, settings, prefer_settings);
                 (audio_button, settings_button)
@@ -710,13 +791,26 @@ pub fn draw_audio_controls(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
     mut volume_feedback: MessageReader<VolumeFeedbackMsg>,
-    ui_state: Option<Res<crate::core::ui::systems::UiState>>,
+    mut ui_state: Option<ResMut<UiState>>,
+    images: Option<Res<ImageIds>>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
     let previous_audio = settings.audio;
     let in_combat = *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat;
+    let in_combat_menu =
+        *app_state.get() == AppState::Game && *game_state.get() == GameState::CombatMenu;
+    let cinematic =
+        ui_state.as_ref().is_some_and(|state| state.combat_view == CombatView::Cinematic);
+    let combat_selection = if in_combat_menu {
+        ui_state
+            .as_deref_mut()
+            .zip(images.as_deref())
+            .map(|(state, images)| (&mut state.combat_view, images))
+    } else {
+        None
+    };
     let settings_destination = (*app_state.get() == AppState::Game)
         .then(|| game_settings_destination(*game_state.get()))
         .flatten();
@@ -730,9 +824,8 @@ pub fn draw_audio_controls(
         &mut settings,
         in_combat,
         settings_destination.is_some(),
-        ui_state.as_ref().is_some_and(|state| {
-            state.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
-        }),
+        cinematic,
+        combat_selection,
     );
     if let Some(destination) = settings_destination
         .filter(|_| settings_button.as_ref().is_some_and(|button| button.clicked()))

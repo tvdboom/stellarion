@@ -5520,22 +5520,6 @@ fn draw_combat_selection(
 ) {
     let reports = combat_selection_reports(player, settings.turn);
 
-    ui.add_space(5.);
-
-    ui.vertical_centered(|ui| {
-        ui.label("Select a battle");
-    });
-
-    ui.horizontal_wrapped(|ui| {
-        use crate::core::combat::cinematic_ui::CombatView;
-        ui.selectable_value(&mut state.combat_view, CombatView::Schematic, "Schematic")
-            .on_hover_text("Replay the battle with the original tactical diagrams");
-        ui.selectable_value(&mut state.combat_view, CombatView::Cinematic, "Cinematic")
-            .on_hover_text(
-                "Watch individual ships and planetary defenses fight in a cinematic replay",
-            );
-    });
-
     ui.vertical_centered(|ui| {
         ui.add_space(10.);
 

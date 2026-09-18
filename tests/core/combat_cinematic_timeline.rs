@@ -342,9 +342,9 @@ fn resolved_battle_replays_every_shot_and_is_seekable_without_new_randomness() {
         let mut prefix = battle.clone();
         prefix.combat_report.as_mut().unwrap().rounds.truncate(round_index + 1);
         let prefix = CinematicTimeline::new(&prefix);
-        // The movie's closing hold is two seconds. Sample just before the boundary checkpoint,
+        // Sample before the closing hold and boundary checkpoint,
         // after all actual impacts/heals, so a corrective snapshot cannot hide damage mistakes.
-        let boundary = prefix.duration - 2.135;
+        let boundary = prefix.duration - CLOSING_HOLD - 0.135;
         for (defender, army) in [(false, &snapshot.attacker), (true, &snapshot.defender)] {
             for record in army {
                 let actor = &movie.actors[actor_index(&movie, defender, record.id)];

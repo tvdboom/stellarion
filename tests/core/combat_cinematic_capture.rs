@@ -171,9 +171,36 @@ fn bombing_battle(raid: BombingRaid) -> crate::core::combat::report::MissionRepo
     panic!("capture fixture must exercise hits on all three buildings");
 }
 
+fn stalemate_battle() -> crate::core::combat::report::MissionReport {
+    let mut rng = DeterministicRngState::from_u64(9).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    origin.colonize(1);
+    let mut planet = Planet::new_with_rng(1, "Stalemate".into(), Vec2::X, false, 1.0, &mut rng);
+    planet.colonize(2);
+    // Neither probe deals damage, so the real resolver reaches its bounded draw outcome.
+    planet.army = Army::from([(Unit::probe(), 1)]).into();
+    let mission = Mission::new_with_id(
+        4,
+        1,
+        1,
+        &origin,
+        &planet,
+        Icon::Attack,
+        Army::from([(Unit::probe(), 1)]),
+        BombingRaid::None,
+        true,
+        false,
+        None,
+    );
+    let report = resolve_combat_with_rng(4, &mission, &planet, &mut rng);
+    assert!(report.is_stalemate());
+    report
+}
+
 #[test]
 #[ignore = "offscreen GPU review; writes PNGs under target/cinematic-preview"]
 fn render_cinematic_preview() {
+    use crate::core::assets::WorldAssets;
     use crate::core::audio::{draw_audio_controls, ChangeAudioMsg, VolumeFeedbackMsg};
     use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
     use crate::core::states::AppState;
@@ -183,17 +210,22 @@ fn render_cinematic_preview() {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
     use bevy::render::view::screenshot::{save_to_disk, Screenshot};
     use bevy::render::RenderPlugin;
+    use bevy::time::TimeUpdateStrategy;
     use bevy::window::ExitCondition;
     use bevy::winit::WinitPlugin;
     use bevy_egui::input::EguiInputEvent;
     use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, EguiTextureHandle, PrimaryEguiContext};
+    use bevy_tweening::TweeningPlugin;
 
     #[derive(Resource)]
     struct CaptureImages(Vec<(String, Handle<Image>)>);
 
     let report = battle(false);
     let playback = CinematicPlayback::new(&report);
-    let mut samples = vec![("entrance".to_string(), 1.2), ("battle".to_string(), 3.5)];
+    let mut samples = vec![
+        ("entrance".to_string(), 3.0),
+        ("battle".to_string(), playback.timeline.entrance_duration + 1.1),
+    ];
     if let Some(shot) = playback
         .timeline
         .shots
@@ -234,7 +266,10 @@ fn render_cinematic_preview() {
             })
             .disable::<WinitPlugin>(),
     )
-    .add_plugins((EguiPlugin::default(), BasisTexturePlugin))
+    .add_plugins((EguiPlugin::default(), BasisTexturePlugin, TweeningPlugin))
+    .insert_resource(TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(
+        1.0 / 60.0,
+    )))
     .insert_resource(player)
     .insert_resource(preview_session())
     .insert_resource(playback)
@@ -249,12 +284,19 @@ fn render_cinematic_preview() {
     .insert_resource(State::new(AppState::Game))
     .insert_resource(State::new(GameState::Combat))
     .init_resource::<ImageIds>()
+    .init_asset::<bevy_kira_audio::AudioSource>()
+    .init_resource::<WorldAssets>()
     .init_resource::<NextState<GameState>>()
     .add_message::<ChangeAudioMsg>()
     .add_message::<VolumeFeedbackMsg>()
     .add_systems(
         EguiPrimaryContextPass,
-        (crate::core::ui::systems::set_ui_style, draw_cinematic, draw_audio_controls).chain(),
+        (
+            crate::core::ui::systems::set_ui_style,
+            draw_cinematic.run_if(in_state(GameState::Combat)),
+            draw_audio_controls,
+        )
+            .chain(),
     );
     app.finish();
     app.cleanup();
@@ -271,6 +313,7 @@ fn render_cinematic_preview() {
         "cinematic",
         "icons",
         "ui",
+        "resources",
     ] {
         let path = format!("assets/images/{directory}");
         let Ok(entries) = std::fs::read_dir(path) else {
@@ -284,6 +327,8 @@ fn render_cinematic_preview() {
             let name = path.file_stem().unwrap().to_string_lossy().to_string();
             if (directory == "icons" && name != "planetary shield marker")
                 || (directory == "ui" && name != "long button")
+                || (directory == "resources"
+                    && !matches!(name.as_str(), "combat schematic" | "combat cinematic"))
             {
                 continue;
             }
@@ -349,6 +394,7 @@ fn render_cinematic_preview() {
              mut images: ResMut<ImageIds>,
              handles: Res<CaptureImages>,
              textures: Res<Assets<Image>>,
+             mut assets: ResMut<WorldAssets>,
              mut playback: ResMut<CinematicPlayback>| {
                 // Render settled HUD states without depending on wall-clock fade-in timing.
                 let context = contexts.ctx_mut().unwrap();
@@ -362,6 +408,9 @@ fn render_cinematic_preview() {
                     );
                     let texture = textures.get(handle).unwrap();
                     playback.set_sprite_size(name, texture.width(), texture.height());
+                    if matches!(name.as_str(), "victory" | "defeat" | "draw") {
+                        assets.images.insert(name.clone(), handle.clone());
+                    }
                 }
             },
         )
@@ -369,7 +418,14 @@ fn render_cinematic_preview() {
     std::fs::create_dir_all("target/cinematic-preview").unwrap();
     for (name, time) in samples {
         app.world_mut().resource_mut::<CinematicPlayback>().elapsed = time;
-        for _ in 0..8 {
+        // The movie stays at its sampled time while the shared result artwork finishes
+        // its 1.5-second entrance on the deterministic 60 Hz UI clock.
+        let settling_frames = if name == "result" {
+            100
+        } else {
+            8
+        };
+        for _ in 0..settling_frames {
             app.update();
         }
         app.world_mut()
@@ -380,7 +436,9 @@ fn render_cinematic_preview() {
         }
     }
     // Exercise the same HUD systems and pointer/scroll input path used in a live replay.
-    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 3.5;
+    let approach_finished =
+        app.world().resource::<CinematicPlayback>().timeline.entrance_duration + 1.1;
+    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = approach_finished;
     let [gear, sound] = app
         .world_mut()
         .run_system_once(|mut contexts: EguiContexts| {
@@ -429,8 +487,30 @@ fn render_cinematic_preview() {
             });
         })
         .unwrap();
+    // The battle-selection gear uses the same controls, with image tiles in its hover panel.
+    // Keep the fixture independent of map setup; only the menu controls paint this sample.
+    app.insert_resource(State::new(GameState::CombatMenu));
+    app.world_mut().write_message(EguiInputEvent {
+        context: camera,
+        event: egui::Event::PointerMoved(gear),
+    });
+    for _ in 0..8 {
+        app.update();
+    }
+    app.world_mut()
+        .spawn(Screenshot::image(target.clone()))
+        .observe(save_to_disk("target/cinematic-preview/combat-view-settings.png"));
+    for _ in 0..8 {
+        app.update();
+    }
+    app.insert_resource(State::new(GameState::Combat));
+    app.world_mut().write_message(EguiInputEvent {
+        context: camera,
+        event: egui::Event::PointerGone,
+    });
     // Multiple surviving War Suns must contribute to the same recorded discharge.
     let report = battle(true);
+    let decisive_report = report.clone();
     assert!(report.planet_destroyed, "capture requires a successful recorded destruction");
     let mut playback = CinematicPlayback::new(&report);
     assert!(!playback.timeline.planet_attacks.is_empty());
@@ -460,6 +540,66 @@ fn render_cinematic_preview() {
         for _ in 0..8 {
             app.update();
         }
+    }
+
+    // Review all three shared banners using real resolved outcomes. Victory and defeat
+    // are the two player perspectives on the same decisive battle, not altered reports.
+    for (index, (status, mut report, player_id)) in [
+        ("victory", decisive_report.clone(), 1),
+        ("defeat", decisive_report, 2),
+        ("draw", stalemate_battle(), 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        report.id = 10 + index as u64;
+        let mut player = Player::new(player_id, 0);
+        assert_eq!(report.status(&player), status);
+        let mut playback = CinematicPlayback::new(&report);
+        for (name, handle) in &app.world().resource::<CaptureImages>().0 {
+            let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+            playback.set_sprite_size(name, texture.width(), texture.height());
+        }
+        playback.elapsed = playback.timeline.duration;
+        app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
+        player.reports.push(report);
+        app.insert_resource(player);
+        app.insert_resource(playback);
+        for _ in 0..100 {
+            app.update();
+        }
+        app.world_mut()
+            .spawn(Screenshot::image(target.clone()))
+            .observe(save_to_disk(format!("target/cinematic-preview/result-{status}.png")));
+        for _ in 0..8 {
+            app.update();
+        }
+        // Render the production Bevy result hierarchy against the same offscreen camera,
+        // checking its centering, clipping, and tween independently of the egui movie HUD.
+        app.insert_resource(State::new(GameState::CombatMenu));
+        let schematic_banner = app
+            .world_mut()
+            .run_system_once(move |mut commands: Commands, assets: Res<WorldAssets>| {
+                let root = crate::core::combat::systems::spawn_combat_result_banner(
+                    &mut commands,
+                    &assets,
+                    status,
+                );
+                commands.entity(root).insert(UiTargetCamera(camera));
+                root
+            })
+            .unwrap();
+        for _ in 0..100 {
+            app.update();
+        }
+        app.world_mut().spawn(Screenshot::image(target.clone())).observe(save_to_disk(format!(
+            "target/cinematic-preview/schematic-result-{status}.png"
+        )));
+        for _ in 0..8 {
+            app.update();
+        }
+        app.world_mut().despawn(schematic_banner);
+        app.insert_resource(State::new(GameState::Combat));
     }
 
     for (category, raid) in

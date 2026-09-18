@@ -1,6 +1,7 @@
 # Cinematic combat replay
 
-Choose **Schematic** or **Cinematic** above the battle list, then select a battle.
+Hover the settings gear beside the sound icon in the battle chooser, select the
+**Schematic** or **Cinematic** image tile, then select a battle from the list.
 Schematic remains the default. Cinematic uses individual isometric ships and defenses,
 with a planet for ground combat and open space for fauna encounters. Space pauses
 the entire scene; Left/Right change speed from 0.25× to 64×. The same top-right
@@ -32,10 +33,15 @@ their charging rays at one focus before a shared beam strikes the planet; the
 planet breaks apart only when the saved report records its destruction.
 
 Weapon colors, projectile masks, barrel patterns, trajectories, particle trails,
-and sound pitch/gain are shared with the schematic renderer. Charged weapons build
-up before their recorded launch, preserving the last shot of a destroyed ship.
+staged wreck explosions, and sound pitch/gain are shared with the schematic renderer.
+Charged weapons build up before their recorded launch, preserving the last shot of a destroyed ship.
 The planetary shield reuses the map's energy-field artwork with a three-second
 pulse, moving filaments and surface sweeps; its strength follows recorded damage.
+The scene uses the normal map background with its proportions preserved. Ships
+follow independent curved approaches over 4.8 seconds, banking gently while
+preserving the perspective of their artwork, then continue maneuvering in combat.
+Both views reveal the same victory, draw, or defeat image in a dark central band,
+using the same 1.5-second entrance and no instruction caption.
 
 The renderer uses a single clock for trajectories, sprite banking and recoil, engine
 glows, navigation lights, shield impacts, explosion atlas frames, particles, stars,
@@ -47,6 +53,8 @@ by the existing asset pipeline and included by normal native and web packaging.
 The six building references and generation prompts are documented in
 [cinematic-economic-art.md](cinematic-economic-art.md) and
 [cinematic-industrial-art.md](cinematic-industrial-art.md).
+The rebuilt War Sun and mode tiles are documented in
+[cinematic-refresh-art.md](cinematic-refresh-art.md).
 
 Visual pacing was informed by [Stellaris battle screenshots](https://forum.paradoxplaza.com/forum/threads/obligatory-space-battle-screenshot-thread.927576/).
 All ship and structure artwork is derived from Stellarion's own shop references.
@@ -73,7 +81,7 @@ cargo test --lib render_cinematic_preview -j6 -- --ignored --nocapture
 
 The frames are written under ignored `target/cinematic-preview/`. They include
 entrance, active combat, shield impact and motion, repair, destruction, the outcome
-banner, the shared settings and volume popovers, the War Sun charge/discharge,
+banner in both renderers, the mode tiles and shared settings/volume popovers, the War Sun charge/discharge,
 planet breakup, both building categories before and during bombing, rising level
 loss captions, and a 640×480 viewport. It uses the generated runtime textures with the same
 filtering and alpha settings as the game; run `just assets` first.

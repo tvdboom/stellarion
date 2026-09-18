@@ -459,6 +459,62 @@ fn combat_selection_places_planet_before_text_with_compact_gap() {
     assert_eq!(row.right() - text.right(), COMBAT_SELECTION_TEXT_RIGHT_INSET);
 }
 
+#[test]
+fn battle_selection_starts_the_chosen_report_without_changing_replay_mode() {
+    use crate::core::combat::cinematic_ui::CombatView;
+
+    let map = Map::new(1, 0);
+    let mut planet = map.get(0).clone();
+    planet.controlled = Some(2);
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            destination: 0,
+            ..default()
+        },
+        planet,
+    );
+    report.id = 42;
+    report.combat_report = Some(crate::core::combat::report::CombatReport {
+        rounds: vec![RoundReport::default()],
+        ..default()
+    });
+    let title = combat_selection_title(&report, &map);
+    let mut player = Player::new(2, 0);
+    player.reports.push(report);
+    let session = MultiplayerSession::default();
+    let images = ImageIds::default();
+    for view in [CombatView::Schematic, CombatView::Cinematic] {
+        let context = egui::Context::default();
+        let mut state = UiState {
+            combat_view: view,
+            ..default()
+        };
+        let mut settings = Settings {
+            turn: 0,
+            combat_paused: true,
+            ..default()
+        };
+        let mut next = NextState::Unchanged;
+        click_text(&context, &title, |ui| {
+            draw_combat_selection(
+                ui,
+                &mut state,
+                &map,
+                &player,
+                &session,
+                &mut settings,
+                &mut next,
+                &images,
+            );
+        });
+        assert_eq!(state.in_combat, Some(42));
+        assert_eq!(state.combat_view, view);
+        assert!(!settings.combat_paused);
+        assert!(matches!(next, NextState::Pending(GameState::Combat)));
+    }
+}
+
 fn click_text(context: &egui::Context, text: &str, mut draw: impl FnMut(&mut egui::Ui)) {
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 180.0));
     let mut frame = |events| {

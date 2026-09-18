@@ -8,6 +8,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
+pub(crate) use super::cinematic_timeline::{DEATH_RAY_COLLAPSE_AT, DEATH_RAY_DISCHARGE_AT};
 use super::report::Side;
 use super::resolution::ShotReport;
 use super::systems::{
@@ -40,11 +41,10 @@ const MISSILE_LAUNCH_STAGGER: f32 = 0.03;
 // character while keeping an actual hull strike audible beneath their tails.
 const HULL_IMPACT_VOLUME: f32 = -10.0;
 const WRECK_LIFETIME: f32 = 0.62;
+const WRECK_STAGES: [f32; 4] = [0.0, 0.13, 0.27, 0.43];
 const REPAIR_READOUT_PROGRESS: f32 = 0.45;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
 pub(crate) const DEATH_RAY_FOCUS_AT: f32 = 1.15;
-pub(crate) const DEATH_RAY_DISCHARGE_AT: f32 = 2.0;
-pub(crate) const DEATH_RAY_COLLAPSE_AT: f32 = 3.7;
 
 /// Heated envelope, energy column and white-hot core shared by both War Sun replays.
 pub(crate) fn death_ray_beam_layers(size: f32) -> [(f32, Color); 3] {
@@ -351,19 +351,23 @@ pub(crate) fn miss_cue() -> PlayAudioMsg {
 
 /// Final wreck blast follows the same brief secondary-explosion sequence in both views.
 pub(crate) fn wreck_cue(unit: Unit) -> (f32, PlayAudioMsg) {
-    let heavy = matches!(unit, Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun));
+    let scale = wreck_scale(unit);
     (
-        0.43 * if heavy {
-            1.5
-        } else {
-            1.0
-        },
-        PlayAudioMsg::new(if heavy || unit == Unit::planetary_shield() {
+        WRECK_STAGES[3] * scale,
+        PlayAudioMsg::new(if scale > 1.0 || unit == Unit::planetary_shield() {
             "large explosion"
         } else {
             "explosion"
         }),
     )
+}
+
+fn wreck_scale(unit: Unit) -> f32 {
+    if matches!(unit, Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun)) {
+        1.5
+    } else {
+        1.0
+    }
 }
 
 /// Creature weapon accents shared by combat playback and the short strategic-map encounter.
@@ -697,6 +701,192 @@ pub struct Particle {
     sustained: bool,
 }
 
+impl Particle {
+    fn glow(origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) -> Self {
+        Self {
+            origin,
+            velocity: Vec3::ZERO,
+            start_size: Vec2::splat(size),
+            end_size: Vec2::splat(size * 1.8),
+            color,
+            elapsed: 0.0,
+            delay,
+            lifetime,
+            spin: 0.0,
+            sustained: false,
+        }
+    }
+
+    fn ring(origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) -> Self {
+        Self {
+            start_size: Vec2::splat(size * 0.2),
+            end_size: Vec2::splat(size),
+            ..Self::glow(origin, size, color, lifetime, delay)
+        }
+    }
+
+    fn blast(origin: Vec3, size: f32, lifetime: f32, delay: f32) -> Self {
+        Self {
+            end_size: Vec2::splat(size * 1.1),
+            ..Self::glow(origin, size, Color::WHITE, lifetime, delay)
+        }
+    }
+
+    fn spark(origin: Vec3, size: f32, color: Color, index: usize, debris: bool) -> Self {
+        let angle = index as f32 * 2.399_963;
+        let direction = Vec3::new(angle.cos(), angle.sin(), 0.0);
+        let distance = size * (0.5 + (index % 5) as f32 * 0.17);
+        let fragment = (size * 0.045).clamp(2.5, 11.0) * (0.6 + (index % 4) as f32 * 0.15);
+        Self {
+            origin: origin
+                + if debris {
+                    direction * size * 0.08
+                } else {
+                    Vec3::ZERO
+                },
+            velocity: direction * distance,
+            start_size: if debris {
+                Vec2::new(fragment, fragment * 0.6)
+            } else {
+                Vec2::new(size * 0.035, size * 0.018)
+            },
+            end_size: Vec2::splat(if debris {
+                fragment * 0.35
+            } else {
+                size * 0.008
+            }),
+            color: if debris && color == GOLD {
+                Color::srgb(0.28, 0.32, 0.38)
+            } else {
+                color
+            },
+            elapsed: 0.0,
+            delay: if debris {
+                0.22
+            } else {
+                0.0
+            },
+            lifetime: if debris {
+                1.7
+            } else {
+                0.42
+            },
+            spin: if debris {
+                angle - 3.0
+            } else {
+                0.0
+            },
+            sustained: false,
+        }
+    }
+
+    fn sample(&self, age: f32) -> Option<ParticleSample> {
+        let age = age - self.delay;
+        if !(0.0..self.lifetime).contains(&age) {
+            return None;
+        }
+        let progress = age / self.lifetime;
+        let envelope = if self.sustained {
+            sustained_envelope(progress)
+        } else {
+            particle_envelope(progress)
+        };
+        Some(ParticleSample {
+            center: self.origin + self.velocity * age,
+            size: self.start_size.lerp(self.end_size, smooth(progress)),
+            rotation: self.spin * age,
+            color: self.color.with_alpha(self.color.alpha() * envelope),
+            progress,
+        })
+    }
+}
+
+struct ParticleSample {
+    center: Vec3,
+    size: Vec2,
+    rotation: f32,
+    color: Color,
+    progress: f32,
+}
+
+#[derive(Clone, Copy)]
+enum WreckMask {
+    Blast,
+    Glow,
+    Ring,
+    Shard,
+}
+
+/// Expands one shared destruction stage without allocating a per-frame effect collection.
+fn wreck_stage(
+    origin: Vec3,
+    size: f32,
+    unit: Unit,
+    stage: usize,
+    mut emit: impl FnMut(WreckMask, Particle),
+) {
+    let heavy = wreck_scale(unit);
+    if stage < 3 {
+        let angle = stage as f32 * 2.4;
+        let origin = origin + Vec3::new(angle.cos(), angle.sin(), 0.0) * size * 0.2;
+        emit(WreckMask::Blast, Particle::blast(origin, size * 0.65, 0.42, 0.0));
+        emit(WreckMask::Glow, Particle::glow(origin, size * 0.75, GOLD, 0.24, 0.0));
+        for index in 0..6 {
+            emit(WreckMask::Glow, Particle::spark(origin, size * 0.7, GOLD, index, false));
+        }
+    } else {
+        emit(WreckMask::Blast, Particle::blast(origin, size * 1.6 * heavy, 0.95, 0.0));
+        emit(WreckMask::Glow, Particle::glow(origin, size * 1.8 * heavy, GOLD, 0.55, 0.0));
+        emit(WreckMask::Glow, Particle::glow(origin, size * 0.95 * heavy, Color::WHITE, 0.16, 0.0));
+        emit(
+            WreckMask::Ring,
+            Particle::ring(origin, size * 2.4 * heavy, GOLD.with_alpha(0.65), 0.85, 0.0),
+        );
+        for index in 0..18 {
+            emit(WreckMask::Shard, Particle::spark(origin, size * heavy, GOLD, index, true));
+        }
+    }
+}
+
+/// A movie-frame sample of the same atlas blasts and masks spawned by schematic wrecks.
+pub(crate) struct WreckSample {
+    pub texture: &'static str,
+    pub atlas_frame: Option<usize>,
+    pub center: Vec3,
+    pub size: Vec2,
+    pub rotation: f32,
+    pub color: Color,
+}
+
+/// Seekable destruction retains secondary blasts, delayed shards and the unit's heavy timing.
+pub(crate) fn sample_wreck(size: f32, unit: Unit, age: f32, mut paint: impl FnMut(WreckSample)) {
+    for (stage, starts_at) in WRECK_STAGES.into_iter().enumerate() {
+        let age = age - starts_at * wreck_scale(unit);
+        if age < 0.0 {
+            continue;
+        }
+        wreck_stage(Vec3::ZERO, size, unit, stage, |mask, particle| {
+            let Some(sample) = particle.sample(age) else {
+                return;
+            };
+            paint(WreckSample {
+                texture: match mask {
+                    WreckMask::Blast => "explosion",
+                    WreckMask::Glow => "combat fx glow",
+                    WreckMask::Ring => "combat fx ring",
+                    WreckMask::Shard => "combat fx shard",
+                },
+                atlas_frame: matches!(mask, WreckMask::Blast)
+                    .then_some((sample.progress * 47.0) as usize),
+                center: sample.center,
+                size: sample.size,
+                rotation: sample.rotation,
+                color: sample.color,
+            });
+        });
+    }
+}
+
 #[derive(Component)]
 /// Atlas frames sampled from effect age, including frames crossed by fast-forward.
 pub struct BlastFrames(usize);
@@ -869,21 +1059,7 @@ impl Painter<'_, '_, '_> {
     }
 
     fn glow_after(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) {
-        self.particle(
-            false,
-            Particle {
-                origin,
-                velocity: Vec3::ZERO,
-                start_size: Vec2::splat(size),
-                end_size: Vec2::splat(size * 1.8),
-                color,
-                elapsed: 0.,
-                delay,
-                lifetime,
-                spin: 0.,
-                sustained: false,
-            },
-        );
+        self.particle(false, Particle::glow(origin, size, color, lifetime, delay));
     }
 
     fn ring(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32) {
@@ -891,73 +1067,12 @@ impl Painter<'_, '_, '_> {
     }
 
     fn ring_after(&mut self, origin: Vec3, size: f32, color: Color, lifetime: f32, delay: f32) {
-        self.particle(
-            true,
-            Particle {
-                origin,
-                velocity: Vec3::ZERO,
-                start_size: Vec2::splat(size * 0.2),
-                end_size: Vec2::splat(size),
-                color,
-                elapsed: 0.,
-                delay,
-                lifetime,
-                spin: 0.,
-                sustained: false,
-            },
-        );
+        self.particle(true, Particle::ring(origin, size, color, lifetime, delay));
     }
 
     fn sparks(&mut self, origin: Vec3, size: f32, color: Color, count: usize, debris: bool) {
         for i in 0..count {
-            let angle = i as f32 * 2.399_963;
-            let direction = Vec3::new(angle.cos(), angle.sin(), 0.);
-            let distance = size * (0.5 + (i % 5) as f32 * 0.17);
-            let fragment = (size * 0.045).clamp(2.5, 11.) * (0.6 + (i % 4) as f32 * 0.15);
-            self.particle(
-                false,
-                Particle {
-                    origin: origin
-                        + if debris {
-                            direction * size * 0.08
-                        } else {
-                            Vec3::ZERO
-                        },
-                    velocity: direction * distance,
-                    start_size: if debris {
-                        Vec2::new(fragment, fragment * 0.6)
-                    } else {
-                        Vec2::new(size * 0.035, size * 0.018)
-                    },
-                    end_size: Vec2::splat(if debris {
-                        fragment * 0.35
-                    } else {
-                        size * 0.008
-                    }),
-                    color: if debris && color == GOLD {
-                        Color::srgb(0.28, 0.32, 0.38)
-                    } else {
-                        color
-                    },
-                    elapsed: 0.,
-                    delay: if debris {
-                        0.22
-                    } else {
-                        0.
-                    },
-                    lifetime: if debris {
-                        1.7
-                    } else {
-                        0.42
-                    },
-                    spin: if debris {
-                        angle - 3.
-                    } else {
-                        0.
-                    },
-                    sustained: false,
-                },
-            );
+            self.particle(false, Particle::spark(origin, size, color, i, debris));
         }
     }
 
@@ -966,6 +1081,10 @@ impl Painter<'_, '_, '_> {
     }
 
     fn blast_after(&mut self, origin: Vec3, size: f32, lifetime: f32, delay: f32) {
+        self.blast_particle(Particle::blast(origin, size, lifetime, delay));
+    }
+
+    fn blast_particle(&mut self, mut particle: Particle) {
         if self.budget == 0 {
             return;
         }
@@ -974,28 +1093,17 @@ impl Painter<'_, '_, '_> {
         };
         self.budget -= 1;
         let texture = art.texture("explosion");
-        let origin = Vec3::new(origin.x, origin.y, COMBAT_EXPLOSION_Z + 0.15);
+        particle.origin.z = COMBAT_EXPLOSION_Z + 0.15;
         self.commands.spawn((
             Sprite {
                 image: texture.image,
                 texture_atlas: Some(texture.atlas),
                 color: Color::WHITE.with_alpha(0.),
-                custom_size: Some(Vec2::splat(size)),
+                custom_size: Some(particle.start_size),
                 ..default()
             },
-            Transform::from_translation(origin),
-            Particle {
-                origin,
-                velocity: Vec3::ZERO,
-                start_size: Vec2::splat(size),
-                end_size: Vec2::splat(size * 1.1),
-                color: Color::WHITE,
-                elapsed: 0.,
-                delay,
-                lifetime,
-                spin: 0.,
-                sustained: false,
-            },
+            Transform::from_translation(particle.origin),
+            particle,
             BlastFrames(texture.last_index),
             CombatCmp,
             Pickable::IGNORE,
@@ -1963,16 +2071,18 @@ pub fn run_combat_animations(
                 motion.flash = 0.2;
             }
         }
-        let stages = [0., 0.13, 0.27, 0.43];
-        while wreck.stage < stages.len() && wreck.elapsed >= stages[wreck.stage] * heavy {
+        while wreck.stage < WRECK_STAGES.len() && wreck.elapsed >= WRECK_STAGES[wreck.stage] * heavy
+        {
             let i = wreck.stage;
             let planetary_shield = wreck.unit == Unit::planetary_shield();
-            let origin = wreck.origin
-                + Vec3::new((i as f32 * 2.4).cos(), (i as f32 * 2.4).sin(), 0.) * wreck.size * 0.2;
+            wreck_stage(wreck.origin, wreck.size, wreck.unit, i, |mask, particle| {
+                if matches!(mask, WreckMask::Blast) {
+                    painter.blast_particle(particle);
+                } else {
+                    painter.particle(matches!(mask, WreckMask::Ring), particle);
+                }
+            });
             if i < 3 {
-                painter.blast(origin, wreck.size * 0.65, 0.42);
-                painter.glow(origin, wreck.size * 0.75, GOLD, 0.24);
-                painter.sparks(origin, wreck.size * 0.7, GOLD, 6, false);
                 if wreck.audible && planetary_shield && matches!(i, 0 | 2) {
                     audio.write(PlayAudioMsg::new("large explosion").rate(if i == 0 {
                         1.05
@@ -1980,15 +2090,8 @@ pub fn run_combat_animations(
                         0.9
                     }));
                 }
-            } else {
-                painter.blast(wreck.origin, wreck.size * 1.6 * heavy, 0.95);
-                painter.glow(wreck.origin, wreck.size * 1.8 * heavy, GOLD, 0.55);
-                painter.glow(wreck.origin, wreck.size * 0.95 * heavy, Color::WHITE, 0.16);
-                painter.ring(wreck.origin, wreck.size * 2.4 * heavy, GOLD.with_alpha(0.65), 0.85);
-                painter.sparks(wreck.origin, wreck.size * heavy, GOLD, 18, true);
-                if wreck.audible {
-                    audio.write(wreck_cue(wreck.unit).1);
-                }
+            } else if wreck.audible {
+                audio.write(wreck_cue(wreck.unit).1);
             }
             wreck.stage += 1;
         }
@@ -2267,25 +2370,23 @@ pub fn run_combat_animations(
         if particle.elapsed < particle.delay {
             continue;
         }
-        let age = particle.elapsed - particle.delay;
-        let p = (age / particle.lifetime).clamp(0., 1.);
-        if p >= 1. {
+        let Some(sample) = particle.sample(particle.elapsed) else {
             painter.commands.entity(entity).despawn();
             continue;
-        }
-        transform.translation = particle.origin + particle.velocity * age;
-        transform.rotate_z(particle.spin * dt);
-        sprite.custom_size = Some(particle.start_size.lerp(particle.end_size, smooth(p)));
-        let envelope = if planet_flash.is_some() {
-            ((1. - p) / 0.6).min(1.)
-        } else if particle.sustained {
-            sustained_envelope(p)
-        } else {
-            particle_envelope(p)
         };
-        sprite.color = particle.color.with_alpha(particle.color.alpha() * envelope);
+        transform.translation = sample.center;
+        // Delayed debris only spins for the active fraction of the first frame.
+        transform.rotate_z(particle.spin * dt.min(particle.elapsed - particle.delay));
+        sprite.custom_size = Some(sample.size);
+        sprite.color = if planet_flash.is_some() {
+            particle
+                .color
+                .with_alpha(particle.color.alpha() * ((1. - sample.progress) / 0.6).min(1.))
+        } else {
+            sample.color
+        };
         if let (Some(frames), Some(atlas)) = (frames, sprite.texture_atlas.as_mut()) {
-            atlas.index = (p * frames.0 as f32) as usize;
+            atlas.index = (sample.progress * frames.0 as f32) as usize;
         }
     }
 }
