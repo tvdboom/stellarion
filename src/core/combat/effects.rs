@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use super::report::Side;
+use super::resolution::ShotReport;
 use super::systems::{
     BackgroundImageCmp, CombatCmp, CombatFormationState, CombatUnitCmp, IndividualCombatUnitCmp,
     PSCombatImageCmp, SpawnShotMsg,
@@ -41,6 +42,24 @@ const HULL_IMPACT_VOLUME: f32 = -10.0;
 const WRECK_LIFETIME: f32 = 0.62;
 const REPAIR_READOUT_PROGRESS: f32 = 0.45;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
+pub(crate) const DEATH_RAY_FOCUS_AT: f32 = 1.15;
+pub(crate) const DEATH_RAY_DISCHARGE_AT: f32 = 2.0;
+pub(crate) const DEATH_RAY_COLLAPSE_AT: f32 = 3.7;
+
+/// Heated envelope, energy column and white-hot core shared by both War Sun replays.
+pub(crate) fn death_ray_beam_layers(size: f32) -> [(f32, Color); 3] {
+    [
+        (size * 2.35, GOLD.with_alpha(0.38)),
+        (size * 1.05, GOLD),
+        (size * 0.32, Color::srgb(1.0, 0.97, 0.78)),
+    ]
+}
+
+/// Sustained discharges hold their intensity until the short final fade.
+pub(crate) fn sustained_envelope(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    (progress * 28.0).min(1.0) * ((1.0 - progress) / 0.22).min(1.0)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Weapon {
@@ -68,6 +87,15 @@ pub(crate) enum Weapon {
 }
 
 impl Weapon {
+    /// Bombing is a recorded action, distinct from the same bomber's ordinary missiles.
+    pub(crate) fn for_shot(unit: Unit, shot: &ShotReport) -> Self {
+        if shot.is_bombing() {
+            Self::Bomb
+        } else {
+            Self::for_unit(unit)
+        }
+    }
+
     pub(crate) fn for_unit(unit: Unit) -> Self {
         match unit {
             Unit::Ship(ship) => match ship {
@@ -128,7 +156,7 @@ impl Weapon {
         }
     }
 
-    fn flight(self) -> f32 {
+    pub(crate) fn flight(self) -> f32 {
         match self {
             Self::Laser | Self::HeavyLaser | Self::Repeater => 0.28,
             Self::TwinLaser | Self::Railgun => 0.32,
@@ -150,7 +178,7 @@ impl Weapon {
         }
     }
 
-    fn charge(self) -> f32 {
+    pub(crate) fn charge(self) -> f32 {
         match self {
             Self::Plasma | Self::Ion | Self::FaunaLightning | Self::FaunaBioPlasma => 0.16,
             Self::Lance => 0.3,
@@ -181,7 +209,7 @@ impl Weapon {
         }
     }
 
-    fn barrels(self) -> usize {
+    pub(crate) fn barrels(self) -> usize {
         match self {
             Self::TwinLaser | Self::Broadside | Self::Siege | Self::FaunaLightning => 2,
             Self::Repeater => 3,
@@ -271,6 +299,71 @@ impl Weapon {
             _ => None,
         }
     }
+
+    /// The same charge envelope is sampled in both the schematic and cinematic views.
+    pub(crate) fn massive(self) -> bool {
+        matches!(
+            self,
+            Self::Solar
+                | Self::Siege
+                | Self::FaunaGravity
+                | Self::FaunaFire
+                | Self::FaunaExtinction
+        )
+    }
+
+    pub(crate) fn charge_radius(self, size: f32) -> f32 {
+        size * if self.massive() {
+            1.35
+        } else {
+            0.65
+        }
+    }
+
+    /// Charge ends at the saved launch, so a doomed shooter never fires after its death.
+    pub(crate) fn cinematic_charge_start(self, launch: f32, impact: f32) -> f32 {
+        launch - (impact - launch).max(0.0) * self.charge() / self.flight()
+    }
+
+    /// A penetrating hit uses the hull cue, without stacking the shield cue over it.
+    pub(crate) fn impact_cue(self, shot: &ShotReport) -> Option<PlayAudioMsg> {
+        if shot.missed {
+            Some(miss_cue())
+        } else if self == Self::Bomb && shot.killed {
+            Some(PlayAudioMsg::new("large explosion"))
+        } else if shot.hull_damage > 0 || shot.killed {
+            Some(hull_impact_cue())
+        } else if shot.shield_damage > 0 || shot.planetary_shield_damage > 0 {
+            Some(PlayAudioMsg::new("shield impact"))
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) fn hull_impact_cue() -> PlayAudioMsg {
+    PlayAudioMsg::new("short explosion").gain(HULL_IMPACT_VOLUME)
+}
+
+pub(crate) fn miss_cue() -> PlayAudioMsg {
+    PlayAudioMsg::new("missile miss").rate(1.45)
+}
+
+/// Final wreck blast follows the same brief secondary-explosion sequence in both views.
+pub(crate) fn wreck_cue(unit: Unit) -> (f32, PlayAudioMsg) {
+    let heavy = matches!(unit, Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun));
+    (
+        0.43 * if heavy {
+            1.5
+        } else {
+            1.0
+        },
+        PlayAudioMsg::new(if heavy || unit == Unit::planetary_shield() {
+            "large explosion"
+        } else {
+            "explosion"
+        }),
+    )
 }
 
 /// Creature weapon accents shared by combat playback and the short strategic-map encounter.
@@ -342,6 +435,134 @@ pub(crate) fn fauna_weapon_trail(
     }
 }
 
+/// Geometry shared by both combat renderers; progress never changes a recorded outcome.
+#[derive(Clone, Copy)]
+pub(crate) struct WeaponFlight {
+    pub weapon: Weapon,
+    pub origin: Vec3,
+    pub destination: Vec3,
+    pub size: f32,
+    pub lane: f32,
+}
+
+/// A leading tip, body center and dimensions sampled without a frame-history dependency.
+pub(crate) struct WeaponFlightSample {
+    pub position: Vec3,
+    pub center: Vec3,
+    pub direction: Vec3,
+    pub dimensions: Vec2,
+}
+
+impl WeaponFlight {
+    pub(crate) fn position(self, progress: f32) -> Vec3 {
+        let mut p = progress.clamp(0.0, 1.0);
+        if self.weapon == Weapon::Bomb {
+            p *= p;
+        }
+        let delta = self.destination - self.origin;
+        let normal = Vec3::new(-delta.y, delta.x, 0.).normalize_or_zero();
+        if self.weapon == Weapon::Repair {
+            if p < 0.25 {
+                return self.origin.lerp(self.destination, smooth(p * 4.));
+            }
+            if p > 0.8 {
+                return self.destination.lerp(self.origin, smooth((p - 0.8) * 5.));
+            }
+            let orbit = (p - 0.25) / 0.55;
+            let radius = (orbit * std::f32::consts::PI).sin() * self.size * 0.38;
+            return self.destination
+                + Vec3::new((orbit * TAU * 2.).cos(), (orbit * TAU * 2.).sin(), 0.) * radius;
+        }
+        let curve = match self.weapon {
+            Weapon::Bomb => self.size * (self.lane - 0.5) * 1.4,
+            Weapon::Missile => self.size * self.lane * MISSILE_CURVE_HEIGHT,
+            _ => 0.0,
+        };
+        self.origin.lerp(self.destination, p) + normal * (std::f32::consts::PI * p).sin() * curve
+    }
+
+    pub(crate) fn sample(self, progress: f32) -> WeaponFlightSample {
+        let position = self.position(progress);
+        let direction = position - self.position((progress - 0.02).max(0.0));
+        let (center, dimensions) = if let Some(width) = self.weapon.beam_width() {
+            (
+                (self.origin + position) * 0.5,
+                Vec2::new(self.origin.distance(position).max(0.01), self.size * width),
+            )
+        } else if self.weapon != Weapon::Repair {
+            let mut dimensions = self.weapon.projectile_size(self.size);
+            dimensions.x = dimensions.x.min(self.origin.distance(position)).max(0.01);
+            (position - direction.normalize_or_zero() * dimensions.x * 0.5, dimensions)
+        } else {
+            (position, self.weapon.projectile_size(self.size))
+        };
+        WeaponFlightSample {
+            position,
+            center,
+            direction,
+            dimensions,
+        }
+    }
+}
+
+/// Emits the same missile smoke, railgun trails, heavy-beam cores and creature accents.
+/// Schematic playback spawns particles; cinematic playback samples their lifetime analytically.
+pub(crate) fn weapon_trail(
+    flight: WeaponFlight,
+    elapsed: f32,
+    progress: f32,
+    mut emit: impl FnMut(WeaponTrail),
+) {
+    let position = flight.position(progress);
+    let size = flight.size;
+    let weapon = flight.weapon;
+    match weapon {
+        Weapon::Missile | Weapon::Bomb => {
+            emit(WeaponTrail::Glow(position, size * 0.18, GOLD.with_alpha(0.65), 0.22));
+            emit(WeaponTrail::Glow(
+                position,
+                size * 0.14,
+                Color::srgb(0.42, 0.47, 0.56).with_alpha(0.45),
+                0.48,
+            ));
+        },
+        Weapon::Repair if (0.25..0.8).contains(&progress) => {
+            emit(WeaponTrail::Beam(
+                position,
+                flight.destination,
+                size * 0.025,
+                MINT.with_alpha(0.7),
+                0.085,
+            ));
+            emit(WeaponTrail::Glow(flight.destination, size * 0.2, MINT.with_alpha(0.25), 0.12));
+        },
+        Weapon::Railgun | Weapon::Broadside => emit(WeaponTrail::Beam(
+            flight.position((progress - 0.2).max(0.0)),
+            position,
+            size * 0.025,
+            weapon.color().with_alpha(0.45),
+            0.12,
+        )),
+        Weapon::Solar | Weapon::Siege => emit(WeaponTrail::Glow(
+            position,
+            size * if weapon == Weapon::Siege {
+                0.22
+            } else {
+                0.45
+            },
+            weapon.color().with_alpha(0.6),
+            0.13,
+        )),
+        _ => fauna_weapon_trail(weapon, flight.origin, position, size, elapsed, progress, emit),
+    }
+}
+
+/// Particle opacity envelope shared by live entities and stateless movie sampling.
+pub(crate) fn particle_envelope(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    (progress * 18.0).min(1.0) * (1.0 - progress).powf(1.3)
+}
+
 /// One visible projectile or an aggregated representative salvo. Missiles and bombs use a larger
 /// bound than other weapons, while every recorded outcome is accumulated into the visible effects.
 #[derive(Component)]
@@ -378,34 +599,14 @@ struct IndividualImpact {
 }
 
 impl PendingImpact {
-    fn position(&self, progress: f32) -> Vec3 {
-        let mut p = progress.clamp(0.0, 1.0);
-        if self.weapon == Weapon::Bomb {
-            p *= p;
+    fn flight_path(&self) -> WeaponFlight {
+        WeaponFlight {
+            weapon: self.weapon,
+            origin: self.origin,
+            destination: self.destination,
+            size: self.size,
+            lane: self.lane,
         }
-        let delta = self.destination - self.origin;
-        let normal = Vec3::new(-delta.y, delta.x, 0.).normalize_or_zero();
-        if self.weapon == Weapon::Repair {
-            // Fly out, orbit the repair site, then return to the Repair Truck.
-            if p < 0.25 {
-                return self.origin.lerp(self.destination, smooth(p * 4.));
-            }
-            if p > 0.8 {
-                return self.destination.lerp(self.origin, smooth((p - 0.8) * 5.));
-            }
-            let orbit = (p - 0.25) / 0.55;
-            let radius = (orbit * std::f32::consts::PI).sin() * self.size * 0.38;
-            return self.destination
-                + Vec3::new((orbit * TAU * 2.).cos(), (orbit * TAU * 2.).sin(), 0.) * radius;
-        }
-        let curve = if self.weapon == Weapon::Bomb {
-            self.size * (self.lane - 0.5) * 1.4
-        } else if self.weapon == Weapon::Missile {
-            self.size * self.lane * MISSILE_CURVE_HEIGHT
-        } else {
-            0.
-        };
-        self.origin.lerp(self.destination, p) + normal * (std::f32::consts::PI * p).sin() * curve
     }
 }
 
@@ -533,6 +734,32 @@ pub struct EffectTextures {
 }
 
 impl EffectTextures {
+    /// Egui variants of the exact schematic masks, with alpha encoded for its blending mode.
+    pub(crate) fn cinematic_images(
+        images: &mut Assets<Image>,
+    ) -> [(&'static str, Handle<Image>); 5] {
+        let mut textures = Self::default();
+        textures.initialize(images);
+        [
+            ("combat fx glow", textures.glow),
+            ("combat fx ring", textures.ring),
+            ("combat fx shard", textures.shard),
+            ("combat fx beam", textures.beam),
+            ("combat fx missile", textures.missile),
+        ]
+        .map(|(name, handle)| {
+            if let Some(mut image) = images.get_mut(&handle) {
+                if let Some(pixels) = &mut image.data {
+                    for pixel in pixels.as_chunks_mut::<4>().0 {
+                        let alpha = pixel[3];
+                        pixel[..3].fill(alpha);
+                    }
+                }
+            }
+            (name, handle)
+        })
+    }
+
     pub(crate) fn initialize(&mut self, images: &mut Assets<Image>) {
         if self.ready {
             return;
@@ -1181,21 +1408,9 @@ pub fn run_combat_animations(
     }
     for (_, impact) in grouped {
         let color = impact.weapon.color();
-        let massive = matches!(
-            impact.weapon,
-            Weapon::Solar
-                | Weapon::Siege
-                | Weapon::FaunaGravity
-                | Weapon::FaunaFire
-                | Weapon::FaunaExtinction
-        );
+        let massive = impact.weapon.massive();
         if impact.weapon.charge() > 0. {
-            let radius = impact.size
-                * if massive {
-                    1.35
-                } else {
-                    0.65
-                };
+            let radius = impact.weapon.charge_radius(impact.size);
             painter.ring(impact.origin, radius, color.with_alpha(0.6), impact.delay);
             painter.glow(impact.origin, radius * 0.6, color, impact.delay);
             if massive {
@@ -1344,22 +1559,10 @@ pub fn run_combat_animations(
             }
         }
         let p = ((impact.elapsed - impact.delay) / impact.weapon.flight()).clamp(0., 1.);
-        let position = impact.position(p);
-        let direction = position - impact.position((p - 0.02).max(0.));
-        let (center, dimensions) = if let Some(width) = impact.weapon.beam_width() {
-            (
-                (impact.origin + position) * 0.5,
-                Vec2::new(impact.origin.distance(position).max(0.01), impact.size * width),
-            )
-        } else if impact.weapon != Weapon::Repair {
-            // The travelling point is the leading tip. Centering a projectile on
-            // it would draw its front half through and beyond the target.
-            let mut dimensions = impact.weapon.projectile_size(impact.size);
-            dimensions.x = dimensions.x.min(impact.origin.distance(position)).max(0.01);
-            (position - direction.normalize_or_zero() * dimensions.x * 0.5, dimensions)
-        } else {
-            (position, impact.weapon.projectile_size(impact.size))
-        };
+        let sample = impact.flight_path().sample(p);
+        let center = sample.center;
+        let dimensions = sample.dimensions;
+        let direction = sample.direction;
         transform.translation = Vec3::new(center.x, center.y, COMBAT_EXPLOSION_Z + 0.3);
         transform.rotation = Quat::from_rotation_z(direction.y.atan2(direction.x));
         transform.scale = dimensions.extend(1.);
@@ -1367,90 +1570,16 @@ pub fn run_combat_animations(
         impact.trail_clock += dt;
         if impact.trail_clock >= 0.035 && p < 1. {
             impact.trail_clock %= 0.035;
-            match impact.weapon {
-                Weapon::Missile | Weapon::Bomb => {
-                    painter.glow(position, impact.size * 0.18, GOLD.with_alpha(0.65), 0.22);
-                    painter.glow(
-                        position,
-                        impact.size * 0.14,
-                        Color::srgb(0.42, 0.47, 0.56).with_alpha(0.45),
-                        0.48,
-                    );
+            weapon_trail(impact.flight_path(), impact.elapsed, p, |trail| match trail {
+                WeaponTrail::Glow(at, size, color, life) => painter.glow(at, size, color, life),
+                WeaponTrail::Ring(at, size, color, life) => painter.ring(at, size, color, life),
+                WeaponTrail::Beam(from, to, width, color, life) => {
+                    painter.beam(from, to, width, color, life)
                 },
-                Weapon::Repair if (0.25..0.8).contains(&p) => {
-                    painter.beam(
-                        position,
-                        impact.destination,
-                        impact.size * 0.025,
-                        MINT.with_alpha(0.7),
-                        0.085,
-                    );
-                    painter.glow(
-                        impact.destination,
-                        impact.size * 0.2,
-                        MINT.with_alpha(0.25),
-                        0.12,
-                    );
+                WeaponTrail::Sparks(at, size, color, count) => {
+                    painter.sparks(at, size, color, count, false)
                 },
-                Weapon::Railgun | Weapon::Broadside => {
-                    painter.beam(
-                        impact.position((p - 0.2).max(0.)),
-                        position,
-                        impact.size * 0.025,
-                        impact.weapon.color().with_alpha(0.45),
-                        0.12,
-                    );
-                },
-                Weapon::Solar | Weapon::Siege => {
-                    painter.glow(
-                        position,
-                        impact.size
-                            * if impact.weapon == Weapon::Siege {
-                                0.22
-                            } else {
-                                0.45
-                            },
-                        impact.weapon.color().with_alpha(0.6),
-                        0.13,
-                    );
-                },
-                Weapon::Ion
-                | Weapon::FaunaSonic
-                | Weapon::FaunaLightning
-                | Weapon::FaunaBioPlasma
-                | Weapon::FaunaGravity
-                | Weapon::FaunaVoid
-                | Weapon::FaunaFire
-                | Weapon::FaunaExtinction => fauna_weapon_trail(
-                    impact.weapon,
-                    impact.origin,
-                    position,
-                    impact.size,
-                    impact.elapsed,
-                    p,
-                    |trail| match trail {
-                        WeaponTrail::Glow(at, size, color, life) => {
-                            painter.glow(at, size, color, life)
-                        },
-                        WeaponTrail::Ring(at, size, color, life) => {
-                            painter.ring(at, size, color, life)
-                        },
-                        WeaponTrail::Beam(from, to, width, color, life) => {
-                            painter.beam(from, to, width, color, life)
-                        },
-                        WeaponTrail::Sparks(at, size, color, count) => {
-                            painter.sparks(at, size, color, count, false)
-                        },
-                    },
-                ),
-                Weapon::Laser
-                | Weapon::HeavyLaser
-                | Weapon::TwinLaser
-                | Weapon::Repeater
-                | Weapon::Plasma
-                | Weapon::Lance
-                | Weapon::Repair => {},
-            }
+            });
         }
         if impact.weapon == Weapon::Repair && !impact.readout_shown && p >= REPAIR_READOUT_PROGRESS
         {
@@ -1519,11 +1648,7 @@ pub fn run_combat_animations(
         }
         if impact.missed {
             // A bright, quick fly-by distinguishes a clean miss from both launch and impact.
-            queue_combat_sound(
-                &mut audio,
-                &mut sound_cooldowns,
-                PlayAudioMsg::new("missile miss").rate(1.45),
-            );
+            queue_combat_sound(&mut audio, &mut sound_cooldowns, miss_cue());
             if impact.weapon == Weapon::Bomb {
                 painter.ring(impact.destination, impact.size * 0.55, GOLD.with_alpha(0.42), 0.45);
                 painter.sparks(impact.destination, impact.size * 0.35, GOLD, 5, false);
@@ -1713,9 +1838,7 @@ pub fn run_combat_animations(
         }
     }
     if hull_hit_sound {
-        let mut hull_impact = PlayAudioMsg::new("short explosion");
-        hull_impact.volume = HULL_IMPACT_VOLUME;
-        queue_combat_sound(&mut audio, &mut sound_cooldowns, hull_impact);
+        queue_combat_sound(&mut audio, &mut sound_cooldowns, hull_impact_cue());
     }
     if building_destroyed_sound {
         queue_combat_sound(&mut audio, &mut sound_cooldowns, PlayAudioMsg::new("large explosion"));
@@ -1864,11 +1987,7 @@ pub fn run_combat_animations(
                 painter.ring(wreck.origin, wreck.size * 2.4 * heavy, GOLD.with_alpha(0.65), 0.85);
                 painter.sparks(wreck.origin, wreck.size * heavy, GOLD, 18, true);
                 if wreck.audible {
-                    audio.write(PlayAudioMsg::new(if wreck.heavy || planetary_shield {
-                        "large explosion"
-                    } else {
-                        "explosion"
-                    }));
+                    audio.write(wreck_cue(wreck.unit).1);
                 }
             }
             wreck.stage += 1;
@@ -1946,7 +2065,7 @@ pub fn run_combat_animations(
             }
             painter.glow(ray.origin, ray.size * 1.7, GOLD, 2.1);
         }
-        if ray.stage == 1 && ray.elapsed >= 1.15 {
+        if ray.stage == 1 && ray.elapsed >= DEATH_RAY_FOCUS_AT {
             ray.stage = 2;
             for i in 0..8 {
                 let angle = i as f32 * TAU / 8.;
@@ -1958,19 +2077,13 @@ pub fn run_combat_animations(
             painter.glow(focus, ray.size * 0.9, Color::WHITE, 1.4);
             painter.ring(focus, ray.size * 1.8, GOLD, 1.2);
         }
-        if ray.stage == 2 && ray.elapsed >= 2.0 {
+        if ray.stage == 2 && ray.elapsed >= DEATH_RAY_DISCHARGE_AT {
             ray.stage = 3;
             // A broad heated envelope, dense energy column and white-hot core make
             // the discharge read as one sustained weapon instead of a quick tracer.
-            painter.sustained_beam(focus, ray.target, ray.size * 2.35, GOLD.with_alpha(0.38), 1.72);
-            painter.sustained_beam(focus, ray.target, ray.size * 1.05, GOLD, 1.72);
-            painter.sustained_beam(
-                focus,
-                ray.target,
-                ray.size * 0.32,
-                Color::srgb(1., 0.97, 0.78),
-                1.72,
-            );
+            for (width, color) in death_ray_beam_layers(ray.size) {
+                painter.sustained_beam(focus, ray.target, width, color, 1.72);
+            }
 
             // The surface absorbs several visible pulses before it gives way.
             painter.glow(ray.target, ray.size * 3.4, GOLD.with_alpha(0.8), 1.5);
@@ -2052,7 +2165,7 @@ pub fn run_combat_animations(
                 }
             }
         }
-        if ray.stage == 4 && ray.elapsed >= 3.7 {
+        if ray.stage == 4 && ray.elapsed >= DEATH_RAY_COLLAPSE_AT {
             ray.stage = 5;
             if !ray.destroys_planet {
                 painter.ring(ray.target, ray.size * 4., GOLD, 1.3);
@@ -2166,9 +2279,9 @@ pub fn run_combat_animations(
         let envelope = if planet_flash.is_some() {
             ((1. - p) / 0.6).min(1.)
         } else if particle.sustained {
-            (p * 28.).min(1.) * ((1. - p) / 0.22).min(1.)
+            sustained_envelope(p)
         } else {
-            (p * 18.).min(1.) * (1. - p).powf(1.3)
+            particle_envelope(p)
         };
         sprite.color = particle.color.with_alpha(particle.color.alpha() * envelope);
         if let (Some(frames), Some(atlas)) = (frames, sprite.texture_atlas.as_mut()) {

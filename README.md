@@ -166,8 +166,11 @@ the planet and the surviving attackers return to their origin.
 The battle selection panel offers **Schematic** (the default tactical replay) and
 **Cinematic**. Cinematic replays show one animated ship or defense per combatant,
 with overlapping weapon fire, shield impacts, repairs, explosions, and recorded
-withdrawals. Both views replay the same saved outcome. Use the on-screen pause and
-speed controls or Space and Left/Right; Close or Escape returns to battle selection.
+withdrawals. Both views replay the same saved outcome. Use Space to pause and
+Left/Right or the top-right settings gear to change speed. The adjacent sound icon
+provides mute and volume controls; scrolling during combat changes volume. Escape
+or **Exit combat** returns to battle selection; the cinematic outcome banner can
+also be clicked. Both views show the participating players and their fleet colors.
 The cinematic view has no round banners and stops on the recorded victory, defeat,
 or draw, including stalemates where ships survive on both sides.
 

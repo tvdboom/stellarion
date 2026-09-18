@@ -528,7 +528,7 @@ fn every_weapon_ends_at_its_leading_tip_without_overshooting_the_target() {
                     .unwrap();
                 let tip =
                     transform.translation + transform.rotation * Vec3::X * transform.scale.x * 0.5;
-                let expected = impact.position(progress);
+                let expected = impact.flight_path().position(progress);
                 assert!(tip.truncate().distance(expected.truncate()) < 0.001, "{kind:?}");
                 assert!(
                     impact.destination.truncate().abs().cmple(Vec2::splat(50.0)).all(),
@@ -699,7 +699,7 @@ fn missiles_use_a_slower_shallower_flight() {
         readout_shown: false,
         trail_clock: 0.,
     };
-    let midpoint = impact.position(0.5);
+    let midpoint = impact.flight_path().position(0.5);
     let direct_midpoint = impact.origin.lerp(impact.destination, 0.5);
     assert!(midpoint.distance(direct_midpoint) <= impact.size * 0.6);
 }
@@ -1237,5 +1237,64 @@ fn render_combat_effects_preview() {
     }
     for file in ["frame-20.png", "frame-82.png", "death-ray-95.png", "death-ray-238.png"] {
         assert!(std::path::Path::new("target/combat-preview").join(file).exists());
+    }
+}
+
+#[test]
+fn shared_flight_keeps_curved_missiles_and_accelerating_bombs_on_the_recorded_target() {
+    let missile = WeaponFlight {
+        weapon: Weapon::Missile,
+        origin: Vec3::ZERO,
+        destination: Vec3::X * 400.0,
+        size: 100.0,
+        lane: 1.0,
+    };
+    let mid = missile.position(0.5);
+    assert!((mid.x - 200.0).abs() < 0.001);
+    assert!((mid.y - 58.0).abs() < 0.001, "missiles preserve their arcing trajectory");
+    let bomb = WeaponFlight {
+        weapon: Weapon::Bomb,
+        ..missile
+    };
+    assert!((bomb.position(0.5).x - 100.0).abs() < 0.001, "bombs accelerate into the target");
+    for flight in [
+        missile,
+        bomb,
+        WeaponFlight {
+            weapon: Weapon::Railgun,
+            ..missile
+        },
+    ] {
+        assert!(flight.position(0.0).distance(flight.origin) < 0.001);
+        assert!(flight.position(1.0).distance(flight.destination) < 0.001);
+        let sample = flight.sample(1.0);
+        let nose = sample.center + sample.direction.normalize_or_zero() * sample.dimensions.x * 0.5;
+        assert!(nose.distance(flight.destination) < 0.001, "body never crosses beyond the impact");
+    }
+    let charge_start = Weapon::Solar.cinematic_charge_start(2.0, 3.24);
+    assert!((charge_start - 0.84).abs() < 0.001, "charging must end at the saved launch");
+}
+
+#[test]
+fn cinematic_masks_have_identical_schematic_alpha_and_premultiplied_edges() {
+    let mut source = Assets::<Image>::default();
+    let mut masks = EffectTextures::default();
+    masks.initialize(&mut source);
+    let original = [masks.glow, masks.ring, masks.shard, masks.beam, masks.missile];
+    let mut destination = Assets::<Image>::default();
+    let movie = EffectTextures::cinematic_images(&mut destination);
+    assert_eq!(destination.len(), 5);
+    for (source_handle, (_, destination_handle)) in original.into_iter().zip(movie) {
+        let source = source.get(&source_handle).unwrap();
+        let movie = destination.get(&destination_handle).unwrap();
+        assert_eq!(source.size(), movie.size());
+        let source_pixels = source.data.as_ref().unwrap().as_chunks::<4>().0;
+        let movie_pixels = movie.data.as_ref().unwrap().as_chunks::<4>().0;
+        assert!(source_pixels.iter().any(|pixel| pixel[3] > 0));
+        assert!(source_pixels.iter().any(|pixel| pixel[3] == 0));
+        for (original, premultiplied) in source_pixels.iter().zip(movie_pixels) {
+            assert_eq!(premultiplied[3], original[3]);
+            assert_eq!(premultiplied[..3], [original[3]; 3]);
+        }
     }
 }

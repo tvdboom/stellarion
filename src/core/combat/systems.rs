@@ -830,6 +830,38 @@ fn spawn_combat_identity(
         });
 }
 
+/// Participant order, names, colors and strength weights shared by both replay views.
+pub(super) fn combat_identity_participants(
+    report: &MissionReport,
+    side: &Side,
+    session: &MultiplayerSession,
+) -> Vec<(String, Color, u128)> {
+    if *side == Side::Defender && report.is_space_fauna_encounter() {
+        return vec![(
+            report.planet.name.clone(),
+            Color::srgb_u8(190, 198, 210),
+            combat_fleet_strength(&report.planet.army.combined()),
+        )];
+    }
+    let players = match side {
+        Side::Attacker => report.attacker_players(),
+        Side::Defender => report.defender_players(),
+    };
+    players
+        .into_iter()
+        .map(|id| {
+            (
+                session
+                    .player_name(id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {id}")),
+                session.player_color(id).color(),
+                report.participant_fleet_strength(side, id),
+            )
+        })
+        .collect()
+}
+
 /// Fans non-zero salvage gains above the surviving Crawler card. Each pickup owns its icon,
 /// amount, and motion so the recovery reads as part of combat instead of a result-screen banner.
 fn spawn_salvage_pickups(
@@ -1244,42 +1276,8 @@ pub fn setup_combat(
     let attack_c = session.player_color(attacker_id).color();
     let defend_c =
         defender_id.map_or(Color::srgb_u8(150, 158, 170), |id| session.player_color(id).color());
-    let attackers = report
-        .attacker_players()
-        .into_iter()
-        .map(|id| {
-            (
-                session
-                    .player_name(id)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Player {id}")),
-                session.player_color(id).color(),
-                report.participant_fleet_strength(&Side::Attacker, id),
-            )
-        })
-        .collect::<Vec<_>>();
-    let defenders = if report.is_space_fauna_encounter() {
-        vec![(
-            report.planet.name.clone(),
-            Color::srgb_u8(190, 198, 210),
-            combat_fleet_strength(&report.planet.army.combined()),
-        )]
-    } else {
-        report
-            .defender_players()
-            .into_iter()
-            .map(|id| {
-                (
-                    session
-                        .player_name(id)
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!("Player {id}")),
-                    session.player_color(id).color(),
-                    report.participant_fleet_strength(&Side::Defender, id),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
+    let attackers = combat_identity_participants(report, &Side::Attacker, &session);
+    let defenders = combat_identity_participants(report, &Side::Defender, &session);
 
     spawn_combat_identity(
         &mut commands,

@@ -2,16 +2,16 @@
 
 use std::f32::consts::{PI, TAU};
 
-use bevy::prelude::Resource;
+use bevy::prelude::{Alpha, Color, Resource, Vec3 as BevyVec3};
 use bevy_egui::egui::{
     epaint::{Mesh, Vertex},
     pos2, vec2, Color32, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
 };
 
 use super::cinematic_timeline::{CinematicActor, CinematicShot, CinematicTimeline};
+use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
 use super::report::{MissionReport, Side};
 use crate::core::ui::utils::ImageIds;
-use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
@@ -29,6 +29,7 @@ pub(crate) struct CinematicPlayback {
     visuals: Vec<ActorVisual>,
     draw_order: Vec<usize>,
     maximum_shot_lifetime: f32,
+    maximum_charge_lead: f32,
     repair_order: Vec<usize>,
     maximum_repair_lifetime: f32,
     planet_image: String,
@@ -139,7 +140,18 @@ impl CinematicPlayback {
         let maximum_shot_lifetime = timeline
             .shots
             .iter()
-            .map(|shot| shot.impact_at - shot.launch_at)
+            .map(|shot| {
+                let weapon = Weapon::for_shot(timeline.actors[shot.source].unit, &shot.outcome);
+                shot.impact_at - shot.launch_at + shot_tail(weapon, shot)
+            })
+            .fold(0.0_f32, f32::max);
+        let maximum_charge_lead = timeline
+            .shots
+            .iter()
+            .map(|shot| {
+                let weapon = Weapon::for_shot(timeline.actors[shot.source].unit, &shot.outcome);
+                shot.launch_at - weapon.cinematic_charge_start(shot.launch_at, shot.impact_at)
+            })
             .fold(0.0_f32, f32::max);
         let mut repair_order: Vec<_> = (0..timeline.repairs.len()).collect();
         repair_order.sort_by(|a, b| {
@@ -156,6 +168,7 @@ impl CinematicPlayback {
             visuals,
             draw_order,
             maximum_shot_lifetime,
+            maximum_charge_lead,
             repair_order,
             maximum_repair_lifetime,
             planet_image: report.planet.image(),
@@ -172,10 +185,6 @@ impl CinematicPlayback {
 
     pub fn is_finished(&self) -> bool {
         self.elapsed >= self.timeline.duration
-    }
-
-    pub fn restart(&mut self) {
-        self.elapsed = 0.0;
     }
 
     /// Records loaded image dimensions once; native and browser textures share the same layout.
@@ -253,14 +262,21 @@ impl CinematicPlayback {
             }
         }
         // The schedule overlaps opposing salvos without changing their recorded causal order.
-        let first_shot = self.timeline.shots.partition_point(|shot| {
-            shot.launch_at < self.elapsed - self.maximum_shot_lifetime - 0.75
-        });
-        let last_shot = self.timeline.shots.partition_point(|shot| shot.launch_at <= self.elapsed);
+        let first_shot = self
+            .timeline
+            .shots
+            .partition_point(|shot| shot.launch_at < self.elapsed - self.maximum_shot_lifetime);
+        let last_shot = self
+            .timeline
+            .shots
+            .partition_point(|shot| shot.launch_at <= self.elapsed + self.maximum_charge_lead);
         for (offset, shot) in self.timeline.shots[first_shot..last_shot].iter().enumerate() {
             let index = first_shot + offset;
-            if self.elapsed >= shot.launch_at && self.elapsed <= shot.impact_at + 0.75 {
-                self.paint_shot(&painter, scene, index, shot);
+            let weapon = Weapon::for_shot(self.timeline.actors[shot.source].unit, &shot.outcome);
+            if self.elapsed >= weapon.cinematic_charge_start(shot.launch_at, shot.impact_at)
+                && self.elapsed <= shot.impact_at + shot_tail(weapon, shot)
+            {
+                self.paint_shot(&painter, scene, images, index, shot);
             }
         }
         for (index, actor) in self.timeline.actors.iter().enumerate() {
@@ -417,36 +433,62 @@ impl CinematicPlayback {
         }
         let shield = self.timeline.planetary_shield_at(self.elapsed);
         if shield > 0 {
-            let ratio = shield as f32 / self.timeline.initial_planetary_shield.max(1) as f32;
-            let pulse = 0.65 + (self.elapsed * 1.8).sin() * 0.12;
+            let ratio = (shield as f32 / self.timeline.initial_planetary_shield.max(1) as f32)
+                .clamp(0.0, 1.0);
+            // The strategic map's filament artwork supplies the same electromagnetic field.
+            // Its three-second breath and two slow counterflows are sampled from the movie
+            // clock, so pausing, speeding up and replaying also control the entire shield.
+            let pulse = 0.5 - 0.5 * (TAU * self.elapsed / 3.0).cos();
+            let strength = (0.25 + ratio * 0.75) * (1.0 - destruction);
             let color = Color32::from_rgb(62, 171, 250);
             painter.circle_filled(
                 scene.planet,
                 radius * 1.065,
-                alpha(color, 0.045 + ratio * 0.045),
+                alpha(color, strength * (0.025 + pulse * 0.035)),
             );
-            painter.circle_stroke(
-                scene.planet,
-                radius * 1.065,
-                Stroke::new(1.8 * scene.scale, alpha(color, pulse * (0.2 + ratio * 0.55))),
-            );
-            // Latitude arcs read as a curved energy layer rather than a flat circle around a card.
-            for i in 0..5 {
-                let offset = (i as f32 - 2.0) * 0.30;
+            if let Some(texture) = images.0.get("planetary shield marker") {
+                for (rotation, opacity, diameter) in [
+                    (self.elapsed * 0.14, 0.32 + pulse * 0.48, 2.38),
+                    (-self.elapsed * 0.09 + 1.8, 0.12 + (1.0 - pulse) * 0.16, 2.34),
+                ] {
+                    rotated_image(
+                        painter,
+                        *texture,
+                        scene.planet,
+                        Vec2::splat(radius * diameter),
+                        rotation,
+                        false,
+                        FULL_UV,
+                        alpha(color, strength * opacity),
+                    );
+                }
+            }
+            // Energy sweeps travel across the near hemisphere, fading at both poles rather
+            // than snapping back. The delicate surface filaments leave turrets readable.
+            for i in 0..6 {
+                let phase = (self.elapsed * 0.11 + i as f32 / 6.0).fract();
+                let offset = phase * 2.0 - 1.0;
                 let width = radius * (1.0 - offset * offset).sqrt() * 1.065;
                 let points: Vec<_> = (0..=36)
                     .map(|step| {
                         let angle = PI + step as f32 / 36.0 * PI;
+                        let ripple = (angle * 12.0 + self.elapsed * 2.2 + i as f32).sin()
+                            * radius
+                            * 0.007
+                            * (angle - PI).sin();
                         scene.planet
                             + vec2(
                                 angle.cos() * width,
-                                angle.sin() * width * 0.28 + offset * radius,
+                                angle.sin() * width * 0.28 + offset * radius + ripple,
                             )
                     })
                     .collect();
                 painter.add(Shape::line(
                     points,
-                    Stroke::new(0.65 * scene.scale, alpha(color, ratio * 0.14)),
+                    Stroke::new(
+                        0.8 * scene.scale,
+                        alpha(color, strength * (phase * PI).sin() * (0.10 + pulse * 0.12)),
+                    ),
                 ));
             }
         }
@@ -680,54 +722,174 @@ impl CinematicPlayback {
         (start, end, target.map_or(35.0 * scene.scale, |pose| pose.size))
     }
 
-    fn paint_shot(&self, painter: &Painter, scene: Scene, index: usize, shot: &CinematicShot) {
+    fn paint_shot(
+        &self,
+        painter: &Painter,
+        scene: Scene,
+        images: &ImageIds,
+        index: usize,
+        shot: &CinematicShot,
+    ) {
         let (start, end, target_size) = self.shot_geometry(scene, index, shot);
         let source = &self.timeline.actors[shot.source];
-        let weapon = Weapon::for_unit(source.unit);
-        let color = weapon.color(source.side == Side::Defender);
-        let flight = (shot.impact_at - shot.launch_at).max(0.01);
-        let age = self.elapsed - shot.launch_at;
-        let progress = (age / flight).clamp(0.0, 1.0);
-        if age <= flight {
-            let strength = (age / 0.08).min(1.0);
-            let head = start.lerp(end, progress);
-            let tail = start.lerp(end, (progress - 0.18).max(0.0));
-            if weapon == Weapon::Beam {
-                let beam_strength = strength * (1.0 - progress * 0.4);
-                glow_line(painter, start, head, 2.0 * scene.scale, color, beam_strength);
-                glow_line(painter, start, head, 0.75 * scene.scale, Color32::WHITE, beam_strength);
-            } else if weapon == Weapon::Missile {
-                let curve = vec2(0.0, -28.0 * scene.scale * (progress * PI).sin());
-                let head = head + curve;
-                glow_line(painter, tail + curve * 0.8, head, 2.4 * scene.scale, GOLD, strength);
-                painter.circle_filled(head, 2.1 * scene.scale, Color32::from_rgb(255, 246, 213));
-                for i in 1..=5 {
-                    let behind = (progress - i as f32 * 0.027).max(0.0);
-                    let point = start.lerp(end, behind)
-                        + vec2(0.0, -28.0 * scene.scale * (behind * PI).sin());
-                    painter.circle_filled(
+        let weapon = Weapon::for_shot(source.unit, &shot.outcome);
+        let color = weapon_color(weapon.color());
+        let release = shot.launch_at;
+        let charge_start = weapon.cinematic_charge_start(shot.launch_at, shot.impact_at);
+        let stretch = ((shot.impact_at - release) / weapon.flight()).max(0.001);
+        let age = (self.elapsed - release) / stretch;
+        let progress = (age / weapon.flight()).clamp(0.0, 1.0);
+        // Physical size is shared across a salvo, never scaled by damage or faction.
+        let source_pose = self.actor_pose(scene, shot.source, shot.launch_at);
+        let size = (source_pose.size * 0.55).clamp(26.0 * scene.scale, 100.0 * scene.scale);
+        let flight = WeaponFlight {
+            weapon,
+            origin: BevyVec3::new(start.x, start.y, 0.0),
+            destination: BevyVec3::new(end.x, end.y, 0.0),
+            size,
+            lane: (index % 3) as f32 - 1.0,
+        };
+        if self.elapsed < release && weapon.charge() > 0.0 {
+            // The charging field follows its ship; the released projectile keeps its saved pose.
+            let charging_pose = self.actor_pose(scene, shot.source, self.elapsed);
+            let charging_muzzle = charging_pose.center
+                + (end - charging_pose.center).normalized() * charging_pose.size * 0.23;
+            let charging_origin = BevyVec3::new(charging_muzzle.x, charging_muzzle.y, 0.0);
+            let charged =
+                ((self.elapsed - charge_start) / (release - charge_start)).clamp(0.0, 1.0);
+            let radius = weapon.charge_radius(size);
+            paint_trail(
+                painter,
+                images,
+                WeaponTrail::Ring(charging_origin, radius, weapon.color().with_alpha(0.6), 1.0),
+                charged,
+                index as u32,
+                scene.scale,
+            );
+            paint_trail(
+                painter,
+                images,
+                WeaponTrail::Glow(charging_origin, radius * 0.6, weapon.color(), 1.0),
+                charged,
+                index as u32,
+                scene.scale,
+            );
+            if weapon.massive() {
+                for spark in 0..8 {
+                    let angle = spark as f32 * TAU / 8.0;
+                    let point =
+                        charging_muzzle + Vec2::angled(angle) * radius * 0.5 * (1.0 - charged);
+                    paint_effect_sprite(
+                        painter,
+                        images,
+                        "combat fx glow",
                         point,
-                        (i as f32 * 0.65 + 0.7) * scene.scale,
-                        Color32::from_rgba_unmultiplied(
-                            128,
-                            153,
-                            177,
-                            (22.0 * (1.0 - i as f32 / 6.0)) as u8,
-                        ),
+                        Vec2::splat(size * (0.07 + 0.05 * smooth(charged))),
+                        0.0,
+                        weapon_color(weapon.color().with_alpha(particle_envelope(charged))),
                     );
                 }
-            } else {
-                let width = if weapon == Weapon::Plasma {
-                    3.7
-                } else {
-                    1.7
-                } * scene.scale;
-                glow_line(painter, tail, head, width, color, strength);
-                glow(painter, head, width * 3.0, color, 0.35);
-                painter.circle_filled(head, width * 0.55, Color32::WHITE);
             }
-            let flash = (1.0 - age / 0.18).clamp(0.0, 1.0);
-            glow(painter, start, 19.0 * scene.scale, color, flash);
+            if weapon == Weapon::FaunaExtinction {
+                for radius in [0.7, 1.1, 1.55] {
+                    paint_trail(
+                        painter,
+                        images,
+                        WeaponTrail::Ring(
+                            charging_origin,
+                            size * radius,
+                            weapon.color().with_alpha(0.7),
+                            1.0,
+                        ),
+                        charged,
+                        index as u32,
+                        scene.scale,
+                    );
+                }
+            }
+        }
+        if age >= 0.0 {
+            if self.elapsed < shot.impact_at {
+                paint_weapon_body(painter, images, flight, progress, scene.scale);
+            }
+            if age < 0.18 {
+                paint_trail(
+                    painter,
+                    images,
+                    WeaponTrail::Glow(flight.origin, size * 0.35, weapon.color(), 0.18),
+                    age,
+                    index as u32,
+                    scene.scale,
+                );
+            }
+            // Replay a bounded history of the same 35ms trail emissions as the schematic.
+            // Emission times are analytical, so pausing, speed changes and seeking are exact.
+            let last = (age.min(weapon.flight()) / 0.035).floor() as usize;
+            let first = ((age - 0.48).max(0.0) / 0.035).floor() as usize;
+            for step in first..=last {
+                let emitted = step as f32 * 0.035;
+                if emitted >= weapon.flight() {
+                    continue;
+                }
+                weapon_trail(
+                    flight,
+                    weapon.charge() + emitted,
+                    emitted / weapon.flight(),
+                    |trail| {
+                        paint_trail(
+                            painter,
+                            images,
+                            trail,
+                            age - emitted,
+                            index as u32,
+                            scene.scale,
+                        );
+                    },
+                );
+            }
+            if self.elapsed >= shot.impact_at {
+                if let Some(width) = weapon.beam_width() {
+                    let tail_age = (self.elapsed - shot.impact_at) / stretch;
+                    paint_trail(
+                        painter,
+                        images,
+                        WeaponTrail::Beam(
+                            flight.origin,
+                            flight.destination,
+                            size * width,
+                            weapon.color().with_alpha(0.7),
+                            0.22,
+                        ),
+                        tail_age,
+                        index as u32,
+                        scene.scale,
+                    );
+                    let direction = (end - start).normalized();
+                    let normal = vec2(-direction.y, direction.x);
+                    for barrel in 0..weapon.barrels() {
+                        let offset = normal
+                            * (barrel as f32 - (weapon.barrels() - 1) as f32 * 0.5)
+                            * size
+                            * width
+                            * 0.55;
+                        let shift = BevyVec3::new(offset.x, offset.y, 0.0);
+                        paint_trail(
+                            painter,
+                            images,
+                            WeaponTrail::Beam(
+                                flight.origin + shift,
+                                flight.destination + shift,
+                                size * width * 0.18,
+                                Color::WHITE.with_alpha(0.85),
+                                0.18,
+                            ),
+                            tail_age,
+                            index as u32,
+                            scene.scale,
+                        );
+                    }
+                }
+            }
         }
         let impact_age = self.elapsed - shot.impact_at;
         if !(0.0..0.75).contains(&impact_age) {
@@ -797,20 +959,130 @@ impl CinematicPlayback {
                 / (attack.end_at - attack.start_at).max(0.1))
             .clamp(0.0, 1.0);
             if self.elapsed < attack.end_at {
-                let color = Color32::from_rgb(200, 141, 255);
-                glow(painter, source.center, source.size * progress * 0.8, color, 0.45);
-                if progress > 0.25 {
-                    let strength = ((progress - 0.25) * 4.0).min(1.0);
-                    glow_line(painter, source.center, target, 8.0 * scene.scale, color, strength);
-                    glow_line(
+                use super::effects::{
+                    death_ray_beam_layers, sustained_envelope, DEATH_RAY_COLLAPSE_AT,
+                    DEATH_RAY_DISCHARGE_AT, DEATH_RAY_FOCUS_AT,
+                };
+                // Sample the schematic War Sun charge, converging emitters and sustained
+                // discharge inside this report's interval. The recorded impact still decides
+                // whether the world is destroyed; there is no new random roll here.
+                let age = progress * DEATH_RAY_COLLAPSE_AT;
+                let size = source.size * 0.30;
+                let focus = source.center.lerp(target, 0.22);
+                let layers = death_ray_beam_layers(size);
+                let gold = weapon_color(layers[1].1);
+                let sprite = |key: &str, center, dimensions, angle, color, opacity| {
+                    paint_effect_sprite(
                         painter,
-                        source.center,
-                        target,
-                        2.0 * scene.scale,
-                        Color32::WHITE,
-                        strength,
+                        images,
+                        key,
+                        center,
+                        dimensions,
+                        angle,
+                        alpha(color, opacity),
                     );
-                    glow(painter, target, scene.planet_radius * 0.6, GOLD, strength * 0.7);
+                };
+                let beam = |from: Pos2, to: Pos2, width, color, opacity| {
+                    let delta = to - from;
+                    sprite(
+                        "combat fx beam",
+                        from.lerp(to, 0.5),
+                        vec2(delta.length(), width),
+                        delta.y.atan2(delta.x),
+                        color,
+                        opacity,
+                    );
+                };
+                if age < 1.65 {
+                    let p = age / 1.65;
+                    for spark in 0..28 {
+                        let offset = Vec2::angled(spark as f32 * TAU / 28.0) * size * 2.2;
+                        sprite(
+                            "combat fx glow",
+                            source.center + offset * (1.0 - p),
+                            Vec2::splat(size * (0.045 + 0.135 * smooth(p))),
+                            0.0,
+                            gold,
+                            particle_envelope(p),
+                        );
+                    }
+                }
+                if age < 1.9 {
+                    let p = age / 1.9;
+                    for radius in [1.2, 1.8, 2.4] {
+                        sprite(
+                            "combat fx ring",
+                            source.center,
+                            Vec2::splat(size * (radius + (0.15 - radius) * smooth(p))),
+                            radius * age,
+                            gold,
+                            particle_envelope(p) * 0.6,
+                        );
+                    }
+                }
+                if age < 2.1 {
+                    let p = age / 2.1;
+                    sprite(
+                        "combat fx glow",
+                        source.center,
+                        Vec2::splat(size * 1.7 * (1.0 + 0.8 * smooth(p))),
+                        0.0,
+                        gold,
+                        particle_envelope(p),
+                    );
+                }
+                let focus_age = age - DEATH_RAY_FOCUS_AT;
+                if (0.0..1.6).contains(&focus_age) {
+                    let strength = particle_envelope(focus_age / 1.6);
+                    let width_scale = 1.0 - 0.6 * smooth(focus_age / 1.6);
+                    for emitter in 0..8 {
+                        let origin =
+                            source.center + Vec2::angled(emitter as f32 * TAU / 8.0) * size * 0.48;
+                        beam(origin, focus, size * 0.07 * width_scale, gold, strength);
+                        beam(origin, focus, size * 0.018 * width_scale, Color32::WHITE, strength);
+                    }
+                    for (key, extent, lifetime, color) in [
+                        ("combat fx glow", 0.9, 1.4, Color32::WHITE),
+                        ("combat fx ring", 1.8, 1.2, gold),
+                    ] {
+                        let p = (focus_age / lifetime).clamp(0.0, 1.0);
+                        let scale = if key == "combat fx ring" {
+                            0.2 + 0.8 * smooth(p)
+                        } else {
+                            1.0 + 0.8 * smooth(p)
+                        };
+                        sprite(
+                            key,
+                            focus,
+                            Vec2::splat(size * extent * scale),
+                            0.0,
+                            color,
+                            particle_envelope(p),
+                        );
+                    }
+                }
+                let discharge_age = age - DEATH_RAY_DISCHARGE_AT;
+                if discharge_age >= 0.0 {
+                    let discharge_progress = (discharge_age / 1.72).clamp(0.0, 1.0);
+                    let strength = sustained_envelope(discharge_progress);
+                    for (width, color) in layers {
+                        beam(
+                            focus,
+                            target,
+                            width * (1.0 - 0.6 * smooth(discharge_progress)),
+                            weapon_color(color),
+                            strength,
+                        );
+                    }
+                    let p = (discharge_age / 1.5).clamp(0.0, 1.0);
+                    sprite(
+                        "combat fx glow",
+                        target,
+                        Vec2::splat(size * 3.4 * (1.0 + 0.8 * smooth(p))),
+                        0.0,
+                        gold,
+                        particle_envelope(p) * 0.8,
+                    );
                 }
             } else if attack.destroyed {
                 explosion(
@@ -910,40 +1182,179 @@ fn sprite_rotation(unit: Unit) -> f32 {
     degrees.to_radians()
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Weapon {
-    Bolt,
-    Beam,
-    Missile,
-    Plasma,
+/// Stretched trajectories retain their last smoke/beam particles after their exact impact.
+fn shot_tail(weapon: Weapon, shot: &CinematicShot) -> f32 {
+    (0.48 * (shot.impact_at - shot.launch_at) / weapon.flight()).max(0.75)
 }
 
-impl Weapon {
-    fn for_unit(unit: Unit) -> Self {
-        match unit {
-            Unit::Defense(
-                Defense::RocketLauncher
-                | Defense::AntiballisticMissile
-                | Defense::InterplanetaryMissile,
-            )
-            | Unit::Ship(Ship::Bomber) => Self::Missile,
-            Unit::Defense(Defense::LightLaser | Defense::HeavyLaser | Defense::GaussCannon)
-            | Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun)
-            | Unit::Building(Building::OrbitalRailgun) => Self::Beam,
-            Unit::Defense(Defense::PlasmaTurret | Defense::IonCannon) | Unit::Fauna(_) => {
-                Self::Plasma
-            },
-            _ => Self::Bolt,
-        }
-    }
+/// Color and alpha are shared with the schematic weapon palette, independent of faction.
+fn weapon_color(color: Color) -> Color32 {
+    let color = color.to_srgba();
+    Color32::from_rgba_unmultiplied(
+        (color.red * 255.0).round() as u8,
+        (color.green * 255.0).round() as u8,
+        (color.blue * 255.0).round() as u8,
+        (color.alpha * 255.0).round() as u8,
+    )
+}
 
-    fn color(self, defender: bool) -> Color32 {
-        match self {
-            Self::Missile => GOLD,
-            Self::Plasma => Color32::from_rgb(174, 130, 255),
-            Self::Beam | Self::Bolt if defender => Color32::from_rgb(255, 111, 86),
-            Self::Beam | Self::Bolt => BLUE,
+#[allow(clippy::too_many_arguments)]
+fn paint_effect_sprite(
+    painter: &Painter,
+    images: &ImageIds,
+    key: &str,
+    center: Pos2,
+    size: Vec2,
+    angle: f32,
+    color: Color32,
+) {
+    if let Some(texture) = images.0.get(key) {
+        rotated_image(painter, *texture, center, size, angle, false, FULL_UV, color);
+    }
+}
+
+fn paint_weapon_body(
+    painter: &Painter,
+    images: &ImageIds,
+    flight: WeaponFlight,
+    progress: f32,
+    _scale: f32,
+) {
+    let sample = flight.sample(progress);
+    if sample.position.distance_squared(flight.origin) < 0.0001 {
+        return;
+    }
+    let center = pos2(sample.center.x, sample.center.y);
+    let size = vec2(sample.dimensions.x, sample.dimensions.y);
+    let angle = sample.direction.y.atan2(sample.direction.x);
+    let mask = match flight.weapon {
+        Weapon::Missile | Weapon::Bomb => "combat fx missile",
+        Weapon::Repair => "combat fx glow",
+        _ => "combat fx beam",
+    };
+    paint_effect_sprite(
+        painter,
+        images,
+        mask,
+        center,
+        size,
+        angle,
+        weapon_color(flight.weapon.color().with_alpha(0.6)),
+    );
+    let physical = matches!(flight.weapon, Weapon::Missile | Weapon::Bomb | Weapon::Repair);
+    for barrel in 0..flight.weapon.barrels() {
+        let offset = (barrel as f32 - (flight.weapon.barrels() - 1) as f32 * 0.5) * 0.55;
+        let barrel_center = center + rotate(vec2(0.0, offset * size.y), angle);
+        if flight.weapon.barrels() > 1 {
+            paint_effect_sprite(
+                painter,
+                images,
+                "combat fx beam",
+                barrel_center,
+                size * vec2(1.0, 0.43),
+                angle,
+                weapon_color(flight.weapon.color()),
+            );
         }
+        paint_effect_sprite(
+            painter,
+            images,
+            mask,
+            barrel_center,
+            size * vec2(
+                0.96,
+                if physical {
+                    0.5
+                } else {
+                    0.18
+                },
+            ),
+            angle,
+            if flight.weapon == Weapon::Repair {
+                weapon_color(flight.weapon.color())
+            } else {
+                Color32::WHITE
+            },
+        );
+    }
+}
+
+/// Samples the exact schematic particle mask, growth, fade and spark motion at a movie age.
+fn paint_trail(
+    painter: &Painter,
+    images: &ImageIds,
+    trail: WeaponTrail,
+    age: f32,
+    _seed: u32,
+    _scale: f32,
+) {
+    let point = |position: BevyVec3| pos2(position.x, position.y);
+    match trail {
+        WeaponTrail::Glow(at, size, color, life) | WeaponTrail::Ring(at, size, color, life) => {
+            if !(0.0..life).contains(&age) {
+                return;
+            }
+            let p = age / life;
+            let ring = matches!(trail, WeaponTrail::Ring(..));
+            let diameter = size
+                * if ring {
+                    0.2 + 0.8 * smooth(p)
+                } else {
+                    1.0 + 0.8 * smooth(p)
+                };
+            paint_effect_sprite(
+                painter,
+                images,
+                if ring {
+                    "combat fx ring"
+                } else {
+                    "combat fx glow"
+                },
+                point(at),
+                Vec2::splat(diameter),
+                0.0,
+                weapon_color(color.with_alpha(color.to_srgba().alpha * particle_envelope(p))),
+            );
+        },
+        WeaponTrail::Beam(from, to, width, color, life) => {
+            if !(0.0..life).contains(&age) {
+                return;
+            }
+            let p = age / life;
+            let delta = to - from;
+            paint_effect_sprite(
+                painter,
+                images,
+                "combat fx beam",
+                point((from + to) * 0.5),
+                vec2(delta.length(), width * (1.0 - 0.6 * smooth(p))),
+                delta.y.atan2(delta.x),
+                weapon_color(color.with_alpha(color.to_srgba().alpha * particle_envelope(p))),
+            );
+        },
+        WeaponTrail::Sparks(at, size, color, count) => {
+            let life = 0.42;
+            if !(0.0..life).contains(&age) {
+                return;
+            }
+            let p = age / life;
+            for spark in 0..count {
+                let angle = spark as f32 * 2.399_963;
+                let direction = vec2(angle.cos(), angle.sin());
+                let center = point(at) + direction * size * (0.5 + (spark % 5) as f32 * 0.17) * age;
+                let start = vec2(size * 0.035, size * 0.018);
+                let dimensions = start + (Vec2::splat(size * 0.008) - start) * smooth(p);
+                paint_effect_sprite(
+                    painter,
+                    images,
+                    "combat fx glow",
+                    center,
+                    dimensions,
+                    0.0,
+                    weapon_color(color.with_alpha(color.to_srgba().alpha * particle_envelope(p))),
+                );
+            }
+        },
     }
 }
 
