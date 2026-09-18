@@ -80,8 +80,14 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
             "The sprite must steer visibly during approach"
         );
         for tick in 0..200 {
-            let pose = movie.actor_pose(scene, index, tick as f32 * 0.1);
-            assert!(pose.angle.abs() < 0.27, "Banking must retain the isometric view");
+            let time = tick as f32 * 0.1;
+            let pose = movie.actor_pose(scene, index, time);
+            let velocity = movie.actor_pose(scene, index, time + 0.025).center
+                - movie.actor_pose(scene, index, time - 0.025).center;
+            let bow = rotate(Vec2::angled(movie.visuals[index].art_heading), pose.angle);
+            if velocity.length_sq() > 0.000_001 {
+                assert!(bow.dot(velocity.normalized()) > 0.99, "Ships must turn into their course");
+            }
         }
         let step = 0.01;
         let before = movie.actor_pose(scene, index, end - step);
@@ -102,6 +108,81 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
             > 0.1,
         "A fleet must not all bank in lockstep"
     );
+}
+
+#[test]
+fn capital_ships_hold_steady_courses_and_all_hulls_fly_bow_first() {
+    use strum::IntoEnumIterator;
+
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let mut fighter_travel = 0.0;
+    let mut capital_travel = 0.0;
+    for ship in Ship::iter() {
+        for side in [Side::Attacker, Side::Defender] {
+            let mut movie = replay();
+            movie.show_planet = false;
+            movie.timeline.actors[0].unit = Unit::Ship(ship);
+            movie.timeline.actors[0].side = side.clone();
+            movie.visuals[0].art_heading = sprite_heading(Unit::Ship(ship));
+            movie.visuals[0].size = unit_size(Unit::Ship(ship));
+            let mut travelled = 0.0;
+            for tick in 0..600 {
+                let time = 5.0 + tick as f32 * 0.05;
+                let pose = movie.actor_pose(scene, 0, time);
+                let next = movie.actor_pose(scene, 0, time + 0.05);
+                let velocity = next.center - pose.center;
+                let direction = if pose.mirror {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let bow = rotate(
+                    Vec2::angled(movie.visuals[0].art_heading) * vec2(direction, 1.0),
+                    pose.angle,
+                );
+                assert!(velocity.length() > 0.01, "{ship:?} must keep moving");
+                assert!(bow.dot(velocity.normalized()) > 0.98, "{ship:?} flew backwards");
+                if matches!(ship, Ship::WarSun | Ship::Dreadnought | Ship::Battleship) {
+                    let turn = next.angle - pose.angle;
+                    assert!(
+                        turn.sin().atan2(turn.cos()).abs() < 0.03,
+                        "Heavy hulls must turn slowly"
+                    );
+                }
+                travelled += velocity.length();
+            }
+            if side == Side::Attacker {
+                if ship == Ship::LightFighter {
+                    fighter_travel = travelled;
+                } else if ship == Ship::WarSun {
+                    capital_travel = travelled;
+                }
+            }
+            movie.timeline.actors[0].retreat_at = Some(8.0);
+            for tick in 1..32 {
+                let time = 8.0 + tick as f32 * 0.05;
+                let pose = movie.actor_pose(scene, 0, time);
+                let velocity = movie.actor_pose(scene, 0, time + 0.01).center - pose.center;
+                let bow = rotate(
+                    Vec2::angled(movie.visuals[0].art_heading)
+                        * vec2(
+                            if pose.mirror {
+                                -1.0
+                            } else {
+                                1.0
+                            },
+                            1.0,
+                        ),
+                    pose.angle,
+                );
+                assert!(
+                    bow.dot(velocity.normalized()) > 0.95,
+                    "{ship:?} withdrawal at {time} must be bow-first"
+                );
+            }
+        }
+    }
+    assert!(capital_travel < fighter_travel * 0.25, "Capital ships should not dart like escorts");
 }
 
 #[test]

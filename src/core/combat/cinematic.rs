@@ -606,6 +606,31 @@ impl CinematicPlayback {
     }
 
     fn actor_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
+        let mut pose = self.actor_flight_pose(scene, index, time);
+        let actor = &self.timeline.actors[index];
+        let visual = &self.visuals[index];
+        if !visual.ground && actor.unit != Unit::space_dock() {
+            // Face the actual course, including approach, shield clearance and withdrawal.
+            // Sampling the immutable path keeps pause, speed changes and seeking identical.
+            let velocity = self.actor_flight_pose(scene, index, time + 0.025).center
+                - self.actor_flight_pose(scene, index, time - 0.025).center;
+            if velocity.length_sq() > 0.000_001 {
+                let bow = Vec2::angled(visual.art_heading)
+                    * vec2(
+                        if pose.mirror {
+                            -1.0
+                        } else {
+                            1.0
+                        },
+                        1.0,
+                    );
+                pose.angle = velocity.angle() - bow.angle();
+            }
+        }
+        pose
+    }
+
+    fn actor_flight_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
         let actor = &self.timeline.actors[index];
         let visual = &self.visuals[index];
         let mirror = actor.side == Side::Defender;
@@ -653,15 +678,18 @@ impl CinematicPlayback {
             // Maneuverability follows the actual hull class, independent of fleet density.
             let agility = (95.0 / unit_size(actor.unit)).clamp(0.48, 1.65);
             let flight_time = time - self.timeline.entrance_duration;
-            let course = flight_time * 0.24 * agility + phase;
-            let sweep = course.sin();
-            // Opposed diagonal passes bring both formations into the shared firing corridor.
-            // The secondary arc separates their return legs instead of reversing along a line.
-            center += scene.rect.size()
-                * vec2(
-                    direction * (0.055 + sweep * 0.13) * agility.sqrt(),
-                    (-direction * sweep * 0.10 + (course * 1.3 + phase).cos() * 0.035)
-                        * agility.sqrt(),
+            let course = flight_time * 0.18 * agility + phase * 0.08;
+            // Coherent, banked circuits replace independent oscillations on each axis.
+            // Escorts make fast attack passes; capital ships trace slow, shallow arcs.
+            // Start every approach on the inward leg, with modest individual separation.
+            center += vec2(direction * scene.rect.width() * 0.055, 0.0)
+                + rotate(
+                    scene.rect.size()
+                        * vec2(
+                            direction * course.sin() * 0.13 * agility,
+                            direction * course.cos() * 0.10 * agility,
+                        ),
+                    -direction * 0.22,
                 );
             if let Some(target) = visual.bombing_target {
                 let approach = scene.planet
@@ -672,8 +700,8 @@ impl CinematicPlayback {
                 center = center.lerp(approach, pass * 0.72);
             }
             {
-                // Sample the ongoing maneuver during arrival too. The cubic offset and its
-                // derivative both reach zero, so the ship never stops or snaps into formation.
+                // Position, velocity and acceleration meet the cruising path smoothly, so
+                // neither the hull nor its tangent-based heading snaps at the end of arrival.
                 let delay = noise(index as u32 + 141) * 0.65;
                 let entered =
                     if actor.retreat_at.is_some_and(|at| at < self.timeline.entrance_duration) {
@@ -690,21 +718,21 @@ impl CinematicPlayback {
                 let from = vec2(-direction * distance, -distance * visual.art_heading.tan());
                 let through =
                     vec2(-direction * distance * 0.43, from.y * 0.14 + bend * 105.0 * scene.scale);
-                center += from * remaining.powi(3) + through * (3.0 * remaining.powi(2) * entered);
-                // Small banks preserve the source's isometric camera angle. A large fixed
-                // bitmap rotation rolls the entire 3D view rather than turning the vessel.
-                angle = direction
-                    * (course.cos() * 0.09 * agility + bend * 0.12 * (entered * PI).sin().powi(2));
+                center += from * remaining.powi(4) + through * (4.0 * remaining.powi(3) * entered);
             }
         }
         if let Some(retreat_at) = actor.retreat_at {
             let retreat = ((time - retreat_at) / 1.65).clamp(0.0, 1.0);
-            center.x -= direction * retreat.powi(2) * scene.rect.width();
-            center.y -= retreat * retreat * scene.rect.height() * 0.2;
+            // Bank away before accelerating outward, rather than cancelling forward thrust
+            // and abruptly reversing on the same line.
+            center.x -= direction * retreat.powi(3) * scene.rect.width() * 1.4;
+            center.y -= (retreat * PI * 0.5).sin().powi(2) * scene.rect.height() * 0.8;
             angle -= direction * retreat * 0.25;
         }
         let fired = visual.firing_times.partition_point(|at| *at <= time);
-        if let Some(last) = fired.checked_sub(1).map(|index| visual.firing_times[index]) {
+        if let Some(last) =
+            fired.checked_sub(1).filter(|_| visual.ground).map(|index| visual.firing_times[index])
+        {
             let recoil = ((time - last) / 0.28).clamp(0.0, 1.0);
             let impulse = (recoil * PI).sin().max(0.0);
             center += vec2(-direction * 2.8, 0.7) * impulse * scene.scale;

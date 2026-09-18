@@ -263,8 +263,29 @@ impl CinematicTimeline {
                 state.shield = actor.max_shield;
                 actor.record(start, state);
                 let ordinary = record.shots.iter().filter(|shot| !shot.is_bombing()).count();
-                let cadence = (2.0 / ordinary.max(1) as f32).clamp(0.016, 0.22);
-                let stagger = unit_fraction(record.id ^ round_index as u64) * 1.25;
+                // During a planet strike, escorts and defenses spread their recorded fire
+                // across the charge/discharge instead of falling silent before it begins.
+                let covering_fire =
+                    round.destroy_probability > 0.0 && record.unit != Unit::war_sun();
+                let volley_window = if covering_fire {
+                    3.6
+                } else {
+                    2.0
+                };
+                let cadence = (volley_window / ordinary.max(1) as f32).clamp(
+                    0.016,
+                    if covering_fire {
+                        0.36
+                    } else {
+                        0.22
+                    },
+                );
+                let stagger = unit_fraction(record.id ^ round_index as u64)
+                    * if covering_fire {
+                        2.1
+                    } else {
+                        1.25
+                    };
                 let mut sequence = 0;
                 for shot in &record.shots {
                     if shot.is_bombing() {
@@ -285,6 +306,26 @@ impl CinematicTimeline {
                             + unit_fraction(record.id ^ sequence as u64) * 0.24,
                         outcome: shot.clone(),
                     });
+                }
+            }
+        }
+
+        if round.destroy_probability > 0.0 {
+            let suns_ready = round
+                .attacker
+                .iter()
+                .filter(|record| record.unit == Unit::war_sun() && record.hull > 0)
+                .filter_map(|record| last_launch.get(&indices[&(false, record.id)]))
+                .copied()
+                .fold(start, f32::max);
+            // Even a turret with just one saved shot should fire around the discharge,
+            // rather than exhausting a short volley before the War Suns finish charging.
+            let delay = suns_ready - start + 1.45;
+            for shot in &mut self.shots[shot_begin..] {
+                if self.actors[shot.source].unit != Unit::war_sun() {
+                    shot.launch_at += delay;
+                    shot.impact_at += delay;
+                    last_launch.insert(shot.source, shot.launch_at);
                 }
             }
         }
@@ -437,7 +478,17 @@ impl CinematicTimeline {
                 .map(|unit| indices[&(false, unit.id)])
                 .collect::<Vec<_>>();
             if !suns.is_empty() {
-                let start_at = cursor;
+                // Surviving War Suns finish their own salvos before charging, while the
+                // remaining recorded fighting continues. Collapse still follows every impact,
+                // repair and departure, so the overlap cannot alter casualties or outcomes.
+                let suns_ready = suns
+                    .iter()
+                    .filter_map(|source| last_launch.get(source))
+                    .copied()
+                    .fold(start, f32::max)
+                    + 0.12;
+                let start_at =
+                    (cursor - DEATH_RAY_COLLAPSE_AT + 0.35).max(start + 0.25).max(suns_ready);
                 let discharge_at = start_at + DEATH_RAY_DISCHARGE_AT;
                 let end_at = start_at + DEATH_RAY_COLLAPSE_AT;
                 let destroyed = report.planet_destroyed

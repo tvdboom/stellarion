@@ -43,7 +43,10 @@ Permanent level labels are omitted. Each recorded successful bomb causes an expl
 and a rising **−1 level** caption, and leaves the structure standing
 until its last level is lost. Misses never remove levels. Surviving War Suns combine
 their charging rays at one focus before a shared beam strikes the planet; the
-impact sends pressure ripples around the curved surface. Failed strikes leave the
+charge and discharge overlap the escorts' and defenses' recorded covering fire.
+War Suns finish their own salvos before charging; final planetary collapse waits
+for the round's impacts, repairs, and departures. No extra shots or damage are invented.
+The impact sends pressure ripples around the curved surface. Failed strikes leave the
 planet intact as those ripples fade. Recorded destruction engulfs the globe in
 overlapping versions of the regular battle explosion, with staggered explosion
 sounds and small drifting shards. The death ray is 4 dB louder than its default
@@ -55,9 +58,10 @@ Charged weapons build up before their recorded launch, preserving the last shot 
 The planetary shield reuses the map's energy-field artwork with a three-second
 pulse, moving filaments and surface sweeps; its strength follows recorded damage.
 The scene uses the normal map background with its proportions preserved. Ships
-follow independent curved approaches over 4.8 seconds, banking gently while
-preserving the perspective of their artwork, then make opposing diagonal passes.
-Lighter ships turn faster; Bombers make approaches toward their recorded surface
+follow curved approaches over 4.8 seconds, then opposing, continuous attack circuits.
+Their bows and engine trails follow their actual travel direction, including withdrawals.
+Capital ships take slow, steady arcs without recoil-driven wiggling; lighter ships
+make faster, broader passes. Bombers make approaches toward their recorded surface
 targets while keeping outside an active planetary shield. Turrets, crawlers and
 repair trucks occupy spaced surface rows, separate from the target buildings.
 Gas worlds use floating building platforms and hovering defense pads.

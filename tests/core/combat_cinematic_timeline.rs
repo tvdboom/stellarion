@@ -628,6 +628,90 @@ fn unbreached_shield_and_failed_bombs_preserve_surface_buildings() {
 }
 
 #[test]
+fn planet_strikes_overlap_recorded_covering_fire_without_changing_the_outcome() {
+    let mut sun = record(1, 1, Unit::war_sun());
+    sun.shots.push(ShotReport {
+        target_id: Some(20),
+        unit: Some(Unit::Defense(Defense::RocketLauncher)),
+        missed: true,
+        ..Default::default()
+    });
+    let mut attacker = vec![sun];
+    let mut defender = Vec::new();
+    for id in 2..8 {
+        let mut escort = record(id, 1, Unit::Ship(Ship::LightFighter));
+        let mut turret = record(id + 18, 2, Unit::Defense(Defense::RocketLauncher));
+        for _ in 0..10 {
+            escort.shots.push(ShotReport {
+                target_id: Some(turret.id),
+                unit: Some(turret.unit),
+                missed: true,
+                ..Default::default()
+            });
+            turret.shots.push(ShotReport {
+                target_id: Some(escort.id),
+                unit: Some(escort.unit),
+                missed: true,
+                ..Default::default()
+            });
+        }
+        attacker.push(escort);
+        defender.push(turret);
+    }
+    let round = RoundReport {
+        attacker,
+        defender,
+        destroy_probability: 0.5,
+        ..Default::default()
+    };
+    let mut sparse = round.clone();
+    for unit in sparse.attacker.iter_mut().chain(&mut sparse.defender) {
+        unit.shots.truncate(1);
+    }
+    for (round, expected_shots) in [(round, 242), (sparse, 26)] {
+        for destroyed in [false, true] {
+            let mut battle = report(vec![round.clone(), round.clone()]);
+            battle.planet_destroyed = destroyed;
+            let movie = CinematicTimeline::new(&battle);
+            assert_eq!(
+                movie.shots.len(),
+                expected_shots,
+                "Do not invent fire to fill the planet strike"
+            );
+            for attack in &movie.planet_attacks {
+                for side in [Side::Attacker, Side::Defender] {
+                    assert!(
+                        movie.shots.iter().any(|shot| {
+                            movie.actors[shot.source].side == side
+                                && shot.launch_at > attack.discharge_at
+                                && shot.impact_at < attack.end_at
+                        }),
+                        "Both sides should still fire while the planet beam is active"
+                    );
+                }
+                assert!(
+                    movie
+                        .shots
+                        .iter()
+                        .filter(|shot| attack.sources.contains(&shot.source))
+                        .all(|shot| shot.launch_at < attack.start_at
+                            || shot.launch_at > attack.end_at)
+                );
+            }
+            let collapse = movie.planet_attacks.last().unwrap().end_at;
+            for actor in &movie.actors {
+                if destroyed && actor.side == Side::Defender {
+                    assert_eq!(actor.death_at, Some(collapse));
+                } else {
+                    assert!(actor.death_at.is_none());
+                    assert_eq!(actor.state_at(movie.duration).hull, actor.max_hull);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn surviving_war_suns_combine_once_per_attempt_and_preserve_failed_outcomes() {
     let mut dead = record(3, 1, Unit::war_sun());
     dead.hull = 0;
