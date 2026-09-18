@@ -5,12 +5,15 @@ use std::f32::consts::{PI, TAU};
 use bevy::prelude::{Alpha, Color, Resource, Vec3 as BevyVec3};
 use bevy_egui::egui::{
     epaint::{Mesh, Vertex},
-    pos2, vec2, Color32, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
+    pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
 };
 
-use super::cinematic_timeline::{CinematicActor, CinematicShot, CinematicTimeline};
+use super::cinematic_timeline::{
+    CinematicActor, CinematicShot, CinematicTimeline, LEVEL_LOSS_INTERVAL,
+};
 use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
 use super::report::{MissionReport, Side};
+use crate::core::map::utils::{MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT};
 use crate::core::ui::utils::ImageIds;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
@@ -68,11 +71,19 @@ struct Scene {
 
 impl Scene {
     fn new(rect: Rect) -> Self {
+        let scale = (rect.width() / 1440.0).min(rect.height() / 820.0);
+        let planet_radius = rect.height().min(rect.width() * 0.78) * 0.32;
+        // The exit button remains unscaled. Lift the globe in short windows so its inhabited
+        // near hemisphere and readable level tags still fit above that fixed control.
+        let planet_y = (rect.height() * 0.80).min(
+            rect.height() - MAIN_BUTTON_BOTTOM - MAIN_BUTTON_HEIGHT - 14.0 - 53.0 * scale
+                + planet_radius * 0.10,
+        );
         Self {
             rect,
-            scale: (rect.width() / 1440.0).min(rect.height() / 820.0),
-            planet: pos2(rect.left() + rect.width() * 0.80, rect.top() + rect.height() * 0.80),
-            planet_radius: rect.height().min(rect.width() * 0.78) * 0.32,
+            scale,
+            planet: pos2(rect.left() + rect.width() * 0.80, rect.top() + planet_y),
+            planet_radius,
         }
     }
 
@@ -84,12 +95,12 @@ impl Scene {
 impl CinematicPlayback {
     pub fn new(report: &MissionReport) -> Self {
         let timeline = CinematicTimeline::new(report);
-        let mut counts = [0_usize; 4];
+        let mut counts = [0_usize; 5];
         for actor in &timeline.actors {
             counts[formation_group(actor)] += 1;
         }
         let fleet_count = counts[0].max(counts[1]).max(counts[3]);
-        let mut slots = [0_usize; 4];
+        let mut slots = [0_usize; 5];
         let mut visuals = Vec::with_capacity(timeline.actors.len());
         for (index, actor) in timeline.actors.iter().enumerate() {
             let group = formation_group(actor);
@@ -103,25 +114,44 @@ impl CinematicPlayback {
             };
             // Both fleets and orbitals share a scale: a fighter must not grow just because its
             // side fields fewer ships. Surface equipment uses its own available ground area.
-            let density_count = if group == 2 {
+            let density_count = if group == 4 {
+                1
+            } else if group == 2 {
                 counts[2]
             } else {
                 fleet_count
             };
-            let density = (9.0 / density_count.max(9) as f32).sqrt().max(0.11);
+            let base_density = if group == 2 && counts[4] > 0 {
+                3
+            } else {
+                9
+            };
+            let density =
+                (base_density as f32 / density_count.max(base_density) as f32).sqrt().max(0.11);
             visuals.push(ActorVisual {
                 texture,
                 fallback_texture: name,
                 aspect: sprite_aspect(actor.unit),
                 art_rotation: sprite_rotation(actor.unit),
-                home: formation_home(group, slot, counts[group]),
-                size: unit_size(actor.unit) * density,
+                home: if group == 2 && counts[4] > 0 {
+                    // Turrets protect the upper limb; the settlement occupies the near surface.
+                    // Separating these footprints keeps dense defenses off the building roofs.
+                    let old = formation_home(group, slot, counts[group]);
+                    vec2(-0.10 + (old.x + 0.19) * 0.52, -0.86 + (old.y + 0.17) * 0.07)
+                } else {
+                    formation_home(group, slot, counts[group])
+                },
+                size: if group == 2 && counts[4] > 0 {
+                    unit_size(actor.unit).min(54.0) * density
+                } else {
+                    unit_size(actor.unit) * density
+                },
                 phase: {
                     let identity = actor.id.unwrap_or(index as u64);
                     noise((identity ^ (identity >> 32)) as u32) * TAU
                         + actor.owner.unwrap_or(0) as f32 * 0.07
                 },
-                ground: group == 2,
+                ground: group == 2 || group == 4,
                 orbital: group == 3,
                 firing_times: Vec::new(),
             });
@@ -288,6 +318,7 @@ impl CinematicPlayback {
                 }
             }
         }
+        self.paint_level_losses(&painter, scene, images);
         self.paint_planet_attacks(&painter, scene, images);
         // Restrained letterbox shading keeps overlaid controls legible without hiding ships.
         let strip = (rect.height() * 0.045).min(28.0);
@@ -389,30 +420,24 @@ impl CinematicPlayback {
             .iter()
             .find(|attack| attack.destroyed)
             .map(|attack| attack.end_at);
-        let destruction =
-            destroyed_at.map_or(0.0, |at| ((self.elapsed - at) / 1.6).clamp(0.0, 1.0));
+        if let Some(age) = destroyed_at.map(|at| self.elapsed - at).filter(|age| *age >= 0.0) {
+            self.paint_broken_planet(painter, scene, images, age);
+            return;
+        }
         let radius = scene.planet_radius;
         for ring in (1..=12).rev() {
             painter.circle_stroke(
                 scene.planet,
                 radius + ring as f32 * 1.6 * scene.scale,
-                Stroke::new(
-                    2.1 * scene.scale,
-                    alpha(BLUE, (1.0 - destruction) * (0.08 - ring as f32 * 0.005)),
-                ),
+                Stroke::new(2.1 * scene.scale, alpha(BLUE, 0.08 - ring as f32 * 0.005)),
             );
         }
-        let texture = if destruction > 0.95 {
-            images.0.get("planet0").or_else(|| images.0.get(&self.planet_image))
-        } else {
-            images.0.get(&self.planet_image)
-        };
-        if let Some(texture) = texture {
+        if let Some(texture) = images.0.get(&self.planet_image) {
             painter.image(
                 *texture,
                 Rect::from_center_size(scene.planet, Vec2::splat(radius * 2.0)),
                 FULL_UV,
-                Color32::from_gray((220.0 - destruction * 90.0) as u8),
+                Color32::from_gray(220),
             );
         } else {
             painter.circle_filled(scene.planet, radius, Color32::from_rgb(20, 41, 56));
@@ -425,10 +450,7 @@ impl CinematicPlayback {
                 radius + ring as f32 * scene.scale,
                 -3.65,
                 2.7,
-                Stroke::new(
-                    1.8 * scene.scale,
-                    alpha(BLUE, (1.0 - destruction) * (0.12 - ring as f32 * 0.018)),
-                ),
+                Stroke::new(1.8 * scene.scale, alpha(BLUE, 0.12 - ring as f32 * 0.018)),
             );
         }
         let shield = self.timeline.planetary_shield_at(self.elapsed);
@@ -439,7 +461,7 @@ impl CinematicPlayback {
             // Its three-second breath and two slow counterflows are sampled from the movie
             // clock, so pausing, speeding up and replaying also control the entire shield.
             let pulse = 0.5 - 0.5 * (TAU * self.elapsed / 3.0).cos();
-            let strength = (0.25 + ratio * 0.75) * (1.0 - destruction);
+            let strength = 0.25 + ratio * 0.75;
             let color = Color32::from_rgb(62, 171, 250);
             painter.circle_filled(
                 scene.planet,
@@ -490,6 +512,47 @@ impl CinematicPlayback {
                         alpha(color, strength * (phase * PI).sin() * (0.10 + pulse * 0.12)),
                     ),
                 ));
+            }
+        }
+    }
+
+    fn paint_broken_planet(&self, painter: &Painter, scene: Scene, images: &ImageIds, age: f32) {
+        let opacity = (1.0 - age / 3.8).clamp(0.0, 1.0);
+        let Some(texture) = images.0.get(&self.planet_image).filter(|_| opacity > 0.0) else {
+            return;
+        };
+        // Split the actual planet artwork into drifting crust fragments, so the recorded
+        // destruction leaves empty space rather than an intact, merely darkened globe.
+        for band in 0..3_u32 {
+            for sector in 0..12_u32 {
+                let seed = band * 12 + sector;
+                let angle = sector as f32 * TAU / 12.0;
+                let inner = band as f32 / 3.0;
+                let outer = (band + 1) as f32 / 3.0;
+                let center = Vec2::angled(angle + TAU / 24.0) * (inner + outer) * 0.5;
+                let travel = center.normalized()
+                    * scene.planet_radius
+                    * (age * 0.34 + age * age * 0.09)
+                    * (0.6 + noise(seed) * 0.7);
+                let spin = age * (noise(seed + 72) - 0.5) * 0.85;
+                let mut mesh = Mesh::with_texture(*texture);
+                for point in [
+                    Vec2::angled(angle) * inner,
+                    Vec2::angled(angle) * outer,
+                    Vec2::angled(angle + TAU / 12.0) * outer,
+                    Vec2::angled(angle + TAU / 12.0) * inner,
+                ] {
+                    mesh.vertices.push(Vertex {
+                        pos: scene.planet
+                            + center * scene.planet_radius
+                            + travel
+                            + rotate((point - center) * scene.planet_radius, spin),
+                        uv: (Vec2::splat(0.5) + point * 0.5).to_pos2(),
+                        color: alpha(Color32::from_rgb(255, 186, 141), opacity),
+                    });
+                }
+                mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                painter.add(Shape::mesh(mesh));
             }
         }
     }
@@ -592,7 +655,11 @@ impl CinematicPlayback {
             1.0
         };
         let state = actor.state_at(self.elapsed);
-        let health = state.hull as f32 / actor.max_hull.max(1) as f32;
+        let health = actor
+            .levels_at(self.elapsed)
+            .map_or(state.hull as f32 / actor.max_hull.max(1) as f32, |levels| {
+                levels as f32 / actor.initial_levels.unwrap_or(1).max(1) as f32
+            });
         let shield_strength = state.shield as f32 / actor.max_shield.max(1) as f32;
         if visual.ground {
             painter.add(Shape::ellipse_filled(
@@ -665,6 +732,32 @@ impl CinematicPlayback {
         let beacon = pose.center + rotate(vec2(direction * 0.18, -0.08) * pose.size, pose.angle);
         let blink = 0.35 + 0.65 * (self.elapsed * 2.1 + visual.phase).sin().powi(8);
         glow(painter, beacon, (pose.size * 0.04).max(1.2), side_color, blink * 0.72);
+        if let Some(levels) = actor.levels_at(self.elapsed) {
+            // Small industrial lights and drifting chimney exhaust animate the actual building,
+            // without turning its levels into a row of fictitious independent structures.
+            for light in 0..3 {
+                let point = pose.center + vec2(-0.19 + light as f32 * 0.13, 0.13) * pose.size;
+                let intensity =
+                    0.35 + 0.4 * (self.elapsed * 1.7 + light as f32 + visual.phase).sin().powi(2);
+                glow(painter, point, pose.size * 0.035, BLUE, intensity);
+            }
+            for puff in 0..5 {
+                let age = (self.elapsed * 0.24 + puff as f32 / 5.0 + visual.phase).fract();
+                let point = pose.center + vec2(-0.12 - age * 0.23, -0.21 - age * 0.43) * pose.size;
+                painter.circle_filled(
+                    point,
+                    pose.size * (0.02 + age * 0.075),
+                    alpha(Color32::from_rgb(124, 144, 159), (1.0 - age) * 0.24),
+                );
+            }
+            painter.text(
+                pose.center + vec2(0.0, pose.size * 0.43),
+                Align2::CENTER_TOP,
+                format!("Lv {levels}"),
+                FontId::monospace((11.0 * scene.scale).max(10.0)),
+                Color32::from_rgb(177, 194, 207),
+            );
+        }
         if health < 0.52 && state.hull > 0 {
             let damage = (0.6 - health).max(0.0);
             let scar = pose.center + vec2(-0.12, 0.04) * pose.size;
@@ -684,6 +777,56 @@ impl CinematicPlayback {
                     Color32::from_black_alpha((damage * (1.0 - age) * 70.0) as u8),
                 );
             }
+        }
+    }
+
+    fn paint_level_losses(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
+        let first =
+            self.timeline.level_losses.partition_point(|loss| loss.impact_at < self.elapsed - 2.2);
+        let last =
+            self.timeline.level_losses.partition_point(|loss| loss.impact_at <= self.elapsed);
+        if first == last {
+            return;
+        }
+        let caption = painter.layout_no_wrap(
+            "-1 level".into(),
+            FontId::monospace((16.0 * scene.scale).max(12.0)),
+            Color32::PLACEHOLDER,
+        );
+        // Actual glyph height varies with fonts and display scale. Match the saved impact
+        // spacing to that measured height so rapid losses never draw over one another.
+        let rise_speed = (52.0 * scene.scale)
+            .max((caption.size().y + 2.0 * scene.scale.max(1.0)) / LEVEL_LOSS_INTERVAL);
+        for (offset, loss) in self.timeline.level_losses[first..last].iter().enumerate() {
+            let age = self.elapsed - loss.impact_at;
+            let pose = self.actor_pose(scene, loss.target, loss.impact_at);
+            // A partial loss gets a localized impact; only the final level triggers a full wreck.
+            if loss.remaining_levels > 0 && age < 1.2 {
+                explosion(
+                    painter,
+                    images,
+                    pose.center,
+                    pose.size * 0.43,
+                    age,
+                    (first + offset) as u32,
+                );
+            }
+            let position = pose.center
+                + vec2(
+                    -caption.size().x * 0.5,
+                    -pose.size * 0.42 - age * rise_speed - caption.size().y,
+                );
+            let opacity = ((2.2 - age) / 0.6).clamp(0.0, 1.0);
+            painter.galley(
+                position + Vec2::splat(1.5 * scene.scale),
+                caption.clone(),
+                alpha(Color32::BLACK, opacity),
+            );
+            painter.galley(
+                position,
+                caption.clone(),
+                alpha(Color32::from_rgb(255, 186, 111), opacity),
+            );
         }
     }
 
@@ -948,28 +1091,40 @@ impl CinematicPlayback {
         }
     }
 
+    fn planet_attack_focus(
+        &self,
+        scene: Scene,
+        attack: &super::cinematic_timeline::CinematicPlanetAttack,
+    ) -> Pos2 {
+        let sum = attack.sources.iter().fold(Vec2::ZERO, |sum, source| {
+            sum + self.actor_pose(scene, *source, attack.start_at).center.to_vec2()
+        });
+        let center = (sum / attack.sources.len().max(1) as f32).to_pos2();
+        let toward = center.lerp(scene.planet, 0.56) - scene.planet;
+        // Keep the shared focus visibly outside the atmosphere, even for a close formation.
+        scene.planet + toward.normalized() * toward.length().max(scene.planet_radius * 1.4)
+    }
+
     fn paint_planet_attacks(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
+        use super::effects::{death_ray_beam_layers, sustained_envelope, DEATH_RAY_FOCUS_AT};
         for (index, attack) in self.timeline.planet_attacks.iter().enumerate() {
             if self.elapsed < attack.start_at || self.elapsed > attack.end_at + 3.8 {
                 continue;
             }
-            let source = self.actor_pose(scene, attack.source, attack.start_at);
             let target = scene.planet + vec2(-0.25, -0.30) * scene.planet_radius;
-            let progress = ((self.elapsed - attack.start_at)
-                / (attack.end_at - attack.start_at).max(0.1))
-            .clamp(0.0, 1.0);
             if self.elapsed < attack.end_at {
-                use super::effects::{
-                    death_ray_beam_layers, sustained_envelope, DEATH_RAY_COLLAPSE_AT,
-                    DEATH_RAY_DISCHARGE_AT, DEATH_RAY_FOCUS_AT,
-                };
-                // Sample the schematic War Sun charge, converging emitters and sustained
-                // discharge inside this report's interval. The recorded impact still decides
-                // whether the world is destroyed; there is no new random roll here.
-                let age = progress * DEATH_RAY_COLLAPSE_AT;
-                let size = source.size * 0.30;
-                let focus = source.center.lerp(target, 0.22);
-                let layers = death_ray_beam_layers(size);
+                let age = self.elapsed - attack.start_at;
+                let focus = self.planet_attack_focus(scene, attack);
+                let maximum_size = attack
+                    .sources
+                    .iter()
+                    .map(|source| self.visuals[*source].size)
+                    .fold(0.0_f32, f32::max)
+                    * scene.scale
+                    * 0.30;
+                let combined_size =
+                    maximum_size * (attack.sources.len() as f32).sqrt().clamp(1.0, 2.6);
+                let layers = death_ray_beam_layers(combined_size);
                 let gold = weapon_color(layers[1].1);
                 let sprite = |key: &str, center, dimensions, angle, color, opacity| {
                     paint_effect_sprite(
@@ -993,95 +1148,117 @@ impl CinematicPlayback {
                         opacity,
                     );
                 };
-                if age < 1.65 {
-                    let p = age / 1.65;
-                    for spark in 0..28 {
-                        let offset = Vec2::angled(spark as f32 * TAU / 28.0) * size * 2.2;
+                let focus_age = age - DEATH_RAY_FOCUS_AT;
+                let focus_span = attack.end_at - attack.start_at - DEATH_RAY_FOCUS_AT;
+                let focus_strength = sustained_envelope((focus_age / focus_span).clamp(0.0, 1.0));
+                for source in &attack.sources {
+                    // Every eligible War Sun charges and contributes its own ray. The live
+                    // muzzle follows its ship while the common focus remains steady in space.
+                    let pose = self.actor_pose(scene, *source, self.elapsed);
+                    let size = pose.size * 0.30;
+                    let muzzle =
+                        pose.center + (focus - pose.center).normalized() * pose.size * 0.23;
+                    if age < 1.65 {
+                        let p = age / 1.65;
+                        for spark in 0..28 {
+                            let offset = Vec2::angled(spark as f32 * TAU / 28.0) * size * 2.2;
+                            sprite(
+                                "combat fx glow",
+                                muzzle + offset * (1.0 - p),
+                                Vec2::splat(size * (0.045 + 0.135 * smooth(p))),
+                                0.0,
+                                gold,
+                                particle_envelope(p),
+                            );
+                        }
+                    }
+                    if age < 1.9 {
+                        let p = age / 1.9;
+                        for radius in [1.2, 1.8, 2.4] {
+                            sprite(
+                                "combat fx ring",
+                                muzzle,
+                                Vec2::splat(size * (radius + (0.15 - radius) * smooth(p))),
+                                radius * age,
+                                gold,
+                                particle_envelope(p) * 0.6,
+                            );
+                        }
+                    }
+                    if focus_age >= 0.0 {
+                        let destination = muzzle.lerp(focus, smooth(focus_age / 0.38));
+                        beam(muzzle, destination, size * 0.17, gold, focus_strength);
+                        beam(muzzle, destination, size * 0.045, Color32::WHITE, focus_strength);
                         sprite(
                             "combat fx glow",
-                            source.center + offset * (1.0 - p),
-                            Vec2::splat(size * (0.045 + 0.135 * smooth(p))),
+                            muzzle,
+                            Vec2::splat(size * 0.85),
                             0.0,
                             gold,
-                            particle_envelope(p),
+                            focus_strength,
                         );
                     }
                 }
-                if age < 1.9 {
-                    let p = age / 1.9;
-                    for radius in [1.2, 1.8, 2.4] {
-                        sprite(
-                            "combat fx ring",
-                            source.center,
-                            Vec2::splat(size * (radius + (0.15 - radius) * smooth(p))),
-                            radius * age,
-                            gold,
-                            particle_envelope(p) * 0.6,
-                        );
-                    }
-                }
-                if age < 2.1 {
-                    let p = age / 2.1;
+                if focus_age >= 0.0 {
+                    let growth = smooth(
+                        focus_age / (attack.discharge_at - attack.start_at - DEATH_RAY_FOCUS_AT),
+                    );
                     sprite(
                         "combat fx glow",
-                        source.center,
-                        Vec2::splat(size * 1.7 * (1.0 + 0.8 * smooth(p))),
+                        focus,
+                        Vec2::splat(combined_size * (0.6 + growth * 1.7)),
                         0.0,
                         gold,
-                        particle_envelope(p),
+                        focus_strength,
+                    );
+                    sprite(
+                        "combat fx glow",
+                        focus,
+                        Vec2::splat(combined_size * (0.2 + growth * 0.55)),
+                        0.0,
+                        Color32::WHITE,
+                        focus_strength,
+                    );
+                    sprite(
+                        "combat fx ring",
+                        focus,
+                        Vec2::splat(combined_size * (1.1 + growth * 0.9)),
+                        age,
+                        gold,
+                        focus_strength * 0.6,
                     );
                 }
-                let focus_age = age - DEATH_RAY_FOCUS_AT;
-                if (0.0..1.6).contains(&focus_age) {
-                    let strength = particle_envelope(focus_age / 1.6);
-                    let width_scale = 1.0 - 0.6 * smooth(focus_age / 1.6);
-                    for emitter in 0..8 {
-                        let origin =
-                            source.center + Vec2::angled(emitter as f32 * TAU / 8.0) * size * 0.48;
-                        beam(origin, focus, size * 0.07 * width_scale, gold, strength);
-                        beam(origin, focus, size * 0.018 * width_scale, Color32::WHITE, strength);
-                    }
-                    for (key, extent, lifetime, color) in [
-                        ("combat fx glow", 0.9, 1.4, Color32::WHITE),
-                        ("combat fx ring", 1.8, 1.2, gold),
-                    ] {
-                        let p = (focus_age / lifetime).clamp(0.0, 1.0);
-                        let scale = if key == "combat fx ring" {
-                            0.2 + 0.8 * smooth(p)
-                        } else {
-                            1.0 + 0.8 * smooth(p)
-                        };
-                        sprite(
-                            key,
-                            focus,
-                            Vec2::splat(size * extent * scale),
-                            0.0,
-                            color,
-                            particle_envelope(p),
-                        );
-                    }
-                }
-                let discharge_age = age - DEATH_RAY_DISCHARGE_AT;
+                let discharge_age = self.elapsed - attack.discharge_at;
                 if discharge_age >= 0.0 {
-                    let discharge_progress = (discharge_age / 1.72).clamp(0.0, 1.0);
-                    let strength = sustained_envelope(discharge_progress);
+                    let progress =
+                        (discharge_age / (attack.end_at - attack.discharge_at)).clamp(0.0, 1.0);
+                    let strength = sustained_envelope(progress);
+                    // These three shared glow/core layers describe one outgoing beam, regardless
+                    // of fleet size; no particular ship is invented as the successful shooter.
                     for (width, color) in layers {
                         beam(
                             focus,
                             target,
-                            width * (1.0 - 0.6 * smooth(discharge_progress)),
+                            width * (1.0 - 0.35 * smooth(progress)),
                             weapon_color(color),
                             strength,
                         );
                     }
-                    let p = (discharge_age / 1.5).clamp(0.0, 1.0);
                     sprite(
                         "combat fx glow",
                         target,
-                        Vec2::splat(size * 3.4 * (1.0 + 0.8 * smooth(p))),
+                        Vec2::splat(combined_size * (2.6 + progress * 2.0)),
                         0.0,
                         gold,
-                        particle_envelope(p) * 0.8,
+                        strength * 0.8,
+                    );
+                    arc(
+                        painter,
+                        scene.planet,
+                        scene.planet_radius * (0.92 + progress * 0.13),
+                        -PI,
+                        PI * 1.5,
+                        Stroke::new(2.0 * scene.scale, alpha(gold, strength * 0.7)),
                     );
                 }
             } else if attack.destroyed {
@@ -1108,7 +1285,9 @@ impl CinematicPlayback {
 
 /// One formation for each fleet, the surface and planetary orbit. No unit counts are capped.
 fn formation_group(actor: &CinematicActor) -> usize {
-    if actor.unit.is_orbital() {
+    if actor.initial_levels.is_some() {
+        4
+    } else if actor.unit.is_orbital() {
         3
     } else if actor.side == Side::Defender && (actor.unit.is_defense() || actor.unit.is_building())
     {
@@ -1130,6 +1309,7 @@ fn formation_home(group: usize, slot: usize, count: usize) -> Vec2 {
         0 => vec2(0.26, 0.45) + disk * vec2(0.19, 0.32),
         1 => vec2(0.73, 0.33) + disk * vec2(0.17, 0.22),
         2 => vec2(-0.19, -0.17) + disk * vec2(0.64, 0.54),
+        4 => vec2(-0.60 + (slot % 3) as f32 * 0.50, -0.53 + (slot / 3) as f32 * 0.43),
         _ => vec2(0.81, 0.55) + disk * vec2(0.13, 0.10),
     }
 }
@@ -1151,6 +1331,7 @@ fn unit_size(unit: Unit) -> f32 {
         Unit::Defense(Defense::AntiballisticMissile | Defense::InterplanetaryMissile) => 57.0,
         Unit::Defense(Defense::Crawler | Defense::RepairTruck) => 66.0,
         Unit::Defense(_) => 68.0 + unit.production() as f32 * 8.0,
+        Unit::Building(_) if !unit.is_orbital() => 106.0,
         Unit::Building(_) => 95.0 + unit.production() as f32 * 13.0,
         Unit::Fauna(_) => 60.0 + unit.production() as f32 * 19.0,
     }

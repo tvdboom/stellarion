@@ -43,7 +43,7 @@ fn runtime_categories_are_ktx2() {
 }
 
 #[test]
-/// Every constructible hull, defense and orbital has its own dedicated cinematic cutout.
+/// Every combatant and bombable building has its own dedicated cinematic cutout.
 fn cinematic_roster_has_registered_source_artwork() {
     use std::collections::BTreeSet;
 
@@ -55,6 +55,8 @@ fn cinematic_roster_has_registered_source_artwork() {
         .map(Unit::Ship)
         .chain(Defense::iter().map(Unit::Defense))
         .chain(orbitals::ALL)
+        .chain(Unit::resource_buildings())
+        .chain(Unit::industrial_buildings())
         .map(|unit| format!("cinematic {}", unit.to_lowername()))
         .collect();
     let registered: BTreeSet<_> =

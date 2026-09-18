@@ -10,7 +10,7 @@ use crate::core::random::DeterministicRngState;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use crate::core::units::{Army, Unit};
+use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
 
@@ -51,7 +51,17 @@ fn preview_session() -> MultiplayerSession {
 }
 
 fn battle(war_sun: bool) -> crate::core::combat::report::MissionReport {
-    let mut rng = DeterministicRngState::from_u64(4567).next_rng();
+    if !war_sun {
+        return battle_with_seed(false, 4567);
+    }
+    (0..64)
+        .map(|seed| battle_with_seed(true, seed))
+        .find(|report| report.planet_destroyed)
+        .expect("capture requires a successful recorded destruction")
+}
+
+fn battle_with_seed(war_sun: bool, seed: u64) -> crate::core::combat::report::MissionReport {
+    let mut rng = DeterministicRngState::from_u64(seed).next_rng();
     let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     origin.colonize(1);
     let mut planet = Planet::new_with_rng(1, "Asterion".into(), Vec2::X, false, 1.0, &mut rng);
@@ -113,6 +123,52 @@ fn battle(war_sun: bool) -> crate::core::combat::report::MissionReport {
         None,
     );
     resolve_combat_with_rng(1, &mission, &planet, &mut rng)
+}
+
+fn bombing_battle(raid: BombingRaid) -> crate::core::combat::report::MissionReport {
+    let buildings = match raid {
+        BombingRaid::Economic => Unit::resource_buildings(),
+        BombingRaid::Industrial => Unit::industrial_buildings(),
+        BombingRaid::None => unreachable!("capture requires a bombing category"),
+    };
+    // Use the real resolver, retaining a seed only when every building has a recorded hit.
+    // The mixed initial levels exercise both complete demolition and surviving structures.
+    for seed in 0..64 {
+        let mut rng = DeterministicRngState::from_u64(seed).next_rng();
+        let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+        origin.colonize(1);
+        let mut planet = Planet::new_with_rng(1, "Asterion".into(), Vec2::X, false, 1.0, &mut rng);
+        planet.colonize(2);
+        let mut defenders: Army = Unit::resource_buildings()
+            .into_iter()
+            .chain(Unit::industrial_buildings())
+            .zip([1, 3, 5, 1, 3, 5])
+            .collect();
+        defenders.insert(Unit::Defense(Defense::RocketLauncher), 4);
+        defenders.insert(Unit::planetary_shield(), 1);
+        planet.army = defenders.into();
+        let mission = Mission::new_with_id(
+            2,
+            1,
+            1,
+            &origin,
+            &planet,
+            Icon::Attack,
+            Army::from([(Unit::Ship(Ship::Bomber), 36)]),
+            raid.clone(),
+            false,
+            false,
+            None,
+        );
+        let report = resolve_combat_with_rng(2, &mission, &planet, &mut rng);
+        if buildings
+            .iter()
+            .all(|unit| report.surviving_defender.amount(unit) < report.planet.army.amount(unit))
+        {
+            return report;
+        }
+    }
+    panic!("capture fixture must exercise hits on all three buildings");
 }
 
 #[test]
@@ -373,37 +429,26 @@ fn render_cinematic_preview() {
             });
         })
         .unwrap();
-    let small = make_target(&mut app, 640, 480);
-    app.world_mut().entity_mut(camera).insert(RenderTarget::Image(small.clone().into()));
-    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 3.5;
-    for _ in 0..8 {
-        app.update();
-    }
-    app.world_mut()
-        .spawn(Screenshot::image(small))
-        .observe(save_to_disk("target/cinematic-preview/small.png"));
-    for _ in 0..12 {
-        app.update();
-    }
-
-    // The War Sun's planetary discharge has its own charge/focus phases. Render a
-    // second real resolver report so the shared masks are checked at cinematic scale.
+    // Multiple surviving War Suns must contribute to the same recorded discharge.
     let report = battle(true);
+    assert!(report.planet_destroyed, "capture requires a successful recorded destruction");
     let mut playback = CinematicPlayback::new(&report);
     assert!(!playback.timeline.planet_attacks.is_empty());
     for (name, handle) in &app.world().resource::<CaptureImages>().0 {
         let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
         playback.set_sprite_size(name, texture.width(), texture.height());
     }
-    let ray = &playback.timeline.planet_attacks[0];
+    let ray = playback.timeline.planet_attacks.iter().find(|attack| attack.destroyed).unwrap();
+    assert!(ray.sources.len() > 1);
     let ray_samples = [
-        ("war-sun-charge", ray.start_at + (ray.end_at - ray.start_at) * 0.38),
-        ("war-sun-beam", ray.start_at + (ray.end_at - ray.start_at) * 0.68),
+        ("war-sun-charge", ray.start_at + (ray.discharge_at - ray.start_at) * 0.75),
+        ("war-sun-beam", (ray.discharge_at + ray.end_at) * 0.5),
+        ("planet-breakup", ray.end_at + 0.45),
+        ("planet-destroyed", playback.timeline.duration - 0.1),
     ];
     app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
     app.world_mut().resource_mut::<Player>().reports = vec![report];
     app.insert_resource(playback);
-    app.world_mut().entity_mut(camera).insert(RenderTarget::Image(target.clone().into()));
     for (name, elapsed) in ray_samples {
         app.world_mut().resource_mut::<CinematicPlayback>().elapsed = elapsed;
         for _ in 0..8 {
@@ -415,5 +460,52 @@ fn render_cinematic_preview() {
         for _ in 0..8 {
             app.update();
         }
+    }
+
+    for (category, raid) in
+        [("economic", BombingRaid::Economic), ("industrial", BombingRaid::Industrial)]
+    {
+        let report = bombing_battle(raid);
+        let mut playback = CinematicPlayback::new(&report);
+        for (name, handle) in &app.world().resource::<CaptureImages>().0 {
+            let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+            playback.set_sprite_size(name, texture.width(), texture.height());
+        }
+        let losses = &playback.timeline.level_losses;
+        assert!(!losses.is_empty());
+        let samples = [
+            ("buildings", playback.timeline.entrance_duration),
+            ("bombing", losses[0].impact_at + 0.24),
+            ("damage", losses.last().unwrap().impact_at + 0.65),
+        ];
+        app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
+        app.world_mut().resource_mut::<Player>().reports = vec![report];
+        app.insert_resource(playback);
+        for (phase, elapsed) in samples {
+            app.world_mut().resource_mut::<CinematicPlayback>().elapsed = elapsed;
+            for _ in 0..8 {
+                app.update();
+            }
+            app.world_mut()
+                .spawn(Screenshot::image(target.clone()))
+                .observe(save_to_disk(format!("target/cinematic-preview/{category}-{phase}.png")));
+            for _ in 0..8 {
+                app.update();
+            }
+        }
+    }
+
+    // Resize only after every full-resolution sample; swapping an old render target back
+    // can retain the small egui viewport for a frame and produce an upscaled capture.
+    let small = make_target(&mut app, 640, 480);
+    app.world_mut().entity_mut(camera).insert(RenderTarget::Image(small.clone().into()));
+    for _ in 0..8 {
+        app.update();
+    }
+    app.world_mut()
+        .spawn(Screenshot::image(small))
+        .observe(save_to_disk("target/cinematic-preview/small.png"));
+    for _ in 0..12 {
+        app.update();
     }
 }

@@ -171,6 +171,9 @@ Left/Right or the top-right settings gear to change speed. The adjacent sound ic
 provides mute and volume controls; scrolling during combat changes volume. Escape
 or **Exit combat** returns to battle selection; the cinematic outcome banner can
 also be clicked. Both views show the participating players and their fleet colors.
+Bombing raids show the targeted planetary buildings, explosions, and rising level
+loss captions. During destruction missions, surviving War Suns combine their rays
+before the planetary blast. Building damage and planet destruction follow the saved report.
 The cinematic view has no round banners and stops on the recorded victory, defeat,
 or draw, including stalemates where ships survive on both sides.
 

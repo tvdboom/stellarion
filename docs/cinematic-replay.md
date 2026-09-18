@@ -23,6 +23,14 @@ trucks are assigned only for presentation. Repairs can overlap fire at other tar
 Retreats, returning probes, bombing, planet destruction, and draws follow the report.
 Noncombat orbital structures have no invented attacks.
 
+Economic and industrial raids show the planet's relevant Metal Mine, Crystal Mine,
+Deuterium Synthesizer, Shipyard, Factory, and Missile Silo as individual surface
+structures. Each recorded successful bomb causes an explosion and a rising
+**−1 level** caption, reduces the displayed level, and leaves the structure standing
+until its last level is lost. Misses never remove levels. Surviving War Suns combine
+their charging rays at one focus before a shared beam strikes the planet; the
+planet breaks apart only when the saved report records its destruction.
+
 Weapon colors, projectile masks, barrel patterns, trajectories, particle trails,
 and sound pitch/gain are shared with the schematic renderer. Charged weapons build
 up before their recorded launch, preserving the last shot of a destroyed ship.
@@ -36,6 +44,9 @@ than repeatedly walking the entire shot history. Every combatant remains represe
 larger fleets scale down to fit the viewport. Source artwork and generation prompts
 are documented in [cinematic-art.md](cinematic-art.md). Runtime textures are generated
 by the existing asset pipeline and included by normal native and web packaging.
+The six building references and generation prompts are documented in
+[cinematic-economic-art.md](cinematic-economic-art.md) and
+[cinematic-industrial-art.md](cinematic-industrial-art.md).
 
 Visual pacing was informed by [Stellaris battle screenshots](https://forum.paradoxplaza.com/forum/threads/obligatory-space-battle-screenshot-thread.927576/).
 All ship and structure artwork is derived from Stellarion's own shop references.
@@ -63,5 +74,6 @@ cargo test --lib render_cinematic_preview -j6 -- --ignored --nocapture
 The frames are written under ignored `target/cinematic-preview/`. They include
 entrance, active combat, shield impact and motion, repair, destruction, the outcome
 banner, the shared settings and volume popovers, the War Sun charge/discharge,
-and a 640×480 viewport. It uses the generated runtime textures with the same
+planet breakup, both building categories before and during bombing, rising level
+loss captions, and a 640×480 viewport. It uses the generated runtime textures with the same
 filtering and alpha settings as the game; run `just assets` first.

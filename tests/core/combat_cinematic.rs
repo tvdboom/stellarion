@@ -241,3 +241,238 @@ fn cinematic_weapon_meshes_preserve_distinct_barrels_masks_and_shared_colors() {
             .all(|vertex| vertex.color == weapon_color(weapon.color().with_alpha(0.6))));
     }
 }
+
+fn bombing_replay() -> CinematicPlayback {
+    use crate::core::combat::resolution::ShotReport;
+    let mut report = crate::test_support::empty_report(
+        Mission::default(),
+        Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
+    );
+    let buildings: Vec<_> =
+        Unit::resource_buildings().into_iter().chain(Unit::industrial_buildings()).collect();
+    for unit in &buildings {
+        report.planet.army.insert(*unit, 3);
+    }
+    report.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport {
+            attacker: (0..3)
+                .map(|index| CombatUnit {
+                    id: index,
+                    unit: Unit::Ship(Ship::Bomber),
+                    owner: None,
+                    hull: 100,
+                    shield: 0,
+                    repairs: vec![],
+                    shots: vec![ShotReport {
+                        unit: Some(buildings[0]),
+                        killed: index < 2,
+                        missed: index == 2,
+                        ..Default::default()
+                    }],
+                })
+                .collect(),
+            defender: (4..10)
+                .map(|id| CombatUnit {
+                    id,
+                    unit: Unit::Defense(Defense::RocketLauncher),
+                    owner: None,
+                    hull: 100,
+                    shield: 0,
+                    repairs: vec![],
+                    shots: vec![],
+                })
+                .collect(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    CinematicPlayback::new(&report)
+}
+
+#[test]
+fn six_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
+    use crate::core::map::utils::{MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH};
+    let movie = bombing_replay();
+    for size in [vec2(1440.0, 900.0), vec2(640.0, 480.0), vec2(640.0, 360.0), vec2(450.0, 700.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        let exit = Rect::from_min_size(
+            pos2(
+                size.x - MAIN_BUTTON_RIGHT - MAIN_BUTTON_WIDTH,
+                size.y - MAIN_BUTTON_BOTTOM - MAIN_BUTTON_HEIGHT,
+            ),
+            vec2(MAIN_BUTTON_WIDTH, MAIN_BUTTON_HEIGHT),
+        );
+        for (index, actor) in movie
+            .timeline
+            .actors
+            .iter()
+            .enumerate()
+            .filter(|(_, actor)| actor.initial_levels.is_some())
+        {
+            let pose = movie.actor_pose(scene, index, movie.timeline.entrance_duration);
+            let footprint = Rect::from_center_size(pose.center, Vec2::splat(pose.size));
+            assert!(
+                scene.rect.contains_rect(footprint),
+                "{} must remain visible at {size:?}",
+                actor.unit.to_lowername()
+            );
+            assert!(
+                !exit.intersects(footprint),
+                "{} overlaps Exit at {size:?}",
+                actor.unit.to_lowername()
+            );
+            assert!(
+                pose.center.y + pose.size * 0.43 + (11.0 * scene.scale).max(10.0) < exit.top(),
+                "Level tags must also clear the fixed exit control at {size:?}"
+            );
+            assert!(pose.center.distance(scene.planet) < scene.planet_radius);
+        }
+        for (index, shot) in movie.timeline.shots.iter().enumerate() {
+            let (_, end, _) = movie.shot_geometry(scene, index, shot);
+            let target = movie.actor_pose(scene, shot.target.unwrap(), shot.impact_at);
+            if shot.outcome.missed {
+                assert!(end.distance(target.center) > target.size * 0.7);
+            } else {
+                assert!(
+                    end.distance(target.center) < 0.001,
+                    "A successful bomb must hit its actual building"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn loss_captions_are_readable_separated_seekable_and_absent_for_misses() {
+    use bevy_egui::egui;
+    let mut movie = bombing_replay();
+    let images = ImageIds::default();
+    for size in [vec2(1440.0, 820.0), vec2(640.0, 480.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        let sample = |movie: &CinematicPlayback| {
+            let context = egui::Context::default();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(scene.rect),
+                    ..Default::default()
+                },
+                |ui| {
+                    movie.paint_level_losses(ui.painter(), scene, &images);
+                },
+            );
+            output.textures_delta.clear();
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    Shape::Text(text)
+                        if text.galley.text() == "-1 level"
+                            && text.override_text_color.is_none() =>
+                    {
+                        Some((text.pos, text.galley.size()))
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        movie.elapsed = movie.timeline.level_losses[1].impact_at + 0.05;
+        let captions = sample(&movie);
+        assert_eq!(captions.len(), 4, "Exactly two actual losses, each with a shadow");
+        assert!(captions.iter().all(|(_, size)| size.y >= 11.0));
+        assert!(
+            (captions[0].0.y - captions[2].0.y).abs() >= captions[0].1.y,
+            "Consecutive losses on one building must remain separately readable"
+        );
+        movie.advance(10.0, 4.0, true);
+        assert_eq!(sample(&movie), captions, "Pause must freeze all caption movement");
+        movie.elapsed = 0.0;
+        assert!(sample(&movie).is_empty());
+        movie.elapsed =
+            movie.timeline.shots.iter().map(|shot| shot.impact_at).fold(0.0_f32, f32::max) + 2.3;
+        assert!(sample(&movie).is_empty(), "Misses cannot introduce additional captions");
+    }
+}
+
+#[test]
+fn combined_ray_has_one_discharge_and_planet_breakup_uses_the_actual_artwork() {
+    use bevy_egui::egui;
+    let mut report = crate::test_support::empty_report(
+        Mission::default(),
+        Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
+    );
+    report.planet_destroyed = true;
+    report.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport {
+            attacker: (0..3)
+                .map(|id| CombatUnit {
+                    id,
+                    unit: Unit::war_sun(),
+                    owner: None,
+                    hull: 100,
+                    shield: 0,
+                    repairs: vec![],
+                    shots: vec![],
+                })
+                .collect(),
+            destroy_probability: 0.5,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let mut movie = CinematicPlayback::new(&report);
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    let planet_texture = TextureId::User(90);
+    let beam_texture = TextureId::User(91);
+    let images = ImageIds(
+        [(movie.planet_image.clone(), planet_texture), ("combat fx beam".into(), beam_texture)]
+            .into(),
+    );
+    let sample = |movie: &CinematicPlayback| {
+        let context = egui::Context::default();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(scene.rect),
+                ..Default::default()
+            },
+            |ui| {
+                movie.paint_planet(ui.painter(), scene, &images);
+                movie.paint_planet_attacks(ui.painter(), scene, &images);
+            },
+        );
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|shape| match shape.shape {
+                Shape::Mesh(mesh) => Some(mesh),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let attack = &movie.timeline.planet_attacks[0];
+    let focus = movie.planet_attack_focus(scene, attack);
+    assert!(focus.distance(scene.planet) > scene.planet_radius * 1.3);
+    let discharge_at = attack.discharge_at;
+    let end_at = attack.end_at;
+    movie.elapsed = discharge_at - 0.1;
+    assert_eq!(
+        sample(&movie).iter().filter(|mesh| mesh.texture_id == beam_texture).count(),
+        6,
+        "All three War Suns have two feeder-ray layers, without a premature discharge"
+    );
+    movie.elapsed = discharge_at + 0.3;
+    assert_eq!(
+        sample(&movie).iter().filter(|mesh| mesh.texture_id == beam_texture).count(),
+        9,
+        "Three feeder rays and exactly one three-layer outgoing beam"
+    );
+    movie.elapsed = end_at + 0.4;
+    let fragments = sample(&movie);
+    assert_eq!(fragments.iter().filter(|mesh| mesh.texture_id == planet_texture).count(), 36);
+    assert_eq!(fragments.iter().filter(|mesh| mesh.texture_id == beam_texture).count(), 0);
+    movie.elapsed = end_at + 3.9;
+    assert!(
+        !sample(&movie).iter().any(|mesh| mesh.texture_id == planet_texture),
+        "A destroyed world must leave empty space"
+    );
+}

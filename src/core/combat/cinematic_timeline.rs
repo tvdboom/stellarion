@@ -7,6 +7,9 @@ use crate::core::combat::resolution::ShotReport;
 use crate::core::identity::PlayerId;
 use crate::core::units::Unit;
 
+/// Minimum spacing for readable, separately animated losses on the same building.
+pub(crate) const LEVEL_LOSS_INTERVAL: f32 = 0.36;
+
 /// One visible combatant, retaining its identity through casualties and reordered snapshots.
 pub(crate) struct CinematicActor {
     pub unit: Unit,
@@ -17,6 +20,9 @@ pub(crate) struct CinematicActor {
     pub max_shield: usize,
     pub death_at: Option<f32>,
     pub retreat_at: Option<f32>,
+    /// Surface buildings retain one identity while bombing removes individual levels.
+    pub initial_levels: Option<usize>,
+    levels: Vec<(f32, usize)>,
     states: Vec<(f32, CinematicActorState)>,
 }
 
@@ -27,6 +33,13 @@ pub(crate) struct CinematicActorState {
 }
 
 impl CinematicActor {
+    pub fn levels_at(&self, time: f32) -> Option<usize> {
+        self.initial_levels.map(|initial| {
+            let end = self.levels.partition_point(|(at, _)| *at <= time);
+            end.checked_sub(1).map_or(initial, |index| self.levels[index].1)
+        })
+    }
+
     /// Sampling is independent of frame rate, playback speed and the direction of a seek.
     pub fn state_at(&self, time: f32) -> CinematicActorState {
         let end = self.states.partition_point(|(at, _)| *at <= time);
@@ -41,7 +54,7 @@ impl CinematicActor {
 /// Each saved shot becomes one projectile, including misses, interceptions and bombing.
 pub(crate) struct CinematicShot {
     pub source: usize,
-    /// `None` denotes the planet, its shared shield, or a non-orbital building.
+    /// `None` denotes the planet or its shared shield.
     pub target: Option<usize>,
     pub launch_at: f32,
     pub impact_at: f32,
@@ -58,11 +71,19 @@ pub(crate) struct CinematicRepair {
 }
 
 pub(crate) struct CinematicPlanetAttack {
-    pub source: usize,
+    /// The report preserves the participating survivors, not which individual roll succeeded.
+    pub sources: Vec<usize>,
     pub start_at: f32,
+    pub discharge_at: f32,
     pub end_at: f32,
     /// Success belongs to the recorded aggregate attempt, not a new random roll.
     pub destroyed: bool,
+}
+
+pub(crate) struct CinematicLevelLoss {
+    pub target: usize,
+    pub impact_at: f32,
+    pub remaining_levels: usize,
 }
 
 /// Immutable playback data. Round boundaries are internal constraints, never movie captions.
@@ -71,6 +92,7 @@ pub(crate) struct CinematicTimeline {
     pub shots: Vec<CinematicShot>,
     pub repairs: Vec<CinematicRepair>,
     pub planet_attacks: Vec<CinematicPlanetAttack>,
+    pub level_losses: Vec<CinematicLevelLoss>,
     pub entrance_duration: f32,
     pub duration: f32,
     pub initial_planetary_shield: usize,
@@ -87,6 +109,7 @@ impl CinematicTimeline {
             shots: Vec::new(),
             repairs: Vec::new(),
             planet_attacks: Vec::new(),
+            level_losses: Vec::new(),
             entrance_duration: 2.4,
             duration: 4.0,
             initial_planetary_shield,
@@ -115,7 +138,19 @@ impl CinematicTimeline {
         // Orbitals are scenery unless the combat report records their destruction. They never
         // gain invented weapons merely because their shop artwork looks like a combat station.
         for (unit, count) in report.planet.army.iter() {
-            if unit.is_orbital() && unit.is_building() {
+            if *count > 0
+                && !unit.is_orbital()
+                && (unit.is_economic_building() || unit.is_industrial_building())
+            {
+                let index = movie.add_actor(
+                    report,
+                    *unit,
+                    true,
+                    None,
+                    report.planet.controlled.or(report.planet.owned),
+                );
+                movie.actors[index].initial_levels = Some(*count);
+            } else if unit.is_orbital() && unit.is_building() {
                 for _ in 0..*count {
                     movie.add_actor(
                         report,
@@ -151,7 +186,12 @@ impl CinematicTimeline {
         for (round_index, round) in combat.rounds.iter().enumerate() {
             cursor = movie.add_round(report, round, round_index, cursor, &indices);
         }
-        movie.duration = cursor + 2.0;
+        movie.duration = cursor
+            + if report.planet_destroyed {
+                4.0
+            } else {
+                2.0
+            };
         movie.shots.sort_by(|left, right| left.launch_at.total_cmp(&right.launch_at));
         movie
     }
@@ -186,6 +226,8 @@ impl CinematicTimeline {
             max_shield,
             death_at: None,
             retreat_at: None,
+            initial_levels: None,
+            levels: Vec::new(),
             states: vec![(
                 0.0,
                 CinematicActorState {
@@ -280,7 +322,6 @@ impl CinematicTimeline {
             .map(|record| indices[&(true, record.id)])
             .collect::<Vec<_>>();
         let mut truck = 0;
-        let weapons_end = cursor;
         for record in &round.defender {
             let target = indices[&(true, record.id)];
             for amount in record.repairs.iter().copied().filter(|amount| *amount > 0) {
@@ -315,8 +356,16 @@ impl CinematicTimeline {
         }
 
         let bomb_begin = self.shots.len();
+        let mut previous_bomb = start;
+        let mut previous_level_loss = BTreeMap::<usize, f32>::new();
         for (sequence, (source, outcome)) in bombs.into_iter().enumerate() {
-            let launch_at = weapons_end + 0.12 + sequence as f32 * 0.065;
+            // Bombers peel toward the surface as other combatants continue firing. They must
+            // finish their own volley and wait for the recorded shared-shield breach first.
+            let launch_at = (start + 0.5 + sequence as f32 * 0.075)
+                .max(last_launch.get(&source).copied().unwrap_or(start) + 0.12)
+                .max(shield_barrier + 0.02);
+            // Keep losses in report order even when different Bombers launch concurrently.
+            let mut impact_at = (launch_at + 0.8).max(previous_bomb + 0.14);
             let target = outcome.unit.and_then(|unit| {
                 self.actors.iter().position(|actor| {
                     actor.unit == unit
@@ -325,17 +374,31 @@ impl CinematicTimeline {
                         && actor.death_at.is_none()
                 })
             });
+            if outcome.killed && !outcome.missed {
+                if let Some(target) =
+                    target.filter(|target| self.actors[*target].initial_levels.is_some())
+                {
+                    // Separate repeated labels on one building without serializing other targets.
+                    if let Some(previous) = previous_level_loss.get(&target) {
+                        impact_at = impact_at.max(*previous + LEVEL_LOSS_INTERVAL);
+                    }
+                    previous_level_loss.insert(target, impact_at);
+                }
+            }
+            previous_bomb = impact_at;
             self.shots.push(CinematicShot {
                 source,
                 target,
                 launch_at,
-                impact_at: launch_at + 0.8,
+                impact_at,
                 outcome: outcome.clone(),
             });
             // Reserve an orbital level for each successful bomb before selecting the next one.
-            if outcome.killed {
+            if outcome.killed && !outcome.missed {
                 if let Some(target) = target {
-                    self.actors[target].death_at = Some(launch_at + 0.8);
+                    if self.actors[target].initial_levels.is_none() {
+                        self.actors[target].death_at = Some(impact_at);
+                    }
                 }
             }
         }
@@ -368,19 +431,19 @@ impl CinematicTimeline {
                 .filter(|unit| unit.unit == Unit::war_sun() && unit.hull > 0)
                 .map(|unit| indices[&(false, unit.id)])
                 .collect::<Vec<_>>();
-            let last = suns.len().saturating_sub(1);
-            for (index, source) in suns.into_iter().enumerate() {
-                let start_at = cursor + index as f32 * 0.12;
-                let end_at = start_at + 1.65;
+            if !suns.is_empty() {
+                let start_at = cursor;
+                let discharge_at = start_at + super::effects::DEATH_RAY_DISCHARGE_AT;
+                let end_at = start_at + super::effects::DEATH_RAY_COLLAPSE_AT;
                 let destroyed = report.planet_destroyed
                     && report
                         .combat_report
                         .as_ref()
-                        .is_some_and(|combat| round_index + 1 == combat.rounds.len())
-                    && index == last;
+                        .is_some_and(|combat| round_index + 1 == combat.rounds.len());
                 self.planet_attacks.push(CinematicPlanetAttack {
-                    source,
+                    sources: suns,
                     start_at,
+                    discharge_at,
                     end_at,
                     destroyed,
                 });
@@ -391,6 +454,9 @@ impl CinematicTimeline {
                             && actor.retreat_at.is_none()
                         {
                             actor.death_at = Some(end_at);
+                            if actor.initial_levels.is_some() {
+                                actor.levels.push((end_at, 0));
+                            }
                             actor.record(
                                 end_at,
                                 CinematicActorState {
@@ -423,11 +489,29 @@ impl CinematicTimeline {
                 if let Some(target) = shot.target {
                     let actor = &mut self.actors[target];
                     let mut state = actor.state_at(shot.impact_at);
-                    state.hull = state.hull.saturating_sub(shot.outcome.hull_damage);
-                    state.shield = state.shield.saturating_sub(shot.outcome.shield_damage);
-                    if shot.outcome.killed {
-                        state.hull = 0;
-                        actor.death_at = Some(shot.impact_at);
+                    if let Some(levels) =
+                        actor.levels_at(shot.impact_at).filter(|_| shot.outcome.is_bombing())
+                    {
+                        if shot.outcome.killed && levels > 0 {
+                            let remaining_levels = levels - 1;
+                            actor.levels.push((shot.impact_at, remaining_levels));
+                            self.level_losses.push(CinematicLevelLoss {
+                                target,
+                                impact_at: shot.impact_at,
+                                remaining_levels,
+                            });
+                            if remaining_levels == 0 {
+                                state.hull = 0;
+                                actor.death_at = Some(shot.impact_at);
+                            }
+                        }
+                    } else {
+                        state.hull = state.hull.saturating_sub(shot.outcome.hull_damage);
+                        state.shield = state.shield.saturating_sub(shot.outcome.shield_damage);
+                        if shot.outcome.killed {
+                            state.hull = 0;
+                            actor.death_at = Some(shot.impact_at);
+                        }
                     }
                     actor.record(shot.impact_at, state);
                 }

@@ -69,6 +69,12 @@ pub(crate) const CINEMATIC_IMAGE_NAMES: &[&str] = &[
     "cinematic jump gate",
     "cinematic orbital railgun",
     "cinematic space dock",
+    "cinematic metal mine",
+    "cinematic crystal mine",
+    "cinematic deuterium synthesizer",
+    "cinematic shipyard",
+    "cinematic factory",
+    "cinematic missile silo",
 ];
 
 /// Image handle plus atlas metadata used by animated sprite systems.

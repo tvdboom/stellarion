@@ -5,7 +5,9 @@ use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
-use crate::core::units::{buildings::Building, defense::Defense, ships::Ship, Army, Combat};
+use crate::core::units::{
+    buildings::Building, defense::Defense, ships::Ship, Amount, Army, Combat,
+};
 use bevy::prelude::Vec2;
 
 fn record(id: u64, owner: PlayerId, unit: Unit) -> CombatUnit {
@@ -23,6 +25,9 @@ fn record(id: u64, owner: PlayerId, unit: Unit) -> CombatUnit {
 fn report(rounds: Vec<RoundReport>) -> MissionReport {
     let mut planet = Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0);
     planet.colonize(2);
+    // Synthetic reports specify their entire visible garrison explicitly. Colonization's
+    // starter mines belong in the real-resolver fixtures, not these combatant-only scenarios.
+    planet.army = Army::new().into();
     let mut report = crate::test_support::empty_report(Mission::default(), planet);
     report.combat_report = Some(CombatReport {
         rounds,
@@ -417,4 +422,255 @@ fn stalemate_keeps_survivors_instead_of_fabricating_a_victory_explosion() {
         .iter()
         .all(|actor| actor.death_at.is_none() && actor.retreat_at.is_none()));
     assert!(movie.planet_attacks.is_empty());
+}
+
+#[test]
+fn ground_bombs_target_one_building_per_type_and_only_remove_recorded_levels() {
+    let mine = Unit::Building(Building::MetalMine);
+    let factory = Unit::Building(Building::Factory);
+    let targets = [(mine, true), (mine, false), (mine, true), (factory, true)];
+    let attackers = targets
+        .iter()
+        .enumerate()
+        .map(|(index, (unit, hit))| {
+            let mut bomber = record(index as u64, 1, Unit::Ship(Ship::Bomber));
+            bomber.shots.push(ShotReport {
+                unit: Some(*unit),
+                killed: *hit,
+                missed: !hit,
+                ..Default::default()
+            });
+            bomber
+        })
+        .collect();
+    let mut battle = report(vec![RoundReport {
+        attacker: attackers,
+        ..Default::default()
+    }]);
+    for unit in Unit::resource_buildings().into_iter().chain(Unit::industrial_buildings()) {
+        battle.planet.army.insert(
+            unit,
+            if unit == factory {
+                1
+            } else {
+                3
+            },
+        );
+    }
+    let movie = CinematicTimeline::new(&battle);
+    assert_eq!(movie.actors.iter().filter(|actor| actor.initial_levels.is_some()).count(), 6);
+    assert_eq!(movie.level_losses.len(), 3, "A miss must not create a level-loss caption");
+    for shot in &movie.shots {
+        let target =
+            &movie.actors[shot.target.expect("A recorded building has an exact visible target")];
+        assert_eq!(Some(target.unit), shot.outcome.unit);
+    }
+    let mine = movie.actors.iter().find(|actor| actor.unit == mine).unwrap();
+    assert_eq!(mine.levels_at(0.0), Some(3));
+    assert_eq!(mine.levels_at(movie.duration), Some(1));
+    assert!(mine.death_at.is_none(), "Losing one level does not destroy the whole building");
+    for loss in &movie.level_losses {
+        let target = &movie.actors[loss.target];
+        assert_eq!(target.levels_at(loss.impact_at - 0.001), Some(loss.remaining_levels + 1));
+        assert_eq!(target.levels_at(loss.impact_at), Some(loss.remaining_levels));
+        assert_eq!(target.death_at, (loss.remaining_levels == 0).then_some(loss.impact_at));
+    }
+    let factory = movie.actors.iter().find(|actor| actor.unit == factory).unwrap();
+    assert_eq!(factory.levels_at(movie.duration), Some(0));
+    assert_eq!(factory.state_at(movie.duration).hull, 0);
+    assert_eq!(mine.levels_at(0.0), Some(3), "Seeking backwards restores the original levels");
+}
+
+#[test]
+fn bombing_overlaps_unrelated_fire_but_waits_for_own_volley_and_shield_breach() {
+    let mine = Unit::Building(Building::MetalMine);
+    let mut bomber = record(1, 1, Unit::Ship(Ship::Bomber));
+    bomber.shots = vec![
+        ShotReport {
+            unit: Some(Unit::planetary_shield()),
+            planetary_shield_damage: 100,
+            ..Default::default()
+        },
+        ShotReport {
+            unit: Some(mine),
+            killed: true,
+            ..Default::default()
+        },
+    ];
+    let mut cruiser = record(3, 1, Unit::Ship(Ship::Cruiser));
+    cruiser.shots = (0..24)
+        .map(|_| ShotReport {
+            missed: true,
+            ..Default::default()
+        })
+        .collect();
+    let mut battle = report(vec![RoundReport {
+        attacker: vec![bomber, cruiser],
+        ..Default::default()
+    }]);
+    battle.planet.army.insert(mine, 2);
+    let movie = CinematicTimeline::new(&battle);
+    let bomb = movie.shots.iter().find(|shot| shot.outcome.is_bombing()).unwrap();
+    let breach = movie.shots.iter().find(|shot| shot.outcome.planetary_shield_damage > 0).unwrap();
+    assert!(bomb.launch_at > breach.impact_at);
+    assert_eq!(movie.planetary_shield_at(bomb.launch_at), 0);
+    assert!(movie
+        .shots
+        .iter()
+        .filter(|shot| shot.source == bomb.source && !shot.outcome.is_bombing())
+        .all(|shot| shot.launch_at < bomb.launch_at));
+    assert!(
+        movie
+            .shots
+            .iter()
+            .any(|shot| !shot.outcome.is_bombing() && shot.impact_at > bomb.launch_at),
+        "Bombs should fly while unrelated salvos are still in progress"
+    );
+}
+
+#[test]
+fn resolver_bombing_levels_and_misses_match_the_saved_surviving_garrison() {
+    for (seed, raid) in [(731, BombingRaid::Economic), (913, BombingRaid::Industrial)] {
+        let mut rng = DeterministicRngState::from_u64(seed).next_rng();
+        let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+        origin.colonize(1);
+        let mut planet = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);
+        planet.colonize(2);
+        let buildings: Vec<_> =
+            Unit::resource_buildings().into_iter().chain(Unit::industrial_buildings()).collect();
+        let mut defenders: Army = buildings.iter().copied().zip([1, 3, 5, 1, 3, 5]).collect();
+        defenders.insert(Unit::Defense(Defense::RocketLauncher), 4);
+        defenders.insert(Unit::planetary_shield(), 1);
+        planet.army = defenders.into();
+        let mission = Mission::new_with_id(
+            1,
+            1,
+            1,
+            &origin,
+            &planet,
+            Icon::Attack,
+            Army::from([(Unit::Ship(Ship::Bomber), 36)]),
+            raid,
+            false,
+            false,
+            None,
+        );
+        let battle = resolve_combat_with_rng(1, &mission, &planet, &mut rng);
+        let movie = CinematicTimeline::new(&battle);
+        let hits = movie
+            .shots
+            .iter()
+            .filter(|shot| shot.outcome.is_bombing() && shot.outcome.killed && !shot.outcome.missed)
+            .count();
+        assert!(hits > 0, "Seeded resolver fixture must exercise actual level loss");
+        assert_eq!(hits, movie.level_losses.len());
+        for unit in buildings {
+            let actor = movie.actors.iter().find(|actor| actor.unit == unit).unwrap();
+            assert_eq!(actor.levels_at(0.0), Some(battle.planet.army.amount(&unit)));
+            assert_eq!(
+                actor.levels_at(movie.duration),
+                Some(battle.surviving_defender.amount(&unit))
+            );
+            assert_eq!(actor.death_at.is_some(), battle.surviving_defender.amount(&unit) == 0);
+            assert!(actor
+                .levels
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 == pair[1].1 + 1));
+        }
+        let barrier = movie
+            .shots
+            .iter()
+            .filter(|shot| shot.outcome.planetary_shield_damage > 0)
+            .map(|shot| shot.impact_at)
+            .fold(0.0_f32, f32::max);
+        assert!(movie
+            .shots
+            .iter()
+            .filter(|shot| shot.outcome.is_bombing())
+            .all(|shot| shot.launch_at > barrier));
+    }
+}
+
+#[test]
+fn unbreached_shield_and_failed_bombs_preserve_surface_buildings() {
+    let mine = Unit::Building(Building::MetalMine);
+    for missed_bomb in [false, true] {
+        let mut bomber = record(1, 1, Unit::Ship(Ship::Bomber));
+        bomber.shots.push(if missed_bomb {
+            ShotReport {
+                unit: Some(mine),
+                missed: true,
+                ..Default::default()
+            }
+        } else {
+            ShotReport {
+                unit: Some(Unit::planetary_shield()),
+                planetary_shield_damage: 20,
+                ..Default::default()
+            }
+        });
+        let mut battle = report(vec![RoundReport {
+            attacker: vec![bomber],
+            planetary_shield: if missed_bomb {
+                0
+            } else {
+                80
+            },
+            ..Default::default()
+        }]);
+        battle.planet.army.insert(mine, 3);
+        let movie = CinematicTimeline::new(&battle);
+        let mine = movie.actors.iter().find(|actor| actor.unit == mine).unwrap();
+        assert_eq!(mine.levels_at(movie.duration), Some(3));
+        assert!(mine.death_at.is_none());
+        assert!(movie.level_losses.is_empty());
+    }
+}
+
+#[test]
+fn surviving_war_suns_combine_once_per_attempt_and_preserve_failed_outcomes() {
+    let mut dead = record(3, 1, Unit::war_sun());
+    dead.hull = 0;
+    let first = RoundReport {
+        attacker: vec![record(1, 1, Unit::war_sun()), record(2, 3, Unit::war_sun()), dead],
+        destroy_probability: 0.5,
+        ..Default::default()
+    };
+    let mut second = first.clone();
+    second.attacker.retain(|unit| unit.hull > 0);
+    let mut battle = report(vec![first, second]);
+    battle.planet_destroyed = true;
+    battle.planet.army.insert(Unit::Building(Building::Factory), 5);
+    let movie = CinematicTimeline::new(&battle);
+    assert_eq!(movie.planet_attacks.len(), 2, "Several War Suns share one recorded attempt");
+    for attack in &movie.planet_attacks {
+        let ids: Vec<_> =
+            attack.sources.iter().map(|source| movie.actors[*source].id.unwrap()).collect();
+        assert_eq!(ids, [1, 2]);
+        assert!(attack.start_at < attack.discharge_at && attack.discharge_at < attack.end_at);
+        assert!(attack.sources.iter().all(|source| movie.actors[*source].death_at.is_none()));
+    }
+    assert!(!movie.planet_attacks[0].destroyed);
+    let final_attack = &movie.planet_attacks[1];
+    assert!(final_attack.destroyed);
+    assert!(movie.planet_attacks[0].end_at < final_attack.start_at);
+    let factory =
+        movie.actors.iter().find(|actor| actor.unit == Unit::Building(Building::Factory)).unwrap();
+    assert_eq!(factory.levels_at(final_attack.end_at - 0.01), Some(5));
+    assert_eq!(factory.levels_at(final_attack.end_at), Some(0));
+    assert!(
+        movie.level_losses.is_empty(),
+        "Planet destruction is not a fictitious bombing level loss"
+    );
+    assert!(
+        movie.duration >= final_attack.end_at + 3.8,
+        "The actual breakup must finish before the result"
+    );
+    battle.planet_destroyed = false;
+    let failed = CinematicTimeline::new(&battle);
+    assert!(failed.planet_attacks.iter().all(|attack| !attack.destroyed));
+    let factory =
+        failed.actors.iter().find(|actor| actor.unit == Unit::Building(Building::Factory)).unwrap();
+    assert_eq!(factory.levels_at(failed.duration), Some(5));
+    assert!(factory.death_at.is_none());
 }
