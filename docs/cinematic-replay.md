@@ -30,7 +30,9 @@ to protected defenses. Repair trucks heal the recorded targets and amounts; the
 report does not identify which particular truck supplied each repair, so surviving
 trucks are assigned only for presentation. Repairs can overlap fire at other targets.
 Retreats, returning probes, bombing, planet destruction, and draws follow the report.
-The Space Dock is larger than a War Sun, drifts in space above the planet, and
+The Space Dock is larger than a War Sun and follows a fixed-altitude orbital arc
+above the planet, smoothly easing to a slower drift as the fleets arrive. It does
+not bob or rock in place, and
 participates with its recorded weapons, hits, and sound. Other orbital structures
 are omitted from the cinematic picture and soundtrack; the saved combat result
 remains unchanged. Surface turrets

@@ -698,24 +698,26 @@ impl CinematicPlayback {
                 center.y += (time * 0.85 + phase).sin() * 3.0 * scene.scale;
             }
         } else if actor.unit == Unit::space_dock() && self.show_planet {
-            // A dock is already stationed in orbit when the fleets arrive. Keep its full
-            // silhouette outside the atmosphere, with a slow drift above the upper-left limb.
-            let orbit_angle = -2.15 + visual.home.x * 0.45 + (time * 0.10 + phase).sin() * 0.08;
+            // Keep a fixed orbital radius and attitude: a station should not bob or rock.
+            // Choose a visible starting point once, rather than clamping its path every frame.
             let altitude = scene.planet_radius * (1.15 + visual.home.y.abs())
                 + size * 0.60
-                // A slight radial drift keeps the station moving even when a short window
-                // projects its orbit along the upper edge of the canvas.
-                + (14.0 + 8.0 * (time * 0.16 + phase).sin()) * scene.scale;
-            center = scene.planet + Vec2::angled(orbit_angle) * altitude;
+                + 22.0 * scene.scale;
             let top = scene.rect.top() + size * 0.55 + 12.0 * scene.scale;
-            if center.y < top {
-                // In short windows, follow the same orbital radius farther around the limb
-                // instead of clipping the station or pushing it down onto the planet.
-                center.y = top;
-                let height = center.y - scene.planet.y;
-                center.x = scene.planet.x - (altitude * altitude - height * height).max(0.0).sqrt();
-            }
-            angle = (time * 0.16 + phase).sin() * 0.025;
+            let visible_start = -PI + ((scene.planet.y - top) / altitude).clamp(0.0, 1.0).asin();
+            let start_angle = (-2.15 + visual.home.x * 0.45).min(visible_start);
+            let elapsed = time.max(0.0);
+            let arrival = self.timeline.entrance_duration.max(0.1);
+            let p = (elapsed / arrival).min(1.0);
+            // Integrate a smooth change from the arrival orbit to a much slower combat drift.
+            // Both position and angular velocity are continuous as the fleets reach the planet.
+            let travel =
+                0.003 * elapsed + (0.024 - 0.003) * arrival * (p - p.powi(3) + 0.5 * p.powi(4));
+            // Ease into the visible upper orbital arc during very long replays, without reversing
+            // direction or clipping through the screen edge or the planet's energy field.
+            let arc = (start_angle + PI - 0.18).clamp(0.01, 0.42);
+            let orbit_angle = start_angle - arc * (1.0 - (-travel / arc).exp());
+            center = scene.planet + Vec2::angled(orbit_angle) * altitude;
         } else {
             center = scene.point(visual.home);
             // Maneuverability follows the actual hull class, independent of fleet density.

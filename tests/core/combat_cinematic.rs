@@ -629,7 +629,7 @@ fn raid_visibility_keeps_defenses_and_docks_hides_other_orbitals_and_respects_jo
 }
 
 #[test]
-fn space_dock_hovers_above_the_planet_with_clearance_for_its_entire_sprite() {
+fn space_dock_orbits_smoothly_then_eases_into_combat_drift_without_wiggling() {
     let mut report = bombing_report();
     let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
     let mut dock = round.defender[0].clone();
@@ -646,8 +646,21 @@ fn space_dock_hovers_above_the_planet_with_clearance_for_its_entire_sprite() {
     {
         let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, viewport));
         let first = movie.actor_pose(scene, index, 0.0);
+        let radius = first.center.distance(scene.planet);
+        let mut previous_angle = (first.center - scene.planet).angle();
         for tick in 0..100 {
             let pose = movie.actor_pose(scene, index, tick as f32 * 0.4);
+            let orbital_angle = (pose.center - scene.planet).angle();
+            assert!(
+                orbital_angle <= previous_angle + 0.000_001,
+                "Orbit must never wiggle backwards"
+            );
+            previous_angle = orbital_angle;
+            assert!(
+                (pose.center.distance(scene.planet) - radius).abs() < 0.001,
+                "The station must keep its orbital altitude instead of bobbing"
+            );
+            assert_eq!(pose.angle, first.angle, "The station must not rock in place");
             assert!(pose.center.y < scene.planet.y);
             assert!(
                 pose.center.distance(scene.planet) - pose.size * 0.5 > scene.planet_radius * 1.065,
@@ -664,6 +677,29 @@ fn space_dock_hovers_above_the_planet_with_clearance_for_its_entire_sprite() {
         assert!(
             movie.actor_pose(scene, index, 8.0).center.distance(first.center) > scene.scale * 2.0,
             "The dock should visibly drift in orbit"
+        );
+        let arrival = movie.timeline.entrance_duration;
+        let before = movie.actor_pose(scene, index, arrival - 0.02).center;
+        let at = movie.actor_pose(scene, index, arrival).center;
+        let after = movie.actor_pose(scene, index, arrival + 0.02).center;
+        let incoming = at - before;
+        let outgoing = after - at;
+        assert!(
+            incoming.length() > 0.0001 && outgoing.length() > 0.0001,
+            "Fleet arrival must not freeze the dock"
+        );
+        assert!(
+            (incoming - outgoing).length() < 0.001,
+            "The dock must ease into its combat drift without a sudden stop"
+        );
+        let approach_speed = movie.actor_pose(scene, index, 1.0).center.distance(first.center);
+        let combat_speed = movie
+            .actor_pose(scene, index, arrival + 3.0)
+            .center
+            .distance(movie.actor_pose(scene, index, arrival + 2.0).center);
+        assert!(
+            approach_speed > combat_speed * 4.0,
+            "The station should settle into a gentler drift once fleets arrive"
         );
     }
 }
