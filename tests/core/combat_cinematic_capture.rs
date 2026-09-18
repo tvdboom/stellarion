@@ -279,7 +279,9 @@ fn render_cinematic_preview() {
         samples.push(("shield-flow".into(), shot.impact_at + 0.70));
     }
     if let Some(repair) = playback.timeline.repairs.first() {
+        samples.push(("repair-approach".into(), (repair.start_at - 0.75).max(0.0)));
         samples.push(("repair".into(), (repair.start_at + repair.end_at) * 0.5));
+        samples.push(("repair-parked".into(), repair.end_at + 0.3));
     }
     if let Some(death) =
         playback.timeline.actors.iter().filter_map(|actor| actor.death_at).min_by(f32::total_cmp)
@@ -371,6 +373,7 @@ fn render_cinematic_preview() {
             // Exercise the production result loader, including its separate alpha conventions.
             if (directory == "bg" && matches!(name.as_str(), "victory" | "defeat" | "draw"))
                 || (directory == "animations" && name == "explosion")
+                || (directory == "planets" && matches!(name.as_str(), "planet0" | "moon0"))
             {
                 continue;
             }
@@ -397,9 +400,9 @@ fn render_cinematic_preview() {
         app.world_mut()
             .run_system_once(|server: Res<AssetServer>, mut assets: ResMut<WorldAssets>| {
                 assets.load_combat_result_images(&server);
-                assets.load_combat_explosion_image(&server);
+                assets.load_combat_shared_images(&server);
                 assert_ne!(assets.ui_images["explosion"].id(), assets.image("explosion").id());
-                ["victory", "defeat", "draw", "explosion"]
+                ["victory", "defeat", "draw", "explosion", "planet0", "moon0"]
                     .into_iter()
                     .flat_map(|name| {
                         [
@@ -680,6 +683,8 @@ fn render_cinematic_preview() {
     let ray_samples = [
         ("war-sun-charge", ray.start_at + (ray.discharge_at - ray.start_at) * 0.75),
         ("war-sun-beam", (ray.discharge_at + ray.end_at) * 0.5),
+        ("planet-before-swap", ray.end_at + 0.66),
+        ("planet-after-swap", ray.end_at + 0.70),
         ("planet-blast", ray.end_at + 0.7),
         ("planet-blast-late", ray.end_at + 1.25),
         ("planet-debris", ray.end_at + 2.5),

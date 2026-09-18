@@ -197,6 +197,25 @@ fn release_frame(age: f32) -> usize {
 }
 
 impl CinematicPlayback {
+    pub(super) fn aim_planet_cannon(
+        &self,
+        index: usize,
+        time: f32,
+        target: Pos2,
+        pose: &mut ActorPose,
+    ) {
+        let Some(sheet) = self.visuals[index].firing_sheet else {
+            return;
+        };
+        let offset = (sheet.muzzle(self.firing_frame(index, time)) - pos2(0.5, 0.5))
+            * sheet.dimensions(pose.size);
+        let direction = target - pose.center;
+        pose.mirror = false;
+        // Align the barrel axis, accounting for its offset above the image center.
+        pose.angle =
+            direction.angle() - (offset.y / direction.length().max(1.0)).clamp(-1.0, 1.0).asin();
+    }
+
     fn firing_shot(&self, index: usize, time: f32) -> Option<&CinematicShot> {
         let visual = &self.visuals[index];
         let end = visual.firing_times.partition_point(|at| *at <= time + 0.16);

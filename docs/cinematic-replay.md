@@ -46,7 +46,10 @@ Projectiles and beams use the rendered cannon's frame-specific muzzle attachment
 The ship artwork has a level bow-to-stern axis; banking follows the actual flight
 path with bounded banks and horizontal reflection, so ships never roll upside down.
 War Suns form a shallow firing fan and advance toward their shared focus during a
-planet strike, with the rest of the battle continuing around them.
+planet strike, with the rest of the battle continuing around them. The convergence
+point is anchored beside the planet, independent of fleet height; barrel axes line up
+with it throughout charging and firing. Completed salvo afterglows retain their impact
+origins instead of following the hulls into the planet-strike formation.
 
 Economic and industrial raids show the planet's relevant Metal Mine, Crystal Mine,
 Deuterium Synthesizer, Shipyard, Factory, and Missile Silo as individual surface
@@ -62,7 +65,10 @@ for the round's impacts, repairs, and departures. No extra shots or damage are i
 The impact sends pressure ripples around the curved surface. Failed strikes leave the
 planet intact as those ripples fade. Recorded destruction engulfs the globe in
 overlapping versions of the regular battle explosion, with staggered explosion
-sounds and small drifting shards. The death ray is 4 dB louder than its default
+sounds and small drifting shards. At 0.68 seconds into the detonation, opaque blast
+cover conceals the swap to the normal destroyed planet (or moon) artwork. Its transparent
+margins are cropped so the ruined globe retains exactly the original visible diameter
+and stays visible after the explosions clear. The death ray is 4 dB louder than its default
 cue, while still following the player's volume setting.
 
 Weapon colors, projectile masks, barrel patterns, trajectories, particle trails,
@@ -83,7 +89,10 @@ make faster, broader passes. Bombers make approaches toward their recorded surfa
 targets while both fleets keep their complete hulls outside the planet and shield.
 Turrets scale by class, with Ion and Plasma guns larger than inexpensive emplacements.
 The relevant buildings occupy a smaller, lower settlement row. Repair trucks travel
-between their assigned recorded repair targets and park beside them while working.
+between their assigned recorded repair targets along curved routes, steer toward
+their direction of travel, and retain their heading when parked. Tight repair schedules
+do not teleport or accelerate trucks: any repair that starts during travel still uses
+the truck's actual position as its visual source.
 Gas worlds use floating building platforms and hovering defense pads.
 Both views reveal the same victory, draw, or defeat image in a dark central band,
 using the same 1.5-second entrance and no instruction caption.

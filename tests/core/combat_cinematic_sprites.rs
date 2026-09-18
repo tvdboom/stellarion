@@ -178,3 +178,32 @@ fn firing_cycle_has_safe_idle_boundaries_and_replay_is_seekable() {
         assert_eq!(movie.firing_frame(shot.source, time), expected);
     }
 }
+
+#[test]
+fn planet_focus_stays_beside_the_world_even_when_the_fleet_is_far_north() {
+    let mut movie = planet_strike_replay(true);
+    for home in [vec2(0.15, -0.8), vec2(0.25, 0.10), vec2(0.8, 0.0), vec2(-0.4, 0.9)] {
+        for visual in &mut movie.visuals {
+            visual.home = home;
+        }
+        for size in [vec2(1440.0, 900.0), vec2(640.0, 360.0)] {
+            let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+            let attack = &movie.timeline.planet_attacks[0];
+            let focus = movie.planet_attack_focus(scene, attack);
+            assert!(focus.x < scene.planet.x - scene.planet_radius);
+            assert!((focus.y - scene.planet.y).abs() < scene.planet_radius * 0.1);
+            for &source in &attack.sources {
+                for tick in 0..=40 {
+                    let time =
+                        attack.start_at + (attack.end_at - attack.start_at) * tick as f32 / 40.0;
+                    let pose = movie.actor_pose(scene, source, time);
+                    let muzzle = movie.actor_muzzle(scene, source, time, focus);
+                    let barrel = Vec2::angled(pose.angle);
+                    assert!(barrel.dot((focus - muzzle).normalized()) > 0.9999,
+                        "The actual cannon must aim at the convergence point throughout charging and firing");
+                    assert!(pose.angle.abs() < 0.4);
+                }
+            }
+        }
+    }
+}

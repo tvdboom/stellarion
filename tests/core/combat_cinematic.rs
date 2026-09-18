@@ -1013,6 +1013,7 @@ fn planet_strike_images(movie: &CinematicPlayback) -> ImageIds {
             ("combat fx shard".into(), TextureId::User(93)),
             ("combat fx glow".into(), TextureId::User(94)),
             ("combat fx ring".into(), TextureId::User(95)),
+            (movie.destroyed_planet_image.into(), TextureId::User(96)),
         ]
         .into(),
     )
@@ -1079,7 +1080,7 @@ fn combined_ray_has_one_discharge_regardless_of_war_sun_count() {
 }
 
 #[test]
-fn destroyed_planet_uses_overlapping_shared_blasts_and_small_shards_then_clears() {
+fn destroyed_planet_uses_shared_blasts_then_reveals_the_same_sized_ruined_world() {
     let mut movie = planet_strike_replay(true);
     let images = planet_strike_images(&movie);
     let planet_texture = images.0[&movie.planet_image];
@@ -1137,10 +1138,14 @@ fn destroyed_planet_uses_overlapping_shared_blasts_and_small_shards_then_clears(
         );
         assert!(meshes_with_texture(&shapes, planet_texture).is_empty());
         movie.elapsed = end_at + 3.9;
-        assert!(
-            planet_strike_shapes(&movie, scene, &images).is_empty(),
-            "A destroyed world must leave empty space after its effects finish"
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        let remnant = meshes_with_texture(&shapes, images.0[movie.destroyed_planet_image]);
+        assert_eq!(remnant.len(), 1, "The ruined world must remain after the clouds clear");
+        assert_eq!(
+            remnant[0].calc_bounds(),
+            Rect::from_center_size(scene.planet, Vec2::splat(scene.planet_radius * 2.0))
         );
+        assert!(meshes_with_texture(&shapes, blast_texture).is_empty());
     }
 }
 
@@ -1253,28 +1258,28 @@ fn repair_trucks_drive_to_recorded_jobs_and_hold_position_while_working() {
         CinematicRepair {
             source: Some(truck),
             target: 26,
-            start_at: 4.0,
-            end_at: 5.0,
+            start_at: 8.0,
+            end_at: 9.0,
             amount: 20,
         },
         CinematicRepair {
             source: Some(truck),
             target: 43,
-            start_at: 8.0,
-            end_at: 9.0,
+            start_at: 18.0,
+            end_at: 19.0,
             amount: 20,
         },
     ];
     movie.visuals[truck].repair_visits = vec![0, 1];
     let start = movie.actor_pose(scene, truck, 0.0).center;
-    let first = movie.actor_pose(scene, truck, 4.0).center;
-    let second = movie.actor_pose(scene, truck, 8.0).center;
+    let first = movie.actor_pose(scene, truck, 8.0).center;
+    let second = movie.actor_pose(scene, truck, 18.0).center;
     assert!(first.distance(start) > 25.0, "Truck only wiggled at its spawn");
     assert!(second.distance(first) > 25.0, "Truck did not travel to the next job");
-    assert_eq!(first, movie.actor_pose(scene, truck, 4.5).center);
-    assert_eq!(second, movie.actor_pose(scene, truck, 8.5).center);
+    assert_eq!(first, movie.actor_pose(scene, truck, 8.5).center);
+    assert_eq!(second, movie.actor_pose(scene, truck, 18.5).center);
     let mut previous = start;
-    for tick in 0..900 {
+    for tick in 0..1900 {
         let position = movie.actor_pose(scene, truck, tick as f32 * 0.01).center;
         assert!(position.distance(previous) < 2.0, "Truck teleported between jobs");
         assert!(position.distance(scene.planet) < scene.planet_radius);
@@ -1282,7 +1287,94 @@ fn repair_trucks_drive_to_recorded_jobs_and_hold_position_while_working() {
     }
     assert_eq!(
         first,
-        movie.actor_pose(scene, truck, 4.0).center,
+        movie.actor_pose(scene, truck, 8.0).center,
         "Seeking must rewind the truck route"
     );
+}
+
+#[test]
+fn planet_texture_swap_is_hidden_by_opaque_blast_cover_and_rewinds_exactly() {
+    let mut movie = planet_strike_replay(true);
+    let images = planet_strike_images(&movie);
+    let end = movie.timeline.planet_attacks[0].end_at;
+    for size in [vec2(1440.0, 900.0), vec2(640.0, 360.0), vec2(450.0, 700.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        for age in [PLANET_SWAP_AT + 0.02, PLANET_SWAP_AT - 0.02] {
+            movie.elapsed = end + age;
+            let shapes = planet_strike_shapes(&movie, scene, &images);
+            let key = if age < PLANET_SWAP_AT {
+                movie.planet_image.as_str()
+            } else {
+                movie.destroyed_planet_image
+            };
+            let globe = meshes_with_texture(&shapes, images.0[key]);
+            assert_eq!(globe.len(), 1);
+            assert_eq!(
+                globe[0].calc_bounds(),
+                Rect::from_center_size(scene.planet, Vec2::splat(scene.planet_radius * 2.0))
+            );
+            assert!(shapes.iter().any(|shape| matches!(shape, Shape::Circle(circle)
+                if circle.fill.a() == 255 && circle.center == scene.planet && circle.radius >= scene.planet_radius)),
+                "Both sides of the swap must be completely concealed by the blast");
+        }
+        movie.elapsed = end + 0.1;
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        assert_eq!(
+            meshes_with_texture(&shapes, images.0[&movie.planet_image])[0].vertices[0].color.a(),
+            255
+        );
+    }
+}
+
+#[test]
+fn trucks_face_the_road_keep_their_heading_when_parked_and_never_teleport_between_tight_jobs() {
+    use crate::core::combat::cinematic_timeline::CinematicRepair;
+    let mut movie = replay();
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let truck = 24;
+    movie.timeline.actors[truck].unit = Unit::repair_truck();
+    movie.visuals[truck].home = vec2(0.0, 0.0);
+    for (slot, home) in [vec2(-0.55, -0.4), vec2(0.55, 0.1), vec2(-0.4, 0.45), vec2(0.1, -0.6)]
+        .into_iter()
+        .enumerate()
+    {
+        let target = truck + 1 + slot;
+        movie.visuals[target].home = home;
+        movie.timeline.repairs.push(CinematicRepair {
+            source: Some(truck),
+            target,
+            start_at: 0.6 + slot as f32 * 0.5,
+            end_at: 0.9 + slot as f32 * 0.5,
+            amount: 20,
+        });
+    }
+    movie.visuals[truck].repair_visits = (0..4).collect();
+    for tick in 0..4000 {
+        let time = tick as f32 * 0.01;
+        let (position, _) = movie.repair_truck_motion(scene, truck, time);
+        let (next, _) = movie.repair_truck_motion(scene, truck, time + 0.01);
+        let velocity = next - position;
+        let pose = movie.actor_pose(scene, truck, time);
+        let forward = rotate(
+            Vec2::angled(145.0_f32.to_radians())
+                * vec2(
+                    if pose.mirror {
+                        -1.0
+                    } else {
+                        1.0
+                    },
+                    1.0,
+                ),
+            pose.angle,
+        );
+        assert!(velocity.length() < 1.2, "A late repair must not teleport the truck");
+        if velocity.length() > 0.001 {
+            assert!(forward.dot(velocity.normalized()) > 0.30, "Truck drove backwards at {time}");
+        }
+        assert!(pose.angle.abs() <= 1.0, "Truck rolled upside down");
+    }
+    let first = movie.actor_pose(scene, truck, 45.0);
+    let later = movie.actor_pose(scene, truck, 45.5);
+    assert_eq!(first.mirror, later.mirror);
+    assert_eq!(first.angle, later.angle, "Floating-platform bob must not change steering");
 }

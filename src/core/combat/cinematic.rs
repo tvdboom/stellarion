@@ -31,6 +31,9 @@ mod sprites;
 use sprites::{firing_sheet, FiringSheet};
 /// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
 pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
+/// The texture swap occurs inside the opaque core of the planet's detonation.
+const PLANET_SWAP_AT: f32 = 0.68;
+const DESTROYED_PLANET_UV: Rect = Rect::from_min_max(pos2(0.01, 0.005), pos2(0.99, 0.9825));
 
 /// The movie has one clock. Manual camera navigation remains available while it is paused.
 #[derive(Resource)]
@@ -45,6 +48,7 @@ pub(crate) struct CinematicPlayback {
     repair_order: Vec<usize>,
     maximum_repair_lifetime: f32,
     planet_image: String,
+    destroyed_planet_image: &'static str,
     planet_uv: Rect,
     show_planet: bool,
     gas_planet: bool,
@@ -254,6 +258,11 @@ impl CinematicPlayback {
             repair_order,
             maximum_repair_lifetime,
             planet_image,
+            destroyed_planet_image: if report.planet.is_moon() {
+                "moon0"
+            } else {
+                "planet0"
+            },
             planet_uv,
             show_planet: !report.is_space_fauna_encounter(),
             gas_planet,
@@ -641,17 +650,21 @@ impl CinematicPlayback {
         images: &ImageIds,
         age: f32,
     ) {
-        // The globe disappears beneath the growing fireballs. Debris comes from the shared
-        // wreck particles (small, size-capped shards), never large slices of planet artwork.
-        let opacity = 1.0 - smooth(age / 0.72);
-        let Some(texture) = images.0.get(&self.planet_image).filter(|_| opacity > 0.0) else {
+        // Preserve the globe's visible diameter. The map's destroyed artwork has a small
+        // transparent margin, unlike the tightly cropped cinematic planet variants.
+        let (name, uv) = if age < PLANET_SWAP_AT {
+            (self.planet_image.as_str(), self.planet_uv)
+        } else {
+            (self.destroyed_planet_image, DESTROYED_PLANET_UV)
+        };
+        let Some(texture) = images.0.get(name) else {
             return;
         };
         painter.image(
             *texture,
             Rect::from_center_size(scene.planet, Vec2::splat(scene.planet_radius * 2.0)),
-            self.planet_uv,
-            alpha(Color32::WHITE, opacity),
+            uv,
+            Color32::WHITE,
         );
     }
 
@@ -685,6 +698,35 @@ impl CinematicPlayback {
         }
         if actor.unit == Unit::space_dock() {
             pose.mirror = false;
+        }
+        if actor.unit == Unit::repair_truck() {
+            // Heading comes from road travel, never the gas platform's vertical bob.
+            let (_, direction) = self.repair_truck_motion(scene, index, time);
+            let art_heading = 145.0_f32.to_radians();
+            pose.mirror = direction.x > 0.0;
+            let bow = Vec2::angled(art_heading)
+                * vec2(
+                    if pose.mirror {
+                        -1.0
+                    } else {
+                        1.0
+                    },
+                    1.0,
+                );
+            let turn = direction.angle() - bow.angle();
+            pose.angle = turn.sin().atan2(turn.cos()).clamp(-1.0, 1.0);
+        }
+        for attack in &self.timeline.planet_attacks {
+            if (attack.start_at..=attack.end_at).contains(&time) && attack.sources.contains(&index)
+            {
+                self.aim_planet_cannon(
+                    index,
+                    time,
+                    self.planet_attack_focus(scene, attack),
+                    &mut pose,
+                );
+                break;
+            }
         }
         pose
     }
@@ -727,34 +769,69 @@ impl CinematicPlayback {
         pose
     }
 
-    fn repair_truck_position(&self, scene: Scene, index: usize, time: f32) -> Pos2 {
+    fn repair_truck_motion(&self, scene: Scene, index: usize, time: f32) -> (Pos2, Vec2) {
         let visual = &self.visuals[index];
         let mut from = scene.planet + visual.home * scene.planet_radius;
         let mut available = 0.0_f32;
+        let mut heading = Vec2::angled(145.0_f32.to_radians());
         for &visit in &visual.repair_visits {
             let repair = &self.timeline.repairs[visit];
             let target = &self.visuals[repair.target];
             // Park beside the repaired gun, leaving its barrel and firing line clear.
-            let destination = scene.planet
+            let mut destination = scene.planet
                 + target.home * scene.planet_radius
                 + vec2(-0.28, 0.34) * (target.size + visual.size) * scene.scale;
-            let travel = (destination.distance(from) / (45.0 * scene.scale)).clamp(0.6, 3.0);
-            let depart = (repair.start_at - travel).max(available);
-            if time < depart {
-                return from;
+            let offset = destination - scene.planet;
+            let clearance = (scene.planet_radius - visual.size * scene.scale * 0.6).max(1.0);
+            if offset.length() > clearance {
+                destination = scene.planet + offset.normalized() * clearance;
             }
-            let arrive = repair.start_at.max(depart + 0.01);
+            if destination.distance(from) < scene.scale {
+                if time <= repair.end_at {
+                    return (from, heading);
+                }
+                available = available.max(repair.end_at);
+                continue;
+            }
+            let travel = (destination.distance(from) / (45.0 * scene.scale)).max(0.6);
+            // Stop and steer before reversing for another job, even when its report
+            // timestamp is already past. Never change direction at nonzero road speed.
+            let steer_ready = if available > 0.0 {
+                available + 0.4
+            } else {
+                0.0
+            };
+            let depart = (repair.start_at - travel).max(steer_ready);
+            // Tight jobs may start while the truck is still approaching. Keep driving at
+            // a plausible speed; the recorded repair beam still originates at its real pose.
+            let arrive = depart + travel;
+            let control = from.lerp(destination, 0.5).lerp(scene.planet, 0.08);
+            let departure_heading = (control - from).normalized();
+            if time < depart {
+                let turn = departure_heading.angle() - heading.angle();
+                let steering = smooth(((time - depart + 0.4) / 0.4).clamp(0.0, 1.0));
+                return (
+                    from,
+                    Vec2::angled(heading.angle() + turn.sin().atan2(turn.cos()) * steering),
+                );
+            }
             if time < arrive {
                 let progress = smooth(((time - depart) / (arrive - depart)).clamp(0.0, 1.0));
-                return from.lerp(destination, progress);
+                return (
+                    from.lerp(control, progress)
+                        .lerp(control.lerp(destination, progress), progress),
+                    ((control - from) * (1.0 - progress) + (destination - control) * progress)
+                        .normalized(),
+                );
             }
-            if time <= repair.end_at {
-                return destination;
+            heading = (destination - control).normalized();
+            if time <= repair.end_at.max(arrive) {
+                return (destination, heading);
             }
             from = destination;
-            available = repair.end_at;
+            available = repair.end_at.max(arrive);
         }
-        from
+        (from, heading)
     }
 
     fn actor_cruise_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
@@ -774,7 +851,7 @@ impl CinematicPlayback {
             // Home positions live on the visible globe, so turrets never float in open space.
             center = scene.planet + visual.home * scene.planet_radius;
             if actor.unit == Unit::repair_truck() {
-                center = self.repair_truck_position(scene, index, time);
+                center = self.repair_truck_motion(scene, index, time).0;
             } else if actor.unit == Unit::crawler() {
                 center +=
                     vec2((time * 0.16 + phase).sin() * 18.0, (time * 0.16 + phase).cos() * 5.0)
@@ -1140,7 +1217,9 @@ impl CinematicPlayback {
         let source = &self.timeline.actors[shot.source];
         let weapon = Weapon::for_shot(source.unit, &shot.outcome);
         if weapon.beam_width().is_some() {
-            start = self.actor_muzzle(scene, shot.source, self.elapsed, end);
+            // A completed salvo's afterglow must not follow a War Sun into its new
+            // planet-strike formation and appear to shoot toward an abandoned target.
+            start = self.actor_muzzle(scene, shot.source, self.elapsed.min(shot.impact_at), end);
         }
         let color = weapon_color(weapon.color());
         let release = shot.launch_at;
@@ -1380,15 +1459,11 @@ impl CinematicPlayback {
     fn planet_attack_focus(
         &self,
         scene: Scene,
-        attack: &super::cinematic_timeline::CinematicPlanetAttack,
+        _attack: &super::cinematic_timeline::CinematicPlanetAttack,
     ) -> Pos2 {
-        let sum = attack.sources.iter().fold(Vec2::ZERO, |sum, source| {
-            sum + self.actor_cruise_pose(scene, *source, attack.start_at).center.to_vec2()
-        });
-        let center = (sum / attack.sources.len().max(1) as f32).to_pos2();
-        let toward = center.lerp(scene.planet, 0.56) - scene.planet;
-        // Keep the shared focus visibly outside the atmosphere, even for a close formation.
-        scene.planet + toward.normalized() * toward.length().max(scene.planet_radius * 1.4)
+        // The strike belongs to the planet. High fleet lanes and camera navigation must
+        // never pull the convergence point northward or away from the target world.
+        scene.planet + vec2(-1.5, -0.05) * scene.planet_radius
     }
 
     fn paint_planet_attacks(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
@@ -1397,7 +1472,7 @@ impl CinematicPlayback {
             if self.elapsed < attack.start_at || self.elapsed > attack.end_at + 3.8 {
                 continue;
             }
-            let target = scene.planet + vec2(-0.25, -0.30) * scene.planet_radius;
+            let target = scene.planet + vec2(-0.48, -0.05) * scene.planet_radius;
             if self.elapsed >= attack.discharge_at
                 && (!attack.destroyed || self.elapsed < attack.end_at)
             {
@@ -1601,6 +1676,36 @@ impl CinematicPlayback {
     }
 
     fn paint_planet_explosion(&self, painter: &Painter, scene: Scene, images: &ImageIds, age: f32) {
+        // The same brief white-hot cover used by the schematic hides the texture swap.
+        // Its opaque plateau spans the swap on both sides; atlas clouds draw over it.
+        let cover = smooth((age - 0.45) / 0.15) * (1.0 - smooth((age - 0.78) / 0.40));
+        if cover > 0.0 {
+            let radius = scene.planet_radius + 2.0 * scene.scale;
+            let color = alpha(Color32::from_rgb(255, 246, 228), cover);
+            // Feather the opaque core into the clouds: a hard circular edge reads as a
+            // flat replacement planet rather than the brief light of a detonation.
+            let mut halo = Mesh::default();
+            for step in 0..=128 {
+                let angle = step as f32 * TAU / 128.0;
+                let ray = Vec2::angled(angle);
+                // Overlap the antialiased core edge so no dark seam appears at high zoom.
+                for (distance, tint) in
+                    [(radius - 4.0 * scene.scale, color), (radius * 1.38, Color32::TRANSPARENT)]
+                {
+                    halo.vertices.push(Vertex {
+                        pos: scene.planet + ray * distance,
+                        uv: bevy_egui::egui::epaint::WHITE_UV,
+                        color: tint,
+                    });
+                }
+                if step > 0 {
+                    let i = step * 2;
+                    halo.indices.extend_from_slice(&[i - 2, i - 1, i, i, i - 1, i + 1]);
+                }
+            }
+            painter.add(Shape::mesh(halo));
+            painter.circle_filled(scene.planet, radius, color);
+        }
         // Reuse the schematic's atlas, secondary blasts, flashes, shock fronts and tiny
         // shards. Staggered surface clouds engulf the globe instead of stretching one frame.
         for cluster in 0..7_u32 {

@@ -586,13 +586,9 @@ impl WorldAssets {
                 "rapid fire",
             ],
         );
-        self.load_gameplay_images(
-            server,
-            "planets",
-            &["unknown", "destroyed bg", "planet0", "moon0"],
-        );
+        self.load_gameplay_images(server, "planets", &["unknown", "destroyed bg"]);
         self.load_gameplay_images(server, "animations", &["flame"]);
-        self.load_combat_explosion_image(server);
+        self.load_combat_shared_images(server);
         for index in 1..=4 {
             let name = format!("solar star {index}");
             load_linear_category_image(
@@ -699,27 +695,32 @@ impl WorldAssets {
         load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
     }
 
-    /// Load the shared blast atlas with each renderer's own alpha convention.
-    pub(crate) fn load_combat_explosion_image(&mut self, server: &AssetServer) {
-        // Bevy uses straight alpha; the cinematic egui mesh needs a premultiplied copy.
-        // Sharing the straight-alpha atlas made its faint smoke look like an opaque orange disk.
-        for ui in [false, true] {
-            let handle: Handle<Image> = server
-                .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
-                    settings.ui_variant = true;
-                    settings.linear_filtering = true;
-                })
-                .load(if ui {
-                    "images/animations/explosion.basisu.ktx2#ui"
+    /// Load the blast atlas and destroyed globes with each renderer's alpha convention.
+    pub(crate) fn load_combat_shared_images(&mut self, server: &AssetServer) {
+        for (name, category) in
+            [("explosion", "animations"), ("planet0", "planets"), ("moon0", "planets")]
+        {
+            let path = format!("images/{category}/{name}.basisu.ktx2");
+            // Register both variants through the same loader settings: Bevy needs straight
+            // alpha while egui's cinematic overlay needs premultiplied edge pixels.
+            for ui in [false, true] {
+                let handle: Handle<Image> = server
+                    .load_builder()
+                    .with_settings(|settings: &mut BasisTextureSettings| {
+                        settings.ui_variant = true;
+                        settings.linear_filtering = true;
+                    })
+                    .load(if ui {
+                        format!("{path}#ui")
+                    } else {
+                        path.clone()
+                    });
+                self.gameplay_handles.push(handle.clone().untyped());
+                if ui {
+                    self.ui_images.insert(name.into(), handle);
                 } else {
-                    "images/animations/explosion.basisu.ktx2"
-                });
-            self.gameplay_handles.push(handle.clone().untyped());
-            if ui {
-                self.ui_images.insert("explosion".into(), handle);
-            } else {
-                self.images.insert("explosion".into(), handle);
+                    self.images.insert(name.into(), handle);
+                }
             }
         }
     }
