@@ -39,6 +39,14 @@ remains unchanged. Surface turrets
 fire from their raised gun housings toward their recorded ship targets, using the
 shared weapon effects at a readable size even in dense defensive formations.
 
+Armed ships, surface turrets and the Space Dock have eight-stage firing sprites:
+charge, muzzle flash, barrel recoil and recovery. Hulls and foundations retain
+their resting pixels while the weapon assembly aims and animates independently.
+Projectiles and beams use the rendered cannon's frame-specific muzzle attachment.
+The ship artwork has a level bow-to-stern axis; banking follows the actual flight
+path. War Suns make a slow forward firing run toward their shared focus during a
+planet strike, with the rest of the battle continuing around them.
+
 Economic and industrial raids show the planet's relevant Metal Mine, Crystal Mine,
 Deuterium Synthesizer, Shipyard, Factory, and Missile Silo as individual surface
 structures. Only the selected raid's economic or industrial category is shown;

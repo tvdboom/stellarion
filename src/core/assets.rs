@@ -77,6 +77,25 @@ pub(crate) const CINEMATIC_IMAGE_NAMES: &[&str] = &[
     "cinematic missile silo",
 ];
 
+/// Eight-frame weapon cycles, with invariant foundations and registered muzzle points.
+pub(crate) const CINEMATIC_FIRING_IMAGE_NAMES: &[&str] = &[
+    "firing light fighter",
+    "firing heavy fighter",
+    "firing destroyer",
+    "firing cruiser",
+    "firing bomber",
+    "firing battleship",
+    "firing dreadnought",
+    "firing war sun",
+    "firing rocket launcher",
+    "firing light laser",
+    "firing heavy laser",
+    "firing gauss cannon",
+    "firing ion cannon",
+    "firing plasma turret",
+    "firing space dock",
+];
+
 /// Two large globe cutouts per planet/moon kind, used only by the combat camera.
 pub(crate) const CINEMATIC_PLANET_IMAGE_NAMES: &[&str] = &[
     "planet dry 1",
@@ -466,6 +485,7 @@ impl WorldAssets {
         // with premultiplied blending and smooth sampling throughout banking and zooming.
         for name in CINEMATIC_IMAGE_NAMES
             .iter()
+            .chain(CINEMATIC_FIRING_IMAGE_NAMES)
             .chain(CINEMATIC_PLANET_IMAGE_NAMES)
             .chain(CINEMATIC_GAS_BUILDING_IMAGE_NAMES)
         {

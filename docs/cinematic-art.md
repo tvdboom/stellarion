@@ -10,8 +10,10 @@ Source PNGs live in `assets/images/cinematic/` as `cinematic <shop image key>.pn
 They retain generated transparency and full source detail. The normal asset pipeline
 converts only this category at half size, then produces a smooth mip chain in KTX2.
 The registry loads these textures with linear filtering and premultiplied alpha for egui.
-Cinematic sprites are animated in the renderer using movement, banking, lights, exhaust,
-recoil, shield impacts and explosions; the PNGs are clean single-frame bases.
+The original PNGs remain clean single-frame references. Armed ships, turrets and the
+Space Dock now use dedicated [firing sheets](cinematic-firing-art.md): eight cycle
+stages with moving weapon assemblies, stationary hulls/foundations, and registered
+muzzle attachments. Movement, exhaust, shield impacts and explosions surround these sprites.
 
 ## Ship and defense prompt set
 

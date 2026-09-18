@@ -4,7 +4,7 @@ use crate::core::combat::resolution::CombatUnit;
 use crate::core::map::planet::Planet;
 use crate::core::missions::Mission;
 
-fn replay() -> CinematicPlayback {
+pub(super) fn replay() -> CinematicPlayback {
     let mut report = crate::test_support::empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
@@ -183,6 +183,26 @@ fn capital_ships_hold_steady_courses_and_all_hulls_fly_bow_first() {
         }
     }
     assert!(capital_travel < fighter_travel * 0.25, "Capital ships should not dart like escorts");
+}
+
+#[test]
+fn encounter_lanes_do_not_tilt_every_ship_upward() {
+    let movie = replay();
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let headings: Vec<_> = (0..24)
+        .map(|index| {
+            let pose = movie.actor_pose(scene, index, movie.timeline.entrance_duration);
+            rotate(Vec2::angled(movie.visuals[index].art_heading), pose.angle).y
+        })
+        .collect();
+    assert!(
+        headings.iter().any(|y| *y > 0.02),
+        "Upper approach lanes should descend into the encounter"
+    );
+    assert!(
+        headings.iter().any(|y| *y < -0.02),
+        "Lower approach lanes should climb into the encounter"
+    );
 }
 
 #[test]
@@ -450,7 +470,7 @@ fn bombing_replay() -> CinematicPlayback {
     CinematicPlayback::new(&bombing_report())
 }
 
-fn bombing_report() -> MissionReport {
+pub(super) fn bombing_report() -> MissionReport {
     use crate::core::combat::resolution::ShotReport;
     let mut report = crate::test_support::empty_report(
         Mission::default(),
@@ -748,7 +768,9 @@ fn surface_counterfire_uses_raised_guns_and_hits_the_recorded_attacking_ship() {
         assert_eq!(movie.timeline.actors[target].side, Side::Attacker);
         let (start, end, _) = movie.shot_geometry(scene, index, shot);
         let gun = movie.actor_pose(scene, shot.source, shot.launch_at);
-        assert!(start.y < gun.center.y - gun.size * 0.2);
+        // The registered muzzle belongs to the articulated upper gun, not a guessed
+        // common height. Its elevation follows the recorded attacking ship.
+        assert!(start.y < gun.center.y + gun.size * 0.05);
         assert!(start.x < gun.center.x);
         assert!(end.distance(movie.actor_pose(scene, target, shot.impact_at).center) < 0.001);
         movie.elapsed = (shot.launch_at + shot.impact_at) * 0.5;
@@ -940,7 +962,7 @@ fn loss_captions_are_readable_separated_seekable_and_absent_for_misses() {
     }
 }
 
-fn planet_strike_replay(destroyed: bool) -> CinematicPlayback {
+pub(super) fn planet_strike_replay(destroyed: bool) -> CinematicPlayback {
     let mut report = crate::test_support::empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),

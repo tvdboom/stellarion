@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn cinematic_firing_sheets_have_eight_transparent_frames_for_every_armed_hull() {
+    assert_eq!(CINEMATIC_FIRING_IMAGE_NAMES.len(), 15);
+    for name in CINEMATIC_FIRING_IMAGE_NAMES {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/images/cinematic")
+            .join(format!("{name}.png"));
+        assert!(path.is_file(), "Missing firing sheet {name}");
+        #[cfg(target_os = "windows")]
+        {
+            let rgba = ::image::open(path).unwrap().to_rgba8();
+            assert!(rgba.width() >= 1600 && rgba.height() >= 700, "Frame detail too low: {name}");
+            for row in 0..2 {
+                for col in 0..4 {
+                    let mut opaque = 0;
+                    let mut transparent = 0;
+                    for y in row * rgba.height() / 2..(row + 1) * rgba.height() / 2 {
+                        for x in col * rgba.width() / 4..(col + 1) * rgba.width() / 4 {
+                            let alpha = rgba.get_pixel(x, y)[3];
+                            opaque += usize::from(alpha > 200);
+                            transparent += usize::from(alpha == 0);
+                        }
+                    }
+                    assert!(
+                        opaque > 1000 && transparent > 1000,
+                        "{name} frame {col},{row} is empty or opaque"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 /// The declared lifecycle cannot report gameplay ready before its group is requested.
 fn gameplay_assets_start_deferred() {
     assert_eq!(GameplayAssetState::default(), GameplayAssetState::Deferred);

@@ -611,7 +611,10 @@ fn convert_one(conversion: &Conversion, toktx: &OsStr) -> Result<(), String> {
     let mut command = Command::new(toktx);
     // Keep full-resolution source artwork while bounding the cinematic egui textures'
     // decoded RGBA footprint. Half-size cutouts still exceed their largest screen size.
-    if conversion.relative.starts_with("images/cinematic/") {
+    // Firing atlases contain eight cells, so retain their resolution for individual frames.
+    if conversion.relative.starts_with("images/cinematic/")
+        && !conversion.relative.starts_with("images/cinematic/firing ")
+    {
         command.args(["--scale", "0.5"]);
     }
     // KTX-Software 4.x expects mipmap controls before the encoder controls.

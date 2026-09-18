@@ -26,6 +26,9 @@ const FULL_UV: Rect = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
 const BLUE: Color32 = Color32::from_rgb(104, 210, 255);
 const GOLD: Color32 = Color32::from_rgb(255, 177, 90);
 const GREEN: Color32 = Color32::from_rgb(102, 255, 182);
+#[path = "cinematic_sprites.rs"]
+mod sprites;
+use sprites::{firing_sheet, FiringSheet};
 /// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
 pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
 
@@ -48,6 +51,7 @@ pub(crate) struct CinematicPlayback {
 }
 
 struct ActorVisual {
+    firing_sheet: Option<FiringSheet>,
     texture: String,
     fallback_texture: String,
     aspect: f32,
@@ -60,6 +64,7 @@ struct ActorVisual {
     /// A recorded surface target guides the bomber's approach without simulating new orders.
     bombing_target: Option<Vec2>,
     firing_times: Vec<f32>,
+    firing_shots: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -159,6 +164,7 @@ impl CinematicPlayback {
             let density =
                 (base_density as f32 / density_count.max(base_density) as f32).sqrt().max(0.11);
             visuals.push(ActorVisual {
+                firing_sheet: firing_sheet(actor.unit),
                 texture,
                 fallback_texture: name,
                 aspect: sprite_aspect(actor.unit),
@@ -189,10 +195,12 @@ impl CinematicPlayback {
                 visible: visible[index],
                 bombing_target: None,
                 firing_times: Vec::new(),
+                firing_shots: Vec::new(),
             });
         }
-        for shot in &timeline.shots {
+        for (shot_index, shot) in timeline.shots.iter().enumerate() {
             visuals[shot.source].firing_times.push(shot.launch_at);
+            visuals[shot.source].firing_shots.push(shot_index);
             if let Some(target) = shot.target.filter(|target| {
                 timeline.actors[shot.source].unit == Unit::Ship(Ship::Bomber)
                     && visuals[*target].ground
@@ -674,6 +682,30 @@ impl CinematicPlayback {
     }
 
     fn actor_flight_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
+        let mut pose = self.actor_cruise_pose(scene, index, time);
+        // Axial superweapons make a deliberate firing run. Only the participating hulls
+        // change course; the rest of the recorded battle continues around them.
+        for attack in &self.timeline.planet_attacks {
+            let lead = 1.5;
+            if time < attack.start_at - lead
+                || time > attack.end_at + lead
+                || !attack.sources.contains(&index)
+            {
+                continue;
+            }
+            let origin = self.actor_cruise_pose(scene, index, attack.start_at).center;
+            let focus = self.planet_attack_focus(scene, attack);
+            let direction = (focus - origin).normalized();
+            let firing_run = origin + direction * (time - attack.start_at) * 6.0 * scene.scale;
+            let blend = smooth(((time - attack.start_at + lead) / lead).clamp(0.0, 1.0))
+                * (1.0 - smooth(((time - attack.end_at) / lead).clamp(0.0, 1.0)));
+            pose.center = pose.center.lerp(firing_run, blend);
+            break;
+        }
+        pose
+    }
+
+    fn actor_cruise_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
         let actor = &self.timeline.actors[index];
         let visual = &self.visuals[index];
         let mirror = actor.side == Side::Defender;
@@ -723,7 +755,7 @@ impl CinematicPlayback {
             // Maneuverability follows the actual hull class, independent of fleet density.
             let agility = (95.0 / unit_size(actor.unit)).clamp(0.48, 1.65);
             let flight_time = time - self.timeline.entrance_duration;
-            let course = flight_time * 0.18 * agility + phase * 0.08;
+            let course = flight_time * 0.18 * agility + (phase - PI) * 0.08;
             // Coherent, banked circuits replace independent oscillations on each axis.
             // Escorts make fast attack passes; capital ships trace slow, shallow arcs.
             // Start every approach on the inward leg, with modest individual separation.
@@ -734,7 +766,9 @@ impl CinematicPlayback {
                             direction * course.sin() * 0.13 * agility,
                             direction * course.cos() * 0.10 * agility,
                         ),
-                    -direction * 0.22,
+                    // High and low approach lanes converge toward the encounter instead
+                    // of imposing the same upward tilt on every ship in the formation.
+                    -direction * (visual.home.y - 0.40) * 0.60,
                 );
             if let Some(target) = visual.bombing_target {
                 let approach = scene.planet
@@ -759,10 +793,13 @@ impl CinematicPlayback {
                     };
                 let remaining = 1.0 - entered;
                 let distance = scene.rect.width() * 0.80;
-                let bend = (phase * 1.7).sin();
+                let lane = (phase * 1.7).sin();
+                // Preserve a visible banking arc even for lanes whose seeded phase lies
+                // near zero; otherwise the level artwork exposes a straight slide-in.
+                let bend = (0.85 + lane.abs() * 0.25).copysign(lane);
                 let from = vec2(-direction * distance, -distance * visual.art_heading.tan());
                 let through =
-                    vec2(-direction * distance * 0.43, from.y * 0.14 + bend * 105.0 * scene.scale);
+                    vec2(-direction * distance * 0.43, from.y * 0.14 + bend * 125.0 * scene.scale);
                 center += from * remaining.powi(4) + through * (4.0 * remaining.powi(3) * entered);
             }
         }
@@ -773,15 +810,6 @@ impl CinematicPlayback {
             center.x -= direction * retreat.powi(3) * scene.rect.width() * 1.4;
             center.y -= (retreat * PI * 0.5).sin().powi(2) * scene.rect.height() * 0.8;
             angle -= direction * retreat * 0.25;
-        }
-        let fired = visual.firing_times.partition_point(|at| *at <= time);
-        if let Some(last) =
-            fired.checked_sub(1).filter(|_| visual.ground).map(|index| visual.firing_times[index])
-        {
-            let recoil = ((time - last) / 0.28).clamp(0.0, 1.0);
-            let impulse = (recoil * PI).sin().max(0.0);
-            center += vec2(-direction * 2.8, 0.7) * impulse * scene.scale;
-            angle += direction * impulse * 0.018;
         }
         if self.show_planet
             && !visual.ground
@@ -881,7 +909,12 @@ impl CinematicPlayback {
         }
         let cinematic_texture = images.0.get(&visual.texture);
         let texture = cinematic_texture.or_else(|| images.0.get(&visual.fallback_texture));
-        if let Some(texture) = texture {
+        if let Some((sheet, texture)) = visual
+            .firing_sheet
+            .and_then(|sheet| images.0.get(sheet.texture).map(|texture| (sheet, *texture)))
+        {
+            self.paint_firing_sprite(painter, scene, index, pose, sheet, texture);
+        } else if let Some(texture) = texture {
             let aspect = if cinematic_texture.is_some() {
                 visual.aspect
             } else {
@@ -1023,7 +1056,7 @@ impl CinematicPlayback {
             |pose| pose.center,
         );
         let direction = (end - source.center).normalized();
-        let start = weapon_muzzle(source, self.visuals[shot.source].ground, end);
+        let start = self.actor_muzzle(scene, shot.source, shot.launch_at, end);
         if shot.outcome.planetary_shield_damage > 0 && self.show_planet {
             end =
                 sphere_entry(start, end, scene.planet, scene.planet_radius * 1.065).unwrap_or(end);
@@ -1054,9 +1087,12 @@ impl CinematicPlayback {
         index: usize,
         shot: &CinematicShot,
     ) {
-        let (start, end, target_size) = self.shot_geometry(scene, index, shot);
+        let (mut start, end, target_size) = self.shot_geometry(scene, index, shot);
         let source = &self.timeline.actors[shot.source];
         let weapon = Weapon::for_shot(source.unit, &shot.outcome);
+        if weapon.beam_width().is_some() {
+            start = self.actor_muzzle(scene, shot.source, self.elapsed, end);
+        }
         let color = weapon_color(weapon.color());
         let release = shot.launch_at;
         let charge_start = weapon.cinematic_charge_start(shot.launch_at, shot.impact_at);
@@ -1082,9 +1118,7 @@ impl CinematicPlayback {
         };
         if self.elapsed < release && weapon.charge() > 0.0 {
             // The charging field follows its ship; the released projectile keeps its saved pose.
-            let charging_pose = self.actor_pose(scene, shot.source, self.elapsed);
-            let charging_muzzle =
-                weapon_muzzle(charging_pose, self.visuals[shot.source].ground, end);
+            let charging_muzzle = self.actor_muzzle(scene, shot.source, self.elapsed, end);
             let charging_origin = BevyVec3::new(charging_muzzle.x, charging_muzzle.y, 0.0);
             let charged =
                 ((self.elapsed - charge_start) / (release - charge_start)).clamp(0.0, 1.0);
@@ -1300,7 +1334,7 @@ impl CinematicPlayback {
         attack: &super::cinematic_timeline::CinematicPlanetAttack,
     ) -> Pos2 {
         let sum = attack.sources.iter().fold(Vec2::ZERO, |sum, source| {
-            sum + self.actor_pose(scene, *source, attack.start_at).center.to_vec2()
+            sum + self.actor_cruise_pose(scene, *source, attack.start_at).center.to_vec2()
         });
         let center = (sum / attack.sources.len().max(1) as f32).to_pos2();
         let toward = center.lerp(scene.planet, 0.56) - scene.planet;
@@ -1364,8 +1398,7 @@ impl CinematicPlayback {
                     // muzzle follows its ship while the common focus remains steady in space.
                     let pose = self.actor_pose(scene, *source, self.elapsed);
                     let size = pose.size * 0.30;
-                    let muzzle =
-                        pose.center + (focus - pose.center).normalized() * pose.size * 0.23;
+                    let muzzle = self.actor_muzzle(scene, *source, self.elapsed, focus);
                     if age < 1.65 {
                         let p = age / 1.65;
                         for spark in 0..28 {
@@ -1698,6 +1731,9 @@ fn unit_size(unit: Unit) -> f32 {
 
 /// Source artwork keeps its natural canvas proportions; egui user textures do not expose sizes.
 fn sprite_aspect(unit: Unit) -> f32 {
+    if let Some(sheet) = firing_sheet(unit) {
+        return sheet.aspect;
+    }
     match unit {
         Unit::Ship(Ship::Probe) => 1.0,
         Unit::Ship(Ship::WarSun) => 1.2,
@@ -1709,6 +1745,9 @@ fn sprite_aspect(unit: Unit) -> f32 {
 /// Projected stern-to-bow direction in the original artwork, before the defender's mirror.
 /// Preserve that camera perspective and use it for approach paths and attached engine plumes.
 fn sprite_heading(unit: Unit) -> f32 {
+    if firing_sheet(unit).is_some() {
+        return 0.0;
+    }
     let degrees: f32 = match unit {
         Unit::Ship(Ship::Probe | Ship::Destroyer | Ship::WarSun) => -30.0,
         Unit::Ship(Ship::ColonyShip | Ship::HeavyFighter) => -15.0,
