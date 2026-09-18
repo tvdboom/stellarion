@@ -555,6 +555,7 @@ fn combat_settings_popover(
     button: &egui::Response,
     settings: &mut Settings,
     suppressed: bool,
+    cinematic: bool,
 ) -> Option<egui::Rect> {
     let id = button.id.with("combat settings");
     let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
@@ -595,46 +596,48 @@ fn combat_settings_popover(
         }
 
         ui.add_space(8.0);
-        let volley_changed = ui
-            .horizontal(|ui| {
-                let label = ui
-                    .add(
-                        egui::Label::new(egui::RichText::new("Volley fire").size(16.0))
-                            .sense(egui::Sense::click()),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if label.clicked() {
-                    settings.combat_volley_fire = !settings.combat_volley_fire;
-                }
-                let toggle =
-                    ui.add(crate::core::ui::utils::toggle(&mut settings.combat_volley_fire));
-                label.clicked() || toggle.changed()
-            })
-            .inner;
-        if volley_changed {
-            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-        }
+        if !cinematic {
+            let volley_changed = ui
+                .horizontal(|ui| {
+                    let label = ui
+                        .add(
+                            egui::Label::new(egui::RichText::new("Volley fire").size(16.0))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if label.clicked() {
+                        settings.combat_volley_fire = !settings.combat_volley_fire;
+                    }
+                    let toggle =
+                        ui.add(crate::core::ui::utils::toggle(&mut settings.combat_volley_fire));
+                    label.clicked() || toggle.changed()
+                })
+                .inner;
+            if volley_changed {
+                set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+            }
 
-        ui.add_space(6.0);
-        let individuals_changed = ui
-            .horizontal(|ui| {
-                let label = ui
-                    .add(
-                        egui::Label::new(egui::RichText::new("Individual units").size(16.0))
-                            .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text("Show every ship and defense separately")
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if label.clicked() {
-                    settings.combat_individual_units = !settings.combat_individual_units;
-                }
-                let toggle =
-                    ui.add(crate::core::ui::utils::toggle(&mut settings.combat_individual_units));
-                label.clicked() || toggle.changed()
-            })
-            .inner;
-        if individuals_changed {
-            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+            ui.add_space(6.0);
+            let individuals_changed = ui
+                .horizontal(|ui| {
+                    let label = ui
+                        .add(
+                            egui::Label::new(egui::RichText::new("Individual units").size(16.0))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("Show every ship and defense separately")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if label.clicked() {
+                        settings.combat_individual_units = !settings.combat_individual_units;
+                    }
+                    let toggle = ui
+                        .add(crate::core::ui::utils::toggle(&mut settings.combat_individual_units));
+                    label.clicked() || toggle.changed()
+                })
+                .inner;
+            if individuals_changed {
+                set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
+            }
         }
         ui.ctx().data_mut(|data| data.insert_temp(id.with("dragging"), speed.dragged()));
     });
@@ -647,6 +650,7 @@ fn audio_controls(
     settings: &mut Settings,
     in_combat: bool,
     show_game_settings: bool,
+    cinematic: bool,
 ) -> (egui::Response, Option<egui::Response>) {
     // One inset for both axes, independent of the window aspect ratio and UI button padding.
     let scale = viewport_ui_scale(context.content_rect().size());
@@ -673,7 +677,12 @@ fn audio_controls(
                 let prefer_volume = audio_button.hovered();
 
                 if let Some(settings_button) = settings_button.as_ref().filter(|_| in_combat) {
-                    let _ = combat_settings_popover(settings_button, settings, prefer_volume);
+                    let _ = combat_settings_popover(
+                        settings_button,
+                        settings,
+                        prefer_volume,
+                        cinematic,
+                    );
                 }
                 volume_popover(&audio_button, settings, prefer_settings);
                 (audio_button, settings_button)
@@ -701,6 +710,7 @@ pub fn draw_audio_controls(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
     mut volume_feedback: MessageReader<VolumeFeedbackMsg>,
+    ui_state: Option<Res<crate::core::ui::systems::UiState>>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
@@ -715,8 +725,15 @@ pub fn draw_audio_controls(
         volume_feedback.clear();
         show_volume_feedback(context);
     }
-    let (audio_button, settings_button) =
-        audio_controls(context, &mut settings, in_combat, settings_destination.is_some());
+    let (audio_button, settings_button) = audio_controls(
+        context,
+        &mut settings,
+        in_combat,
+        settings_destination.is_some(),
+        ui_state.as_ref().is_some_and(|state| {
+            state.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
+        }),
+    );
     if let Some(destination) = settings_destination
         .filter(|_| settings_button.as_ref().is_some_and(|button| button.clicked()))
     {

@@ -1,5 +1,8 @@
 //! Bevy application plugin and system scheduling.
 
+use crate::core::combat::cinematic_ui::{
+    advance_cinematic, cinematic_selected, draw_cinematic, exit_cinematic, setup_cinematic,
+};
 use crate::core::combat::playback::control_combat_playback;
 use bevy::prelude::*;
 use bevy_egui::{EguiPostUpdateSet, EguiPrimaryContextPass};
@@ -308,7 +311,29 @@ impl Plugin for GamePlugin {
                 OnExit(GameState::CombatMenu),
                 (despawn::<CombatMenuCmp>, exit_combat_menu),
             )
-            .add_systems(OnEnter(GameState::Combat), setup_combat)
+            .add_systems(
+                OnEnter(GameState::Combat),
+                (
+                    setup_combat.run_if(not(cinematic_selected)),
+                    setup_cinematic.run_if(cinematic_selected),
+                ),
+            )
+            .add_systems(
+                Update,
+                advance_cinematic
+                    .after(check_keys_combat)
+                    .in_set(InGameSet)
+                    .run_if(in_state(GameState::Combat))
+                    .run_if(cinematic_selected),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                draw_cinematic
+                    .before(draw_ui)
+                    .in_set(InGameSet)
+                    .run_if(in_state(GameState::Combat))
+                    .run_if(cinematic_selected),
+            )
             .add_systems(
                 Update,
                 (
@@ -320,11 +345,12 @@ impl Plugin for GamePlugin {
                     update_combat_stats,
                 )
                     .chain()
-                    .run_if(in_state(GameState::Combat)),
+                    .run_if(in_state(GameState::Combat))
+                    .run_if(not(cinematic_selected)),
             )
             .add_systems(
                 OnExit(GameState::Combat),
-                (despawn::<CombatCmp>, restore_combat_camera, exit_combat),
+                (despawn::<CombatCmp>, restore_combat_camera, exit_combat, exit_cinematic),
             )
             .add_systems(
                 Last,

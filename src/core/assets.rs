@@ -39,6 +39,38 @@ pub(crate) const GAS_PLANET_TERRAFORMER_IMAGE: &str = "gas planet terraformer";
 pub(crate) const PLANET_ADMINISTRATION_IMAGE: &str = "planet colonial administration";
 pub(crate) const GAS_PLANET_ADMINISTRATION_IMAGE: &str = "gas planet colonial administration";
 
+/// Isometric cutouts derived from the shop roster for cinematic battle playback.
+pub(crate) const CINEMATIC_IMAGE_NAMES: &[&str] = &[
+    "cinematic probe",
+    "cinematic colony ship",
+    "cinematic light fighter",
+    "cinematic heavy fighter",
+    "cinematic destroyer",
+    "cinematic cruiser",
+    "cinematic bomber",
+    "cinematic battleship",
+    "cinematic dreadnought",
+    "cinematic war sun",
+    "cinematic crawler",
+    "cinematic repair truck",
+    "cinematic rocket launcher",
+    "cinematic light laser",
+    "cinematic heavy laser",
+    "cinematic gauss cannon",
+    "cinematic ion cannon",
+    "cinematic plasma turret",
+    "cinematic antiballistic missile",
+    "cinematic interplanetary missile",
+    "cinematic solar satellite",
+    "cinematic recycler",
+    "cinematic command relay",
+    "cinematic trading post",
+    "cinematic sensor phalanx",
+    "cinematic jump gate",
+    "cinematic orbital railgun",
+    "cinematic space dock",
+];
+
 /// Image handle plus atlas metadata used by animated sprite systems.
 #[derive(Clone)]
 pub struct TextureInfo {
@@ -392,6 +424,19 @@ impl WorldAssets {
                 "war sun",
             ],
         );
+        // These images are drawn through egui's rotated meshes. Preserve detailed edge alpha
+        // with premultiplied blending and smooth sampling throughout banking and zooming.
+        for name in CINEMATIC_IMAGE_NAMES {
+            let handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.premultiply_alpha = true;
+                    settings.linear_filtering = true;
+                })
+                .load(category_image_path("cinematic", name));
+            self.gameplay_handles.push(handle.clone().untyped());
+            self.images.insert((*name).to_string(), handle);
+        }
         self.load_gameplay_images(
             server,
             "fauna",

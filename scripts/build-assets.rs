@@ -341,6 +341,7 @@ fn normalized(path: &Path) -> Result<String, String> {
 /// Chooses mipmaps for artwork that is independently sampled or continuously scaled.
 fn should_generate_mipmaps(source_relative: &str) -> bool {
     source_relative.starts_with("images/bg/")
+        || source_relative.starts_with("images/cinematic/")
         || source_relative.ends_with(" large.png")
         || source_relative.starts_with("images/ambient/")
         || matches!(
@@ -608,6 +609,11 @@ fn convert_one(conversion: &Conversion, toktx: &OsStr) -> Result<(), String> {
     }
 
     let mut command = Command::new(toktx);
+    // Keep full-resolution source artwork while bounding the cinematic egui textures'
+    // decoded RGBA footprint. Half-size cutouts still exceed their largest screen size.
+    if conversion.relative.starts_with("images/cinematic/") {
+        command.args(["--scale", "0.5"]);
+    }
     // KTX-Software 4.x expects mipmap controls before the encoder controls.
     if conversion.mipmaps {
         // Clamp is the documented toktx default; its Windows 4.3 build rejects

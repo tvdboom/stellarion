@@ -1,0 +1,420 @@
+use super::*;
+use crate::core::combat::report::{CombatReport, DefenderRetreat};
+use crate::core::combat::resolution::{resolve_combat_with_rng, CombatUnit};
+use crate::core::map::icon::Icon;
+use crate::core::map::planet::Planet;
+use crate::core::missions::{BombingRaid, Mission};
+use crate::core::random::DeterministicRngState;
+use crate::core::units::{buildings::Building, defense::Defense, ships::Ship, Army, Combat};
+use bevy::prelude::Vec2;
+
+fn record(id: u64, owner: PlayerId, unit: Unit) -> CombatUnit {
+    CombatUnit {
+        id,
+        owner: Some(owner),
+        unit,
+        hull: unit.hull(),
+        shield: unit.shield(),
+        repairs: Vec::new(),
+        shots: Vec::new(),
+    }
+}
+
+fn report(rounds: Vec<RoundReport>) -> MissionReport {
+    let mut planet = Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0);
+    planet.colonize(2);
+    let mut report = crate::test_support::empty_report(Mission::default(), planet);
+    report.combat_report = Some(CombatReport {
+        rounds,
+        defender_retreat: None,
+    });
+    report
+}
+
+fn actor_index(movie: &CinematicTimeline, defender: bool, id: u64) -> usize {
+    movie
+        .actors
+        .iter()
+        .position(|actor| actor.id == Some(id) && (actor.side == Side::Defender) == defender)
+        .unwrap()
+}
+
+#[test]
+fn mutual_kills_wait_for_recorded_launches_and_keep_post_kill_misses() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut attacker = record(12, 1, fighter);
+    let mut defender = record(12, 2, fighter);
+    for combatant in [&mut attacker, &mut defender] {
+        combatant.hull = 0;
+        combatant.shield = 0;
+        combatant.shots = vec![
+            ShotReport {
+                target_id: Some(12),
+                unit: Some(fighter),
+                hull_damage: fighter.hull(),
+                shield_damage: fighter.shield(),
+                killed: true,
+                ..Default::default()
+            },
+            ShotReport {
+                target_id: Some(12),
+                unit: Some(fighter),
+                missed: true,
+                ..Default::default()
+            },
+        ];
+    }
+    let movie = CinematicTimeline::new(&report(vec![RoundReport {
+        attacker: vec![attacker],
+        defender: vec![defender],
+        ..Default::default()
+    }]));
+    assert_eq!(movie.actors.len(), 2);
+    assert_eq!(movie.shots.len(), 4);
+    for (index, actor) in movie.actors.iter().enumerate() {
+        let death = actor.death_at.unwrap();
+        assert!(movie
+            .shots
+            .iter()
+            .filter(|shot| shot.source == index)
+            .all(|shot| shot.launch_at < death));
+        let kill = movie
+            .shots
+            .iter()
+            .find(|shot| shot.target == Some(index) && shot.outcome.killed)
+            .unwrap();
+        let miss = movie
+            .shots
+            .iter()
+            .find(|shot| shot.target == Some(index) && shot.outcome.missed)
+            .unwrap();
+        assert!(kill.impact_at < miss.impact_at);
+        assert_eq!(actor.state_at(movie.duration).hull, 0);
+        assert_eq!(actor.state_at(0.0).hull, fighter.hull());
+    }
+}
+
+#[test]
+fn shared_shield_collapses_before_ground_damage_and_repairs_accumulate() {
+    let turret = Unit::Defense(Defense::HeavyLaser);
+    let mut attacking = record(40, 1, Unit::Ship(Ship::Bomber));
+    attacking.shots = vec![
+        ShotReport {
+            unit: Some(Unit::planetary_shield()),
+            planetary_shield_damage: 100,
+            ..Default::default()
+        },
+        ShotReport {
+            target_id: Some(90),
+            unit: Some(turret),
+            shield_damage: turret.shield(),
+            hull_damage: 100,
+            ..Default::default()
+        },
+    ];
+    let fighter = Unit::Ship(Ship::LightFighter);
+    attacking.shots.push(ShotReport {
+        target_id: Some(93),
+        unit: Some(fighter),
+        shield_damage: fighter.shield(),
+        hull_damage: fighter.hull(),
+        killed: true,
+        ..Default::default()
+    });
+    attacking.shots.extend((0..15).map(|_| ShotReport {
+        target_id: Some(93),
+        unit: Some(fighter),
+        missed: true,
+        ..Default::default()
+    }));
+    let mut casualty = record(93, 2, fighter);
+    casualty.hull = 0;
+    casualty.shield = 0;
+    let mut defender = record(90, 2, turret);
+    defender.hull = turret.hull() - 100 + 60;
+    defender.shield = 0;
+    defender.repairs = vec![40, 20];
+    let battle = report(vec![RoundReport {
+        attacker: vec![attacking],
+        defender: vec![
+            defender,
+            record(91, 2, Unit::repair_truck()),
+            record(92, 2, Unit::repair_truck()),
+            casualty,
+        ],
+        ..Default::default()
+    }]);
+    let movie = CinematicTimeline::new(&battle);
+    let shield = movie.shots.iter().find(|shot| shot.outcome.planetary_shield_damage > 0).unwrap();
+    let damage = movie.shots.iter().find(|shot| shot.outcome.hull_damage > 0).unwrap();
+    assert!(shield.impact_at < damage.impact_at);
+    assert_eq!(movie.initial_planetary_shield, 100);
+    assert_eq!(movie.planetary_shield_at(shield.impact_at - 0.01), 100);
+    assert_eq!(movie.planetary_shield_at(shield.impact_at), 0);
+    let actor = &movie.actors[actor_index(&movie, true, 90)];
+    assert_eq!(actor.state_at(damage.impact_at).hull, turret.hull() - 100);
+    assert_eq!(movie.repairs.len(), 2);
+    let last_impact = movie.shots.iter().map(|shot| shot.impact_at).fold(0.0_f32, f32::max);
+    assert!(movie.repairs[0].start_at < last_impact);
+    assert!(movie.repairs.iter().all(|repair| repair.start_at > damage.impact_at));
+    assert_ne!(movie.repairs[0].source, movie.repairs[1].source);
+    assert_eq!(movie.repairs.iter().map(|repair| repair.amount).sum::<usize>(), 60);
+    assert_eq!(actor.state_at(movie.repairs[0].end_at).hull, turret.hull() - 60);
+    assert_eq!(actor.state_at(movie.repairs[1].end_at).hull, turret.hull() - 40);
+    assert_eq!(actor.state_at(movie.duration).hull, turret.hull() - 40);
+}
+
+#[test]
+fn reordered_survivors_keep_hull_and_regenerate_only_shields() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut first = record(5, 1, fighter);
+    first.hull = fighter.hull() - 10;
+    first.shield = 0;
+    let second = record(9, 1, fighter);
+    let mut next = first.clone();
+    next.shield = fighter.shield();
+    let movie = CinematicTimeline::new(&report(vec![
+        RoundReport {
+            attacker: vec![first.clone(), second.clone()],
+            ..Default::default()
+        },
+        RoundReport {
+            attacker: vec![second, next],
+            ..Default::default()
+        },
+    ]));
+    let actor = &movie.actors[actor_index(&movie, false, 5)];
+    assert_eq!(movie.actors.len(), 2);
+    assert_eq!(
+        actor.state_at(movie.duration),
+        CinematicActorState {
+            hull: first.hull,
+            shield: fighter.shield()
+        }
+    );
+    assert!(actor.states.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    assert!(actor.death_at.is_none());
+}
+
+#[test]
+fn retreat_moves_only_commanders_survivors_and_includes_colony_support() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut battle = report(vec![RoundReport {
+        attacker: vec![record(1, 1, fighter)],
+        defender: vec![record(2, 2, fighter), record(3, 3, fighter)],
+        ..Default::default()
+    }]);
+    battle.combat_report.as_mut().unwrap().defender_retreat = Some(DefenderRetreat {
+        after_round: Some(0),
+        home_planet: 2,
+        ships: Army::from([(fighter, 1), (Unit::colony_ship(), 1)]),
+    });
+    let movie = CinematicTimeline::new(&battle);
+    let defender = &movie.actors[actor_index(&movie, true, 2)];
+    let protector = &movie.actors[actor_index(&movie, true, 3)];
+    let colony = movie.actors.iter().find(|actor| actor.unit == Unit::colony_ship()).unwrap();
+    assert_eq!(defender.retreat_at, colony.retreat_at);
+    assert!(defender.retreat_at.is_some());
+    assert!(protector.retreat_at.is_none());
+    assert!(movie.actors.iter().all(|actor| actor.death_at.is_none()));
+}
+
+#[test]
+fn immediate_retreat_has_individual_living_ships_without_invented_shots() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut battle = report(vec![RoundReport::default()]);
+    battle.combat_report.as_mut().unwrap().defender_retreat = Some(DefenderRetreat {
+        after_round: None,
+        home_planet: 2,
+        ships: Army::from([(fighter, 3), (Unit::colony_ship(), 1)]),
+    });
+    let movie = CinematicTimeline::new(&battle);
+    assert_eq!(movie.actors.len(), 4);
+    assert!(movie.shots.is_empty());
+    assert!(movie.actors.iter().all(|actor| actor
+        .retreat_at
+        .is_some_and(|at| at < movie.entrance_duration)
+        && actor.death_at.is_none()
+        && actor.state_at(movie.duration).hull > 0));
+}
+
+#[test]
+fn planet_destruction_follows_only_recorded_success_and_removes_orbital_scenery() {
+    let round = RoundReport {
+        attacker: vec![record(1, 1, Unit::war_sun())],
+        defender: vec![record(2, 2, Unit::Defense(Defense::HeavyLaser))],
+        destroy_probability: 0.4,
+        ..Default::default()
+    };
+    let mut battle = report(vec![round.clone(), round]);
+    battle.planet.army.insert(Unit::Building(Building::SolarSatellite), 2);
+    battle.planet_destroyed = true;
+    let movie = CinematicTimeline::new(&battle);
+    assert_eq!(movie.planet_attacks.len(), 2);
+    assert!(!movie.planet_attacks[0].destroyed);
+    assert!(movie.planet_attacks[1].destroyed);
+    let destroyed_at = movie.planet_attacks[1].end_at;
+    assert_eq!(movie.actors.iter().filter(|actor| actor.side == Side::Defender).count(), 3);
+    for actor in movie.actors.iter().filter(|actor| actor.side == Side::Defender) {
+        assert_eq!(actor.death_at, Some(destroyed_at));
+        assert!(actor.state_at(destroyed_at - 0.01).hull > 0);
+        assert_eq!(actor.state_at(destroyed_at).hull, 0);
+    }
+    battle.planet_destroyed = false;
+    let unsuccessful = CinematicTimeline::new(&battle);
+    assert!(unsuccessful.planet_attacks.iter().all(|attack| !attack.destroyed));
+    assert!(unsuccessful.actors.iter().all(|actor| actor.death_at.is_none()));
+}
+
+#[test]
+fn missiles_explode_only_for_recorded_intercepts_and_used_launchers_depart() {
+    let missile = Unit::interplanetary_missile();
+    let mut interceptor = record(2, 2, Unit::antiballistic_missile());
+    interceptor.shots = vec![ShotReport {
+        target_id: Some(1),
+        unit: Some(missile),
+        killed: true,
+        ..Default::default()
+    }];
+    let movie = CinematicTimeline::new(&report(vec![RoundReport {
+        attacker: vec![record(1, 1, missile), record(3, 1, missile)],
+        defender: vec![interceptor],
+        antiballistic_fired: 1,
+        ..Default::default()
+    }]));
+    let incoming = &movie.actors[actor_index(&movie, false, 1)];
+    let interceptor = &movie.actors[actor_index(&movie, true, 2)];
+    assert_eq!(incoming.death_at, Some(movie.shots[0].impact_at));
+    assert_eq!(incoming.state_at(movie.duration).hull, 0);
+    assert_eq!(interceptor.retreat_at, Some(movie.shots[0].impact_at));
+    assert!(interceptor.death_at.is_none());
+    let without_target = &movie.actors[actor_index(&movie, false, 3)];
+    assert!(without_target.death_at.is_none());
+    assert!(without_target.retreat_at.is_some());
+    assert_eq!(movie.shots.len(), 1);
+}
+
+#[test]
+fn resolved_battle_replays_every_shot_and_is_seekable_without_new_randomness() {
+    let mut rng = DeterministicRngState::from_u64(731).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+    origin.colonize(1);
+    let mut planet = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);
+    planet.colonize(2);
+    planet.army = Army::from([
+        (Unit::Defense(Defense::HeavyLaser), 8),
+        (Unit::repair_truck(), 3),
+        (Unit::space_dock(), 1),
+        (Unit::planetary_shield(), 1),
+    ])
+    .into();
+    let mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        &origin,
+        &planet,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 4), (Unit::Ship(Ship::LightFighter), 10)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let battle = resolve_combat_with_rng(1, &mission, &planet, &mut rng);
+    let movie = CinematicTimeline::new(&battle);
+    let repeated = CinematicTimeline::new(&battle);
+    let combat = battle.combat_report.as_ref().unwrap();
+    let expected = combat
+        .rounds
+        .iter()
+        .flat_map(|round| round.attacker.iter().chain(&round.defender))
+        .map(|unit| unit.shots.len())
+        .sum::<usize>();
+    assert_eq!(movie.shots.len(), expected);
+    assert_eq!(movie.duration, repeated.duration);
+    for (round_index, snapshot) in combat.rounds.iter().enumerate() {
+        let mut prefix = battle.clone();
+        prefix.combat_report.as_mut().unwrap().rounds.truncate(round_index + 1);
+        let prefix = CinematicTimeline::new(&prefix);
+        // The movie's closing hold is two seconds. Sample just before the boundary checkpoint,
+        // after all actual impacts/heals, so a corrective snapshot cannot hide damage mistakes.
+        let boundary = prefix.duration - 2.135;
+        for (defender, army) in [(false, &snapshot.attacker), (true, &snapshot.defender)] {
+            for record in army {
+                let actor = &movie.actors[actor_index(&movie, defender, record.id)];
+                assert_eq!(
+                    actor.state_at(boundary),
+                    CinematicActorState {
+                        hull: record.hull,
+                        shield: record.shield
+                    },
+                    "Actor {} at the end of recorded round {round_index}",
+                    record.id,
+                );
+            }
+        }
+    }
+    assert_eq!(
+        movie
+            .shots
+            .iter()
+            .map(|shot| (shot.source, shot.target, shot.launch_at, shot.impact_at))
+            .collect::<Vec<_>>(),
+        repeated
+            .shots
+            .iter()
+            .map(|shot| (shot.source, shot.target, shot.launch_at, shot.impact_at))
+            .collect::<Vec<_>>()
+    );
+    for (index, actor) in movie.actors.iter().enumerate() {
+        assert!(actor.states.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        let end = actor.state_at(movie.duration);
+        assert_eq!(end, actor.state_at(movie.duration));
+        assert_eq!(actor.state_at(0.0).hull, actor.max_hull);
+        if let Some(death) = actor.death_at {
+            assert_eq!(end.hull, 0);
+            assert!(movie
+                .shots
+                .iter()
+                .filter(|shot| shot.source == index)
+                .all(|shot| shot.launch_at < death));
+        } else {
+            let record = combat
+                .rounds
+                .last()
+                .unwrap()
+                .units(&actor.side)
+                .iter()
+                .find(|record| Some(record.id) == actor.id)
+                .unwrap();
+            assert_eq!(
+                end,
+                CinematicActorState {
+                    hull: record.hull,
+                    shield: record.shield
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn stalemate_keeps_survivors_instead_of_fabricating_a_victory_explosion() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut battle = report(vec![RoundReport {
+        attacker: vec![record(1, 1, fighter)],
+        defender: vec![record(2, 2, fighter)],
+        ..Default::default()
+    }]);
+    battle.mission.objective = Icon::Attack;
+    battle.surviving_attacker = Army::from([(fighter, 1)]);
+    battle.surviving_defender = Army::from([(fighter, 1)]).into();
+    assert!(battle.is_stalemate());
+    let movie = CinematicTimeline::new(&battle);
+    assert!(movie
+        .actors
+        .iter()
+        .all(|actor| actor.death_at.is_none() && actor.retreat_at.is_none()));
+    assert!(movie.planet_attacks.is_empty());
+}

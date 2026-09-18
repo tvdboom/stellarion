@@ -163,6 +163,14 @@ planet, each side will fire upon the enemy. Combat ends in an attacker victory, 
 victory, or a draw. If both combat armies survive the 100-round limit, the defender keeps
 the planet and the surviving attackers return to their origin.
 
+The battle selection panel offers **Schematic** (the default tactical replay) and
+**Cinematic**. Cinematic replays show one animated ship or defense per combatant,
+with overlapping weapon fire, shield impacts, repairs, explosions, and recorded
+withdrawals. Both views replay the same saved outcome. Use the on-screen pause and
+speed controls or Space and Left/Right; Close or Escape returns to battle selection.
+The cinematic view has no round banners and stops on the recorded victory, defeat,
+or draw, including stalemates where ships survive on both sides.
+
 Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S), 
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
 unit starts with its shield at its initial value. The hull has the value of previous round
@@ -226,7 +234,8 @@ Things to keep in mind:
 - `space`: Center the map on your home planet and select it.
 - `tab / mouse forward-backward`: Cycle through the shop/mission menu or rounds in a combat report.
 - `ctrl + tab`: Cycle through your owned planets (if any selected).
-- During combat: `space` pauses, `ctrl + left/right` changes speed, and `ctrl + shift + left/right` jumps rounds.
+- During combat: `space` pauses and `left/right` changes speed. In the schematic view,
+  `ctrl + shift + left/right` jumps rounds.
 - `Q`: Toggle the audio settings.
 - `C`: Show/hide the player's control domain.
 - `I`: Show/hide all planet information.

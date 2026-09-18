@@ -496,7 +496,10 @@ fn audio_control_has_equal_top_and_right_insets_at_each_display_scale() {
                             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                             ..default()
                         },
-                        |ui| button = audio_controls(ui.ctx(), &mut settings, false, false).0.rect,
+                        |ui| {
+                            button =
+                                audio_controls(ui.ctx(), &mut settings, false, false, false).0.rect
+                        },
                     );
                     output.textures_delta.clear();
                 }
@@ -543,7 +546,7 @@ fn map_settings_gear_opens_and_closes_directly_beside_audio() {
             },
             |ui| {
                 let (audio_button, settings_button) =
-                    audio_controls(ui.ctx(), settings, false, show_gear);
+                    audio_controls(ui.ctx(), settings, false, show_gear, false);
                 *audio = audio_button.rect;
                 *gear = settings_button.as_ref().map(|button| button.rect);
                 *clicked = settings_button.is_some_and(|button| button.clicked());
@@ -650,7 +653,7 @@ fn combat_settings_hover_panel_stays_on_screen_and_defaults_to_sequential_fire()
                     .show(ui.ctx(), |ui| {
                         let response = settings_gear_button(ui, "Combat settings");
                         *button = response.rect;
-                        *panel = combat_settings_popover(&response, settings, false);
+                        *panel = combat_settings_popover(&response, settings, false, false);
                     });
             },
         );
@@ -706,7 +709,7 @@ fn combat_and_volume_hover_panels_are_mutually_exclusive() {
                             let prefer_combat = combat.hovered();
                             let prefer_volume = volume.hovered();
                             *combat_panel =
-                                combat_settings_popover(&combat, settings, prefer_volume);
+                                combat_settings_popover(&combat, settings, prefer_volume, false);
                             *volume_panel = volume_popover(&volume, settings, prefer_combat)
                                 .map(|response| response.rect);
                         });

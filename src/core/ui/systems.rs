@@ -214,6 +214,8 @@ pub struct UiState {
     pub combat_report_round: usize,
     pub combat_report_hover: Option<(Unit, Side)>,
     pub in_combat: Option<ReportId>,
+    /// Local replay presentation; schematic remains the default for every new game.
+    pub(crate) combat_view: crate::core::combat::cinematic_ui::CombatView,
     pub combat_round: usize,
     pub end_turn: bool,
 }
@@ -5524,6 +5526,16 @@ fn draw_combat_selection(
         ui.label("Select a battle");
     });
 
+    ui.horizontal_wrapped(|ui| {
+        use crate::core::combat::cinematic_ui::CombatView;
+        ui.selectable_value(&mut state.combat_view, CombatView::Schematic, "Schematic")
+            .on_hover_text("Replay the battle with the original tactical diagrams");
+        ui.selectable_value(&mut state.combat_view, CombatView::Cinematic, "Cinematic")
+            .on_hover_text(
+                "Watch individual ships and planetary defenses fight in a cinematic replay",
+            );
+    });
+
     ui.vertical_centered(|ui| {
         ui.add_space(10.);
 
@@ -5692,6 +5704,15 @@ pub fn draw_ui(
         return;
     }
     if game_state.get().is_modal_menu() {
+        planet_panel_slide.hide();
+        planet_panel_hover_hold.clear();
+        mission_hover_panel_slide.hide();
+        return;
+    }
+
+    if *game_state.get() == GameState::Combat
+        && state.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
+    {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
         mission_hover_panel_slide.hide();
