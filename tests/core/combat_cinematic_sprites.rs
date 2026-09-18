@@ -17,53 +17,74 @@ fn meshes(paint: impl Fn(&Painter)) -> Vec<Mesh> {
 }
 
 #[test]
-fn turret_foundation_and_hull_pixels_stay_fixed_while_the_weapon_cycles() {
-    let mut movie = CinematicPlayback::new(&bombing_report());
-    let shot = &movie.timeline.shots[0];
-    let index = shot.source;
-    let launch = shot.launch_at;
-    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
-    let pose = ActorPose {
-        center: pos2(500.0, 450.0),
-        size: 240.0,
-        angle: 0.0,
-        mirror: false,
-    };
-    for unit in [
-        Unit::war_sun(),
-        Unit::Ship(Ship::LightFighter),
-        Unit::Defense(Defense::GaussCannon),
-        Unit::Defense(Defense::LightLaser),
-    ] {
-        let sheet = firing_sheet(unit).unwrap();
-        let mut rest = None;
-        let mut frames = std::collections::BTreeSet::new();
-        for age in [-0.3, -0.1, 0.01, 0.1, 0.2, 0.3, 0.4, 0.52, 0.8] {
-            movie.elapsed = launch + age;
-            frames.insert(movie.firing_frame(index, movie.elapsed));
-            let sample = meshes(|painter| {
-                movie.paint_firing_sprite(painter, scene, index, pose, sheet, TextureId::User(10))
-            });
-            let base = &sample[..sample.len() - 1];
-            if let Some(ref fixed) = rest {
-                assert_eq!(base, fixed, "{unit:?}: recoil changed hull/base pixels or geometry");
-            } else {
-                rest = Some(base.to_vec());
-            }
-        }
-        assert_eq!(frames.len(), 8, "The recorded launch must play all eight cycle stages");
-    }
-}
-
-#[test]
-fn mirrored_and_rotated_guns_share_their_exact_attachment_with_projectiles() {
+fn aiming_keeps_every_turret_joint_closed_and_foundation_fixed() {
     let mut movie = CinematicPlayback::new(&bombing_report());
     let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
     let index = movie.timeline.shots[0].source;
     let launch = movie.timeline.shots[0].launch_at;
-    for unit in
-        [Unit::Ship(Ship::HeavyFighter), Unit::Defense(Defense::GaussCannon), Unit::space_dock()]
-    {
+    for unit in [
+        Defense::RocketLauncher,
+        Defense::LightLaser,
+        Defense::HeavyLaser,
+        Defense::GaussCannon,
+        Defense::IonCannon,
+        Defense::PlasmaTurret,
+    ] {
+        let sheet = firing_sheet(Unit::Defense(unit)).unwrap();
+        for mirror in [false, true] {
+            let pose = ActorPose {
+                center: pos2(500.0, 450.0),
+                size: 240.0,
+                angle: 0.0,
+                mirror,
+            };
+            let mut foundation = None;
+            for age in [-0.3, -0.1, 0.01, 0.10, 0.20, 0.3, 0.4, 0.52, 0.8] {
+                movie.elapsed = launch + age;
+                let sample = meshes(|painter| {
+                    movie.paint_firing_sprite(
+                        painter,
+                        scene,
+                        index,
+                        pose,
+                        sheet,
+                        TextureId::User(10),
+                    )
+                });
+                let mesh = &sample[0];
+                // Adjacent bands have separate UVs but MUST share their geometric seam.
+                for band in 0..8 {
+                    for column in 0..5 {
+                        assert_eq!(
+                            mesh.vertices[band * 10 + 5 + column].pos,
+                            mesh.vertices[(band + 1) * 10 + column].pos,
+                            "{unit:?}: aiming opened a gap in the pedestal"
+                        );
+                    }
+                }
+                let base = &mesh.vertices[80..];
+                if let Some(ref expected) = foundation {
+                    assert_eq!(base, expected);
+                } else {
+                    foundation = Some(base.to_vec());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ships_and_stations_keep_complete_silhouettes_and_attached_muzzles() {
+    let mut movie = CinematicPlayback::new(&bombing_report());
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let index = movie.timeline.shots[0].source;
+    let launch = movie.timeline.shots[0].launch_at;
+    for unit in [
+        Unit::Ship(Ship::HeavyFighter),
+        Unit::war_sun(),
+        Unit::space_dock(),
+        Unit::Defense(Defense::GaussCannon),
+    ] {
         movie.timeline.actors[index].unit = unit;
         let sheet = firing_sheet(unit).unwrap();
         movie.visuals[index].firing_sheet = Some(sheet);
@@ -82,30 +103,31 @@ fn mirrored_and_rotated_guns_share_their_exact_attachment_with_projectiles() {
                         TextureId::User(10),
                     )
                 });
-                let gun = sample.last().unwrap();
-                let mouth = sheet.muzzle(movie.firing_frame(index, movie.elapsed));
-                let uv = (mouth - sheet.weapon.min) / sheet.weapon.size();
-                let x = if pose.mirror {
-                    1.0 - uv.x
-                } else {
-                    uv.x
-                };
-                let actual = gun.vertices[0].pos
-                    + (gun.vertices[1].pos - gun.vertices[0].pos) * x
-                    + (gun.vertices[3].pos - gun.vertices[0].pos) * uv.y;
-                let target = movie.turret_target(scene, index, movie.elapsed);
-                let muzzle = movie.actor_muzzle(scene, index, movie.elapsed, target);
-                assert!(
-                    actual.distance(muzzle) < 0.001,
-                    "Projectile detached from rendered cannon"
-                );
-                let mut barrel = (gun.vertices[1].pos - gun.vertices[0].pos).normalized();
-                if pose.mirror {
-                    barrel = -barrel;
+                assert_eq!(sample.len(), 1, "Hull must not be chopped into aiming pieces");
+                let hull = &sample[0];
+                if !sheet.ground {
+                    assert_eq!(hull.vertices.len(), 4);
                 }
+                let mouth = sheet.muzzle(movie.firing_frame(index, movie.elapsed));
+                let actual = if sheet.ground {
+                    hull.vertices[0].pos
+                        + (hull.vertices[4].pos - hull.vertices[0].pos) * mouth.x
+                        + (hull.vertices[5].pos - hull.vertices[0].pos)
+                            * (mouth.y / sheet.weapon.bottom())
+                } else {
+                    let x = if pose.mirror {
+                        1.0 - mouth.x
+                    } else {
+                        mouth.x
+                    };
+                    hull.vertices[0].pos
+                        + (hull.vertices[1].pos - hull.vertices[0].pos) * x
+                        + (hull.vertices[3].pos - hull.vertices[0].pos) * mouth.y
+                };
+                let target = movie.turret_target(scene, index, movie.elapsed);
                 assert!(
-                    barrel.dot((target - muzzle).normalized()) > 0.999,
-                    "Barrel points away from target"
+                    actual.distance(movie.actor_muzzle(scene, index, movie.elapsed, target))
+                        < 0.001
                 );
             }
         }

@@ -591,7 +591,8 @@ impl WorldAssets {
             "planets",
             &["unknown", "destroyed bg", "planet0", "moon0"],
         );
-        self.load_gameplay_images(server, "animations", &["explosion", "flame"]);
+        self.load_gameplay_images(server, "animations", &["flame"]);
+        self.load_combat_explosion_image(server);
         for index in 1..=4 {
             let name = format!("solar star {index}");
             load_linear_category_image(
@@ -696,6 +697,31 @@ impl WorldAssets {
 
     fn load_gameplay_linear_image(&mut self, server: &AssetServer, name: &str, path: &str) {
         load_linear_image(server, &mut self.images, &mut self.gameplay_handles, name, path);
+    }
+
+    /// Load the shared blast atlas with each renderer's own alpha convention.
+    pub(crate) fn load_combat_explosion_image(&mut self, server: &AssetServer) {
+        // Bevy uses straight alpha; the cinematic egui mesh needs a premultiplied copy.
+        // Sharing the straight-alpha atlas made its faint smoke look like an opaque orange disk.
+        for ui in [false, true] {
+            let handle: Handle<Image> = server
+                .load_builder()
+                .with_settings(|settings: &mut BasisTextureSettings| {
+                    settings.ui_variant = true;
+                    settings.linear_filtering = true;
+                })
+                .load(if ui {
+                    "images/animations/explosion.basisu.ktx2#ui"
+                } else {
+                    "images/animations/explosion.basisu.ktx2"
+                });
+            self.gameplay_handles.push(handle.clone().untyped());
+            if ui {
+                self.ui_images.insert("explosion".into(), handle);
+            } else {
+                self.images.insert("explosion".into(), handle);
+            }
+        }
     }
 
     /// Keeps straight alpha for Bevy and premultiplied alpha for the cinematic egui overlay.

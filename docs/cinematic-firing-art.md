@@ -4,7 +4,11 @@ Original artwork generated with the built-in `image_gen.imagegen` tool, using ea
 
 Source files are `assets/images/cinematic/firing <unit>.png`. Each transparent sheet has four columns and two rows. Runtime sheets retain source resolution so each frame has enough detail for zooming. Frame 7 reuses the registered rest pose for a seamless return to idle.
 
-Only the selected weapon region animates. The renderer always samples the resting frame for the surrounding hull/foundation, which prevents frame-to-frame drift. Weapon pivots and individual frame muzzle positions are registered in `src/core/combat/cinematic_sprites.rs`. The gun rotates independently of the chassis and uses the same attachment transform as the projectiles. War Suns additionally steer into their combined death-ray firing run. Recoil does not move the chassis. Non-firing probes, colony ships, crawlers and repair trucks do not gain invented attacks.
+Ship and station firing cycles retain the complete silhouette. Ground guns animate the
+upper assembly above a continuous joint and a fixed foundation. Weapon pivots and
+individual frame muzzle positions are registered in `src/core/combat/cinematic_sprites.rs`.
+War Suns steer into a shallow combined death-ray firing fan. Non-firing probes, colony
+ships, crawlers and repair trucks do not gain invented attacks.
 
 ## Prompt record
 
@@ -106,3 +110,29 @@ Reference: `assets/images/cinematic/cinematic space dock.png`
 
 Use case: precise-object-edit. Asset type: production 8-frame firing sprite sheet for a 2D game. Use the provided unit as the identity reference, preserving its materials, silhouette and lights. Output one transparent PNG sprite sheet in a strict 4 COLUMN by 2 ROW equal-cell grid, all 8 frames row-major. No text, no grid lines, no background, genuine transparent alpha. Each cell has the EXACT SAME camera, scale, pivot and immobile hull/base; never translate, rotate or distort the whole unit between frames. Keep generous equal padding in every cell and all effects within their own cell. Frames: 0 resting cannon fully extended and dark muzzle; 1 gun charges, breech opens slightly; 2 bright compact muzzle flash, barrel retracts 5% of unit width into its housing; 3 recoil fully compressed and flash fades; 4 barrel half returns with faint vapor; 5 almost extended; 6 fully extended cooling; 7 identical to resting frame0. Only the cannon/barrel, breech, vents and muzzle flash animate. Detailed realistic sci-fi brushed-metal painterly hard-surface rendering, no blur. Keep the unit recognizably identical across all frames. Huge radial dark gunmetal Space Dock with long flat docking arms and blue illuminated central hub. Preserve station identity and asymmetric perspective, add clearly visible articulated defensive gun on upper right arm. Only cannon recoils, station immobile. Golden flash. CRITICAL: reorient the whole ship so its long stern-to-bow axis is HORIZONTAL, engines LEFT, nose RIGHT, no upward/downward tilt. See some top surface but no diagonal long axis. 4x2 equal grid, each cell aspect1.5:1, output sheet aspect3:1. All hulls at exact same location, NO changing pose, scale, camera or silhouette. Entire ship fills x0.10..0.80, y0.16..0.84. Main cannon points directly RIGHT, clear protruding muzzle at x0.82 y0.48. Leave x0.85..0.98 clear for muzzle flashes. Engine glow faint and unchanging. Do not fire from engines.
 
+
+
+## Connected mounts and upright station revision
+
+The renderer now keeps ship silhouettes whole, including the War Sun ring. Ground guns
+have continuous mesh joints joining their aimed head to the fixed pedestal; physical
+elevation stops prevent backward folding. Flight uses forward passes and bounded banks
+with horizontal reflection, rather than rotating isometric hulls through vertical turns.
+The Space Dock remains upright and keeps its radial docking arms.
+
+Replacement source: `assets/images/cinematic/firing space dock.png`.
+Generated with the built-in image tool from `cinematic space dock.png`, saved as
+`exec-545900de-ec50-4ab4-8003-fe8c315a428d.png` in the session generated-images directory.
+
+Prompt: Use case: precise-object-edit. Create a transparent 4-column by 2-row sprite
+sheet of EXACTLY this upright space station. Eight equal SQUARE cells, perfectly
+registered identical immobile station in every cell. Retain exact recognizable
+silhouette: radial flat docking arms above luminous blue cylindrical hub, long central
+shaft pointing DOWN, not sideways. Never add a giant cannon or distort or bend the
+station. Same isometric camera, metallic detail, scale and position in every frame.
+Eight firing animation frames: 1 idle; 2 subtle blue charging on tiny defense battery
+on leftmost docking arm tip; 3 small white-blue muzzle flash at that leftmost arm tip;
+4 flash fading; 5 tiny smoke; 6 cooling; 7 cooling; 8 identical idle. Only the tiny
+defense battery animates, entire station absolutely fixed. Actual transparent background
+alpha, no labels, no grid borders, no scenery, ample clear padding inside every square
+cell. Sheet aspect 2:1, high resolution.

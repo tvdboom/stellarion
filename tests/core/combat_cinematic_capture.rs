@@ -369,7 +369,9 @@ fn render_cinematic_preview() {
             }
             let name = path.file_stem().unwrap().to_string_lossy().to_string();
             // Exercise the production result loader, including its separate alpha conventions.
-            if directory == "bg" && matches!(name.as_str(), "victory" | "defeat" | "draw") {
+            if (directory == "bg" && matches!(name.as_str(), "victory" | "defeat" | "draw"))
+                || (directory == "animations" && name == "explosion")
+            {
                 continue;
             }
             if (directory == "icons" && name != "planetary shield marker")
@@ -395,7 +397,9 @@ fn render_cinematic_preview() {
         app.world_mut()
             .run_system_once(|server: Res<AssetServer>, mut assets: ResMut<WorldAssets>| {
                 assets.load_combat_result_images(&server);
-                ["victory", "defeat", "draw"]
+                assets.load_combat_explosion_image(&server);
+                assert_ne!(assets.ui_images["explosion"].id(), assets.image("explosion").id());
+                ["victory", "defeat", "draw", "explosion"]
                     .into_iter()
                     .flat_map(|name| {
                         [
@@ -586,6 +590,24 @@ fn render_cinematic_preview() {
     for _ in 0..8 {
         app.update();
     }
+    // Close-up counterfire review catches detached joints and large-gun proportions.
+    app.world_mut().resource_mut::<Settings>().combat_paused = false;
+    for (name, time) in
+        [("mounts-closeup", counterfire), ("mounts-closeup-later", counterfire + 0.3)]
+    {
+        app.world_mut().resource_mut::<CinematicPlayback>().elapsed = time;
+        for _ in 0..8 {
+            app.update();
+        }
+        app.world_mut()
+            .spawn(Screenshot::image(target.clone()))
+            .observe(save_to_disk(format!("target/cinematic-preview/{name}.png")));
+        for _ in 0..8 {
+            app.update();
+        }
+    }
+    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = approach_finished;
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
     input(
         &mut app,
         egui::Event::PointerButton {

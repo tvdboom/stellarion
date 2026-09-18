@@ -10,6 +10,7 @@ pub(super) struct FiringSheet {
     /// Animated gun region; everything outside it always uses the resting hull frame.
     weapon: Rect,
     pivot: Pos2,
+    ground: bool,
 }
 
 pub(super) fn firing_sheet(unit: Unit) -> Option<FiringSheet> {
@@ -78,14 +79,9 @@ pub(super) fn firing_sheet(unit: Unit) -> Option<FiringSheet> {
             0.350,
             0.620,
         ),
-        Unit::Defense(Defense::SpaceDock) => (
-            "firing space dock",
-            0.540,
-            [0.940, 0.940, 0.790, 0.740, 0.790, 0.910, 0.940, 0.940],
-            0.640,
-            0.440,
-            0.650,
-        ),
+        Unit::Defense(Defense::SpaceDock) => {
+            ("firing space dock", 0.400, [0.055; 8], 0.640, 0.440, 0.650)
+        },
         Unit::Defense(Defense::RocketLauncher) => (
             "firing rocket launcher",
             0.240,
@@ -139,13 +135,18 @@ pub(super) fn firing_sheet(unit: Unit) -> Option<FiringSheet> {
     let ground = unit.is_defense() && unit != Unit::space_dock();
     Some(FiringSheet {
         texture,
-        aspect: if ground {
+        aspect: if ground || unit == Unit::space_dock() {
             1.0
         } else {
             1.5
         },
         muzzle_x,
-        weapon: Rect::from_min_max(pos2(left, top), pos2(1.0, bottom)),
+        weapon: if ground {
+            Rect::from_min_max(pos2(left, top), pos2(1.0, bottom))
+        } else {
+            FULL_UV
+        },
+        ground,
         pivot: pos2(
             if ground {
                 0.40
@@ -255,6 +256,9 @@ impl CinematicPlayback {
     }
 
     fn gun_angle(&self, pose: ActorPose, sheet: FiringSheet, target: Pos2) -> f32 {
+        if !sheet.ground {
+            return pose.angle;
+        }
         let reflection = vec2(
             if pose.mirror {
                 -1.0
@@ -268,12 +272,14 @@ impl CinematicPlayback {
                 (sheet.pivot - pos2(0.5, 0.5)) * sheet.dimensions(pose.size) * reflection,
                 pose.angle,
             );
-        (target - pivot).angle()
+        let heading = (target - pivot).angle()
             - if pose.mirror {
                 PI
             } else {
                 0.0
-            }
+            };
+        // Physical elevation stops prevent the assembly folding back through its pedestal.
+        heading.sin().atan2(heading.cos()).clamp(-0.85, 0.85)
     }
 
     pub(super) fn actor_muzzle(&self, scene: Scene, index: usize, time: f32, target: Pos2) -> Pos2 {
@@ -320,46 +326,71 @@ impl CinematicPlayback {
             },
             1.0,
         );
-        // The resting frame supplies every pixel outside the moving weapon assembly.
-        // This also removes generated frame-to-frame hull drift at high zoom.
-        for base in [
-            Rect::from_min_max(Pos2::ZERO, pos2(1.0, weapon.top())),
-            Rect::from_min_max(pos2(0.0, weapon.bottom()), pos2(1.0, 1.0)),
-            Rect::from_min_max(pos2(0.0, weapon.top()), pos2(weapon.left(), weapon.bottom())),
-        ] {
-            if base.width() <= 0.0 || base.height() <= 0.0 {
-                continue;
-            }
+        if !sheet.ground {
+            // The ring, docking arms and hull form one unbroken rigid body. Never
+            // rotate rectangular slices through their structural supports.
             rotated_image(
                 painter,
                 texture,
-                pose.center
-                    + rotate(
-                        (base.center() - pos2(0.5, 0.5)) * dimensions * reflection,
-                        pose.angle,
-                    ),
-                dimensions * base.size(),
+                pose.center,
+                dimensions,
                 pose.angle,
                 pose.mirror,
-                frame_uv(0, base),
+                frame_uv(frame, FULL_UV),
                 Color32::WHITE,
             );
+            return;
         }
+        let angle = self.gun_angle(pose, sheet, self.turret_target(scene, index, self.elapsed));
         let pivot = pose.center
             + rotate((sheet.pivot - pos2(0.5, 0.5)) * dimensions * reflection, pose.angle);
-        let angle = self.gun_angle(pose, sheet, self.turret_target(scene, index, self.elapsed));
-        let center =
-            pivot + rotate((weapon.center() - sheet.pivot) * dimensions * reflection, angle);
-        rotated_image(
-            painter,
-            texture,
-            center,
-            dimensions * weapon.size(),
-            angle,
-            pose.mirror,
-            frame_uv(frame, weapon),
-            Color32::WHITE,
-        );
+        let resting = |point: Pos2| {
+            pose.center + rotate((point - pos2(0.5, 0.5)) * dimensions * reflection, pose.angle)
+        };
+        let aimed =
+            |point: Pos2| pivot + rotate((point - sheet.pivot) * dimensions * reflection, angle);
+        // One continuous joint connects the rigid gun to the stationary pedestal.
+        // Shared edge vertices cannot open holes like independently cut rectangles.
+        let shoulder = weapon.bottom();
+        let foundation = 0.70;
+        let mut mesh = Mesh::with_texture(texture);
+        let edge = |row: usize| {
+            if row == 0 {
+                0.0
+            } else if row <= 8 {
+                shoulder + (foundation - shoulder) * (row - 1) as f32 / 7.0
+            } else {
+                1.0
+            }
+        };
+        for band in 0..9 {
+            let uv = frame_uv(
+                if band == 0 {
+                    frame
+                } else {
+                    0
+                },
+                FULL_UV,
+            );
+            let start = mesh.vertices.len() as u32;
+            for row in 0..=1 {
+                let y = edge(band + row);
+                let weight = (1.0 - (y - shoulder) / (foundation - shoulder)).clamp(0.0, 1.0);
+                for col in 0..=4 {
+                    let point = pos2(col as f32 / 4.0, y);
+                    mesh.vertices.push(Vertex {
+                        pos: resting(point).lerp(aimed(point), weight),
+                        uv: uv.min + point.to_vec2() * uv.size(),
+                        color: Color32::WHITE,
+                    });
+                    if row > 0 && col > 0 {
+                        let i = start + (row * 5 + col) as u32;
+                        mesh.indices.extend_from_slice(&[i - 6, i - 5, i, i - 6, i, i - 1]);
+                    }
+                }
+            }
+        }
+        painter.add(Shape::mesh(mesh));
     }
 }
 

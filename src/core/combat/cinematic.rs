@@ -65,6 +65,7 @@ struct ActorVisual {
     bombing_target: Option<Vec2>,
     firing_times: Vec<f32>,
     firing_shots: Vec<usize>,
+    repair_visits: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -95,7 +96,7 @@ impl Scene {
                 - MAIN_BUTTON_HEIGHT
                 - 18.0
                 - 58.0 * scale
-                - planet_radius * 0.22,
+                - planet_radius * 0.44,
         );
         Self {
             rect,
@@ -177,15 +178,7 @@ impl CinematicPlayback {
                 } else {
                     formation_home(group, slot, counts[group])
                 },
-                size: if group == 2 {
-                    unit_size(actor.unit).min(if counts[4] > 0 {
-                        64.0
-                    } else {
-                        82.0
-                    }) * density
-                } else {
-                    unit_size(actor.unit) * density
-                },
+                size: unit_size(actor.unit) * density,
                 phase: {
                     let identity = actor.id.unwrap_or(index as u64);
                     noise((identity ^ (identity >> 32)) as u32) * TAU
@@ -196,6 +189,7 @@ impl CinematicPlayback {
                 bombing_target: None,
                 firing_times: Vec::new(),
                 firing_shots: Vec::new(),
+                repair_visits: Vec::new(),
             });
         }
         for (shot_index, shot) in timeline.shots.iter().enumerate() {
@@ -237,6 +231,11 @@ impl CinematicPlayback {
         repair_order.sort_by(|a, b| {
             timeline.repairs[*a].start_at.total_cmp(&timeline.repairs[*b].start_at)
         });
+        for &visit in &repair_order {
+            if let Some(source) = timeline.repairs[visit].source {
+                visuals[source].repair_visits.push(visit);
+            }
+        }
         let maximum_repair_lifetime = timeline
             .repairs
             .iter()
@@ -666,6 +665,9 @@ impl CinematicPlayback {
             let velocity = self.actor_flight_pose(scene, index, time + 0.025).center
                 - self.actor_flight_pose(scene, index, time - 0.025).center;
             if velocity.length_sq() > 0.000_001 {
+                // Mirror horizontally when changing course instead of rotating through
+                // a half-turn and exposing an upside-down isometric hull.
+                pose.mirror = velocity.x < 0.0;
                 let bow = Vec2::angled(visual.art_heading)
                     * vec2(
                         if pose.mirror {
@@ -675,8 +677,14 @@ impl CinematicPlayback {
                         },
                         1.0,
                     );
-                pose.angle = velocity.angle() - bow.angle();
+                let heading = velocity.angle() - bow.angle();
+                let bank = heading.sin().atan2(heading.cos());
+                let limit = (0.80 * 95.0 / unit_size(actor.unit)).clamp(0.30, 0.65);
+                pose.angle = bank.clamp(-limit, limit);
             }
+        }
+        if actor.unit == Unit::space_dock() {
+            pose.mirror = false;
         }
         pose
     }
@@ -686,15 +694,29 @@ impl CinematicPlayback {
         // Axial superweapons make a deliberate firing run. Only the participating hulls
         // change course; the rest of the recorded battle continues around them.
         for attack in &self.timeline.planet_attacks {
-            let lead = 1.5;
+            let lead = 2.0;
             if time < attack.start_at - lead
                 || time > attack.end_at + lead
                 || !attack.sources.contains(&index)
             {
                 continue;
             }
-            let origin = self.actor_cruise_pose(scene, index, attack.start_at).center;
+            let mut origin = self.actor_cruise_pose(scene, index, attack.start_at).center;
             let focus = self.planet_attack_focus(scene, attack);
+            // Form a shallow firing fan before discharge: axial guns must line up
+            // without banking a capital hull vertically toward a nearby focus.
+            let slot = attack.sources.iter().position(|source| *source == index).unwrap_or(0);
+            let rows = attack.sources.len().min(3);
+            let lane = (slot % rows) as f32 - (rows - 1) as f32 * 0.5;
+            let bearing = lane
+                * if rows == 2 {
+                    0.44
+                } else {
+                    0.24
+                };
+            let distance = origin.distance(focus).max(pose.size * 2.2)
+                + (slot / rows) as f32 * pose.size * 1.25;
+            origin = focus - Vec2::angled(bearing) * distance;
             let direction = (focus - origin).normalized();
             let firing_run = origin + direction * (time - attack.start_at) * 6.0 * scene.scale;
             let blend = smooth(((time - attack.start_at + lead) / lead).clamp(0.0, 1.0))
@@ -703,6 +725,36 @@ impl CinematicPlayback {
             break;
         }
         pose
+    }
+
+    fn repair_truck_position(&self, scene: Scene, index: usize, time: f32) -> Pos2 {
+        let visual = &self.visuals[index];
+        let mut from = scene.planet + visual.home * scene.planet_radius;
+        let mut available = 0.0_f32;
+        for &visit in &visual.repair_visits {
+            let repair = &self.timeline.repairs[visit];
+            let target = &self.visuals[repair.target];
+            // Park beside the repaired gun, leaving its barrel and firing line clear.
+            let destination = scene.planet
+                + target.home * scene.planet_radius
+                + vec2(-0.28, 0.34) * (target.size + visual.size) * scene.scale;
+            let travel = (destination.distance(from) / (45.0 * scene.scale)).clamp(0.6, 3.0);
+            let depart = (repair.start_at - travel).max(available);
+            if time < depart {
+                return from;
+            }
+            let arrive = repair.start_at.max(depart + 0.01);
+            if time < arrive {
+                let progress = smooth(((time - depart) / (arrive - depart)).clamp(0.0, 1.0));
+                return from.lerp(destination, progress);
+            }
+            if time <= repair.end_at {
+                return destination;
+            }
+            from = destination;
+            available = repair.end_at;
+        }
+        from
     }
 
     fn actor_cruise_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
@@ -721,9 +773,11 @@ impl CinematicPlayback {
         if visual.ground {
             // Home positions live on the visible globe, so turrets never float in open space.
             center = scene.planet + visual.home * scene.planet_radius;
-            if actor.unit == Unit::repair_truck() || actor.unit == Unit::crawler() {
+            if actor.unit == Unit::repair_truck() {
+                center = self.repair_truck_position(scene, index, time);
+            } else if actor.unit == Unit::crawler() {
                 center +=
-                    vec2((time * 0.32 + phase).sin() * 7.0, (time * 0.38 + phase).cos() * 2.0)
+                    vec2((time * 0.16 + phase).sin() * 18.0, (time * 0.16 + phase).cos() * 5.0)
                         * scene.scale;
             }
             if self.gas_planet {
@@ -756,15 +810,14 @@ impl CinematicPlayback {
             let agility = (95.0 / unit_size(actor.unit)).clamp(0.48, 1.65);
             let flight_time = time - self.timeline.entrance_duration;
             let course = flight_time * 0.18 * agility + (phase - PI) * 0.08;
-            // Coherent, banked circuits replace independent oscillations on each axis.
-            // Escorts make fast attack passes; capital ships trace slow, shallow arcs.
-            // Start every approach on the inward leg, with modest individual separation.
+            // Long forward passes with shallow lateral bends. Closed 2D ellipses force
+            // a flat isometric sprite through vertical and upside-down attitudes.
             center += vec2(direction * scene.rect.width() * 0.055, 0.0)
                 + rotate(
                     scene.rect.size()
                         * vec2(
-                            direction * course.sin() * 0.13 * agility,
-                            direction * course.cos() * 0.10 * agility,
+                            direction * (flight_time * 0.14 * agility).atan() * 0.13 * agility,
+                            direction * course.cos() * 0.035 * agility,
                         ),
                     // High and low approach lanes converge toward the encounter instead
                     // of imposing the same upward tilt on every ship in the formation.
@@ -811,15 +864,11 @@ impl CinematicPlayback {
             center.y -= (retreat * PI * 0.5).sin().powi(2) * scene.rect.height() * 0.8;
             angle -= direction * retreat * 0.25;
         }
-        if self.show_planet
-            && !visual.ground
-            && actor.side == Side::Attacker
-            && self.timeline.planetary_shield_at(time) > 0
-        {
-            // Attack runs skim outside an active field. Even the muzzle remains outside,
-            // so a recorded shield hit always intersects the field before the target roof.
+        if self.show_planet && !visual.ground {
+            // Both fleets stay in space even after the shield has fallen. Reserve room
+            // for the entire hull, not just its center or the attacking fleet's nose.
             let offset = center - scene.planet;
-            let clearance = scene.planet_radius * 1.11 + size * 0.30;
+            let clearance = scene.planet_radius * 1.11 + size * 0.56;
             if offset.length_sq() < clearance * clearance {
                 let outward = if offset.length_sq() > 0.01 {
                     offset.normalized()
@@ -850,7 +899,7 @@ impl CinematicPlayback {
         if !scene.rect.expand(pose.size).contains(pose.center) {
             return;
         }
-        let side_color = if pose.mirror {
+        let side_color = if actor.side == Side::Defender {
             GOLD
         } else {
             BLUE
@@ -1677,11 +1726,11 @@ fn formation_home(group: usize, slot: usize, count: usize) -> Vec2 {
             vec2(x, -0.24 + y * 0.84 / rows.max(2).saturating_sub(1) as f32 + x * x * 0.10)
         },
         4 => vec2(
-            -0.60 + (slot % 3) as f32 * 0.52,
+            -0.54 + (slot % 3) as f32 * 0.43,
             if count <= 3 {
-                0.12
+                0.32
             } else {
-                -0.04 + (slot / 3) as f32 * 0.29
+                0.18 + (slot / 3) as f32 * 0.26
             },
         ),
         _ => disk * vec2(0.70, 0.20),
@@ -1722,8 +1771,13 @@ fn unit_size(unit: Unit) -> f32 {
         Unit::Defense(Defense::SpaceDock) => 340.0,
         Unit::Defense(Defense::AntiballisticMissile | Defense::InterplanetaryMissile) => 57.0,
         Unit::Defense(Defense::Crawler | Defense::RepairTruck) => 66.0,
-        Unit::Defense(_) => 68.0 + unit.production() as f32 * 8.0,
-        Unit::Building(_) if !unit.is_orbital() => 106.0,
+        Unit::Defense(Defense::RocketLauncher) => 62.0,
+        Unit::Defense(Defense::LightLaser) => 72.0,
+        Unit::Defense(Defense::HeavyLaser) => 84.0,
+        Unit::Defense(Defense::GaussCannon) => 102.0,
+        Unit::Defense(Defense::IonCannon) => 116.0,
+        Unit::Defense(Defense::PlasmaTurret) => 134.0,
+        Unit::Building(_) if !unit.is_orbital() => 76.0,
         Unit::Building(_) => 95.0 + unit.production() as f32 * 13.0,
         Unit::Fauna(_) => 60.0 + unit.production() as f32 * 19.0,
     }
@@ -2053,7 +2107,9 @@ fn sparks(
 
 fn explosion(painter: &Painter, images: &ImageIds, center: Pos2, size: f32, age: f32, unit: Unit) {
     super::effects::sample_wreck(size, unit, age, |sample| {
-        paint_wreck_sample(painter, images, center, sample);
+        if sample.atlas_frame.is_some() {
+            paint_wreck_sample(painter, images, center, sample);
+        }
     });
 }
 
@@ -2063,6 +2119,11 @@ fn paint_wreck_sample(
     center: Pos2,
     sample: super::effects::WreckSample,
 ) {
+    // Cinematic destruction uses the normal explosion atlas only. The planet's
+    // separately retained tiny fragments are handled by the caller.
+    if sample.atlas_frame.is_none() && sample.texture != "combat fx shard" {
+        return;
+    }
     let Some(texture) = images.0.get(sample.texture) else {
         return;
     };
