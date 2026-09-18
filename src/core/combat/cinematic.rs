@@ -635,7 +635,9 @@ impl CinematicPlayback {
             let orbit_angle = -2.15 + visual.home.x * 0.45 + (time * 0.10 + phase).sin() * 0.08;
             let altitude = scene.planet_radius * (1.15 + visual.home.y.abs())
                 + size * 0.60
-                + 14.0 * scene.scale;
+                // A slight radial drift keeps the station moving even when a short window
+                // projects its orbit along the upper edge of the canvas.
+                + (14.0 + 8.0 * (time * 0.16 + phase).sin()) * scene.scale;
             center = scene.planet + Vec2::angled(orbit_angle) * altitude;
             let top = scene.rect.top() + size * 0.55 + 12.0 * scene.scale;
             if center.y < top {
@@ -1611,7 +1613,7 @@ fn unit_size(unit: Unit) -> f32 {
             Ship::WarSun => 242.0,
             Ship::ColonyShip => 132.0,
         },
-        Unit::Defense(Defense::SpaceDock) => 195.0,
+        Unit::Defense(Defense::SpaceDock) => 340.0,
         Unit::Defense(Defense::AntiballisticMissile | Defense::InterplanetaryMissile) => 57.0,
         Unit::Defense(Defense::Crawler | Defense::RepairTruck) => 66.0,
         Unit::Defense(_) => 68.0 + unit.production() as f32 * 8.0,
