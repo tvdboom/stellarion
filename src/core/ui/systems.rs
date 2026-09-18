@@ -5520,6 +5520,12 @@ fn draw_combat_selection(
 ) {
     let reports = combat_selection_reports(player, settings.turn);
 
+    ui.add_space(5.);
+
+    ui.vertical_centered(|ui| {
+        ui.label("Select a battle");
+    });
+
     ui.vertical_centered(|ui| {
         ui.add_space(10.);
 
