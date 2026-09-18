@@ -191,6 +191,21 @@ impl CinematicTimeline {
         for (round_index, round) in combat.rounds.iter().enumerate() {
             cursor = movie.add_round(report, round, round_index, cursor, &indices);
         }
+        if report.is_stalemate() {
+            let fauna_encounter = report.is_space_fauna_encounter();
+            for actor in &mut movie.actors {
+                if actor.death_at.is_none()
+                    && actor.retreat_at.is_none()
+                    && !actor.unit.is_building()
+                    && !actor.unit.is_missile()
+                    && actor.unit != Unit::colony_ship()
+                    && (actor.side == Side::Attacker
+                        || fauna_encounter && actor.side == Side::Defender && actor.unit.is_fauna())
+                {
+                    actor.retreat_at = Some(cursor);
+                }
+            }
+        }
         movie.duration = cursor
             + if report.planet_destroyed {
                 4.0

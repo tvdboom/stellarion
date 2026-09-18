@@ -9,8 +9,8 @@ use bevy_tweening::TweenAnim;
 use super::effects::{PendingImpact, Wreck};
 use super::report::{MissionReport, Side};
 use super::systems::{
-    restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatUnitCmp, FireState,
-    IndividualCombatUnitCmp, SpawnShotMsg,
+    restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatFormationState,
+    CombatUnitCmp, FireState, IndividualCombatUnitCmp, SpawnShotMsg,
 };
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
@@ -40,19 +40,12 @@ fn conclusion_phase(report: &MissionReport) -> CombatState {
     }
 }
 
-/// Returns the first recorded action for a round restored by backward navigation.
-fn replay_phase(report: &MissionReport, index: usize) -> CombatState {
-    if index == 0 && report.mission.objective == Icon::MissileStrike {
-        if report
-            .combat_report
-            .as_ref()
-            .and_then(|combat| combat.rounds.first())
-            .is_some_and(|round| round.antiballistic_fired > 0)
-        {
-            CombatState::AntiBallistic
-        } else {
-            CombatState::Fire
-        }
+/// Returns the presentation boundary for a round restored by backward navigation.
+fn replay_phase(index: usize) -> CombatState {
+    if index == 0 {
+        // The first round owns the mission fly-in. Re-enter Setup so no weapon can be selected
+        // until those restored entry tweens finish, exactly as on initial playback.
+        CombatState::Setup
     } else {
         CombatState::DisplayRound
     }
@@ -205,6 +198,7 @@ fn seek(
     index: usize,
     finished: bool,
     ending_phase: CombatState,
+    preserved_individual_positions: Option<&HashMap<(bool, u64), Vec3>>,
 ) {
     if let Err(error) = world.run_system_once(restore_combat_camera) {
         warn!("Could not restore combat camera: {error}");
@@ -272,10 +266,16 @@ fn seek(
                 world.despawn(entity);
                 continue;
             }
-            world
-                .entity_mut(entity)
-                .insert((card, Transform::from_translation(position)))
-                .remove::<TweenAnim>();
+            if ending_phase == CombatState::Setup {
+                // Round one replays the mission entry. Keep the transform and tween created by
+                // setup_combat so Setup can gate weapon selection on their completion.
+                world.entity_mut(entity).insert(card);
+            } else {
+                world
+                    .entity_mut(entity)
+                    .insert((card, Transform::from_translation(position)))
+                    .remove::<TweenAnim>();
+            }
         } else {
             world.despawn(entity);
         }
@@ -287,7 +287,13 @@ fn seek(
             let individuals = world
                 .query::<(Entity, &IndividualCombatUnitCmp)>()
                 .iter(world)
-                .map(|(entity, card)| (entity, card.id, card.side.clone(), card.home()))
+                .map(|(entity, card)| {
+                    let key = card.id.map(|id| (card.side == Side::Defender, id));
+                    let home = key
+                        .and_then(|key| preserved_individual_positions?.get(&key).copied())
+                        .unwrap_or_else(|| card.home());
+                    (entity, card.id, card.side.clone(), home)
+                })
                 .collect::<Vec<_>>();
             for (entity, id, side, home) in individuals {
                 world
@@ -360,6 +366,11 @@ pub fn control_combat_playback(world: &mut World) {
             }
         }
     }
+    let unresolved_effects = world
+        .query_filtered::<(), Or<(With<PendingImpact>, With<Wreck>)>>()
+        .iter(world)
+        .next()
+        .is_some();
     let state = world.resource::<UiState>();
     let Some(report) = state
         .in_combat
@@ -394,7 +405,7 @@ pub fn control_combat_playback(world: &mut World) {
             } else {
                 index.saturating_sub(1)
             };
-            (destination, false, replay_phase(report, destination))
+            (destination, false, replay_phase(destination))
         }
     } else {
         // Withdrawal has its own recorded departure boundary. Early-completion shortcuts could
@@ -413,6 +424,7 @@ pub fn control_combat_playback(world: &mut World) {
             // Hull reaches zero on impact, one frame before the normal state machine creates and
             // completes the wreck sequence. Do not rebuild the conclusion over those explosions.
             || destroyed_card
+            || unresolved_effects
         {
             return;
         }
@@ -443,7 +455,27 @@ pub fn control_combat_playback(world: &mut World) {
         )
     };
     let report = report.clone();
-    seek(world, &report, destination.0, destination.1, destination.2);
+    // Automatic early completion rebuilds the report at its final boundary. Keep the exact
+    // survivor slots from the played formation instead of compacting them around casualties.
+    let preserved_individual_positions = (shortcut.is_none()
+        && world
+            .get_resource::<CombatFormationState>()
+            .is_some_and(|formation| formation.individual()))
+    .then(|| {
+        world
+            .query::<&IndividualCombatUnitCmp>()
+            .iter(world)
+            .filter_map(|card| card.id.map(|id| ((card.side == Side::Defender, id), card.home())))
+            .collect::<HashMap<_, _>>()
+    });
+    seek(
+        world,
+        &report,
+        destination.0,
+        destination.1,
+        destination.2,
+        preserved_individual_positions.as_ref(),
+    );
 }
 
 #[cfg(test)]

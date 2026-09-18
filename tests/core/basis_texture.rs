@@ -93,9 +93,10 @@ fn cinematic_result_textures_hide_rgb_under_transparent_pixels() {
         .unwrap();
         assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
         let pixels = image.data.as_ref().unwrap();
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 200));
-        for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] == 0) {
+        let pixels = pixels.as_chunks::<4>().0;
+        assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+        assert!(pixels.iter().any(|pixel| pixel[3] > 200));
+        for pixel in pixels.iter().filter(|pixel| pixel[3] == 0) {
             assert_eq!(&pixel[..3], &[0, 0, 0], "{name} must not paint a colored rectangle");
         }
     }

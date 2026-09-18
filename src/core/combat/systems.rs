@@ -30,9 +30,7 @@ use crate::core::constants::{
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::utils::{
-    spawn_main_button, UiTransformScaleLens, MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT,
-};
+use crate::core::map::utils::{spawn_main_button, MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT};
 use crate::core::menu::systems::MenuBackground;
 use crate::core::menu::utils::{add_root_node, add_text};
 use crate::core::missions::BombingRaid;
@@ -120,28 +118,43 @@ fn spawn_combat_owner_border(
         }
     }
 }
-const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.62;
+const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.76;
 const INDIVIDUAL_SAME_TYPE_GAP_FACTOR: f32 = 0.06;
-const INDIVIDUAL_TYPE_GAP_FACTOR: f32 = 0.48;
-const INDIVIDUAL_ROW_GAP_FACTOR: f32 = 0.42;
+const INDIVIDUAL_TYPE_GAP_FACTOR: f32 = 0.32;
+const INDIVIDUAL_ROW_GAP_FACTOR: f32 = 0.22;
 const INDIVIDUAL_CARD_UPPER_EXTENT: f32 = 0.5;
 const INDIVIDUAL_CARD_LOWER_EXTENT: f32 = 0.75;
 const INDIVIDUAL_FLEET_SEPARATION_FACTOR: f32 = 0.115;
+const INDIVIDUAL_DEFENDER_FRONT_FACTOR: f32 = 0.075;
 
-/// Both status overlays use this viewport anchor so pausing never moves the label.
-fn combat_status_node() -> Node {
+/// Positions round and pause overlays according to the active formation presentation.
+fn combat_status_node(individual_units: bool) -> Node {
     Node {
         position_type: PositionType::Absolute,
         width: Val::Percent(100.),
-        height: Val::Percent(105.),
+        height: Val::Percent(if individual_units {
+            100.0
+        } else {
+            105.0
+        }),
         align_items: AlignItems::Center,
         justify_content: JustifyContent::Center,
         ..default()
     }
 }
 
-fn combat_status_transform() -> UiTransform {
-    UiTransform::from_translation(Val2::new(Val::ZERO, Val::Percent(COMBAT_STATUS_OFFSET)))
+fn combat_status_transform(individual_units: bool) -> UiTransform {
+    if individual_units {
+        UiTransform::default()
+    } else {
+        // The old percentage offset was relative to the text itself. The status content is now a
+        // full-width band, so preserve the same visual placement with the equivalent font-sized
+        // pixel offset instead of shifting by more than the entire band height.
+        UiTransform::from_translation(Val2::new(
+            Val::ZERO,
+            Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0),
+        ))
+    }
 }
 
 /// Spawns the shared centered result artwork without covering the combat controls.
@@ -256,6 +269,15 @@ pub struct BackgroundImageCmp;
 #[derive(Component)]
 /// Marker for the pause overlay at the combat round-label position.
 pub struct CombatPausedCmp;
+
+#[derive(Component)]
+pub(crate) struct CombatRoundPauseAnchorCmp;
+
+#[derive(Component)]
+pub(crate) struct CombatRoundPauseContentCmp;
+
+#[derive(Component)]
+pub(crate) struct CombatStatusBandCmp;
 
 #[derive(Component)]
 /// Bevy component marking display text presentation entities.
@@ -387,6 +409,24 @@ impl CombatFormationState {
     }
 }
 
+fn individual_group_scale(display_size: f32, grouped_size: f32) -> f32 {
+    grouped_size.max(f32::EPSILON) / display_size.max(f32::EPSILON)
+}
+
+fn grouped_death_ray_origins(center: Vec3, count: usize, size: f32) -> Vec<Vec3> {
+    if count <= 1 {
+        return vec![center];
+    }
+    (0..count)
+        .map(|index| {
+            let fraction = (index as f32 + 0.5) / count as f32;
+            let radius = size * 0.42 * fraction.sqrt();
+            let angle = index as f32 * 2.399_963;
+            center + Vec3::new(angle.cos() * radius, angle.sin() * radius * 0.55, 0.0)
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 struct IndividualCardSeed {
     id: Option<u64>,
@@ -402,15 +442,40 @@ struct IndividualCardSeed {
     max_shield: usize,
 }
 
-fn individual_unit_strength(unit: Unit) -> usize {
-    unit.hull().saturating_add(unit.shield()).saturating_add(unit.damage()).max(1)
+/// Gives every unit at the same production level the exact same combat-card silhouette.
+fn individual_unit_scale(unit: Unit) -> f32 {
+    match unit.production() {
+        0 | 1 => 0.62,
+        2 => 0.82,
+        3 => 1.00,
+        4 => 1.22,
+        5 => 1.45,
+        6 => 1.68,
+        _ => 1.90,
+    }
 }
 
-/// Gives capital ships a materially stronger silhouette while preserving room for full fleets.
-fn individual_unit_scale(unit: Unit) -> f32 {
-    let war_sun_strength = individual_unit_strength(Unit::war_sun()) as f32;
-    let relative = (individual_unit_strength(unit) as f32 / war_sun_strength).clamp(0.0, 1.0);
-    0.53 + 0.92 * relative.powf(0.65)
+fn planetary_shield_icon_center_x(
+    original_center_x: f32,
+    first_grouped_defense_x: Option<f32>,
+    individual_ground_left: f32,
+    size: f32,
+    spacing: f32,
+    individual_mode: bool,
+) -> f32 {
+    let grouped_limit = if individual_mode {
+        f32::INFINITY
+    } else {
+        first_grouped_defense_x.map_or(f32::INFINITY, |x| x - spacing)
+    };
+    let previous_center_x = original_center_x.min(grouped_limit);
+    let desired_center_x = previous_center_x + size * 0.75;
+    let individual_limit = if individual_ground_left.is_finite() {
+        individual_ground_left - size * 0.5 - size * 0.12
+    } else {
+        f32::INFINITY
+    };
+    desired_center_x.min(grouped_limit).min(individual_limit).max(previous_center_x)
 }
 
 #[derive(Clone)]
@@ -464,6 +529,7 @@ fn balanced_type_rows(groups: &[IndividualTypeGroup], rows: usize) -> Vec<(usize
 ///
 /// Inputs are returned in their original order. Unit kinds progress from weak to strong from left
 /// to right and from the front rank to the rear, so capital ships sit behind the smaller screen.
+#[cfg(test)]
 fn individual_formation_layout(
     units: &[Unit],
     center_x: f32,
@@ -473,8 +539,32 @@ fn individual_formation_layout(
     attacker: bool,
     grouped_size: f32,
 ) -> Vec<(Vec3, f32)> {
+    individual_formation_layout_with_base(
+        units,
+        center_x,
+        width,
+        y_min,
+        y_max,
+        attacker,
+        grouped_size,
+        None,
+    )
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn individual_formation_layout_with_base(
+    units: &[Unit],
+    center_x: f32,
+    width: f32,
+    y_min: f32,
+    y_max: f32,
+    attacker: bool,
+    grouped_size: f32,
+    shared_base_size: Option<f32>,
+) -> (Vec<(Vec3, f32)>, f32) {
     if units.is_empty() {
-        return Vec::new();
+        return (Vec::new(), grouped_size * INDIVIDUAL_CARD_MAX_FACTOR);
     }
 
     let (mut y_min, mut y_max) = if y_min <= y_max {
@@ -508,8 +598,9 @@ fn individual_formation_layout(
         }
     }
     groups.sort_by(|left, right| {
-        individual_unit_strength(left.unit)
-            .cmp(&individual_unit_strength(right.unit))
+        left.unit
+            .production()
+            .cmp(&right.unit.production())
             .then_with(|| left.unit.cmp(&right.unit))
     });
     for group in &mut groups {
@@ -545,7 +636,8 @@ fn individual_formation_layout(
             best_rows = rows;
         }
     }
-    let base_size = best_size.max(f32::EPSILON);
+    let max_base_size = best_size.max(f32::EPSILON);
+    let base_size = shared_base_size.unwrap_or(max_base_size).min(max_base_size);
     let mut result = vec![(Vec3::ZERO, base_size); units.len()];
 
     // Rows are ordered weak-to-strong. Attackers advance downward and defenders upward, so the
@@ -588,7 +680,7 @@ fn individual_formation_layout(
             y_edge -= advance;
         }
     }
-    result
+    (result, max_base_size)
 }
 
 #[derive(Component)]
@@ -600,7 +692,7 @@ pub struct PSCombatImageCmp;
 pub struct ProbeRetreatCmp;
 
 #[derive(Component)]
-/// A surviving defending ship card flying out of the battle scene.
+/// A surviving combatant card flying out of the battle scene.
 pub struct FleetRetreatCmp;
 
 #[derive(Component)]
@@ -1516,8 +1608,8 @@ pub fn setup_combat(
         + COMBAT_SHIELD_DEFENSE_GAP * projection.scale
         + defender_y_offset;
     let shield_height = size * PLANETARY_SHIELD_HEIGHT_FACTOR;
-    // Keep the shield bar immediately above the defense images. Its icon is anchored at the
-    // bar's upper-left corner and hangs below it, clear of the first defense card.
+    // The shield image hangs beside the bar, with their top edges aligned. This leaves the bar
+    // between the defending fleet and ground defenses without running it through the image.
     let shield_y = defense_row_y
         + (size + shield_height) * 0.5
         + COMBAT_SHIELD_DEFENSE_GAP * 0.5 * projection.scale;
@@ -1529,16 +1621,21 @@ pub fn setup_combat(
     } else {
         size * 0.5 + spacing * (defending_def.len() as f32 - 1.0) * 0.5
     };
-    let defense_center_x = if buildings.is_empty() || defending_def.is_empty() {
-        pos.x
+    let building_left = if buildings.is_empty() {
+        None
     } else {
         let building_size = size * COMBAT_BUILDING_SIZE_FACTOR;
         let building_spacing = building_size * COMBAT_BUILDING_SPACING_FACTOR;
         let building_half_width =
             building_size * 0.5 + building_spacing * (buildings.len() as f32 - 1.0) * 0.5;
-        let building_left =
-            pos.x + building_size * COMBAT_BUILDING_CENTER_FACTOR - building_half_width;
+        Some(pos.x + building_size * COMBAT_BUILDING_CENTER_FACTOR - building_half_width)
+    };
+    let defense_center_x = if defending_def.is_empty() {
+        pos.x
+    } else if let Some(building_left) = building_left {
         pos.x.min(building_left - COMBAT_SHIELD_DEFENSE_GAP * projection.scale - defense_half_width)
+    } else {
+        pos.x
     };
     let occupied_top = if draw_ps {
         shield_y + shield_height * 0.5
@@ -1654,32 +1751,22 @@ pub fn setup_combat(
             .then_some(index)
         })
         .collect::<Vec<_>>();
-    let mut individual_layout = vec![None; individual_seeds.len()];
-    let mut place_band = |indices: &[usize],
-                          center_x: f32,
-                          band_width: f32,
-                          y_min: f32,
-                          y_max: f32,
-                          attacker: bool| {
-        let units = indices.iter().map(|index| individual_seeds[*index].unit).collect::<Vec<_>>();
-        for (index, layout) in indices.iter().copied().zip(individual_formation_layout(
-            &units, center_x, band_width, y_min, y_max, attacker, size,
-        )) {
-            individual_layout[index] = Some(layout);
-        }
-    };
-
     let horizontal_room = width * 0.86;
-    let ground_width = if buildings.is_empty() {
-        horizontal_room
-    } else {
-        width * 0.58
-    };
-    let ground_center = if buildings.is_empty() {
-        pos.x
-    } else {
-        pos.x - width * 0.12
-    };
+    // Keep the low formation in the central corridor so it can safely use the viewport bottom
+    // between the defender identity card and combat controls. The narrower band also encourages
+    // a third row when that permits materially larger cards.
+    let preferred_ground_width = width * 0.68;
+    // Bombing targets are a separate fixed presentation at the lower-right edge. Restrict the
+    // individual defense fitter to the centered space before them; if necessary it will add a
+    // row or reduce card size instead of allowing large turrets to cover a building.
+    let ground_width = building_left.map_or(preferred_ground_width, |building_left| {
+        preferred_ground_width.min(
+            ((building_left - COMBAT_SHIELD_DEFENSE_GAP * projection.scale) - pos.x)
+                .max(size * 0.5)
+                * 2.0,
+        )
+    });
+    let ground_center = pos.x;
     let shield_top = shield_y + shield_height * 0.5;
     let shield_bottom = shield_y - shield_height * 0.5;
     // Fauna and fleets with no active ground-defense layer use the old low defender row. Besides
@@ -1696,36 +1783,171 @@ pub fn setup_combat(
         } else {
             control_top + size * 0.45
         };
-        let front = (pos.y - height * 0.055).max(rear + size * 0.05);
+        // Use the otherwise empty center field for a second defending-ship row. A shallow band
+        // makes a wide fleet the global size bottleneck even when every other formation has room.
+        let front = (pos.y + height * INDIVIDUAL_DEFENDER_FRONT_FACTOR).max(rear + size * 0.05);
         (rear, front)
     };
-    let attacker_rear = pos.y + height * 0.5 - size * 0.82;
-    let attacker_front = (pos.y + height * 0.06)
+    let attacker_rear = pos.y + height * 0.5 - size * 0.35;
+    let attacker_front = (pos.y + height * 0.105)
         .max(defender_front + height * INDIVIDUAL_FLEET_SEPARATION_FACTOR)
         .min(attacker_rear - size * 0.05);
-    place_band(&attacker_indices, pos.x, horizontal_room, attacker_front, attacker_rear, true);
+    let ground_top = if draw_ps {
+        shield_bottom - COMBAT_SHIELD_DEFENSE_GAP * projection.scale
+    } else {
+        pos.y - height * 0.1
+    };
+    let defender_ground_rear = (pos.y - height * 0.5 + size * 0.18).min(ground_top - size * 0.05);
+
+    let attacker_units =
+        attacker_indices.iter().map(|index| individual_seeds[*index].unit).collect::<Vec<_>>();
+    let defender_ship_units =
+        defender_ship_indices.iter().map(|index| individual_seeds[*index].unit).collect::<Vec<_>>();
+    let defender_ground_units = defender_ground_indices
+        .iter()
+        .map(|index| individual_seeds[*index].unit)
+        .collect::<Vec<_>>();
+    let (_, attacker_max_base) = individual_formation_layout_with_base(
+        &attacker_units,
+        pos.x,
+        horizontal_room,
+        attacker_front,
+        attacker_rear,
+        true,
+        size,
+        None,
+    );
+    let (_, defender_ship_max_base) = individual_formation_layout_with_base(
+        &defender_ship_units,
+        pos.x,
+        horizontal_room,
+        defender_ship_rear,
+        defender_front,
+        false,
+        size,
+        None,
+    );
+    let (_, defender_ground_max_base) = individual_formation_layout_with_base(
+        &defender_ground_units,
+        ground_center,
+        ground_width,
+        defender_ground_rear,
+        ground_top,
+        false,
+        size,
+        None,
+    );
+    // Choose one base size for the whole battlefield. Production level is then the only input to
+    // card size, so a level-three defense and a level-three ship have identical silhouettes.
+    let shared_base_size = [
+        (!attacker_units.is_empty()).then_some(attacker_max_base),
+        (!defender_ship_units.is_empty()).then_some(defender_ship_max_base),
+        (!defender_ground_units.is_empty()).then_some(defender_ground_max_base),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by(f32::total_cmp)
+    .unwrap_or(size * INDIVIDUAL_CARD_MAX_FACTOR);
+
+    let mut individual_layout = vec![None; individual_seeds.len()];
+    let mut place_band = |indices: &[usize],
+                          units: &[Unit],
+                          center_x: f32,
+                          band_width: f32,
+                          y_min: f32,
+                          y_max: f32,
+                          attacker: bool| {
+        let layouts = individual_formation_layout_with_base(
+            units,
+            center_x,
+            band_width,
+            y_min,
+            y_max,
+            attacker,
+            size,
+            Some(shared_base_size),
+        )
+        .0;
+        for (index, layout) in indices.iter().copied().zip(layouts) {
+            individual_layout[index] = Some(layout);
+        }
+    };
+    place_band(
+        &attacker_indices,
+        &attacker_units,
+        pos.x,
+        horizontal_room,
+        attacker_front,
+        attacker_rear,
+        true,
+    );
     place_band(
         &defender_ship_indices,
+        &defender_ship_units,
         pos.x,
         horizontal_room,
         defender_ship_rear,
         defender_front,
         false,
     );
-    let ground_top = if draw_ps {
-        shield_bottom - COMBAT_SHIELD_DEFENSE_GAP * projection.scale
-    } else {
-        pos.y - height * 0.1
-    };
-    let defender_ground_rear = (control_top + size * 0.2).min(ground_top - size * 0.05);
     place_band(
         &defender_ground_indices,
+        &defender_ground_units,
         ground_center,
         ground_width,
         defender_ground_rear,
         ground_top,
         false,
     );
+    // The fitter sizes against the whole available band. Align formations to the outer screen
+    // edges afterwards so a sparse layout does not leave its usable top or bottom margin empty.
+    let attacker_top = attacker_indices
+        .iter()
+        .filter_map(|index| individual_layout[*index])
+        .map(|(home, card_size)| home.y + card_size * INDIVIDUAL_CARD_UPPER_EXTENT)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if attacker_top.is_finite() {
+        let shift = attacker_rear - attacker_top;
+        for index in &attacker_indices {
+            if let Some((home, _)) = individual_layout[*index].as_mut() {
+                home.y += shift;
+            }
+        }
+    }
+    let defender_ground_bottom = defender_ground_indices
+        .iter()
+        .filter_map(|index| individual_layout[*index])
+        .map(|(home, card_size)| home.y - card_size * INDIVIDUAL_CARD_LOWER_EXTENT)
+        .fold(f32::INFINITY, f32::min);
+    if defender_ground_bottom.is_finite() {
+        let shift = defender_ground_rear - defender_ground_bottom;
+        for index in &defender_ground_indices {
+            if let Some((home, _)) = individual_layout[*index].as_mut() {
+                home.y += shift;
+            }
+        }
+    }
+    // Sparse defender formations otherwise hug the upper edge of the generously sized fleet
+    // band. Pull the whole formation toward the shield while preserving its rows and spacing.
+    let defender_ship_bottom = defender_ship_indices
+        .iter()
+        .filter_map(|index| individual_layout[*index])
+        .map(|(home, card_size)| home.y - card_size * INDIVIDUAL_CARD_LOWER_EXTENT)
+        .fold(f32::INFINITY, f32::min);
+    if defender_ship_bottom.is_finite() {
+        let shift = defender_ship_rear - defender_ship_bottom;
+        for index in &defender_ship_indices {
+            if let Some((home, _)) = individual_layout[*index].as_mut() {
+                home.y += shift;
+            }
+        }
+    }
+
+    let individual_ground_left = defender_ground_indices
+        .iter()
+        .filter_map(|index| individual_layout[*index])
+        .map(|(home, card_size)| home.x - card_size * 0.5)
+        .fold(f32::INFINITY, f32::min);
 
     for (seed, layout) in individual_seeds.into_iter().zip(individual_layout) {
         let Some((home, card_size)) = layout else {
@@ -1837,8 +2059,14 @@ pub fn setup_combat(
         let max_shield = report.initial_planetary_shield();
         let original_bar_left = pos.x - full_bar_width * 0.5;
         let original_icon_center_x = original_bar_left + size * 0.5;
-        let icon_center_x = first_defense_x
-            .map_or(original_icon_center_x, |x| (x - spacing).min(original_icon_center_x));
+        let icon_center_x = planetary_shield_icon_center_x(
+            original_icon_center_x,
+            first_defense_x,
+            individual_ground_left,
+            size,
+            spacing,
+            settings.combat_individual_units,
+        );
         let icon_left = icon_center_x - size * 0.5;
         // The bar's top-left corner and the image's top-right corner are one exact anchor.
         let bar_left = icon_left + size;
@@ -1994,7 +2222,7 @@ pub fn setup_combat(
 
     commands
         .spawn((
-            combat_status_node(),
+            combat_status_node(settings.combat_individual_units),
             if settings.combat_paused {
                 Visibility::Inherited
             } else {
@@ -2003,13 +2231,21 @@ pub fn setup_combat(
             Pickable::IGNORE,
             ZIndex(7),
             CombatPausedCmp,
+            CombatRoundPauseAnchorCmp,
             CombatCmp,
         ))
         .with_child((
-            add_text("PAUSED", "medium", COMBAT_STATUS_FONT_SIZE, &assets, &window),
-            combat_status_transform(),
-            TextShadow::default(),
+            combat_status_band_node(),
+            BackgroundColor(Color::BLACK.with_alpha(result_banner::BAR_ALPHA as f32 / 255.0)),
+            combat_status_transform(settings.combat_individual_units),
+            CombatRoundPauseContentCmp,
+            CombatStatusBandCmp,
             Pickable::IGNORE,
+            children![(
+                add_text("PAUSED", "medium", COMBAT_STATUS_FONT_SIZE, &assets, &window),
+                TextShadow::default(),
+                Pickable::IGNORE,
+            )],
         ));
 
     spawn_main_button(&mut commands, "Exit combat", &assets)
@@ -2017,6 +2253,22 @@ pub fn setup_combat(
         .observe(|_: On<Pointer<Click>>, mut next_game_state: ResMut<NextState<GameState>>| {
             next_game_state.set(GameState::CombatMenu);
         });
+}
+
+/// Keeps round and pause overlays at their mode-specific anchors when settings change.
+pub(crate) fn update_combat_status_layout(
+    settings: Res<Settings>,
+    mut anchors: Query<&mut Node, With<CombatRoundPauseAnchorCmp>>,
+    mut contents: Query<&mut UiTransform, With<CombatRoundPauseContentCmp>>,
+) {
+    let node = combat_status_node(settings.combat_individual_units);
+    for mut anchor in &mut anchors {
+        anchor.height = node.height;
+    }
+    let translation = combat_status_transform(settings.combat_individual_units).translation;
+    for mut transform in &mut contents {
+        transform.translation = translation;
+    }
 }
 
 /// Animates every exact combatant between its responsive slot and its aggregate type card.
@@ -2055,15 +2307,19 @@ pub fn update_combat_formation(
             return;
         }
 
-        let group_positions = grouped_q
+        let group_cards = grouped_q
             .iter_mut()
-            .map(|(entity, transform, _, _)| (entity, transform.translation))
+            .map(|(entity, transform, _, sprite)| {
+                let grouped_size =
+                    sprite.custom_size.map_or(UNIT_SIZE, |size| size.x) * transform.scale.x.abs();
+                (entity, transform.translation, grouped_size)
+            })
             .collect::<Vec<_>>();
         for (entity, mut transform, mut visibility, mut individual) in &mut individual_q {
             individual.transition_start = if desired {
-                group_positions
+                group_cards
                     .iter()
-                    .find_map(|(entity, position)| {
+                    .find_map(|(entity, position, _)| {
                         (*entity == individual.group).then_some(*position)
                     })
                     .unwrap_or(transform.translation)
@@ -2072,6 +2328,12 @@ pub fn update_combat_formation(
             };
             if desired {
                 transform.translation = individual.transition_start;
+                let grouped_size = group_cards
+                    .iter()
+                    .find_map(|(entity, _, size)| (*entity == individual.group).then_some(*size))
+                    .unwrap_or(individual.display_size);
+                transform.scale =
+                    Vec3::splat(individual_group_scale(individual.display_size, grouped_size));
             }
             *visibility = Visibility::Inherited;
             commands.entity(entity).remove::<TweenAnim>();
@@ -2099,15 +2361,20 @@ pub fn update_combat_formation(
     transition.elapsed += time.delta_secs() * settings.speed();
     let progress = (transition.elapsed / COMBAT_FORMATION_TRANSITION_SECS).clamp(0.0, 1.0);
     let eased = progress * progress * (3.0 - 2.0 * progress);
-    let group_positions = grouped_q
+    let group_cards = grouped_q
         .iter_mut()
-        .map(|(entity, transform, _, _)| (entity, transform.translation))
+        .map(|(entity, transform, _, sprite)| {
+            let grouped_size =
+                sprite.custom_size.map_or(UNIT_SIZE, |size| size.x) * transform.scale.x.abs();
+            (entity, transform.translation, grouped_size)
+        })
         .collect::<Vec<_>>();
     for (_, mut transform, _, individual) in &mut individual_q {
-        let group_position = group_positions
-            .iter()
-            .find_map(|(entity, position)| (*entity == individual.group).then_some(*position))
-            .unwrap_or(individual.transition_start);
+        let group_card = group_cards.iter().find(|(entity, _, _)| *entity == individual.group);
+        let group_position =
+            group_card.map_or(individual.transition_start, |(_, position, _)| *position);
+        let grouped_size = group_card.map_or(individual.display_size, |(_, _, size)| *size);
+        let grouped_scale = individual_group_scale(individual.display_size, grouped_size);
         let destination = if transition.to_individual {
             individual.home
         } else {
@@ -2115,9 +2382,9 @@ pub fn update_combat_formation(
         };
         transform.translation = individual.transition_start.lerp(destination, eased);
         let scale = if transition.to_individual {
-            0.82 + 0.18 * eased
+            grouped_scale + (1.0 - grouped_scale) * eased
         } else {
-            1.0 - 0.18 * eased
+            1.0 + (grouped_scale - 1.0) * eased
         };
         transform.scale = Vec3::splat(scale);
     }
@@ -2225,6 +2492,99 @@ fn start_fleet_retreat(
                             center.y + height * 0.8,
                             COMBAT_SHIP_Z + 0.9,
                         ),
+                    },
+                )),
+            ));
+        }
+    }
+    commands.spawn((
+        FleetRetreatPlayback {
+            complete: false,
+        },
+        CombatCmp,
+        Transform::default(),
+        TweenAnim::new(Tween::new(
+            EaseFunction::Linear,
+            Duration::from_millis(FLEET_RETREAT_TIME_MS),
+            TransformScaleLens {
+                start: Vec3::ONE,
+                end: Vec3::ONE,
+            },
+        )),
+    ));
+}
+
+fn combat_status_band_node() -> Node {
+    Node {
+        width: Val::Percent(100.0),
+        height: Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.0),
+        min_height: Val::Px(result_banner::BAR_MIN_HEIGHT),
+        max_height: Val::Px(result_banner::BAR_MAX_HEIGHT),
+        align_items: AlignItems::Center,
+        justify_content: JustifyContent::Center,
+        overflow: Overflow::clip(),
+        ..default()
+    }
+}
+
+/// Flies surviving attackers away after a draw; neutral fauna also leave the opposite edge.
+fn start_stalemate_departure(
+    commands: &mut Commands,
+    units: &mut Query<(Entity, &Transform, &mut CombatUnitCmp)>,
+    individuals: &mut Query<
+        (Entity, &Transform, &mut IndividualCombatUnitCmp),
+        Without<CombatUnitCmp>,
+    >,
+    fauna_encounter: bool,
+    center: Vec3,
+    height: f32,
+) {
+    let should_depart = |side: &Side, unit: Unit, hull: usize| {
+        hull > 0
+            && !unit.is_building()
+            && !unit.is_missile()
+            && unit != Unit::colony_ship()
+            && (*side == Side::Attacker
+                || fauna_encounter && *side == Side::Defender && unit.is_fauna())
+    };
+    let destination = |side: &Side, x: f32| {
+        Vec3::new(
+            x,
+            center.y
+                + if *side == Side::Attacker {
+                    height * 0.8
+                } else {
+                    -height * 0.8
+                },
+            COMBAT_SHIP_Z + 0.9,
+        )
+    };
+
+    for (entity, transform, unit) in units.iter_mut() {
+        if should_depart(&unit.side, unit.unit, unit.hull) {
+            commands.entity(entity).insert((
+                FleetRetreatCmp,
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticIn,
+                    Duration::from_millis(FLEET_RETREAT_TIME_MS),
+                    TransformPositionLens {
+                        start: transform.translation,
+                        end: destination(&unit.side, transform.translation.x),
+                    },
+                )),
+            ));
+        }
+    }
+    for (entity, transform, unit) in individuals.iter_mut() {
+        if should_depart(&unit.side, unit.unit, unit.hull) {
+            commands.entity(entity).insert((
+                FleetRetreatCmp,
+                TweenAnim::new(Tween::new(
+                    EaseFunction::QuadraticIn,
+                    Duration::from_millis(FLEET_RETREAT_TIME_MS),
+                    TransformPositionLens {
+                        start: transform.translation,
+                        end: destination(&unit.side, transform.translation.x),
                     },
                 )),
             ));
@@ -2629,6 +2989,23 @@ pub fn animate_combat(
             }
         }
 
+        // A bounded draw leaves the defended planet unchanged. The attacking fleet returns to
+        // its origin; in deep space, the neutral fauna depart in the opposite direction too.
+        if state.combat_round + 1 == combat.rounds.len()
+            && report.is_stalemate()
+            && fleet_retreat_q.is_empty()
+        {
+            start_stalemate_departure(
+                &mut commands,
+                &mut unit_q,
+                &mut individual_q,
+                report.is_space_fauna_encounter(),
+                pos,
+                projection.area.height(),
+            );
+            return;
+        }
+
         next_combat_state.set(if state.combat_round == combat.rounds.len() - 1 {
             if report.defender_salvage() == default() {
                 CombatState::EndCombat
@@ -2709,31 +3086,34 @@ pub fn animate_combat(
                 }
 
                 commands.spawn((
-                    combat_status_node(),
+                    combat_status_node(settings.combat_individual_units),
                     Pickable::IGNORE,
                     ZIndex(7),
+                    CombatRoundPauseAnchorCmp,
                     children![(
-                        Node::default(),
-                        UiTransform {
-                            scale: Vec2::splat(0.97),
-                            ..combat_status_transform()
-                        },
+                        combat_status_band_node(),
+                        BackgroundColor(Color::BLACK.with_alpha(0.0)),
+                        combat_status_transform(settings.combat_individual_units),
+                        CombatRoundPauseContentCmp,
+                        CombatStatusBandCmp,
                         TweenAnim::new(
                             Tween::new(
                                 EaseFunction::CubicOut,
                                 Duration::from_millis(ROUND_BANNER_ENTER_MS),
-                                UiTransformScaleLens {
-                                    start: Vec2::splat(0.97),
-                                    end: Vec2::ONE,
+                                UiBackgroundColorLens {
+                                    start: Color::BLACK.with_alpha(0.0),
+                                    end: Color::BLACK
+                                        .with_alpha(result_banner::BAR_ALPHA as f32 / 255.0,),
                                 },
                             )
                             .then(Delay::new(Duration::from_millis(ROUND_BANNER_HOLD_MS)))
                             .then(Tween::new(
                                 EaseFunction::CubicIn,
                                 Duration::from_millis(ROUND_BANNER_EXIT_MS),
-                                UiTransformScaleLens {
-                                    start: Vec2::ONE,
-                                    end: Vec2::splat(0.99),
+                                UiBackgroundColorLens {
+                                    start: Color::BLACK
+                                        .with_alpha(result_banner::BAR_ALPHA as f32 / 255.0,),
+                                    end: Color::BLACK.with_alpha(0.0),
                                 },
                             ))
                         ),
@@ -2929,22 +3309,38 @@ pub fn animate_combat(
                                 }
                             }
                         } else {
-                            let origin = if individual_mode {
-                                individual_q
-                                    .iter()
-                                    .find_map(|(_, transform, individual)| {
-                                        (individual.side == cu.side
-                                            && individual.unit == cu.unit
-                                            && individual.hull > 0)
-                                            .then_some(transform.translation)
-                                    })
-                                    .unwrap_or(unit_t.translation)
+                            let individual_origins = individual_q
+                                .iter()
+                                .filter_map(|(_, transform, individual)| {
+                                    (individual.side == cu.side
+                                        && individual.unit == cu.unit
+                                        && individual.hull > 0)
+                                        .then_some(transform.translation)
+                                })
+                                .collect::<Vec<_>>();
+                            let origins = if individual_mode && !individual_origins.is_empty() {
+                                individual_origins
                             } else {
-                                unit_t.translation
+                                let surviving = if individual_origins.is_empty() {
+                                    round
+                                        .units(&cu.side)
+                                        .iter()
+                                        .filter(|combatant| {
+                                            combatant.unit == cu.unit && combatant.hull > 0
+                                        })
+                                        .count()
+                                } else {
+                                    individual_origins.len()
+                                };
+                                grouped_death_ray_origins(
+                                    unit_t.translation,
+                                    surviving.max(1),
+                                    size,
+                                )
                             };
                             commands.spawn((
-                                Cinematic::new(
-                                    origin,
+                                Cinematic::from_origins(
+                                    origins,
                                     pos,
                                     projection.area.size(),
                                     size,

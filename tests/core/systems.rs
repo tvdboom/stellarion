@@ -4,6 +4,54 @@ use super::*;
 use crate::core::ui::systems::MapRangePreview;
 
 #[test]
+fn zero_height_resize_keeps_bevy_font_sizes_positive() {
+    let mut app = App::new();
+    app.add_message::<WindowResized>();
+    app.world_mut()
+        .spawn((MainCamera, Projection::Orthographic(OrthographicProjection::default_2d())));
+    let text = app.world_mut().spawn((TextFont::default(), TextSize(30.0))).id();
+
+    app.world_mut().write_message(WindowResized {
+        window: Entity::PLACEHOLDER,
+        width: 0.0,
+        height: 0.0,
+    });
+    app.world_mut().run_system_once(on_resize_system).unwrap();
+
+    assert_eq!(app.world().get::<TextFont>(text).unwrap().font_size, FontSize::Px(1.0));
+}
+
+#[test]
+fn spectator_cannot_open_missions_with_keyboard_shortcut() {
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::KeyM);
+    let mut player = Player::new(1, 0);
+    player.spectator = true;
+
+    let mut app = App::new();
+    app.insert_resource(keyboard)
+        .init_resource::<ButtonInput<MouseButton>>()
+        .insert_resource(Map {
+            rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: Vec::new(),
+        })
+        .insert_resource(player)
+        .insert_resource(Settings::default())
+        .insert_resource(UiState {
+            mission: true,
+            mission_planet_hover: Some(4),
+            ..default()
+        });
+
+    app.world_mut().run_system_once(check_keys).unwrap();
+
+    let state = app.world().resource::<UiState>();
+    assert!(!state.mission);
+    assert_eq!(state.mission_planet_hover, None);
+}
+
+#[test]
 fn ctrl_tab_recenters_after_manual_selection_with_the_shop_open() {
     use crate::core::camera::move_camera;
     use crate::core::map::systems::{select_planet, PlanetCmp};

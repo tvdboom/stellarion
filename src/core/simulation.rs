@@ -551,7 +551,7 @@ impl GameModel {
                 let joint_attack_is_valid =
                     valid_joint_attack(mission, &player_ids, &planet_ids, true);
                 let combat_is_bounded = report.combat_report.as_ref().is_none_or(|combat| {
-                    combat.rounds.len() <= MAX_COMBAT_ROUNDS + 1
+                    combat.rounds.len() <= MAX_COMBAT_ROUNDS
                         && combat.defender_retreat.as_ref().is_none_or(|retreat| {
                             planet_ids.contains(&retreat.home_planet)
                                 && retreat.home_planet != report.planet.id
@@ -3195,22 +3195,28 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     continue;
                                 };
                                 if army.has_army() && !origin.is_destroyed {
-                                    new_missions.push(Mission::new_with_id(
-                                        next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
-                                        turn,
-                                        *owner,
-                                        destination,
-                                        origin,
-                                        Icon::Deploy,
-                                        army.clone(),
-                                        BombingRaid::None,
-                                        false,
-                                        false,
-                                        Some(format!(
-                                            "{}\n- ({turn}) Joint combat stalemate; returning to {}.",
-                                            report.mission.logs, origin.name
-                                        )),
-                                    ).with_return_objective(mission.objective));
+                                    new_missions.push(
+                                        Mission::new_with_id(
+                                            next_unique_mission_id(
+                                                &mut rng,
+                                                &mut used_mission_ids,
+                                            )?,
+                                            turn,
+                                            *owner,
+                                            destination,
+                                            origin,
+                                            Icon::Deploy,
+                                            army.clone(),
+                                            BombingRaid::None,
+                                            false,
+                                            false,
+                                            Some(format!(
+                                                "{}\n- ({turn}) Joint combat draw; returning to {}.",
+                                                report.mission.logs, origin.name
+                                            )),
+                                        )
+                                        .with_return_objective(mission.objective),
+                                    );
                                 }
                             }
                         } else if retreat.has_army() {
@@ -3226,7 +3232,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 false,
                                 false,
                                 Some(format!(
-                                    "{}\n- ({turn}) Combat stalemate; returning to {}.",
+                                    "{}\n- ({turn}) Combat draw; returning to {}.",
                                     report.mission.logs, new_origin.name
                                 )),
                             );
@@ -3641,7 +3647,7 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         } else if spying {
             "withdrew after one combat round"
         } else if report.surviving_defender.has_army() {
-            "survived after the creatures withdrew"
+            "the battle ended in a draw; both sides withdrew"
         } else {
             "defeated the creatures"
         };

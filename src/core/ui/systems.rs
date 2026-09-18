@@ -1816,6 +1816,9 @@ fn draw_owned_worlds_widget_with_max_bottom(
     max_bottom: f32,
 ) -> egui::Rect {
     state.world_shortcut_hover = None;
+    if player.spectator {
+        return egui::Rect::NOTHING;
+    }
     let scale = owned_worlds_hud_scale(context.content_rect().size());
     let mut owned = map
         .planets
@@ -5687,6 +5690,10 @@ pub fn draw_ui(
     ),
 ) {
     state.world_shortcut_hover = None;
+    if player.spectator {
+        state.mission = false;
+        state.mission_planet_hover = None;
+    }
     if end_game_presentation.is_pending() {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
@@ -6046,7 +6053,7 @@ pub fn draw_ui(
     // Keep the previous hover for drawing, but require the mission list to renew it.
     let mission_hover_from_ui = std::mem::take(&mut state.mission_hover_from_ui);
 
-    if mission_panel_visible(&state) {
+    if !player.spectator && mission_panel_visible(&state) {
         let mission_scale = missions::mission_panel_scale(egui::vec2(width, height));
         let size = missions::mission_panel_size(egui::vec2(width, height) / mission_scale);
         let (window_w, window_h) = (size.x, size.y);

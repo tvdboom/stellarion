@@ -3239,6 +3239,39 @@ fn owned_worlds_panel_uses_the_compact_screen_edge_inset_below_the_resource_pane
 }
 
 #[test]
+fn spectator_has_no_owned_worlds_panel() {
+    let context = egui::Context::default();
+    let mut player = Player::new(1, 0);
+    player.spectator = true;
+    let mut state = UiState {
+        world_shortcut_hover: Some(3),
+        ..default()
+    };
+    let mut settings = Settings::default();
+    let mut panel = egui::Rect::ZERO;
+    let mut output = context.run_ui(egui::RawInput::default(), |context| {
+        panel = draw_owned_worlds_widget(
+            context,
+            &Map {
+                rect: Rect::default(),
+                solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+                planets: Vec::new(),
+            },
+            &player,
+            &MultiplayerSession::default(),
+            &mut state,
+            &mut settings,
+            &ImageIds::default(),
+        );
+    });
+    output.textures_delta.clear();
+
+    assert_eq!(panel, egui::Rect::NOTHING);
+    assert_eq!(state.world_shortcut_hover, None);
+    assert!(!has_text(&output.shapes, "No worlds under your control"));
+}
+
+#[test]
 fn strategic_hud_panels_scale_with_viewports() {
     fn panel_metrics(viewport: egui::Vec2) -> (egui::Rect, egui::Rect, egui::Vec2, egui::Vec2) {
         let context = egui::Context::default();

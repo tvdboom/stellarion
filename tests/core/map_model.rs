@@ -224,7 +224,9 @@ fn large_maps_wrap_past_the_old_quadrant_without_the_old_radial_sprawl() {
             "seed {seed}: arc did not wrap above the old quadrant"
         );
         assert!(
-            maximum_radius < previous_outer_radius * 0.8,
+            // The reserved asteroid corridor adds a small fixed radial offset while retaining
+            // most of the sector generator's improvement over the old quadrant layout.
+            maximum_radius < previous_outer_radius * 0.85,
             "seed {seed}: {maximum_radius} was not materially closer than {previous_outer_radius}"
         );
     }

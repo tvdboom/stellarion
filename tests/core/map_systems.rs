@@ -546,7 +546,7 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
 }
 
 #[test]
-fn orbiting_asteroid_hides_when_it_reaches_a_planet_and_returns_after_clearing_it() {
+fn orbiting_asteroid_remains_visible_when_a_planet_is_moved_into_its_orbit() {
     let map = GameModel::new([29; 32], GameRules::default()).unwrap().map;
     let layout = asteroid_belt_layout(&map).unwrap();
     let placement = asteroid_belt_placements(&map, layout)[0];
@@ -584,10 +584,6 @@ fn orbiting_asteroid_hides_when_it_reaches_a_planet_and_returns_after_clearing_i
     );
     app.world_mut().resource_mut::<Map>().get_mut(planet_id).position = position;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
-    app.update();
-    assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
-
-    app.world_mut().resource_mut::<Map>().get_mut(planet_id).position += Vec2::splat(10_000.0);
     app.update();
     assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Inherited));
 }
@@ -1711,12 +1707,12 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
         assert_eq!(world.query::<&SolarStarCmp>().iter(world).count(), 1);
         let kind = map_scenery_selection(world.resource::<Map>());
         let mut layers = world.query::<(&ParallaxCmp, &Children)>();
-        let mut nebula_follow = None;
+        let mut nebula_parallax = None;
         let mut celestial_follow = None;
         for (parallax, children) in layers.iter(world) {
             for child in children.iter() {
                 if world.get::<NebulaCmp>(child).is_some() {
-                    nebula_follow = Some(parallax.camera_follow);
+                    nebula_parallax = Some((parallax.camera_follow, parallax.zoom_power));
                 }
                 if world.get::<CelestialCmp>(child).is_some() {
                     celestial_follow = Some(parallax.camera_follow);
@@ -1743,7 +1739,7 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
             assert!((0.0..=kind.opacity()).contains(&color.alpha));
         }
 
-        assert_eq!(nebula_follow, Some(NEBULA_PARALLAX_FOLLOW));
+        assert_eq!(nebula_parallax, Some((NEBULA_PARALLAX_FOLLOW, NEBULA_ZOOM_POWER)));
         assert_eq!(celestial_follow, Some(CELESTIAL_PARALLAX_FOLLOW));
         let first_star_layer = world
             .query::<(Entity, &Transform, &Children)>()
@@ -1790,6 +1786,7 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
 
         // Both cross-faded frames remain behind planets throughout the zoom range.
         let mut apparent_widths = Vec::new();
+        let mut nebula_apparent_widths = Vec::new();
         for zoom in [MIN_ZOOM, 1.0, MAX_ZOOM] {
             if let Projection::Orthographic(projection) =
                 &mut *app.world_mut().get_mut::<Projection>(camera).unwrap()
@@ -1812,12 +1809,19 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
                 let scale = transform.to_scale_rotation_translation().0;
                 apparent_widths.push(sprite.custom_size.unwrap().x * scale.x / zoom);
             }
+            let mut nebula = world.query_filtered::<(&Sprite, &GlobalTransform), With<NebulaCmp>>();
+            let (sprite, transform) = nebula.single(world).unwrap();
+            let scale = transform.to_scale_rotation_translation().0;
+            nebula_apparent_widths.push(sprite.custom_size.unwrap().x * scale.x / zoom);
         }
         let smallest = apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
         let largest = apparent_widths.iter().copied().fold(0.0, f32::max);
         let expected_ratio = MAX_ZOOM / MIN_ZOOM;
         assert!((largest / smallest - expected_ratio).abs() < 1e-3);
         assert!(largest > smallest);
+        let smallest_nebula = nebula_apparent_widths.iter().copied().fold(f32::INFINITY, f32::min);
+        let largest_nebula = nebula_apparent_widths.iter().copied().fold(0.0, f32::max);
+        assert!((largest_nebula / smallest_nebula - 1.0).abs() < 1e-3);
 
         // Time alone does not move the landmark away from its chosen edge.
         let world = app.world_mut();

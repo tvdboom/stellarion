@@ -9,6 +9,13 @@ use crate::core::ui::systems::UiCmp;
 /// Marker component for menu text whose font size follows window scale.
 pub struct TextSize(pub f32);
 
+const MIN_FONT_SIZE: f32 = 1.0;
+
+/// Scales Bevy text without ever passing a transient zero-sized window to its text pipeline.
+pub(crate) fn scaled_text_font_size(font_size: f32, window_height: f32) -> f32 {
+    (font_size * window_height.max(0.0) / 460.0).max(MIN_FONT_SIZE)
+}
+
 /// Add a root UI node that covers the whole screen
 pub fn add_root_node(block: bool) -> (Node, Pickable, ZIndex, UiCmp) {
     (
@@ -52,7 +59,7 @@ pub fn add_text(
         Text::new(text),
         TextFont {
             font: assets.font(font).into(),
-            font_size: (font_size * window.height() / 460.).into(),
+            font_size: scaled_text_font_size(font_size, window.height()).into(),
             ..default()
         },
         TextSize(font_size),

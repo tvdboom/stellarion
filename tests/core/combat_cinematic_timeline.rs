@@ -405,7 +405,7 @@ fn resolved_battle_replays_every_shot_and_is_seekable_without_new_randomness() {
 }
 
 #[test]
-fn stalemate_keeps_survivors_instead_of_fabricating_a_victory_explosion() {
+fn stalemate_flies_the_attacker_away_and_keeps_the_defender() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut battle = report(vec![RoundReport {
         attacker: vec![record(1, 1, fighter)],
@@ -417,11 +417,45 @@ fn stalemate_keeps_survivors_instead_of_fabricating_a_victory_explosion() {
     battle.surviving_defender = Army::from([(fighter, 1)]).into();
     assert!(battle.is_stalemate());
     let movie = CinematicTimeline::new(&battle);
+    assert!(movie.actors.iter().all(|actor| actor.death_at.is_none()));
     assert!(movie
         .actors
         .iter()
-        .all(|actor| actor.death_at.is_none() && actor.retreat_at.is_none()));
+        .find(|actor| actor.side == Side::Attacker)
+        .unwrap()
+        .retreat_at
+        .is_some());
+    assert!(movie
+        .actors
+        .iter()
+        .find(|actor| actor.side == Side::Defender)
+        .unwrap()
+        .retreat_at
+        .is_none());
     assert!(movie.planet_attacks.is_empty());
+}
+
+#[test]
+fn fauna_stalemate_flies_both_surviving_sides_away() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let fauna = Unit::Fauna(crate::core::units::fauna::SpaceFauna::VoidManta);
+    let mut battle = report(vec![RoundReport {
+        attacker: vec![record(1, 1, fighter)],
+        defender: vec![record(2, 0, fauna)],
+        ..Default::default()
+    }]);
+    battle.mission.objective = Icon::Attack;
+    battle.planet.army.insert(fauna, 1);
+    battle.surviving_attacker = Army::from([(fighter, 1)]);
+    battle.surviving_defender = Army::from([(fauna, 1)]).into();
+    assert!(battle.is_stalemate());
+
+    let movie = CinematicTimeline::new(&battle);
+    assert!(movie
+        .actors
+        .iter()
+        .filter(|actor| actor.death_at.is_none())
+        .all(|actor| actor.retreat_at.is_some()));
 }
 
 #[test]

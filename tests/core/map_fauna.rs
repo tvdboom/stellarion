@@ -68,6 +68,22 @@ fn creatures_circle_the_mission_then_cross_it_with_continuous_flight() {
 }
 
 #[test]
+fn defeated_creatures_recede_during_the_dive_and_vanish_at_contact() {
+    for fauna in SpaceFauna::iter() {
+        for slot in 0..3 {
+            let creature = creature(fauna, slot, 3);
+            let delay = creature.delay();
+            let halfway = (ORBIT_END + STRIKE_END) * 0.5 + delay;
+
+            assert_eq!(creature.dive_envelope(ORBIT_END + delay), 1.0);
+            assert!((0.0..1.0).contains(&creature.dive_envelope(halfway)));
+            assert_eq!(creature.dive_envelope(STRIKE_END + delay), 0.0);
+            assert_eq!(creature.dive_envelope(STRIKE_END + delay + 0.5), 0.0);
+        }
+    }
+}
+
+#[test]
 fn mesh_animation_pins_each_mouth_and_articulates_the_body() {
     for fauna in SpaceFauna::iter() {
         let mouth = anatomy(fauna).0;

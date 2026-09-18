@@ -22,7 +22,7 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
 
 /// Hard ceiling that turns shield stalemates into deterministic draws.
-pub const MAX_COMBAT_ROUNDS: usize = 100;
+pub const MAX_COMBAT_ROUNDS: usize = 20;
 
 /// Hard ceiling for one unit's probabilistic rapid-fire chain in one round.
 pub const MAX_SHOTS_PER_UNIT_PER_ROUND: usize = 256;
@@ -292,7 +292,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
         );
     }
     while ((!attack_army.is_empty() && !defend_army.is_empty()) || round == 1 || withdrawal_cover)
-        && (round <= MAX_COMBAT_ROUNDS || withdrawal_cover)
+        && round <= MAX_COMBAT_ROUNDS
     {
         if attack_army.is_empty()
             && defend_army.is_empty()

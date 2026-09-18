@@ -1233,6 +1233,7 @@ fn bounded_stalemate_preserves_defender_and_returns_colonization_fleet() {
     assert_eq!(game.map.get(target).owned, Some(2));
     assert_eq!(game.map.get(target).army.amount(&Unit::probe()), 1);
     assert_eq!(game.missions.len(), 1);
+    assert!(game.missions[0].logs.contains("Combat draw; returning to"));
     assert_eq!(game.missions[0].destination, origin);
     assert_eq!(game.missions[0].army.amount(&Unit::colony_ship()), 1);
 }

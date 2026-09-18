@@ -1,7 +1,7 @@
 //! Bounded, presentation-only combat choreography. Reports supply all damage; visual
 //! sampling, particle timing and curved trajectories never feed back into simulation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::TAU;
 
 use bevy::asset::RenderAssetUsages;
@@ -40,7 +40,10 @@ const MISSILE_LAUNCH_STAGGER: f32 = 0.03;
 // The original impact recording is quieter than the new firing cues. Preserve its
 // character while keeping an actual hull strike audible beneath their tails.
 const HULL_IMPACT_VOLUME: f32 = -10.0;
-const WRECK_LIFETIME: f32 = 0.62;
+const WRECK_CARD_LIFETIME: f32 = 0.62;
+// The final wreck stage launches debris with a short delay and a long drift. Keep an invisible
+// wreck marker alive for that complete tail so conclusion playback cannot clear it early.
+const WRECK_EFFECT_TAIL: f32 = 0.22 + 1.7;
 const WRECK_STAGES: [f32; 4] = [0.0, 0.13, 0.27, 0.43];
 const REPAIR_READOUT_PROGRESS: f32 = 0.45;
 pub(crate) const DEATH_RAY_DURATION: f32 = 6.0;
@@ -587,6 +590,8 @@ pub struct PendingImpact {
     shield: usize,
     planetary: usize,
     levels: usize,
+    /// Full building-level loss shown once for this target's complete bombing volley.
+    display_levels: usize,
     elapsed: f32,
     delay: f32,
     lane: f32,
@@ -620,10 +625,12 @@ pub struct Wreck {
     origin: Vec3,
     size: f32,
     elapsed: f32,
+    tail_elapsed: f32,
     stage: usize,
     unit: Unit,
     heavy: bool,
     audible: bool,
+    card_hidden: bool,
 }
 
 impl Wreck {
@@ -632,10 +639,12 @@ impl Wreck {
             origin,
             size,
             elapsed: 0.,
+            tail_elapsed: 0.,
             stage: 0,
             unit,
             heavy: matches!(unit, Unit::Ship(Ship::Battleship | Ship::Dreadnought | Ship::WarSun)),
             audible: true,
+            card_hidden: false,
         }
     }
 }
@@ -643,7 +652,7 @@ impl Wreck {
 /// Death-ray charge, sustained beam and planetary shockwave, in playback seconds.
 #[derive(Component)]
 pub struct Cinematic {
-    origin: Vec3,
+    origins: Vec<Vec3>,
     target: Vec3,
     viewport: Vec2,
     size: f32,
@@ -654,6 +663,7 @@ pub struct Cinematic {
 }
 
 impl Cinematic {
+    #[cfg(test)]
     pub(crate) fn new(
         origin: Vec3,
         target: Vec3,
@@ -661,8 +671,24 @@ impl Cinematic {
         size: f32,
         destroys_planet: bool,
     ) -> Self {
+        Self::from_origins(vec![origin], target, viewport, size, destroys_planet)
+    }
+
+    pub(crate) fn from_origins(
+        mut origins: Vec<Vec3>,
+        target: Vec3,
+        viewport: Vec2,
+        size: f32,
+        destroys_planet: bool,
+    ) -> Self {
+        if origins.is_empty() {
+            origins.push(target);
+        }
+        for origin in &mut origins {
+            origin.z = COMBAT_EXPLOSION_Z;
+        }
         Self {
-            origin: origin.truncate().extend(COMBAT_EXPLOSION_Z),
+            origins,
             target: target.truncate().extend(COMBAT_EXPLOSION_Z),
             viewport,
             size,
@@ -671,6 +697,20 @@ impl Cinematic {
             destroys_planet,
             boom_stage: 0,
         }
+    }
+
+    fn focus(&self) -> Vec3 {
+        let source_center = self.origins.iter().copied().sum::<Vec3>() / self.origins.len() as f32;
+        source_center.lerp(self.target, 0.22)
+    }
+
+    fn combined_beam_size(&self) -> f32 {
+        self.size * (1.0 + (self.origins.len() as f32).ln() * 0.12).min(1.5)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn origins(&self) -> &[Vec3] {
+        &self.origins
     }
 }
 
@@ -900,6 +940,10 @@ pub struct PlanetFlash;
 struct CinematicBeam;
 
 #[derive(Component)]
+/// One attacking War Sun's feeder beam into the shared death-ray focus.
+struct CinematicConvergenceBeam;
+
+#[derive(Component)]
 /// One short, irregular molten segment in the planet-destruction fracture pattern.
 struct PlanetFissure;
 
@@ -1116,6 +1160,12 @@ impl Painter<'_, '_, '_> {
 
     fn sustained_beam(&mut self, from: Vec3, to: Vec3, width: f32, color: Color, lifetime: f32) {
         self.beam_after(from, to, width, color, lifetime, 0., true);
+    }
+
+    fn convergence_beam(&mut self, from: Vec3, to: Vec3, width: f32, color: Color, lifetime: f32) {
+        if let Some(entity) = self.beam_after(from, to, width, color, lifetime, 0., false) {
+            self.commands.entity(entity).insert(CinematicConvergenceBeam);
+        }
     }
 
     fn fissure(
@@ -1475,6 +1525,7 @@ pub fn run_combat_animations(
                 shield: 0,
                 planetary: 0,
                 levels: 0,
+                display_levels: 0,
                 elapsed: 0.,
                 // Every target of one firing card belongs to the same visible volley. Lanes
                 // spread projectiles spatially without making rapid-fire chains or later target
@@ -1512,6 +1563,22 @@ pub fn run_combat_animations(
                     shield: message.shot.shield_damage,
                 });
             }
+        }
+    }
+    let bombing_level_totals = grouped
+        .values()
+        .filter(|impact| impact.weapon == Weapon::Bomb && !impact.missed)
+        .fold(BTreeMap::<Entity, usize>::new(), |mut totals, impact| {
+            *totals.entry(impact.target).or_default() += impact.levels;
+            totals
+        });
+    let mut bombing_readouts_assigned = BTreeSet::new();
+    for impact in grouped.values_mut() {
+        if impact.weapon == Weapon::Bomb
+            && impact.levels > 0
+            && bombing_readouts_assigned.insert(impact.target)
+        {
+            impact.display_levels = bombing_level_totals[&impact.target];
         }
     }
     for (_, impact) in grouped {
@@ -1915,33 +1982,35 @@ pub fn run_combat_animations(
                 painter.blast(impact.destination, impact.size * 1.4, 0.7);
                 painter.ring(impact.destination, impact.size * 1.7, GOLD.with_alpha(0.6), 0.7);
                 painter.sparks(impact.destination, impact.size * 1.4, GOLD, 18, true);
-                let origin = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5)
-                    + Vec3::Y * impact.size * 0.65;
-                painter.commands.spawn((
-                    Text2d::new(format!(
-                        "-{} {}",
-                        impact.levels,
-                        if impact.levels == 1 {
-                            "LEVEL"
-                        } else {
-                            "LEVELS"
-                        }
-                    )),
-                    TextFont {
-                        font_size: (impact.size * 0.17).into(),
-                        ..default()
-                    },
-                    TextColor(GOLD),
-                    Transform::from_translation(origin),
-                    CombatReadout {
-                        age: 0.,
-                        origin,
-                        size: impact.size,
-                        color: GOLD,
-                    },
-                    CombatCmp,
-                    Pickable::IGNORE,
-                ));
+                if impact.display_levels > 0 {
+                    let origin = impact.destination.truncate().extend(COMBAT_EXPLOSION_Z + 0.5)
+                        + Vec3::Y * impact.size * 0.65;
+                    painter.commands.spawn((
+                        Text2d::new(format!(
+                            "-{} {}",
+                            impact.display_levels,
+                            if impact.display_levels == 1 {
+                                "LEVEL"
+                            } else {
+                                "LEVELS"
+                            }
+                        )),
+                        TextFont {
+                            font_size: (impact.size * 0.17).into(),
+                            ..default()
+                        },
+                        TextColor(GOLD),
+                        Transform::from_translation(origin),
+                        CombatReadout {
+                            age: 0.,
+                            origin,
+                            size: impact.size,
+                            color: GOLD,
+                        },
+                        CombatCmp,
+                        Pickable::IGNORE,
+                    ));
+                }
             }
         }
     }
@@ -2062,6 +2131,7 @@ pub fn run_combat_animations(
         } else {
             1.
         };
+        let effect_tail_started = wreck.stage == WRECK_STAGES.len();
         if let Ok((_, _, _, _, Some(mut motion))) = units.get_mut(entity) {
             if wreck.stage == 0 && wreck.unit != Unit::planetary_shield() {
                 motion.flash = 0.2;
@@ -2095,7 +2165,16 @@ pub fn run_combat_animations(
             }
             wreck.stage += 1;
         }
-        if wreck.elapsed > WRECK_LIFETIME * heavy {
+        if !wreck.card_hidden && wreck.elapsed > WRECK_CARD_LIFETIME * heavy {
+            wreck.card_hidden = true;
+            painter.commands.entity(entity).insert(Visibility::Hidden);
+        }
+        // Start this clock on the update after the final stage is emitted. That guarantees even
+        // a low-frame-rate or fast-forwarded blast remains a blocking effect for its full tail.
+        if effect_tail_started {
+            wreck.tail_elapsed += dt;
+        }
+        if wreck.tail_elapsed > WRECK_EFFECT_TAIL {
             painter.commands.entity(entity).despawn();
         }
     }
@@ -2105,7 +2184,8 @@ pub fn run_combat_animations(
         if dt == 0. {
             continue;
         }
-        let focus = ray.origin.lerp(ray.target, 0.22);
+        let focus = ray.focus();
+        let combined_size = ray.combined_beam_size();
         if ray.stage == 0 {
             ray.stage = 1;
             painter.commands.spawn((
@@ -2130,61 +2210,60 @@ pub fn run_combat_animations(
                 CombatCmp,
                 Pickable::IGNORE,
             ));
-            for i in 0..28 {
-                let angle = i as f32 * TAU / 28.;
-                let offset = Vec3::new(angle.cos(), angle.sin(), 0.) * ray.size * 2.2;
-                painter.particle(
-                    false,
-                    Particle {
-                        origin: ray.origin + offset,
-                        velocity: -offset / 1.65,
-                        start_size: Vec2::splat(ray.size * 0.045),
-                        end_size: Vec2::splat(ray.size * 0.18),
-                        color: GOLD,
-                        elapsed: 0.,
-                        delay: 0.,
-                        lifetime: 1.65,
-                        spin: 0.,
-                        sustained: false,
-                    },
-                );
+            for (source_index, origin) in ray.origins.iter().copied().enumerate() {
+                for i in 0..8 {
+                    let angle = i as f32 * TAU / 8. + source_index as f32 * 0.41;
+                    let offset = Vec3::new(angle.cos(), angle.sin(), 0.) * ray.size * 0.72;
+                    painter.particle(
+                        false,
+                        Particle {
+                            origin: origin + offset,
+                            velocity: -offset / 1.65,
+                            start_size: Vec2::splat(ray.size * 0.035),
+                            end_size: Vec2::splat(ray.size * 0.13),
+                            color: GOLD,
+                            elapsed: 0.,
+                            delay: 0.,
+                            lifetime: 1.65,
+                            spin: 0.,
+                            sustained: false,
+                        },
+                    );
+                }
+                for radius in [0.7, 1.1] {
+                    painter.particle(
+                        true,
+                        Particle {
+                            origin,
+                            velocity: Vec3::ZERO,
+                            start_size: Vec2::splat(ray.size * radius),
+                            end_size: Vec2::splat(ray.size * 0.12),
+                            color: GOLD.with_alpha(0.6),
+                            elapsed: 0.,
+                            delay: 0.,
+                            lifetime: 1.9,
+                            spin: radius,
+                            sustained: false,
+                        },
+                    );
+                }
+                painter.glow(origin, ray.size * 0.85, GOLD, 2.1);
             }
-            for radius in [1.2, 1.8, 2.4] {
-                painter.particle(
-                    true,
-                    Particle {
-                        origin: ray.origin,
-                        velocity: Vec3::ZERO,
-                        start_size: Vec2::splat(ray.size * radius),
-                        end_size: Vec2::splat(ray.size * 0.15),
-                        color: GOLD.with_alpha(0.6),
-                        elapsed: 0.,
-                        delay: 0.,
-                        lifetime: 1.9,
-                        spin: radius,
-                        sustained: false,
-                    },
-                );
-            }
-            painter.glow(ray.origin, ray.size * 1.7, GOLD, 2.1);
         }
         if ray.stage == 1 && ray.elapsed >= DEATH_RAY_FOCUS_AT {
             ray.stage = 2;
-            for i in 0..8 {
-                let angle = i as f32 * TAU / 8.;
-                let emitter =
-                    ray.origin + Vec3::new(angle.cos(), angle.sin(), 0.) * ray.size * 0.48;
-                painter.beam(emitter, focus, ray.size * 0.07, GOLD, 1.6);
-                painter.beam(emitter, focus, ray.size * 0.018, Color::WHITE, 1.6);
+            for origin in ray.origins.iter().copied() {
+                painter.convergence_beam(origin, focus, ray.size * 0.11, GOLD, 1.7);
+                painter.convergence_beam(origin, focus, ray.size * 0.035, Color::WHITE, 1.7);
             }
-            painter.glow(focus, ray.size * 0.9, Color::WHITE, 1.4);
-            painter.ring(focus, ray.size * 1.8, GOLD, 1.2);
+            painter.glow(focus, combined_size * 1.05, Color::WHITE, 1.4);
+            painter.ring(focus, combined_size * 1.9, GOLD, 1.2);
         }
         if ray.stage == 2 && ray.elapsed >= DEATH_RAY_DISCHARGE_AT {
             ray.stage = 3;
             // A broad heated envelope, dense energy column and white-hot core make
             // the discharge read as one sustained weapon instead of a quick tracer.
-            for (width, color) in death_ray_beam_layers(ray.size) {
+            for (width, color) in death_ray_beam_layers(combined_size) {
                 painter.sustained_beam(focus, ray.target, width, color, 1.72);
             }
 

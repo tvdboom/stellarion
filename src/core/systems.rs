@@ -8,7 +8,7 @@ use itertools::Itertools;
 use crate::core::camera::MainCamera;
 use crate::core::combat::systems::BackgroundImageCmp;
 use crate::core::map::model::{Map, MapCmp};
-use crate::core::menu::utils::{add_root_node, TextSize};
+use crate::core::menu::utils::{add_root_node, scaled_text_font_size, TextSize};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::simulation::TurnCommand;
@@ -86,7 +86,7 @@ pub fn on_resize_system(
 
     for window in resize_reader.read() {
         for (mut text, size) in text.iter_mut() {
-            text.font_size = (size.0 * window.height / 460.).into()
+            text.font_size = scaled_text_font_size(size.0, window.height).into();
         }
 
         // Resize background images to cover the whole screen
@@ -230,6 +230,14 @@ pub fn check_keys(
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
 
+    // Spectators can inspect the map, but no longer have access to the mission interface.
+    // Close a panel that was left open when the player became a spectator as well as
+    // ignoring subsequent mission shortcuts.
+    if player.spectator {
+        state.mission = false;
+        state.mission_planet_hover = None;
+    }
+
     // Toggle show planet info
     if keyboard.just_pressed(KeyCode::KeyI) {
         settings.show_info = !settings.show_info;
@@ -241,7 +249,7 @@ pub fn check_keys(
     }
 
     // Toggle mission panel
-    if keyboard.just_pressed(KeyCode::KeyM) {
+    if !player.spectator && keyboard.just_pressed(KeyCode::KeyM) {
         state.planet_selected = None;
         state.mission = !state.mission;
         if state.mission && state.joint_attack_draft_id.is_some() {

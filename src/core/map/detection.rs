@@ -23,7 +23,8 @@ use crate::core::states::{AppState, GameState};
 use crate::core::units::Amount;
 use crate::multiplayer::client::MultiplayerSession;
 
-const DETECTION_SECONDS: f32 = 4.2;
+const DETECTION_SECONDS: f32 = 4.2 + super::AFTERMATH_LABEL_EXTENSION_SECONDS;
+const DETECTION_LABEL_FADE_OUT_SECONDS: f32 = 1.4;
 const MISSION_MARKER_SIZE: f32 = 50.0;
 const PULSE_COUNT: usize = 4;
 const PULSE_INTERVAL_SECONDS: f32 = 0.34;
@@ -445,7 +446,6 @@ fn animate_detections(
         }
 
         let elapsed = effect.timer.elapsed_secs();
-        let settle = ((elapsed - 2.8) / (DETECTION_SECONDS - 2.8)).clamp(0.0, 1.0);
         for child in children.iter() {
             let Ok((child, part, mut transform, material, text)) = parts.get_mut(child) else {
                 continue;
@@ -472,11 +472,17 @@ fn animate_detections(
                 DetectionPart::Label {
                     y,
                 } => {
-                    let fade_in = ((elapsed - 0.25) / 0.4).clamp(0.0, 1.0);
-                    transform.scale = Vec3::splat(1.0 - 0.12 * settle);
-                    transform.translation.y = y + 8.0 * (1.0 - fade_in);
+                    let (label_y, alpha) = super::aftermath_label_motion(
+                        *y,
+                        elapsed,
+                        0.25,
+                        DETECTION_SECONDS,
+                        0.4,
+                        DETECTION_LABEL_FADE_OUT_SECONDS,
+                    );
+                    transform.translation.y = label_y;
                     if let Some(mut text) = text {
-                        text.0.set_alpha(fade_in * (1.0 - settle));
+                        text.0.set_alpha(alpha);
                     }
                 },
             }

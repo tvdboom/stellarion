@@ -18,7 +18,7 @@ use crate::core::camera::{
 use crate::core::combat::systems::{
     animate_combat, exit_combat, exit_combat_menu, restore_combat_camera, run_combat_animations,
     setup_combat, setup_combat_menu, shake_combat_camera, update_combat_formation,
-    update_combat_stats, CombatCmp, CombatMenuCmp, SpawnShotMsg,
+    update_combat_stats, update_combat_status_layout, CombatCmp, CombatMenuCmp, SpawnShotMsg,
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
@@ -343,6 +343,7 @@ impl Plugin for GamePlugin {
                     run_combat_animations,
                     shake_combat_camera,
                     update_combat_stats,
+                    update_combat_status_layout,
                 )
                     .chain()
                     .run_if(in_state(GameState::Combat))

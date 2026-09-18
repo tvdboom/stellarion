@@ -21,7 +21,7 @@ use crate::core::simulation::TurnCommand;
 use crate::core::states::{AppState, GameState};
 use crate::multiplayer::client::PendingTurnCommands;
 
-const CELEBRATION_SECONDS: f32 = 5.0;
+const CELEBRATION_SECONDS: f32 = 5.0 + super::AFTERMATH_LABEL_EXTENSION_SECONDS;
 const WAVE_BANDS: usize = 4;
 const ARRIVAL_APPROACH_SECONDS: f32 = 0.86;
 const ARRIVAL_LANDING_SECONDS: f32 = 0.44;
@@ -582,9 +582,16 @@ fn animate_colonies(
                 EffectPart::Label {
                     y,
                 } => {
-                    let fade_in = ((celebration_elapsed - 0.4) / 0.4).clamp(0.0, 1.0);
-                    transform.translation.y = y + 10.0 * (1.0 - fade_in);
-                    fade_in * ((CELEBRATION_SECONDS - elapsed) / 0.8).clamp(0.0, 1.0)
+                    let (label_y, alpha) = super::aftermath_label_motion(
+                        *y,
+                        elapsed,
+                        celebration_delay + 0.4,
+                        CELEBRATION_SECONDS,
+                        0.4,
+                        0.8,
+                    );
+                    transform.translation.y = label_y;
+                    alpha
                 },
             };
             if let Some(mut material) = material.and_then(|handle| materials.get_mut(&handle.0)) {

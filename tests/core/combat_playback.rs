@@ -11,7 +11,7 @@ use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
 use crate::core::units::{defense::Defense, ships::Ship, Army, Combat};
 use crate::multiplayer::client::MultiplayerSession;
-use bevy_tweening::AnimCompletedEvent;
+use bevy_tweening::{AnimCompletedEvent, AnimTargetKind};
 
 #[test]
 fn snapshot_matches_hull_by_id_across_casualties_and_reordered_rounds() {
@@ -264,6 +264,68 @@ fn eliminated_army_finishes_its_wrecks_before_concluding_playback() {
 }
 
 #[test]
+fn automatic_individual_conclusion_waits_for_wrecks_and_preserves_survivor_slots() {
+    let mut app = app(150);
+    assert!(app.world().resource::<Player>().reports[0]
+        .surviving_attacker
+        .iter()
+        .any(|(_, count)| *count > 0));
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    app.world_mut().run_system_once(super::super::systems::update_combat_formation).unwrap();
+    app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+    app.world_mut().run_system_once(super::super::systems::update_combat_formation).unwrap();
+    assert!(app.world().resource::<CombatFormationState>().individual());
+
+    let expected = app
+        .world_mut()
+        .query::<&IndividualCombatUnitCmp>()
+        .iter(app.world())
+        .filter_map(|card| {
+            card.id.filter(|_| card.side == Side::Attacker).map(|id| (id, card.home()))
+        })
+        .collect::<HashMap<_, _>>();
+    assert!(!expected.is_empty());
+
+    let defenders = app
+        .world_mut()
+        .query::<(Entity, &CombatUnitCmp)>()
+        .iter(app.world())
+        .filter_map(|(entity, card)| {
+            (card.side == Side::Defender && combatant(card.unit)).then_some(entity)
+        })
+        .collect::<Vec<_>>();
+    for entity in defenders {
+        app.world_mut().despawn(entity);
+    }
+
+    let wreck = app
+        .world_mut()
+        .spawn(super::super::effects::Wreck::new(Vec3::ZERO, 40.0, Unit::crawler()))
+        .id();
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+    app.world_mut().despawn(wreck);
+
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::EndCombat)
+    ));
+    let survivors = app
+        .world_mut()
+        .query::<(&Transform, &IndividualCombatUnitCmp)>()
+        .iter(app.world())
+        .filter_map(|(transform, card)| {
+            card.id.filter(|_| card.side == Side::Attacker).map(|id| (id, transform.translation))
+        })
+        .collect::<Vec<_>>();
+    assert!(!survivors.is_empty());
+    for (id, position) in survivors {
+        assert_eq!(position, expected[&id]);
+    }
+}
+
+#[test]
 fn finishing_ship_fire_keeps_recorded_bombing_and_applies_building_losses_once() {
     let mut app = app_with_raid(150, BombingRaid::Economic);
     let report = app.world().resource::<Player>().reports[0].clone();
@@ -320,7 +382,7 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
     assert!(app.world().contains_resource::<CombatRoundJump>());
     assert!(matches!(
         *app.world().resource::<NextState<CombatState>>(),
-        NextState::Pending(CombatState::DisplayRound)
+        NextState::Pending(CombatState::Setup)
     ));
     let last =
         app.world().resource::<Player>().reports[0].combat_report.as_ref().unwrap().rounds.len()
@@ -341,6 +403,36 @@ fn ctrl_arrows_without_shift_do_not_seek_and_round_bounds_restart_or_finish() {
         .collect::<Vec<_>>();
     assert!(!individuals.is_empty());
     assert!(individuals.iter().all(|entity| app.world().get::<TweenAnim>(*entity).is_none()));
+}
+
+#[test]
+fn rewinding_round_one_finishes_the_restored_fly_in_before_weapon_selection() {
+    let mut app = app(12);
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    key(&mut app, KeyCode::ArrowLeft, true);
+    app.world_mut().run_system_once(control_combat_playback).unwrap();
+
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::Setup)
+    ));
+    assert!(app
+        .world_mut()
+        .query::<&CombatUnitCmp>()
+        .iter(app.world())
+        .all(|card| card.fire == FireState::Idle));
+    assert!(app
+        .world_mut()
+        .query_filtered::<&TweenAnim, With<IndividualCombatUnitCmp>>()
+        .iter(app.world())
+        .next()
+        .is_some());
+
+    app.insert_resource(State::new(CombatState::Setup));
+    app.insert_resource(NextState::<CombatState>::Unchanged);
+    app.world_mut().run_system_once(super::super::systems::animate_combat).unwrap();
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+    assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
 }
 
 #[test]
@@ -406,15 +498,40 @@ fn rewinding_a_fully_intercepted_missile_strike_replays_the_interceptors() {
 
     assert!(matches!(
         *app.world().resource::<NextState<CombatState>>(),
-        NextState::Pending(CombatState::AntiBallistic)
+        NextState::Pending(CombatState::Setup)
     ));
     let cards = app
         .world_mut()
         .query::<&CombatUnitCmp>()
         .iter(app.world())
-        .map(|card| (card.unit, card.fire == FireState::Select))
+        .map(|card| (card.unit, card.fire == FireState::Idle))
         .collect::<Vec<_>>();
     assert!(cards.contains(&(Unit::antiballistic_missile(), true)), "rewound cards: {cards:?}");
+
+    let entry = app
+        .world_mut()
+        .query_filtered::<Entity, With<TweenAnim>>()
+        .iter(app.world())
+        .next()
+        .unwrap();
+    app.insert_resource(State::new(CombatState::Setup));
+    app.insert_resource(NextState::<CombatState>::Unchanged);
+    app.world_mut().resource_mut::<Messages<AnimCompletedEvent>>().write(AnimCompletedEvent {
+        anim_entity: entry,
+        target: AnimTargetKind::Component {
+            entity: entry,
+        },
+    });
+    app.world_mut().run_system_once(super::super::systems::animate_combat).unwrap();
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::AntiBallistic)
+    ));
+    assert!(app
+        .world_mut()
+        .query::<&CombatUnitCmp>()
+        .iter(app.world())
+        .any(|card| card.unit == Unit::antiballistic_missile() && card.fire == FireState::Select));
 }
 
 #[test]

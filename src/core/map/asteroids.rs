@@ -99,10 +99,12 @@ fn asteroid_belt_layout_in_gap(gap: AsteroidBeltGap, radial_position: f32) -> As
     let surface_width = gap.outer_edge - gap.inner_edge;
     let (safe_inner, safe_outer, maximum_asteroid_radius) = if surface_width > 0.0 {
         let maximum_asteroid_radius = ASTEROID_MAXIMUM_RADIUS.min(surface_width * 0.2);
-        let planet_padding = 8.0_f32.min(surface_width * 0.08);
+        let orbital_clearance = asteroid_render_radius(maximum_asteroid_radius * 2.0)
+            + ASTEROID_PLANET_CLEARANCE
+            + ASTEROID_MAXIMUM_WOBBLE;
         (
-            gap.inner_edge + maximum_asteroid_radius + planet_padding,
-            gap.outer_edge - maximum_asteroid_radius - planet_padding,
+            gap.inner_edge + orbital_clearance,
+            gap.outer_edge - orbital_clearance,
             maximum_asteroid_radius,
         )
     } else {
@@ -159,8 +161,15 @@ pub(crate) fn visible_asteroid_count(map: &Map, placements: &[AsteroidBeltPlacem
 pub(crate) fn asteroid_belt_layout(map: &Map) -> Option<AsteroidBeltLayout> {
     let seed = map.scenery_seed().wrapping_add(0x7a21_6d4b);
     let gaps = solar_band_gaps(map);
-    let clear_gaps =
-        gaps.iter().copied().filter(|gap| gap.inner_edge < gap.outer_edge).collect::<Vec<_>>();
+    let minimum_orbital_corridor = 2.0
+        * (asteroid_render_radius(ASTEROID_MAXIMUM_RADIUS * 2.0)
+            + ASTEROID_PLANET_CLEARANCE
+            + ASTEROID_MAXIMUM_WOBBLE);
+    let clear_gaps = gaps
+        .iter()
+        .copied()
+        .filter(|gap| gap.outer_edge - gap.inner_edge >= minimum_orbital_corridor)
+        .collect::<Vec<_>>();
     let candidates = if clear_gaps.is_empty() {
         gaps
     } else {
@@ -284,21 +293,6 @@ fn asteroid_render_radius(diameter: f32) -> f32 {
     diameter * 0.5 * ASTEROID_MAX_RENDER_SCALE * ASTEROID_TUMBLE_SCALE_MARGIN
 }
 
-/// A rotating rock may cross a planet long after its initially clear placement.
-#[cfg(feature = "app")]
-pub(crate) fn asteroid_clears_planets_at_position(
-    map: &Map,
-    placement: &AsteroidBeltPlacement,
-    position: Vec2,
-) -> bool {
-    map.planets.iter().filter(|planet| !planet.is_moon()).all(|planet| {
-        let minimum_distance = planet.size() * 0.5
-            + asteroid_render_radius(placement.diameter)
-            + ASTEROID_PLANET_CLEARANCE;
-        position.distance_squared(planet.position) > minimum_distance * minimum_distance
-    })
-}
-
 pub(crate) fn asteroid_belt_placements(
     map: &Map,
     layout: AsteroidBeltLayout,
@@ -371,10 +365,9 @@ pub(crate) fn recycler_asteroid_target_groups_at_elapsed(
 ) -> BTreeMap<PlanetId, Vec<Vec2>> {
     let asteroids = placements
         .iter()
-        .filter_map(|placement| {
+        .map(|placement| {
             let position = asteroid_position_at_elapsed(map, placement, elapsed);
-            asteroid_clears_planets_at_position(map, placement, position)
-                .then_some((position, placement.diameter * 0.5))
+            (position, placement.diameter * 0.5)
         })
         .collect::<Vec<_>>();
     recycler_targets_from_positions(map, &asteroids)

@@ -153,6 +153,7 @@ fn bastion_statistics_apply_to_every_combat_round_and_survive_reports() {
 #[test]
 /// Zero-damage armies produce a bounded draw instead of an infinite combat loop.
 fn zero_damage_stalemate_terminates() {
+    assert_eq!(MAX_COMBAT_ROUNDS, 20);
     let destination = Planet {
         id: 1,
         name: "Stalemate".to_string(),
@@ -189,7 +190,8 @@ fn zero_damage_stalemate_terminates() {
         1,
         &origin,
         &destination,
-        Icon::Attack,
+        // Destroy reports are retained even when neither side can fire, exposing the exact cap.
+        Icon::Destroy,
         Army::from([(Unit::probe(), 1)]),
         BombingRaid::None,
         true,
@@ -206,6 +208,7 @@ fn zero_damage_stalemate_terminates() {
     );
     assert_eq!(report.surviving_attacker.amount(&Unit::probe()), 1);
     assert_eq!(report.surviving_defender.amount(&Unit::probe()), 1);
+    assert_eq!(report.combat_report.as_ref().unwrap().rounds.len(), MAX_COMBAT_ROUNDS);
     assert!(report.is_stalemate());
     assert_eq!(report.winner(), None);
 }

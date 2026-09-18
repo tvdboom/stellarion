@@ -31,6 +31,22 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
                     let seed = DeterministicRngState::from_u64(sample).seed;
                     let map = GameModel::new(seed, rules.clone()).unwrap().map;
                     let layout = asteroid_belt_layout(&map).unwrap();
+                    let gap = solar_band_gaps(&map)
+                        .into_iter()
+                        .find(|gap| gap.between_bands == layout.between_bands)
+                        .unwrap();
+                    let required_orbital_clearance =
+                        asteroid_render_radius(layout.maximum_asteroid_diameter)
+                            + ASTEROID_PLANET_CLEARANCE
+                            + ASTEROID_MAXIMUM_WOBBLE;
+                    assert!(
+                        layout.radius - layout.radial_half_width - gap.inner_edge
+                            >= required_orbital_clearance - 0.01
+                    );
+                    assert!(
+                        gap.outer_edge - (layout.radius + layout.radial_half_width)
+                            >= required_orbital_clearance - 0.01
+                    );
                     let placements = asteroid_belt_placements(&map, layout);
                     let count = asteroid_belt_asteroid_count(layout.radius);
                     assert!((count * 3 / 4..=count).contains(&placements.len()));
@@ -118,14 +134,13 @@ fn generated_belts_keep_varied_spacing_clearance_and_deterministic_placements() 
 }
 
 #[test]
-fn two_player_practice_seeds_never_shrink_asteroids_below_the_legible_minimum() {
+fn two_player_practice_seeds_reserve_a_clear_corridor_without_shrinking_asteroids() {
     let rules = GameRules {
         player_count: 2,
         practice_mode: true,
         ..Default::default()
     };
 
-    let mut narrow_layouts = 0;
     for sample in 0..512 {
         let seed = DeterministicRngState::from_u64(sample).seed;
         let map = GameModel::new(seed, rules.clone()).unwrap().map;
@@ -134,9 +149,10 @@ fn two_player_practice_seeds_never_shrink_asteroids_below_the_legible_minimum() 
             .into_iter()
             .find(|gap| gap.between_bands == layout.between_bands)
             .unwrap();
-        narrow_layouts += usize::from(
-            gap.outer_edge > gap.inner_edge
-                && (gap.outer_edge - gap.inner_edge) * 0.4 < ASTEROID_MINIMUM_DIAMETER,
+        assert!(
+            gap.outer_edge - gap.inner_edge
+                >= super::super::model::ASTEROID_BELT_MINIMUM_SURFACE_GAP - 0.01,
+            "sample {sample} did not reserve the belt corridor: {gap:?}"
         );
         let placements = asteroid_belt_placements(&map, layout);
 
@@ -146,5 +162,4 @@ fn two_player_practice_seeds_never_shrink_asteroids_below_the_legible_minimum() 
             "sample {sample} produced a sub-legible asteroid: layout={layout:?}"
         );
     }
-    assert!(narrow_layouts > 0, "the regression sweep did not exercise any narrow belts");
 }

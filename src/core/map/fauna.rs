@@ -21,9 +21,15 @@ use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::Unit;
 use crate::utils::NameFromEnum;
 
-pub(super) const FAUNA_AFTERMATH_SECONDS: f32 = 7.5;
+pub(super) const FAUNA_ACTION_SECONDS: f32 = 7.5;
+pub(super) const FAUNA_AFTERMATH_SECONDS: f32 =
+    FAUNA_ACTION_SECONDS + super::AFTERMATH_LABEL_EXTENSION_SECONDS;
+pub(super) const FAUNA_RESULT_LABEL_Y: f32 = 110.0;
 // Flight, weapons, body motion, audio and fades all use this authored timeline.
 const CHOREOGRAPHY_SECONDS: f32 = 2.8;
+const FAUNA_LABEL_APPEAR_SECONDS: f32 = FAUNA_ACTION_SECONDS * 1.95 / CHOREOGRAPHY_SECONDS;
+const FAUNA_LABEL_FADE_IN_SECONDS: f32 = FAUNA_ACTION_SECONDS * 0.15 / CHOREOGRAPHY_SECONDS;
+const FAUNA_LABEL_FADE_OUT_SECONDS: f32 = FAUNA_ACTION_SECONDS * 0.25 / CHOREOGRAPHY_SECONDS;
 const ENTRY_END: f32 = 0.28;
 const ORBIT_END: f32 = 1.08;
 const STRIKE_END: f32 = 1.66;
@@ -147,6 +153,12 @@ impl Creature {
         } else {
             arrival * (1.0 - smooth((t - STRIKE_END - 0.03) / 0.30))
         }
+    }
+
+    /// Shrinks a defeated creature into the fleet during its final inward strike.
+    fn dive_envelope(self, elapsed: f32) -> f32 {
+        let t = elapsed - self.delay();
+        1.0 - smooth((t - ORBIT_END) / (STRIKE_END - ORBIT_END))
     }
 }
 
@@ -666,7 +678,7 @@ pub(super) fn spawn_fauna_aftermath(
                     FaunaPart::Ripple(index),
                 ));
             }
-            let y = 140.0;
+            let y = FAUNA_RESULT_LABEL_Y;
             parent.spawn((
                 Text2d::new(outcome.label),
                 TextFont {
@@ -728,7 +740,9 @@ pub(super) fn animate_fauna_aftermath(
             commands.entity(entity).despawn();
             continue;
         }
-        let elapsed = effect.timer.fraction() * CHOREOGRAPHY_SECONDS;
+        let effect_elapsed = effect.timer.elapsed_secs();
+        let elapsed =
+            (effect_elapsed / FAUNA_ACTION_SECONDS).clamp(0.0, 1.0) * CHOREOGRAPHY_SECONDS;
         for (threshold, flag) in [(0.48, 1), (1.11, 2), (STRIKE_END, 4)] {
             if elapsed < threshold || effect.sounds & flag != 0 {
                 continue;
@@ -790,20 +804,21 @@ pub(super) fn animate_fauna_aftermath(
                 },
                 FaunaPart::Creature(slot) => {
                     let creature = effect.creatures[slot];
-                    // A defeated pack vanishes at contact; victorious fauna keep flying past
-                    // the destroyed mission as before.
+                    // A defeated pack recedes into the mission throughout its final dive;
+                    // victorious fauna keep flying past the destroyed mission as before.
                     let flight_time = if effect.victory {
                         elapsed.min(STRIKE_END + creature.delay())
                     } else {
                         elapsed
                     };
                     *transform = creature.pose(flight_time);
-                    let alpha = creature.alpha(flight_time)
-                        * if effect.victory {
-                            1.0 - smooth((elapsed - creature.delay() - STRIKE_END) / 0.20)
-                        } else {
-                            1.0
-                        };
+                    let dive_envelope = if effect.victory {
+                        creature.dive_envelope(elapsed)
+                    } else {
+                        1.0
+                    };
+                    transform.scale = Vec3::splat(dive_envelope);
+                    let alpha = creature.alpha(flight_time) * dive_envelope;
                     if let Some(mut material) =
                         material.and_then(|handle| materials.get_mut(&handle.0))
                     {
@@ -887,11 +902,17 @@ pub(super) fn animate_fauna_aftermath(
                     transform.translation = position.extend(0.35);
                 },
                 FaunaPart::Label(y) => {
-                    let fade =
-                        smooth((elapsed - 1.95) / 0.15) * (1.0 - smooth((elapsed - 2.55) / 0.25));
-                    transform.translation.y = y + (1.0 - fade) * 4.0;
+                    let (label_y, alpha) = super::aftermath_label_motion(
+                        y,
+                        effect_elapsed,
+                        FAUNA_LABEL_APPEAR_SECONDS,
+                        FAUNA_AFTERMATH_SECONDS,
+                        FAUNA_LABEL_FADE_IN_SECONDS,
+                        FAUNA_LABEL_FADE_OUT_SECONDS,
+                    );
+                    transform.translation.y = label_y;
                     if let Some(mut text) = text {
-                        text.0.set_alpha(fade);
+                        text.0.set_alpha(alpha);
                     }
                 },
             }

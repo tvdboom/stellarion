@@ -37,8 +37,7 @@ use crate::core::map::asteroids::{
 };
 use crate::core::map::asteroids::{
     asteroid_belt_layout as shared_asteroid_belt_layout,
-    asteroid_belt_placements as shared_asteroid_belt_placements,
-    asteroid_clears_planets_at_position, asteroid_position_at_elapsed,
+    asteroid_belt_placements as shared_asteroid_belt_placements, asteroid_position_at_elapsed,
     recycler_asteroid_target_groups_at_elapsed, AsteroidBeltPlacement as SharedAsteroidPlacement,
     ASTEROID_MAX_RENDER_SCALE, ASTEROID_TUMBLE_SCALE_MARGIN,
 };
@@ -277,6 +276,7 @@ const SOLAR_STAR_DEPTH: f32 = BACKGROUND_Z + 0.78;
 const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
 const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
+const NEBULA_ZOOM_POWER: f32 = 1.0;
 const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
 const CELESTIAL_MAP_MARGIN: f32 = 8.0;
 const CELESTIAL_TINT: f32 = 0.92;
@@ -2020,7 +2020,14 @@ fn spawn_background_landmarks(commands: &mut Commands, assets: &WorldAssets, map
             Name::new("Decorative nebula parallax"),
             Transform::from_xyz(0.0, 0.0, NEBULA_DEPTH),
             Visibility::Inherited,
-            ParallaxCmp::new(NEBULA_PARALLAX_FOLLOW, 1.0, 0.025, Vec2::new(0.06, -0.03)),
+            // Match the layer's world scale to the orthographic camera scale so the distant
+            // nebula keeps the same apparent size in the viewport at every zoom level.
+            ParallaxCmp::new(
+                NEBULA_PARALLAX_FOLLOW,
+                1.0,
+                NEBULA_ZOOM_POWER,
+                Vec2::new(0.06, -0.03),
+            ),
             Pickable::IGNORE,
             MapCmp,
         ))
@@ -4432,7 +4439,7 @@ pub(crate) fn animate_map_ambience(
 
 /// Advances the visible, non-authoritative asteroid-band drift and tumbling.
 pub(crate) fn animate_asteroid_belts(
-    mut asteroids: Query<(&AsteroidCmp, &mut Transform, &mut Visibility)>,
+    mut asteroids: Query<(&AsteroidCmp, &mut Transform)>,
     camera: Query<&Projection, With<MainCamera>>,
     map: Res<Map>,
     time: Res<Time>,
@@ -4447,14 +4454,9 @@ pub(crate) fn animate_asteroid_belts(
         })
         .unwrap_or(ASTEROID_REFERENCE_CAMERA_SCALE);
     let render_scale = asteroid_render_scale(camera_scale);
-    for (asteroid, mut transform, mut visibility) in &mut asteroids {
+    for (asteroid, mut transform) in &mut asteroids {
         let position = asteroid_position_at_elapsed(&map, &asteroid.placement, elapsed);
         transform.translation = position.extend(transform.translation.z);
-        *visibility = if asteroid_clears_planets_at_position(&map, &asteroid.placement, position) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
         transform.rotation =
             Quat::from_rotation_z(elapsed * asteroid.spin + asteroid.placement.phase);
         let tumble = (elapsed * asteroid.tumble_speed + asteroid.tumble_phase).sin();

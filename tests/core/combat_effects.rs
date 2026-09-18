@@ -645,6 +645,44 @@ fn every_recorded_bomber_raid_attempt_gets_its_own_bomb() {
 }
 
 #[test]
+fn bombing_readout_reports_the_complete_level_loss_for_each_building() {
+    let mut app = app();
+    let bomber = Unit::Ship(Ship::Bomber);
+    let building = Unit::resource_buildings()[0];
+    let source = unit(&mut app, bomber, Side::Attacker, Vec3::Y * 200.0, 2, 0);
+    unit(&mut app, building, Side::Defender, Vec3::ZERO, 5, 0);
+
+    for _ in 0..2 {
+        fire(
+            &mut app,
+            source,
+            bomber,
+            building,
+            ShotReport {
+                killed: true,
+                ..default()
+            },
+            false,
+        );
+    }
+    step(&mut app, 0.0);
+
+    let impacts = app.world_mut().query::<&PendingImpact>().iter(app.world()).collect::<Vec<_>>();
+    assert_eq!(impacts.iter().map(|impact| impact.levels).sum::<usize>(), 2);
+    assert_eq!(impacts.iter().map(|impact| impact.display_levels).sum::<usize>(), 2);
+    assert_eq!(impacts.iter().filter(|impact| impact.display_levels > 0).count(), 1);
+
+    step(&mut app, 2.0);
+    let readouts = app
+        .world_mut()
+        .query_filtered::<&Text2d, With<CombatReadout>>()
+        .iter(app.world())
+        .map(|text| text.0.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(readouts, ["-2 LEVELS"]);
+}
+
+#[test]
 fn bomb_salvos_share_the_expanded_missile_bound() {
     let mut app = app();
     let bomber = Unit::Ship(Ship::Bomber);
@@ -693,6 +731,7 @@ fn missiles_use_a_slower_shallower_flight() {
         shield: 0,
         planetary: 0,
         levels: 0,
+        display_levels: 0,
         elapsed: 0.,
         delay: 0.,
         lane: 1.,
@@ -922,9 +961,30 @@ fn destroyed_target_during_flight_is_safe_and_wrecks_finish_at_low_frame_rates()
     app.world_mut().despawn(target);
     app.world_mut().entity_mut(source).insert(Wreck::new(Vec3::Y * 200., 100., kind));
     step(&mut app, 4.);
-    assert!(app.world().get_entity(source).is_err());
+    assert_eq!(app.world().get::<Visibility>(source), Some(&Visibility::Hidden));
+    assert!(app.world().get::<Wreck>(source).is_some());
     assert_eq!(app.world_mut().query::<&PendingImpact>().iter(app.world()).count(), 0);
     step(&mut app, 4.);
+    assert!(app.world().get_entity(source).is_err());
+    assert_eq!(app.world_mut().query::<&Particle>().iter(app.world()).count(), 0);
+}
+
+#[test]
+fn wreck_hides_its_card_but_blocks_completion_until_the_explosion_tail_finishes() {
+    let mut app = app();
+    let kind = Unit::Defense(Defense::GaussCannon);
+    let defense = unit(&mut app, kind, Side::Defender, Vec3::ZERO, kind.hull(), 0);
+    app.world_mut().entity_mut(defense).insert(Wreck::new(Vec3::ZERO, 100.0, kind));
+
+    step(&mut app, WRECK_CARD_LIFETIME + 0.01);
+    assert_eq!(app.world().get::<Visibility>(defense), Some(&Visibility::Hidden));
+    assert!(app.world().get::<Wreck>(defense).is_some());
+    assert!(app.world_mut().query::<&Particle>().iter(app.world()).count() > 0);
+
+    step(&mut app, WRECK_EFFECT_TAIL - 0.1);
+    assert!(app.world().get::<Wreck>(defense).is_some());
+    step(&mut app, 0.11);
+    assert!(app.world().get_entity(defense).is_err());
     assert_eq!(app.world_mut().query::<&Particle>().iter(app.world()).count(), 0);
 }
 
@@ -1061,6 +1121,38 @@ fn planet_kill_uses_a_heavy_sustained_beam_and_irregular_fissures() {
 }
 
 #[test]
+fn every_war_sun_feeds_the_same_death_ray_focus_before_discharge() {
+    let mut app = app();
+    let origins = vec![
+        Vec3::new(-260.0, 260.0, 0.0),
+        Vec3::new(0.0, 310.0, 0.0),
+        Vec3::new(240.0, 250.0, 0.0),
+    ];
+    let ray =
+        Cinematic::from_origins(origins.clone(), Vec3::ZERO, Vec2::new(900.0, 600.0), 100.0, true);
+    let expected_focus = ray.focus();
+    assert!(origins.iter().all(|origin| origin.truncate() != expected_focus.truncate()));
+    app.world_mut().spawn((ray, CombatCmp));
+
+    step(&mut app, DEATH_RAY_FOCUS_AT + 0.01);
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<Entity, With<CinematicConvergenceBeam>>()
+            .iter(app.world())
+            .count(),
+        origins.len() * 2,
+        "each War Sun contributes a gold feeder and white-hot core to the shared focus"
+    );
+
+    step(&mut app, DEATH_RAY_DISCHARGE_AT - DEATH_RAY_FOCUS_AT);
+    assert_eq!(
+        app.world_mut().query_filtered::<Entity, With<CinematicBeam>>().iter(app.world()).count(),
+        3,
+        "the shared focus emits one three-layer combined beam toward the planet"
+    );
+}
+
+#[test]
 fn exiting_during_camera_jolt_restores_exact_position() {
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
@@ -1074,7 +1166,10 @@ fn exiting_during_camera_jolt_restores_exact_position() {
         ))
         .id();
     let mut ray = Cinematic::new(Vec3::Y * 200., origin, Vec2::splat(900.), 100., true);
-    assert_eq!(ray.target.z, ray.origin.z, "camera depth must not stretch the beam");
+    assert!(
+        ray.origins.iter().all(|origin| ray.target.z == origin.z),
+        "camera depth must not stretch the beam"
+    );
     ray.elapsed = 3.8;
     app.world_mut().spawn(ray);
     app.world_mut().run_system_once(shake_combat_camera).unwrap();

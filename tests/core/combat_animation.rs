@@ -331,6 +331,108 @@ fn individual_formation_keeps_twelve_of_each_ship_together_with_clear_type_gaps(
 }
 
 #[test]
+fn expanded_defender_ship_band_uses_two_rows_and_raises_the_shared_scale() {
+    let units = [
+        Ship::LightFighter,
+        Ship::HeavyFighter,
+        Ship::Destroyer,
+        Ship::Cruiser,
+        Ship::Bomber,
+        Ship::Battleship,
+        Ship::Dreadnought,
+        Ship::WarSun,
+    ]
+    .into_iter()
+    .flat_map(|ship| std::iter::repeat_n(Unit::Ship(ship), 6))
+    .collect::<Vec<_>>();
+    let width = 1_920.0 * 0.86;
+    let rear = -200.0;
+    let (_, shallow_base) = individual_formation_layout_with_base(
+        &units,
+        0.0,
+        width,
+        rear,
+        -1_080.0 * 0.055,
+        false,
+        UNIT_SIZE,
+        None,
+    );
+    let (expanded, expanded_base) = individual_formation_layout_with_base(
+        &units,
+        0.0,
+        width,
+        rear,
+        1_080.0 * INDIVIDUAL_DEFENDER_FRONT_FACTOR,
+        false,
+        UNIT_SIZE,
+        None,
+    );
+    let mut rows = expanded.iter().map(|(home, _)| home.y).collect::<Vec<_>>();
+    rows.sort_by(f32::total_cmp);
+    rows.dedup_by(|left, right| (*left - *right).abs() < 0.01);
+
+    assert_eq!(rows.len(), 2);
+    assert!(expanded_base > shallow_base * 1.35);
+}
+
+#[test]
+fn shared_individual_scale_matches_equal_production_levels_across_unit_categories() {
+    let units = [
+        Unit::Ship(Ship::LightFighter),
+        Unit::Defense(Defense::RocketLauncher),
+        Unit::Ship(Ship::Destroyer),
+        Unit::Defense(Defense::HeavyLaser),
+        Unit::Ship(Ship::Bomber),
+        Unit::Defense(Defense::GaussCannon),
+        Unit::Ship(Ship::Battleship),
+        Unit::Defense(Defense::PlasmaTurret),
+        Unit::Ship(Ship::WarSun),
+        Unit::space_dock(),
+    ];
+    let shared_base = 70.0;
+    let (layout, _) = individual_formation_layout_with_base(
+        &units,
+        0.0,
+        1_280.0,
+        -300.0,
+        300.0,
+        false,
+        UNIT_SIZE,
+        Some(shared_base),
+    );
+
+    for production in 1..=5 {
+        let sizes = units
+            .iter()
+            .zip(&layout)
+            .filter_map(|(unit, (_, size))| (unit.production() == production).then_some(*size))
+            .collect::<Vec<_>>();
+        assert_eq!(sizes.len(), 2);
+        assert!((sizes[0] - sizes[1]).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn planetary_shield_image_moves_right_when_the_individual_formation_leaves_room() {
+    let shifted = planetary_shield_icon_center_x(-650.0, Some(-500.0), -300.0, 100.0, 100.0, true);
+    assert!((shifted - -575.0).abs() < f32::EPSILON);
+
+    let crowded = planetary_shield_icon_center_x(-650.0, Some(-500.0), -588.0, 100.0, 100.0, true);
+    assert_eq!(crowded, -650.0);
+}
+
+#[test]
+fn grouped_war_suns_use_one_distinct_death_ray_emitter_per_survivor() {
+    let center = Vec3::new(40.0, 80.0, COMBAT_SHIP_Z);
+    let origins = grouped_death_ray_origins(center, 6, UNIT_SIZE);
+    assert_eq!(origins.len(), 6);
+    assert!(origins.iter().all(|origin| origin.distance(center) < UNIT_SIZE * 0.5));
+    for (index, origin) in origins.iter().enumerate() {
+        assert!(origins[index + 1..].iter().all(|other| !origin.abs_diff_eq(*other, 0.001)));
+    }
+}
+
+#[test]
 fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
     let mut app = App::new();
     app.init_resource::<Settings>().init_resource::<Time>();
@@ -338,7 +440,10 @@ fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
     let group = app
         .world_mut()
         .spawn((
-            Sprite::default(),
+            Sprite {
+                custom_size: Some(Vec2::splat(100.0)),
+                ..default()
+            },
             Transform::default(),
             Visibility::Inherited,
             GroupedCombatUnitCmp,
@@ -382,8 +487,10 @@ fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
         .resource_mut::<Time>()
         .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
     app.world_mut().run_system_once(update_combat_formation).unwrap();
-    let midpoint = app.world().get::<Transform>(individual).unwrap().translation;
+    let midpoint_transform = app.world().get::<Transform>(individual).unwrap();
+    let midpoint = midpoint_transform.translation;
     assert!(midpoint.x > 0.0 && midpoint.x < 100.0);
+    assert!(midpoint_transform.scale.x > 1.0 && midpoint_transform.scale.x < 100.0 / 70.0);
     assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Hidden);
     assert_eq!(app.world().get::<Sprite>(group).unwrap().color.alpha(), 0.0);
     assert_eq!(*app.world().get::<Visibility>(individual).unwrap(), Visibility::Inherited);
@@ -393,16 +500,85 @@ fn combat_formation_toggle_splits_and_combines_cards_smoothly() {
         .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
     app.world_mut().run_system_once(update_combat_formation).unwrap();
     assert_eq!(app.world().get::<Transform>(individual).unwrap().translation.x, 100.0);
+    assert_eq!(app.world().get::<Transform>(individual).unwrap().scale, Vec3::ONE);
     assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Hidden);
 
     app.world_mut().resource_mut::<Settings>().combat_individual_units = false;
     app.world_mut()
         .resource_mut::<Time>()
-        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS));
+        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
+    app.world_mut().run_system_once(update_combat_formation).unwrap();
+    let midpoint_transform = app.world().get::<Transform>(individual).unwrap();
+    assert!(midpoint_transform.translation.x > 0.0 && midpoint_transform.translation.x < 100.0);
+    assert!(midpoint_transform.scale.x > 1.0 && midpoint_transform.scale.x < 100.0 / 70.0);
+    assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Hidden);
+
+    app.world_mut()
+        .resource_mut::<Time>()
+        .advance_by(Duration::from_secs_f32(COMBAT_FORMATION_TRANSITION_SECS * 0.5));
     app.world_mut().run_system_once(update_combat_formation).unwrap();
     assert_eq!(*app.world().get::<Visibility>(group).unwrap(), Visibility::Inherited);
     assert_eq!(*app.world().get::<Visibility>(individual).unwrap(), Visibility::Hidden);
     assert_eq!(app.world().get::<Transform>(individual).unwrap().translation, Vec3::ZERO);
+}
+
+#[test]
+fn destroyed_individual_defenses_become_wrecks_before_their_cards_are_removed() {
+    let mut app = playback_app(report(1, 0, true, 73), 0, CombatState::Fire);
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    app.insert_resource(CombatFormationState::new(true));
+    let unit = Unit::Defense(Defense::GaussCannon);
+    let group = app
+        .world_mut()
+        .spawn((
+            Sprite::default(),
+            Transform::default(),
+            GroupedCombatUnitCmp,
+            CombatUnitCmp {
+                unit,
+                side: Side::Defender,
+                fire: FireState::Fired,
+                shield: 0,
+                max_shield: 0,
+                hull: 0,
+                max_hull: unit.hull(),
+                outcome_visible: true,
+            },
+        ))
+        .id();
+    let defense = app
+        .world_mut()
+        .spawn((
+            Sprite {
+                custom_size: Some(Vec2::splat(70.0)),
+                ..default()
+            },
+            Transform::default(),
+            Visibility::Inherited,
+            IndividualCombatUnitCmp {
+                id: Some(73),
+                owner: Some(2),
+                unit,
+                side: Side::Defender,
+                group,
+                home: Vec3::ZERO,
+                display_size: 70.0,
+                transition_start: Vec3::ZERO,
+                shield: 0,
+                max_shield: 0,
+                hull: 0,
+                max_hull: unit.hull(),
+            },
+        ))
+        .id();
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get_entity(group).is_err());
+    assert!(app.world().get_entity(defense).is_ok());
+    assert!(app.world().get::<Wreck>(defense).is_some());
+    assert_eq!(app.world().get::<Visibility>(defense), Some(&Visibility::Inherited));
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 }
 
 #[test]
@@ -530,6 +706,15 @@ fn individual_fleets_keep_the_center_clear_and_straddle_the_planetary_shield() {
             home.y + size * INDIVIDUAL_CARD_UPPER_EXTENT
                 <= shield_bottom - COMBAT_SHIELD_DEFENSE_GAP + 0.1
         }));
+    let closest_ship_bottom = individuals
+        .iter()
+        .filter(|(_, unit, side, _, _)| *side == Side::Defender && unit.is_ship())
+        .map(|(_, _, _, home, size)| home.y - size * INDIVIDUAL_CARD_LOWER_EXTENT)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        (closest_ship_bottom - shield_top - COMBAT_SHIELD_DEFENSE_GAP).abs() < 0.1,
+        "the defending fleet sits immediately above the planetary shield"
+    );
 
     let bomber = individuals
         .iter()
@@ -1367,6 +1552,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
     app.insert_resource(map).init_resource::<MultiplayerSession>();
     let camera =
         app.world_mut().query_filtered::<Entity, With<MainCamera>>().single(app.world()).unwrap();
@@ -1374,6 +1560,57 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
     projection.area = Rect::new(-960.0, -540.0, 960.0, 540.0);
     app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
     app.world_mut().run_system_once(setup_combat).unwrap();
+
+    let individual_cards = app
+        .world_mut()
+        .query::<&IndividualCombatUnitCmp>()
+        .iter(app.world())
+        .map(|card| (card.unit, card.side.clone(), card.home, card.display_size))
+        .collect::<Vec<_>>();
+    let attacker_bomber_size = individual_cards
+        .iter()
+        .find_map(|(unit, side, _, size)| {
+            (*unit == Unit::Ship(Ship::Bomber) && *side == Side::Attacker).then_some(*size)
+        })
+        .unwrap();
+    let defender_gauss = individual_cards
+        .iter()
+        .filter(|(unit, side, _, _)| {
+            *unit == Unit::Defense(Defense::GaussCannon) && *side == Side::Defender
+        })
+        .collect::<Vec<_>>();
+    assert!(!defender_gauss.is_empty());
+    assert!(defender_gauss
+        .iter()
+        .all(|(_, _, _, size)| (*size - attacker_bomber_size).abs() < f32::EPSILON));
+    assert!(
+        attacker_bomber_size > UNIT_SIZE * 0.62,
+        "the expanded outer bands let individual cards grow beyond the former size cap"
+    );
+    let attacker_top = individual_cards
+        .iter()
+        .filter(|(_, side, _, _)| *side == Side::Attacker)
+        .map(|(_, _, home, size)| home.y + size * INDIVIDUAL_CARD_UPPER_EXTENT)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!((attacker_top - (540.0 - UNIT_SIZE * 0.35)).abs() < 0.01);
+    let defender_bottom = individual_cards
+        .iter()
+        .filter(|(unit, side, _, _)| matches!(unit, Unit::Defense(_)) && *side == Side::Defender)
+        .map(|(_, _, home, size)| home.y - size * INDIVIDUAL_CARD_LOWER_EXTENT)
+        .fold(f32::INFINITY, f32::min);
+    assert!((defender_bottom - (-540.0 + UNIT_SIZE * 0.18)).abs() < 0.01);
+    let defender_left = defender_gauss
+        .iter()
+        .map(|(_, _, home, size)| home.x - size * 0.5)
+        .fold(f32::INFINITY, f32::min);
+    let defender_right = defender_gauss
+        .iter()
+        .map(|(_, _, home, size)| home.x + size * 0.5)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        ((defender_left + defender_right) * 0.5).abs() < 0.01,
+        "individual ground defenses stay centered even when bombing targets occupy the right edge"
+    );
 
     let homes = app
         .world_mut()
@@ -1415,6 +1652,15 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         defense_right + COMBAT_SHIELD_DEFENSE_GAP <= building_left,
         "defense cards clear the bombing targets"
     );
+    let individual_defense_right = individual_cards
+        .iter()
+        .filter(|(unit, side, _, _)| matches!(unit, Unit::Defense(_)) && *side == Side::Defender)
+        .map(|(_, _, home, display_size)| home.x + display_size * 0.5)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        individual_defense_right + COMBAT_SHIELD_DEFENSE_GAP <= building_left,
+        "individual defense cards clear the bombing targets"
+    );
 
     let (shield_entity, shield_home, shield_size) = app
         .world_mut()
@@ -1447,19 +1693,15 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
     let shield_bar_left = shield_home.x - shield_size.x * 0.5;
     let shield_icon_left = shield_home.x + shield_icon_offset.x - size * 0.5;
     let shield_icon_right = shield_home.x + shield_icon_offset.x + size * 0.5;
-    let crawler_x =
-        homes.iter().find_map(|(unit, home)| (*unit == Unit::crawler()).then_some(home.x)).unwrap();
-    let repair_truck_x = homes
-        .iter()
-        .find_map(|(unit, home)| (*unit == Unit::repair_truck()).then_some(home.x))
-        .unwrap();
-    let shield_to_crawler_gap = crawler_x - size * 0.5 - shield_icon_right;
-    let crawler_to_repair_gap = repair_truck_x - size * 0.5 - (crawler_x + size * 0.5);
     assert!(
-        (shield_to_crawler_gap - crawler_to_repair_gap).abs() < 0.01,
-        "the planetary shield-to-Crawler gap matches the Crawler-to-Repair Truck gap"
+        shield_icon_right <= defender_left + 0.01,
+        "the planetary shield never enters a crowded individual defense row"
     );
     assert!(shield_icon_left > -960.0, "the planetary shield remains inside the viewport");
+    assert!(
+        shield_icon_left >= -size * PS_WIDTH * 0.5 - 0.01,
+        "the planetary shield image never moves farther toward the viewport edge"
+    );
     assert!(
         (shield_bar_left - shield_icon_right).abs() < 0.01,
         "the planetary shield bar begins exactly at the shield image's right edge"
@@ -1472,7 +1714,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
     );
     assert!(
         (shield_icon_top - shield_bar_top).abs() < 0.01,
-        "the planetary shield image's top-right corner anchors the health bar"
+        "the planetary shield image's top edge anchors the health bar"
     );
     let shield_fill = app
         .world_mut()
@@ -1514,10 +1756,6 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         .find_map(|(unit, home)| (*unit == Unit::Ship(Ship::LightFighter)).then_some(*home))
         .unwrap();
     assert!(
-        defender_ship.y < -108.0,
-        "defending ships move slightly down from their former middle-row position"
-    );
-    assert!(
         defender_ship.y - size * COMBAT_CARD_LOWER_EXTENT_FACTOR
             >= shield_bar_top + COMBAT_SHIELD_DEFENSE_GAP,
         "defending ships and their stat bars clear the planetary shield health bar"
@@ -1543,20 +1781,78 @@ fn single_round_battles_go_directly_to_fire_without_a_round_banner() {
 }
 
 #[test]
+fn round_and_pause_overlays_use_the_grouped_offset_or_individual_center() {
+    let grouped_anchor = combat_status_node(false);
+    assert_eq!(grouped_anchor.width, Val::Percent(100.0));
+    assert_eq!(grouped_anchor.height, Val::Percent(105.0));
+    assert_eq!(grouped_anchor.align_items, AlignItems::Center);
+    assert_eq!(grouped_anchor.justify_content, JustifyContent::Center);
+    assert_eq!(
+        combat_status_transform(false).translation,
+        Val2::new(Val::ZERO, Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0))
+    );
+
+    let band = combat_status_band_node();
+    assert_eq!(band.width, Val::Percent(100.0));
+    assert_eq!(band.height, Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.0));
+    assert_eq!(band.min_height, Val::Px(result_banner::BAR_MIN_HEIGHT));
+    assert_eq!(band.max_height, Val::Px(result_banner::BAR_MAX_HEIGHT));
+    assert_eq!(band.overflow, Overflow::clip());
+
+    let individual_anchor = combat_status_node(true);
+    assert_eq!(individual_anchor.height, Val::Percent(100.0));
+    assert_eq!(combat_status_transform(true).translation, Val2::ZERO);
+}
+
+#[test]
+fn visible_round_and_pause_layouts_follow_the_formation_setting() {
+    let mut app = App::new();
+    app.init_resource::<Settings>();
+    let anchor = app.world_mut().spawn((Node::default(), CombatRoundPauseAnchorCmp)).id();
+    let content = app.world_mut().spawn((UiTransform::default(), CombatRoundPauseContentCmp)).id();
+
+    app.world_mut().run_system_once(update_combat_status_layout).unwrap();
+    assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(105.0));
+    assert_eq!(
+        app.world().get::<UiTransform>(content).unwrap().translation,
+        Val2::new(Val::ZERO, Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0))
+    );
+
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    app.world_mut().run_system_once(update_combat_status_layout).unwrap();
+    assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(100.0));
+    assert_eq!(app.world().get::<UiTransform>(content).unwrap().translation, Val2::ZERO);
+}
+
+#[test]
 fn round_banner_after_navigation_uses_the_normal_playback_duration() {
     let report = report(12, 5, true, 2);
     assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
     let mut app = playback_app(report, 0, CombatState::DisplayRound);
+    app.add_plugins(bevy_tweening::TweeningPlugin);
     app.insert_resource(CombatRoundJump);
 
     app.world_mut().run_system_once(animate_combat).unwrap();
 
-    let tween = app
+    let (band, background, tween) = app
         .world_mut()
-        .query_filtered::<&TweenAnim, With<DisplayTextCmp>>()
+        .query_filtered::<(&Node, &BackgroundColor, &TweenAnim), With<DisplayTextCmp>>()
         .single(app.world())
         .unwrap();
+    assert_eq!(band.height, Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.0));
+    assert_eq!(background.0.alpha(), 0.0);
     assert_eq!(tween.tweenable().cycle_duration(), Duration::from_millis(1200));
+
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(ROUND_BANNER_ENTER_MS));
+    let background = app
+        .world_mut()
+        .query_filtered::<&BackgroundColor, With<DisplayTextCmp>>()
+        .single(app.world())
+        .unwrap();
+    assert!(
+        (background.0.alpha() - result_banner::BAR_ALPHA as f32 / 255.0).abs() < 0.001,
+        "the short round banner fades in the same dark band as the combat result"
+    );
 }
 
 #[test]
@@ -1597,6 +1893,56 @@ fn probes_do_not_fly_away_during_space_fauna_playback() {
     assert!(app.world().get::<ProbeRetreatCmp>(probe).is_none());
     assert!(app.world().get::<TweenAnim>(probe).is_none());
     assert!(app.world().resource::<Messages<PlayAudioMsg>>().is_empty());
+}
+
+#[test]
+fn final_stalemate_round_flies_the_attacker_away_and_keeps_the_defender() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let planet = Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0);
+    let mut battle = crate::test_support::empty_report(Mission::default(), planet);
+    battle.mission.objective = Icon::Attack;
+    battle.surviving_attacker = Army::from([(fighter, 1)]);
+    battle.surviving_defender = Army::from([(fighter, 1)]).into();
+    battle.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport::default()],
+        ..Default::default()
+    });
+    let mut app = playback_app(battle, 0, CombatState::Fire);
+    let attacker = spawn_unit(&mut app, fighter, 1, Side::Attacker, FireState::Fired);
+    let defender = spawn_unit(&mut app, fighter, 1, Side::Defender, FireState::Fired);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<FleetRetreatCmp>(attacker).is_some());
+    assert!(app.world().get::<TweenAnim>(attacker).is_some());
+    assert!(app.world().get::<FleetRetreatCmp>(defender).is_none());
+    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
+}
+
+#[test]
+fn final_fauna_stalemate_round_flies_both_sides_away() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let fauna = Unit::Fauna(SpaceFauna::VoidManta);
+    let mut planet = Planet::new(1, "Encounter".into(), Vec2::ZERO, false, 1.0);
+    planet.army.insert(fauna, 1);
+    let mut battle = crate::test_support::empty_report(Mission::default(), planet);
+    battle.mission.objective = Icon::Attack;
+    battle.surviving_attacker = Army::from([(fighter, 1)]);
+    battle.surviving_defender = Army::from([(fauna, 1)]).into();
+    battle.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport::default()],
+        ..Default::default()
+    });
+    let mut app = playback_app(battle, 0, CombatState::Fire);
+    let attacker = spawn_unit(&mut app, fighter, 1, Side::Attacker, FireState::Fired);
+    let defender = spawn_unit(&mut app, fauna, 1, Side::Defender, FireState::Fired);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<FleetRetreatCmp>(attacker).is_some());
+    assert!(app.world().get::<FleetRetreatCmp>(defender).is_some());
+    assert!(app.world().get::<TweenAnim>(attacker).is_some());
+    assert!(app.world().get::<TweenAnim>(defender).is_some());
 }
 
 #[test]
@@ -1659,7 +2005,7 @@ fn death_ray_playback_completes_for_successful_and_failed_destroy_missions() {
                     &origin,
                     &target,
                     Icon::Destroy,
-                    Army::from([(Unit::war_sun(), 1)]),
+                    Army::from([(Unit::war_sun(), 3)]),
                     BombingRaid::None,
                     false,
                     false,
@@ -1674,7 +2020,34 @@ fn death_ray_playback_completes_for_successful_and_failed_destroy_missions() {
         assert!(combat.rounds[round].destroy_probability > 0.);
         let mut app = playback_app(report, round, CombatState::Fire);
         app.add_plugins(bevy_tweening::TweeningPlugin);
-        let sun = spawn_unit(&mut app, Unit::war_sun(), 1, Side::Attacker, FireState::Fired);
+        app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+        app.insert_resource(CombatFormationState::new(true));
+        let sun = spawn_unit(&mut app, Unit::war_sun(), 3, Side::Attacker, FireState::Fired);
+        let individual_origins = [
+            Vec3::new(-180.0, 260.0, COMBAT_SHIP_Z),
+            Vec3::new(0.0, 300.0, COMBAT_SHIP_Z),
+            Vec3::new(190.0, 250.0, COMBAT_SHIP_Z),
+        ];
+        for (id, origin) in individual_origins.into_iter().enumerate() {
+            app.world_mut().spawn((
+                Transform::from_translation(origin),
+                Visibility::Inherited,
+                IndividualCombatUnitCmp {
+                    id: Some(id as u64),
+                    owner: Some(1),
+                    unit: Unit::war_sun(),
+                    side: Side::Attacker,
+                    group: sun,
+                    home: origin,
+                    display_size: 100.0,
+                    transition_start: origin,
+                    shield: Unit::war_sun().shield(),
+                    max_shield: Unit::war_sun().shield(),
+                    hull: Unit::war_sun().hull(),
+                    max_hull: Unit::war_sun().hull(),
+                },
+            ));
+        }
 
         app.world_mut().run_system_once(animate_combat).unwrap();
         assert!(matches!(
@@ -1690,7 +2063,12 @@ fn death_ray_playback_completes_for_successful_and_failed_destroy_missions() {
             .query_filtered::<Entity, With<DeathRayCmp>>()
             .single(app.world())
             .unwrap();
-        assert!(app.world().get::<Cinematic>(ray).is_some());
+        let cinematic = app.world().get::<Cinematic>(ray).unwrap();
+        assert_eq!(cinematic.origins().len(), individual_origins.len());
+        assert!(individual_origins.iter().all(|expected| cinematic
+            .origins()
+            .iter()
+            .any(|origin| origin.truncate() == expected.truncate())));
 
         // Exercise the actual tween target and completion message, not a synthetic event.
         TweenAnim::step_all(app.world_mut(), Duration::from_secs_f32(DEATH_RAY_DURATION - 0.2));
@@ -2081,6 +2459,12 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     assert_eq!(app.world().get::<ImageNode>(result).unwrap().color.alpha(), 0.);
     let root = app.world().get::<ChildOf>(backdrop).unwrap().parent();
     assert_eq!(app.world().get::<Node>(root).unwrap().height, Val::Percent(100.));
+    let player = app.world().resource::<Player>();
+    let artwork = result_banner::artwork(player.reports[0].status(player));
+    assert_eq!(
+        app.world().get::<UiTransform>(result).unwrap().translation,
+        Val2::new(Val::ZERO, Val::Percent(artwork.center_offset * 100.))
+    );
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
     assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
     assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 0);

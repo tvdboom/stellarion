@@ -29,7 +29,8 @@ use crate::core::states::{AppState, GameState};
 use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::{Amount, Unit};
 
-const AFTERMATH_SECONDS: f32 = 4.2;
+const AFTERMATH_SECONDS: f32 = 4.2 + super::AFTERMATH_LABEL_EXTENSION_SECONDS;
+const AFTERMATH_LABEL_FADE_OUT_SECONDS: f32 = 1.4;
 const EXPLOSION_SECONDS: f32 = 1.55;
 const RIPPLE_COUNT: usize = 4;
 const RIPPLE_INTERVAL_SECONDS: f32 = 0.38;
@@ -1150,7 +1151,6 @@ fn animate_battles(
                 suppressed.release(mission);
             }
         }
-        let settle = ((elapsed - 2.8) / (AFTERMATH_SECONDS - 2.8)).clamp(0.0, 1.0);
         for child in children.iter() {
             let Ok((entity, part, mut transform, sprite, material, text)) = parts.get_mut(child)
             else {
@@ -1344,10 +1344,17 @@ fn animate_battles(
                 EffectPart::Label {
                     y,
                 } => {
-                    transform.scale = Vec3::splat(1.0 - 0.12 * settle);
-                    transform.translation.y = *y + 5.0 * (1.0 - settle);
+                    let (label_y, alpha) = super::aftermath_label_motion(
+                        *y,
+                        elapsed,
+                        0.3,
+                        AFTERMATH_SECONDS,
+                        0.4,
+                        AFTERMATH_LABEL_FADE_OUT_SECONDS,
+                    );
+                    transform.translation.y = label_y;
                     if let Some(mut text) = text {
-                        text.0.set_alpha(((elapsed - 0.3) / 0.4).clamp(0.0, 1.0) * (1.0 - settle));
+                        text.0.set_alpha(alpha);
                     }
                 },
             }

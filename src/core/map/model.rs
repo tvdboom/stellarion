@@ -18,6 +18,10 @@ const SOLAR_SECTOR_END_ANGLE: f32 = SOLAR_SECTOR_CENTER_ANGLE + SOLAR_SECTOR_ANG
 const SOLAR_SECTOR_WING: f32 = 0.258_819_04;
 const SOLAR_STAR_OUTSIDE_FACTOR: f32 = 0.06;
 const SOLAR_SECTOR_MAP_SCALE: f32 = 1.08;
+// Reserve enough radial space for the largest rendered, wobbling asteroid plus the visible
+// planet clearance on both sides of the belt. Keeping this corridor in generated geometry means
+// an asteroid can orbit continuously instead of being hidden whenever it reaches a world.
+pub(crate) const ASTEROID_BELT_MINIMUM_SURFACE_GAP: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -365,12 +369,46 @@ fn generate_positions<R: Rng + ?Sized>(
         positions.push(position);
     }
 
+    reserve_asteroid_belt_corridors(&mut positions, moons, &mut outer_radius);
+
     let side = outer_radius * (1.0 + SOLAR_SECTOR_WING) * SOLAR_SECTOR_MAP_SCALE;
     *rect = Rect::from_center_size(center, Vec2::splat(side));
     let star = solar_star_position(*rect, solar_corner);
     let corner = solar_corner.direction();
     let inward = -corner;
     positions.into_iter().map(|position| star + position * inward).collect()
+}
+
+/// Separates the least-expensive adjacent solar bands to reserve one asteroid-belt corridor.
+fn reserve_asteroid_belt_corridors(positions: &mut [Vec2], moons: &[bool], outer_radius: &mut f32) {
+    let mut planets = positions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, position)| (!moons[index]).then_some((index, position.length())))
+        .collect::<Vec<_>>();
+    planets.sort_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+    if planets.len() < 3 {
+        return;
+    }
+
+    let splits = [planets.len().div_ceil(4), planets.len().saturating_sub(planets.len() / 4)];
+    let Some((inner, outer, shift)) = splits
+        .into_iter()
+        .filter_map(|split| {
+            let (inner, outer) = planets.get(split.saturating_sub(1)).zip(planets.get(split))?;
+            let surface_gap = outer.1 - inner.1 - Planet::SIZE;
+            let shift = (ASTEROID_BELT_MINIMUM_SURFACE_GAP - surface_gap).max(0.0);
+            Some((inner.1, outer.1, shift))
+        })
+        .min_by(|left, right| left.2.total_cmp(&right.2))
+    else {
+        return;
+    };
+    let threshold = (inner + outer) * 0.5;
+    for position in positions.iter_mut().filter(|position| position.length() > threshold) {
+        *position += position.normalize_or_zero() * shift;
+    }
+    *outer_radius += shift;
 }
 
 /// Keeps every straight inter-world route outside the visible body of the star.
