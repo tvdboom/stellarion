@@ -26,6 +26,9 @@ matching running lights and engine exhaust. These use the individual combatant's
 owner and the match's selected player palette, so allies on either side retain
 their own colors. Space Docks carry the same hull markings; surface defenses use
 colored pedestal armor. Neutral fauna keep their original artwork.
+Schematic unit images have a thin border in the same owner color. Individual cards
+use their own player's color; grouped cards split the perimeter between contributing
+players in proportion to their unit counts.
 
 The movie consumes `MissionReport` without modifying it or running combat again.
 Stable combatant IDs retain each ship through hits, repairs, and casualties. Both

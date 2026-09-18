@@ -1,5 +1,8 @@
 //! Headless playback checks run the real Bevy combat systems against resolver reports.
 
+#[path = "combat_owner_borders.rs"]
+mod owner_borders;
+
 use bevy::ecs::system::RunSystemOnce;
 use bevy_tweening::CycleCompletedEvent;
 use std::collections::BTreeSet;

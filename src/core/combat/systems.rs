@@ -75,6 +75,51 @@ const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
 const COMBAT_FORMATION_TRANSITION_SECS: f32 = 0.7;
 const COMBAT_FORMATION_GROUP_FADE_PORTION: f32 = 0.28;
+
+#[derive(Component)]
+struct CombatOwnerBorder;
+
+/// A thin, continuous outline follows the card through movement, hiding and despawn.
+/// Mixed grouped cards divide the perimeter by owner count instead of assigning all
+/// allied ships to the commander whose card happens to be drawn first.
+fn spawn_combat_owner_border(
+    parent: &mut ChildSpawnerCommands,
+    size: f32,
+    scale: f32,
+    owners: &[(Color, u128)],
+) {
+    let thickness = (1.25 * scale).min(size * 0.06);
+    let half = size * 0.5;
+    let corners = [
+        Vec2::new(-half, half),
+        Vec2::new(half, half),
+        Vec2::new(half, -half),
+        Vec2::new(-half, -half),
+        Vec2::new(-half, half),
+    ];
+    let counts: Vec<_> = owners.iter().map(|(_, count)| *count).collect();
+    for ((color, _), (start, end)) in owners.iter().zip(combat_strength_ranges(&counts)) {
+        for edge in 0..4 {
+            let from = (start * 4.0 - edge as f32).clamp(0.0, 1.0);
+            let to = (end * 4.0 - edge as f32).clamp(0.0, 1.0);
+            if to <= from {
+                continue;
+            }
+            let a = corners[edge].lerp(corners[edge + 1], from);
+            let b = corners[edge].lerp(corners[edge + 1], to);
+            parent.spawn((
+                Sprite {
+                    color: *color,
+                    custom_size: Some((b - a).abs() + Vec2::splat(thickness)),
+                    ..default()
+                },
+                Transform::from_translation(((a + b) * 0.5).extend(0.3)),
+                Pickable::IGNORE,
+                CombatOwnerBorder,
+            ));
+        }
+    }
+}
 const INDIVIDUAL_CARD_MAX_FACTOR: f32 = 0.62;
 const INDIVIDUAL_SAME_TYPE_GAP_FACTOR: f32 = 0.06;
 const INDIVIDUAL_TYPE_GAP_FACTOR: f32 = 0.48;
@@ -1237,6 +1282,19 @@ pub fn setup_combat(
             ));
             let card_entity = card.id();
             card.with_children(|parent| {
+                let owners: Vec<_> = std::iter::once((owner, owner_count))
+                    .chain(protection.iter().map(|(owner, count)| (Some(*owner), *count)))
+                    .filter(|(_, count)| *count > 0)
+                    .map(|(owner, count)| {
+                        (
+                            owner.map_or(Color::srgb_u8(190, 198, 210), |id| {
+                                session.player_color(id).color()
+                            }),
+                            count as u128,
+                        )
+                    })
+                    .collect();
+                spawn_combat_owner_border(parent, size, projection.scale, &owners);
                 parent
                     .spawn((
                         Sprite {
@@ -1678,10 +1736,6 @@ pub fn setup_combat(
         } else {
             seed.group_home
         };
-        let show_owner = match &seed.side {
-            Side::Attacker => report.attacker_players().len() > 1,
-            Side::Defender => report.defender_players().len() > 1,
-        };
         let owner_color = seed
             .owner
             .map_or(Color::srgb_u8(190, 198, 210), |owner| session.player_color(owner).color());
@@ -1725,18 +1779,9 @@ pub fn setup_combat(
             )));
         }
         card.with_children(|parent| {
+            spawn_combat_owner_border(parent, card_size, projection.scale, &[(owner_color, 1)]);
             let bar_height = (card_size * 0.11).max(2.0 * projection.scale);
             let first_bar_y = -card_size * 0.5 - bar_height * 0.5;
-            if show_owner {
-                parent.spawn((
-                    Sprite {
-                        color: owner_color,
-                        custom_size: Some(Vec2::new(card_size * 0.38, bar_height * 0.5)),
-                        ..default()
-                    },
-                    Transform::from_xyz(-card_size * 0.29, card_size * 0.47, 0.2),
-                ));
-            }
             if seed.max_shield > 0 {
                 parent.spawn((
                     Sprite {
