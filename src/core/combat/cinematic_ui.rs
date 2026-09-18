@@ -40,6 +40,11 @@ impl CinematicSoundtrack {
     fn new(playback: &CinematicPlayback) -> Self {
         let mut cues = Vec::new();
         for shot in &playback.timeline.shots {
+            if !playback.actor_visible(shot.source)
+                || shot.target.is_some_and(|target| !playback.actor_visible(target))
+            {
+                continue;
+            }
             let weapon =
                 Weapon::for_shot(playback.timeline.actors[shot.source].unit, &shot.outcome);
             if let Some(cue) = weapon.launch_cue() {
@@ -49,20 +54,28 @@ impl CinematicSoundtrack {
                 cues.push((shot.impact_at, cue));
             }
         }
-        for actor in &playback.timeline.actors {
+        for (index, actor) in playback.timeline.actors.iter().enumerate() {
+            if !playback.actor_visible(index) {
+                continue;
+            }
             if let Some(at) = actor.death_at {
                 let (delay, cue) = wreck_cue(actor.unit);
                 cues.push((at + delay, cue));
             }
         }
         for repair in &playback.timeline.repairs {
+            if !playback.actor_visible(repair.target)
+                || repair.source.is_some_and(|source| !playback.actor_visible(source))
+            {
+                continue;
+            }
             cues.push((repair.start_at, PlayAudioMsg::new("repair")));
         }
         for attack in &playback.timeline.planet_attacks {
             cues.push((attack.start_at, PlayAudioMsg::new("death ray")));
         }
         cues.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // Sound is a bounded mix; every projectile and recorded outcome remains visible.
+        // Sound is a bounded mix of the same visible actions the renderer presents.
         let mut last = std::collections::BTreeMap::new();
         cues.retain(|(at, cue)| {
             let key = (cue.name, cue.volume.to_bits(), cue.playback_rate.to_bits());

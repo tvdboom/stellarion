@@ -77,6 +77,40 @@ pub(crate) const CINEMATIC_IMAGE_NAMES: &[&str] = &[
     "cinematic missile silo",
 ];
 
+/// Two large globe cutouts per planet/moon kind, used only by the combat camera.
+pub(crate) const CINEMATIC_PLANET_IMAGE_NAMES: &[&str] = &[
+    "planet dry 1",
+    "planet dry 2",
+    "planet gas 1",
+    "planet gas 2",
+    "planet ice 1",
+    "planet ice 2",
+    "planet metallic 1",
+    "planet metallic 2",
+    "planet water 1",
+    "planet water 2",
+    "planet blue 1",
+    "planet blue 2",
+    "planet brown 1",
+    "planet brown 2",
+    "planet gray 1",
+    "planet gray 2",
+    "planet red 1",
+    "planet red 2",
+    "planet yellow 1",
+    "planet yellow 2",
+];
+
+/// Gas-world settlements use floating platforms, matching their strategic-map buildings.
+pub(crate) const CINEMATIC_GAS_BUILDING_IMAGE_NAMES: &[&str] = &[
+    "cinematic gas metal mine",
+    "cinematic gas crystal mine",
+    "cinematic gas deuterium synthesizer",
+    "cinematic gas shipyard",
+    "cinematic gas factory",
+    "cinematic gas missile silo",
+];
+
 /// Image handle plus atlas metadata used by animated sprite systems.
 #[derive(Clone)]
 pub struct TextureInfo {
@@ -434,7 +468,11 @@ impl WorldAssets {
         );
         // These images are drawn through egui's rotated meshes. Preserve detailed edge alpha
         // with premultiplied blending and smooth sampling throughout banking and zooming.
-        for name in CINEMATIC_IMAGE_NAMES {
+        for name in CINEMATIC_IMAGE_NAMES
+            .iter()
+            .chain(CINEMATIC_PLANET_IMAGE_NAMES)
+            .chain(CINEMATIC_GAS_BUILDING_IMAGE_NAMES)
+        {
             let handle: Handle<Image> = server
                 .load_builder()
                 .with_settings(|settings: &mut BasisTextureSettings| {

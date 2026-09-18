@@ -5,7 +5,7 @@ use std::f32::consts::{PI, TAU};
 use bevy::prelude::{Alpha, Color, Resource, Vec3 as BevyVec3};
 use bevy_egui::egui::{
     epaint::{Mesh, Vertex},
-    pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
+    pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
 };
 
 use super::cinematic_timeline::{
@@ -13,7 +13,9 @@ use super::cinematic_timeline::{
 };
 use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
 use super::report::{MissionReport, Side};
+use crate::core::map::planet::{Planet, PlanetKind};
 use crate::core::map::utils::{MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT};
+use crate::core::missions::BombingRaid;
 use crate::core::ui::utils::ImageIds;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
@@ -36,7 +38,9 @@ pub(crate) struct CinematicPlayback {
     repair_order: Vec<usize>,
     maximum_repair_lifetime: f32,
     planet_image: String,
+    planet_uv: Rect,
     show_planet: bool,
+    gas_planet: bool,
 }
 
 struct ActorVisual {
@@ -48,7 +52,9 @@ struct ActorVisual {
     size: f32,
     phase: f32,
     ground: bool,
-    orbital: bool,
+    visible: bool,
+    /// A recorded surface target guides the bomber's approach without simulating new orders.
+    bombing_target: Option<Vec2>,
     firing_times: Vec<f32>,
 }
 
@@ -73,16 +79,19 @@ impl Scene {
     fn new(rect: Rect) -> Self {
         let scale = (rect.width() / 1440.0).min(rect.height() / 820.0);
         let planet_radius = rect.height().min(rect.width() * 0.78) * 0.32;
-        // The exit button remains unscaled. Lift the globe in short windows so its inhabited
-        // near hemisphere and readable level tags still fit above that fixed control.
-        let planet_y = (rect.height() * 0.80).min(
-            rect.height() - MAIN_BUTTON_BOTTOM - MAIN_BUTTON_HEIGHT - 14.0 - 53.0 * scale
-                + planet_radius * 0.10,
+        // Reserve room for the near-side settlement above the fixed-size exit control.
+        let planet_y = (rect.height() * 0.77).min(
+            rect.height()
+                - MAIN_BUTTON_BOTTOM
+                - MAIN_BUTTON_HEIGHT
+                - 18.0
+                - 58.0 * scale
+                - planet_radius * 0.22,
         );
         Self {
             rect,
             scale,
-            planet: pos2(rect.left() + rect.width() * 0.80, rect.top() + planet_y),
+            planet: pos2(rect.left() + rect.width() * 0.79, rect.top() + planet_y),
             planet_radius,
         }
     }
@@ -95,9 +104,24 @@ impl Scene {
 impl CinematicPlayback {
     pub fn new(report: &MissionReport) -> Self {
         let timeline = CinematicTimeline::new(report);
+        let gas_planet = report.planet.kind == PlanetKind::Gas;
+        let visible: Vec<_> = timeline
+            .actors
+            .iter()
+            .map(|actor| {
+                !actor.unit.is_orbital()
+                    && (actor.initial_levels.is_none()
+                        || (actor.unit.is_economic_building()
+                            && report.mission.includes_bombing(&BombingRaid::Economic))
+                        || (actor.unit.is_industrial_building()
+                            && report.mission.includes_bombing(&BombingRaid::Industrial)))
+            })
+            .collect();
         let mut counts = [0_usize; 5];
-        for actor in &timeline.actors {
-            counts[formation_group(actor)] += 1;
+        for (actor, visible) in timeline.actors.iter().zip(&visible) {
+            if *visible {
+                counts[formation_group(actor)] += 1;
+            }
         }
         let fleet_count = counts[0].max(counts[1]).max(counts[3]);
         let mut slots = [0_usize; 5];
@@ -105,14 +129,16 @@ impl CinematicPlayback {
         for (index, actor) in timeline.actors.iter().enumerate() {
             let group = formation_group(actor);
             let slot = slots[group];
-            slots[group] += 1;
+            slots[group] += usize::from(visible[index]);
             let name = actor.unit.to_lowername();
             let texture = if actor.unit.is_fauna() {
                 format!("map {name}")
+            } else if gas_planet && actor.initial_levels.is_some() {
+                format!("cinematic gas {name}")
             } else {
                 format!("cinematic {name}")
             };
-            // Both fleets and orbitals share a scale: a fighter must not grow just because its
+            // Both fleets share a scale: a fighter must not grow just because its
             // side fields fewer ships. Surface equipment uses its own available ground area.
             let density_count = if group == 4 {
                 1
@@ -121,8 +147,8 @@ impl CinematicPlayback {
             } else {
                 fleet_count
             };
-            let base_density = if group == 2 && counts[4] > 0 {
-                3
+            let base_density = if group == 2 {
+                14
             } else {
                 9
             };
@@ -134,15 +160,19 @@ impl CinematicPlayback {
                 aspect: sprite_aspect(actor.unit),
                 art_heading: sprite_heading(actor.unit),
                 home: if group == 2 && counts[4] > 0 {
-                    // Turrets protect the upper limb; the settlement occupies the near surface.
-                    // Separating these footprints keeps dense defenses off the building roofs.
                     let old = formation_home(group, slot, counts[group]);
-                    vec2(-0.10 + (old.x + 0.19) * 0.52, -0.86 + (old.y + 0.17) * 0.07)
+                    // Keep a full defensive terrace above the separate settlement row.
+                    let y = -0.57 + (old.y + 0.24) * 0.65;
+                    vec2(old.x * (1.0 - y * y).sqrt(), y)
                 } else {
                     formation_home(group, slot, counts[group])
                 },
-                size: if group == 2 && counts[4] > 0 {
-                    unit_size(actor.unit).min(54.0) * density
+                size: if group == 2 {
+                    unit_size(actor.unit).min(if counts[4] > 0 {
+                        64.0
+                    } else {
+                        82.0
+                    }) * density
                 } else {
                     unit_size(actor.unit) * density
                 },
@@ -152,14 +182,22 @@ impl CinematicPlayback {
                         + actor.owner.unwrap_or(0) as f32 * 0.07
                 },
                 ground: group == 2 || group == 4,
-                orbital: group == 3,
+                visible: visible[index],
+                bombing_target: None,
                 firing_times: Vec::new(),
             });
         }
         for shot in &timeline.shots {
             visuals[shot.source].firing_times.push(shot.launch_at);
+            if let Some(target) = shot.target.filter(|target| {
+                timeline.actors[shot.source].unit == Unit::Ship(Ship::Bomber)
+                    && visuals[*target].ground
+                    && visuals[*target].visible
+            }) {
+                visuals[shot.source].bombing_target = Some(visuals[target].home);
+            }
         }
-        let mut draw_order: Vec<_> = (0..visuals.len()).collect();
+        let mut draw_order: Vec<_> = (0..visuals.len()).filter(|index| visible[*index]).collect();
         // Surface equipment lies beneath orbiting hulls; within a layer the foreground wins.
         draw_order.sort_by(|a, b| {
             visuals[*b]
@@ -192,6 +230,8 @@ impl CinematicPlayback {
             .iter()
             .map(|repair| repair.end_at - repair.start_at)
             .fold(0.0_f32, f32::max);
+        let planet_image = cinematic_planet_image(&report.planet);
+        let planet_uv = cinematic_planet_uv(&planet_image);
         Self {
             timeline,
             elapsed: 0.0,
@@ -201,8 +241,10 @@ impl CinematicPlayback {
             maximum_charge_lead,
             repair_order,
             maximum_repair_lifetime,
-            planet_image: report.planet.image(),
+            planet_image,
+            planet_uv,
             show_planet: !report.is_space_fauna_encounter(),
+            gas_planet,
         }
     }
 
@@ -215,6 +257,11 @@ impl CinematicPlayback {
 
     pub fn is_finished(&self) -> bool {
         self.elapsed >= self.timeline.duration
+    }
+
+    /// Presentation filtering is shared with sound; hidden scenery has no audible events.
+    pub fn actor_visible(&self, index: usize) -> bool {
+        self.visuals[index].visible
     }
 
     /// Records loaded image dimensions once; native and browser textures share the same layout.
@@ -253,7 +300,11 @@ impl CinematicPlayback {
             .partition_point(|index| self.timeline.repairs[*index].start_at <= self.elapsed);
         for &index in &self.repair_order[first_repair..last_repair] {
             let repair = &self.timeline.repairs[index];
-            if self.elapsed < repair.start_at || self.elapsed > repair.end_at + 0.4 {
+            if !self.visuals[repair.target].visible
+                || repair.source.is_some_and(|source| !self.visuals[source].visible)
+                || self.elapsed < repair.start_at
+                || self.elapsed > repair.end_at + 0.4
+            {
                 continue;
             }
             let target = self.actor_pose(scene, repair.target, self.elapsed);
@@ -301,6 +352,11 @@ impl CinematicPlayback {
             .shots
             .partition_point(|shot| shot.launch_at <= self.elapsed + self.maximum_charge_lead);
         for (offset, shot) in self.timeline.shots[first_shot..last_shot].iter().enumerate() {
+            if !self.visuals[shot.source].visible
+                || shot.target.is_some_and(|target| !self.visuals[target].visible)
+            {
+                continue;
+            }
             let index = first_shot + offset;
             let weapon = Weapon::for_shot(self.timeline.actors[shot.source].unit, &shot.outcome);
             if self.elapsed >= weapon.cinematic_charge_start(shot.launch_at, shot.impact_at)
@@ -310,6 +366,9 @@ impl CinematicPlayback {
             }
         }
         for (index, actor) in self.timeline.actors.iter().enumerate() {
+            if !self.visuals[index].visible {
+                continue;
+            }
             if let Some(death) = actor.death_at {
                 let age = self.elapsed - death;
                 if (0.0..3.6).contains(&age) {
@@ -429,13 +488,12 @@ impl CinematicPlayback {
             painter.image(
                 *texture,
                 Rect::from_center_size(scene.planet, Vec2::splat(radius * 2.0)),
-                FULL_UV,
-                Color32::from_gray(220),
+                self.planet_uv,
+                Color32::WHITE,
             );
         } else {
             painter.circle_filled(scene.planet, radius, Color32::from_rgb(20, 41, 56));
         }
-        planet_terminator(painter, scene.planet, radius);
         for ring in 0..5 {
             arc(
                 painter,
@@ -540,7 +598,7 @@ impl CinematicPlayback {
                             + center * scene.planet_radius
                             + travel
                             + rotate((point - center) * scene.planet_radius, spin),
-                        uv: (Vec2::splat(0.5) + point * 0.5).to_pos2(),
+                        uv: self.planet_uv.center() + point * self.planet_uv.size() * 0.5,
                         color: alpha(Color32::from_rgb(255, 186, 141), opacity),
                     });
                 }
@@ -567,28 +625,37 @@ impl CinematicPlayback {
             // Home positions live on the visible globe, so turrets never float in open space.
             center = scene.planet + visual.home * scene.planet_radius;
             if actor.unit == Unit::repair_truck() || actor.unit == Unit::crawler() {
-                center += vec2((time * 0.32 + phase).sin() * 3.0, (time * 0.38 + phase).cos())
-                    * scene.scale;
+                center +=
+                    vec2((time * 0.32 + phase).sin() * 7.0, (time * 0.38 + phase).cos() * 2.0)
+                        * scene.scale;
+            }
+            if self.gas_planet {
+                center.y += (time * 0.85 + phase).sin() * 3.0 * scene.scale;
             }
         } else {
             center = scene.point(visual.home);
-            let agility = if visual.orbital {
-                0.2
-            } else {
-                (85.0 / visual.size.max(20.0)).clamp(0.4, 2.0)
-            };
+            // Maneuverability follows the actual hull class, independent of fleet density.
+            let agility = (95.0 / unit_size(actor.unit)).clamp(0.48, 1.65);
             let flight_time = time - self.timeline.entrance_duration;
-            let amplitude = if visual.orbital {
-                6.0
-            } else {
-                36.0
-            } * scene.scale;
-            center += vec2(
-                direction * (flight_time * 0.29 * agility + phase).sin() * amplitude,
-                (flight_time * 0.37 * agility + phase).cos() * amplitude * 0.8,
-            );
-            if !visual.orbital {
-                center.x += direction * 72.0 * scene.scale * smooth(flight_time / 18.0);
+            let course = flight_time * 0.24 * agility + phase;
+            let sweep = course.sin();
+            // Opposed diagonal passes bring both formations into the shared firing corridor.
+            // The secondary arc separates their return legs instead of reversing along a line.
+            center += scene.rect.size()
+                * vec2(
+                    direction * (0.055 + sweep * 0.13) * agility.sqrt(),
+                    (-direction * sweep * 0.10 + (course * 1.3 + phase).cos() * 0.035)
+                        * agility.sqrt(),
+                );
+            if let Some(target) = visual.bombing_target {
+                let approach = scene.planet
+                    + (vec2(-1.25, -0.55) + target * 0.25).normalized()
+                        * scene.planet_radius
+                        * 1.48;
+                let pass = smooth(0.5 + 0.5 * (course - 0.6).sin());
+                center = center.lerp(approach, pass * 0.72);
+            }
+            {
                 // Sample the ongoing maneuver during arrival too. The cubic offset and its
                 // derivative both reach zero, so the ship never stops or snaps into formation.
                 let delay = noise(index as u32 + 141) * 0.65;
@@ -611,8 +678,7 @@ impl CinematicPlayback {
                 // Small banks preserve the source's isometric camera angle. A large fixed
                 // bitmap rotation rolls the entire 3D view rather than turning the vessel.
                 angle = direction
-                    * ((flight_time * 0.37 * agility + phase).sin() * 0.065 * agility
-                        + bend * 0.12 * (entered * PI).sin().powi(2));
+                    * (course.cos() * 0.09 * agility + bend * 0.12 * (entered * PI).sin().powi(2));
             }
         }
         if let Some(retreat_at) = actor.retreat_at {
@@ -628,6 +694,24 @@ impl CinematicPlayback {
             center += vec2(-direction * 2.8, 0.7) * impulse * scene.scale;
             angle += direction * impulse * 0.018;
         }
+        if self.show_planet
+            && !visual.ground
+            && actor.side == Side::Attacker
+            && self.timeline.planetary_shield_at(time) > 0
+        {
+            // Attack runs skim outside an active field. Even the muzzle remains outside,
+            // so a recorded shield hit always intersects the field before the target roof.
+            let offset = center - scene.planet;
+            let clearance = scene.planet_radius * 1.11 + size * 0.30;
+            if offset.length_sq() < clearance * clearance {
+                let outward = if offset.length_sq() > 0.01 {
+                    offset.normalized()
+                } else {
+                    vec2(-1.0, 0.0)
+                };
+                center = scene.planet + outward * clearance;
+            }
+        }
         ActorPose {
             center,
             size,
@@ -640,6 +724,7 @@ impl CinematicPlayback {
         let actor = &self.timeline.actors[index];
         if actor.death_at.is_some_and(|at| self.elapsed >= at)
             || actor.retreat_at.is_some_and(|at| self.elapsed >= at + 1.7)
+            || !self.visuals[index].visible
         {
             return;
         }
@@ -666,12 +751,29 @@ impl CinematicPlayback {
             });
         let shield_strength = state.shield as f32 / actor.max_shield.max(1) as f32;
         if visual.ground {
-            painter.add(Shape::ellipse_filled(
-                pose.center + vec2(0.0, pose.size * 0.25),
-                vec2(pose.size * 0.34, pose.size * 0.12),
-                Color32::from_black_alpha(95),
-            ));
-        } else if !visual.orbital && !actor.unit.is_fauna() {
+            if self.gas_planet {
+                // Settlements have painted lift platforms; defenses get compact floating pads.
+                // There is no rocky ground or contact shadow on a gas world's cloud deck.
+                if actor.initial_levels.is_none() {
+                    painter.add(Shape::ellipse_filled(
+                        pose.center + vec2(0.0, pose.size * 0.24),
+                        vec2(pose.size * 0.40, pose.size * 0.13),
+                        Color32::from_rgb(31, 51, 66),
+                    ));
+                }
+                for jet in [-0.23, 0.23] {
+                    let lift = pose.center + vec2(jet, 0.34) * pose.size;
+                    let pulse = 0.35 + 0.15 * (self.elapsed * 4.0 + visual.phase).sin();
+                    glow(painter, lift, pose.size * 0.15, BLUE, pulse);
+                }
+            } else {
+                painter.add(Shape::ellipse_filled(
+                    pose.center + vec2(0.0, pose.size * 0.25),
+                    vec2(pose.size * 0.34, pose.size * 0.12),
+                    Color32::from_black_alpha(95),
+                ));
+            }
+        } else if !actor.unit.is_fauna() {
             let heading = Vec2::angled(visual.art_heading) * vec2(direction, 1.0);
             let engine = pose.center - rotate(heading * pose.size * 0.32, pose.angle);
             let thrust = (self.elapsed * 18.0 + visual.phase).sin() * 0.10 + 0.9;
@@ -722,11 +824,11 @@ impl CinematicPlayback {
                 Stroke::new(scene.scale, alpha(BLUE, shield_strength * 0.10)),
             );
         }
-        // Navigation lights and engine pulses make even anchored orbitals feel inhabited.
+        // Navigation lights and engine pulses keep the scene alive between recorded shots.
         let beacon = pose.center + rotate(vec2(direction * 0.18, -0.08) * pose.size, pose.angle);
         let blink = 0.35 + 0.65 * (self.elapsed * 2.1 + visual.phase).sin().powi(8);
         glow(painter, beacon, (pose.size * 0.04).max(1.2), side_color, blink * 0.72);
-        if let Some(levels) = actor.levels_at(self.elapsed) {
+        if actor.levels_at(self.elapsed).is_some() {
             // Small industrial lights and drifting chimney exhaust animate the actual building,
             // without turning its levels into a row of fictitious independent structures.
             for light in 0..3 {
@@ -744,13 +846,6 @@ impl CinematicPlayback {
                     alpha(Color32::from_rgb(124, 144, 159), (1.0 - age) * 0.24),
                 );
             }
-            painter.text(
-                pose.center + vec2(0.0, pose.size * 0.43),
-                Align2::CENTER_TOP,
-                format!("Lv {levels}"),
-                FontId::monospace((11.0 * scene.scale).max(10.0)),
-                Color32::from_rgb(177, 194, 207),
-            );
         }
         if health < 0.52 && state.hull > 0 {
             let damage = (0.6 - health).max(0.0);
@@ -792,6 +887,9 @@ impl CinematicPlayback {
         let rise_speed = (52.0 * scene.scale)
             .max((caption.size().y + 2.0 * scene.scale.max(1.0)) / LEVEL_LOSS_INTERVAL);
         for loss in &self.timeline.level_losses[first..last] {
+            if !self.visuals[loss.target].visible {
+                continue;
+            }
             let age = self.elapsed - loss.impact_at;
             let pose = self.actor_pose(scene, loss.target, loss.impact_at);
             // A partial loss gets a localized impact; only the final level triggers a full wreck.
@@ -1032,6 +1130,23 @@ impl CinematicPlayback {
         if !(0.0..0.75).contains(&impact_age) {
             return;
         }
+        // Residual shield flashes and hull sparks travel with the struck vessel. Wrecks
+        // stay at the recorded death pose instead of carrying their explosion offscreen.
+        let struck_center = shot.target.map(|target| {
+            let actor = &self.timeline.actors[target];
+            let time = actor.death_at.map_or(self.elapsed, |death| self.elapsed.min(death));
+            self.actor_pose(scene, target, time).center
+        });
+        let end = if shot.outcome.planetary_shield_damage == 0 {
+            match (shot.target, struck_center) {
+                (Some(target), Some(center)) => {
+                    end + (center - self.actor_pose(scene, target, shot.impact_at).center)
+                },
+                _ => end,
+            }
+        } else {
+            end
+        };
         let strength = (1.0 - impact_age / 0.75).powi(2);
         if shot.outcome.planetary_shield_damage > 0 || shot.outcome.shield_damage > 0 {
             let planet_hit = shot.outcome.planetary_shield_damage > 0 && self.show_planet;
@@ -1074,9 +1189,7 @@ impl CinematicPlayback {
             );
         }
         if shot.outcome.hull_damage > 0 || (shot.outcome.killed && !shot.outcome.missed) {
-            let hull = shot
-                .target
-                .map_or(end, |index| self.actor_pose(scene, index, shot.impact_at).center);
+            let hull = struck_center.unwrap_or(end);
             if shot.outcome.shield_damage > 0 {
                 glow_line(painter, end, hull, 1.6 * scene.scale, color, strength * 0.65);
             }
@@ -1277,7 +1390,49 @@ impl CinematicPlayback {
     }
 }
 
-/// One formation for each fleet, the surface and planetary orbit. No unit counts are capped.
+/// Stable planet identity chooses artwork without changing the persisted strategic-map image.
+fn cinematic_planet_image(planet: &Planet) -> String {
+    let kind = match planet.kind {
+        PlanetKind::Dry => "dry",
+        PlanetKind::Gas => "gas",
+        PlanetKind::Ice => "ice",
+        PlanetKind::Metallic => "metallic",
+        PlanetKind::Water => "water",
+        PlanetKind::Blue => "blue",
+        PlanetKind::Brown => "brown",
+        PlanetKind::Gray => "gray",
+        PlanetKind::Red => "red",
+        PlanetKind::Yellow => "yellow",
+    };
+    format!("planet {kind} {}", 1 + (planet.id ^ planet.image) % 2)
+}
+
+/// Match the opaque globe rim to the camera radius without resampling source artwork.
+/// Generation leaves different transparent margins, especially around the rocky moons.
+fn cinematic_planet_uv(image: &str) -> Rect {
+    let diameter = match image {
+        "planet dry 1" => 0.970,
+        "planet dry 2" => 0.989,
+        "planet ice 1" => 0.953,
+        "planet ice 2" => 0.979,
+        "planet metallic 1" => 0.950,
+        "planet metallic 2" => 0.978,
+        "planet blue 1" => 0.957,
+        "planet blue 2" => 0.969,
+        "planet brown 1" => 0.864,
+        "planet brown 2" => 0.858,
+        "planet gray 1" => 0.899,
+        "planet gray 2" => 0.850,
+        "planet red 1" => 0.921,
+        "planet red 2" => 0.940,
+        "planet yellow 1" => 0.927,
+        "planet yellow 2" => 0.920,
+        _ => 0.970,
+    };
+    Rect::from_center_size(pos2(0.5, 0.5), Vec2::splat(diameter))
+}
+
+/// Keep the full recorded roster; only the visible forces take space in these formations.
 fn formation_group(actor: &CinematicActor) -> usize {
     if actor.initial_levels.is_some() {
         4
@@ -1300,10 +1455,36 @@ fn formation_home(group: usize, slot: usize, count: usize) -> Vec2 {
     };
     let disk = vec2(angle.cos(), angle.sin()) * radius;
     match group {
-        0 => vec2(0.26, 0.45) + disk * vec2(0.19, 0.32),
-        1 => vec2(0.73, 0.33) + disk * vec2(0.17, 0.22),
-        2 => vec2(-0.19, -0.17) + disk * vec2(0.64, 0.54),
-        4 => vec2(-0.60 + (slot % 3) as f32 * 0.50, -0.53 + (slot / 3) as f32 * 0.43),
+        0 => vec2(0.24, 0.44) + disk * vec2(0.15, 0.23),
+        1 => vec2(0.76, 0.32) + disk * vec2(0.13, 0.15),
+        2 => {
+            // Deliberate rows make individual barrels and mobile support units readable.
+            let columns = (count as f32 * 1.65).sqrt().ceil().max(1.0) as usize;
+            let rows = count.div_ceil(columns).max(1);
+            let row = slot / columns;
+            let in_row = count.saturating_sub(row * columns).min(columns).max(1);
+            let x = (slot % columns) as f32 - (in_row - 1) as f32 * 0.5;
+            let y = row as f32 - (rows - 1) as f32 * 0.5;
+            let stagger = if rows > 1 {
+                if row.is_multiple_of(2) {
+                    -0.025
+                } else {
+                    0.025
+                }
+            } else {
+                0.0
+            };
+            let x = -0.08 + x * 1.10 / columns.max(2).saturating_sub(1) as f32 + stagger;
+            vec2(x, -0.24 + y * 0.84 / rows.max(2).saturating_sub(1) as f32 + x * x * 0.10)
+        },
+        4 => vec2(
+            -0.60 + (slot % 3) as f32 * 0.52,
+            if count <= 3 {
+                0.12
+            } else {
+                -0.04 + (slot / 3) as f32 * 0.29
+            },
+        ),
         _ => vec2(0.81, 0.55) + disk * vec2(0.13, 0.10),
     }
 }
@@ -1618,34 +1799,6 @@ fn exhaust(painter: &Painter, engine: Pos2, tail: Pos2, width: f32) {
         mesh.colored_vertex(tail, Color32::TRANSPARENT);
         mesh.colored_vertex(engine - perpendicular * width * scale, Color32::TRANSPARENT);
         mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    painter.add(Shape::mesh(mesh));
-}
-
-/// Light from the upper-left gives the globe a smooth terminator even at cinematic scale.
-fn planet_terminator(painter: &Painter, center: Pos2, radius: f32) {
-    const RINGS: u32 = 12;
-    const SEGMENTS: u32 = 64;
-    let mut mesh = Mesh::default();
-    for ring in 0..=RINGS {
-        let distance = ring as f32 / RINGS as f32;
-        let z = (1.0 - distance * distance).max(0.0).sqrt();
-        for segment in 0..=SEGMENTS {
-            let normal = Vec2::angled(segment as f32 / SEGMENTS as f32 * TAU) * distance;
-            let illumination = (normal.dot(vec2(-0.40, -0.58)) + z * 0.71).max(0.0);
-            let shade = (1.0 - illumination).powf(1.6) * 0.70;
-            mesh.colored_vertex(
-                center + normal * radius,
-                Color32::from_black_alpha((shade * 255.0) as u8),
-            );
-        }
-    }
-    for ring in 0..RINGS {
-        for segment in 0..SEGMENTS {
-            let a = ring * (SEGMENTS + 1) + segment;
-            let b = a + SEGMENTS + 1;
-            mesh.indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
-        }
     }
     painter.add(Shape::mesh(mesh));
 }

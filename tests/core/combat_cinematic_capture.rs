@@ -13,6 +13,8 @@ use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
+use crate::utils::NameFromEnum;
+use strum::IntoEnumIterator;
 
 fn preview_session() -> MultiplayerSession {
     let model = GameModel::new(
@@ -225,6 +227,8 @@ fn render_cinematic_preview() {
     let mut samples = vec![
         ("entrance".to_string(), 3.0),
         ("battle".to_string(), playback.timeline.entrance_duration + 1.1),
+        ("maneuver-a".to_string(), playback.timeline.entrance_duration + 3.0),
+        ("maneuver-b".to_string(), playback.timeline.entrance_duration + 7.0),
     ];
     if let Some(shot) = playback
         .timeline
@@ -602,10 +606,15 @@ fn render_cinematic_preview() {
         app.insert_resource(State::new(GameState::Combat));
     }
 
-    for (category, raid) in
-        [("economic", BombingRaid::Economic), ("industrial", BombingRaid::Industrial)]
-    {
-        let report = bombing_battle(raid);
+    for (category, raid, kind) in [
+        ("economic", BombingRaid::Economic, crate::core::map::planet::PlanetKind::Dry),
+        ("industrial", BombingRaid::Industrial, crate::core::map::planet::PlanetKind::Water),
+        ("gas-economic", BombingRaid::Economic, crate::core::map::planet::PlanetKind::Gas),
+        ("gas-industrial", BombingRaid::Industrial, crate::core::map::planet::PlanetKind::Gas),
+    ] {
+        let mut report = bombing_battle(raid);
+        // The report's original kind selects presentation only; recorded damage stays intact.
+        report.planet.kind = kind;
         let mut playback = CinematicPlayback::new(&report);
         for (name, handle) in &app.world().resource::<CaptureImages>().0 {
             let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
@@ -629,6 +638,33 @@ fn render_cinematic_preview() {
             app.world_mut()
                 .spawn(Screenshot::image(target.clone()))
                 .observe(save_to_disk(format!("target/cinematic-preview/{category}-{phase}.png")));
+            for _ in 0..8 {
+                app.update();
+            }
+        }
+    }
+
+    // Inspect all globe types through the production camera, including both stable variants.
+    for kind in crate::core::map::planet::PlanetKind::iter() {
+        for variant in 1..=2 {
+            let mut report = battle(false);
+            report.planet.kind = kind;
+            report.planet.id = variant;
+            let mut playback = CinematicPlayback::new(&report);
+            for (name, handle) in &app.world().resource::<CaptureImages>().0 {
+                let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+                playback.set_sprite_size(name, texture.width(), texture.height());
+            }
+            playback.elapsed = playback.timeline.entrance_duration + 0.1;
+            app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
+            app.world_mut().resource_mut::<Player>().reports = vec![report];
+            app.insert_resource(playback);
+            for _ in 0..8 {
+                app.update();
+            }
+            app.world_mut().spawn(Screenshot::image(target.clone())).observe(save_to_disk(
+                format!("target/cinematic-preview/planet-{}-{variant}.png", kind.to_lowername()),
+            ));
             for _ in 0..8 {
                 app.update();
             }

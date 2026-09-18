@@ -22,12 +22,15 @@ to protected defenses. Repair trucks heal the recorded targets and amounts; the
 report does not identify which particular truck supplied each repair, so surviving
 trucks are assigned only for presentation. Repairs can overlap fire at other targets.
 Retreats, returning probes, bombing, planet destruction, and draws follow the report.
-Noncombat orbital structures have no invented attacks.
+Orbital structures are omitted from the cinematic picture and soundtrack; their
+recorded combat participation still contributes to the unchanged result.
 
 Economic and industrial raids show the planet's relevant Metal Mine, Crystal Mine,
 Deuterium Synthesizer, Shipyard, Factory, and Missile Silo as individual surface
-structures. Each recorded successful bomb causes an explosion and a rising
-**−1 level** caption, reduces the displayed level, and leaves the structure standing
+structures. Only the selected raid's economic or industrial category is shown;
+coordinated attacks include every participating commander's selected category.
+Permanent level labels are omitted. Each recorded successful bomb causes an explosion
+and a rising **−1 level** caption, and leaves the structure standing
 until its last level is lost. Misses never remove levels. Surviving War Suns combine
 their charging rays at one focus before a shared beam strikes the planet; the
 planet breaks apart only when the saved report records its destruction.
@@ -39,15 +42,19 @@ The planetary shield reuses the map's energy-field artwork with a three-second
 pulse, moving filaments and surface sweeps; its strength follows recorded damage.
 The scene uses the normal map background with its proportions preserved. Ships
 follow independent curved approaches over 4.8 seconds, banking gently while
-preserving the perspective of their artwork, then continue maneuvering in combat.
+preserving the perspective of their artwork, then make opposing diagonal passes.
+Lighter ships turn faster; Bombers make approaches toward their recorded surface
+targets while keeping outside an active planetary shield. Turrets, crawlers and
+repair trucks occupy spaced surface rows, separate from the target buildings.
+Gas worlds use floating building platforms and hovering defense pads.
 Both views reveal the same victory, draw, or defeat image in a dark central band,
 using the same 1.5-second entrance and no instruction caption.
 
 The renderer uses a single clock for trajectories, sprite banking and recoil, engine
 glows, navigation lights, shield impacts, explosion atlas frames, particles, stars,
 comets, and parallax. It caches actor layouts and indexes shot time ranges rather
-than repeatedly walking the entire shot history. Every combatant remains represented;
-larger fleets scale down to fit the viewport. Source artwork and generation prompts
+than repeatedly walking the entire shot history. Every visible ship and ground unit
+keeps its own sprite; larger fleets scale down to fit the viewport. Source artwork and generation prompts
 are documented in [cinematic-art.md](cinematic-art.md). Runtime textures are generated
 by the existing asset pipeline and included by normal native and web packaging.
 The six building references and generation prompts are documented in
@@ -55,6 +62,12 @@ The six building references and generation prompts are documented in
 [cinematic-industrial-art.md](cinematic-industrial-art.md).
 The rebuilt War Sun and mode tiles are documented in
 [cinematic-refresh-art.md](cinematic-refresh-art.md).
+Twenty detailed 1254-pixel planet sprites provide two stable variants for each of
+the ten planet/moon kinds. The camera frames their globe rims consistently, and
+planet destruction uses the same high-resolution texture. Planet and gas-platform
+prompts are recorded in [cinematic-planets-a.md](cinematic-planets-a.md),
+[cinematic-planets-b.md](cinematic-planets-b.md), and
+[cinematic-gas-surface-art.md](cinematic-gas-surface-art.md).
 
 Visual pacing was informed by [Stellaris battle screenshots](https://forum.paradoxplaza.com/forum/threads/obligatory-space-battle-screenshot-thread.927576/).
 All ship and structure artwork is derived from Stellarion's own shop references.

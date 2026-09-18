@@ -554,3 +554,90 @@ fn soundtrack_uses_recorded_bombs_penetrating_hull_gain_and_miss_pitch() {
     let miss = at(4.3);
     assert_eq!((miss[0].name, miss[0].playback_rate), ("missile miss", 1.45));
 }
+
+#[test]
+fn soundtrack_omits_hidden_orbitals_and_unselected_buildings_without_mutating_events() {
+    use crate::core::combat::cinematic_timeline::{CinematicRepair, CinematicShot};
+    use crate::core::combat::resolution::ShotReport;
+    use crate::core::units::buildings::Building;
+
+    let app = app();
+    let mut report = app.world().resource::<Player>().reports[0].clone();
+    let orbital_unit = Unit::Building(Building::SolarSatellite);
+    let building_unit = Unit::Building(Building::MetalMine);
+    report.planet.army.insert(orbital_unit, 1);
+    report.planet.army.insert(building_unit, 3);
+    let mut movie = CinematicPlayback::new(&report);
+    let find = |unit| movie.timeline.actors.iter().position(|actor| actor.unit == unit).unwrap();
+    let source = find(Unit::war_sun());
+    let target = find(Unit::Ship(Ship::LightFighter));
+    let orbital = find(orbital_unit);
+    let building = find(building_unit);
+    assert!(movie.actor_visible(source) && movie.actor_visible(target));
+    assert!(!movie.actor_visible(orbital) && !movie.actor_visible(building));
+    for actor in &mut movie.timeline.actors {
+        actor.death_at = None;
+    }
+    movie.timeline.planet_attacks.clear();
+    movie.timeline.shots = [
+        (orbital, Some(target)),
+        (source, Some(orbital)),
+        (source, Some(building)),
+        (source, Some(target)),
+        (source, None),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (source, target))| CinematicShot {
+        source,
+        target,
+        launch_at: 2.0 + index as f32,
+        impact_at: 2.3 + index as f32,
+        outcome: ShotReport {
+            hull_damage: usize::from(target.is_some()),
+            planetary_shield_damage: usize::from(target.is_none()),
+            ..Default::default()
+        },
+    })
+    .collect();
+    movie.timeline.actors[orbital].death_at = Some(7.0);
+    movie.timeline.actors[target].death_at = Some(8.0);
+    movie.timeline.actors[building].death_at = Some(9.0);
+    movie.timeline.repairs = [
+        (Some(orbital), target),
+        (Some(source), orbital),
+        (None, building),
+        (Some(source), target),
+        (None, target),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (source, target))| CinematicRepair {
+        source,
+        target,
+        start_at: 10.0 + index as f32,
+        end_at: 10.5 + index as f32,
+        amount: 1,
+    })
+    .collect();
+
+    let soundtrack = CinematicSoundtrack::new(&movie);
+    let expected = [
+        (5.0, "beam fire"),
+        (5.3, "short explosion"),
+        (6.0, "beam fire"),
+        (6.3, "shield impact"),
+        (8.0 + wreck_cue(Unit::Ship(Ship::LightFighter)).0, "explosion"),
+        (13.0, "repair"),
+        (14.0, "repair"),
+    ];
+    assert_eq!(soundtrack.cues.len(), expected.len());
+    for ((at, cue), (expected_at, name)) in soundtrack.cues.iter().zip(expected) {
+        assert!((at - expected_at).abs() < 0.001);
+        assert_eq!(cue.name, name);
+    }
+    assert_eq!(movie.timeline.shots.len(), 5);
+    assert_eq!(movie.timeline.repairs.len(), 5);
+    assert_eq!(movie.timeline.actors[orbital].death_at, Some(7.0));
+    assert_eq!(movie.timeline.actors[building].death_at, Some(9.0));
+}

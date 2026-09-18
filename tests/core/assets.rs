@@ -87,3 +87,44 @@ fn cinematic_roster_has_registered_source_artwork() {
         }
     }
 }
+
+#[test]
+fn cinematic_planets_and_gas_buildings_have_large_transparent_source_art() {
+    use std::collections::BTreeSet;
+    let expected: BTreeSet<_> = PlanetKind::iter()
+        .flat_map(|kind| {
+            (1..=2).map(move |variant| format!("planet {} {variant}", kind.to_lowername()))
+        })
+        .chain(
+            crate::core::units::Unit::resource_buildings()
+                .into_iter()
+                .chain(crate::core::units::Unit::industrial_buildings())
+                .map(|unit| format!("cinematic gas {}", unit.to_lowername())),
+        )
+        .collect();
+    let actual: BTreeSet<_> = CINEMATIC_PLANET_IMAGE_NAMES
+        .iter()
+        .chain(CINEMATIC_GAS_BUILDING_IMAGE_NAMES)
+        .map(|name| name.to_string())
+        .collect();
+    assert_eq!(actual, expected);
+    for name in actual {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/images/cinematic")
+            .join(format!("{name}.png"));
+        assert!(path.is_file(), "missing {name}");
+        #[cfg(target_os = "windows")]
+        {
+            let rgba = ::image::open(&path).unwrap().to_rgba8();
+            assert!(
+                rgba.width() >= 1024 && rgba.height() >= 1024,
+                "{name} is too small for the combat camera"
+            );
+            let transparent = rgba.pixels().filter(|pixel| pixel[3] == 0).count();
+            assert!(
+                transparent > (rgba.width() * rgba.height()) as usize / 10,
+                "{name} needs true transparency outside the cutout"
+            );
+        }
+    }
+}

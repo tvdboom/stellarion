@@ -66,8 +66,13 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
         assert!(start.center.x + start.size < scene.rect.left());
         assert!(middle.center.x > start.center.x && arrived.center.x > middle.center.x);
         let chord = arrived.center - start.center;
-        let offset = middle.center - start.center;
-        let distance_from_line = (chord.x * offset.y - chord.y * offset.x).abs() / chord.length();
+        let distance_from_line = (1..10)
+            .map(|step| {
+                let offset =
+                    movie.actor_pose(scene, index, end * step as f32 / 10.0).center - start.center;
+                (chord.x * offset.y - chord.y * offset.x).abs() / chord.length()
+            })
+            .fold(0.0_f32, f32::max);
         assert!(distance_from_line > 12.0, "Arrival {index} collapsed to a straight translation");
         banks.push(middle.angle);
         assert!(
@@ -326,11 +331,17 @@ fn cinematic_weapon_meshes_preserve_distinct_barrels_masks_and_shared_colors() {
 }
 
 fn bombing_replay() -> CinematicPlayback {
+    CinematicPlayback::new(&bombing_report())
+}
+
+fn bombing_report() -> MissionReport {
     use crate::core::combat::resolution::ShotReport;
     let mut report = crate::test_support::empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
+    report.mission.bombing = BombingRaid::Economic;
+    report.planet.kind = PlanetKind::Dry;
     let buildings: Vec<_> =
         Unit::resource_buildings().into_iter().chain(Unit::industrial_buildings()).collect();
     for unit in &buildings {
@@ -369,11 +380,11 @@ fn bombing_replay() -> CinematicPlayback {
         }],
         ..Default::default()
     });
-    CinematicPlayback::new(&report)
+    report
 }
 
 #[test]
-fn six_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
+fn relevant_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
     use crate::core::map::utils::{MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH};
     let movie = bombing_replay();
     for size in [vec2(1440.0, 900.0), vec2(640.0, 480.0), vec2(640.0, 360.0), vec2(450.0, 700.0)] {
@@ -385,13 +396,18 @@ fn six_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
             ),
             vec2(MAIN_BUTTON_WIDTH, MAIN_BUTTON_HEIGHT),
         );
-        for (index, actor) in movie
-            .timeline
-            .actors
-            .iter()
-            .enumerate()
-            .filter(|(_, actor)| actor.initial_levels.is_some())
+        for (index, _) in
+            movie.visuals.iter().enumerate().filter(|(_, visual)| visual.ground && visual.visible)
         {
+            let pose = movie.actor_pose(scene, index, movie.timeline.entrance_duration);
+            assert!(
+                pose.center.distance(scene.planet) + pose.size * 0.25 < scene.planet_radius,
+                "The actual defensive terrace must sit on the globe, including its base"
+            );
+        }
+        for (index, actor) in movie.timeline.actors.iter().enumerate().filter(|(index, actor)| {
+            actor.initial_levels.is_some() && movie.visuals[*index].visible
+        }) {
             let pose = movie.actor_pose(scene, index, movie.timeline.entrance_duration);
             let footprint = Rect::from_center_size(pose.center, Vec2::splat(pose.size));
             assert!(
@@ -403,10 +419,6 @@ fn six_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
                 !exit.intersects(footprint),
                 "{} overlaps Exit at {size:?}",
                 actor.unit.to_lowername()
-            );
-            assert!(
-                pose.center.y + pose.size * 0.43 + (11.0 * scene.scale).max(10.0) < exit.top(),
-                "Level tags must also clear the fixed exit control at {size:?}"
             );
             assert!(pose.center.distance(scene.planet) < scene.planet_radius);
         }
@@ -422,6 +434,195 @@ fn six_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn raid_visibility_keeps_defenses_hides_orbitals_and_respects_joint_orders() {
+    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
+    use crate::core::units::orbitals;
+    let mut report = bombing_report();
+    for orbital in orbitals::ALL {
+        report.planet.army.insert(orbital, 2);
+    }
+    let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+    let mut dock = round.defender[0].clone();
+    dock.id = 99;
+    dock.unit = Unit::space_dock();
+    round.defender.push(dock);
+    for (raid, expected) in
+        [(BombingRaid::None, 0), (BombingRaid::Economic, 3), (BombingRaid::Industrial, 3)]
+    {
+        report.mission.bombing = raid.clone();
+        let movie = CinematicPlayback::new(&report);
+        let visible: Vec<_> =
+            movie.draw_order.iter().map(|index| &movie.timeline.actors[*index]).collect();
+        assert_eq!(visible.iter().filter(|actor| actor.initial_levels.is_some()).count(), expected);
+        assert!(!visible.iter().any(|actor| actor.unit.is_orbital()));
+        assert_eq!(visible.iter().filter(|actor| actor.unit.is_turret()).count(), 6);
+        for actor in visible.iter().filter(|actor| actor.initial_levels.is_some()) {
+            assert_eq!(actor.unit.is_economic_building(), raid == BombingRaid::Economic);
+        }
+        assert!(
+            movie.timeline.actors.iter().any(|actor| actor.unit == Unit::space_dock()),
+            "Hiding scenery must not rewrite recorded participants"
+        );
+    }
+    report.mission.joint_attack = Some(JointAttackMission {
+        combat_orders: [
+            (
+                1,
+                FleetCombatOrders {
+                    bombing: BombingRaid::Economic,
+                    ..Default::default()
+                },
+            ),
+            (
+                2,
+                FleetCombatOrders {
+                    bombing: BombingRaid::Industrial,
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into(),
+        ..Default::default()
+    });
+    let movie = CinematicPlayback::new(&report);
+    assert_eq!(
+        movie
+            .draw_order
+            .iter()
+            .filter(|index| movie.timeline.actors[**index].initial_levels.is_some())
+            .count(),
+        6
+    );
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(640.0, 480.0)));
+    for &index in &movie.draw_order {
+        if movie.timeline.actors[index].initial_levels.is_some() {
+            let pose = movie.actor_pose(scene, index, 5.0);
+            assert!(
+                pose.center.y + pose.size * 0.5
+                    < scene.rect.bottom() - MAIN_BUTTON_BOTTOM - MAIN_BUTTON_HEIGHT
+            );
+        }
+    }
+}
+
+#[test]
+fn gas_platforms_hover_and_buildings_have_no_permanent_level_labels() {
+    use bevy_egui::egui;
+    let mut report = bombing_report();
+    report.planet.kind = PlanetKind::Gas;
+    let mut movie = CinematicPlayback::new(&report);
+    movie.elapsed = movie.timeline.entrance_duration;
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let context = egui::Context::default();
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(scene.rect),
+            ..Default::default()
+        },
+        |ui| {
+            for &index in &movie.draw_order {
+                let actor = &movie.timeline.actors[index];
+                if actor.initial_levels.is_some() {
+                    assert!(movie.visuals[index].texture.starts_with("cinematic gas "));
+                    assert_ne!(
+                        movie.actor_pose(scene, index, 5.0).center,
+                        movie.actor_pose(scene, index, 6.0).center
+                    );
+                    movie.paint_actor(ui.painter(), scene, &ImageIds::default(), index);
+                }
+            }
+        },
+    );
+    output.textures_delta.clear();
+    assert!(
+        !output.shapes.iter().any(|shape| matches!(&shape.shape, Shape::Text(_))),
+        "Only recorded level losses get a temporary caption"
+    );
+}
+
+#[test]
+fn every_planet_kind_uses_two_stable_large_globes() {
+    use strum::IntoEnumIterator;
+    let mut planet = bombing_report().planet;
+    for kind in PlanetKind::iter() {
+        planet.kind = kind;
+        planet.id = 12;
+        let first = cinematic_planet_image(&planet);
+        assert_eq!(first, cinematic_planet_image(&planet));
+        planet.id = 13;
+        let second = cinematic_planet_image(&planet);
+        assert_ne!(first, second);
+        for name in [first, second] {
+            assert!(crate::core::assets::CINEMATIC_PLANET_IMAGE_NAMES.contains(&name.as_str()));
+        }
+    }
+}
+
+#[test]
+fn combat_maneuvers_cover_diagonal_passes_and_bombers_approach_the_surface() {
+    let movie = replay();
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    for index in 0..24 {
+        let samples: Vec<_> = (0..80)
+            .map(|step| movie.actor_pose(scene, index, 5.0 + step as f32 * 0.25).center)
+            .collect();
+        let bounds = Rect::from_points(&samples);
+        assert!(
+            bounds.width() > 250.0 && bounds.height() > 140.0,
+            "Fighters should make broad attack passes, not hover over their formation slot"
+        );
+    }
+    let bomber = bombing_replay();
+    assert!(bomber.visuals[0].bombing_target.is_some());
+    let nearest = (0..120)
+        .map(|step| {
+            bomber.actor_pose(scene, 0, 5.0 + step as f32 * 0.25).center.distance(scene.planet)
+        })
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        nearest < scene.planet_radius * 1.9,
+        "Bomber passes must reach the planet's approach corridor"
+    );
+}
+
+#[test]
+fn bomber_runs_cannot_cross_a_live_planetary_shield() {
+    let mut report = bombing_report();
+    report.planet.army.insert(Unit::planetary_shield(), 3);
+    report.combat_report.as_mut().unwrap().rounds[0].planetary_shield = 999;
+    let shot = &mut report.combat_report.as_mut().unwrap().rounds[0].attacker[0].shots[0];
+    shot.planetary_shield_damage = 1;
+    shot.killed = false;
+    let movie = CinematicPlayback::new(&report);
+    for size in [vec2(1440.0, 900.0), vec2(640.0, 480.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        for tick in 0..200 {
+            let time = 4.8 + tick as f32 * 0.1;
+            assert!(movie.timeline.planetary_shield_at(time) > 0);
+            for index in 0..3 {
+                let pose = movie.actor_pose(scene, index, time);
+                assert!(
+                    pose.center.distance(scene.planet) - pose.size * 0.23
+                        > scene.planet_radius * 1.065
+                );
+            }
+        }
+        let (index, shot) = movie
+            .timeline
+            .shots
+            .iter()
+            .enumerate()
+            .find(|(_, shot)| shot.outcome.planetary_shield_damage > 0)
+            .unwrap();
+        let (_, impact, _) = movie.shot_geometry(scene, index, shot);
+        assert!(
+            (impact.distance(scene.planet) - scene.planet_radius * 1.065).abs() < 0.01,
+            "Recorded shield damage must strike the field, never a roof behind it"
+        );
     }
 }
 
