@@ -695,6 +695,9 @@ impl CinematicPlayback {
                 let limit = (0.80 * 95.0 / unit_size(actor.unit)).clamp(0.30, 0.65);
                 pose.angle = bank.clamp(-limit, limit);
             }
+            if actor.retreat_at.is_none_or(|at| time < at) {
+                self.aim_ship_cannon(scene, index, time, &mut pose);
+            }
         }
         if actor.unit == Unit::space_dock() {
             pose.mirror = false;
@@ -894,7 +897,7 @@ impl CinematicPlayback {
                     scene.rect.size()
                         * vec2(
                             direction * (flight_time * 0.14 * agility).atan() * 0.13 * agility,
-                            direction * course.cos() * 0.035 * agility,
+                            direction * (course + phase).cos() * 0.035 * agility,
                         ),
                     // High and low approach lanes converge toward the encounter instead
                     // of imposing the same upward tilt on every ship in the formation.

@@ -197,6 +197,44 @@ fn release_frame(age: f32) -> usize {
 }
 
 impl CinematicPlayback {
+    pub(super) fn aim_ship_cannon(
+        &self,
+        scene: Scene,
+        index: usize,
+        time: f32,
+        pose: &mut ActorPose,
+    ) {
+        let visual = &self.visuals[index];
+        let (Some(sheet), Some(&first), Some(&last)) =
+            (visual.firing_sheet, visual.firing_times.first(), visual.firing_shots.last())
+        else {
+            return;
+        };
+        let end = self.timeline.shots[last]
+            .impact_at
+            .max(visual.firing_times.last().copied().unwrap_or(first) + 0.58);
+        let weight = smooth(((time - first + 0.8) / 0.8).clamp(0.0, 1.0))
+            * (1.0 - smooth(((time - end) / 0.8).clamp(0.0, 1.0)));
+        if weight == 0.0 {
+            return;
+        }
+        let target = self.turret_target(scene, index, time);
+        let direction = target - pose.center;
+        let sign = if pose.mirror {
+            -1.0
+        } else {
+            1.0
+        };
+        let offset = (sheet.muzzle(self.firing_frame(index, time)) - pos2(0.5, 0.5))
+            * sheet.dimensions(pose.size);
+        // Aim the complete hull, not a disconnected weapon slice. Retain the forward
+        // course and limit elevation so a nearby/overflown target cannot invert it.
+        let angle = sign
+            * (direction.y.atan2(direction.x.abs())
+                - (offset.y / direction.length().max(1.0)).clamp(-1.0, 1.0).asin());
+        pose.angle += (angle.clamp(-0.85, 0.85) - pose.angle) * weight;
+    }
+
     pub(super) fn aim_planet_cannon(
         &self,
         index: usize,

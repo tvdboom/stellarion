@@ -45,6 +45,10 @@ whole. Ground weapons aim through continuous joints attached to fixed foundation
 Projectiles and beams use the rendered cannon's frame-specific muzzle attachment.
 The ship artwork has a level bow-to-stern axis; banking follows the actual flight
 path with bounded banks and horizontal reflection, so ships never roll upside down.
+During ordinary salvos, hulls smoothly aim their cannons toward the recorded target,
+including defenses below them, then return to their travel heading. Firing elevation
+remains bounded to keep steep nearby targets from rolling the artwork over. Lateral
+cruise bends have individual phases instead of tilting the whole fleet together.
 War Suns form a shallow firing fan and advance toward their shared focus during a
 planet strike, with the rest of the battle continuing around them. The convergence
 point is anchored beside the planet, independent of fleet height; barrel axes line up

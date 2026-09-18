@@ -207,3 +207,57 @@ fn planet_focus_stays_beside_the_world_even_when_the_fleet_is_far_north() {
         }
     }
 }
+
+#[test]
+fn ordinary_ship_cannons_follow_targets_above_and_below_on_both_sides() {
+    use strum::IntoEnumIterator;
+
+    for size in [vec2(1440.0, 900.0), vec2(640.0, 360.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        for ship in Ship::iter().filter(|ship| firing_sheet(Unit::Ship(*ship)).is_some()) {
+            for side in [Side::Attacker, Side::Defender] {
+                let mut movie = CinematicPlayback::new(&bombing_report());
+                movie.show_planet = false;
+                let index = movie.timeline.shots[0].source;
+                let target = movie.timeline.shots[0].target.unwrap();
+                let launch = movie.timeline.shots[0].launch_at;
+                movie.timeline.actors[index].unit = Unit::Ship(ship);
+                movie.timeline.actors[index].side = side.clone();
+                movie.visuals[index].firing_sheet = firing_sheet(Unit::Ship(ship));
+                movie.visuals[index].bombing_target = None;
+                movie.visuals[index].home = vec2(0.4, 0.4);
+                let sign = if side == Side::Attacker {
+                    1.0
+                } else {
+                    -1.0
+                };
+                for elevation in [-0.60_f32, 0.0, 0.60, 1.3] {
+                    let center = movie.actor_flight_pose(scene, index, launch).center;
+                    let offset =
+                        vec2(sign * elevation.cos(), elevation.sin()) * 500.0 * scene.scale;
+                    movie.visuals[target].home =
+                        (center + offset - scene.planet) / scene.planet_radius;
+                    for age in [0.0, 0.01, 0.1, 0.3] {
+                        let time = launch + age;
+                        let pose = movie.actor_pose(scene, index, time);
+                        let aim = movie.turret_target(scene, index, time);
+                        let muzzle = movie.actor_muzzle(scene, index, time, aim);
+                        let barrel = rotate(vec2(sign, 0.0), pose.angle);
+                        assert_eq!(pose.mirror, side == Side::Defender);
+                        assert!(pose.angle.abs() <= 0.85, "{ship:?} must stay upright");
+                        if elevation.abs() < 0.8 {
+                            assert!(barrel.dot((aim - muzzle).normalized()) > 0.9999,
+                                "{ship:?} on {side:?} aimed away from elevation {elevation}: {barrel:?}");
+                        } else {
+                            assert!(
+                                barrel.y > 0.5,
+                                "A steep downward target cannot produce an upward bow"
+                            );
+                        }
+                        assert_eq!(movie.actor_pose(scene, index, time).angle, pose.angle);
+                    }
+                }
+            }
+        }
+    }
+}
