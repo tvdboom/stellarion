@@ -21,6 +21,11 @@ selection at any time, as does the schematic-style **Exit combat** button at the
 bottom right; the completed outcome banner is also clickable. Attacker and defender
 banners align beneath the top-right controls, using the same participant ordering,
 names, colors, and fleet-strength accent segments as the schematic replay.
+Each owned ship carries two player-colored hull bands, a subtle armor tint, and
+matching running lights and engine exhaust. These use the individual combatant's
+owner and the match's selected player palette, so allies on either side retain
+their own colors. Space Docks carry the same hull markings; surface defenses use
+colored pedestal armor. Neutral fauna keep their original artwork.
 
 The movie consumes `MissionReport` without modifying it or running combat again.
 Stable combatant IDs retain each ship through hits, repairs, and casualties. Both

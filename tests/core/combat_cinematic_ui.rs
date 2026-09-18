@@ -699,7 +699,7 @@ fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
     // Area fade-in multiplies every painted color during its first 150 ms. This assertion
     // compares canonical player colors, so remove that unrelated transition from the fixture.
     context.global_style_mut(|style| style.animation_time = 0.0);
-    let model = GameModel::new(
+    let mut model = GameModel::new(
         [45; 32],
         GameRules {
             player_count: 3,
@@ -707,6 +707,7 @@ fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
         },
     )
     .unwrap();
+    model.player_mut(1).unwrap().color = crate::core::player::PlayerColor::new(4).unwrap();
     let mut session = MultiplayerSession::default();
     session.active_game = Some(GameRecord {
         id: GameId::new("identity-test"),
@@ -732,6 +733,9 @@ fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
     let attacker_color = session.player_color(3).color().to_color32();
     let ally_color = session.player_color(1).color().to_color32();
     app.insert_resource(session);
+    let hull_texture = egui::TextureId::User(4321);
+    app.world_mut().resource_mut::<ImageIds>().0.insert("firing war sun".into(), hull_texture);
+    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 5.0;
     let fighter = Unit::Ship(Ship::LightFighter);
     {
         let mut player = app.world_mut().resource_mut::<Player>();
@@ -767,6 +771,10 @@ fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
     let commander = segments.iter().find(|rect| rect.fill == attacker_color).unwrap();
     let ally = segments.iter().find(|rect| rect.fill == ally_color).unwrap();
     assert!((commander.rect.height() / ally.rect.height() - 3.0).abs() < 0.01);
+    assert!(shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Mesh(mesh) if mesh.texture_id == hull_texture
+            && mesh.vertices.iter().any(|vertex| vertex.color == ally_color))),
+        "The actual owner's selected lobby color must reach the hull, not the attacking commander's color");
 }
 
 #[test]

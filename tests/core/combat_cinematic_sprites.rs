@@ -261,3 +261,78 @@ fn ordinary_ship_cannons_follow_targets_above_and_below_on_both_sides() {
         }
     }
 }
+
+#[test]
+fn allied_owner_paint_uses_each_ships_palette_and_stays_attached_in_every_frame() {
+    let mut report = bombing_report();
+    let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+    for (army, owners) in [(&mut round.attacker, [1, 3]), (&mut round.defender, [2, 4])] {
+        for (index, record) in army.iter_mut().enumerate() {
+            record.owner = Some(owners[index % 2]);
+        }
+    }
+    let mut movie = CinematicPlayback::new(&report);
+    // Deliberately differ from player-slot defaults: lobby-selected colors are authoritative.
+    let palette = |owner: PlayerId| {
+        let [r, g, b] = PlayerColor::new((owner as u8 + 1) % 6).unwrap().rgb();
+        Color32::from_rgb(r, g, b)
+    };
+    movie.set_owner_colors(palette);
+    for (index, actor) in movie.timeline.actors.iter().enumerate() {
+        let Some(owner) = actor.owner else {
+            continue;
+        };
+        let sheet = movie.visuals[index].firing_sheet.unwrap();
+        for frame in 0..8 {
+            for mirror in [false, true] {
+                let pose = ActorPose {
+                    center: pos2(500.0, 450.0),
+                    size: 150.0,
+                    angle: 0.5,
+                    mirror,
+                };
+                let sample = meshes(|painter| {
+                    paint_owner_hull(
+                        painter,
+                        TextureId::User(10),
+                        pose.center,
+                        sheet.dimensions(pose.size),
+                        pose.angle,
+                        mirror,
+                        frame_uv(frame, FULL_UV),
+                        movie.visuals[index].owner_color,
+                    );
+                });
+                let mesh = &sample[0];
+                assert_eq!(sample.len(), 1, "Markings must share the hull mesh");
+                assert!(mesh.vertices.iter().any(|vertex| vertex.color == palette(owner)));
+                let uv = frame_uv(frame, FULL_UV);
+                for vertex in &mesh.vertices {
+                    assert!(uv.contains(vertex.uv), "Paint leaked into another firing frame");
+                    let point = (vertex.uv - uv.min) / uv.size();
+                    let reflection = vec2(
+                        if mirror {
+                            -1.0
+                        } else {
+                            1.0
+                        },
+                        1.0,
+                    );
+                    let expected = pose.center
+                        + rotate(
+                            (point - Vec2::splat(0.5)) * sheet.dimensions(pose.size) * reflection,
+                            pose.angle,
+                        );
+                    assert!(vertex.pos.distance(expected) < 0.001,
+                        "Owner paint must follow the exact visible hull through bank and reflection");
+                }
+            }
+        }
+    }
+    movie.timeline.actors[0].owner = None;
+    movie.set_owner_colors(palette);
+    assert!(
+        movie.visuals[0].owner_color.is_none(),
+        "Neutral units cannot inherit a side's player color"
+    );
+}

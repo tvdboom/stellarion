@@ -444,12 +444,14 @@ pub(crate) fn draw_cinematic(
     }
     if let Some(report) = report {
         if hud.report_id != Some(report.id)
+            || playback.is_added()
             || session.as_ref().is_some_and(|session| session.is_changed())
         {
             let fallback = MultiplayerSession::default();
             let session = session.as_deref().unwrap_or(&fallback);
             hud.attackers = combat_identity_participants(report, &Side::Attacker, session);
             hud.defenders = combat_identity_participants(report, &Side::Defender, session);
+            playback.set_owner_colors(|owner| session.player_color(owner).color().to_color32());
             hud.report_id = Some(report.id);
         }
     }

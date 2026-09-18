@@ -20,13 +20,13 @@ fn preview_session() -> MultiplayerSession {
     let model = GameModel::new(
         [45; 32],
         GameRules {
-            player_count: 2,
+            player_count: 4,
             ..default()
         },
     )
     .unwrap();
     let game_id = GameId::new("cinematic-preview");
-    let members = (1..=2)
+    let members = (1..=4)
         .map(|player_id| GameMembership {
             game_id: game_id.clone(),
             player_id,
@@ -43,7 +43,7 @@ fn preview_session() -> MultiplayerSession {
         code: GameCode::new("ABCDEF"),
         revision: 0,
         saved_at: 0,
-        max_players: 2,
+        max_players: 4,
         status: model.status,
         persisted: PersistedGame::new(model),
         members,
@@ -668,6 +668,59 @@ fn render_cinematic_preview() {
         context: camera,
         event: egui::Event::PointerGone,
     });
+    // Four owners on two sides expose accidental attacker/defender-only coloring.
+    let mut allied = battle(false);
+    allied.id = 100;
+    for round in &mut allied.combat_report.as_mut().unwrap().rounds {
+        for record in &mut round.attacker {
+            record.owner = Some(if record.id % 2 == 0 {
+                1
+            } else {
+                3
+            });
+        }
+        for record in &mut round.defender {
+            record.owner = Some(if record.unit.is_ship() {
+                4
+            } else {
+                2
+            });
+        }
+    }
+    let first = &allied.combat_report.as_ref().unwrap().rounds[0];
+    let army = |records: &[crate::core::combat::resolution::CombatUnit], owner| {
+        let mut army = Army::new();
+        for record in records.iter().filter(|record| record.owner == Some(owner)) {
+            *army.entry(record.unit).or_default() += 1;
+        }
+        army
+    };
+    allied.mission.joint_attack = Some(crate::core::missions::JointAttackMission {
+        attackers: [(1, army(&first.attacker, 1)), (3, army(&first.attacker, 3))].into(),
+        ..default()
+    });
+    allied.planet.army = crate::core::map::planet::Garrison::from_parts(
+        army(&first.defender, 2),
+        [(4, army(&first.defender, 4))].into(),
+    );
+    let mut playback = CinematicPlayback::new(&allied);
+    playback.elapsed = playback.timeline.entrance_duration + 1.1;
+    for (name, handle) in &app.world().resource::<CaptureImages>().0 {
+        let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+        playback.set_sprite_size(name, texture.width(), texture.height());
+    }
+    app.world_mut().resource_mut::<UiState>().in_combat = Some(allied.id);
+    app.world_mut().resource_mut::<Player>().reports.push(allied);
+    app.insert_resource(playback);
+    for _ in 0..8 {
+        app.update();
+    }
+    app.world_mut()
+        .spawn(Screenshot::image(target.clone()))
+        .observe(save_to_disk("target/cinematic-preview/allied-owner-colors.png"));
+    for _ in 0..8 {
+        app.update();
+    }
     // Multiple surviving War Suns must contribute to the same recorded discharge.
     let report = battle(true);
     let decisive_report = report.clone();

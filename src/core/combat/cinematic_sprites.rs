@@ -196,6 +196,59 @@ fn release_frame(age: f32) -> usize {
     }
 }
 
+fn hull_tint(color: Color32, strength: f32) -> Color32 {
+    let channel = |value: u8| (255.0 + (value as f32 - 255.0) * strength).round() as u8;
+    Color32::from_rgb(channel(color.r()), channel(color.g()), channel(color.b()))
+}
+
+/// Paint directly through the sprite's alpha and shading: markings remain part of the
+/// hull, including through bank, horizontal reflection and every recoil frame.
+pub(super) fn paint_owner_hull(
+    painter: &Painter,
+    texture: TextureId,
+    center: Pos2,
+    dimensions: Vec2,
+    angle: f32,
+    mirror: bool,
+    uv: Rect,
+    owner: Option<Color32>,
+) {
+    let Some(color) = owner else {
+        rotated_image(painter, texture, center, dimensions, angle, mirror, uv, Color32::WHITE);
+        return;
+    };
+    let mut mesh = Mesh::with_texture(texture);
+    let reflection = vec2(
+        if mirror {
+            -1.0
+        } else {
+            1.0
+        },
+        1.0,
+    );
+    // Two broad armor bands stand out against a lightly tinted metallic hull.
+    let edges = [0.0, 0.28, 0.36, 0.43, 0.51, 1.0];
+    for (band, edge) in edges.windows(2).enumerate() {
+        let tint = if band == 1 || band == 3 {
+            color
+        } else {
+            hull_tint(color, 0.22)
+        };
+        let base = mesh.vertices.len() as u32;
+        for point in
+            [pos2(edge[0], 0.0), pos2(edge[1], 0.0), pos2(edge[1], 1.0), pos2(edge[0], 1.0)]
+        {
+            mesh.vertices.push(Vertex {
+                pos: center + rotate((point - pos2(0.5, 0.5)) * dimensions * reflection, angle),
+                uv: uv.min + point.to_vec2() * uv.size(),
+                color: tint,
+            });
+        }
+        mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
 impl CinematicPlayback {
     pub(super) fn aim_ship_cannon(
         &self,
@@ -386,7 +439,7 @@ impl CinematicPlayback {
         if !sheet.ground {
             // The ring, docking arms and hull form one unbroken rigid body. Never
             // rotate rectangular slices through their structural supports.
-            rotated_image(
+            paint_owner_hull(
                 painter,
                 texture,
                 pose.center,
@@ -394,7 +447,7 @@ impl CinematicPlayback {
                 pose.angle,
                 pose.mirror,
                 frame_uv(frame, FULL_UV),
-                Color32::WHITE,
+                self.visuals[index].owner_color,
             );
             return;
         }
@@ -438,7 +491,18 @@ impl CinematicPlayback {
                     mesh.vertices.push(Vertex {
                         pos: resting(point).lerp(aimed(point), weight),
                         uv: uv.min + point.to_vec2() * uv.size(),
-                        color: Color32::WHITE,
+                        color: self.visuals[index].owner_color.map_or(Color32::WHITE, |color| {
+                            // Fixed pedestal armor carries the owner's strongest paint;
+                            // the barrel keeps its metal highlights and muzzle flash.
+                            hull_tint(
+                                color,
+                                if band >= 8 {
+                                    0.9
+                                } else {
+                                    0.22
+                                },
+                            )
+                        }),
                     });
                     if row > 0 && col > 0 {
                         let i = start + (row * 5 + col) as u32;

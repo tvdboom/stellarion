@@ -14,9 +14,11 @@ use super::cinematic_timeline::{
 };
 use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
 use super::report::{MissionReport, Side};
+use crate::core::identity::PlayerId;
 use crate::core::map::planet::{Planet, PlanetKind};
 use crate::core::map::utils::{MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT};
 use crate::core::missions::BombingRaid;
+use crate::core::player::PlayerColor;
 use crate::core::ui::utils::ImageIds;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
@@ -55,6 +57,7 @@ pub(crate) struct CinematicPlayback {
 }
 
 struct ActorVisual {
+    owner_color: Option<Color32>,
     firing_sheet: Option<FiringSheet>,
     texture: String,
     fallback_texture: String,
@@ -169,6 +172,10 @@ impl CinematicPlayback {
             let density =
                 (base_density as f32 / density_count.max(base_density) as f32).sqrt().max(0.11);
             visuals.push(ActorVisual {
+                owner_color: actor.owner.filter(|_| !actor.unit.is_fauna()).map(|owner| {
+                    let [r, g, b] = PlayerColor::for_player(owner).rgb();
+                    Color32::from_rgb(r, g, b)
+                }),
                 firing_sheet: firing_sheet(actor.unit),
                 texture,
                 fallback_texture: name,
@@ -283,6 +290,13 @@ impl CinematicPlayback {
     /// Presentation filtering is shared with sound; hidden scenery has no audible events.
     pub fn actor_visible(&self, index: usize) -> bool {
         self.visuals[index].visible
+    }
+
+    /// Cache the match palette, including lobby color choices and allied fleet ownership.
+    pub fn set_owner_colors(&mut self, mut color: impl FnMut(PlayerId) -> Color32) {
+        for (actor, visual) in self.timeline.actors.iter().zip(&mut self.visuals) {
+            visual.owner_color = actor.owner.filter(|_| !actor.unit.is_fauna()).map(&mut color);
+        }
     }
 
     /// Records loaded image dimensions once; native and browser textures share the same layout.
@@ -979,11 +993,7 @@ impl CinematicPlayback {
         if !scene.rect.expand(pose.size).contains(pose.center) {
             return;
         }
-        let side_color = if actor.side == Side::Defender {
-            GOLD
-        } else {
-            BLUE
-        };
+        let identity_color = visual.owner_color.unwrap_or(Color32::from_rgb(190, 198, 210));
         let direction = if pose.mirror {
             -1.0
         } else {
@@ -1033,8 +1043,8 @@ impl CinematicPlayback {
                 }
                 * thrust;
             let tail = engine - rotate(heading * length, pose.angle);
-            exhaust(painter, engine, tail, pose.size * 0.06);
-            glow(painter, engine, pose.size * 0.18, BLUE, 0.35);
+            exhaust(painter, engine, tail, pose.size * 0.06, identity_color);
+            glow(painter, engine, pose.size * 0.18, identity_color, 0.35);
         }
         let cinematic_texture = images.0.get(&visual.texture);
         let texture = cinematic_texture.or_else(|| images.0.get(&visual.fallback_texture));
@@ -1049,7 +1059,7 @@ impl CinematicPlayback {
             } else {
                 1.0
             };
-            rotated_image(
+            sprites::paint_owner_hull(
                 painter,
                 *texture,
                 pose.center,
@@ -1057,7 +1067,7 @@ impl CinematicPlayback {
                 pose.angle,
                 pose.mirror,
                 FULL_UV,
-                Color32::WHITE,
+                visual.owner_color,
             );
         }
         if !visual.ground && state.shield > 0 {
@@ -1076,9 +1086,29 @@ impl CinematicPlayback {
             );
         }
         // Navigation lights and engine pulses keep the scene alive between recorded shots.
-        let beacon = pose.center + rotate(vec2(direction * 0.18, -0.08) * pose.size, pose.angle);
+        let beacon = pose.center
+            + rotate(
+                vec2(
+                    0.0,
+                    if visual.ground {
+                        0.18
+                    } else {
+                        0.0
+                    },
+                ) * pose.size,
+                pose.angle,
+            );
         let blink = 0.35 + 0.65 * (self.elapsed * 2.1 + visual.phase).sin().powi(8);
-        glow(painter, beacon, (pose.size * 0.04).max(1.2), side_color, blink * 0.72);
+        glow(painter, beacon, (pose.size * 0.06).max(2.0 * scene.scale), identity_color, blink);
+        if visual.owner_color.is_some() {
+            // A steady attached running light remains legible when zoomed out; ownership
+            // never disappears at the dark part of the decorative blinking cycle.
+            painter.circle_filled(
+                beacon,
+                (pose.size * 0.022).max(1.2 * scene.scale),
+                identity_color,
+            );
+        }
         if actor.levels_at(self.elapsed).is_some() {
             // Small industrial lights and drifting chimney exhaust animate the actual building,
             // without turning its levels into a row of fictitious independent structures.
@@ -2173,11 +2203,11 @@ fn glow_line(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color
 }
 
 /// A tapered, transparent plume avoids the rectangular ends of wide line primitives.
-fn exhaust(painter: &Painter, engine: Pos2, tail: Pos2, width: f32) {
+fn exhaust(painter: &Painter, engine: Pos2, tail: Pos2, width: f32, color: Color32) {
     let direction = (tail - engine).normalized();
     let perpendicular = vec2(-direction.y, direction.x);
     let mut mesh = Mesh::default();
-    for (scale, center_color) in [(2.0, alpha(BLUE, 0.45)), (0.65, alpha(Color32::WHITE, 0.9))] {
+    for (scale, center_color) in [(2.0, alpha(color, 0.65)), (0.65, alpha(Color32::WHITE, 0.9))] {
         let base = mesh.vertices.len() as u32;
         mesh.colored_vertex(engine, center_color);
         mesh.colored_vertex(engine + perpendicular * width * scale, Color32::TRANSPARENT);
