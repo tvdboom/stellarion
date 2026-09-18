@@ -642,13 +642,50 @@ fn render_cinematic_preview() {
     let ray_samples = [
         ("war-sun-charge", ray.start_at + (ray.discharge_at - ray.start_at) * 0.75),
         ("war-sun-beam", (ray.discharge_at + ray.end_at) * 0.5),
-        ("planet-breakup", ray.end_at + 0.45),
+        ("planet-blast", ray.end_at + 0.7),
+        ("planet-blast-late", ray.end_at + 1.25),
+        ("planet-debris", ray.end_at + 2.5),
         ("planet-destroyed", playback.timeline.duration - 0.1),
     ];
     app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
     app.world_mut().resource_mut::<Player>().reports = vec![report];
     app.insert_resource(playback);
     for (name, elapsed) in ray_samples {
+        app.world_mut().resource_mut::<CinematicPlayback>().elapsed = elapsed;
+        for _ in 0..8 {
+            app.update();
+        }
+        app.world_mut()
+            .spawn(Screenshot::image(target.clone()))
+            .observe(save_to_disk(format!("target/cinematic-preview/{name}.png")));
+        for _ in 0..8 {
+            app.update();
+        }
+    }
+
+    // Capture the real failed outcome too: its surface should ripple, then settle intact.
+    let report = (0..64)
+        .map(|seed| battle_with_seed(true, seed))
+        .find(|report| {
+            !report.planet_destroyed
+                && report.combat_report.as_ref().is_some_and(|combat| {
+                    combat.rounds.iter().any(|round| round.destroy_probability > 0.0)
+                })
+        })
+        .expect("capture requires a failed recorded planetary discharge");
+    let mut playback = CinematicPlayback::new(&report);
+    for (name, handle) in &app.world().resource::<CaptureImages>().0 {
+        let texture = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+        playback.set_sprite_size(name, texture.width(), texture.height());
+    }
+    let ray = playback.timeline.planet_attacks.last().unwrap();
+    assert!(!ray.destroyed);
+    let samples =
+        [("failed-ray-ripple", ray.end_at + 0.4), ("failed-ray-settled", ray.end_at + 1.4)];
+    app.world_mut().resource_mut::<UiState>().in_combat = Some(report.id);
+    app.world_mut().resource_mut::<Player>().reports = vec![report];
+    app.insert_resource(playback);
+    for (name, elapsed) in samples {
         app.world_mut().resource_mut::<CinematicPlayback>().elapsed = elapsed;
         for _ in 0..8 {
             app.update();

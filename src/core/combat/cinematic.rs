@@ -26,6 +26,8 @@ const FULL_UV: Rect = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
 const BLUE: Color32 = Color32::from_rgb(104, 210, 255);
 const GOLD: Color32 = Color32::from_rgb(255, 177, 90);
 const GREEN: Color32 = Color32::from_rgb(102, 255, 182);
+/// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
+pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
 
 /// The movie has one clock. Manual camera navigation remains available while it is paused.
 #[derive(Resource)]
@@ -488,7 +490,7 @@ impl CinematicPlayback {
             .find(|attack| attack.destroyed)
             .map(|attack| attack.end_at);
         if let Some(age) = destroyed_at.map(|at| self.elapsed - at).filter(|age| *age >= 0.0) {
-            self.paint_broken_planet(painter, scene, images, age);
+            self.paint_collapsing_planet(painter, scene, images, age);
             return;
         }
         let radius = scene.planet_radius;
@@ -582,45 +584,25 @@ impl CinematicPlayback {
         }
     }
 
-    fn paint_broken_planet(&self, painter: &Painter, scene: Scene, images: &ImageIds, age: f32) {
-        let opacity = (1.0 - age / 3.8).clamp(0.0, 1.0);
+    fn paint_collapsing_planet(
+        &self,
+        painter: &Painter,
+        scene: Scene,
+        images: &ImageIds,
+        age: f32,
+    ) {
+        // The globe disappears beneath the growing fireballs. Debris comes from the shared
+        // wreck particles (small, size-capped shards), never large slices of planet artwork.
+        let opacity = 1.0 - smooth(age / 0.72);
         let Some(texture) = images.0.get(&self.planet_image).filter(|_| opacity > 0.0) else {
             return;
         };
-        // Split the actual planet artwork into drifting crust fragments, so the recorded
-        // destruction leaves empty space rather than an intact, merely darkened globe.
-        for band in 0..3_u32 {
-            for sector in 0..12_u32 {
-                let seed = band * 12 + sector;
-                let angle = sector as f32 * TAU / 12.0;
-                let inner = band as f32 / 3.0;
-                let outer = (band + 1) as f32 / 3.0;
-                let center = Vec2::angled(angle + TAU / 24.0) * (inner + outer) * 0.5;
-                let travel = center.normalized()
-                    * scene.planet_radius
-                    * (age * 0.34 + age * age * 0.09)
-                    * (0.6 + noise(seed) * 0.7);
-                let spin = age * (noise(seed + 72) - 0.5) * 0.85;
-                let mut mesh = Mesh::with_texture(*texture);
-                for point in [
-                    Vec2::angled(angle) * inner,
-                    Vec2::angled(angle) * outer,
-                    Vec2::angled(angle + TAU / 12.0) * outer,
-                    Vec2::angled(angle + TAU / 12.0) * inner,
-                ] {
-                    mesh.vertices.push(Vertex {
-                        pos: scene.planet
-                            + center * scene.planet_radius
-                            + travel
-                            + rotate((point - center) * scene.planet_radius, spin),
-                        uv: self.planet_uv.center() + point * self.planet_uv.size() * 0.5,
-                        color: alpha(Color32::from_rgb(255, 186, 141), opacity),
-                    });
-                }
-                mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-                painter.add(Shape::mesh(mesh));
-            }
-        }
+        painter.image(
+            *texture,
+            Rect::from_center_size(scene.planet, Vec2::splat(scene.planet_radius * 2.0)),
+            self.planet_uv,
+            alpha(Color32::WHITE, opacity),
+        );
     }
 
     fn actor_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
@@ -1258,6 +1240,11 @@ impl CinematicPlayback {
                 continue;
             }
             let target = scene.planet + vec2(-0.25, -0.30) * scene.planet_radius;
+            if self.elapsed >= attack.discharge_at
+                && (!attack.destroyed || self.elapsed < attack.end_at)
+            {
+                self.paint_planet_ripples(painter, scene, self.elapsed - attack.discharge_at);
+            }
             if self.elapsed < attack.end_at {
                 let age = self.elapsed - attack.start_at;
                 let focus = self.planet_attack_focus(scene, attack);
@@ -1398,24 +1385,9 @@ impl CinematicPlayback {
                         gold,
                         strength * 0.8,
                     );
-                    arc(
-                        painter,
-                        scene.planet,
-                        scene.planet_radius * (0.92 + progress * 0.13),
-                        -PI,
-                        PI * 1.5,
-                        Stroke::new(2.0 * scene.scale, alpha(gold, strength * 0.7)),
-                    );
                 }
             } else if attack.destroyed {
-                explosion(
-                    painter,
-                    images,
-                    scene.planet,
-                    scene.planet_radius * 2.4,
-                    self.elapsed - attack.end_at,
-                    Unit::planetary_shield(),
-                );
+                self.paint_planet_explosion(painter, scene, images, self.elapsed - attack.end_at);
             } else {
                 glow(
                     painter,
@@ -1425,6 +1397,86 @@ impl CinematicPlayback {
                     (1.0 - (self.elapsed - attack.end_at) / 1.2).max(0.0) * 0.65,
                 );
             }
+        }
+    }
+
+    fn paint_planet_ripples(&self, painter: &Painter, scene: Scene, age: f32) {
+        // A pressure front follows the spherical surface from the actual beam contact.
+        // Project only the near hemisphere, so the wave wraps behind the limb naturally.
+        let contact = BevyVec3::new(-0.25, -0.30, (1.0_f32 - 0.25 * 0.25 - 0.30 * 0.30).sqrt());
+        let tangent = contact.cross(BevyVec3::Y).normalize();
+        let bitangent = contact.cross(tangent);
+        for wave in 0..3 {
+            let progress = (age - wave as f32 * 0.34) / 2.8;
+            if !(0.0..1.0).contains(&progress) {
+                continue;
+            }
+            let spread = progress * PI;
+            let strength = smooth(progress / 0.08) * (1.0 - progress).powi(2);
+            let mut points = Vec::with_capacity(81);
+            let wave_width = (1.8 + (1.0 - progress) * 1.6) * scene.scale;
+            let paint_front = |points: Vec<Pos2>| {
+                painter.add(Shape::line(
+                    points.clone(),
+                    Stroke::new(wave_width * 3.5, alpha(BLUE, strength * 0.22)),
+                ));
+                painter.add(Shape::line(
+                    points,
+                    Stroke::new(wave_width, alpha(Color32::from_rgb(224, 244, 255), strength)),
+                ));
+            };
+            for step in 0..=80 {
+                let angle = step as f32 * TAU / 80.0;
+                let point = contact * spread.cos()
+                    + (tangent * angle.cos() + bitangent * angle.sin()) * spread.sin();
+                if point.z >= 0.0 {
+                    points.push(scene.planet + vec2(point.x, point.y) * scene.planet_radius);
+                } else if points.len() >= 2 {
+                    paint_front(std::mem::take(&mut points));
+                } else {
+                    points.clear();
+                }
+            }
+            if points.len() >= 2 {
+                paint_front(points);
+            }
+        }
+    }
+
+    fn paint_planet_explosion(&self, painter: &Painter, scene: Scene, images: &ImageIds, age: f32) {
+        // Reuse the schematic's atlas, secondary blasts, flashes, shock fronts and tiny
+        // shards. Staggered surface clouds engulf the globe instead of stretching one frame.
+        for cluster in 0..7_u32 {
+            let (center, size, delay) = if cluster == 0 {
+                (scene.planet, scene.planet_radius * 2.2, 0.0)
+            } else {
+                let angle = (cluster - 1) as f32 * TAU / 6.0 + 0.35;
+                let offset = Vec2::angled(angle) * scene.planet_radius * 0.64;
+                (
+                    scene.planet + offset,
+                    scene.planet_radius * (0.75 + noise(cluster + 913) * 0.20),
+                    ((cluster - 1) % 3) as f32 * 0.24,
+                )
+            };
+            let local_age = (age - delay) / PLANET_BLAST_TIME_SCALE;
+            if local_age < 0.0 {
+                continue;
+            }
+            super::effects::sample_wreck(
+                size,
+                Unit::planetary_shield(),
+                local_age,
+                |mut sample| {
+                    if sample.texture == "combat fx shard" {
+                        // Keep the shared, size-capped fragments near the former globe long
+                        // enough to read against space once the explosion cloud has dissipated.
+                        sample.center *= 0.40;
+                        sample.color =
+                            Color::srgb(0.90, 0.60, 0.32).with_alpha(sample.color.alpha());
+                    }
+                    paint_wreck_sample(painter, images, center, sample);
+                },
+            );
         }
     }
 }
@@ -1887,26 +1939,35 @@ fn sparks(
 
 fn explosion(painter: &Painter, images: &ImageIds, center: Pos2, size: f32, age: f32, unit: Unit) {
     super::effects::sample_wreck(size, unit, age, |sample| {
-        let Some(texture) = images.0.get(sample.texture) else {
-            return;
-        };
-        let uv = sample.atlas_frame.map_or(FULL_UV, |frame| {
-            Rect::from_min_max(
-                pos2((frame % 8) as f32 / 8.0, (frame / 8) as f32 / 6.0),
-                pos2((frame % 8 + 1) as f32 / 8.0, (frame / 8 + 1) as f32 / 6.0),
-            )
-        });
-        rotated_image(
-            painter,
-            *texture,
-            center + vec2(sample.center.x, -sample.center.y),
-            vec2(sample.size.x, sample.size.y),
-            -sample.rotation,
-            false,
-            uv,
-            weapon_color(sample.color),
-        );
+        paint_wreck_sample(painter, images, center, sample);
     });
+}
+
+fn paint_wreck_sample(
+    painter: &Painter,
+    images: &ImageIds,
+    center: Pos2,
+    sample: super::effects::WreckSample,
+) {
+    let Some(texture) = images.0.get(sample.texture) else {
+        return;
+    };
+    let uv = sample.atlas_frame.map_or(FULL_UV, |frame| {
+        Rect::from_min_max(
+            pos2((frame % 8) as f32 / 8.0, (frame / 8) as f32 / 6.0),
+            pos2((frame % 8 + 1) as f32 / 8.0, (frame / 8 + 1) as f32 / 6.0),
+        )
+    });
+    rotated_image(
+        painter,
+        *texture,
+        center + vec2(sample.center.x, -sample.center.y),
+        vec2(sample.size.x, sample.size.y),
+        -sample.rotation,
+        false,
+        uv,
+        weapon_color(sample.color),
+    );
 }
 
 /// Intersects the shot segment with the visible globe's shield before it reaches a surface gun.

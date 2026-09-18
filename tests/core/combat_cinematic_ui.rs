@@ -57,6 +57,32 @@ fn advance(app: &mut App, seconds: f32) {
     app.world_mut().run_system_once(advance_cinematic).unwrap();
 }
 
+fn planet_strike_app(destroyed: bool) -> App {
+    use crate::core::combat::report::{CombatReport, RoundReport};
+
+    let mut app = app();
+    {
+        let mut player = app.world_mut().resource_mut::<Player>();
+        let report = &mut player.reports[0];
+        let mut sun = report.combat_report.as_ref().unwrap().rounds[0].attacker[0].clone();
+        sun.shots.clear();
+        let round = RoundReport {
+            attacker: vec![sun],
+            destroy_probability: 0.5,
+            ..Default::default()
+        };
+        report.planet.army = Army::new().into();
+        report.planet_destroyed = destroyed;
+        report.combat_report = Some(CombatReport {
+            rounds: vec![round.clone(), round],
+            defender_retreat: None,
+        });
+    }
+    app.world_mut().run_system_once(setup_cinematic).unwrap();
+    audio(&mut app);
+    app
+}
+
 #[test]
 fn schematic_is_the_default_selection_and_cinematic_is_explicit() {
     let mut world = World::new();
@@ -771,6 +797,111 @@ fn cinematic_exit_matches_schematic_atlas_states_and_returns_before_completion()
         app.world().resource::<NextState<GameState>>(),
         NextState::Pending(GameState::CombatMenu)
     ));
+}
+
+#[test]
+fn planet_strike_soundtrack_plays_destruction_only_for_the_recorded_success() {
+    for destroyed in [false, true] {
+        let app = planet_strike_app(destroyed);
+        let movie = app.world().resource::<CinematicPlayback>();
+        let soundtrack = app.world().resource::<CinematicSoundtrack>();
+        assert_eq!(movie.timeline.planet_attacks.len(), 2);
+        assert!(!movie.timeline.planet_attacks[0].destroyed);
+        assert_eq!(movie.timeline.planet_attacks[1].destroyed, destroyed);
+        let rays: Vec<_> =
+            soundtrack.cues.iter().filter(|(_, cue)| cue.name == "death ray").collect();
+        assert_eq!(rays.len(), 2);
+        for ((at, cue), attack) in rays.into_iter().zip(&movie.timeline.planet_attacks) {
+            assert_eq!(*at, attack.start_at);
+            assert_eq!(cue.volume, PlayAudioMsg::new("death ray").volume + 4.0);
+            assert_eq!(cue.playback_rate, 1.0);
+            assert!(!cue.is_background && !cue.is_looped);
+        }
+        if destroyed {
+            let attack = &movie.timeline.planet_attacks[1];
+            let (delay, central) = wreck_cue(Unit::planetary_shield());
+            let blast_at = attack.end_at + delay * PLANET_BLAST_TIME_SCALE;
+            let expected = [
+                (attack.end_at, hull_impact_cue()),
+                (blast_at, central),
+                (blast_at + 0.24, PlayAudioMsg::new("explosion")),
+                (blast_at + 0.48, PlayAudioMsg::new("large explosion").gain(-12.0)),
+            ];
+            assert_eq!(soundtrack.cues.len(), 6);
+            for ((at, cue), (expected_at, expected_cue)) in
+                soundtrack.cues[2..].iter().zip(expected)
+            {
+                assert!((*at - expected_at).abs() < 0.001);
+                assert_eq!((cue.name, cue.volume), (expected_cue.name, expected_cue.volume));
+            }
+        } else {
+            assert_eq!(soundtrack.cues.len(), 2, "A surviving planet must not explode audibly");
+        }
+    }
+}
+
+#[test]
+fn planet_strike_cues_follow_pause_and_speed_without_changing_master_volume() {
+    let mut app = planet_strike_app(true);
+    let cues: Vec<_> = app
+        .world()
+        .resource::<CinematicSoundtrack>()
+        .cues
+        .iter()
+        .map(|(at, cue)| (*at, cue.name))
+        .collect();
+    {
+        let mut settings = app.world_mut().resource_mut::<Settings>();
+        settings.combat_speed = 2.0;
+        settings.volume = 0.3;
+    }
+    for (at, name) in cues {
+        let before = app.world().resource::<CinematicPlayback>().elapsed;
+        app.world_mut().resource_mut::<Settings>().combat_paused = true;
+        advance(&mut app, 5.0);
+        assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, before);
+        assert!(audio(&mut app).is_empty());
+        app.world_mut().resource_mut::<Settings>().combat_paused = false;
+        advance(&mut app, (at - before) / 2.0 + 0.001);
+        assert_eq!(audio(&mut app), [name]);
+        advance(&mut app, 0.0);
+        assert!(audio(&mut app).is_empty(), "Each strike cue must play only once");
+        assert_eq!(app.world().resource::<Settings>().volume, 0.3);
+    }
+}
+
+#[test]
+fn restarting_during_planet_destruction_stops_its_sounds_and_rearms_the_strike() {
+    let mut app = planet_strike_app(true);
+    let end_at = app.world().resource::<CinematicPlayback>().timeline.planet_attacks[1].end_at;
+    let first_start =
+        app.world().resource::<CinematicPlayback>().timeline.planet_attacks[0].start_at;
+    advance(&mut app, end_at + 0.65);
+    assert_eq!(audio(&mut app), ["large explosion"]);
+    app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().write(PlayAudioMsg::new("explosion"));
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::ControlLeft);
+        keys.press(KeyCode::ShiftLeft);
+        keys.press(KeyCode::ArrowLeft);
+    }
+    advance(&mut app, 0.1);
+    assert_eq!(audio(&mut app), ["horn"]);
+    let stopped: Vec<_> = app
+        .world_mut()
+        .resource_mut::<Messages<StopAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect();
+    for name in ["death ray", "short explosion", "large explosion", "explosion"] {
+        assert!(stopped.contains(&name), "The old {name} must stop on restart");
+    }
+    assert!(!stopped.contains(&"music") && !stopped.contains(&"drums"));
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+    advance(&mut app, first_start);
+    assert_eq!(audio(&mut app), ["death ray"]);
+    advance(&mut app, end_at - first_start);
+    assert_eq!(audio(&mut app), ["short explosion"]);
 }
 
 #[test]

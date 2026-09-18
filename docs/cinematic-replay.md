@@ -42,7 +42,11 @@ Permanent level labels are omitted. Each recorded successful bomb causes an expl
 and a rising **−1 level** caption, and leaves the structure standing
 until its last level is lost. Misses never remove levels. Surviving War Suns combine
 their charging rays at one focus before a shared beam strikes the planet; the
-planet breaks apart only when the saved report records its destruction.
+impact sends pressure ripples around the curved surface. Failed strikes leave the
+planet intact as those ripples fade. Recorded destruction engulfs the globe in
+overlapping versions of the regular battle explosion, with staggered explosion
+sounds and small drifting shards. The death ray is 4 dB louder than its default
+cue, while still following the player's volume setting.
 
 Weapon colors, projectile masks, barrel patterns, trajectories, particle trails,
 staged wreck explosions, and sound pitch/gain are shared with the schematic renderer.

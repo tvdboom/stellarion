@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use bevy_egui::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 
-use super::cinematic::CinematicPlayback;
-use super::effects::{wreck_cue, EffectTextures, Weapon};
+use super::cinematic::{CinematicPlayback, PLANET_BLAST_TIME_SCALE};
+use super::effects::{hull_impact_cue, wreck_cue, EffectTextures, Weapon};
 use super::report::{combat_strength_ranges, MissionReport, ReportId, Side};
 use super::result_banner;
 use super::systems::combat_identity_participants;
@@ -19,6 +19,7 @@ use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{viewport_ui_scale, UiState};
 use crate::core::ui::utils::ImageIds;
+use crate::core::units::Unit;
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::ToColor32;
 
@@ -72,7 +73,17 @@ impl CinematicSoundtrack {
             cues.push((repair.start_at, PlayAudioMsg::new("repair")));
         }
         for attack in &playback.timeline.planet_attacks {
-            cues.push((attack.start_at, PlayAudioMsg::new("death ray")));
+            // A fleet's combined discharge should stand above ordinary weapons, while the
+            // shared audio path still applies the user's volume and mute settings.
+            cues.push((attack.start_at, PlayAudioMsg::new("death ray").gain(0.0)));
+            if attack.destroyed {
+                cues.push((attack.end_at, hull_impact_cue()));
+                let (delay, cue) = wreck_cue(Unit::planetary_shield());
+                let blast_at = attack.end_at + delay * PLANET_BLAST_TIME_SCALE;
+                cues.push((blast_at, cue));
+                cues.push((blast_at + 0.24, PlayAudioMsg::new("explosion")));
+                cues.push((blast_at + 0.48, PlayAudioMsg::new("large explosion").gain(-12.0)));
+            }
         }
         cues.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Sound is a bounded mix of the same visible actions the renderer presents.

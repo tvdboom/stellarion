@@ -788,14 +788,12 @@ fn loss_captions_are_readable_separated_seekable_and_absent_for_misses() {
     }
 }
 
-#[test]
-fn combined_ray_has_one_discharge_and_planet_breakup_uses_the_actual_artwork() {
-    use bevy_egui::egui;
+fn planet_strike_replay(destroyed: bool) -> CinematicPlayback {
     let mut report = crate::test_support::empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
-    report.planet_destroyed = true;
+    report.planet_destroyed = destroyed;
     report.combat_report = Some(CombatReport {
         rounds: vec![RoundReport {
             attacker: (0..3)
@@ -814,36 +812,60 @@ fn combined_ray_has_one_discharge_and_planet_breakup_uses_the_actual_artwork() {
         }],
         ..Default::default()
     });
-    let mut movie = CinematicPlayback::new(&report);
-    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
-    let planet_texture = TextureId::User(90);
-    let beam_texture = TextureId::User(91);
-    let images = ImageIds(
-        [(movie.planet_image.clone(), planet_texture), ("combat fx beam".into(), beam_texture)]
-            .into(),
+    CinematicPlayback::new(&report)
+}
+
+fn planet_strike_images(movie: &CinematicPlayback) -> ImageIds {
+    ImageIds(
+        [
+            (movie.planet_image.clone(), TextureId::User(90)),
+            ("combat fx beam".into(), TextureId::User(91)),
+            ("explosion".into(), TextureId::User(92)),
+            ("combat fx shard".into(), TextureId::User(93)),
+            ("combat fx glow".into(), TextureId::User(94)),
+            ("combat fx ring".into(), TextureId::User(95)),
+        ]
+        .into(),
+    )
+}
+
+fn planet_strike_shapes(movie: &CinematicPlayback, scene: Scene, images: &ImageIds) -> Vec<Shape> {
+    capture_planet_shapes(scene, |painter| {
+        movie.paint_planet(painter, scene, images);
+        movie.paint_planet_attacks(painter, scene, images);
+    })
+}
+
+fn capture_planet_shapes(scene: Scene, mut paint: impl FnMut(&Painter)) -> Vec<Shape> {
+    use bevy_egui::egui;
+    let context = egui::Context::default();
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(scene.rect),
+            ..Default::default()
+        },
+        |ui| paint(ui.painter()),
     );
-    let sample = |movie: &CinematicPlayback| {
-        let context = egui::Context::default();
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(scene.rect),
-                ..Default::default()
-            },
-            |ui| {
-                movie.paint_planet(ui.painter(), scene, &images);
-                movie.paint_planet_attacks(ui.painter(), scene, &images);
-            },
-        );
-        output.textures_delta.clear();
-        output
-            .shapes
-            .into_iter()
-            .filter_map(|shape| match shape.shape {
-                Shape::Mesh(mesh) => Some(mesh),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
+    output.textures_delta.clear();
+    output.shapes.into_iter().map(|shape| shape.shape).collect()
+}
+
+fn meshes_with_texture(shapes: &[Shape], texture: TextureId) -> Vec<&Mesh> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.as_ref()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn combined_ray_has_one_discharge_regardless_of_war_sun_count() {
+    let mut movie = planet_strike_replay(true);
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    let images = planet_strike_images(&movie);
+    let beam_texture = images.0["combat fx beam"];
     let attack = &movie.timeline.planet_attacks[0];
     let focus = movie.planet_attack_focus(scene, attack);
     assert!(focus.distance(scene.planet) > scene.planet_radius * 1.3);
@@ -851,23 +873,166 @@ fn combined_ray_has_one_discharge_and_planet_breakup_uses_the_actual_artwork() {
     let end_at = attack.end_at;
     movie.elapsed = discharge_at - 0.1;
     assert_eq!(
-        sample(&movie).iter().filter(|mesh| mesh.texture_id == beam_texture).count(),
+        meshes_with_texture(&planet_strike_shapes(&movie, scene, &images), beam_texture).len(),
         6,
         "All three War Suns have two feeder-ray layers, without a premature discharge"
     );
     movie.elapsed = discharge_at + 0.3;
     assert_eq!(
-        sample(&movie).iter().filter(|mesh| mesh.texture_id == beam_texture).count(),
+        meshes_with_texture(&planet_strike_shapes(&movie, scene, &images), beam_texture).len(),
         9,
         "Three feeder rays and exactly one three-layer outgoing beam"
     );
     movie.elapsed = end_at + 0.4;
-    let fragments = sample(&movie);
-    assert_eq!(fragments.iter().filter(|mesh| mesh.texture_id == planet_texture).count(), 36);
-    assert_eq!(fragments.iter().filter(|mesh| mesh.texture_id == beam_texture).count(), 0);
-    movie.elapsed = end_at + 3.9;
     assert!(
-        !sample(&movie).iter().any(|mesh| mesh.texture_id == planet_texture),
-        "A destroyed world must leave empty space"
+        meshes_with_texture(&planet_strike_shapes(&movie, scene, &images), beam_texture).is_empty()
     );
+}
+
+#[test]
+fn destroyed_planet_uses_overlapping_shared_blasts_and_small_shards_then_clears() {
+    let mut movie = planet_strike_replay(true);
+    let images = planet_strike_images(&movie);
+    let planet_texture = images.0[&movie.planet_image];
+    let blast_texture = images.0["explosion"];
+    let shard_texture = images.0["combat fx shard"];
+    let end_at = movie.timeline.planet_attacks[0].end_at;
+    for size in [vec2(1440.0, 820.0), vec2(640.0, 480.0)] {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
+        movie.elapsed = end_at + 0.7;
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        let blasts = meshes_with_texture(&shapes, blast_texture);
+        assert!(blasts.len() > 3, "A planetary blast must spread through overlapping wreck clouds");
+        let bounds =
+            blasts.iter().fold(Rect::NOTHING, |bounds, mesh| bounds.union(mesh.calc_bounds()));
+        assert!(
+            bounds.contains_rect(Rect::from_center_size(
+                scene.planet,
+                Vec2::splat(scene.planet_radius * 2.0),
+            )),
+            "The shared explosions must cover the full globe"
+        );
+        for blast in &blasts {
+            let uv = Rect::from_points(
+                &blast.vertices.iter().map(|vertex| vertex.uv).collect::<Vec<_>>(),
+            );
+            assert!((uv.width() - 1.0 / 8.0).abs() < 0.0001);
+            assert!(
+                (uv.height() - 1.0 / 6.0).abs() < 0.0001,
+                "Planet destruction must sample the normal battle explosion atlas"
+            );
+        }
+        let planet = meshes_with_texture(&shapes, planet_texture);
+        assert!(
+            planet.len() <= 1,
+            "The globe must fade as one image instead of flying away in wedges"
+        );
+
+        movie.elapsed = end_at + 1.25;
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        assert!(meshes_with_texture(&shapes, planet_texture).is_empty());
+        assert!(
+            !meshes_with_texture(&shapes, blast_texture).is_empty(),
+            "Successive blasts must retain the ordinary explosion animation after the first flash"
+        );
+
+        movie.elapsed = end_at + 2.5;
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        let shards = meshes_with_texture(&shapes, shard_texture);
+        assert!(shards.len() >= 18, "A destroyed planet should leave a cloud of small debris");
+        assert!(
+            shards
+                .iter()
+                .all(|mesh| mesh.calc_bounds().size().length() < scene.planet_radius * 0.12),
+            "Debris must remain small instead of resembling large slices of the globe"
+        );
+        assert!(meshes_with_texture(&shapes, planet_texture).is_empty());
+        movie.elapsed = end_at + 3.9;
+        assert!(
+            planet_strike_shapes(&movie, scene, &images).is_empty(),
+            "A destroyed world must leave empty space after its effects finish"
+        );
+    }
+}
+
+#[test]
+fn failed_planet_strike_leaves_an_intact_globe_and_fading_surface_ripples() {
+    let mut movie = planet_strike_replay(false);
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    let images = planet_strike_images(&movie);
+    let discharge_at = movie.timeline.planet_attacks[0].discharge_at;
+    let end_at = movie.timeline.planet_attacks[0].end_at;
+    // Inspect the strike separately from the quiet planet's decorative atmosphere arcs.
+    movie.elapsed = end_at + 1.4;
+    let ripple_shapes = |movie: &CinematicPlayback| {
+        capture_planet_shapes(scene, |painter| {
+            movie.paint_planet_attacks(painter, scene, &images);
+        })
+    };
+    assert!(!ripple_shapes(&movie).iter().any(|shape| matches!(shape, Shape::Path(_))));
+    for time in [discharge_at + 0.35, end_at + 0.4] {
+        movie.elapsed = time;
+        let shapes = planet_strike_shapes(&movie, scene, &images);
+        let globe = meshes_with_texture(&shapes, images.0[&movie.planet_image]);
+        assert_eq!(globe.len(), 1);
+        assert!(globe[0].vertices.iter().all(|vertex| vertex.color == Color32::WHITE));
+        assert!(meshes_with_texture(&shapes, images.0["explosion"]).is_empty());
+        assert!(meshes_with_texture(&shapes, images.0["combat fx shard"]).is_empty());
+        let ripples = ripple_shapes(&movie);
+        let paths: Vec<_> = ripples
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::Path(path) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert!(!paths.is_empty(), "A failed discharge must visibly ripple over the globe");
+        for path in paths {
+            assert!(
+                path.points
+                    .iter()
+                    .all(|point| point.distance(scene.planet) <= scene.planet_radius * 1.03),
+                "Surface ripples must curve around the globe instead of expanding into space"
+            );
+        }
+    }
+    movie.elapsed = end_at + 1.4;
+    assert_eq!(
+        meshes_with_texture(
+            &planet_strike_shapes(&movie, scene, &images),
+            images.0[&movie.planet_image]
+        )
+        .len(),
+        1,
+        "A failed attack must never remove the planet"
+    );
+}
+
+#[test]
+fn planetary_blasts_and_surface_ripples_freeze_on_pause_and_reproduce_after_seeking() {
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    for destroyed in [false, true] {
+        let mut movie = planet_strike_replay(destroyed);
+        let images = planet_strike_images(&movie);
+        let attack = &movie.timeline.planet_attacks[0];
+        for time in [attack.discharge_at + 0.35, attack.end_at + 0.7, attack.end_at + 2.5] {
+            movie.elapsed = time;
+            let before = planet_strike_shapes(&movie, scene, &images);
+            movie.advance(100.0, 4.0, true);
+            assert_eq!(
+                planet_strike_shapes(&movie, scene, &images),
+                before,
+                "Pausing must freeze every stage of the planetary effect"
+            );
+            movie.elapsed = 0.0;
+            assert!(meshes_with_texture(
+                &planet_strike_shapes(&movie, scene, &images),
+                images.0["explosion"]
+            )
+            .is_empty());
+            movie.elapsed = time;
+            assert_eq!(planet_strike_shapes(&movie, scene, &images), before,
+                "Seeking back to a timestamp must restore identical atlas frames, ripples and debris");
+        }
+    }
 }
