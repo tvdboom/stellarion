@@ -109,7 +109,7 @@ impl CinematicPlayback {
             .actors
             .iter()
             .map(|actor| {
-                !actor.unit.is_orbital()
+                (!actor.unit.is_orbital() || actor.unit == Unit::space_dock())
                     && (actor.initial_levels.is_none()
                         || (actor.unit.is_economic_building()
                             && report.mission.includes_bombing(&BombingRaid::Economic))
@@ -632,6 +632,23 @@ impl CinematicPlayback {
             if self.gas_planet {
                 center.y += (time * 0.85 + phase).sin() * 3.0 * scene.scale;
             }
+        } else if actor.unit == Unit::space_dock() && self.show_planet {
+            // A dock is already stationed in orbit when the fleets arrive. Keep its full
+            // silhouette outside the atmosphere, with a slow drift above the upper-left limb.
+            let orbit_angle = -2.15 + visual.home.x * 0.45 + (time * 0.10 + phase).sin() * 0.08;
+            let altitude = scene.planet_radius * (1.15 + visual.home.y.abs())
+                + size * 0.60
+                + 14.0 * scene.scale;
+            center = scene.planet + Vec2::angled(orbit_angle) * altitude;
+            let top = scene.rect.top() + size * 0.55 + 12.0 * scene.scale;
+            if center.y < top {
+                // In short windows, follow the same orbital radius farther around the limb
+                // instead of clipping the station or pushing it down onto the planet.
+                center.y = top;
+                let height = center.y - scene.planet.y;
+                center.x = scene.planet.x - (altitude * altitude - height * height).max(0.0).sqrt();
+            }
+            angle = (time * 0.16 + phase).sin() * 0.025;
         } else {
             center = scene.point(visual.home);
             // Maneuverability follows the actual hull class, independent of fleet density.
@@ -773,7 +790,7 @@ impl CinematicPlayback {
                     Color32::from_black_alpha(95),
                 ));
             }
-        } else if !actor.unit.is_fauna() {
+        } else if !actor.unit.is_fauna() && actor.unit != Unit::space_dock() {
             let heading = Vec2::angled(visual.art_heading) * vec2(direction, 1.0);
             let engine = pose.center - rotate(heading * pose.size * 0.32, pose.angle);
             let thrust = (self.elapsed * 18.0 + visual.phase).sin() * 0.10 + 0.9;
@@ -934,7 +951,7 @@ impl CinematicPlayback {
             |pose| pose.center,
         );
         let direction = (end - source.center).normalized();
-        let start = source.center + direction * source.size * 0.23;
+        let start = weapon_muzzle(source, self.visuals[shot.source].ground, end);
         if shot.outcome.planetary_shield_damage > 0 && self.show_planet {
             end =
                 sphere_entry(start, end, scene.planet, scene.planet_radius * 1.065).unwrap_or(end);
@@ -976,7 +993,14 @@ impl CinematicPlayback {
         let progress = (age / weapon.flight()).clamp(0.0, 1.0);
         // Physical size is shared across a salvo, never scaled by damage or faction.
         let source_pose = self.actor_pose(scene, shot.source, shot.launch_at);
-        let size = (source_pose.size * 0.55).clamp(26.0 * scene.scale, 100.0 * scene.scale);
+        // Surface formations can be dense, but their fire must remain readable against the
+        // planet. Use the same weapon meshes/trails at a minimum visible gun calibre.
+        let minimum_size = if self.visuals[shot.source].ground {
+            60.0
+        } else {
+            26.0
+        };
+        let size = (source_pose.size * 0.55).clamp(minimum_size * scene.scale, 100.0 * scene.scale);
         let flight = WeaponFlight {
             weapon,
             origin: BevyVec3::new(start.x, start.y, 0.0),
@@ -987,8 +1011,8 @@ impl CinematicPlayback {
         if self.elapsed < release && weapon.charge() > 0.0 {
             // The charging field follows its ship; the released projectile keeps its saved pose.
             let charging_pose = self.actor_pose(scene, shot.source, self.elapsed);
-            let charging_muzzle = charging_pose.center
-                + (end - charging_pose.center).normalized() * charging_pose.size * 0.23;
+            let charging_muzzle =
+                weapon_muzzle(charging_pose, self.visuals[shot.source].ground, end);
             let charging_origin = BevyVec3::new(charging_muzzle.x, charging_muzzle.y, 0.0);
             let charged =
                 ((self.elapsed - charge_start) / (release - charge_start)).clamp(0.0, 1.0);
@@ -1485,8 +1509,26 @@ fn formation_home(group: usize, slot: usize, count: usize) -> Vec2 {
                 -0.04 + (slot / 3) as f32 * 0.29
             },
         ),
-        _ => vec2(0.81, 0.55) + disk * vec2(0.13, 0.10),
+        _ => disk * vec2(0.70, 0.20),
     }
+}
+
+/// Surface weapons fire from their raised gun housing rather than the ground-level base.
+fn weapon_muzzle(pose: ActorPose, ground: bool, target: Pos2) -> Pos2 {
+    let housing = pose.center
+        + if ground {
+            vec2(0.0, -pose.size * 0.24)
+        } else {
+            Vec2::ZERO
+        };
+    housing
+        + (target - housing).normalized()
+            * pose.size
+            * if ground {
+                0.32
+            } else {
+                0.23
+            }
 }
 
 fn unit_size(unit: Unit) -> f32 {

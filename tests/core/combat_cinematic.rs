@@ -438,7 +438,7 @@ fn relevant_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
 }
 
 #[test]
-fn raid_visibility_keeps_defenses_hides_orbitals_and_respects_joint_orders() {
+fn raid_visibility_keeps_defenses_and_docks_hides_other_orbitals_and_respects_joint_orders() {
     use crate::core::missions::{FleetCombatOrders, JointAttackMission};
     use crate::core::units::orbitals;
     let mut report = bombing_report();
@@ -458,7 +458,10 @@ fn raid_visibility_keeps_defenses_hides_orbitals_and_respects_joint_orders() {
         let visible: Vec<_> =
             movie.draw_order.iter().map(|index| &movie.timeline.actors[*index]).collect();
         assert_eq!(visible.iter().filter(|actor| actor.initial_levels.is_some()).count(), expected);
-        assert!(!visible.iter().any(|actor| actor.unit.is_orbital()));
+        assert!(!visible
+            .iter()
+            .any(|actor| actor.unit.is_orbital() && actor.unit != Unit::space_dock()));
+        assert_eq!(visible.iter().filter(|actor| actor.unit == Unit::space_dock()).count(), 1);
         assert_eq!(visible.iter().filter(|actor| actor.unit.is_turret()).count(), 6);
         for actor in visible.iter().filter(|actor| actor.initial_levels.is_some()) {
             assert_eq!(actor.unit.is_economic_building(), raid == BombingRaid::Economic);
@@ -506,6 +509,114 @@ fn raid_visibility_keeps_defenses_hides_orbitals_and_respects_joint_orders() {
                     < scene.rect.bottom() - MAIN_BUTTON_BOTTOM - MAIN_BUTTON_HEIGHT
             );
         }
+    }
+}
+
+#[test]
+fn space_dock_hovers_above_the_planet_with_clearance_for_its_entire_sprite() {
+    let mut report = bombing_report();
+    let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+    let mut dock = round.defender[0].clone();
+    dock.id = 99;
+    dock.unit = Unit::space_dock();
+    round.defender.push(dock);
+    let movie = CinematicPlayback::new(&report);
+    let index =
+        movie.timeline.actors.iter().position(|actor| actor.unit == Unit::space_dock()).unwrap();
+    assert!(movie.actor_visible(index));
+    assert!(!movie.visuals[index].ground);
+    for viewport in
+        [vec2(1440.0, 900.0), vec2(640.0, 480.0), vec2(640.0, 360.0), vec2(450.0, 700.0)]
+    {
+        let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, viewport));
+        let first = movie.actor_pose(scene, index, 0.0);
+        for tick in 0..100 {
+            let pose = movie.actor_pose(scene, index, tick as f32 * 0.4);
+            assert!(pose.center.y < scene.planet.y);
+            assert!(
+                pose.center.distance(scene.planet) - pose.size * 0.5 > scene.planet_radius * 1.065,
+                "Dock must orbit outside the field, including its hull"
+            );
+            assert!(
+                scene
+                    .rect
+                    .contains_rect(Rect::from_center_size(pose.center, Vec2::splat(pose.size))),
+                "Dock must remain visible at {viewport:?}"
+            );
+            assert!((pose.size - first.size).abs() < 0.001);
+        }
+        assert!(
+            movie.actor_pose(scene, index, 8.0).center.distance(first.center) > scene.scale * 2.0,
+            "The dock should visibly drift in orbit"
+        );
+    }
+}
+
+#[test]
+fn surface_counterfire_uses_raised_guns_and_hits_the_recorded_attacking_ship() {
+    use crate::core::combat::resolution::ShotReport;
+    use bevy_egui::egui;
+    let mut report = bombing_report();
+    let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+    round.attacker.iter_mut().for_each(|actor| actor.shots.clear());
+    let units = [
+        Defense::RocketLauncher,
+        Defense::LightLaser,
+        Defense::HeavyLaser,
+        Defense::GaussCannon,
+        Defense::IonCannon,
+        Defense::PlasmaTurret,
+    ];
+    for (actor, unit) in round.defender.iter_mut().zip(units) {
+        actor.unit = Unit::Defense(unit);
+        actor.shots = vec![ShotReport {
+            target_id: Some(0),
+            unit: Some(Unit::Ship(Ship::Bomber)),
+            hull_damage: 1,
+            ..Default::default()
+        }];
+    }
+    let mut movie = CinematicPlayback::new(&report);
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let images = ImageIds(
+        [
+            ("combat fx beam".into(), TextureId::User(91)),
+            ("combat fx missile".into(), TextureId::User(92)),
+            ("combat fx glow".into(), TextureId::User(93)),
+        ]
+        .into(),
+    );
+    assert_eq!(movie.timeline.shots.len(), units.len());
+    for index in 0..movie.timeline.shots.len() {
+        let shot = &movie.timeline.shots[index];
+        assert!(movie.actor_visible(shot.source));
+        assert_eq!(movie.timeline.actors[shot.source].side, Side::Defender);
+        let target = shot.target.unwrap();
+        assert_eq!(movie.timeline.actors[target].id, Some(0));
+        assert_eq!(movie.timeline.actors[target].side, Side::Attacker);
+        let (start, end, _) = movie.shot_geometry(scene, index, shot);
+        let gun = movie.actor_pose(scene, shot.source, shot.launch_at);
+        assert!(start.y < gun.center.y - gun.size * 0.2);
+        assert!(start.x < gun.center.x);
+        assert!(end.distance(movie.actor_pose(scene, target, shot.impact_at).center) < 0.001);
+        movie.elapsed = (shot.launch_at + shot.impact_at) * 0.5;
+        let context = egui::Context::default();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(scene.rect),
+                ..Default::default()
+            },
+            |ui| {
+                movie.paint_shot(ui.painter(), scene, &images, index, shot);
+            },
+        );
+        output.textures_delta.clear();
+        assert!(
+            output.shapes.iter().any(
+                |shape| matches!(&shape.shape, Shape::Mesh(mesh) if !mesh.vertices.is_empty())
+            ),
+            "Every recorded turret shot must produce visible weapon artwork"
+        );
     }
 }
 

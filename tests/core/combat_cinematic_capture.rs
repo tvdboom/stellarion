@@ -226,10 +226,49 @@ fn render_cinematic_preview() {
     let playback = CinematicPlayback::new(&report);
     let mut samples = vec![
         ("entrance".to_string(), 3.0),
+        ("orbital-entrance".to_string(), playback.timeline.entrance_duration * 0.3),
         ("battle".to_string(), playback.timeline.entrance_duration + 1.1),
         ("maneuver-a".to_string(), playback.timeline.entrance_duration + 3.0),
         ("maneuver-b".to_string(), playback.timeline.entrance_duration + 7.0),
     ];
+    // Sample actual simultaneous counterfire, while the dock still guards the planet.
+    // An arbitrary battle time can miss the short turret volleys and hide their return fire.
+    let dock = playback
+        .timeline
+        .actors
+        .iter()
+        .position(|actor| actor.unit == Unit::space_dock())
+        .expect("surface-combat capture requires a Space Dock");
+    assert!(playback.actor_visible(dock), "The combat dock must appear above the planet");
+    let turret_shots: Vec<_> = playback
+        .timeline
+        .shots
+        .iter()
+        .filter(|shot| {
+            let source = &playback.timeline.actors[shot.source];
+            source.side == Side::Defender
+                && source.unit.is_turret()
+                && playback.actor_visible(shot.source)
+                && shot.target.is_some_and(|target| {
+                    let actor = &playback.timeline.actors[target];
+                    actor.side == Side::Attacker
+                        && actor.unit.is_ship()
+                        && playback.actor_visible(target)
+                })
+        })
+        .collect();
+    let counterfire = turret_shots
+        .iter()
+        .map(|shot| shot.launch_at + (shot.impact_at - shot.launch_at) * 0.65)
+        .filter(|time| playback.timeline.actors[dock].death_at.is_none_or(|death| *time < death))
+        .max_by_key(|time| {
+            turret_shots
+                .iter()
+                .filter(|shot| shot.launch_at < *time && *time < shot.impact_at)
+                .count()
+        })
+        .expect("surface-combat capture requires recorded turret fire while the dock survives");
+    samples.push(("turret-counterfire".into(), counterfire));
     if let Some(shot) = playback
         .timeline
         .shots
