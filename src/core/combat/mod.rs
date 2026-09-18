@@ -2,6 +2,8 @@
 
 #[cfg(feature = "app")]
 pub(crate) mod cinematic;
+#[cfg(feature = "app")]
+pub(crate) mod cinematic_camera;
 #[cfg(any(feature = "app", test))]
 pub(crate) mod cinematic_timeline;
 #[cfg(feature = "app")]

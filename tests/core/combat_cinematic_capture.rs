@@ -530,6 +530,82 @@ fn render_cinematic_preview() {
             });
         })
         .unwrap();
+    // Navigate the frozen battle through real egui wheel and drag events. These captures
+    // also verify that the fixed HUD and pause marker stay outside the camera transform.
+    let was_paused = app.world().resource::<Settings>().combat_paused;
+    let volume = app.world().resource::<Settings>().volume;
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+    let viewport = app
+        .world_mut()
+        .run_system_once(|mut contexts: EguiContexts| contexts.ctx_mut().unwrap().content_rect())
+        .unwrap();
+    let pointer = viewport.min + viewport.size() * egui::vec2(0.70, 0.57);
+    let input = |app: &mut App, event| {
+        app.world_mut().write_message(EguiInputEvent {
+            context: camera,
+            event,
+        });
+        app.update();
+    };
+    for _ in 0..3 {
+        input(&mut app, egui::Event::PointerMoved(pointer));
+    }
+    input(
+        &mut app,
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 6.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        },
+    );
+    let zoomed = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert!(zoomed.scaling > 1.5, "the live cinematic wheel path must zoom the camera");
+    for _ in 0..8 {
+        app.update();
+    }
+    app.world_mut()
+        .spawn(Screenshot::image(target.clone()))
+        .observe(save_to_disk("target/cinematic-preview/camera-zoomed.png"));
+    for _ in 0..8 {
+        app.update();
+    }
+    input(
+        &mut app,
+        egui::Event::PointerButton {
+            pos: pointer,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    );
+    let drag = egui::vec2(220.0, -90.0);
+    for fraction in [0.25, 0.5, 0.75, 1.0] {
+        input(&mut app, egui::Event::PointerMoved(pointer + drag * fraction));
+    }
+    input(
+        &mut app,
+        egui::Event::PointerButton {
+            pos: pointer + drag,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+    );
+    let panned = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert_eq!(panned.scaling, zoomed.scaling);
+    assert!((panned.translation - zoomed.translation).length() > 100.0);
+    assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, approach_finished);
+    assert_eq!(app.world().resource::<Settings>().volume, volume);
+    app.world_mut()
+        .spawn(Screenshot::image(target.clone()))
+        .observe(save_to_disk("target/cinematic-preview/camera-panned.png"));
+    for _ in 0..8 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<CinematicPlayback>().camera = Default::default();
+    app.world_mut().resource_mut::<Settings>().combat_paused = was_paused;
+    input(&mut app, egui::Event::PointerGone);
     // The battle-selection gear uses the same controls, with image tiles in its hover panel.
     // Keep the fixture independent of map setup; only the menu controls paint this sample.
     app.insert_resource(State::new(GameState::CombatMenu));

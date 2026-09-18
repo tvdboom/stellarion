@@ -331,6 +331,14 @@ fn scroll_volume_opacity(context: &egui::Context) -> f32 {
 
 /// Draws the hover popup's master slider in the game's blue-grey palette.
 pub fn volume_slider(ui: &mut egui::Ui, settings: &mut Settings) -> egui::Response {
+    volume_slider_with_scroll(ui, settings, true)
+}
+
+fn volume_slider_with_scroll(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    allow_scroll: bool,
+) -> egui::Response {
     let mut volume = if settings.audio == AudioState::Mute {
         0.0
     } else {
@@ -363,7 +371,7 @@ pub fn volume_slider(ui: &mut egui::Ui, settings: &mut Settings) -> egui::Respon
             settings.set_volume(volume);
             set_ui_sound(ui.ctx(), None);
         }
-        if response.hovered() {
+        if allow_scroll && response.hovered() {
             let previous_volume = settings.volume;
             // Share the frame guard with combat scrolling so the same event is applied once.
             scroll_volume(ui.ctx(), settings, true);
@@ -380,6 +388,7 @@ fn volume_popover(
     button: &egui::Response,
     settings: &mut Settings,
     suppressed: bool,
+    allow_scroll: bool,
 ) -> Option<egui::Response> {
     let id = button.id.with("volume");
     let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
@@ -419,7 +428,11 @@ fn volume_popover(
         .multiply_with_opacity(opacity);
     let response = popup.frame(frame).open_bool(&mut open).show(|ui| {
         ui.set_opacity(opacity);
-        let response = volume_slider(ui, settings);
+        let response = if allow_scroll {
+            volume_slider(ui, settings)
+        } else {
+            volume_slider_with_scroll(ui, settings, false)
+        };
         ui.ctx().data_mut(|data| data.insert_temp(id.with("dragging"), response.dragged()));
         response
     });
@@ -765,7 +778,7 @@ fn audio_controls(
                         );
                     }
                 }
-                volume_popover(&audio_button, settings, prefer_settings);
+                volume_popover(&audio_button, settings, prefer_settings, !in_combat || !cinematic);
                 (audio_button, settings_button)
             })
             .inner
@@ -814,7 +827,8 @@ pub fn draw_audio_controls(
     let settings_destination = (*app_state.get() == AppState::Game)
         .then(|| game_settings_destination(*game_state.get()))
         .flatten();
-    scroll_volume(context, &mut settings, in_combat);
+    // Cinematic replay reserves wheel input for camera navigation.
+    scroll_volume(context, &mut settings, in_combat && !cinematic);
     if !volume_feedback.is_empty() {
         volume_feedback.clear();
         show_volume_feedback(context);

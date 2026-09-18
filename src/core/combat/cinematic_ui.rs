@@ -166,6 +166,7 @@ pub(crate) fn advance_cinematic(
         // Every visual is sampled from this clock, including restored hulls and the planet.
         // Keep the loaded sprite dimensions and the recorded report while rewinding.
         playback.elapsed = 0.0;
+        playback.camera = Default::default();
         settings.combat_paused = false;
         let mut sounds = std::collections::BTreeSet::from(["horn", "victory", "draw", "defeat"]);
         if let Some(soundtrack) = soundtrack.as_mut() {
@@ -360,7 +361,7 @@ fn draw_exit_button(context: &egui::Context, images: &ImageIds) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_cinematic(
     mut contexts: EguiContexts,
-    playback: Option<Res<CinematicPlayback>>,
+    playback: Option<ResMut<CinematicPlayback>>,
     mut images: ResMut<ImageIds>,
     textures: Option<ResMut<Assets<Image>>>,
     state: Res<UiState>,
@@ -371,7 +372,7 @@ pub(crate) fn draw_cinematic(
     session: Option<Res<MultiplayerSession>>,
     mut hud: Local<CinematicHud>,
 ) {
-    let Some(playback) = playback else {
+    let Some(mut playback) = playback else {
         next.set(GameState::CombatMenu);
         return;
     };
@@ -448,7 +449,8 @@ pub(crate) fn draw_cinematic(
             let rect = context.content_rect();
             ui.set_min_size(rect.size());
             // Consume the scene's pointer area so clicks cannot select the map underneath.
-            ui.allocate_rect(rect, egui::Sense::click_and_drag());
+            let scene = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+            playback.camera.navigate(&scene, time.delta_secs());
             playback.paint(ui.painter(), rect, &images);
             draw_identity(
                 ui.painter(),

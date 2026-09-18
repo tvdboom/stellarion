@@ -418,9 +418,177 @@ fn cinematic_shared_hud_controls_volume_mute_and_speed_without_schematic_options
             },
         ],
     );
-    assert_eq!(app.world().resource::<Settings>().volume, 0.5);
+    assert_eq!(app.world().resource::<Settings>().volume, 0.4);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+    let zoom = app.world().resource::<CinematicPlayback>().camera.transform(viewport).scaling;
+    assert!(zoom > 1.0, "The scene wheel zooms instead of changing volume");
     controls_frame(&mut app, &context, vec![]);
-    assert_eq!(app.world().resource::<Settings>().volume, 0.5, "scroll applies once");
+    assert_eq!(app.world().resource::<Settings>().volume, 0.4);
+    assert_eq!(
+        app.world().resource::<CinematicPlayback>().camera.transform(viewport).scaling,
+        zoom
+    );
+}
+
+fn cinematic_wheel(delta: f32) -> egui::Event {
+    egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, delta),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn cinematic_key(key: egui::Key, pressed: bool) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+#[test]
+fn cinematic_camera_navigates_while_paused_and_keeps_hud_and_world_geometry_consistent() {
+    let (mut app, context) = controls_app();
+    context.global_style_mut(|style| style.animation_time = 0.0);
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+    app.world_mut().resource_mut::<Settings>().combat_speed = 64.0;
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(0.05));
+    app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 5.0;
+    let ship = egui::TextureId::User(850);
+    let background = egui::TextureId::User(851);
+    app.world_mut()
+        .resource_mut::<ImageIds>()
+        .0
+        .extend([("cinematic war sun".into(), ship), ("bg".into(), background)]);
+    let pointer = egui::pos2(370.0, 260.0);
+    for _ in 0..4 {
+        controls_frame(&mut app, &context, vec![egui::Event::PointerMoved(pointer)]);
+    }
+    let mesh_positions = |shapes: &[egui::epaint::ClippedShape], texture| {
+        shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh),
+                _ => None,
+            })
+            .flat_map(|mesh| mesh.vertices.iter().map(|vertex| vertex.pos))
+            .collect::<Vec<_>>()
+    };
+    let initial = controls_frame(&mut app, &context, vec![]);
+    let initial_ship = mesh_positions(&initial, ship);
+    assert!(!initial_ship.is_empty());
+    let initial_bg = mesh_positions(&initial, background);
+    let initial_attacker = label_rect(&initial, "ATTACKER").unwrap();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+    let zoomed = controls_frame(&mut app, &context, vec![cinematic_wheel(5.0)]);
+    let camera = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert!(camera.scaling > 1.5);
+    for (before, after) in initial_ship.iter().zip(mesh_positions(&zoomed, ship)) {
+        assert!((camera * *before).distance(after) < 0.01);
+    }
+    assert_eq!(mesh_positions(&zoomed, background), initial_bg);
+    assert_eq!(label_rect(&zoomed, "ATTACKER"), Some(initial_attacker));
+    assert_eq!(label_rect(&zoomed, "PAUSED"), label_rect(&initial, "PAUSED"));
+
+    controls_frame(&mut app, &context, vec![cinematic_key(egui::Key::D, true)]);
+    let moved = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert!((moved.translation.x - camera.translation.x + 30.0).abs() < 0.01);
+    controls_frame(&mut app, &context, vec![cinematic_key(egui::Key::D, false)]);
+    for (key, direction) in [
+        (egui::Key::A, egui::vec2(30.0, 0.0)),
+        (egui::Key::W, egui::vec2(0.0, 30.0)),
+        (egui::Key::S, egui::vec2(0.0, -30.0)),
+    ] {
+        let before = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+        controls_frame(&mut app, &context, vec![cinematic_key(key, true)]);
+        let after = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+        assert!((after.translation - before.translation - direction).length() < 0.01);
+        controls_frame(&mut app, &context, vec![cinematic_key(key, false)]);
+    }
+    controls_frame(
+        &mut app,
+        &context,
+        vec![egui::Event::PointerButton {
+            pos: pointer,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    let before_drag = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    let delta = egui::vec2(42.0, -24.0);
+    controls_frame(&mut app, &context, vec![egui::Event::PointerMoved(pointer + delta)]);
+    let after_drag = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert!((after_drag.translation - before_drag.translation - delta).length() < 0.01);
+    controls_frame(
+        &mut app,
+        &context,
+        vec![egui::Event::PointerButton {
+            pos: pointer + delta,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, 5.0);
+
+    click_control(&mut app, &context, pointer);
+    let before = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    controls_frame(&mut app, &context, vec![cinematic_key(egui::Key::W, true)]);
+    let after = app.world().resource::<CinematicPlayback>().camera.transform(viewport);
+    assert!(
+        (after.translation.y - before.translation.y - 30.0).abs() < 0.01,
+        "WASD remains available after the scene takes pointer focus"
+    );
+    controls_frame(&mut app, &context, vec![cinematic_key(egui::Key::W, false)]);
+
+    // Restart restores the opening camera as well as the replay clock.
+    let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+    keys.press(KeyCode::ControlLeft);
+    keys.press(KeyCode::ShiftLeft);
+    keys.press(KeyCode::ArrowLeft);
+    advance(&mut app, 0.05);
+    assert_eq!(
+        app.world().resource::<CinematicPlayback>().camera.transform(viewport),
+        egui::emath::TSTransform::IDENTITY
+    );
+}
+
+#[test]
+fn cinematic_hud_blocks_camera_wheel_and_slider_drag() {
+    let (mut app, context) = controls_app();
+    for _ in 0..4 {
+        controls_frame(&mut app, &context, vec![]);
+    }
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+    let scale = viewport_ui_scale(viewport.size());
+    let sound = viewport.right_top() + egui::vec2(-36.0, 36.0) * scale;
+    for _ in 0..3 {
+        controls_frame(&mut app, &context, vec![egui::Event::PointerMoved(sound)]);
+    }
+    let shapes = controls_frame(&mut app, &context, vec![cinematic_wheel(3.0)]);
+    assert_eq!(
+        app.world().resource::<CinematicPlayback>().camera.transform(viewport),
+        egui::emath::TSTransform::IDENTITY
+    );
+    let volume = app.world().resource::<Settings>().volume;
+    let label = label_rect(&shapes, &format!("Volume  {:.0}%", volume * 100.0)).unwrap();
+    let slider = label.left_bottom() + egui::vec2(45.0, 15.0);
+    controls_frame(
+        &mut app,
+        &context,
+        vec![egui::Event::PointerMoved(slider), cinematic_wheel(-3.0)],
+    );
+    assert_eq!(app.world().resource::<Settings>().volume, volume);
+    click_control(&mut app, &context, slider);
+    assert_ne!(app.world().resource::<Settings>().volume, volume);
+    assert_eq!(
+        app.world().resource::<CinematicPlayback>().camera.transform(viewport),
+        egui::emath::TSTransform::IDENTITY
+    );
 }
 
 #[test]

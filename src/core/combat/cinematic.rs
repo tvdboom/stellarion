@@ -8,6 +8,7 @@ use bevy_egui::egui::{
     pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2,
 };
 
+use super::cinematic_camera::CinematicCamera;
 use super::cinematic_timeline::{
     CinematicActor, CinematicShot, CinematicTimeline, LEVEL_LOSS_INTERVAL,
 };
@@ -26,11 +27,12 @@ const BLUE: Color32 = Color32::from_rgb(104, 210, 255);
 const GOLD: Color32 = Color32::from_rgb(255, 177, 90);
 const GREEN: Color32 = Color32::from_rgb(102, 255, 182);
 
-/// The movie has one clock. Engines, stars, debris and camera movement freeze with playback.
+/// The movie has one clock. Manual camera navigation remains available while it is paused.
 #[derive(Resource)]
 pub(crate) struct CinematicPlayback {
     pub timeline: CinematicTimeline,
     pub elapsed: f32,
+    pub camera: CinematicCamera,
     visuals: Vec<ActorVisual>,
     draw_order: Vec<usize>,
     maximum_shot_lifetime: f32,
@@ -235,6 +237,7 @@ impl CinematicPlayback {
         Self {
             timeline,
             elapsed: 0.0,
+            camera: CinematicCamera::default(),
             visuals,
             draw_order,
             maximum_shot_lifetime,
@@ -282,9 +285,16 @@ impl CinematicPlayback {
         if rect.width() < 1.0 || rect.height() < 1.0 {
             return;
         }
-        let painter = painter.with_clip_rect(rect);
+        let mut painter = painter.with_clip_rect(rect);
         let scene = Scene::new(rect);
         self.paint_space(&painter, scene, images);
+        // Sample all geometry in the original canvas, then transform it together. Zoom must
+        // never recalculate trajectories, shield contacts, muzzle positions or effect sizes.
+        let transform = self.camera.transform(rect);
+        let clip = painter.clip_rect();
+        painter.set_clip_rect(transform.inverse().mul_rect(clip));
+        let first_world_shape =
+            painter.ctx().graphics_mut(|graphics| graphics.entry(painter.layer_id()).next_idx());
         if self.show_planet {
             self.paint_planet(&painter, scene, images);
         }
@@ -379,6 +389,11 @@ impl CinematicPlayback {
         }
         self.paint_level_losses(&painter, scene, images);
         self.paint_planet_attacks(&painter, scene, images);
+        painter.ctx().graphics_mut(|graphics| {
+            let shapes = graphics.entry(painter.layer_id());
+            shapes.transform_range(first_world_shape, shapes.next_idx(), transform);
+        });
+        painter.set_clip_rect(clip);
         // Restrained letterbox shading keeps overlaid controls legible without hiding ships.
         let strip = (rect.height() * 0.045).min(28.0);
         for i in 0..8 {

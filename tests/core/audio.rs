@@ -242,6 +242,16 @@ fn volume_frame_in_state(
     events: Vec<egui::Event>,
     in_combat: bool,
 ) -> (egui::Rect, Option<egui::Rect>, egui::CursorIcon) {
+    volume_frame_with_scroll(context, settings, events, in_combat, true)
+}
+
+fn volume_frame_with_scroll(
+    context: &egui::Context,
+    settings: &mut Settings,
+    events: Vec<egui::Event>,
+    in_combat: bool,
+    allow_scroll: bool,
+) -> (egui::Rect, Option<egui::Rect>, egui::CursorIcon) {
     let mut button_rect = egui::Rect::NOTHING;
     let mut slider_rect = None;
     let mut output = context.run_ui(
@@ -255,14 +265,19 @@ fn volume_frame_in_state(
         },
         |ui| {
             let context = ui.ctx();
-            scroll_volume(context, settings, in_combat);
+            scroll_volume(context, settings, in_combat && allow_scroll);
             egui::Area::new(egui::Id::new("test audio"))
                 .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
                 .show(context, |ui| {
                     let button = audio_mode_button(ui, settings.audio);
                     button_rect = button.rect;
                     slider_rect =
-                        volume_popover(&button, settings, false).map(|response| response.rect);
+                        volume_popover(&button, settings, false, allow_scroll).map(|response| {
+                            context.data_mut(|data| {
+                                data.insert_temp(egui::Id::new("test volume slider"), response.id);
+                            });
+                            response.rect
+                        });
                 });
         },
     );
@@ -390,6 +405,72 @@ fn hovered_volume_slider_scrolls_in_ten_percent_steps_even_during_combat() {
 }
 
 #[test]
+fn cinematic_volume_popup_ignores_wheel_but_keeps_pointer_and_keyboard_input() {
+    let context = egui::Context::default();
+    let mut settings = Settings {
+        audio: AudioState::Sound,
+        volume: 0.4,
+        ..default()
+    };
+    let frame = |settings: &mut Settings, events| {
+        volume_frame_with_scroll(&context, settings, events, true, false)
+    };
+    for _ in 0..3 {
+        frame(&mut settings, vec![]);
+    }
+    let (button, _, _) = frame(&mut settings, vec![]);
+    for _ in 0..3 {
+        frame(&mut settings, vec![egui::Event::PointerMoved(button.center())]);
+    }
+    let slider = frame(&mut settings, vec![]).1.unwrap();
+    for amount in [1.0, -1.0] {
+        frame(
+            &mut settings,
+            vec![
+                egui::Event::PointerMoved(slider.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, amount),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(settings.volume, 0.4, "cinematic wheel input must not change gain");
+    }
+    for pressed in [true, false] {
+        frame(
+            &mut settings,
+            vec![egui::Event::PointerButton {
+                pos: slider.center(),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+    assert!((settings.volume - 0.5).abs() < 0.1, "the popup slider must remain interactive");
+    let clicked_volume = settings.volume;
+    // Pointer interaction with egui's drag-only slider does not assign keyboard focus.
+    // Focus the actual response before checking its independent keyboard controls.
+    let slider_id = context
+        .data(|data| data.get_temp::<egui::Id>(egui::Id::new("test volume slider")))
+        .unwrap();
+    context.memory_mut(|memory| memory.request_focus(slider_id));
+    frame(
+        &mut settings,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(settings.volume > clicked_volume, "focused slider keys must still change gain");
+}
+
+#[test]
 fn combat_wheel_changes_volume_once_and_popup_fades_after_scrolling() {
     let context = egui::Context::default();
     let mut settings = Settings {
@@ -422,7 +503,7 @@ fn combat_wheel_changes_volume_once_and_popup_fades_after_scrolling() {
                 scroll_volume(ui.ctx(), settings, in_combat);
                 opacity = scroll_volume_opacity(ui.ctx());
                 let button = audio_mode_button(ui, settings.audio);
-                popup = volume_popover(&button, settings, false).is_some();
+                popup = volume_popover(&button, settings, false, true).is_some();
             },
         );
         output.textures_delta.clear();
@@ -810,7 +891,7 @@ fn combat_and_volume_hover_panels_are_mutually_exclusive() {
                             let prefer_volume = volume.hovered();
                             *combat_panel =
                                 combat_settings_popover(&combat, settings, prefer_volume, false);
-                            *volume_panel = volume_popover(&volume, settings, prefer_combat)
+                            *volume_panel = volume_popover(&volume, settings, prefer_combat, true)
                                 .map(|response| response.rect);
                         });
                     });
