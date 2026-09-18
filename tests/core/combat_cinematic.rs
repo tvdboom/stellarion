@@ -222,6 +222,41 @@ fn background_preserves_map_art_proportions_and_color_without_an_oversized_nebul
 }
 
 #[test]
+fn background_stars_twinkle_without_rerolling_and_rewind_exactly() {
+    let mut movie = replay();
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let sample = |movie: &CinematicPlayback| {
+        let context = bevy_egui::egui::Context::default();
+        let mut output = context.run_ui(
+            bevy_egui::egui::RawInput {
+                screen_rect: Some(scene.rect),
+                ..Default::default()
+            },
+            |ui| movie.paint_space(ui.painter(), scene, &ImageIds::default()),
+        );
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|shape| match shape.shape {
+                Shape::Circle(circle) => Some(circle),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Sample between comets so these circles are just the star layers and their glow.
+    movie.elapsed = 4.0;
+    let first = sample(&movie);
+    assert!(first.len() > 200, "Every depth should contribute a visible field of stars");
+    assert_eq!(sample(&movie), first, "Pause must preserve the star field exactly");
+    movie.elapsed = 4.3;
+    let later = sample(&movie);
+    assert_ne!(later, first, "The stars must twinkle and drift while time advances");
+    movie.elapsed = 4.0;
+    assert_eq!(sample(&movie), first, "Seeking must restore the same twinkles and positions");
+}
+
+#[test]
 fn dense_surface_formations_keep_each_turret_on_the_globe() {
     for count in [1, 2, 7, 34, 150, 600] {
         let positions: Vec<_> = (0..count).map(|i| formation_home(2, i, count)).collect();

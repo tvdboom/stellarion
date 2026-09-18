@@ -437,26 +437,69 @@ impl CinematicPlayback {
                 Color32::WHITE,
             );
         }
-        // Stable hashes keep the same stars through pausing, resizing, restarting and seeking.
-        for i in 0..150_u32 {
-            let layer = 0.25 + noise(i + 502) * 0.75;
-            let base = vec2(noise(i * 3 + 11), noise(i * 3 + 12));
-            let center = scene.point(base) + camera * (12.0 * layer);
-            let twinkle = 0.45 + 0.55 * (self.elapsed * (0.45 + layer) + i as f32).sin().powi(2);
-            let color = alpha(Color32::from_rgb(182, 220, 255), twinkle * layer);
-            let size = (0.5 + layer * 1.2) * scene.scale.max(0.55);
-            painter.circle_filled(center, size, color);
-            if i % 19 == 0 {
-                glow(painter, center, size * 6.0, BLUE, twinkle * 0.22);
-                let length = size * (2.0 + twinkle);
-                painter.line_segment(
-                    [center - vec2(length, 0.0), center + vec2(length, 0.0)],
-                    Stroke::new(0.65, alpha(color, 0.8)),
-                );
-                painter.line_segment(
-                    [center - vec2(0.0, length), center + vec2(0.0, length)],
-                    Stroke::new(0.65, alpha(color, 0.8)),
-                );
+        // Three camera-linked depths use the map's cool/white/warm palette and progressively
+        // brighter, sharper twinkles. Stable seeds preserve stars across replay and seeking.
+        for (layer, (depth, count, drift)) in [
+            (0.34, 420_u32, vec2(0.28, -0.12)),
+            (0.57, 280, vec2(-0.34, 0.24)),
+            (0.80, 220, vec2(0.90, -0.42)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transform = self.camera.parallax_transform(scene.rect, depth);
+            let period = scene.rect.size() * 2.0 * transform.scaling;
+            let layer = layer as f32;
+            for i in 0..count {
+                let seed = i * 11 + layer as u32 * 1703 + 502;
+                let base = vec2(noise(seed + 1), noise(seed + 2));
+                let point = transform
+                    * (scene.point(base * 2.0 - Vec2::splat(0.5))
+                        + drift * self.elapsed * scene.scale);
+                // Wrap beyond the visible edges, even at minimum zoom, so dragging or bouncing
+                // never exposes an empty strip or teleports a visible star across the screen.
+                let offset = point - scene.rect.center() + period * 0.5;
+                let center = scene.rect.center()
+                    + vec2(offset.x.rem_euclid(period.x), offset.y.rem_euclid(period.y))
+                    - period * 0.5;
+                if !scene.rect.expand(16.0).contains(center) {
+                    continue;
+                }
+                let pulse = (0.5
+                    + 0.5
+                        * (self.elapsed
+                            * (0.22 + layer * 0.22 + noise(seed + 3) * (0.68 + layer * 0.22))
+                            + noise(seed + 4) * TAU)
+                            .sin())
+                .powf(1.25 + layer * 1.075);
+                let minimum = 0.48 - layer * 0.20 + noise(seed + 5) * 0.14;
+                let brightness = (0.28 + layer * 0.13 + noise(seed + 6) * 0.35)
+                    * (minimum + (1.0 - minimum) * pulse);
+                let temperature = noise(seed + 7);
+                let tint = if temperature < 0.24 {
+                    Color32::from_rgb(158, 194, 255)
+                } else if temperature > 0.88 {
+                    Color32::from_rgb(255, 209, 148)
+                } else {
+                    Color32::from_rgb(230, 242, 255)
+                };
+                let size = (0.8 + layer * 0.2 + noise(seed + 8) * (2.0 + layer * 0.7))
+                    * 0.5
+                    * scene.scale.max(0.55)
+                    * transform.scaling.min(1.5)
+                    * (0.82 + 0.30 * pulse);
+                let color = alpha(tint, brightness);
+                painter.circle_filled(center, size, color);
+                if i % 17 == 0 {
+                    glow(painter, center, size * 6.0, tint, brightness * 0.35);
+                    let length = size * (2.0 + pulse);
+                    for ray in [vec2(length, 0.0), vec2(0.0, length * 0.75)] {
+                        painter.line_segment(
+                            [center - ray, center + ray],
+                            Stroke::new(0.65, alpha(color, pulse * 0.8)),
+                        );
+                    }
+                }
             }
         }
         for i in 0..3_u32 {

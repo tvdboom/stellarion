@@ -122,7 +122,8 @@ fn map_camera_target(map: &Map, position: Vec2) -> Option<Vec2> {
     clamp_to_planet_hull(position, &hull)
 }
 
-fn clamp_overscroll(offset: Vec2, view_size: Vec2) -> Vec2 {
+/// Shared screen-relative travel limit for strategic and cinematic camera edges.
+pub(crate) fn clamp_overscroll(offset: Vec2, view_size: Vec2) -> Vec2 {
     let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;
     offset.clamp(-limit, limit)
 }
@@ -139,7 +140,8 @@ pub(crate) fn drag_camera_position(
         .map_or(proposed, |target| target + clamp_overscroll(proposed - target, view_size))
 }
 
-fn settle_position(position: Vec2, target: Vec2, delta_seconds: f32) -> Vec2 {
+/// Shared frame-rate-independent return after releasing an overscrolled camera.
+pub(crate) fn settle_position(position: Vec2, target: Vec2, delta_seconds: f32) -> Vec2 {
     if position.distance_squared(target) < 0.01 {
         target
     } else {

@@ -48,13 +48,83 @@ fn zoom_limits_bound_extreme_wheel_input_and_center_the_widest_view() {
     camera.pan(viewport, vec2(100_000.0, -100_000.0));
     let shown = camera.transform(viewport).inverse().mul_rect(viewport);
     let allowed = viewport.expand2(viewport.size() * 0.25);
-    assert!(allowed.contains_rect(shown), "panning must retain a bounded battle canvas");
+    assert!(
+        allowed
+            .expand2(viewport.size() * (0.20 / camera.zoom) + Vec2::splat(0.01))
+            .contains_rect(shown),
+        "overscroll must retain a bounded battle canvas"
+    );
+    for _ in 0..120 {
+        camera.bound_center(viewport, false, 1.0 / 60.0);
+    }
+    assert!(allowed
+        .expand(0.01)
+        .contains_rect(camera.transform(viewport).inverse().mul_rect(viewport)));
     camera.zoom_at(viewport, viewport.max, -100_000.0);
     assert_eq!(camera.zoom, MIN_ZOOM);
+    for _ in 0..120 {
+        camera.bound_center(viewport, false, 1.0 / 60.0);
+    }
     assert_eq!(camera.center, Vec2::splat(0.5));
     camera.pan(viewport, vec2(-100_000.0, 100_000.0));
+    assert_ne!(camera.center, Vec2::splat(0.5), "The widest view can still stretch at the edges");
+    for _ in 0..120 {
+        camera.bound_center(viewport, false, 1.0 / 60.0);
+    }
     assert_eq!(camera.center, Vec2::splat(0.5));
     assert_near(camera.transform(viewport) * viewport.center(), viewport.center());
+}
+
+#[test]
+fn edges_stretch_by_twenty_percent_and_return_with_the_maps_frame_independent_easing() {
+    let viewport = viewport();
+    for zoom in [MIN_ZOOM, 1.0, 2.0, MAX_ZOOM] {
+        let mut camera = CinematicCamera {
+            zoom,
+            ..Default::default()
+        };
+        camera.pan(viewport, vec2(-100_000.0, 100_000.0));
+        let travel = (0.75 - 0.5 / zoom).max(0.0);
+        let target = vec2(0.5 + travel, 0.5 - travel);
+        let stretch = (camera.center - target) * viewport.size() * zoom;
+        assert!((stretch - viewport.size() * vec2(0.2, -0.2)).length() < 0.001);
+        let held = camera.center;
+        for _ in 0..10 {
+            camera.bound_center(viewport, true, 0.1);
+        }
+        assert_eq!(camera.center, held, "Holding the drag must retain the stretch");
+        let mut faster = camera.clone();
+        for _ in 0..12 {
+            camera.bound_center(viewport, false, 1.0 / 60.0);
+        }
+        for _ in 0..24 {
+            faster.bound_center(viewport, false, 1.0 / 120.0);
+        }
+        assert!((camera.center - faster.center).length() < 0.000_01);
+        assert!((camera.center - target).length() < (held - target).length() * 0.07);
+        for _ in 0..120 {
+            camera.bound_center(viewport, false, 1.0 / 60.0);
+        }
+        assert!((camera.center - target).length() < 0.000_001);
+    }
+}
+
+#[test]
+fn star_depths_follow_pan_and_zoom_at_distinct_rates() {
+    let viewport = viewport();
+    let mut camera = CinematicCamera::default();
+    let drag = vec2(80.0, -36.0);
+    camera.pan(viewport, drag);
+    let point = viewport.center();
+    for depth in [0.34, 0.57, 0.8] {
+        assert_near(camera.parallax_transform(viewport, depth) * point, point + drag * depth);
+    }
+    camera.zoom_at(viewport, point, 5.0);
+    let far = camera.parallax_transform(viewport, 0.34);
+    let middle = camera.parallax_transform(viewport, 0.57);
+    let near = camera.parallax_transform(viewport, 0.8);
+    assert!(1.0 < far.scaling && far.scaling < middle.scaling);
+    assert!(middle.scaling < near.scaling && near.scaling < camera.zoom);
 }
 
 #[test]

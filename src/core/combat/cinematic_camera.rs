@@ -2,6 +2,7 @@
 
 use bevy_egui::egui::{self, emath::TSTransform, vec2, Pos2, Rect, Vec2};
 
+use crate::core::camera::{clamp_overscroll, settle_position};
 use crate::core::constants::ZOOM_FACTOR;
 
 const MIN_ZOOM: f32 = 0.65;
@@ -34,11 +35,33 @@ impl CinematicCamera {
         }
     }
 
-    fn clamp_center(&mut self) {
+    /// Background layers inherit only part of the battle camera's translation and zoom.
+    pub fn parallax_transform(&self, viewport: Rect, depth: f32) -> TSTransform {
+        let scaling = self.zoom.powf(depth * 0.7);
+        let offset = (self.center - Vec2::splat(0.5)) * viewport.size();
+        TSTransform {
+            scaling,
+            translation: viewport.center().to_vec2() * (1.0 - scaling) - offset * self.zoom * depth,
+        }
+    }
+
+    fn bound_center(&mut self, viewport: Rect, held: bool, seconds: f32) -> bool {
+        use bevy::math::Vec2 as BVec2;
         // Keep the viewport within a small margin around the original battle canvas. At the
-        // widest zoom the complete scene fits, so center it instead of allowing empty-space travel.
+        // widest zoom it returns to the center, while a held drag can still stretch its edges.
         let travel = (0.75 - 0.5 / self.zoom).max(0.0);
-        self.center = self.center.clamp(Vec2::splat(0.5 - travel), Vec2::splat(0.5 + travel));
+        let target = self.center.clamp(Vec2::splat(0.5 - travel), Vec2::splat(0.5 + travel));
+        let size = BVec2::new(viewport.width(), viewport.height());
+        let position = BVec2::new(self.center.x, self.center.y) * size;
+        let target = BVec2::new(target.x, target.y) * size;
+        let limited = target + clamp_overscroll(position - target, size / self.zoom);
+        let next = if held {
+            limited
+        } else {
+            settle_position(limited, target, seconds)
+        };
+        self.center = vec2(next.x / size.x, next.y / size.y);
+        next != target
     }
 
     fn zoom_at(&mut self, viewport: Rect, pointer: Pos2, steps: f32) {
@@ -47,12 +70,12 @@ impl CinematicCamera {
             (self.zoom * ZOOM_FACTOR.powf(steps.clamp(-64.0, 64.0))).clamp(MIN_ZOOM, MAX_ZOOM);
         let focus = anchor - (pointer - viewport.center()) / self.zoom;
         self.center = (focus - viewport.min) / viewport.size();
-        self.clamp_center();
+        self.bound_center(viewport, true, 0.0);
     }
 
     fn pan(&mut self, viewport: Rect, screen_delta: Vec2) {
         self.center -= screen_delta / (viewport.size() * self.zoom);
-        self.clamp_center();
+        self.bound_center(viewport, true, 0.0);
     }
 
     /// Only the scene owns drag/wheel input; foreground buttons and popovers keep theirs.
@@ -112,6 +135,15 @@ impl CinematicCamera {
                 self.pan(response.rect, movement * 600.0 * seconds.clamp(0.0, 0.1));
                 context.request_repaint();
             }
+        }
+        // Keep the return animated even while playback is paused or the pointer is over a HUD.
+        // Like the map, a held drag retains the stretch; keyboard movement can press against it.
+        if self.bound_center(
+            response.rect,
+            response.is_pointer_button_down_on(),
+            seconds.clamp(0.0, 0.1),
+        ) {
+            context.request_repaint();
         }
     }
 }

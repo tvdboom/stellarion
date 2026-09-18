@@ -11,7 +11,9 @@ sound and settings icons as the schematic view provide volume and playback speed
 Hover the sound icon to click or drag its volume slider, or click the icon to mute/restore sound.
 In cinematic combat, scroll over the battlefield to zoom toward the mouse pointer
 between 0.65× and 4×. Hold the left mouse button and drag, or use **WASD**, to move
-around the battle, including while paused. Camera travel is bounded around the battlefield;
+around the battle, including while paused. Dragging can stretch 20% of the viewport
+beyond the battlefield edges, then returns with the normal map's elastic easing.
+The return stays active while the movie is paused and also recenters after zooming out;
 the banners, settings and exit button stay fixed on screen. Schematic combat retains
 its wheel volume control in 10% steps. Cinematic settings omit the
 schematic-only Volley fire and Individual units options. Escape returns to battle
@@ -57,7 +59,11 @@ staged wreck explosions, and sound pitch/gain are shared with the schematic rend
 Charged weapons build up before their recorded launch, preserving the last shot of a destroyed ship.
 The planetary shield reuses the map's energy-field artwork with a three-second
 pulse, moving filaments and surface sweeps; its strength follows recorded damage.
-The scene uses the normal map background with its proportions preserved. Ships
+The scene uses the normal map background with its proportions preserved. Three
+wrapping star layers respond at different depths to camera movement and zoom,
+with the map's blue, white, and warm star colors, independent twinkles, and sparse
+glowing flares. Their animation follows the replay clock; navigating while paused
+still changes their parallax. Ships
 follow curved approaches over 4.8 seconds, then opposing, continuous attack circuits.
 Their bows and engine trails follow their actual travel direction, including withdrawals.
 Capital ships take slow, steady arcs without recoil-driven wiggling; lighter ships
