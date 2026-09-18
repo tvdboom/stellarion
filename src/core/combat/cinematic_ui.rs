@@ -9,7 +9,7 @@ use super::effects::{wreck_cue, EffectTextures, Weapon};
 use super::report::{combat_strength_ranges, MissionReport, ReportId, Side};
 use super::result_banner;
 use super::systems::combat_identity_participants;
-use crate::core::audio::{set_ui_sound, PlayAudioMsg, SoundEffect};
+use crate::core::audio::{set_ui_sound, PlayAudioMsg, SoundEffect, StopAudioMsg};
 use crate::core::constants::BUTTON_TEXT_SIZE;
 use crate::core::map::utils::{
     MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT, MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
@@ -94,7 +94,7 @@ impl CinematicSoundtrack {
         }
     }
 
-    fn advance(&mut self, elapsed: f32, audio: &mut MessageWriter<PlayAudioMsg>) {
+    fn advance(&mut self, elapsed: f32, audio: &mut Messages<PlayAudioMsg>) {
         if elapsed < self.previous_time {
             self.next = 0;
         }
@@ -143,18 +143,44 @@ pub(crate) fn setup_cinematic(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn advance_cinematic(
     playback: Option<ResMut<CinematicPlayback>>,
     time: Res<Time>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     state: Res<UiState>,
     player: Res<Player>,
-    mut audio: MessageWriter<PlayAudioMsg>,
-    soundtrack: Option<ResMut<CinematicSoundtrack>>,
+    mut audio: ResMut<Messages<PlayAudioMsg>>,
+    mut soundtrack: Option<ResMut<CinematicSoundtrack>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut stop_audio: MessageWriter<StopAudioMsg>,
 ) {
     let Some(mut playback) = playback else {
         return;
     };
+    if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+        && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+        && keys.just_pressed(KeyCode::ArrowLeft)
+        && !keys.just_pressed(KeyCode::ArrowRight)
+    {
+        // Every visual is sampled from this clock, including restored hulls and the planet.
+        // Keep the loaded sprite dimensions and the recorded report while rewinding.
+        playback.elapsed = 0.0;
+        settings.combat_paused = false;
+        let mut sounds = std::collections::BTreeSet::from(["horn", "victory", "draw", "defeat"]);
+        if let Some(soundtrack) = soundtrack.as_mut() {
+            soundtrack.next = 0;
+            soundtrack.previous_time = 0.0;
+            sounds.extend(soundtrack.cues.iter().map(|(_, cue)| cue.name));
+        }
+        // Audio stops before new requests play in PostUpdate; leave music/drums running.
+        audio.clear();
+        for name in sounds {
+            stop_audio.write(StopAudioMsg::new(name));
+        }
+        audio.write(PlayAudioMsg::new("horn"));
+        return;
+    }
     let finished = playback.is_finished();
     playback.advance(time.delta_secs(), settings.combat_speed, settings.combat_paused);
     if let Some(mut soundtrack) = soundtrack {
@@ -383,10 +409,18 @@ pub(crate) fn draw_cinematic(
         context.request_repaint();
         return;
     }
-    // The shared Bevy shortcut already handled Space during Update. Avoid also activating
-    // a focused HUD control with that same key press.
+    // Bevy already handled playback shortcuts during Update. Avoid also activating or
+    // adjusting a focused HUD control with those same key presses.
     context.input_mut(|input| {
         input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+        input.consume_key(
+            egui::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..egui::Modifiers::NONE
+            },
+            egui::Key::ArrowLeft,
+        );
     });
     let report =
         state.in_combat.and_then(|id| player.reports.iter().find(|report| report.id == id));

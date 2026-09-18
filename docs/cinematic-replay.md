@@ -4,7 +4,9 @@ Hover the settings gear beside the sound icon in the battle chooser, select the
 **Schematic** or **Cinematic** image tile, then select a battle from the list.
 Schematic remains the default. Cinematic uses individual isometric ships and defenses,
 with a planet for ground combat and open space for fauna encounters. Space pauses
-the entire scene; Left/Right change speed from 0.25× to 64×. The same top-right
+the entire scene; Left/Right change speed from 0.25× to 64×. **Ctrl+Shift+Left**
+restarts and resumes the whole movie, including its sound, from the opening arrival.
+The selected speed and volume are preserved. The same top-right
 sound and settings icons as the schematic view provide volume and playback speed.
 Hover the sound icon for its volume slider, click to mute/restore sound, or scroll
 anywhere during combat to change volume in 10% steps. Cinematic settings omit the

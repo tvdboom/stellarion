@@ -35,6 +35,7 @@ fn app() -> App {
     player.reports.push(report);
     let mut app = App::new();
     app.init_resource::<Time>()
+        .init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<Settings>()
         .insert_resource(player)
         .insert_resource(UiState {
@@ -42,7 +43,8 @@ fn app() -> App {
             combat_view: CombatView::Cinematic,
             ..Default::default()
         })
-        .add_message::<PlayAudioMsg>();
+        .add_message::<PlayAudioMsg>()
+        .add_message::<StopAudioMsg>();
     app
 }
 
@@ -133,6 +135,100 @@ fn rewinding_rearms_audio_and_can_complete_a_second_time() {
     assert!(audio(&mut app).is_empty());
     advance(&mut app, duration);
     assert_eq!(audio(&mut app), vec!["victory"]);
+}
+
+#[test]
+fn restart_shortcut_replays_from_zero_even_when_paused_or_finished() {
+    for (finished, paused) in [(false, false), (false, true), (true, false)] {
+        let mut app = app();
+        app.world_mut().run_system_once(setup_cinematic).unwrap();
+        let report = serde_json::to_string(&app.world().resource::<Player>().reports).unwrap();
+        let duration = app.world().resource::<CinematicPlayback>().timeline.duration;
+        advance(
+            &mut app,
+            if finished {
+                duration + 1.0
+            } else {
+                duration * 0.5
+            },
+        );
+        {
+            let mut settings = app.world_mut().resource_mut::<Settings>();
+            settings.combat_paused = paused;
+            settings.combat_speed = 2.0;
+            settings.volume = 0.3;
+        }
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ControlRight);
+            keys.press(KeyCode::ShiftLeft);
+            keys.press(KeyCode::ArrowLeft);
+        }
+        advance(&mut app, 0.25);
+        assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, 0.0);
+        assert!(!app.world().resource::<Settings>().combat_paused);
+        assert_eq!(app.world().resource::<Settings>().combat_speed, 2.0);
+        assert_eq!(app.world().resource::<Settings>().volume, 0.3);
+        let soundtrack = app.world().resource::<CinematicSoundtrack>();
+        assert_eq!((soundtrack.next, soundtrack.previous_time), (0, 0.0));
+        let first_cue_at = soundtrack.cues[0].0;
+        assert_eq!(audio(&mut app), vec!["horn"], "Discard queued sounds from the old playback");
+        let stopped: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<StopAudioMsg>>()
+            .drain()
+            .map(|cue| cue.name)
+            .collect();
+        assert!(stopped.contains(&"horn") && stopped.contains(&"victory"));
+        assert!(!stopped.contains(&"music") && !stopped.contains(&"drums"));
+        // Holding the combination must not keep resetting the movie each frame.
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+        advance(&mut app, first_cue_at / 2.0);
+        assert!(!audio(&mut app).is_empty(), "The original weapon cues must play again");
+        advance(&mut app, duration);
+        assert_eq!(audio(&mut app), vec!["victory"]);
+        assert_eq!(
+            serde_json::to_string(&app.world().resource::<Player>().reports).unwrap(),
+            report
+        );
+    }
+}
+
+#[test]
+fn restart_requires_both_modifiers_and_does_not_change_speed_on_release() {
+    use crate::core::states::CombatState;
+    use crate::core::systems::check_keys_combat;
+    let mut app = app();
+    app.world_mut().run_system_once(setup_cinematic).unwrap();
+    app.insert_resource(State::new(CombatState::Fire))
+        .add_systems(Update, (check_keys_combat, advance_cinematic).chain());
+    app.world_mut().resource_mut::<Settings>().combat_speed = 4.0;
+    for modifiers in [vec![], vec![KeyCode::ControlLeft], vec![KeyCode::ShiftRight]] {
+        app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 2.0;
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.reset_all();
+        for key in modifiers.into_iter().chain([KeyCode::ArrowLeft]) {
+            keys.press(key);
+        }
+        app.update();
+        assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, 2.0);
+    }
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.reset_all();
+        for key in [KeyCode::ControlLeft, KeyCode::ShiftRight, KeyCode::ArrowLeft] {
+            keys.press(key);
+        }
+    }
+    app.update();
+    assert_eq!(app.world().resource::<CinematicPlayback>().elapsed, 0.0);
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.clear();
+        keys.release_all();
+    }
+    app.update();
+    assert_eq!(app.world().resource::<Settings>().combat_speed, 4.0);
 }
 
 #[test]
@@ -277,6 +373,27 @@ fn cinematic_shared_hud_controls_volume_mute_and_speed_without_schematic_options
     // Click the actual speed slider below its label, well beyond the current 1× position.
     click_control(&mut app, &context, speed_label.left_bottom() + egui::vec2(85.0, 15.0));
     assert!(app.world().resource::<Settings>().combat_speed > 1.0);
+    let selected_speed = app.world().resource::<Settings>().combat_speed;
+    controls_frame(
+        &mut app,
+        &context,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..egui::Modifiers::NONE
+            },
+        }],
+    );
+    assert_eq!(
+        app.world().resource::<Settings>().combat_speed,
+        selected_speed,
+        "Restart must not also adjust the focused speed slider"
+    );
 
     for _ in 0..3 {
         controls_frame(&mut app, &context, vec![egui::Event::PointerMoved(sound)]);
