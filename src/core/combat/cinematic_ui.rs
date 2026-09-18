@@ -522,11 +522,24 @@ pub(crate) fn draw_cinematic(
                     next.set(GameState::CombatMenu);
                 }
             } else if settings.combat_paused {
+                let banner = egui::Rect::from_center_size(
+                    rect.center(),
+                    egui::vec2(
+                        rect.width(),
+                        (rect.height() * result_banner::BAR_HEIGHT_FRACTION)
+                            .clamp(result_banner::BAR_MIN_HEIGHT, result_banner::BAR_MAX_HEIGHT),
+                    ),
+                );
+                ui.painter().rect_filled(
+                    banner,
+                    0.0,
+                    egui::Color32::from_black_alpha(result_banner::BAR_ALPHA),
+                );
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "PAUSED",
-                    egui::FontId::proportional((rect.width() * 0.026).clamp(20.0, 36.0)),
+                    egui::FontId::proportional((rect.width() * 0.055).clamp(32.0, 72.0)),
                     egui::Color32::from_rgb(225, 236, 248),
                 );
             }
