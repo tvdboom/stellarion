@@ -157,6 +157,18 @@ pub fn check_turn_ended(
         if state.end_turn_blocked(session.as_deref(), &pending) {
             return;
         }
+        // Inviting players without publishing a proposal is only local mission-editor state.
+        // Ending the turn discards that draft just like Cancel mission; published invitations
+        // remain covered by `end_turn_blocked` until their owner explicitly resolves them.
+        state.mission = false;
+        state.mission_info = Mission::default();
+        state.allied_mission = false;
+        state.joint_attack_invitees.clear();
+        state.joint_attack_invite_panel_rect = None;
+        state.joint_attack_draft_id = None;
+        state.joint_attack_owner_draft = None;
+        state.joint_attack_owner_shared_route = None;
+        state.joint_attack_owner_withdrawal = None;
         #[cfg(debug_assertions)]
         if session.as_deref().is_some_and(|session| session.local_practice) {
             requests.write(MultiplayerRequest::AdvanceLocalPracticeTurn);
@@ -261,7 +273,7 @@ fn report_notification(
     } else if report.hidden {
         MessageAction::OpenMissionReports
     } else {
-        MessageAction::OpenMissionReport(report.mission.id)
+        MessageAction::OpenMissionReport(report.id)
     })
 }
 
@@ -480,7 +492,7 @@ pub fn start_turn(
 
         if let Some(last) = new_reports.last() {
             state.mission_tab = MissionTab::MissionReports;
-            state.mission_report = Some(last.mission.id);
+            state.mission_report = Some(last.id);
         }
     }
 }

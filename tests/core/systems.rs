@@ -383,3 +383,104 @@ fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_online_planets() {
         assert_eq!(map.get(moon).army.amount(&building), Building::MAX_LEVEL);
     }
 }
+
+#[test]
+fn local_practice_shortcut_is_immediately_available_to_allied_preview() {
+    use crate::core::identity::{GameCode, GameId};
+    use crate::core::map::icon::Icon;
+    use crate::core::messages::MessageMsg;
+    use crate::core::missions::BombingRaid;
+    use crate::core::simulation::{
+        GameModel, GameRules, JointAttackContribution, MatchStatus, PersistedGame,
+    };
+    use crate::core::units::{ships::Ship, Amount, Army, Unit};
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = GameModel::new(
+        [10; 32],
+        GameRules {
+            player_count: 3,
+            practice_mode: true,
+            ..GameRules::default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    let boosted_home = model.players[0].home_planet;
+    let leader_home = model.players[1].home_planet;
+    let target = model.players[2].home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(boosted_home).army.remove(&Unit::probe());
+    model.map.get_mut(leader_home).army.insert(fighter, 1);
+    model.players[1].resources.deuterium = 100_000;
+
+    let mut session = MultiplayerSession::default();
+    session.local_practice = true;
+    session.active_game = Some(GameRecord {
+        id: GameId::new("local-practice-allied-shortcut"),
+        code: GameCode::new("ABCDEF"),
+        revision: 1,
+        saved_at: 0,
+        max_players: 3,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        members: Vec::new(),
+        submitted_players: Vec::new(),
+    });
+
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::ControlLeft);
+    keyboard.press(KeyCode::ShiftLeft);
+    keyboard.press(KeyCode::ArrowUp);
+    let mut app = App::new();
+    app.insert_resource(keyboard)
+        .insert_resource(model.map.clone())
+        .insert_resource(model.players[0].clone())
+        .insert_resource(session)
+        .insert_resource(PendingTurnCommands {
+            turn: model.turn,
+            ..default()
+        })
+        .add_message::<MessageMsg>();
+    app.world_mut().run_system_once(testing_boost_keys).unwrap();
+
+    let launch = TurnCommand::SendJointMission {
+        attack_id: 45,
+        mission_id: 45,
+        destination: target,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        contributions: vec![
+            JointAttackContribution {
+                player_id: 2,
+                origin: leader_home,
+                army: Army::from([(fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+            JointAttackContribution {
+                player_id: 1,
+                origin: boosted_home,
+                army: Army::from([(Unit::probe(), 3)]),
+                bombing: BombingRaid::None,
+                combat_probes: true,
+            },
+        ],
+    };
+    let session = app.world().resource::<MultiplayerSession>();
+    let canonical = &session.active_game.as_ref().unwrap().persisted.state;
+    let preview = session
+        .preview_commands(canonical, 2, &[launch])
+        .expect("another practice empire must see the shortcut before a player switch");
+    assert_eq!(
+        preview
+            .missions
+            .iter()
+            .find(|mission| mission.owner == 1 && mission.joint_attack.is_some())
+            .unwrap()
+            .army
+            .amount(&Unit::probe()),
+        3
+    );
+}

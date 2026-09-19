@@ -468,7 +468,7 @@ fn open_latest_battle(player: &Player, planet: PlanetId, state: &mut UiState) {
     state.planet_selected = None;
     state.mission = true;
     state.mission_tab = MissionTab::MissionReports;
-    state.mission_report = Some(report.mission.id);
+    state.mission_report = Some(report.id);
     state.combat_report = None;
     if report.can_see(&Side::Attacker, player.id) && report.can_see(&Side::Defender, player.id) {
         state.combat_report = Some(report.id);

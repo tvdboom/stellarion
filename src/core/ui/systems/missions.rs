@@ -42,6 +42,15 @@ const MISSION_REPORT_HOVER_STROKE_WIDTH: f32 = 1.5;
 const MISSION_REPORT_IMAGE_SIZE: f32 = 48.0;
 const MISSION_REPORT_SELECTED_IMAGE_SIZE: f32 = 52.0;
 const MISSION_MISSILE_IMAGE_OFFSET_X: f32 = -4.0;
+const MISSION_REPORT_ROUTE_PLANET_WIDTH: f32 = 100.0;
+const MISSION_REPORT_ROUTE_PLAYER_WIDTH: f32 = 100.0;
+const MISSION_REPORT_ROUTE_CENTER_WIDTH: f32 = 100.0;
+const MISSION_REPORT_ROUTE_GAP: f32 = 10.0;
+const MISSION_REPORT_ROUTE_WIDTH: f32 = MISSION_REPORT_ROUTE_PLANET_WIDTH * 2.0
+    + MISSION_REPORT_ROUTE_PLAYER_WIDTH * 2.0
+    + MISSION_REPORT_ROUTE_CENTER_WIDTH
+    + MISSION_REPORT_ROUTE_GAP * 4.0;
+const MISSION_REPORT_STRENGTH_BAR_WIDTH: f32 = 140.0;
 const MISSION_REPORT_PLANET_INTEL_WIDTH: f32 = 138.0;
 const MISSION_REPORT_INTEL_COLUMN_GAP: f32 = 4.0;
 const MISSION_REPORT_INTEL_IMAGE_SIZE: f32 = (MISSION_REPORT_PLANET_INTEL_WIDTH
@@ -137,6 +146,19 @@ fn mission_objective_available(
     objective.condition_for_army(origin_army)
         && !(destination.is_moon() && objective.on_planet_only())
         && !(objective == Icon::Colonize && n_owned >= n_max_owned)
+}
+
+/// Only hostile fleet objectives can be shared with invited players.
+const fn mission_objective_supports_allied_attack(objective: Icon) -> bool {
+    matches!(objective, Icon::Colonize | Icon::Attack | Icon::Destroy)
+}
+
+const fn mission_objective_selectable(
+    objective: Icon,
+    available: bool,
+    allied_objectives_only: bool,
+) -> bool {
+    available && (!allied_objectives_only || mission_objective_supports_allied_attack(objective))
 }
 
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
@@ -444,7 +466,7 @@ fn mission_planet_rects(cell: egui::Rect) -> (egui::Rect, egui::Rect) {
     );
     let name = egui::Rect::from_min_size(
         egui::pos2(cell.left(), image.bottom() - MISSION_PLANET_NAME_OVERLAP),
-        egui::vec2(MISSION_PLANET_COLUMN_WIDTH, MISSION_PLANET_NAME_HEIGHT),
+        egui::vec2(cell.width(), MISSION_PLANET_NAME_HEIGHT),
     );
 
     (image, name)
@@ -742,13 +764,10 @@ fn sync_allied_mission(
         state.joint_attack_owner_withdrawal = None;
         return true;
     }
-    if !eligible {
-        if invitation.is_some() {
-            // An unsupported local objective is still just an unsent draft. Keep the
-            // invitation intact until its owner either chooses a shared objective or cancels.
-            return false;
-        }
-        state.allied_mission = false;
+    if !eligible && invitation.is_some() {
+        // An unsupported local objective is still just an unsent draft. Keep the
+        // invitation intact until its owner either chooses a shared objective or cancels.
+        return false;
     }
     if let Some(invitation) = invitation {
         state.joint_attack_invitees.extend(
@@ -977,7 +996,7 @@ fn draw_joint_attack_invite_picker(
 fn draw_new_mission(
     ui: &mut Ui,
     send_mission: &mut MessageWriter<SendMissionMsg>,
-    _missions: &[Mission],
+    missions: &[Mission],
     settings: &Settings,
     state: &mut UiState,
     map: &mut Map,
@@ -1152,6 +1171,8 @@ fn draw_new_mission(
                     &mut state.mission_info,
                     map,
                     player,
+                    missions,
+                    session,
                     &origin_army,
                     &army,
                     images,
@@ -1302,7 +1323,8 @@ fn draw_new_mission(
                             ui.spacing_mut().item_spacing.x = 6.;
                             ui.spacing_mut().button_padding = egui::Vec2::splat(2.);
 
-                            let on_hover = |ui: &mut Ui, icon: &Icon, msg: bool| {
+                            let on_hover =
+                                |ui: &mut Ui, icon: &Icon, disabled_reason: Option<&str>| {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.add_image(
@@ -1312,14 +1334,14 @@ fn draw_new_mission(
                                     });
                                     ui.vertical(|ui| {
                                         ui.label(icon.to_name());
-                                        if msg || !settings.brief_hover_info {
+                                        if disabled_reason.is_some() || !settings.brief_hover_info {
                                             ui.separator();
                                         }
 
-                                        if msg {
+                                        if let Some(disabled_reason) = disabled_reason {
                                             ui.colored_label(
                                                 Color32::RED,
-                                                RichText::new(icon.requirement()).small(),
+                                                RichText::new(disabled_reason).small(),
                                             );
                                         }
 
@@ -1330,19 +1352,35 @@ fn draw_new_mission(
                                 });
                             };
 
+                            let allied_objectives_only = state.allied_mission
+                                || !state.joint_attack_invitees.is_empty()
+                                || active_invitation.is_some();
+
                             for icon in Icon::objectives(
                                 player.owns(destination),
                                 player.controls(destination),
                                 destination.allows_protection(player.id),
                                 destination.blocks_hostile_action_by(player.id),
                             ) {
+                                let available = mission_objective_available(
+                                    icon,
+                                    &origin_army,
+                                    destination,
+                                    n_owned,
+                                    n_max_owned,
+                                );
+                                let allied_compatible = !allied_objectives_only
+                                    || mission_objective_supports_allied_attack(icon);
+                                let disabled_reason = if !allied_compatible {
+                                    "Send or cancel the allied mission before choosing this objective."
+                                } else {
+                                    icon.requirement()
+                                };
                                 ui.add_enabled_ui(
-                                    mission_objective_available(
+                                    mission_objective_selectable(
                                         icon,
-                                        &origin_army,
-                                        destination,
-                                        n_owned,
-                                        n_max_owned,
+                                        available,
+                                        allied_objectives_only,
                                     ),
                                     |ui| {
                                         let button = ui
@@ -1353,8 +1391,10 @@ fn draw_new_mission(
                                                 ))
                                                 .corner_radius(5.),
                                             )
-                                            .on_hover_ui(|ui| on_hover(ui, &icon, false))
-                                            .on_disabled_hover_ui(|ui| on_hover(ui, &icon, true))
+                                            .on_hover_ui(|ui| on_hover(ui, &icon, None))
+                                            .on_disabled_hover_ui(|ui| {
+                                                on_hover(ui, &icon, Some(disabled_reason));
+                                            })
                                             .on_hover_cursor(CursorIcon::PointingHand);
 
                                         if button.clicked() {
@@ -1808,12 +1848,48 @@ fn draw_new_mission(
     }
 }
 
+/// Builds a planet label with a colored affiliation marker when that identity is visible.
+fn mission_planet_selector_label(
+    ui: &Ui,
+    map: &Map,
+    player: &Player,
+    missions: &[Mission],
+    session: &MultiplayerSession,
+    planet: &Planet,
+) -> egui::text::LayoutJob {
+    let mut label = egui::text::LayoutJob::default();
+    let font_id = TextStyle::Button.resolve(ui.style());
+    if let Some(player_id) = visible_planet_affiliation(map, player, missions, planet) {
+        label.append(
+            "●  ",
+            0.0,
+            egui::text::TextFormat {
+                font_id: font_id.clone(),
+                color: session.player_color(player_id).color().to_color32(),
+                ..Default::default()
+            },
+        );
+    }
+    label.append(
+        &planet.name,
+        0.0,
+        egui::text::TextFormat {
+            font_id,
+            color: ui.visuals().text_color(),
+            ..Default::default()
+        },
+    );
+    label
+}
+
 /// Shared planet selectors and fleet shortcut.
 fn draw_mission_route(
     ui: &mut Ui,
     mission: &mut Mission,
     map: &Map,
     player: &Player,
+    missions: &[Mission],
+    session: &MultiplayerSession,
     available: &Army,
     units: &[Unit],
     images: &ImageIds,
@@ -1848,15 +1924,21 @@ fn draw_mission_route(
 
                     ComboBox::from_id_salt("origin")
                         .height(60. * origins.len().max(5) as f32)
-                        .selected_text(&map.get(mission.origin).name)
+                        .selected_text(mission_planet_selector_label(
+                            ui,
+                            map,
+                            player,
+                            missions,
+                            session,
+                            map.get(mission.origin),
+                        ))
                         .show_ui(ui, |ui| {
                             for planet in origins {
-                                ui.selectable_value(
-                                    &mut mission.origin,
-                                    planet.id,
-                                    RichText::new(&planet.name).text_style(TextStyle::Button),
-                                )
-                                .on_hover_cursor(CursorIcon::PointingHand);
+                                let label = mission_planet_selector_label(
+                                    ui, map, player, missions, session, planet,
+                                );
+                                ui.selectable_value(&mut mission.origin, planet.id, label)
+                                    .on_hover_cursor(CursorIcon::PointingHand);
                             }
                         })
                         .response
@@ -1895,7 +1977,14 @@ fn draw_mission_route(
                         style_selection_boxes(ui);
                         ui.add_space(15.);
                         ComboBox::from_id_salt("destination")
-                            .selected_text(&map.get(mission.destination).name)
+                            .selected_text(mission_planet_selector_label(
+                                ui,
+                                map,
+                                player,
+                                missions,
+                                session,
+                                map.get(mission.destination),
+                            ))
                             .show_ui(ui, |ui| {
                                 for planet in map
                                     .planets
@@ -1903,12 +1992,11 @@ fn draw_mission_route(
                                     .filter(|p| !p.is_destroyed)
                                     .sorted_by(|a, b| a.name.cmp(&b.name))
                                 {
-                                    ui.selectable_value(
-                                        &mut mission.destination,
-                                        planet.id,
-                                        RichText::new(&planet.name).text_style(TextStyle::Button),
-                                    )
-                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                    let label = mission_planet_selector_label(
+                                        ui, map, player, missions, session, planet,
+                                    );
+                                    ui.selectable_value(&mut mission.destination, planet.id, label)
+                                        .on_hover_cursor(CursorIcon::PointingHand);
                                 }
                             })
                             .response
@@ -2493,6 +2581,168 @@ fn mission_report_fleet_owner(report: &MissionReport, viewer: PlayerId) -> Playe
         .map_or(report.mission.owner, |_| viewer)
 }
 
+fn mission_report_fleet_color(
+    report: &MissionReport,
+    viewer: PlayerId,
+    session: &MultiplayerSession,
+) -> Color32 {
+    if mission_report_sender_is_known(report, viewer) {
+        session.player_color(mission_report_fleet_owner(report, viewer)).color().to_color32()
+    } else {
+        NEUTRAL_COMBAT_COLOR
+    }
+}
+
+/// Resolves report selection by report identity rather than mission identity.
+///
+/// One traveling mission can produce multiple reports: an en-route encounter and its later
+/// destination arrival. Those reports intentionally share a mission ID, but never a report ID.
+fn selected_mission_report<'a>(
+    reports: &[&'a MissionReport],
+    selected: Option<ReportId>,
+) -> Option<&'a MissionReport> {
+    reports
+        .iter()
+        .copied()
+        .find(|report| Some(report.id) == selected)
+        .or_else(|| reports.last().copied())
+}
+
+fn mission_report_player_name(session: &MultiplayerSession, player_id: PlayerId) -> String {
+    session
+        .player_name(player_id)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("Player {player_id}"))
+}
+
+fn mission_report_attacker_name(
+    report: &MissionReport,
+    viewer: PlayerId,
+    session: &MultiplayerSession,
+) -> String {
+    if mission_report_sender_is_known(report, viewer) {
+        mission_report_player_name(session, report.mission.owner)
+    } else {
+        "Unknown".to_owned()
+    }
+}
+
+fn mission_report_attacker_color(
+    report: &MissionReport,
+    viewer: PlayerId,
+    session: &MultiplayerSession,
+) -> Color32 {
+    if mission_report_sender_is_known(report, viewer) {
+        session.player_color(report.mission.owner).color().to_color32()
+    } else {
+        NEUTRAL_COMBAT_COLOR
+    }
+}
+
+fn mission_report_defender_name(report: &MissionReport, session: &MultiplayerSession) -> String {
+    if let Some(name) = report.space_fauna_name() {
+        name.to_owned()
+    } else if let Some(name) = report.independent_population_name() {
+        name
+    } else if let Some(player_id) = report.planet.controlled.or(report.planet.owned) {
+        mission_report_player_name(session, player_id)
+    } else {
+        "Unclaimed".to_owned()
+    }
+}
+
+fn mission_report_defender_color(report: &MissionReport, session: &MultiplayerSession) -> Color32 {
+    if report.is_space_fauna_encounter() || report.is_independent_population_encounter() {
+        NEUTRAL_COMBAT_COLOR
+    } else {
+        report
+            .planet
+            .controlled
+            .or(report.planet.owned)
+            .map(|player_id| session.player_color(player_id).color().to_color32())
+            .unwrap_or(NEUTRAL_COMBAT_COLOR)
+    }
+}
+
+/// Draws a compact report endpoint with the same below-image caption used by active missions.
+fn draw_mission_report_planet_link(
+    ui: &mut Ui,
+    image: egui::TextureId,
+    corner_radius: egui::CornerRadius,
+    planet_name: &str,
+    sense: Sense,
+) -> (Response, Response) {
+    let (cell, _) = ui.allocate_exact_size(
+        egui::vec2(MISSION_REPORT_ROUTE_PLANET_WIDTH, MISSION_PLANET_CELL_HEIGHT),
+        Sense::hover(),
+    );
+    let (image_rect, name_rect) = mission_planet_rects(cell);
+    let image_response = ui
+        .place(
+            image_rect,
+            egui::Image::new(SizedTexture::new(
+                image,
+                egui::Vec2::splat(MISSION_PLANET_IMAGE_SIZE),
+            ))
+            .corner_radius(corner_radius),
+        )
+        .interact(sense);
+    let name = egui::WidgetText::from(RichText::new(planet_name).text_style(TextStyle::Small))
+        .into_galley(ui, Some(egui::TextWrapMode::Truncate), name_rect.width(), TextStyle::Small);
+    let name_pos = name_rect.center() - name.size() * 0.5;
+    ui.painter().galley(name_pos, name, ui.visuals().text_color());
+    let name_response = ui.interact(name_rect, ui.next_auto_id(), sense);
+
+    (image_response, name_response)
+}
+
+fn draw_mission_report_player(ui: &mut Ui, name: String, color: Color32) {
+    let (cell, _) = ui.allocate_exact_size(
+        egui::vec2(MISSION_REPORT_ROUTE_PLAYER_WIDTH, MISSION_PLANET_CELL_HEIGHT),
+        Sense::hover(),
+    );
+    let (image_rect, _) = mission_planet_rects(cell);
+    let galley = egui::WidgetText::from(RichText::new(name).small().color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        cell.width(),
+        TextStyle::Small,
+    );
+    ui.painter().galley(image_rect.center() - galley.size() * 0.5, galley, color);
+}
+
+fn mission_report_route_leading_space(available_width: f32) -> f32 {
+    ((available_width - MISSION_REPORT_ROUTE_WIDTH) * 0.5).max(0.0)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MissionReportRouteRects {
+    origin: egui::Rect,
+    attacker: egui::Rect,
+    center: egui::Rect,
+    defender: egui::Rect,
+    destination: egui::Rect,
+}
+
+fn mission_report_route_rects(row: egui::Rect) -> MissionReportRouteRects {
+    let top = row.top();
+    let height = MISSION_PLANET_CELL_HEIGHT;
+    let mut left = row.left() + mission_report_route_leading_space(row.width());
+    let mut next = |width: f32| {
+        let rect = egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height));
+        left = rect.right() + MISSION_REPORT_ROUTE_GAP;
+        rect
+    };
+
+    MissionReportRouteRects {
+        origin: next(MISSION_REPORT_ROUTE_PLANET_WIDTH),
+        attacker: next(MISSION_REPORT_ROUTE_PLAYER_WIDTH),
+        center: next(MISSION_REPORT_ROUTE_CENTER_WIDTH),
+        defender: next(MISSION_REPORT_ROUTE_PLAYER_WIDTH),
+        destination: next(MISSION_REPORT_ROUTE_PLANET_WIDTH),
+    }
+}
+
 fn draw_mission_reports(
     ui: &mut Ui,
     state: &mut UiState,
@@ -2544,11 +2794,8 @@ fn draw_mission_reports(
                                 [25.; 2],
                             );
 
-                            let [red, green, blue] = session
-                                .player_color(mission_report_fleet_owner(report, player.id))
-                                .rgb();
                             let size = mission_report_image_base_size(
-                                state.mission_report == Some(report.mission.id),
+                                state.mission_report == Some(report.id),
                             );
                             let mission_image = report.mission.image(player);
                             draw_mission_image(
@@ -2557,7 +2804,7 @@ fn draw_mission_reports(
                                 mission_report_image_size(mission_image, size),
                                 MISSION_REPORT_IMAGE_SLOT_SIZE,
                                 mission_report_image_offset(mission_image),
-                                Color32::from_rgb(red, green, blue),
+                                mission_report_fleet_color(report, player.id, session),
                             );
 
                             ui.scope(|ui| {
@@ -2601,7 +2848,7 @@ fn draw_mission_reports(
                     }
 
                     if response.clicked() {
-                        state.mission_report = Some(report.mission.id);
+                        state.mission_report = Some(report.id);
                     }
                 }
             });
@@ -2613,173 +2860,172 @@ fn draw_mission_reports(
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 40.);
 
-            let Some(report) = player
-                .reports
-                .iter()
-                .find(|r| state.mission_report == Some(r.mission.id))
-                .or_else(|| reports.last().copied())
-            else {
+            let Some(report) = selected_mission_report(&reports, state.mission_report) else {
                 return;
             };
 
             ui.horizontal(|ui| {
-                ui.add_space(55.);
-
+                let (route_row, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), MISSION_PLANET_CELL_HEIGHT),
+                    Sense::hover(),
+                );
+                let route_rects = mission_report_route_rects(route_row);
                 let mut changed_hover = false;
-                egui::Grid::new("active report").spacing([10., 0.]).striped(false).show(ui, |ui| {
-                    let origin = map.get(report.mission.origin);
-                    let destination = map.get(report.mission.destination);
-
-                    if report.mission.owner == player.id || !report.mission.objective.is_hidden() {
-                        let resp1 = ui.cell(70., |ui| {
-                            let resp1 = ui
-                                .add_image(images.get(origin.image()), [60.; 2])
-                                .interact(Sense::click())
-                                .on_hover_cursor(CursorIcon::PointingHand);
-
-                            if report.mission.owner == player.id {
-                                let resp = ui.add_icon_on_image(images.get("logs"), resp1.rect);
-
-                                resp.on_hover_ui(|ui| {
-                                    ui.set_min_width(350.);
-                                    ui.small(format!(
-                                        "Mission logs\n===========\n\n{}",
-                                        report.mission.logs
-                                    ));
-                                });
-                            }
-
-                            resp1
-                        });
-
-                        let resp2 = ui.cell(100., |ui| {
-                            ui.small(&origin.name)
-                                .interact(Sense::click())
-                                .on_hover_cursor(CursorIcon::PointingHand)
-                        });
-
-                        handle_mission_planet_link(
-                            &resp1,
-                            &resp2,
-                            origin,
-                            &mut changed_hover,
-                            state,
-                            map,
-                            player,
-                        );
+                let origin = map.get(report.mission.origin);
+                let destination = map.get(report.mission.destination);
+                let sender_known = mission_report_sender_is_known(report, player.id);
+                let origin_image = if sender_known {
+                    origin.image()
+                } else {
+                    "unknown".to_owned()
+                };
+                let mut origin_ui = ui.new_child(
+                    UiBuilder::new().id_salt("report origin").max_rect(route_rects.origin),
+                );
+                let (resp1, resp2) = draw_mission_report_planet_link(
+                    &mut origin_ui,
+                    images.get(origin_image),
+                    egui::CornerRadius::ZERO,
+                    if sender_known {
+                        &origin.name
                     } else {
-                        ui.cell(70., |ui| {
-                            ui.add_image(images.get("unknown"), [60.; 2]);
-                        });
-                        ui.cell(100., |ui| ui.small("Unknown"));
-                    }
-
-                    ui.cell(100., |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.;
-
-                            ui.add_image(
-                                images.get(report.mission.objective.asset_key()),
-                                [25.; 2],
-                            )
-                            .on_hover_small(report.mission.objective.to_name());
-
-                            let [red, green, blue] = session
-                                .player_color(mission_report_fleet_owner(report, player.id))
-                                .rgb();
-                            let mission_image = report.mission.image(player);
-                            draw_mission_image(
-                                ui,
-                                images.get(mission_image),
-                                mission_report_image_size(mission_image, 50.0),
-                                50.0,
-                                mission_report_image_offset(mission_image),
-                                Color32::from_rgb(red, green, blue),
-                            );
-
-                            ui.small(report.turn.to_string()).on_hover_small(format!(
-                                "The mission arrived in turn {}.",
-                                report.turn
+                        ""
+                    },
+                    if sender_known {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
+                    },
+                );
+                if sender_known {
+                    let resp1 = resp1.on_hover_cursor(CursorIcon::PointingHand);
+                    let resp2 = resp2.on_hover_cursor(CursorIcon::PointingHand);
+                    if report.mission.owner == player.id {
+                        let logs = ui.add_icon_on_image(images.get("logs"), resp1.rect);
+                        logs.on_hover_ui(|ui| {
+                            ui.set_min_width(350.);
+                            ui.small(format!(
+                                "Mission logs\n===========\n\n{}",
+                                report.mission.logs
                             ));
                         });
-                    });
+                    }
+                    handle_mission_planet_link(
+                        &resp1,
+                        &resp2,
+                        origin,
+                        &mut changed_hover,
+                        state,
+                        map,
+                        player,
+                    );
+                }
 
-                    let destination_name = mission_report_destination_name(report, destination);
-                    let destination_name_color = if report.is_space_fauna_encounter() {
-                        NEUTRAL_COMBAT_COLOR
+                let mut attacker_ui = ui.new_child(
+                    UiBuilder::new().id_salt("report attacker").max_rect(route_rects.attacker),
+                );
+                draw_mission_report_player(
+                    &mut attacker_ui,
+                    mission_report_attacker_name(report, player.id, session),
+                    mission_report_attacker_color(report, player.id, session),
+                );
+
+                let (route_image_rect, _) = mission_planet_rects(route_rects.center);
+                let mut route_ui = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt("report route")
+                        .max_rect(egui::Rect::from_center_size(
+                            route_image_rect.center(),
+                            egui::vec2(MISSION_REPORT_ROUTE_CENTER_WIDTH, 50.0),
+                        ))
+                        .layout(
+                            Layout::left_to_right(Align::Center).with_main_align(Align::Center),
+                        ),
+                );
+                route_ui.spacing_mut().item_spacing.x = 4.0;
+
+                route_ui
+                    .add_image(images.get(report.mission.objective.asset_key()), [25.; 2])
+                    .on_hover_small(report.mission.objective.to_name());
+
+                let mission_image = report.mission.image(player);
+                draw_mission_image(
+                    &mut route_ui,
+                    images.get(mission_image),
+                    mission_report_image_size(mission_image, 50.0),
+                    50.0,
+                    mission_report_image_offset(mission_image),
+                    mission_report_fleet_color(report, player.id, session),
+                );
+
+                route_ui
+                    .small(report.turn.to_string())
+                    .on_hover_small(format!("The mission arrived in turn {}.", report.turn));
+
+                let mut defender_ui = ui.new_child(
+                    UiBuilder::new().id_salt("report defender").max_rect(route_rects.defender),
+                );
+                draw_mission_report_player(
+                    &mut defender_ui,
+                    mission_report_defender_name(report, session),
+                    mission_report_defender_color(report, session),
+                );
+
+                let mut destination_ui = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt("report destination")
+                        .max_rect(route_rects.destination),
+                );
+                let (resp4, resp3) = draw_mission_report_planet_link(
+                    &mut destination_ui,
+                    images.get(combat_selection_planet_image(report)),
+                    encounter_image_corner_radius(report, MISSION_PLANET_IMAGE_SIZE),
+                    mission_report_destination_name(report, destination),
+                    if report.is_space_fauna_encounter() {
+                        Sense::hover()
                     } else {
-                        ui.visuals().text_color()
-                    };
-                    let destination_name_width = ui
-                        .painter()
-                        .layout_no_wrap(
-                            destination_name.to_owned(),
-                            TextStyle::Small.resolve(ui.style()),
-                            destination_name_color,
-                        )
-                        .size()
-                        .x
-                        .max(100.0);
-                    let resp3 = ui.cell(destination_name_width, |ui| {
-                        let response = ui.add(
-                            egui::Label::new(
-                                RichText::new(destination_name)
-                                    .small()
-                                    .color(destination_name_color),
-                            )
-                            .sense(if report.is_space_fauna_encounter() {
-                                Sense::hover()
-                            } else {
-                                Sense::click()
-                            })
-                            .wrap_mode(egui::TextWrapMode::Extend),
-                        );
-                        response.on_hover_cursor(mission_report_destination_cursor(
-                            report.is_space_fauna_encounter(),
-                        ))
-                    });
+                        Sense::click()
+                    },
+                );
+                let resp4 = resp4.on_hover_cursor(mission_report_destination_cursor(
+                    report.is_space_fauna_encounter(),
+                ));
+                let resp3 = resp3.on_hover_cursor(mission_report_destination_cursor(
+                    report.is_space_fauna_encounter(),
+                ));
 
-                    let resp4 = ui.cell(70., |ui| {
-                        let response = add_combat_report_destination_image(
-                            ui, report, images, 60.0,
-                        )
-                        .interact(if report.is_space_fauna_encounter() {
-                            Sense::hover()
-                        } else {
-                            Sense::click()
-                        });
-                        response.on_hover_cursor(mission_report_destination_cursor(
-                            report.is_space_fauna_encounter(),
-                        ))
-                    });
+                if report.combat_report.is_some() {
+                    ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
+                }
 
-                    if report.combat_report.is_some() {
-                        ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
-                    }
+                if !report.is_space_fauna_encounter() {
+                    handle_mission_planet_link(
+                        &resp3,
+                        &resp4,
+                        destination,
+                        &mut changed_hover,
+                        state,
+                        map,
+                        player,
+                    );
+                }
 
-                    if !report.is_space_fauna_encounter() {
-                        handle_mission_planet_link(
-                            &resp3,
-                            &resp4,
-                            destination,
-                            &mut changed_hover,
-                            state,
-                            map,
-                            player,
-                        );
-                    }
-
-                    // If not hovering anything, reset all hover selections
-                    if is_hovered && !changed_hover {
-                        state.planet_hover = None;
-                        state.mission_planet_hover = None;
-                    }
-                });
+                // If not hovering anything, reset all hover selections
+                if is_hovered && !changed_hover {
+                    state.planet_hover = None;
+                    state.mission_planet_hover = None;
+                }
             });
 
             ui.add_space(-10.);
             ui.horizontal(|ui| {
-                draw_mission_report_strength_bars(ui, report, session, 140.0);
+                draw_mission_report_strength_bars(
+                    ui,
+                    report,
+                    session,
+                    player.id,
+                    MISSION_REPORT_STRENGTH_BAR_WIDTH,
+                );
             });
             ui.add_space(-10.);
 
@@ -3391,6 +3637,8 @@ fn draw_joint_attack_response_panel(
                                 &mut state.joint_attack_contribution,
                                 map,
                                 player,
+                                &[],
+                                session,
                                 &available,
                                 &Unit::ships(),
                                 images,

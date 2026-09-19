@@ -97,7 +97,7 @@ fn snapshot_card(
                 return None;
             }
             if retreat.after_round.is_none() {
-                let count = report.planet.army.controller().amount(&unit);
+                let count = retreat.ships.amount(&unit);
                 return Some(CombatUnitCmp {
                     unit,
                     side: side.clone(),

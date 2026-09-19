@@ -7,6 +7,144 @@ fn space_fauna_report_destinations_use_the_default_cursor() {
 }
 
 #[test]
+fn report_selection_distinguishes_encounter_from_later_arrival_for_one_mission() {
+    let planet = Planet::new(2, "Destination".into(), Vec2::ZERO, false, 1.0);
+    let mission = Mission {
+        id: 42,
+        destination: planet.id,
+        objective: Icon::Protect,
+        ..default()
+    };
+    let encounter = MissionReport {
+        id: 7,
+        turn: 4,
+        ..crate::test_support::empty_report(mission.clone(), planet.clone())
+    };
+    let arrival = MissionReport {
+        id: 8,
+        turn: 7,
+        ..crate::test_support::empty_report(mission, planet)
+    };
+    let reports = [&encounter, &arrival];
+
+    assert_eq!(
+        selected_mission_report(&reports, Some(arrival.id)).map(|report| report.id),
+        Some(8)
+    );
+    assert_eq!(
+        selected_mission_report(&reports, Some(encounter.id)).map(|report| report.id),
+        Some(7)
+    );
+}
+
+#[test]
+fn mission_planet_selector_marks_only_visible_affiliations() {
+    let mut home = Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
+    home.owned = Some(1);
+    home.controlled = Some(1);
+    let mut hidden = Planet::new(1, "Hidden".into(), Vec2::X, false, 1.0);
+    hidden.owned = Some(2);
+    hidden.controlled = Some(2);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![home, hidden],
+    };
+    let player = Player::new(1, 0);
+    let session = MultiplayerSession::default();
+    let context = egui::Context::default();
+    let mut labels = None;
+
+    let mut output = context.run_ui(Default::default(), |ui| {
+        labels = Some((
+            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(0)),
+            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(1)),
+        ));
+    });
+    output.textures_delta.clear();
+    let (home, hidden) = labels.unwrap();
+
+    assert_eq!(home.text, "●  Home");
+    assert_eq!(home.sections.len(), 2);
+    assert_eq!(home.sections[0].format.color, session.player_color(1).color().to_color32());
+    assert_eq!(hidden.text, "Hidden");
+    assert_eq!(hidden.sections.len(), 1);
+}
+
+#[test]
+fn mission_report_route_names_players_without_disclosing_a_hidden_sender() {
+    let mut destination = Planet::new(2, "Target".into(), Vec2::ZERO, false, 1.0);
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            owner: 3,
+            objective: Icon::Spy,
+            ..default()
+        },
+        destination,
+    );
+    let session = MultiplayerSession::default();
+
+    assert_eq!(mission_report_attacker_name(&report, 1, &session), "Unknown");
+    assert_eq!(mission_report_attacker_color(&report, 1, &session), NEUTRAL_COMBAT_COLOR);
+    assert_eq!(mission_report_fleet_color(&report, 1, &session), NEUTRAL_COMBAT_COLOR);
+    assert_eq!(mission_report_attacker_name(&report, 3, &session), "Player 3");
+    assert_eq!(
+        mission_report_attacker_color(&report, 3, &session),
+        session.player_color(3).color().to_color32()
+    );
+    assert_eq!(
+        mission_report_fleet_color(&report, 3, &session),
+        session.player_color(3).color().to_color32()
+    );
+    assert_eq!(mission_report_defender_name(&report, &session), "Player 2");
+    assert_eq!(
+        mission_report_defender_color(&report, &session),
+        session.player_color(2).color().to_color32()
+    );
+
+    report.mission.objective = Icon::Attack;
+    assert_eq!(mission_report_attacker_name(&report, 1, &session), "Player 3");
+    assert_eq!(
+        mission_report_fleet_color(&report, 1, &session),
+        session.player_color(3).color().to_color32()
+    );
+
+    report.planet.owned = None;
+    report.planet.controlled = None;
+    assert_eq!(mission_report_defender_name(&report, &session), "Unclaimed");
+    assert_eq!(mission_report_defender_color(&report, &session), NEUTRAL_COMBAT_COLOR);
+}
+
+#[test]
+fn mission_report_route_is_centered_without_a_fixed_horizontal_offset() {
+    assert_eq!(MISSION_REPORT_ROUTE_WIDTH, 540.0);
+    assert_eq!(mission_report_route_leading_space(640.0), 50.0);
+    assert_eq!(mission_report_route_leading_space(540.0), 0.0);
+    assert_eq!(mission_report_route_leading_space(480.0), 0.0);
+
+    let row = egui::Rect::from_min_size(
+        egui::pos2(20.0, 30.0),
+        egui::vec2(640.0, MISSION_PLANET_CELL_HEIGHT),
+    );
+    let route = mission_report_route_rects(row);
+    let (origin_planet, origin_name) = mission_planet_rects(route.origin);
+    let (destination_planet, destination_name) = mission_planet_rects(route.destination);
+
+    assert_eq!(origin_planet.top(), destination_planet.top());
+    assert_eq!(origin_planet.size(), destination_planet.size());
+    assert_eq!(origin_name.top(), destination_name.top());
+    assert_eq!(origin_name.size(), destination_name.size());
+    assert_eq!(route.attacker.size(), route.defender.size());
+    assert_eq!(route.attacker.top(), route.defender.top());
+    assert_eq!(route.attacker.width(), MISSION_REPORT_ROUTE_PLAYER_WIDTH);
+    assert_eq!(route.origin.center().x + route.destination.center().x, row.center().x * 2.0);
+    assert_eq!(route.attacker.center().x + route.defender.center().x, row.center().x * 2.0);
+    assert_eq!(route.center.center().x, row.center().x);
+}
+
+#[test]
 fn mission_objectives_require_their_origin_units_before_selection() {
     let destination = Planet::new(2, "Target".into(), Vec2::ZERO, false, 1.0);
     let fighter = Unit::Ship(Ship::LightFighter);
@@ -31,6 +169,18 @@ fn mission_objectives_require_their_origin_units_before_selection() {
             "{objective:?} should be enabled once its required unit is available"
         );
     }
+}
+
+#[test]
+fn allied_drafts_allow_only_shared_objectives() {
+    for objective in [Icon::Colonize, Icon::Attack, Icon::Destroy] {
+        assert!(mission_objective_selectable(objective, true, true));
+    }
+    for objective in [Icon::Protect, Icon::Deploy, Icon::Spy, Icon::MissileStrike] {
+        assert!(!mission_objective_selectable(objective, true, true));
+    }
+    assert!(mission_objective_selectable(Icon::Protect, true, false));
+    assert!(!mission_objective_selectable(Icon::Attack, false, true));
 }
 
 #[test]
@@ -491,10 +641,10 @@ fn new_mission_origin_picker_selects_and_keeps_stationed_protection() {
             for shape in &output.shapes {
                 if let egui::Shape::Text(text) = &shape.shape {
                     let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                    match text.galley.text() {
-                        "Home port" => home_rect = rect,
-                        "Protected port" => protected_rect = rect,
-                        _ => {},
+                    if text.galley.text().ends_with("Home port") {
+                        home_rect = rect;
+                    } else if text.galley.text().ends_with("Protected port") {
+                        protected_rect = rect;
                     }
                 }
             }

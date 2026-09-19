@@ -122,6 +122,102 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
 }
 
 #[test]
+fn missile_strike_is_one_straight_descent_and_hides_defending_ships() {
+    use crate::core::combat::resolution::ShotReport;
+    use crate::core::units::Combat;
+
+    let mut report = crate::test_support::empty_report(
+        Mission::default(),
+        Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
+    );
+    report.mission.objective = Icon::MissileStrike;
+    let missile = Unit::interplanetary_missile();
+    let defense = Unit::Defense(Defense::GaussCannon);
+    let record = |id, unit, shots| CombatUnit {
+        id,
+        unit,
+        owner: Some(if id == 1 {
+            1
+        } else {
+            2
+        }),
+        hull: unit.hull(),
+        shield: unit.shield(),
+        repairs: Vec::new(),
+        shots,
+    };
+    report.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport {
+            attacker: vec![record(
+                1,
+                missile,
+                vec![ShotReport {
+                    target_id: Some(20),
+                    unit: Some(defense),
+                    hull_damage: defense.hull(),
+                    killed: true,
+                    ..Default::default()
+                }],
+            )],
+            defender: vec![
+                record(10, Unit::Ship(Ship::Cruiser), Vec::new()),
+                record(20, defense, Vec::new()),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+
+    let mut movie = CinematicPlayback::new(&report);
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
+    let missile_index =
+        movie.timeline.actors.iter().position(|actor| actor.unit == missile).unwrap();
+    let ship_index = movie
+        .timeline
+        .actors
+        .iter()
+        .position(|actor| actor.unit == Unit::Ship(Ship::Cruiser))
+        .unwrap();
+    let defense_index =
+        movie.timeline.actors.iter().position(|actor| actor.unit == defense).unwrap();
+    assert!(movie.actor_visible(missile_index));
+    assert!(!movie.actor_visible(ship_index));
+    assert!(movie.actor_visible(defense_index));
+    assert_eq!(movie.timeline.entrance_duration, 1.4);
+
+    let shot = &movie.timeline.shots[0];
+    let launch_at = shot.launch_at;
+    let impact_at = shot.impact_at;
+    let start = movie.actor_pose(scene, missile_index, 0.0).center;
+    let middle = movie.actor_pose(scene, missile_index, impact_at * 0.5).center;
+    let impact = movie.actor_pose(scene, missile_index, impact_at).center;
+    assert!(start.x < scene.rect.left());
+    assert!(impact.y > start.y, "Missiles descend toward the planet instead of climbing");
+    assert!(middle.distance(start.lerp(impact, 0.5)) < 0.01, "Missile path must be straight");
+    let middle_pose = movie.actor_pose(scene, missile_index, impact_at * 0.5);
+    let bow = rotate(Vec2::angled(movie.visuals[missile_index].art_heading), middle_pose.angle);
+    assert!(
+        bow.dot((impact - start).normalized()) > 0.999,
+        "Missile artwork must point along its descent"
+    );
+    assert!(
+        impact.distance(movie.actor_pose(scene, defense_index, impact_at).center) < 0.01,
+        "The incoming missile itself must reach the recorded defense"
+    );
+
+    // The incoming actor is the missile. Do not create a second projectile between it and the
+    // target as the ordinary fleet-shot renderer used to do.
+    movie.elapsed = (launch_at + impact_at) * 0.5;
+    let shot = &movie.timeline.shots[0];
+    let context = bevy_egui::egui::Context::default();
+    let mut output = context.run_ui(bevy_egui::egui::RawInput::default(), |ui| {
+        movie.paint_shot(ui.painter(), scene, &ImageIds::default(), 0, shot);
+    });
+    output.textures_delta.clear();
+    assert!(output.shapes.is_empty());
+}
+
+#[test]
 fn capital_ships_hold_steady_courses_and_all_hulls_fly_bow_first() {
     use strum::IntoEnumIterator;
 
@@ -342,6 +438,7 @@ fn immediate_withdrawal_starts_visible_then_flies_out_without_exploding() {
             after_round: None,
             home_planet: 0,
             ships: [(Unit::Ship(Ship::LightFighter), 3)].into(),
+            fleets: Default::default(),
         }),
         ..Default::default()
     });

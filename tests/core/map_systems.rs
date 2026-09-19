@@ -4305,7 +4305,7 @@ fn modal_game_menus_hide_planet_details_even_with_selection_and_show_info() {
 }
 
 #[test]
-fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
+fn end_turn_keeps_its_label_and_disables_only_blocking_shared_choices() {
     let mut app = App::new();
     app.insert_resource(State::new(GameState::Playing))
         .insert_resource(Player::new(1, 0))
@@ -4324,22 +4324,36 @@ fn end_turn_keeps_its_label_and_disables_picking_during_shared_choices() {
             MainButtonLabelCmp,
         ))
         .id();
-    for kind in 0..3 {
-        *app.world_mut().resource_mut::<UiState>() = match kind {
-            0 => UiState {
+    let cases = [
+        (
+            UiState {
                 allied_mission: true,
                 ..default()
             },
-            1 => UiState {
+            true,
+        ),
+        (
+            UiState {
+                joint_attack_open: Some(9),
+                ..default()
+            },
+            false,
+        ),
+        (
+            UiState {
                 trading_post_open: Some(2),
                 ..default()
             },
-            _ => UiState::default(),
-        };
+            false,
+        ),
+        (UiState::default(), true),
+    ];
+    for (state, enabled) in cases {
+        *app.world_mut().resource_mut::<UiState>() = state;
         app.update();
         assert_eq!(app.world().get::<Text>(button).unwrap().0, "End turn");
-        assert_eq!(app.world().get::<Pickable>(button).unwrap().is_hoverable, kind == 2);
-        assert_eq!(app.world().get::<ImageNode>(button).unwrap().color == Color::WHITE, kind == 2);
+        assert_eq!(app.world().get::<Pickable>(button).unwrap().is_hoverable, enabled);
+        assert_eq!(app.world().get::<ImageNode>(button).unwrap().color == Color::WHITE, enabled);
     }
 }
 

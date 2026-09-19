@@ -201,8 +201,7 @@ fn hull_tint(color: Color32, strength: f32) -> Color32 {
     Color32::from_rgb(channel(color.r()), channel(color.g()), channel(color.b()))
 }
 
-/// Paint directly through the sprite's alpha and shading: markings remain part of the
-/// hull, including through bank, horizontal reflection and every recoil frame.
+/// Paint the source hull without decorative faction bands.
 pub(super) fn paint_owner_hull(
     painter: &Painter,
     texture: TextureId,
@@ -211,42 +210,10 @@ pub(super) fn paint_owner_hull(
     angle: f32,
     mirror: bool,
     uv: Rect,
-    owner: Option<Color32>,
+    _owner: Option<Color32>,
 ) {
-    let Some(color) = owner else {
-        rotated_image(painter, texture, center, dimensions, angle, mirror, uv, Color32::WHITE);
-        return;
-    };
-    let mut mesh = Mesh::with_texture(texture);
-    let reflection = vec2(
-        if mirror {
-            -1.0
-        } else {
-            1.0
-        },
-        1.0,
-    );
-    // Two broad armor bands stand out against a lightly tinted metallic hull.
-    let edges = [0.0, 0.28, 0.36, 0.43, 0.51, 1.0];
-    for (band, edge) in edges.windows(2).enumerate() {
-        let tint = if band == 1 || band == 3 {
-            color
-        } else {
-            hull_tint(color, 0.22)
-        };
-        let base = mesh.vertices.len() as u32;
-        for point in
-            [pos2(edge[0], 0.0), pos2(edge[1], 0.0), pos2(edge[1], 1.0), pos2(edge[0], 1.0)]
-        {
-            mesh.vertices.push(Vertex {
-                pos: center + rotate((point - pos2(0.5, 0.5)) * dimensions * reflection, angle),
-                uv: uv.min + point.to_vec2() * uv.size(),
-                color: tint,
-            });
-        }
-        mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    painter.add(Shape::mesh(mesh));
+    // The old UV-wide color bands read as detached lines across detailed ships at combat scale.
+    rotated_image(painter, texture, center, dimensions, angle, mirror, uv, Color32::WHITE);
 }
 
 impl CinematicPlayback {

@@ -9,7 +9,8 @@ use thiserror::Error;
 
 use crate::core::combat::report::MissionReport;
 use crate::core::combat::resolution::{
-    resolve_combat_with_retreat_with_rng, MAX_COMBAT_ROUNDS, MAX_SHOTS_PER_UNIT_PER_ROUND,
+    resolve_combat_with_retreat_with_rng, resolve_combat_with_retreats_with_rng, MAX_COMBAT_ROUNDS,
+    MAX_SHOTS_PER_UNIT_PER_ROUND,
 };
 use crate::core::constants::{
     ORBITAL_RAILGUN_DESTRUCTION_BASIS_POINTS_PER_LEVEL, ORBITAL_RAILGUN_FIRE_DEUTERIUM_COST,
@@ -1264,7 +1265,7 @@ pub fn preview_commands(
     player_id: PlayerId,
     commands: &[TurnCommand],
 ) -> Result<GameModel, GameError> {
-    preview_commands_with_allied_launches(state, player_id, commands, &[])
+    preview_commands_with_allied_launches(state, player_id, commands, &[], None)
 }
 
 /// Projects published allied launches alongside the local draft, before ordinary orders.
@@ -1274,10 +1275,20 @@ pub(crate) fn preview_commands_with_allied_launches(
     player_id: PlayerId,
     commands: &[TurnCommand],
     allied_launches: &[(PlayerId, TurnCommand)],
+    practice_boosts: Option<&BTreeMap<PlayerId, usize>>,
 ) -> Result<GameModel, GameError> {
     let mut preview = state.clone();
     preview.orbital_strikes.clear();
     reserve_trade_resources(&mut preview)?;
+    // Local Practice owns every draft, so a frozen allied contribution may legitimately use
+    // units created by that participant's saved shortcut. Online sessions never supply this map.
+    for (owner, count) in
+        practice_boosts.into_iter().flatten().filter(|(owner, _)| **owner != player_id)
+    {
+        for _ in 0..*count {
+            apply_command(&mut preview, *owner, &TurnCommand::PracticeBoost)?;
+        }
+    }
     // Match full-turn resolution: testing setup must exist before a Resource Hub or shared fleet
     // validates the completed infrastructure and units shown in the draft preview.
     for command in commands.iter().filter(|command| matches!(command, TurnCommand::PracticeBoost)) {
@@ -2583,9 +2594,6 @@ fn apply_mission(
     source_army.retain(|_, count| *count > 0);
     origin.army.retain_protectors(|_, army| army.has_army());
     origin.release_control_if_vacant();
-    if mission.objective.is_hostile_action() {
-        model.map.get_mut(destination_id).protection_permissions.remove(&player_id);
-    }
     model.missions.push(mission);
     Ok(())
 }
@@ -2755,10 +2763,6 @@ fn apply_joint_mission(
         });
         model.map.get_mut(contingent.origin).release_control_if_vacant();
         model.missions.push(contingent);
-    }
-    let destination = model.map.get_mut(destination_id);
-    for attacker in seen {
-        destination.protection_permissions.remove(&attacker);
     }
     Ok(())
 }
@@ -3009,17 +3013,23 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
                 for mission in regroup_missions(&arrived) {
                     let new_origin = model.map.get(mission.check_origin(&model.map)).clone();
-                    let retreat_destination = model
-                        .map
-                        .get(mission.destination)
+                    let defending_world = model.map.get(mission.destination);
+                    let retreat_destinations = defending_world
                         .controlled
-                        .and_then(|owner| model.players.iter().find(|player| player.id == owner))
+                        .into_iter()
+                        .chain(defending_world.army.protector_ids())
+                        .filter_map(|owner| model.players.iter().find(|player| player.id == owner))
                         .filter(|player| {
                             !player.spectator && player.home_planet != mission.destination
                         })
                         .map(|player| (player.id, model.map.get(player.home_planet)))
                         .filter(|(owner, home)| !home.is_destroyed && home.owned == Some(*owner))
-                        .map(|(owner, home)| (owner, home.clone()));
+                        .map(|(owner, home)| (owner, home.clone()))
+                        .collect::<BTreeMap<_, _>>();
+                    let retreat_homes = retreat_destinations
+                        .iter()
+                        .map(|(owner, home)| (*owner, home.id))
+                        .collect::<BTreeMap<_, _>>();
                     let joint_origins = mission
                         .joint_attack
                         .as_ref()
@@ -3056,21 +3066,37 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     let mut report = if deep_cover_succeeds || relay_diverts_spy {
                         resolve_spy_without_combat(turn, &mission, destination, &mut rng)
                     } else {
-                        resolve_combat_with_retreat_with_rng(
+                        resolve_combat_with_retreats_with_rng(
                             turn,
                             &mission,
                             destination,
                             energy,
-                            retreat_destination.as_ref().map(|(_, home)| home.id),
+                            &retreat_homes,
                             &mut rng,
                         )
                     };
-                    if let Some((owner, home)) = &retreat_destination {
-                        if let Some(retreat) = report
-                            .combat_report
-                            .as_ref()
-                            .and_then(|combat| combat.defender_retreat.as_ref())
-                        {
+                    // Keep protection access intact while hostile fleets are travelling. An early
+                    // revocation would disclose an ordinary or allied attack before it arrives.
+                    // Once the action resolves, revoke the former controller's invitations;
+                    // conquest may then grant surviving allied supporters fresh access.
+                    if report.mission.objective.is_hostile_action() {
+                        if let Some(attack) = report.mission.joint_attack.as_ref() {
+                            for attacker in attack.attackers.keys() {
+                                destination.protection_permissions.remove(attacker);
+                            }
+                        } else {
+                            destination.protection_permissions.remove(&report.mission.owner);
+                        }
+                    }
+                    if let Some(retreat) = report
+                        .combat_report
+                        .as_ref()
+                        .and_then(|combat| combat.defender_retreat.as_ref())
+                    {
+                        for (owner, fleet) in &retreat.fleets {
+                            let Some(home) = retreat_destinations.get(owner) else {
+                                continue;
+                            };
                             fleeing_missions.push(Mission::new_with_id(
                                 next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
                                 turn - 1,
@@ -3078,7 +3104,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 destination,
                                 home,
                                 Icon::Deploy,
-                                retreat.ships.clone(),
+                                fleet.ships.clone(),
                                 BombingRaid::None,
                                 false,
                                 false,
@@ -3631,6 +3657,9 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
             rng,
         );
         report.mission = original.clone();
+        // Restore the travelling objective and logs for presentation, but not the shared attack
+        // roster: allied contingents do not combine until they reach their destination.
+        report.mission.joint_attack = None;
         report.planet.owned = None;
         report.planet.controlled = None;
         report.destination_owned = None;
@@ -3739,8 +3768,17 @@ fn consolidate_joint_attack_arrivals(model: &mut GameModel) {
             continue;
         }
         contingents.sort_by_key(|mission| mission.owner);
-        let lead_index =
-            contingents.iter().position(|mission| mission.owner == leader).unwrap_or(0);
+        let Some(lead_index) = contingents.iter().position(|mission| mission.owner == leader)
+        else {
+            // The inviter's objective and conquest claim govern the operation. If that fleet was
+            // destroyed in transit, the remaining contributors cannot silently inherit command.
+            let turn = usize::try_from(model.turn).unwrap_or(usize::MAX);
+            for mut contingent in contingents {
+                contingent.recall(&model.map, turn);
+                model.missions.push(contingent);
+            }
+            continue;
+        };
         let mut combined = contingents.remove(lead_index);
         let mut attackers = BTreeMap::new();
         let mut origins = BTreeMap::new();
@@ -3754,9 +3792,15 @@ fn consolidate_joint_attack_arrivals(model: &mut GameModel) {
                 *total = total.saturating_add(count);
             }
         }
-        if let Some(attack) = &mut combined.joint_attack {
+        if attackers.len() < 2 {
+            // Attrition reduced the operation to the inviter's fleet, so it is no longer a joint
+            // battle. Treating it as an ordinary mission keeps both active-state and report
+            // invariants honest without resurrecting the destroyed contributor.
+            combined.joint_attack = None;
+        } else if let Some(attack) = &mut combined.joint_attack {
             attack.attackers = attackers;
             attack.origins = origins;
+            attack.combat_orders.retain(|owner, _| attack.attackers.contains_key(owner));
         }
         model.missions.push(combined);
     }

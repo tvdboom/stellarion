@@ -24,7 +24,7 @@ use crate::utils::NameFromEnum;
 pub(super) const FAUNA_ACTION_SECONDS: f32 = 7.5;
 pub(super) const FAUNA_AFTERMATH_SECONDS: f32 =
     FAUNA_ACTION_SECONDS + super::AFTERMATH_LABEL_EXTENSION_SECONDS;
-pub(super) const FAUNA_RESULT_LABEL_Y: f32 = 110.0;
+pub(super) const FAUNA_RESULT_LABEL_Y: f32 = 90.0;
 // Flight, weapons, body motion, audio and fades all use this authored timeline.
 const CHOREOGRAPHY_SECONDS: f32 = 2.8;
 const FAUNA_LABEL_APPEAR_SECONDS: f32 = FAUNA_ACTION_SECONDS * 1.95 / CHOREOGRAPHY_SECONDS;

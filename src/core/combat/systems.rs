@@ -19,7 +19,8 @@ pub use crate::core::combat::effects::{
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
 use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
 use crate::core::combat::report::{
-    combat_fleet_strength, combat_strength_ranges, CombatReport, MissionReport, RoundReport, Side,
+    combat_fleet_strength, combat_strength_ranges, CombatReport, DefenderRetreat, MissionReport,
+    RoundReport, Side,
 };
 use crate::core::combat::resolution::ShotReport;
 use crate::core::combat::result_banner;
@@ -77,30 +78,39 @@ const COMBAT_FORMATION_GROUP_FADE_PORTION: f32 = 0.28;
 #[derive(Component)]
 struct CombatOwnerBorder;
 
-/// A thin, continuous outline follows the card through movement, hiding and despawn.
-/// Mixed grouped cards divide the perimeter by owner count instead of assigning all
-/// allied ships to the commander whose card happens to be drawn first.
+/// A thin, continuous outline follows the image and its stat bars through movement,
+/// hiding and despawn. Mixed grouped cards divide the perimeter by owner count instead
+/// of assigning all allied ships to the commander whose card happens to be drawn first.
 fn spawn_combat_owner_border(
     parent: &mut ChildSpawnerCommands,
-    size: f32,
+    width: f32,
+    upper_extent: f32,
+    lower_extent: f32,
     scale: f32,
     owners: &[(Color, u128)],
 ) {
-    let thickness = (1.25 * scale).min(size * 0.06);
-    let half = size * 0.5;
+    let thickness = (1.25 * scale).min(width * 0.06);
+    let half_width = width * 0.5;
     let corners = [
-        Vec2::new(-half, half),
-        Vec2::new(half, half),
-        Vec2::new(half, -half),
-        Vec2::new(-half, -half),
-        Vec2::new(-half, half),
+        Vec2::new(-half_width, upper_extent),
+        Vec2::new(half_width, upper_extent),
+        Vec2::new(half_width, -lower_extent),
+        Vec2::new(-half_width, -lower_extent),
+        Vec2::new(-half_width, upper_extent),
     ];
+    let edge_lengths = [width, upper_extent + lower_extent, width, upper_extent + lower_extent];
+    let perimeter = edge_lengths.iter().sum::<f32>();
     let counts: Vec<_> = owners.iter().map(|(_, count)| *count).collect();
     for ((color, _), (start, end)) in owners.iter().zip(combat_strength_ranges(&counts)) {
+        let start = start * perimeter;
+        let end = end * perimeter;
+        let mut edge_start = 0.0;
         for edge in 0..4 {
-            let from = (start * 4.0 - edge as f32).clamp(0.0, 1.0);
-            let to = (end * 4.0 - edge as f32).clamp(0.0, 1.0);
+            let edge_end = edge_start + edge_lengths[edge];
+            let from = ((start.max(edge_start) - edge_start) / edge_lengths[edge]).clamp(0.0, 1.0);
+            let to = ((end.min(edge_end) - edge_start) / edge_lengths[edge]).clamp(0.0, 1.0);
             if to <= from {
+                edge_start = edge_end;
                 continue;
             }
             let a = corners[edge].lerp(corners[edge + 1], from);
@@ -115,6 +125,7 @@ fn spawn_combat_owner_border(
                 Pickable::IGNORE,
                 CombatOwnerBorder,
             ));
+            edge_start = edge_end;
         }
     }
 }
@@ -236,6 +247,18 @@ fn selected_combat_round<'a>(
     let combat = report.combat_report.as_ref()?;
     let round = combat.rounds.get(state.combat_round)?;
     Some((report, combat, round))
+}
+
+/// Returns whether an interceptor destroyed this exact incoming missile.
+fn missile_was_intercepted(round: &RoundReport, missile_id: u64) -> bool {
+    round.units(&Side::Defender).iter().any(|defender| {
+        defender.unit == Unit::antiballistic_missile()
+            && defender.shots.iter().any(|shot| {
+                shot.target_id == Some(missile_id)
+                    && shot.unit == Some(Unit::interplanetary_missile())
+                    && shot.killed
+            })
+    })
 }
 
 #[derive(Component)]
@@ -808,16 +831,15 @@ fn displayed_combat_unit_count(
     }
 
     let defender_owner = report.planet.controlled.or(report.planet.owned);
-    if card.side == Side::Defender
-        && card.unit.is_ship()
-        && owner == defender_owner
-        && (fleeing
-            || combat
-                .defender_retreat
-                .as_ref()
-                .is_some_and(|retreat| retreat.after_round.is_none()))
-    {
-        return report.escaped_defenders(&card.unit);
+    if card.side == Side::Defender && card.unit.is_ship() {
+        if let Some(ships) = combat
+            .defender_retreat
+            .as_ref()
+            .filter(|retreat| fleeing || retreat.after_round.is_none())
+            .and_then(|retreat| owner.and_then(|owner| retreat.ships_for(owner, defender_owner)))
+        {
+            return ships.amount(&card.unit);
+        }
     }
 
     let mut count = round
@@ -1374,6 +1396,24 @@ pub fn setup_combat(
             ));
             let card_entity = card.id();
             card.with_children(|parent| {
+                let has_shield_track = u.shield() > 0
+                    || *u == Unit::probe()
+                    || *u == Unit::crawler()
+                    || *u == Unit::repair_truck();
+                let bar_height = size * 0.14;
+                let shield_y = -size * 0.57;
+                let hull_y = if u.is_fauna() {
+                    shield_y
+                } else {
+                    -size * 0.69
+                };
+                let lower_extent = if u.hull() > 0 {
+                    -hull_y + bar_height * 0.5
+                } else if has_shield_track {
+                    -shield_y + bar_height * 0.5
+                } else {
+                    size * 0.5
+                };
                 let owners: Vec<_> = std::iter::once((owner, owner_count))
                     .chain(protection.iter().map(|(owner, count)| (Some(*owner), *count)))
                     .filter(|(_, count)| *count > 0)
@@ -1386,7 +1426,14 @@ pub fn setup_combat(
                         )
                     })
                     .collect();
-                spawn_combat_owner_border(parent, size, projection.scale, &owners);
+                spawn_combat_owner_border(
+                    parent,
+                    size,
+                    size * 0.5,
+                    lower_extent,
+                    projection.scale,
+                    &owners,
+                );
                 parent
                     .spawn((
                         Sprite {
@@ -1432,20 +1479,16 @@ pub fn setup_combat(
                 // Unshielded support units keep the same two-slot card layout as shielded
                 // units, using the depleted shield-track color for the empty slot. Missile
                 // cards still omit stats they do not have.
-                if u.shield() > 0
-                    || *u == Unit::probe()
-                    || *u == Unit::crawler()
-                    || *u == Unit::repair_truck()
-                {
+                if has_shield_track {
                     let has_shield = u.shield() > 0;
                     parent
                         .spawn((
                             Sprite {
                                 color: BG2_COLOR,
-                                custom_size: Some(Vec2::new(size, size * 0.14)),
+                                custom_size: Some(Vec2::new(size, bar_height)),
                                 ..default()
                             },
-                            Transform::from_xyz(0., -size * 0.57, 0.1),
+                            Transform::from_xyz(0., shield_y, 0.1),
                         ))
                         .with_children(|bar| {
                             let fill = (
@@ -1455,7 +1498,7 @@ pub fn setup_combat(
                                     } else {
                                         BG2_COLOR
                                     },
-                                    custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
+                                    custom_size: Some(Vec2::new(size * 0.96, bar_height * 0.75)),
                                     ..default()
                                 },
                                 Transform::from_xyz(0., 0., 0.2),
@@ -1468,22 +1511,17 @@ pub fn setup_combat(
                         });
                 }
                 if u.hull() > 0 {
-                    let hull_y = if u.is_fauna() {
-                        -size * 0.57
-                    } else {
-                        -size * 0.69
-                    };
                     parent.spawn((
                         Sprite {
                             color: BG2_COLOR,
-                            custom_size: Some(Vec2::new(size, size * 0.14)),
+                            custom_size: Some(Vec2::new(size, bar_height)),
                             ..default()
                         },
                         Transform::from_xyz(0., hull_y, 0.1),
                         children![(
                             Sprite {
                                 color: HEALTH_COLOR,
-                                custom_size: Some(Vec2::new(size * 0.96, size * 0.14 * 0.75)),
+                                custom_size: Some(Vec2::new(size * 0.96, bar_height * 0.75)),
                                 ..default()
                             },
                             Transform::from_xyz(0., 0., 0.2),
@@ -1699,27 +1737,37 @@ pub fn setup_combat(
                 // An immediate level-five withdrawal is intentionally absent from round zero.
                 // Give those ships visual stand-ins so individual mode can show their flyaway.
                 if state.combat_round == 0 && *side == Side::Defender && unit.is_ship() {
-                    let withdrawn = combat
+                    if let Some(retreat) = combat
                         .defender_retreat
                         .as_ref()
                         .filter(|retreat| retreat.after_round.is_none())
-                        .map_or(0, |retreat| retreat.ships.amount(unit));
-                    for _ in 0..withdrawn {
-                        let max_hull = report.unit_hull(*unit, side);
-                        let max_shield = report.unit_shield(*unit, side);
-                        individual_seeds.push(IndividualCardSeed {
-                            id: None,
-                            owner: defender_id,
-                            unit: *unit,
-                            side: side.clone(),
-                            group: *group,
-                            group_home: *group_home,
-                            entry_y: *entry_y,
-                            hull: max_hull,
-                            max_hull,
-                            shield: max_shield,
-                            max_shield,
-                        });
+                    {
+                        let mut add_withdrawn = |owner, withdrawn| {
+                            for _ in 0..withdrawn {
+                                let max_hull = report.unit_hull(*unit, side);
+                                let max_shield = report.unit_shield(*unit, side);
+                                individual_seeds.push(IndividualCardSeed {
+                                    id: None,
+                                    owner,
+                                    unit: *unit,
+                                    side: side.clone(),
+                                    group: *group,
+                                    group_home: *group_home,
+                                    entry_y: *entry_y,
+                                    hull: max_hull,
+                                    max_hull,
+                                    shield: max_shield,
+                                    max_shield,
+                                });
+                            }
+                        };
+                        if retreat.fleets.is_empty() {
+                            add_withdrawn(defender_id, retreat.ships.amount(unit));
+                        } else {
+                            for (owner, fleet) in &retreat.fleets {
+                                add_withdrawn(Some(*owner), fleet.ships.amount(unit));
+                            }
+                        }
                     }
                 }
             }
@@ -2001,8 +2049,16 @@ pub fn setup_combat(
             )));
         }
         card.with_children(|parent| {
-            spawn_combat_owner_border(parent, card_size, projection.scale, &[(owner_color, 1)]);
             let bar_height = (card_size * 0.11).max(2.0 * projection.scale);
+            let bar_count = usize::from(seed.max_shield > 0) + usize::from(seed.max_hull > 0);
+            spawn_combat_owner_border(
+                parent,
+                card_size,
+                card_size * 0.5,
+                card_size * 0.5 + bar_height * bar_count as f32,
+                projection.scale,
+                &[(owner_color, 1)],
+            );
             let first_bar_y = -card_size * 0.5 - bar_height * 0.5;
             if seed.max_shield > 0 {
                 parent.spawn((
@@ -2433,8 +2489,8 @@ fn start_fleet_retreat(
         (Entity, &Transform, &mut IndividualCombatUnitCmp),
         Without<CombatUnitCmp>,
     >,
-    ships: &crate::core::units::Army,
-    owner: Option<PlayerId>,
+    retreat: &DefenderRetreat,
+    defender_owner: Option<PlayerId>,
     center: Vec3,
     width: f32,
     height: f32,
@@ -2443,7 +2499,7 @@ fn start_fleet_retreat(
         if unit.side == Side::Defender
             && unit.unit != Unit::colony_ship()
             && unit.hull > 0
-            && ships.amount(&unit.unit) > 0
+            && retreat.ships.amount(&unit.unit) > 0
         {
             let horizontal_direction = if transform.translation.x < center.x {
                 -1.0
@@ -2472,8 +2528,11 @@ fn start_fleet_retreat(
             && unit.unit != Unit::colony_ship()
             && unit.unit.is_ship()
             && unit.hull > 0
-            && unit.owner == owner
-            && ships.amount(&unit.unit) > 0
+            && unit.owner.is_some_and(|owner| {
+                retreat
+                    .ships_for(owner, defender_owner)
+                    .is_some_and(|ships| ships.amount(&unit.unit) > 0)
+            })
         {
             let horizontal_direction = if transform.translation.x < center.x {
                 -1.0
@@ -2714,7 +2773,7 @@ pub fn animate_combat(
                 &mut commands,
                 &mut unit_q,
                 &mut individual_q,
-                &retreat.ships,
+                retreat,
                 report.planet.controlled.or(report.planet.owned),
                 pos,
                 projection.area.width(),
@@ -2738,6 +2797,28 @@ pub fn animate_combat(
         // advance a round or remove simultaneous return-fire cards before they arrive.
         if !pending_q.is_empty() {
             return;
+        }
+
+        // Successful intercepts have no hull damage to apply because missiles are ammunition
+        // with zero hull. Remove their exact cards once the interceptor effects have landed,
+        // before the surviving missiles are selected and highlighted for their own strike.
+        // Missed interception targets remain in the formation and fire normally.
+        if individual_mode && *combat_state.get() == CombatState::AntiBallistic {
+            let intercepted = individual_q
+                .iter()
+                .filter_map(|(entity, _, unit)| {
+                    (unit.side == Side::Attacker
+                        && unit.unit == Unit::interplanetary_missile()
+                        && unit.id.is_some_and(|id| missile_was_intercepted(round, id)))
+                    .then_some(entity)
+                })
+                .collect::<Vec<_>>();
+            if !intercepted.is_empty() {
+                for entity in intercepted {
+                    commands.entity(entity).despawn();
+                }
+                return;
+            }
         }
 
         // A volley deliberately leaves a short, speed-aware beat after all projectiles have
@@ -2962,7 +3043,7 @@ pub fn animate_combat(
                     &mut commands,
                     &mut unit_q,
                     &mut individual_q,
-                    &retreat.ships,
+                    retreat,
                     report.planet.controlled.or(report.planet.owned),
                     pos,
                     projection.area.width(),
@@ -3064,7 +3145,10 @@ pub fn animate_combat(
                                 .as_ref()
                                 .is_some_and(|retreat| retreat.after_round.is_none())
                         {
-                            report.planet.army.amount(&cu.unit)
+                            combat
+                                .defender_retreat
+                                .as_ref()
+                                .map_or(0, |retreat| retreat.ships.amount(&cu.unit))
                         } else {
                             round.units(&cu.side).iter().filter(|cu2| cu.unit == cu2.unit).count()
                         };

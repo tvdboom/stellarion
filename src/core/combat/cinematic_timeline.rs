@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use crate::core::combat::report::{MissionReport, RoundReport, Side};
 use crate::core::combat::resolution::ShotReport;
 use crate::core::identity::PlayerId;
-use crate::core::units::Unit;
+use crate::core::map::icon::Icon;
+use crate::core::units::{Amount, Unit};
 
 /// Minimum spacing for readable, separately animated losses on the same building.
 pub(crate) const LEVEL_LOSS_INTERVAL: f32 = 0.36;
@@ -115,7 +116,12 @@ impl CinematicTimeline {
             repairs: Vec::new(),
             planet_attacks: Vec::new(),
             level_losses: Vec::new(),
-            entrance_duration: 4.8,
+            // Missile strikes are a direct incoming barrage, not a fleet assembling in orbit.
+            entrance_duration: if report.mission.objective == Icon::MissileStrike {
+                1.4
+            } else {
+                4.8
+            },
             duration: 4.0,
             initial_planetary_shield,
             planetary_shield: vec![(0.0, initial_planetary_shield)],
@@ -168,20 +174,31 @@ impl CinematicTimeline {
             }
         }
         if let Some(retreat) = &combat.defender_retreat {
-            for (unit, count) in &retreat.ships {
-                if retreat.after_round.is_some() && *unit != Unit::colony_ship() {
-                    continue;
+            let controller = report.planet.controlled.or(report.planet.owned);
+            if retreat.fleets.is_empty() {
+                for (unit, count) in &retreat.ships {
+                    if retreat.after_round.is_some() && *unit != Unit::colony_ship() {
+                        continue;
+                    }
+                    for _ in 0..*count {
+                        let index = movie.add_actor(report, *unit, true, None, controller);
+                        if retreat.after_round.is_none() {
+                            movie.actors[index].retreat_at = Some(0.45);
+                        }
+                    }
                 }
-                for _ in 0..*count {
-                    let index = movie.add_actor(
-                        report,
-                        *unit,
-                        true,
-                        None,
-                        report.planet.controlled.or(report.planet.owned),
-                    );
-                    if retreat.after_round.is_none() {
-                        movie.actors[index].retreat_at = Some(0.45);
+            } else {
+                for (owner, fleet) in &retreat.fleets {
+                    for (unit, count) in &fleet.ships {
+                        if retreat.after_round.is_some() && *unit != Unit::colony_ship() {
+                            continue;
+                        }
+                        for _ in 0..*count {
+                            let index = movie.add_actor(report, *unit, true, None, Some(*owner));
+                            if retreat.after_round.is_none() {
+                                movie.actors[index].retreat_at = Some(0.45);
+                            }
+                        }
                     }
                 }
             }
@@ -633,9 +650,12 @@ impl CinematicTimeline {
         for record in &round.defender {
             if record.hull > 0
                 && record.unit.is_ship()
-                && record.owner == defender_owner
                 && retreat.is_some_and(|retreat| {
-                    retreat.ships.get(&record.unit).is_some_and(|count| *count > 0)
+                    record.owner.is_some_and(|owner| {
+                        retreat
+                            .ships_for(owner, defender_owner)
+                            .is_some_and(|ships| ships.amount(&record.unit) > 0)
+                    })
                 })
             {
                 self.actors[indices[&(true, record.id)]].retreat_at = Some(cursor);

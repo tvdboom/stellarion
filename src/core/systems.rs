@@ -353,7 +353,7 @@ pub fn testing_boost_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
-    session: Res<MultiplayerSession>,
+    mut session: ResMut<MultiplayerSession>,
     mut pending: ResMut<PendingTurnCommands>,
     mut messages: MessageWriter<crate::core::messages::MessageMsg>,
 ) {
@@ -382,6 +382,7 @@ pub fn testing_boost_keys(
         Ok((preview_player, preview_map)) => {
             *player = preview_player;
             *map = preview_map;
+            session.sync_local_practice_boosts(player.id, &pending);
         },
         Err(error) => {
             pending.commands.pop();

@@ -1206,15 +1206,21 @@ impl MultiplayerBackend for InMemoryBackend {
                 return Err(BackendError::InvalidData("unknown readiness generation".into()));
             }
             if !existing.is_some_and(|stored| stored.ready) {
+                // A Local Practice client owns every draft. Include its saved editable drafts so
+                // a published allied fleet can depend on another empire's same-turn testing
+                // shortcut. Online saves retain the normal ready-only visibility boundary.
+                let include_editable = stored.record.persisted.state.rules.practice_mode;
                 let ready_submissions = stored
                     .submissions
                     .range((draft.turn, 0)..=(draft.turn, PlayerId::MAX))
-                    .filter(|(_, stored)| stored.ready)
+                    .filter(|(key, stored)| {
+                        key.1 != player_id && (stored.ready || include_editable)
+                    })
                     .map(|(_, stored)| stored.submission.clone())
                     .collect::<Vec<_>>();
                 validate_joint_attack_commands(stored, &draft)?;
                 validate_incoming(&stored.record, &ready_submissions, &draft)?;
-                freeze_joint_attack_launches(stored, &draft);
+                freeze_joint_attack_launches(stored, &draft)?;
                 stored.submissions.insert(
                     key,
                     StoredTurnSubmission {
@@ -1288,10 +1294,13 @@ impl MultiplayerBackend for InMemoryBackend {
             } else if submission.generation != 0 {
                 return Err(BackendError::InvalidData("unknown readiness generation".into()));
             }
+            let include_editable = stored.record.persisted.state.rules.practice_mode;
             let existing = stored
                 .submissions
                 .range((submission.turn, 0)..=(submission.turn, PlayerId::MAX))
-                .filter(|(_, stored)| stored.ready)
+                .filter(|(key, stored)| {
+                    key.1 != submission.player_id && (stored.ready || include_editable)
+                })
                 .map(|(_, stored)| stored.submission.clone())
                 .collect::<Vec<_>>();
             if stored.joint_attacks.values().any(|invitation| {
@@ -1304,7 +1313,7 @@ impl MultiplayerBackend for InMemoryBackend {
             }
             validate_joint_attack_commands(stored, &submission)?;
             validate_incoming(&stored.record, &existing, &submission)?;
-            freeze_joint_attack_launches(stored, &submission);
+            freeze_joint_attack_launches(stored, &submission)?;
             let player_id = submission.player_id;
             let turn = submission.turn;
             stored.submissions.insert(
@@ -1641,22 +1650,72 @@ fn joint_attack_offer_changed(
     previous != next
 }
 
-/// Freeze accepted rosters only after the complete submission has passed validation.
-fn freeze_joint_attack_launches(stored: &mut StoredGame, submission: &TurnSubmission) {
-    for command in &submission.commands {
-        let TurnCommand::SendJointMission {
-            attack_id,
-            ..
-        } = command
-        else {
-            continue;
-        };
+/// Freezes accepted rosters only after the complete submission has passed validation.
+///
+/// Local Practice exposes every private draft to one person. Once a participant's fleet launches,
+/// their acceptance in another open proposal may refer to those same ships, especially when the
+/// fleet came from the current turn's testing boost. Return those overlapping-risk acceptances to
+/// Pending so the player must review the now-current fleet instead of hitting a late launch error.
+fn freeze_joint_attack_launches(
+    stored: &mut StoredGame,
+    submission: &TurnSubmission,
+) -> Result<(), BackendError> {
+    let launching = submission
+        .commands
+        .iter()
+        .filter_map(|command| {
+            let TurnCommand::SendJointMission {
+                attack_id,
+                contributions,
+                ..
+            } = command
+            else {
+                return None;
+            };
+            stored
+                .joint_attacks
+                .get(attack_id)
+                .is_some_and(|invitation| !invitation.launched)
+                .then(|| (*attack_id, contributions.clone()))
+        })
+        .collect::<Vec<_>>();
+    let launched_attack_ids =
+        launching.iter().map(|(attack_id, _)| *attack_id).collect::<HashSet<_>>();
+    let launched_fleets =
+        launching.iter().flat_map(|(_, contributions)| contributions).cloned().collect::<Vec<_>>();
+    let overlaps_launch = |participant: &crate::multiplayer::model::JointAttackParticipant| {
+        participant.contribution.as_ref().is_some_and(|reserved| {
+            launched_fleets.iter().any(|launched| {
+                launched.player_id == reserved.player_id
+                    && launched.origin == reserved.origin
+                    && launched
+                        .army
+                        .iter()
+                        .any(|(unit, count)| *count > 0 && reserved.army.amount(unit) > 0)
+            })
+        })
+    };
+    if stored.record.persisted.state.rules.practice_mode {
+        let revision_overflow = stored.joint_attacks.iter().any(|(attack_id, invitation)| {
+            invitation.turn == submission.turn
+                && !invitation.canceled
+                && !invitation.launched
+                && !launched_attack_ids.contains(attack_id)
+                && invitation.revision == u64::MAX
+                && invitation.participants.iter().any(|participant| {
+                    participant.response == JointAttackResponse::Accepted
+                        && overlaps_launch(participant)
+                })
+        });
+        if revision_overflow {
+            return Err(BackendError::InvalidData("joint_attack_revision".into()));
+        }
+    }
+
+    for (attack_id, _) in &launching {
         let Some(invitation) = stored.joint_attacks.get_mut(attack_id) else {
             continue;
         };
-        if invitation.launched {
-            continue;
-        }
         invitation.launched = true;
         if let Some(owner) = invitation.participants.first_mut() {
             // Sending is the host's final consent to the guests' current contributions.
@@ -1672,6 +1731,43 @@ fn freeze_joint_attack_launches(stored: &mut StoredGame, submission: &TurnSubmis
             );
         }
     }
+
+    if stored.record.persisted.state.rules.practice_mode && !launched_fleets.is_empty() {
+        let mut changed = Vec::new();
+        for invitation in stored.joint_attacks.values_mut().filter(|invitation| {
+            invitation.turn == submission.turn && !invitation.canceled && !invitation.launched
+        }) {
+            let invalidated =
+                invitation.participants.iter_mut().fold(false, |changed, participant| {
+                    if participant.response == JointAttackResponse::Accepted
+                        && overlaps_launch(participant)
+                    {
+                        participant.response = JointAttackResponse::Pending;
+                        true
+                    } else {
+                        changed
+                    }
+                });
+            if invalidated {
+                invitation.revision += 1;
+                changed.push(
+                    invitation.participants.iter().map(|item| item.player_id).collect::<Vec<_>>(),
+                );
+            }
+        }
+        for players in changed {
+            for player_id in players {
+                push_event(
+                    stored,
+                    BackendEventKind::JointAttackChanged,
+                    Some(submission.turn),
+                    Some(player_id),
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_joint_attack_commands(

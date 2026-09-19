@@ -689,7 +689,7 @@ fn cinematic_shared_effect_textures_survive_replays_without_reallocation() {
 }
 
 #[test]
-fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
+fn cinematic_identity_banners_keep_commander_colors_without_painting_hulls() {
     use crate::core::identity::{GameCode, GameId, UserId};
     use crate::core::missions::JointAttackMission;
     use crate::core::simulation::{GameModel, GameRules, PersistedGame};
@@ -771,10 +771,17 @@ fn cinematic_identity_banners_keep_commander_order_and_shared_player_colors() {
     let commander = segments.iter().find(|rect| rect.fill == attacker_color).unwrap();
     let ally = segments.iter().find(|rect| rect.fill == ally_color).unwrap();
     assert!((commander.rect.height() / ally.rect.height() - 3.0).abs() < 0.01);
-    assert!(shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Mesh(mesh) if mesh.texture_id == hull_texture
-            && mesh.vertices.iter().any(|vertex| vertex.color == ally_color))),
-        "The actual owner's selected lobby color must reach the hull, not the attacking commander's color");
+    let hull = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == hull_texture => Some(mesh),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        hull.vertices.iter().all(|vertex| vertex.color == egui::Color32::WHITE),
+        "Identity remains in the banners without adding colored lines to hull artwork"
+    );
 }
 
 #[test]

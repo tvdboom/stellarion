@@ -263,7 +263,7 @@ fn ordinary_ship_cannons_follow_targets_above_and_below_on_both_sides() {
 }
 
 #[test]
-fn allied_owner_paint_uses_each_ships_palette_and_stays_attached_in_every_frame() {
+fn cinematic_hulls_do_not_add_decorative_owner_bands() {
     let mut report = bombing_report();
     let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
     for (army, owners) in [(&mut round.attacker, [1, 3]), (&mut round.defender, [2, 4])] {
@@ -279,7 +279,7 @@ fn allied_owner_paint_uses_each_ships_palette_and_stays_attached_in_every_frame(
     };
     movie.set_owner_colors(palette);
     for (index, actor) in movie.timeline.actors.iter().enumerate() {
-        let Some(owner) = actor.owner else {
+        let Some(_owner) = actor.owner else {
             continue;
         };
         let sheet = movie.visuals[index].firing_sheet.unwrap();
@@ -304,8 +304,11 @@ fn allied_owner_paint_uses_each_ships_palette_and_stays_attached_in_every_frame(
                     );
                 });
                 let mesh = &sample[0];
-                assert_eq!(sample.len(), 1, "Markings must share the hull mesh");
-                assert!(mesh.vertices.iter().any(|vertex| vertex.color == palette(owner)));
+                assert_eq!(sample.len(), 1);
+                assert!(
+                    mesh.vertices.iter().all(|vertex| vertex.color == Color32::WHITE),
+                    "Player color must not add bands or lines over hull artwork"
+                );
                 let uv = frame_uv(frame, FULL_UV);
                 for vertex in &mesh.vertices {
                     assert!(uv.contains(vertex.uv), "Paint leaked into another firing frame");
@@ -323,8 +326,7 @@ fn allied_owner_paint_uses_each_ships_palette_and_stays_attached_in_every_frame(
                             (point - Vec2::splat(0.5)) * sheet.dimensions(pose.size) * reflection,
                             pose.angle,
                         );
-                    assert!(vertex.pos.distance(expected) < 0.001,
-                        "Owner paint must follow the exact visible hull through bank and reflection");
+                    assert!(vertex.pos.distance(expected) < 0.001);
                 }
             }
         }

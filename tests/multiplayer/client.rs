@@ -1,6 +1,6 @@
 use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
 use bevy::ecs::system::RunSystemOnce;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 use crate::core::simulation::resolve_turn;
@@ -552,10 +552,15 @@ fn local_practice_switching_preserves_each_players_draft() {
         2
     );
     assert!(app.world().resource::<PendingTurnCommands>().commands.is_empty());
+    assert_eq!(app.world().resource::<MultiplayerSession>().practice_boosts.get(&1), Some(&1));
     assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
 
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
     app.update();
+    assert_eq!(
+        app.world().resource::<MultiplayerSession>().practice_boosts,
+        BTreeMap::from([(1, 1), (2, 1)])
+    );
     assert!(matches!(
         app.world().resource::<PendingTurnCommands>().commands.as_slice(),
         [TurnCommand::PracticeBoost]
@@ -666,8 +671,6 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
         }
         app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost);
     }
-    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
-    settle_local_practice(&mut app);
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(1));
     app.update();
     let model = app
@@ -737,7 +740,14 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
     };
     app.world_mut().resource_mut::<MultiplayerSession>().joint_attacks = vec![invitation];
     app.world_mut().resource_mut::<PendingTurnCommands>().push(command.clone());
-    let expected = crate::core::simulation::preview_commands(&model, 1, &[command]).unwrap();
+    assert!(contributions.iter().all(|contribution| {
+        model.map.get(contribution.origin).army.amount(&Unit::war_sun()) == 0
+    }));
+    let expected = app
+        .world()
+        .resource::<MultiplayerSession>()
+        .preview_commands(&model, 1, &[TurnCommand::PracticeBoost, command.clone()])
+        .unwrap();
     app.world_mut().write_message(MultiplayerRequest::PublishJointMission);
     settle_local_practice(&mut app);
     assert!(app.world().resource::<MultiplayerSession>().joint_attacks[0].launched);
@@ -759,28 +769,45 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
         TurnSubmissionScope::All,
     ))
     .unwrap();
-    assert_eq!(saved.len(), 1);
-    assert!(!saved[0].ready, "Send must not end the player's turn");
+    assert_eq!(saved.len(), 2);
+    assert!(saved.iter().all(|stored| !stored.ready), "Send must not end any player's turn");
+    let leader_saved = saved.iter().find(|stored| stored.submission.player_id == 1).unwrap();
+    let supporter_saved = saved.iter().find(|stored| stored.submission.player_id == 2).unwrap();
+    assert!(matches!(supporter_saved.submission.commands.as_slice(), [TurnCommand::PracticeBoost]));
     assert!(block_on(backend.load_joint_attacks(&guest, &game_id)).unwrap()[0].launched);
     app.world_mut().write_message(MultiplayerRequest::SwitchLocalPracticePlayer(2));
     app.update();
     let session = app.world().resource::<MultiplayerSession>();
     let pending = app.world().resource::<PendingTurnCommands>();
-    assert!(pending.commands.is_empty());
+    assert!(matches!(pending.commands.as_slice(), [TurnCommand::PracticeBoost]));
     let preview = session.preview_commands(&model, 2, &pending.commands).unwrap();
     assert_eq!(
         serde_json::to_value(&preview.missions).unwrap(),
         serde_json::to_value(&expected.missions).unwrap()
     );
     for contribution in contributions {
-        assert_eq!(
-            preview.map.get(contribution.origin).army.amount(&Unit::war_sun()),
-            model.map.get(contribution.origin).army.amount(&Unit::war_sun()) - 1
-        );
+        assert_eq!(preview.map.get(contribution.origin).army.amount(&Unit::war_sun()), 2);
     }
     assert_eq!(
-        session.preview_commands(&model, 1, &saved[0].submission.commands).unwrap().missions.len(),
+        session
+            .preview_commands(&model, 1, &leader_saved.submission.commands)
+            .unwrap()
+            .missions
+            .len(),
         2
+    );
+    app.world_mut().write_message(MultiplayerRequest::AdvanceLocalPracticeTurn);
+    settle_local_practice(&mut app);
+    assert_eq!(
+        app.world()
+            .resource::<MultiplayerSession>()
+            .active_game
+            .as_ref()
+            .unwrap()
+            .persisted
+            .state
+            .turn,
+        model.turn + 1
     );
 }
 

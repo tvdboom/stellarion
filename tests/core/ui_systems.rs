@@ -358,6 +358,10 @@ fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let owner = 3;
     let allies = [1, 4];
+    let defender = 2;
+    let mut target = Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0);
+    target.controlled = Some(defender);
+    target.army.insert(fighter, 5);
     let report = crate::test_support::empty_report(
         Mission {
             owner,
@@ -372,16 +376,18 @@ fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
             }),
             ..default()
         },
-        Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0),
+        target,
     );
     let session = MultiplayerSession::default();
     let colors =
         [owner, allies[0], allies[1]].map(|id| session.player_color(id).color().to_color32());
     let context = egui::Context::default();
+    let mut defender_width = 0.0;
     let mut output = context.run_ui(Default::default(), |ui| {
         ui.set_width(400.0);
         ui.horizontal(|ui| {
-            draw_mission_report_strength_bars(ui, &report, &session, 200.0);
+            defender_width = ui.available_width() - 200.0 - ui.spacing().item_spacing.x;
+            draw_mission_report_strength_bars(ui, &report, &session, owner, 200.0);
         });
     });
     output.textures_delta.clear();
@@ -400,6 +406,92 @@ fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
     assert_eq!(segments.map(|rect| rect.top()), [segments[0].top(); 3]);
     assert_eq!(segments[0].right(), segments[1].left());
     assert_eq!(segments[1].right(), segments[2].left());
+    let defender_color = session.player_color(defender).color().to_color32();
+    let defender_bar = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == defender_color => Some(rect.rect),
+            _ => None,
+        })
+        .expect("defender strength bar");
+    assert_eq!(defender_bar.width(), defender_width);
+}
+
+#[test]
+fn mission_report_strength_bar_hides_an_unknown_attackers_color() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let owner = 3;
+    let viewer = 1;
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner,
+            objective: Icon::Spy,
+            army: Army::from([(fighter, 1)]),
+            ..default()
+        },
+        Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0),
+    );
+    let session = MultiplayerSession::default();
+    let owner_color = session.player_color(owner).color().to_color32();
+    let context = egui::Context::default();
+    let mut output = context.run_ui(Default::default(), |ui| {
+        ui.set_width(400.0);
+        ui.horizontal(|ui| {
+            draw_mission_report_strength_bars(ui, &report, &session, viewer, 200.0);
+        });
+    });
+    output.textures_delta.clear();
+
+    assert!(output.shapes.iter().any(|shape| matches!(
+        &shape.shape,
+        egui::Shape::Rect(rect)
+            if rect.fill == NEUTRAL_COMBAT_COLOR && (rect.rect.width() - 200.0).abs() < 0.1
+    )));
+    assert!(!output.shapes.iter().any(|shape| matches!(
+        &shape.shape,
+        egui::Shape::Rect(rect) if rect.fill == owner_color
+    )));
+}
+
+#[test]
+fn mission_report_strength_bar_marks_an_empty_planet_in_neutral_gray() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let owner = 3;
+    let report = crate::test_support::empty_report(
+        Mission {
+            owner,
+            objective: Icon::Attack,
+            army: Army::from([(fighter, 1)]),
+            ..default()
+        },
+        Planet::new(0, "Empty".into(), Vec2::ZERO, false, 1.0),
+    );
+    let session = MultiplayerSession::default();
+    let context = egui::Context::default();
+    let mut defender_width = 0.0;
+    let mut output = context.run_ui(Default::default(), |ui| {
+        ui.set_width(400.0);
+        ui.horizontal(|ui| {
+            defender_width = ui.available_width() - 140.0 - ui.spacing().item_spacing.x;
+            draw_mission_report_strength_bars(ui, &report, &session, owner, 140.0);
+        });
+    });
+    output.textures_delta.clear();
+
+    let neutral_bars = output
+        .shapes
+        .iter()
+        .filter(|shape| {
+            matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect)
+                    if rect.fill == NEUTRAL_COMBAT_COLOR
+                        && (rect.rect.width() - defender_width).abs() < 0.1
+            )
+        })
+        .count();
+    assert_eq!(neutral_bars, 1);
 }
 
 #[test]

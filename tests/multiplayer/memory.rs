@@ -513,9 +513,22 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
             contributions: exact_contributions,
         }],
     );
+    let mut competing = invitation.clone();
+    competing.id = 599;
+    block_on(backend.create_joint_attack(&host, &active.id, competing.clone())).unwrap();
+    block_on(backend.respond_joint_attack(
+        &sessions[0],
+        &active.id,
+        competing.id,
+        competing.revision,
+        JointAttackResponse::Accepted,
+        Some(contribution(2, guest_home)),
+    ))
+    .unwrap();
     {
         let mut state = backend.lock().unwrap();
         let stored = state.games.get_mut(&active.id).unwrap();
+        stored.record.persisted.state.rules.practice_mode = true;
         assert!(validate_joint_attack_commands(stored, &exact_launch).is_ok());
         let mut spoofed_launch = exact_launch.clone();
         if let TurnCommand::SendJointMission {
@@ -526,7 +539,7 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
             contributions.pop();
         }
         assert!(validate_joint_attack_commands(stored, &spoofed_launch).is_err());
-        freeze_joint_attack_launches(stored, &exact_launch);
+        freeze_joint_attack_launches(stored, &exact_launch).unwrap();
         stored.submissions.insert(
             (active.persisted.state.turn, 1),
             StoredTurnSubmission {
@@ -536,6 +549,15 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
             },
         );
     }
+    let competing = block_on(backend.load_joint_attacks(&sessions[0], &active.id))
+        .unwrap()
+        .into_iter()
+        .find(|attack| attack.id == competing.id)
+        .unwrap();
+    assert_eq!(competing.revision, 2);
+    assert!(competing.participants.iter().all(|participant| {
+        participant.response == JointAttackResponse::Pending && participant.contribution.is_some()
+    }));
     assert!(matches!(
         block_on(backend.cancel_joint_attack(&host, &active.id, invitation.id)),
         Err(BackendError::Forbidden)

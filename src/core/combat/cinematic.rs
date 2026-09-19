@@ -15,6 +15,7 @@ use super::cinematic_timeline::{
 use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
 use super::report::{MissionReport, Side};
 use crate::core::identity::PlayerId;
+use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Planet, PlanetKind};
 use crate::core::map::utils::{MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT};
 use crate::core::missions::BombingRaid;
@@ -54,6 +55,7 @@ pub(crate) struct CinematicPlayback {
     planet_uv: Rect,
     show_planet: bool,
     gas_planet: bool,
+    missile_strike: bool,
 }
 
 struct ActorVisual {
@@ -122,11 +124,15 @@ impl CinematicPlayback {
     pub fn new(report: &MissionReport) -> Self {
         let timeline = CinematicTimeline::new(report);
         let gas_planet = report.planet.kind == PlanetKind::Gas;
+        let missile_strike = report.mission.objective == Icon::MissileStrike;
         let visible: Vec<_> = timeline
             .actors
             .iter()
             .map(|actor| {
-                (!actor.unit.is_orbital() || actor.unit == Unit::space_dock())
+                (!missile_strike
+                    || actor.side != Side::Defender
+                    || !actor.unit.is_ship() && !actor.unit.is_orbital())
+                    && (!actor.unit.is_orbital() || actor.unit == Unit::space_dock())
                     && (actor.initial_levels.is_none()
                         || (actor.unit.is_economic_building()
                             && report.mission.includes_bombing(&BombingRaid::Economic))
@@ -273,6 +279,7 @@ impl CinematicPlayback {
             planet_uv,
             show_planet: !report.is_space_fauna_encounter(),
             gas_planet,
+            missile_strike,
         }
     }
 
@@ -594,7 +601,13 @@ impl CinematicPlayback {
                 Stroke::new(1.8 * scene.scale, alpha(BLUE, 0.12 - ring as f32 * 0.018)),
             );
         }
-        let shield = self.timeline.planetary_shield_at(self.elapsed);
+        // Strategic missiles bypass the fleet and planetary shield; only surface defenses and
+        // their antiballistic interceptors participate in this presentation.
+        let shield = if self.missile_strike {
+            0
+        } else {
+            self.timeline.planetary_shield_at(self.elapsed)
+        };
         if shield > 0 {
             let ratio = (shield as f32 / self.timeline.initial_planetary_shield.max(1) as f32)
                 .clamp(0.0, 1.0);
@@ -686,6 +699,17 @@ impl CinematicPlayback {
         let mut pose = self.actor_flight_pose(scene, index, time);
         let actor = &self.timeline.actors[index];
         let visual = &self.visuals[index];
+        if self.missile_strike && actor.unit == Unit::interplanetary_missile() {
+            // The source artwork points upward; rotate it onto the saved straight approach rather
+            // than applying the banking and cannon-aiming behavior used by maneuvering ships.
+            let velocity = self.actor_flight_pose(scene, index, time + 0.025).center
+                - self.actor_flight_pose(scene, index, time - 0.025).center;
+            if velocity.length_sq() > 0.000_001 {
+                pose.angle = velocity.angle() - visual.art_heading;
+            }
+            pose.mirror = false;
+            return pose;
+        }
         if !visual.ground && actor.unit != Unit::space_dock() {
             // Face the actual course, including approach, shield clearance and withdrawal.
             // Sampling the immutable path keeps pause, speed changes and seeking identical.
@@ -854,6 +878,9 @@ impl CinematicPlayback {
     fn actor_cruise_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
         let actor = &self.timeline.actors[index];
         let visual = &self.visuals[index];
+        if self.missile_strike && actor.unit == Unit::interplanetary_missile() {
+            return self.incoming_missile_pose(scene, index, time);
+        }
         let mirror = actor.side == Side::Defender;
         let direction = if mirror {
             -1.0
@@ -980,9 +1007,57 @@ impl CinematicPlayback {
         }
     }
 
+    /// Strategic missiles are themselves the projectile: one straight descent replaces the
+    /// fleet arrival, orbit and second projectile that ordinary combat actors use.
+    fn incoming_missile_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
+        let visual = &self.visuals[index];
+        let actor = &self.timeline.actors[index];
+        let strike = self.timeline.shots.iter().find(|shot| shot.source == index);
+        let destination = strike
+            .and_then(|shot| {
+                shot.target
+                    .map(|target| self.actor_cruise_pose(scene, target, shot.impact_at).center)
+            })
+            .unwrap_or_else(|| {
+                let lane = noise(index as u32 + 911) - 0.5;
+                scene.planet + vec2(-0.72, -0.24 + lane * 0.72) * scene.planet_radius
+            });
+        // An intercepted missile is still heading for the surface when it is destroyed. Giving
+        // that unseen destination a little extra travel time leaves the recorded intercept aloft.
+        let arrival = strike.map_or_else(
+            || {
+                actor
+                    .retreat_at
+                    .or(actor.death_at.map(|at| at + 0.8))
+                    .unwrap_or(self.timeline.duration - 0.5)
+            },
+            |shot| shot.impact_at,
+        );
+        let lane = noise(index as u32 + 733) - 0.5;
+        let start = pos2(
+            scene.rect.left() - visual.size * scene.scale,
+            (destination.y - scene.rect.height() * (0.18 + lane * 0.08))
+                .clamp(scene.rect.top() + 20.0, scene.rect.bottom() - 20.0),
+        );
+        let progress = (time / arrival.max(0.1)).clamp(0.0, 1.0);
+        ActorPose {
+            center: start.lerp(destination, progress),
+            size: visual.size * scene.scale,
+            angle: 0.0,
+            mirror: false,
+        }
+    }
+
     fn paint_actor(&self, painter: &Painter, scene: Scene, images: &ImageIds, index: usize) {
         let actor = &self.timeline.actors[index];
         if actor.death_at.is_some_and(|at| self.elapsed >= at)
+            || self.missile_strike
+                && actor.unit == Unit::interplanetary_missile()
+                && self
+                    .timeline
+                    .shots
+                    .iter()
+                    .any(|shot| shot.source == index && self.elapsed >= shot.impact_at)
             || actor.retreat_at.is_some_and(|at| self.elapsed >= at + 1.7)
             || !self.visuals[index].visible
         {
@@ -993,7 +1068,6 @@ impl CinematicPlayback {
         if !scene.rect.expand(pose.size).contains(pose.center) {
             return;
         }
-        let identity_color = visual.owner_color.unwrap_or(Color32::from_rgb(190, 198, 210));
         let direction = if pose.mirror {
             -1.0
         } else {
@@ -1029,22 +1103,6 @@ impl CinematicPlayback {
                     Color32::from_black_alpha(95),
                 ));
             }
-        } else if !actor.unit.is_fauna() && actor.unit != Unit::space_dock() {
-            let heading = Vec2::angled(visual.art_heading) * vec2(direction, 1.0);
-            let engine = pose.center - rotate(heading * pose.size * 0.32, pose.angle);
-            let thrust = (self.elapsed * 18.0 + visual.phase).sin() * 0.10 + 0.9;
-            let entering = self.elapsed < self.timeline.entrance_duration;
-            let fleeing = actor.retreat_at.is_some_and(|at| self.elapsed > at);
-            let length = pose.size
-                * if entering || fleeing {
-                    0.55
-                } else {
-                    0.23
-                }
-                * thrust;
-            let tail = engine - rotate(heading * length, pose.angle);
-            exhaust(painter, engine, tail, pose.size * 0.06, identity_color);
-            glow(painter, engine, pose.size * 0.18, identity_color, 0.35);
         }
         let cinematic_texture = images.0.get(&visual.texture);
         let texture = cinematic_texture.or_else(|| images.0.get(&visual.fallback_texture));
@@ -1083,30 +1141,6 @@ impl CinematicPlayback {
                 toward_enemy - 0.42,
                 0.84,
                 Stroke::new(scene.scale, alpha(BLUE, shield_strength * 0.10)),
-            );
-        }
-        // Navigation lights and engine pulses keep the scene alive between recorded shots.
-        let beacon = pose.center
-            + rotate(
-                vec2(
-                    0.0,
-                    if visual.ground {
-                        0.18
-                    } else {
-                        0.0
-                    },
-                ) * pose.size,
-                pose.angle,
-            );
-        let blink = 0.35 + 0.65 * (self.elapsed * 2.1 + visual.phase).sin().powi(8);
-        glow(painter, beacon, (pose.size * 0.06).max(2.0 * scene.scale), identity_color, blink);
-        if visual.owner_color.is_some() {
-            // A steady attached running light remains legible when zoomed out; ownership
-            // never disappears at the dark part of the decorative blinking cycle.
-            painter.circle_filled(
-                beacon,
-                (pose.size * 0.022).max(1.2 * scene.scale),
-                identity_color,
             );
         }
         if actor.levels_at(self.elapsed).is_some() {
@@ -1249,7 +1283,8 @@ impl CinematicPlayback {
         let (mut start, end, target_size) = self.shot_geometry(scene, index, shot);
         let source = &self.timeline.actors[shot.source];
         let weapon = Weapon::for_shot(source.unit, &shot.outcome);
-        if weapon.beam_width().is_some() {
+        let direct_missile = self.missile_strike && source.unit == Unit::interplanetary_missile();
+        if !direct_missile && weapon.beam_width().is_some() {
             // A completed salvo's afterglow must not follow a War Sun into its new
             // planet-strike formation and appear to shoot toward an abandoned target.
             start = self.actor_muzzle(scene, shot.source, self.elapsed.min(shot.impact_at), end);
@@ -1277,7 +1312,7 @@ impl CinematicPlayback {
             size,
             lane: (index % 3) as f32 - 1.0,
         };
-        if self.elapsed < release && weapon.charge() > 0.0 {
+        if !direct_missile && self.elapsed < release && weapon.charge() > 0.0 {
             // The charging field follows its ship; the released projectile keeps its saved pose.
             let charging_muzzle = self.actor_muzzle(scene, shot.source, self.elapsed, end);
             let charging_origin = BevyVec3::new(charging_muzzle.x, charging_muzzle.y, 0.0);
@@ -1334,7 +1369,7 @@ impl CinematicPlayback {
                 }
             }
         }
-        if age >= 0.0 {
+        if !direct_missile && age >= 0.0 {
             if self.elapsed < shot.impact_at {
                 paint_weapon_body(painter, images, flight, progress, scene.scale);
             }
@@ -1946,6 +1981,7 @@ fn sprite_heading(unit: Unit) -> f32 {
         Unit::Ship(Ship::LightFighter | Ship::Cruiser) => -27.0,
         Unit::Ship(Ship::Bomber | Ship::Battleship) => 25.0,
         Unit::Ship(Ship::Dreadnought) => -23.0,
+        Unit::Defense(Defense::InterplanetaryMissile) => -28.0,
         _ => 0.0,
     };
     degrees.to_radians()
@@ -2200,22 +2236,6 @@ fn glow_line(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color
             Stroke::new(width * factor, alpha(color, strength * opacity)),
         );
     }
-}
-
-/// A tapered, transparent plume avoids the rectangular ends of wide line primitives.
-fn exhaust(painter: &Painter, engine: Pos2, tail: Pos2, width: f32, color: Color32) {
-    let direction = (tail - engine).normalized();
-    let perpendicular = vec2(-direction.y, direction.x);
-    let mut mesh = Mesh::default();
-    for (scale, center_color) in [(2.0, alpha(color, 0.65)), (0.65, alpha(Color32::WHITE, 0.9))] {
-        let base = mesh.vertices.len() as u32;
-        mesh.colored_vertex(engine, center_color);
-        mesh.colored_vertex(engine + perpendicular * width * scale, Color32::TRANSPARENT);
-        mesh.colored_vertex(tail, Color32::TRANSPARENT);
-        mesh.colored_vertex(engine - perpendicular * width * scale, Color32::TRANSPARENT);
-        mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    painter.add(Shape::mesh(mesh));
 }
 
 fn arc(painter: &Painter, center: Pos2, radius: f32, start: f32, sweep: f32, stroke: Stroke) {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::combat::report::{CombatReport, DefenderRetreat};
+use crate::core::combat::report::{CombatReport, DefenderRetreat, RetreatingFleet};
 use crate::core::combat::resolution::{resolve_combat_with_rng, CombatUnit};
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
@@ -213,6 +213,7 @@ fn retreat_moves_only_commanders_survivors_and_includes_colony_support() {
         after_round: Some(0),
         home_planet: 2,
         ships: Army::from([(fighter, 1), (Unit::colony_ship(), 1)]),
+        fleets: Default::default(),
     });
     let movie = CinematicTimeline::new(&battle);
     let defender = &movie.actors[actor_index(&movie, true, 2)];
@@ -225,6 +226,44 @@ fn retreat_moves_only_commanders_survivors_and_includes_colony_support() {
 }
 
 #[test]
+fn collective_retreat_moves_controller_and_protector_survivors() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut battle = report(vec![RoundReport {
+        attacker: vec![record(1, 1, fighter)],
+        defender: vec![record(2, 2, fighter), record(3, 3, fighter)],
+        ..Default::default()
+    }]);
+    battle.combat_report.as_mut().unwrap().defender_retreat = Some(DefenderRetreat {
+        after_round: Some(0),
+        home_planet: 20,
+        ships: Army::from([(fighter, 2)]),
+        fleets: std::collections::BTreeMap::from([
+            (
+                2,
+                RetreatingFleet {
+                    home_planet: 20,
+                    ships: Army::from([(fighter, 1)]),
+                },
+            ),
+            (
+                3,
+                RetreatingFleet {
+                    home_planet: 30,
+                    ships: Army::from([(fighter, 1)]),
+                },
+            ),
+        ]),
+    });
+
+    let movie = CinematicTimeline::new(&battle);
+
+    let controller = &movie.actors[actor_index(&movie, true, 2)];
+    let protector = &movie.actors[actor_index(&movie, true, 3)];
+    assert_eq!(controller.retreat_at, protector.retreat_at);
+    assert!(controller.retreat_at.is_some());
+}
+
+#[test]
 fn immediate_retreat_has_individual_living_ships_without_invented_shots() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut battle = report(vec![RoundReport::default()]);
@@ -232,6 +271,7 @@ fn immediate_retreat_has_individual_living_ships_without_invented_shots() {
         after_round: None,
         home_planet: 2,
         ships: Army::from([(fighter, 3), (Unit::colony_ship(), 1)]),
+        fleets: Default::default(),
     });
     let movie = CinematicTimeline::new(&battle);
     assert_eq!(movie.actors.len(), 4);

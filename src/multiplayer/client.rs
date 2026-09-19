@@ -4,6 +4,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(debug_assertions)]
+use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
@@ -187,6 +189,9 @@ pub struct MultiplayerSession {
     pub local_practice: bool,
     #[cfg(debug_assertions)]
     practice_turn_requested: bool,
+    /// Saved per-empire shortcut counts needed to project cross-player practice launches.
+    #[cfg(debug_assertions)]
+    practice_boosts: BTreeMap<crate::core::identity::PlayerId, usize>,
     /// Whether a foreground menu operation is still running.
     pub busy: bool,
     /// Whether one compact protection patch is still in flight.
@@ -214,6 +219,33 @@ pub struct MultiplayerSession {
 }
 
 impl MultiplayerSession {
+    /// Keeps debug Local Practice projections aligned with the selected empire's live draft.
+    pub(crate) fn sync_local_practice_boosts(
+        &mut self,
+        player_id: crate::core::identity::PlayerId,
+        pending: &PendingTurnCommands,
+    ) {
+        #[cfg(debug_assertions)]
+        {
+            if !self.local_practice {
+                return;
+            }
+            let boosts = pending
+                .commands
+                .iter()
+                .chain(&pending.queued_commands)
+                .filter(|command| matches!(command, TurnCommand::PracticeBoost))
+                .count();
+            if boosts == 0 {
+                self.practice_boosts.remove(&player_id);
+            } else {
+                self.practice_boosts.insert(player_id, boosts);
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = (player_id, pending);
+    }
+
     /// Whether the selected match still has enough active players for joint attacks.
     pub(crate) fn joint_attacks_enabled(&self) -> bool {
         self.membership.is_some()
@@ -262,8 +294,16 @@ impl MultiplayerSession {
                 )
             })
             .collect::<Vec<_>>();
+        #[cfg(debug_assertions)]
+        let practice_boosts = self.local_practice.then_some(&self.practice_boosts);
+        #[cfg(not(debug_assertions))]
+        let practice_boosts = None;
         crate::core::simulation::preview_commands_with_allied_launches(
-            state, player_id, commands, &launches,
+            state,
+            player_id,
+            commands,
+            &launches,
+            practice_boosts,
         )
     }
 
@@ -388,6 +428,7 @@ impl MultiplayerSession {
         #[cfg(debug_assertions)]
         {
             self.practice_turn_requested = false;
+            self.practice_boosts.clear();
         }
     }
 }
@@ -872,7 +913,7 @@ async fn create_local_practice(
 #[cfg(debug_assertions)]
 fn store_selected_practice_draft(
     runtime: &mut ClientRuntime,
-    session: &MultiplayerSession,
+    session: &mut MultiplayerSession,
     pending: &PendingTurnCommands,
 ) {
     let Some(player_id) = session.membership.as_ref().map(|member| member.player_id) else {
@@ -883,6 +924,7 @@ fn store_selected_practice_draft(
     {
         player.pending = pending.clone();
     }
+    session.sync_local_practice_boosts(player_id, pending);
 }
 
 /// Builds one complete stable submission set from the locally controlled practice drafts.
@@ -1141,7 +1183,7 @@ fn process_requests(
             if !session.local_practice || !tasks.0.is_empty() || session.joint_launch_save_needed {
                 continue;
             }
-            store_selected_practice_draft(&mut runtime, &session, &pending);
+            store_selected_practice_draft(&mut runtime, &mut session, &pending);
             if session.membership.as_ref().map(|member| member.player_id) == Some(*player_id) {
                 continue;
             }
@@ -1190,7 +1232,7 @@ fn process_requests(
                 continue;
             }
             session.practice_turn_requested = false;
-            store_selected_practice_draft(&mut runtime, &session, &pending);
+            store_selected_practice_draft(&mut runtime, &mut session, &pending);
             let Some(record) = session.active_game.clone() else {
                 request_error(&mut session, "No local practice game is selected.");
                 continue;
@@ -2248,6 +2290,7 @@ fn apply_output(
                 }
                 session.submitted_turn = None;
                 session.resolve_needed = false;
+                session.practice_boosts.clear();
             }
             if matches!(operation, Operation::ResumeLoad) {
                 session.reconnect_lobby = record.status == MatchStatus::Active;
@@ -3212,10 +3255,46 @@ fn drive_joint_mission_publication(
     let (game_id, revision) = (record.id.clone(), record.revision);
     let mut draft = TurnSubmission::new(member.player_id, pending.turn, pending.commands.clone());
     draft.generation = pending.generation;
+    #[cfg(debug_assertions)]
+    let practice_boost_drafts = if session.local_practice {
+        runtime
+            .practice_players
+            .iter()
+            .filter(|player| {
+                player.membership.player_id != member.player_id
+                    && player.pending.turn == pending.turn
+            })
+            .filter_map(|player| {
+                let commands = player
+                    .pending
+                    .commands
+                    .iter()
+                    .filter(|command| matches!(command, TurnCommand::PracticeBoost))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if commands.is_empty() {
+                    return None;
+                }
+                let mut draft =
+                    TurnSubmission::new(player.membership.player_id, player.pending.turn, commands);
+                draft.generation = player.pending.generation;
+                Some((player.auth.clone(), draft))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    #[cfg(not(debug_assertions))]
+    let practice_boost_drafts = Vec::<(AuthSession, TurnSubmission)>::new();
     session.joint_launch_save_needed = false;
     session.joint_attack_update_pending = true;
     spawn_backend_task(&mut tasks, async move {
         let result = async {
+            // Save the other locally controlled shortcut commands first. The in-memory backend
+            // can then validate their accepted fleets against the same state the UI displayed.
+            for (practice_auth, practice_draft) in practice_boost_drafts {
+                backend.save_game(&practice_auth, &game_id, revision, practice_draft).await?;
+            }
             let acknowledgement = backend.save_game(&auth, &game_id, revision, draft).await?;
             let invitations = backend.load_joint_attacks(&auth, &game_id).await?;
             Ok((acknowledgement, invitations))

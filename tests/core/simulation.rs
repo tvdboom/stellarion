@@ -218,6 +218,80 @@ fn one_turn_colonial_withdrawal_docks_at_home_in_the_battle_turn() {
 }
 
 #[test]
+fn colonial_withdrawal_sends_each_protecting_fleet_to_its_commanders_homeworld() {
+    let mut model = started_model(4);
+    let homes = model
+        .players
+        .iter()
+        .map(|player| (player.id, player.home_planet))
+        .collect::<BTreeMap<_, _>>();
+    let colony = model
+        .map
+        .planets
+        .iter()
+        .find(|world| !world.is_moon() && world.owned.is_none())
+        .unwrap()
+        .id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let cruiser = Unit::Ship(Ship::Cruiser);
+    let bomber = Unit::Ship(Ship::Bomber);
+    let fleets = [(1, fighter, 2), (2, cruiser, 3), (3, bomber, 4)];
+    let initial_home_counts = fleets
+        .iter()
+        .map(|(owner, unit, _)| (*owner, model.map.get(homes[owner]).army.amount(unit)))
+        .collect::<BTreeMap<_, _>>();
+    let planet = model.map.get_mut(colony);
+    planet.colonize(1);
+    planet.army.insert(fighter, 2);
+    planet.army.insert(Unit::Building(Building::ColonialAdministration), 5);
+    planet.protection_permissions.extend([2, 3]);
+    planet.army.dock_protector(2, Army::from([(cruiser, 3)]));
+    planet.army.dock_protector(3, Army::from([(bomber, 4)]));
+    planet.fleet_withdrawal = FleetWithdrawal::Immediate;
+    let mut attack = Mission::new_with_id(
+        99,
+        model.turn as usize,
+        4,
+        model.map.get(homes[&4]),
+        model.map.get(colony),
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 2)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    attack.position = model.map.get(colony).position;
+    model.missions.push(attack);
+
+    empty_turn(&mut model);
+
+    let report =
+        model.player(1).unwrap().reports.iter().find(|report| report.mission.id == 99).unwrap();
+    let retreat = report.combat_report.as_ref().unwrap().defender_retreat.as_ref().unwrap();
+    for (owner, unit, count) in fleets {
+        assert_eq!(retreat.fleets[&owner].home_planet, homes[&owner]);
+        assert_eq!(retreat.fleets[&owner].ships.amount(&unit), count);
+        let returning = model.missions.iter().find(|mission| {
+            mission.owner == owner && mission.origin == colony && mission.objective == Icon::Deploy
+        });
+        if let Some(returning) = returning {
+            assert_eq!(returning.destination, homes[&owner]);
+            assert_eq!(returning.army.amount(&unit), count);
+        } else {
+            assert_eq!(
+                model.map.get(homes[&owner]).army.amount(&unit),
+                initial_home_counts[&owner] + count
+            );
+        }
+    }
+    assert_eq!(model.map.get(colony).army.amount(&fighter), 0);
+    assert!(model.map.get(colony).army.protector(2).is_none());
+    assert!(model.map.get(colony).army.protector(3).is_none());
+    model.validate().unwrap();
+}
+
+#[test]
 fn world_acquisition_order_survives_reinforcement_colonization_and_resume() {
     let mut model = started_model(2);
     let home = model.players[0].home_planet;
@@ -772,6 +846,61 @@ fn fauna_encounters_roll_on_full_turns_between_launch_and_arrival() {
 }
 
 #[test]
+fn allied_contingent_fights_space_fauna_without_its_destination_allies() {
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 100;
+    let owner = model.players[0].id;
+    let ally = model.players[1].id;
+    let origin = model.players[0].home_planet;
+    let ally_origin = model.players[1].home_planet;
+    let destination = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| planet.id != origin && planet.id != ally_origin && !planet.is_moon())
+        .unwrap()
+        .id;
+    let origin_position = model.map.get(origin).position;
+    model.map.get_mut(destination).position = origin_position + Vec2::X * Planet::SIZE * 40.0;
+    let owner_army = Army::from([(Unit::war_sun(), 50)]);
+    let ally_army = Army::from([(Unit::Ship(Ship::LightFighter), 7)]);
+    let mut mission = Mission::new_with_id(
+        92,
+        model.turn as usize,
+        owner,
+        model.map.get(origin),
+        model.map.get(destination),
+        Icon::Attack,
+        owner_army.clone(),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    mission.position = origin_position + Vec2::X * Planet::SIZE;
+    mission.travel_turns = 1;
+    mission.joint_attack = Some(JointAttackMission {
+        id: 77,
+        leader: owner,
+        arrival_turn: model.turn as usize + 5,
+        attackers: BTreeMap::from([(owner, owner_army), (ally, ally_army)]),
+        origins: BTreeMap::from([(owner, origin), (ally, ally_origin)]),
+        ..Default::default()
+    });
+    model.missions.push(mission);
+
+    let turn = model.turn as usize + 1;
+    resolve_space_fauna_encounters(&mut model, turn, &mut StdRng::seed_from_u64(0x000A_11ED));
+
+    let report = model.player(owner).unwrap().reports.last().unwrap();
+    assert!(report.is_space_fauna_encounter());
+    assert_eq!(report.attacker_players(), vec![owner]);
+    assert!(report.mission.joint_attack.is_none());
+    let traveling_attack = model.missions[0].joint_attack.as_ref().unwrap();
+    assert_eq!(traveling_attack.attackers.keys().copied().collect::<Vec<_>>(), [owner, ally]);
+}
+
+#[test]
 fn next_turn_arrival_has_no_fauna_encounter() {
     let mut model = started_model(2);
     model.rules.space_fauna_percent = 100;
@@ -1010,37 +1139,58 @@ fn protection_permission_is_planet_specific_and_controller_only() {
 }
 
 #[test]
-fn attacking_a_world_immediately_revokes_only_the_attackers_protection_rights() {
+fn single_attack_revokes_only_the_attackers_protection_after_arrival() {
     let mut model = started_model(3);
+    model.rules.space_fauna_percent = 0;
     let target = model.players[0].home_planet;
     let origin = model.players[1].home_planet;
     let fighter = Unit::Ship(Ship::LightFighter);
     set_protection_permission_immediately(&mut model, 1, target, 2, true).unwrap();
     set_protection_permission_immediately(&mut model, 1, target, 3, true).unwrap();
     model.map.get_mut(origin).army.insert(fighter, 1);
+    model.map.get_mut(target).army.insert(Unit::war_sun(), 100);
     model.players[1].resources.deuterium = 1_000_000;
 
-    let preview = preview_commands(
-        &model,
-        2,
-        &[TurnCommand::SendMission {
-            mission_id: 299,
-            origin,
-            destination: target,
-            objective: Icon::Attack,
-            army: Army::from([(fighter, 1)]),
-            bombing: BombingRaid::None,
-            combat_probes: false,
-            deep_cover: false,
-            jump_gate: false,
-        }],
+    let attack = TurnCommand::SendMission {
+        mission_id: 299,
+        origin,
+        destination: target,
+        objective: Icon::Attack,
+        army: Army::from([(fighter, 1)]),
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        deep_cover: false,
+        jump_gate: false,
+    };
+    let preview = preview_commands(&model, 2, std::slice::from_ref(&attack)).unwrap();
+
+    assert!(preview.map.get(target).allows_protection(2));
+    assert!(preview.map.get(target).allows_protection(3));
+    assert_eq!(preview.missions.len(), 1);
+
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[
+            TurnSubmission::new(1, turn, Vec::new()),
+            TurnSubmission::new(2, turn, vec![attack]),
+            TurnSubmission::new(3, turn, Vec::new()),
+        ],
     )
     .unwrap();
-
-    assert!(!preview.map.get(target).allows_protection(2));
-    assert!(preview.map.get(target).allows_protection(3));
     assert!(model.map.get(target).allows_protection(2));
-    assert_eq!(preview.missions.len(), 1);
+    for _ in 0..32 {
+        if !model.missions.iter().any(|mission| mission.id == 299) {
+            break;
+        }
+        assert!(model.map.get(target).allows_protection(2));
+        empty_turn(&mut model);
+    }
+
+    assert!(!model.missions.iter().any(|mission| mission.id == 299));
+    assert_eq!(model.map.get(target).controlled, Some(1));
+    assert!(!model.map.get(target).allows_protection(2));
+    assert!(model.map.get(target).allows_protection(3));
 }
 
 #[test]
@@ -3110,7 +3260,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 && reason.contains("only 3 available")
     ));
     let launch_preview = preview_commands(&model, 1, std::slice::from_ref(&joint)).unwrap();
-    assert!(!launch_preview.map.get(target).allows_protection(2));
+    assert!(launch_preview.map.get(target).allows_protection(2));
     resolve_turn(
         &mut model,
         &[
@@ -3120,6 +3270,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
         ],
     )
     .unwrap();
+    assert!(model.map.get(target).allows_protection(2));
 
     let joint_fleets = model
         .missions
@@ -3144,6 +3295,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
             break;
         }
         assert!(model.turn < arrival_turn as u64);
+        assert!(model.map.get(target).allows_protection(2));
         empty_turn(&mut model);
     }
     assert_eq!(model.turn, arrival_turn as u64);
@@ -3158,6 +3310,79 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
     assert_eq!(report.attacker_players(), vec![1, 2]);
     assert_eq!(report.winner(), Some(1));
     assert_eq!(report.status(model.player(2).unwrap()), "victory");
+}
+
+#[test]
+fn joint_attack_revokes_protection_only_after_the_battle() {
+    let mut model = started_model(3);
+    model.rules.space_fauna_percent = 0;
+    let leader_origin = model.player(1).unwrap().home_planet;
+    let supporter_origin = model.player(2).unwrap().home_planet;
+    let target = model.player(3).unwrap().home_planet;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    set_protection_permission_immediately(&mut model, 3, target, 1, true).unwrap();
+    set_protection_permission_immediately(&mut model, 3, target, 2, true).unwrap();
+    model.map.get_mut(leader_origin).army.insert(fighter, 1);
+    model.map.get_mut(supporter_origin).army.insert(fighter, 1);
+    model.map.get_mut(target).army.insert(Unit::war_sun(), 100);
+    for participant in &mut model.players {
+        participant.resources.deuterium = 100_000;
+    }
+
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[
+            TurnSubmission::new(
+                1,
+                turn,
+                vec![TurnCommand::SendJointMission {
+                    attack_id: 78,
+                    mission_id: 7_800,
+                    destination: target,
+                    objective: Icon::Attack,
+                    bombing: BombingRaid::None,
+                    combat_probes: false,
+                    contributions: vec![
+                        JointAttackContribution {
+                            player_id: 1,
+                            origin: leader_origin,
+                            army: Army::from([(fighter, 1)]),
+                            bombing: BombingRaid::None,
+                            combat_probes: false,
+                        },
+                        JointAttackContribution {
+                            player_id: 2,
+                            origin: supporter_origin,
+                            army: Army::from([(fighter, 1)]),
+                            bombing: BombingRaid::None,
+                            combat_probes: false,
+                        },
+                    ],
+                }],
+            ),
+            TurnSubmission::new(2, turn, Vec::new()),
+            TurnSubmission::new(3, turn, Vec::new()),
+        ],
+    )
+    .unwrap();
+
+    assert!(model.map.get(target).allows_protection(1));
+    assert!(model.map.get(target).allows_protection(2));
+    let arrival_turn = model
+        .missions
+        .iter()
+        .find_map(|mission| mission.joint_attack.as_ref().map(|attack| attack.arrival_turn))
+        .unwrap();
+    while model.turn < arrival_turn as u64 {
+        assert!(model.map.get(target).allows_protection(1));
+        assert!(model.map.get(target).allows_protection(2));
+        empty_turn(&mut model);
+    }
+
+    assert_eq!(model.map.get(target).controlled, Some(3));
+    assert!(!model.map.get(target).allows_protection(1));
+    assert!(!model.map.get(target).allows_protection(2));
 }
 
 #[test]
@@ -3210,15 +3435,19 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
             JointAttackContribution {
                 player_id: 2,
                 origin: supporter_origin,
-                army: Army::from([(fighter, 1)]),
+                army: Army::from([(probes, 3), (fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
             },
         ],
     };
-    let commands = vec![TurnCommand::PracticeBoost, joint.clone()];
-
-    let preview = preview_commands(&model, 1, &commands).unwrap();
+    // Reproduce Local Practice with the allied launch frozen before its leader and contributor
+    // save their independent shortcuts. The selected player's preview must include both drafts.
+    let commands = vec![joint.clone(), TurnCommand::PracticeBoost];
+    assert!(preview_commands_with_allied_launches(&model, 1, &commands, &[], None).is_err());
+    let boosts = BTreeMap::from([(2, 1)]);
+    let preview =
+        preview_commands_with_allied_launches(&model, 1, &commands, &[], Some(&boosts)).unwrap();
     assert_eq!(preview.map.get(leader_origin).army.amount(&probes), 0);
     assert_eq!(
         preview
@@ -3230,17 +3459,123 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
             .amount(&probes),
         6
     );
+    assert_eq!(
+        preview
+            .missions
+            .iter()
+            .find(|mission| mission.owner == 2 && mission.joint_attack.is_some())
+            .unwrap()
+            .army
+            .amount(&probes),
+        3
+    );
 
     let turn = model.turn;
     resolve_turn(
         &mut model,
         &[
             TurnSubmission::new(1, turn, commands),
-            TurnSubmission::new(2, turn, Vec::new()),
+            TurnSubmission::new(2, turn, vec![TurnCommand::PracticeBoost]),
             TurnSubmission::new(3, turn, Vec::new()),
         ],
     )
     .unwrap();
+}
+
+#[test]
+fn joint_attack_report_remains_valid_when_a_supporter_is_destroyed_in_transit() {
+    let mut model = started_model(4);
+    let leader_origin = model.player(1).unwrap().home_planet;
+    let supporter_origin = model.player(2).unwrap().home_planet;
+    let lost_supporter_origin = model.player(3).unwrap().home_planet;
+    let target = model
+        .map
+        .planets
+        .iter()
+        .find(|planet| !planet.is_moon() && planet.owned.is_none())
+        .unwrap()
+        .id;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(leader_origin).army.insert(fighter, 1);
+    model.map.get_mut(supporter_origin).army.insert(fighter, 1);
+    model.map.get_mut(lost_supporter_origin).army.insert(fighter, 1);
+    for player in &mut model.players {
+        player.resources.deuterium = 100_000;
+    }
+    let attack_id = 79;
+    let command = TurnCommand::SendJointMission {
+        attack_id,
+        mission_id: 7_900,
+        destination: target,
+        objective: Icon::Attack,
+        bombing: BombingRaid::None,
+        combat_probes: false,
+        contributions: vec![
+            JointAttackContribution {
+                player_id: 1,
+                origin: leader_origin,
+                army: Army::from([(fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+            JointAttackContribution {
+                player_id: 2,
+                origin: supporter_origin,
+                army: Army::from([(fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+            JointAttackContribution {
+                player_id: 3,
+                origin: lost_supporter_origin,
+                army: Army::from([(fighter, 1)]),
+                bombing: BombingRaid::None,
+                combat_probes: false,
+            },
+        ],
+    };
+    let turn = model.turn;
+    resolve_turn(
+        &mut model,
+        &[
+            TurnSubmission::new(1, turn, vec![command]),
+            TurnSubmission::new(2, turn, Vec::new()),
+            TurnSubmission::new(3, turn, Vec::new()),
+            TurnSubmission::new(4, turn, Vec::new()),
+        ],
+    )
+    .unwrap();
+
+    // Space-fauna combat can remove one independently travelling contingent before rendezvous.
+    model.missions.retain(|mission| {
+        !mission
+            .joint_attack
+            .as_ref()
+            .is_some_and(|attack| attack.id == attack_id && mission.owner == 3)
+    });
+    for contingent in model.missions.iter_mut().filter(|mission| {
+        mission.joint_attack.as_ref().is_some_and(|attack| attack.id == attack_id)
+    }) {
+        let attack = contingent.joint_attack.as_mut().unwrap();
+        attack.arrival_turn = contingent.send.saturating_add(contingent.travel_turns);
+    }
+
+    empty_turn(&mut model);
+
+    let report = model
+        .player(1)
+        .unwrap()
+        .reports
+        .iter()
+        .find(|report| {
+            report.mission.joint_attack.as_ref().is_some_and(|attack| attack.id == attack_id)
+        })
+        .unwrap();
+    let attack = report.mission.joint_attack.as_ref().unwrap();
+    assert_eq!(attack.attackers.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(attack.origins.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(attack.combat_orders.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+    model.validate().unwrap();
 }
 
 #[test]

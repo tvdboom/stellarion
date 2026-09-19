@@ -1,5 +1,7 @@
 //! Persisted combat outcomes, rounds, visibility, and attacker/defender views.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
@@ -459,6 +461,32 @@ pub struct DefenderRetreat {
     /// The defender's homeworld at the time of departure.
     pub home_planet: PlanetId,
     /// All surviving ships evacuated from the battle, excluding stationary defenses.
+    pub ships: Army,
+    /// Per-commander fleets and destinations. `ships` is their aggregate for presentation and
+    /// loss accounting, while this map preserves who commands each returning fleet.
+    #[serde(default)]
+    pub fleets: BTreeMap<PlayerId, RetreatingFleet>,
+}
+
+impl DefenderRetreat {
+    /// Returns the escaping fleet commanded by this player.
+    ///
+    /// Reports created before retreats were partitioned contain only the controller aggregate;
+    /// retaining that fallback also keeps hand-authored presentation fixtures concise.
+    pub fn ships_for(&self, player_id: PlayerId, controller: Option<PlayerId>) -> Option<&Army> {
+        self.fleets.get(&player_id).map(|fleet| &fleet.ships).or_else(|| {
+            (self.fleets.is_empty() && controller == Some(player_id)).then_some(&self.ships)
+        })
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// One commander's ships within a collective colonial-administration withdrawal.
+pub struct RetreatingFleet {
+    /// This commander's homeworld at the time of departure.
+    pub home_planet: PlanetId,
+    /// Surviving ships returning under this commander's control.
     pub ships: Army,
 }
 

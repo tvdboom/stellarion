@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::core::combat::report::{
-    CombatReport, DefenderRetreat, MissionReport, RoundReport, Side,
+    combat_fleet_strength, CombatReport, DefenderRetreat, MissionReport, RetreatingFleet,
+    RoundReport, Side,
 };
 use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
 use crate::core::energy::EnergyGrid;
@@ -157,6 +158,20 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     retreat_home: Option<crate::core::map::planet::PlanetId>,
     rng: &mut R,
 ) -> MissionReport {
+    let retreat_homes =
+        destination.controlled.or(destination.owned).zip(retreat_home).into_iter().collect();
+    resolve_combat_with_retreats_with_rng(turn, mission, destination, energy, &retreat_homes, rng)
+}
+
+/// Resolves a battle with a homeworld for every fleet eligible to join a collective withdrawal.
+pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
+    turn: usize,
+    mission: &Mission,
+    destination: &Planet,
+    energy: EnergyGrid,
+    retreat_homes: &BTreeMap<crate::core::identity::PlayerId, crate::core::map::planet::PlanetId>,
+    rng: &mut R,
+) -> MissionReport {
     if matches!(mission.objective, Icon::Deploy | Icon::Protect)
         || (mission.objective == Icon::Colonize && destination.controlled == Some(mission.owner))
     {
@@ -182,21 +197,26 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     let administration = destination
         .army
         .amount(&Unit::Building(crate::core::units::buildings::Building::ColonialAdministration));
-    let retreat_home = retreat_home.filter(|home| {
-        *home != destination.id
-            && !destination.is_moon()
-            && destination.controlled.is_some()
-            && matches!(mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
-            && administration >= destination.fleet_withdrawal.minimum_level()
-    });
-    let threshold = retreat_home.and(destination.fleet_withdrawal.losses_percent());
-    let initial_fleet_strength = destination
-        .army
-        .iter()
-        .filter(|(unit, _)| unit.is_ship())
-        .map(|(unit, count)| unit.production() as u128 * *count as u128)
-        .sum::<u128>();
     let defender_owner = destination.controlled.or(destination.owned);
+    let retreat_enabled =
+        defender_owner.and_then(|owner| retreat_homes.get(&owner)).is_some_and(|home| {
+            *home != destination.id
+                && !destination.is_moon()
+                && destination.controlled.is_some()
+                && matches!(mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+                && administration >= destination.fleet_withdrawal.minimum_level()
+        });
+    let threshold =
+        retreat_enabled.then(|| destination.fleet_withdrawal.losses_percent()).flatten();
+    let initial_fleet_strength = defender_owner
+        .filter(|owner| retreat_homes.contains_key(owner))
+        .map_or(0, |_| combat_fleet_strength(destination.army.controller()))
+        + destination
+            .army
+            .protectors()
+            .filter(|(owner, _)| retreat_homes.contains_key(owner))
+            .map(|(_, fleet)| combat_fleet_strength(fleet))
+            .sum::<u128>();
     let mut support_colonies = BTreeMap::<crate::core::identity::PlayerId, usize>::new();
     if let Some(owner) = defender_owner {
         support_colonies.insert(owner, destination.army.controller().amount(&Unit::colony_ship()));
@@ -287,7 +307,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             &mut defend_army,
             &mut support_colonies,
             defender_owner,
-            retreat_home,
+            retreat_homes,
             None,
         );
     }
@@ -327,7 +347,11 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
             });
 
             'unit: for unit in army {
-                if withdrawal_cover && side == Side::Defender && unit.unit.is_ship() {
+                if withdrawal_cover
+                    && side == Side::Defender
+                    && unit.unit.is_ship()
+                    && unit.owner.is_some_and(|owner| retreat_homes.contains_key(&owner))
+                {
                     // Ships committed to withdrawal cannot return fire during the final volley.
                     continue;
                 }
@@ -485,20 +509,24 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                 &mut defend_army,
                 &mut support_colonies,
                 defender_owner,
-                retreat_home,
+                retreat_homes,
                 Some(round - 1),
             );
             withdrawal_cover = false;
         } else if !withdrawal_ordered && !attack_army.is_empty() {
             let remaining = defend_army
                 .iter()
-                .filter(|unit| unit.unit.is_ship() && unit.owner == defender_owner)
+                .filter(|unit| {
+                    unit.unit.is_ship()
+                        && unit.owner.is_some_and(|owner| retreat_homes.contains_key(&owner))
+                })
                 .map(|unit| unit.unit.production() as u128)
                 .sum::<u128>()
-                + defender_owner
-                    .and_then(|owner| support_colonies.get(&owner).copied())
-                    .unwrap_or_default() as u128
-                    * Unit::colony_ship().production() as u128;
+                + support_colonies
+                    .iter()
+                    .filter(|(owner, _)| retreat_homes.contains_key(owner))
+                    .map(|(_, count)| *count as u128 * Unit::colony_ship().production() as u128)
+                    .sum::<u128>();
             if threshold.is_some_and(|percent| {
                 remaining > 0
                     && initial_fleet_strength > 0
@@ -512,7 +540,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
                         &mut defend_army,
                         &mut support_colonies,
                         defender_owner,
-                        retreat_home,
+                        retreat_homes,
                         Some(round - 1),
                     );
                 } else {
@@ -680,34 +708,58 @@ fn record_defender_retreat(
     army: &mut Vec<CombatUnit>,
     colonies: &mut BTreeMap<crate::core::identity::PlayerId, usize>,
     withdrawing_owner: Option<crate::core::identity::PlayerId>,
-    home: Option<crate::core::map::planet::PlanetId>,
+    homes: &BTreeMap<crate::core::identity::PlayerId, crate::core::map::planet::PlanetId>,
     after_round: Option<usize>,
 ) {
-    let (Some(home_planet), Some(withdrawing_owner)) = (home, withdrawing_owner) else {
+    let Some(withdrawing_owner) = withdrawing_owner else {
         return;
     };
-    let mut ships = Army::new();
+    let Some(home_planet) = homes.get(&withdrawing_owner).copied() else {
+        return;
+    };
+    let mut fleets = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
     army.retain(|unit| {
-        if unit.unit.is_ship() && unit.owner == Some(withdrawing_owner) {
+        if unit.unit.is_ship() && unit.owner.is_some_and(|owner| homes.contains_key(&owner)) {
             if unit.hull > 0 {
-                *ships.entry(unit.unit).or_default() += 1;
+                let owner = unit.owner.unwrap_or(withdrawing_owner);
+                *fleets.entry(owner).or_default().entry(unit.unit).or_default() += 1;
             }
             false
         } else {
             true
         }
     });
-    if let Some(count) = colonies.get_mut(&withdrawing_owner) {
-        if *count > 0 {
-            *ships.entry(Unit::colony_ship()).or_default() += *count;
+    for (owner, count) in colonies {
+        if homes.contains_key(owner) && *count > 0 {
+            *fleets.entry(*owner).or_default().entry(Unit::colony_ship()).or_default() += *count;
             *count = 0;
         }
     }
+    let ships = fleets.values().fold(Army::new(), |mut combined, fleet| {
+        for (unit, count) in fleet {
+            *combined.entry(*unit).or_default() += *count;
+        }
+        combined
+    });
     if ships.has_army() {
         report.defender_retreat = Some(DefenderRetreat {
             after_round,
             home_planet,
             ships,
+            fleets: fleets
+                .into_iter()
+                .filter_map(|(owner, ships)| {
+                    homes.get(&owner).copied().map(|home_planet| {
+                        (
+                            owner,
+                            RetreatingFleet {
+                                home_planet,
+                                ships,
+                            },
+                        )
+                    })
+                })
+                .collect(),
         });
     }
 }

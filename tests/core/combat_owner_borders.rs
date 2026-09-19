@@ -59,14 +59,39 @@ fn schematic_owner_borders_follow_individual_owners_and_mixed_group_counts() {
     for (entity, owner, card_size) in individuals {
         let border = edges(entity);
         assert_eq!(border.len(), 4);
+        let horizontal_edges =
+            border.iter().filter(|(_, size, _)| size.x > size.y).collect::<Vec<_>>();
+        let top = horizontal_edges
+            .iter()
+            .map(|(_, _, position)| position.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = horizontal_edges
+            .iter()
+            .map(|(_, _, position)| position.y)
+            .fold(f32::INFINITY, f32::min);
         assert!(
             border.iter().all(|(tint, size, position)| {
-                *tint == color(owner.unwrap())
-                    && size.min_element() <= 1.25
-                    && (position.x.abs().max(position.y.abs()) - card_size * 0.5).abs() < 0.001
-                    && position.z > 0.0
+                *tint == color(owner.unwrap()) && size.min_element() <= 1.25 && position.z > 0.0
             }),
-            "Each thin edge must be attached to the image and use its actual owner's color"
+            "Each thin edge must use the card's actual owner's color"
+        );
+        assert!((top - card_size * 0.5).abs() < 0.001);
+        let stat_bottom = app
+            .world()
+            .get::<Children>(entity)
+            .unwrap()
+            .iter()
+            .filter_map(|child| {
+                let sprite = app.world().get::<Sprite>(child)?;
+                let transform = app.world().get::<Transform>(child)?;
+                (transform.translation.z < 0.2 && transform.translation.y < -card_size * 0.5)
+                    .then(|| transform.translation.y - sprite.custom_size.unwrap().y * 0.5)
+            })
+            .reduce(f32::min)
+            .unwrap_or(-card_size * 0.5);
+        assert!(
+            (bottom - stat_bottom).abs() < 0.001,
+            "The owner border must enclose every individual stat bar"
         );
     }
     for (side, unit, counts) in [
@@ -80,13 +105,16 @@ fn schematic_owner_borders_follow_individual_owners_and_mixed_group_counts() {
             .unwrap();
         let border = edges(*entity);
         let total = counts.iter().map(|(_, count)| *count).sum::<usize>() as f32;
+        let perimeter: f32 =
+            border.iter().map(|(_, size, _)| size.max_element() - size.min_element()).sum();
+        assert!(perimeter > size * 4.0, "Stat bars must extend the colored border below the image");
         for (owner, count) in counts {
-            let perimeter: f32 = border
+            let owner_perimeter: f32 = border
                 .iter()
                 .filter(|(tint, _, _)| *tint == color(owner))
                 .map(|(_, size, _)| size.max_element() - size.min_element())
                 .sum();
-            assert!((perimeter - size * 4.0 * count as f32 / total).abs() < 0.01,
+            assert!((owner_perimeter - perimeter * count as f32 / total).abs() < 0.01,
                 "Grouped borders must show every ally's share, including types absent from the commander's fleet");
         }
     }

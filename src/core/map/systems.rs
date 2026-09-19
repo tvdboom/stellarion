@@ -83,6 +83,33 @@ const TRADE_LINK_PARTICLE_SPEED: f32 = 32.0;
 const TRADE_LINK_LANE_OFFSET: f32 = 3.8;
 /// Shared rotation rate for gate links and mission helices, in radians per second.
 pub(crate) const JUMP_GATE_HELIX_ANGULAR_SPEED: f32 = 5.0;
+
+/// Returns the controller or owner whose affiliation is visible to this player.
+///
+/// Territory colors may come from private controller intelligence or from an ownership signal
+/// that is public independently of that intelligence, such as a Space Dock or Orbital Railgun.
+/// Keep non-map UI on this boundary as well so it cannot disclose the live hidden controller.
+pub(crate) fn visible_planet_affiliation(
+    map: &Map,
+    player: &Player,
+    missions: &[Mission],
+    planet: &Planet,
+) -> Option<PlayerId> {
+    publicly_visible_planet_owner(map, player.id, planet)
+        .or_else(|| player.known_controller(planet, missions))
+}
+
+fn publicly_visible_planet_owner(map: &Map, viewer: PlayerId, planet: &Planet) -> Option<PlayerId> {
+    if planet.is_destroyed {
+        return None;
+    }
+
+    planet.owned.filter(|owner| {
+        planet.army.amount(&Unit::space_dock()) > 0
+            || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0
+            || visible_trading_post_owner(map, viewer, planet) == Some(*owner)
+    })
+}
 // Keep gate links and mission particles moving at the same pace.
 const JUMP_GATE_PARTICLE_SPEED: f32 = 38.0;
 // These are local to the planet entity, whose own transform contributes PLANET_Z. Keep the whole
@@ -3877,21 +3904,9 @@ pub(crate) fn update_voronoi(
         .planets
         .iter()
         .filter_map(|planet| {
-            let public_owner = (!planet.is_destroyed
-                && planet.owned.is_some()
-                && (planet.army.amount(&Unit::space_dock()) > 0
-                    || planet.army.amount(&Unit::Building(Building::OrbitalRailgun)) > 0))
-                .then_some(planet.owned)
-                .flatten()
-                .or_else(|| visible_trading_post_owner(&map, player.id, planet))
-                .or_else(|| fading_public_owners.get(&planet.id).copied());
-            let controller = public_owner.or_else(|| {
-                if player.controls(planet) {
-                    planet.controlled
-                } else {
-                    player.known_controller(planet, &missions.0)
-                }
-            });
+            let controller = publicly_visible_planet_owner(&map, player.id, planet)
+                .or_else(|| fading_public_owners.get(&planet.id).copied())
+                .or_else(|| player.known_controller(planet, &missions.0));
             controller.map(|controller| (planet.id, controller))
         })
         .collect::<HashMap<PlanetId, PlayerId>>();

@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::core::audio::PlayAudioMsg;
+use crate::core::combat::report::ReportId;
 use crate::core::constants::{MAX_ZOOM, MESSAGE_DURATION};
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
@@ -97,7 +98,7 @@ pub enum MessageAction {
     /// Opens the mission interface on the enemy-missions tab.
     OpenEnemyMissions,
     /// Opens the mission interface on the supplied persisted report.
-    OpenMissionReport(MissionId),
+    OpenMissionReport(ReportId),
     /// Opens the mission interface on the reports tab without selecting a hidden report.
     OpenMissionReports,
     /// Opens the completed resource trade for review.
@@ -375,8 +376,8 @@ fn check_messages(
                 MessageAction::OpenEnemyMissions => {
                     open_enemy_missions(state);
                 },
-                MessageAction::OpenMissionReport(mission_id) => {
-                    open_mission_reports(state, Some(mission_id));
+                MessageAction::OpenMissionReport(report_id) => {
+                    open_mission_reports(state, Some(report_id));
                 },
                 MessageAction::OpenMissionReports => {
                     open_mission_reports(state, None);
@@ -492,12 +493,12 @@ fn open_revoked_protection_mission(
     true
 }
 
-fn open_mission_reports(state: &mut UiState, mission_id: Option<MissionId>) {
+fn open_mission_reports(state: &mut UiState, report_id: Option<ReportId>) {
     state.planet_selected = None;
     state.mission = true;
     state.mission_tab = MissionTab::MissionReports;
-    if let Some(mission_id) = mission_id {
-        state.mission_report = Some(mission_id);
+    if let Some(report_id) = report_id {
+        state.mission_report = Some(report_id);
     }
     state.combat_report = None;
 }

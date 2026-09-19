@@ -1379,6 +1379,37 @@ fn clicking_an_invited_player_keeps_the_published_offer() {
 }
 
 #[test]
+fn incompatible_objective_does_not_hide_an_existing_allied_draft() {
+    let (model, player, mut state, _) = fixture();
+    state.mission_info = state.joint_attack_contribution.clone();
+    state.mission_info.objective = Icon::Protect;
+    state.allied_mission = true;
+    state.joint_attack_invitees = [2].into();
+    let session = session_for_model(&model);
+    let mut world = World::new();
+    world.init_resource::<Messages<MultiplayerRequest>>();
+    let mut params =
+        bevy::ecs::system::SystemState::<MessageWriter<MultiplayerRequest>>::new(&mut world);
+
+    {
+        let mut requests = params.get_mut(&mut world).unwrap();
+        assert!(!sync_allied_mission(
+            &mut state,
+            model.turn as usize,
+            &player,
+            &session,
+            &mut requests,
+            None,
+            None,
+        ));
+    }
+
+    assert!(state.allied_mission);
+    assert_eq!(state.joint_attack_invitees, [2].into());
+    assert!(world.resource::<Messages<MultiplayerRequest>>().is_empty());
+}
+
+#[test]
 fn added_invitees_wait_for_send_proposal_after_an_update() {
     let (model, player, mut state, mut invitation) = fixture();
     state.mission_info = state.joint_attack_contribution.clone();

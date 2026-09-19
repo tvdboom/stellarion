@@ -534,6 +534,7 @@ fn escaping_ships_do_not_become_public_battle_wreckage() {
             after_round: Some(0),
             home_planet: 1,
             ships: Army::from([(Unit::probe(), 7)]),
+            fleets: Default::default(),
         });
     assert_eq!(destroyed_units(&battle), 1);
 }

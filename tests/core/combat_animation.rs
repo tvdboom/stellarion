@@ -1308,6 +1308,108 @@ fn repair_keeps_its_deliberate_highlight_when_volley_fire_is_enabled() {
 }
 
 #[test]
+fn intercepted_missile_cards_leave_before_surviving_missiles_are_highlighted() {
+    use crate::core::combat::resolution::CombatUnit;
+
+    let missile = Unit::interplanetary_missile();
+    let interceptor = Unit::antiballistic_missile();
+    let target = Unit::Defense(Defense::GaussCannon);
+    let missile_record = |id: u64| CombatUnit {
+        id,
+        owner: Some(1),
+        unit: missile,
+        hull: 0,
+        shield: 0,
+        repairs: Vec::new(),
+        shots: if id == 1 {
+            Vec::new()
+        } else {
+            vec![ShotReport {
+                target_id: Some(100),
+                unit: Some(target),
+                hull_damage: 1,
+                ..default()
+            }]
+        },
+    };
+    let interceptor_record = |id: u64, target_id: u64, killed: bool| CombatUnit {
+        id,
+        owner: Some(2),
+        unit: interceptor,
+        hull: 0,
+        shield: 0,
+        repairs: Vec::new(),
+        shots: vec![ShotReport {
+            target_id: Some(target_id),
+            unit: Some(missile),
+            missed: !killed,
+            killed,
+            ..default()
+        }],
+    };
+
+    let mut report = report(1, 0, true, 97);
+    report.mission.objective = Icon::MissileStrike;
+    report.mission.bombing = BombingRaid::None;
+    report.mission.army = Army::from([(missile, 3)]);
+    report.combat_report = Some(CombatReport {
+        rounds: vec![RoundReport {
+            attacker: vec![missile_record(1), missile_record(2), missile_record(3)],
+            defender: vec![interceptor_record(10, 1, true), interceptor_record(11, 2, false)],
+            antiballistic_fired: 2,
+            ..default()
+        }],
+        ..default()
+    });
+
+    let mut app = playback_app(report, 0, CombatState::AntiBallistic);
+    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
+    app.insert_resource(CombatFormationState::new(true));
+    spawn_unit(&mut app, interceptor, 2, Side::Defender, FireState::Fired);
+    let missile_group = spawn_unit(&mut app, missile, 3, Side::Attacker, FireState::Idle);
+    let cards = [1, 2, 3].map(|id| {
+        app.world_mut()
+            .spawn((
+                Sprite {
+                    custom_size: Some(Vec2::splat(60.0)),
+                    ..default()
+                },
+                Transform::default(),
+                IndividualCombatUnitCmp {
+                    id: Some(id),
+                    owner: Some(1),
+                    unit: missile,
+                    side: Side::Attacker,
+                    group: missile_group,
+                    home: Vec3::ZERO,
+                    display_size: 60.0,
+                    transition_start: Vec3::ZERO,
+                    shield: 0,
+                    max_shield: 0,
+                    hull: 0,
+                    max_hull: 0,
+                },
+            ))
+            .id()
+    });
+
+    // The successful target leaves before missile selection. The missed target stays alongside
+    // the untouched missile and both are selected as exact firing cards on the following ticks.
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get_entity(cards[0]).is_err());
+    assert!(app.world().get_entity(cards[1]).is_ok());
+    assert!(app.world().get_entity(cards[2]).is_ok());
+    assert!(app.world().get::<CombatUnitCmp>(missile_group).unwrap().fire == FireState::Idle);
+
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<CombatUnitCmp>(missile_group).unwrap().fire == FireState::Select);
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    assert!(app.world().get::<CombatFireHighlight>(cards[1]).is_some());
+    assert!(app.world().get::<CombatFireHighlight>(cards[2]).is_some());
+}
+
+#[test]
 fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let mut report = report(1, 0, true, 7);
     report.mission.objective = Icon::MissileStrike;

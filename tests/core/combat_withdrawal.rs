@@ -241,3 +241,99 @@ fn withdrawal_from_an_unarmed_colonization_still_records_a_playable_departure() 
     assert_eq!(combat.rounds.len(), 1);
     assert_eq!(combat.defender_retreat.unwrap().ships.amount(&Unit::probe()), 2);
 }
+
+#[test]
+fn withdrawal_groups_controller_and_protection_fleets_by_their_own_homeworlds() {
+    let mut rng = DeterministicRngState::from_u64(41).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Attacker".into(), Vec2::ZERO, false, 1., &mut rng);
+    origin.colonize(1);
+    let mut colony = Planet::new_with_rng(1, "Colony".into(), Vec2::X, false, 1., &mut rng);
+    colony.colonize(2);
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let cruiser = Unit::Ship(Ship::Cruiser);
+    colony.army = Army::from([
+        (fighter, 2),
+        (Unit::colony_ship(), 1),
+        (Unit::Building(Building::ColonialAdministration), 5),
+    ])
+    .into();
+    colony.army.dock_protector(3, Army::from([(cruiser, 3)]));
+    colony.fleet_withdrawal = FleetWithdrawal::Immediate;
+    let mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        &origin,
+        &colony,
+        Icon::Attack,
+        Army::from([(Unit::war_sun(), 1)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let homes = BTreeMap::from([(2, 20), (3, 30)]);
+
+    let report = resolve_combat_with_retreats_with_rng(
+        1,
+        &mission,
+        &colony,
+        EnergyGrid::default(),
+        &homes,
+        &mut rng,
+    );
+
+    let retreat = report.combat_report.as_ref().unwrap().defender_retreat.as_ref().unwrap();
+    assert_eq!(retreat.after_round, None);
+    assert_eq!(retreat.ships.amount(&fighter), 2);
+    assert_eq!(retreat.ships.amount(&cruiser), 3);
+    assert_eq!(retreat.fleets[&2].home_planet, 20);
+    assert_eq!(retreat.fleets[&2].ships.amount(&fighter), 2);
+    assert_eq!(retreat.fleets[&2].ships.amount(&Unit::colony_ship()), 1);
+    assert_eq!(retreat.fleets[&3].home_planet, 30);
+    assert_eq!(retreat.fleets[&3].ships.amount(&cruiser), 3);
+    assert!(!report.surviving_defender.has_fleet());
+}
+
+#[test]
+fn loss_threshold_counts_a_stationed_protection_fleet_even_without_controller_ships() {
+    let mut rng = DeterministicRngState::from_u64(23).next_rng();
+    let mut origin = Planet::new_with_rng(0, "Attacker".into(), Vec2::ZERO, false, 1., &mut rng);
+    origin.colonize(1);
+    let mut colony = Planet::new_with_rng(1, "Colony".into(), Vec2::X, false, 1., &mut rng);
+    colony.colonize(2);
+    colony.army.insert(Unit::Building(Building::ColonialAdministration), 2);
+    colony.army.dock_protector(
+        3,
+        Army::from([(Unit::Ship(Ship::LightFighter), 90), (Unit::Ship(Ship::HeavyFighter), 20)]),
+    );
+    colony.fleet_withdrawal = FleetWithdrawal::Losses50;
+    let mission = Mission::new_with_id(
+        1,
+        1,
+        1,
+        &origin,
+        &colony,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 20)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let homes = BTreeMap::from([(2, 20), (3, 30)]);
+
+    let report = resolve_combat_with_retreats_with_rng(
+        1,
+        &mission,
+        &colony,
+        EnergyGrid::default(),
+        &homes,
+        &mut rng,
+    );
+
+    let retreat = report.combat_report.as_ref().unwrap().defender_retreat.as_ref().unwrap();
+    assert!(retreat.after_round.is_some());
+    assert!(retreat.fleets[&3].ships.iter().any(|(unit, count)| unit.is_ship() && *count > 0));
+    assert!(!retreat.fleets.contains_key(&2));
+}

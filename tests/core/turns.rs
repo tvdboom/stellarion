@@ -510,7 +510,7 @@ fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report(
     let success = report_notification(&report, &player, &origin, &destination);
     assert_eq!(success.message, format!("Spy mission successful at planet {}.", destination.name));
     assert_eq!(success.level, MessageLevel::Info);
-    assert_eq!(success.action, Some(MessageAction::OpenMissionReport(42)));
+    assert_eq!(success.action, Some(MessageAction::OpenMissionReport(9)));
 
     report.scout_probes = 0;
     report.surviving_attacker = Army::new();
@@ -520,7 +520,7 @@ fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report(
         format!("Spy mission failed at planet {}; all probes were lost.", destination.name)
     );
     assert_eq!(failed.level, MessageLevel::Warning);
-    assert_eq!(failed.action, Some(MessageAction::OpenMissionReport(42)));
+    assert_eq!(failed.action, Some(MessageAction::OpenMissionReport(9)));
 }
 
 #[test]
@@ -850,10 +850,12 @@ fn terminal_overlay_waits_until_planet_destruction_finishes() {
 }
 
 #[test]
-fn allied_owner_must_send_or_cancel_before_ending_the_turn() {
+fn ending_the_turn_cancels_an_unpublished_allied_draft() {
     let mut app = App::new();
     app.insert_resource(UiState {
         allied_mission: true,
+        mission: true,
+        joint_attack_invitees: [2].into(),
         end_turn: true,
         ..default()
     })
@@ -861,14 +863,9 @@ fn allied_owner_must_send_or_cancel_before_ending_the_turn() {
     .add_message::<MultiplayerRequest>()
     .add_systems(Update, check_turn_ended);
     app.update();
-    assert!(app.world().resource::<Messages<MultiplayerRequest>>().is_empty());
-    assert!(!app.world().resource::<UiState>().mission);
-    assert_eq!(app.world().resource::<UiState>().mission_tab, MissionTab::NewMission);
-    {
-        let mut state = app.world_mut().resource_mut::<UiState>();
-        state.allied_mission = false;
-        state.end_turn = true;
-    }
-    app.update();
     assert_eq!(app.world().resource::<Messages<MultiplayerRequest>>().len(), 1);
+    let state = app.world().resource::<UiState>();
+    assert!(!state.mission);
+    assert!(!state.allied_mission);
+    assert!(state.joint_attack_invitees.is_empty());
 }

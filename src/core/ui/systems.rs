@@ -35,7 +35,7 @@ use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId, PlanetKind, SolarBand};
-use crate::core::map::systems::select_planet;
+use crate::core::map::systems::{select_planet, visible_planet_affiliation};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
     BombingRaid, JointAttackMission, JointMissionLaunch, Mission, MissionId, Missions,
@@ -208,7 +208,8 @@ pub struct UiState {
     pub mission_hover: Option<MissionId>,
     /// UI hover expires each pass; map hover persists until a picking event changes it.
     pub(crate) mission_hover_from_ui: bool,
-    pub mission_report: Option<MissionId>,
+    /// Persisted report selected in the mission-report panel.
+    pub mission_report: Option<ReportId>,
     pub combat_report: Option<ReportId>,
     pub combat_report_total: bool,
     pub combat_report_round: usize,
@@ -277,8 +278,7 @@ impl UiState {
         ) {
             return false;
         }
-        self.allied_mission
-            || self.joint_attack_open.is_some()
+        self.joint_attack_open.is_some()
             || self.trading_post_open.is_some()
             || session.is_some_and(|session| session.has_open_negotiation(pending))
     }
@@ -4536,6 +4536,11 @@ fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a 
     }
 }
 
+/// Hidden Spy and Missile Strike reports do not disclose the sender or departure world.
+fn mission_report_sender_is_known(report: &MissionReport, viewer: PlayerId) -> bool {
+    report.mission.owner == viewer || !report.mission.objective.is_hidden()
+}
+
 fn add_combat_report_destination_image(
     ui: &mut Ui,
     report: &MissionReport,
@@ -4679,13 +4684,28 @@ fn draw_mission_report_strength_bars(
     ui: &mut Ui,
     report: &MissionReport,
     session: &MultiplayerSession,
+    viewer: PlayerId,
     attacker_width: f32,
 ) {
-    let attackers = combat_side_participants(report, &Side::Attacker, session);
-    let defenders = combat_side_participants(report, &Side::Defender, session);
+    let defender_width =
+        (ui.available_width() - attacker_width - ui.spacing().item_spacing.x).max(0.0);
+    let mut attackers = combat_side_participants(report, &Side::Attacker, session);
+    if !mission_report_sender_is_known(report, viewer) {
+        for attacker in &mut attackers {
+            attacker.color = NEUTRAL_COMBAT_COLOR;
+        }
+    }
+    let mut defenders = combat_side_participants(report, &Side::Defender, session);
+    if defenders.iter().all(|defender| defender.strength == 0) {
+        defenders = vec![CombatParticipant {
+            name: "Empty".to_owned(),
+            color: NEUTRAL_COMBAT_COLOR,
+            strength: 1,
+        }];
+    }
 
     draw_combat_strength_bar_line(ui, attacker_width, &attackers);
-    draw_combat_strength_bar_line(ui, ui.available_width(), &defenders);
+    draw_combat_strength_bar_line(ui, defender_width, &defenders);
 }
 
 /// Draws the combat report interface and emits any resulting local actions.
