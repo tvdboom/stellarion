@@ -1116,10 +1116,6 @@ fn lobby_screen(
             reconnecting,
             session.membership.as_ref().map(|member| member.player_id),
         );
-        let guidance = lobby_guidance(session);
-        if !guidance.is_empty() {
-            ui.label(egui::RichText::new(guidance).size(16.0));
-        }
     });
 
     let can_continue = lobby_primary_enabled(session);
@@ -1147,31 +1143,6 @@ fn lobby_screen(
         } else {
             MultiplayerRequest::StartGame
         });
-    }
-}
-
-/// Explains the next step when the local player can act or must wait for the host.
-fn lobby_guidance(session: &MultiplayerSession) -> String {
-    let Some(game) = &session.active_game else {
-        return String::new();
-    };
-    let is_host = session.membership.as_ref().is_some_and(|member| member.is_creator);
-    if game.status == MatchStatus::Lobby {
-        return String::new();
-    }
-    if is_host {
-        return if game.members.iter().all(|member| member.connected) {
-            "Everyone is connected. Resume the saved game for all players.".to_string()
-        } else {
-            String::new()
-        };
-    }
-    let host = game.members.iter().find(|member| member.is_creator);
-    let host_name = host.map_or("the host", |member| member.display_name.as_str());
-    if host.is_some_and(|member| member.connected) {
-        format!("Waiting for {host_name} to resume. You'll enter automatically when the host resumes. If they're in-game, ask them to return to the main menu and open this game from Resume Game.")
-    } else {
-        format!("Waiting for {host_name} to reconnect. The host must open this game from Resume Game. You'll enter automatically when the host resumes.")
     }
 }
 
@@ -1576,23 +1547,19 @@ fn lobby_players_card(
             });
         });
         ui.add_space(FORM_CARD_GAP);
-        ui.label(
-            egui::RichText::new(if reconnecting {
-                if game.members.iter().all(|member| member.connected) {
-                    "Everyone is connected. The host can resume the game."
+        if !reconnecting {
+            ui.label(
+                egui::RichText::new(if !is_host {
+                    "Waiting for the host to start..."
+                } else if game.members.len() < 2 {
+                    "Waiting for at least one more player…"
                 } else {
-                    "Waiting for every existing player to reconnect…"
-                }
-            } else if !is_host {
-                "Waiting for the host to start..."
-            } else if game.members.len() < 2 {
-                "Waiting for at least one more player…"
-            } else {
-                "Ready to start — more players may still join."
-            })
-            .size(14.0)
-            .color(egui::Color32::from_rgb(175, 195, 218)),
-        );
+                    "Ready to start — more players may still join."
+                })
+                .size(14.0)
+                .color(egui::Color32::from_rgb(175, 195, 218)),
+            );
+        }
         ui.add_space(FORM_CARD_GAP);
 
         ui.spacing_mut().item_spacing.y = 0.0;
