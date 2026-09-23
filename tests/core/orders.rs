@@ -21,6 +21,7 @@ fn construction_prices_use_multiples_of_ten() {
 #[test]
 fn purchase_errors_name_the_exact_blocker() {
     for (error, message) in [
+        (OrderError::SameWorld, "A mission needs different origin and destination worlds."),
         (OrderError::Resources, "Not enough resources."),
         (OrderError::BuildingAtMaximumLevel, "Building is already at maximum level."),
         (OrderError::BuildingAlreadyQueued, "Building is already queued."),

@@ -283,7 +283,7 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
             membership: Some(current.members[local].clone()),
             ..default()
         };
-        let notifications = disconnected_player_notifications(
+        let notifications = player_presence_notifications(
             &BackendOutput::Record(Operation::Load, next.clone()),
             &session,
         );
@@ -294,21 +294,37 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
         );
         assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
 
+        let disconnected = next.clone();
+        session.active_game = Some(disconnected.clone());
+        let mut reconnected = disconnected;
+        reconnected.members[remote].connected = true;
+        let notifications = player_presence_notifications(
+            &BackendOutput::Record(Operation::Load, reconnected.clone()),
+            &session,
+        );
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0].message,
+            format!("Player {} reconnected.", current.members[remote].display_name)
+        );
+        assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
+
+        session.active_game = Some(current.clone());
         next.members[local].connected = false;
         let output = BackendOutput::Record(Operation::Load, next.clone());
         assert_eq!(
-            disconnected_player_notifications(&output, &session).len(),
+            player_presence_notifications(&output, &session).len(),
             1,
             "the local player's presence change must not create a toast"
         );
         session.local_practice = true;
         assert!(
-            disconnected_player_notifications(&output, &session).is_empty(),
+            player_presence_notifications(&output, &session).is_empty(),
             "locally controlled players must never appear disconnected"
         );
         session.local_practice = false;
         session.active_game = Some(next);
-        assert!(disconnected_player_notifications(&output, &session).is_empty());
+        assert!(player_presence_notifications(&output, &session).is_empty());
     }
 }
 
@@ -1614,7 +1630,7 @@ fn heartbeat_refreshes_resume_roster_without_renewing_again_immediately() {
     game.members[0].connected = true;
     game.members[1].connected = false;
     let output = BackendOutput::Presence(game.members.clone());
-    assert_eq!(disconnected_player_notifications(&output, &session).len(), 1);
+    assert_eq!(player_presence_notifications(&output, &session).len(), 1);
     apply_output(
         output,
         &mut runtime,

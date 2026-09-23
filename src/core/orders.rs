@@ -15,6 +15,9 @@ use crate::core::units::{orbitals, Amount, Price, Unit};
 /// A player-facing reason why an order cannot currently be accepted.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum OrderError {
+    /// A mission cannot depart from and arrive at the same world.
+    #[error("A mission needs different origin and destination worlds.")]
+    SameWorld,
     /// The player cannot use the specified world.
     #[error("This world is not available to this player.")]
     Ownership,
@@ -217,13 +220,15 @@ pub fn validate_mission(
     destination: &Planet,
     mission: &Mission,
 ) -> Result<(), OrderError> {
+    if origin.id == destination.id {
+        return Err(OrderError::SameWorld);
+    }
     if player.spectator
         || mission.owner != player.id
         || !origin.can_launch_mission(player.id)
         || destination.is_destroyed
         || mission.origin != origin.id
         || mission.destination != destination.id
-        || origin.id == destination.id
     {
         return Err(OrderError::Ownership);
     }

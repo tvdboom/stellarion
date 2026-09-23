@@ -1059,6 +1059,15 @@ fn draw_new_mission(
     {
         state.mission_info.origin = player.home_planet;
     }
+    if state.mission_info.origin == state.mission_info.destination {
+        if let Some(destination) = map
+            .planets
+            .iter()
+            .find(|planet| !planet.is_destroyed && planet.id != state.mission_info.origin)
+        {
+            state.mission_info.destination = destination.id;
+        }
+    }
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
     let origin_army = mission_origin_army_after_allied_reservations(
@@ -1848,7 +1857,18 @@ fn draw_new_mission(
     }
 }
 
-/// Builds a planet label with a colored affiliation marker when that identity is visible.
+/// Builds a planet label, optionally colored by the visible controller or owner affiliation.
+fn mission_planet_affiliation_color(
+    map: &Map,
+    player: &Player,
+    missions: &[Mission],
+    session: &MultiplayerSession,
+    planet: &Planet,
+) -> Option<Color32> {
+    visible_planet_affiliation(map, player, missions, planet)
+        .map(|player_id| session.player_color(player_id).color().to_color32())
+}
+
 fn mission_planet_selector_label(
     ui: &Ui,
     map: &Map,
@@ -1856,26 +1876,22 @@ fn mission_planet_selector_label(
     missions: &[Mission],
     session: &MultiplayerSession,
     planet: &Planet,
+    color_by_affiliation: bool,
 ) -> egui::text::LayoutJob {
     let mut label = egui::text::LayoutJob::default();
     let font_id = TextStyle::Button.resolve(ui.style());
-    if let Some(player_id) = visible_planet_affiliation(map, player, missions, planet) {
-        label.append(
-            "●  ",
-            0.0,
-            egui::text::TextFormat {
-                font_id: font_id.clone(),
-                color: session.player_color(player_id).color().to_color32(),
-                ..Default::default()
-            },
-        );
-    }
+    let name_color = if color_by_affiliation {
+        mission_planet_affiliation_color(map, player, missions, session, planet)
+            .unwrap_or_else(|| ui.visuals().text_color())
+    } else {
+        Color32::WHITE
+    };
     label.append(
         &planet.name,
         0.0,
         egui::text::TextFormat {
             font_id,
-            color: ui.visuals().text_color(),
+            color: name_color,
             ..Default::default()
         },
     );
@@ -1912,7 +1928,14 @@ fn draw_mission_route(
 
             ui.cell(100., |ui| {
                 ui.vertical(|ui| {
-                    style_selection_boxes(ui);
+                    let selected_color = mission_planet_affiliation_color(
+                        map,
+                        player,
+                        missions,
+                        session,
+                        map.get(mission.origin),
+                    );
+                    style_selection_boxes(ui, selected_color);
                     ui.add_space(15.);
 
                     let origins = map
@@ -1924,6 +1947,9 @@ fn draw_mission_route(
 
                     ComboBox::from_id_salt("origin")
                         .height(60. * origins.len().max(5) as f32)
+                        .popup_style(egui::style::StyleModifier::new(|style: &mut egui::Style| {
+                            style.spacing.menu_margin.right = 0;
+                        }))
                         .selected_text(mission_planet_selector_label(
                             ui,
                             map,
@@ -1931,11 +1957,18 @@ fn draw_mission_route(
                             missions,
                             session,
                             map.get(mission.origin),
+                            true,
                         ))
                         .show_ui(ui, |ui| {
+                            let visuals = ui.visuals_mut();
+                            visuals.selection.bg_fill = Color32::from_rgb(57, 66, 82);
+                            visuals.selection.stroke = Stroke::new(
+                                1.0,
+                                selected_color.unwrap_or(Color32::from_rgb(190, 198, 210)),
+                            );
                             for planet in origins {
                                 let label = mission_planet_selector_label(
-                                    ui, map, player, missions, session, planet,
+                                    ui, map, player, missions, session, planet, true,
                                 );
                                 ui.selectable_value(&mut mission.origin, planet.id, label)
                                     .on_hover_cursor(CursorIcon::PointingHand);
@@ -1974,9 +2007,21 @@ fn draw_mission_route(
             ui.add_enabled_ui(!fixed_destination, |ui| {
                 ui.cell(100., |ui| {
                     ui.vertical(|ui| {
-                        style_selection_boxes(ui);
+                        let selected_color = mission_planet_affiliation_color(
+                            map,
+                            player,
+                            missions,
+                            session,
+                            map.get(mission.destination),
+                        );
+                        style_selection_boxes(ui, selected_color);
                         ui.add_space(15.);
                         ComboBox::from_id_salt("destination")
+                            .popup_style(egui::style::StyleModifier::new(
+                                |style: &mut egui::Style| {
+                                    style.spacing.menu_margin.right = 0;
+                                },
+                            ))
                             .selected_text(mission_planet_selector_label(
                                 ui,
                                 map,
@@ -1984,16 +2029,24 @@ fn draw_mission_route(
                                 missions,
                                 session,
                                 map.get(mission.destination),
+                                true,
                             ))
                             .show_ui(ui, |ui| {
+                                let visuals = ui.visuals_mut();
+                                visuals.selection.bg_fill = Color32::from_rgb(57, 66, 82);
+                                visuals.selection.stroke = Stroke::new(
+                                    1.0,
+                                    selected_color.unwrap_or(Color32::from_rgb(190, 198, 210)),
+                                );
                                 for planet in map
                                     .planets
                                     .iter()
                                     .filter(|p| !p.is_destroyed)
+                                    .filter(|p| p.id != mission.origin)
                                     .sorted_by(|a, b| a.name.cmp(&b.name))
                                 {
                                     let label = mission_planet_selector_label(
-                                        ui, map, player, missions, session, planet,
+                                        ui, map, player, missions, session, planet, true,
                                     );
                                     ui.selectable_value(&mut mission.destination, planet.id, label)
                                         .on_hover_cursor(CursorIcon::PointingHand);
@@ -2065,7 +2118,7 @@ fn draw_mission_fleet_picker(
                             Align2::LEFT_BOTTOM,
                         );
 
-                        style_selection_boxes(ui);
+                        style_selection_boxes(ui, None);
                         ui.style_mut().drag_value_text_style = TextStyle::Body;
                         ui.spacing_mut().button_padding = egui::vec2(4.0, 6.0);
                         ui.spacing_mut().interact_size.x = 50.;
@@ -2329,7 +2382,7 @@ fn draw_mission_details(
                 ui.horizontal(|ui| {
                     ui.small("💣 Bombing raid:");
 
-                    style_selection_boxes(ui);
+                    style_selection_boxes(ui, None);
                     ui.style_mut().spacing.button_padding.y = 1.5;
                     if let Some(style) = ui.style_mut().text_styles.get_mut(&TextStyle::Button) {
                         style.size = 18.;

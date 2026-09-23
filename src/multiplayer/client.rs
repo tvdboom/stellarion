@@ -2014,8 +2014,8 @@ fn host_closed_lobby_notification(
     })
 }
 
-/// Reports opposing players whose canonical presence changed from connected to disconnected.
-fn disconnected_player_notifications(
+/// Reports opposing players whose canonical presence changed state.
+fn player_presence_notifications(
     output: &BackendOutput,
     session: &MultiplayerSession,
 ) -> Vec<MessageMsg> {
@@ -2053,6 +2053,19 @@ fn disconnected_player_notifications(
                 .any(|previous| previous.player_id == member.player_id && previous.connected)
         })
         .map(|member| MessageMsg::warning(format!("Player {} disconnected.", member.display_name)))
+        .chain(
+            members
+                .iter()
+                .filter(|member| Some(member.player_id) != local_player_id && member.connected)
+                .filter(|member| {
+                    previous.members.iter().any(|previous| {
+                        previous.player_id == member.player_id && !previous.connected
+                    })
+                })
+                .map(|member| {
+                    MessageMsg::warning(format!("Player {} reconnected.", member.display_name))
+                }),
+        )
         .collect()
 }
 
@@ -2076,7 +2089,7 @@ fn poll_backend_tasks(
                 || matches!(&output, BackendOutput::DraftLoaded(turn, _) if *turn == pending.turn);
             let notification = operation_notification(&output, &session);
             let lobby_closed_notification = host_closed_lobby_notification(&output, &session);
-            let presence_notifications = disconnected_player_notifications(&output, &session);
+            let presence_notifications = player_presence_notifications(&output, &session);
             let protection_notifications = protection_permission_notifications(&output, &session);
             let revoked_targets = revoked_protection_targets(&output, &session);
             let refresh_protection = matches!(

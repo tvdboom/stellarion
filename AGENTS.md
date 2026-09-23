@@ -190,6 +190,11 @@ against modified clients. No service-role key belongs in the client.
 - Inspect `git status` and relevant diffs first. Preserve unrelated work;
   other tasks may be editing this checkout. Avoid broad rewrites and formatting
   changes outside the requested scope.
+- Before every `git push`, confirm the CI quality checks pass locally: run
+  formatting checks, clippy with warnings rejected, and the relevant test suite
+  (prefer `just ci` when the full repository gate is appropriate). Do not push
+  while any of these checks are failing; report any environment-related limit
+  separately.
 - Run focused tests for changed behavior, then the relevant compile/lint gates.
   Add regression tests for meaningful rules, boundaries, errors, concurrency,
   or persistence behavior; do not add tests that merely duplicate code.

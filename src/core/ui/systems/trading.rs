@@ -160,7 +160,7 @@ fn resource_controls(
     images: &ImageIds,
 ) {
     resource_row(ui, RESOURCE_HUB_ROW_WIDTH, 62.0, 64.0, |ui, resource, image_size, width| {
-        style_selection_boxes(ui);
+        style_selection_boxes(ui, None);
         ui.style_mut().drag_value_text_style = TextStyle::Small;
         ui.spacing_mut().button_padding = egui::vec2(4.0, 6.0);
         ui.spacing_mut().interact_size = egui::vec2(width, 34.0);

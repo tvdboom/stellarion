@@ -507,9 +507,20 @@ fn style_modal_buttons(ui: &mut Ui) {
 }
 
 /// Keeps selectors and their keyboard-edit fields in the same dark modal palette.
-fn style_selection_boxes(ui: &mut Ui) {
+fn style_selection_boxes(ui: &mut Ui, selected_color: Option<Color32>) {
     style_modal_buttons(ui);
-    ui.visuals_mut().text_edit_bg_color = Some(ABANDON_CONFIRMATION_BUTTON_FILL);
+    let visuals = ui.visuals_mut();
+    visuals.text_edit_bg_color = Some(ABANDON_CONFIRMATION_BUTTON_FILL);
+    if let Some(color) = selected_color {
+        for widget in [
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            widget.fg_stroke.color = color;
+        }
+    }
 }
 
 /// Draws a centered Yes/No footer entirely inside the supplied modal region.

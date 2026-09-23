@@ -57,15 +57,15 @@ fn mission_planet_selector_marks_only_visible_affiliations() {
 
     let mut output = context.run_ui(Default::default(), |ui| {
         labels = Some((
-            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(0)),
-            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(1)),
+            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(0), true),
+            mission_planet_selector_label(ui, &map, &player, &[], &session, map.get(1), true),
         ));
     });
     output.textures_delta.clear();
     let (home, hidden) = labels.unwrap();
 
-    assert_eq!(home.text, "●  Home");
-    assert_eq!(home.sections.len(), 2);
+    assert_eq!(home.text, "Home");
+    assert_eq!(home.sections.len(), 1);
     assert_eq!(home.sections[0].format.color, session.player_color(1).color().to_color32());
     assert_eq!(hidden.text, "Hidden");
     assert_eq!(hidden.sections.len(), 1);
