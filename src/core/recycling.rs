@@ -9,6 +9,7 @@ use strum::IntoEnumIterator;
 use crate::core::combat::report::MissionReport;
 use crate::core::identity::PlayerId;
 use crate::core::map::asteroids::recycler_asteroid_targets;
+use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 #[cfg(test)]
 use crate::core::map::planet::Planet;
@@ -60,7 +61,7 @@ impl DebrisSize {
     }
 }
 
-/// A deduplicated public battle-debris site.
+/// A deduplicated battle-debris site.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DebrisSite {
     pub(crate) losses: usize,
@@ -100,7 +101,7 @@ pub(crate) fn destroyed_ships(report: &MissionReport) -> usize {
         .fold(0usize, usize::saturating_add)
 }
 
-/// Builds public debris from canonical participant reports, deduplicating their persisted copies.
+/// Builds debris from canonical participant reports, deduplicating their persisted copies.
 pub(crate) fn debris_sites<'a>(
     reports: impl Iterator<Item = &'a MissionReport>,
     turn: usize,
@@ -130,6 +131,39 @@ pub(crate) fn debris_sites<'a>(
         site.seed ^= report.id as u32;
     }
     sites
+}
+
+/// Shows each battle's debris to its participants, the current planet owner, or a later spy.
+pub(crate) fn visible_debris_sites<'a>(
+    map: &Map,
+    viewer: &Player,
+    reports: impl Iterator<Item = &'a MissionReport>,
+    turn: usize,
+) -> BTreeMap<PlanetId, DebrisSite> {
+    let spy_turns = viewer
+        .reports
+        .iter()
+        .filter(|report| {
+            report.mission.objective == Icon::Spy
+                && report.mission.owner == viewer.id
+                && report.scout_probes > 0
+                && report.turn <= turn
+        })
+        .fold(BTreeMap::<PlanetId, usize>::new(), |mut turns, report| {
+            let seen = turns.entry(report.mission.destination).or_default();
+            *seen = (*seen).max(report.turn);
+            turns
+        });
+    debris_sites(
+        reports.filter(|report| {
+            let planet_id = report.mission.destination;
+            map.try_get(planet_id).is_some_and(|planet| planet.owned == Some(viewer.id))
+                || report.is_attacker(viewer.id)
+                || report.is_defender(viewer.id)
+                || spy_turns.get(&planet_id).is_some_and(|seen| *seen >= report.turn)
+        }),
+        turn,
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

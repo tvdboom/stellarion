@@ -653,7 +653,7 @@ fn fauna_formations_include_adult_and_offspring_variants() {
     ];
     let mut found = [false; 5];
 
-    for turn in [5, 10, 17, 50] {
+    for turn in [5, 10, 17, 21, 50, 100] {
         for seed in 0..512 {
             let mut rng = StdRng::seed_from_u64(seed);
             let (_, army) = encounter_formation(turn, &mut rng);
@@ -664,7 +664,7 @@ fn fauna_formations_include_adult_and_offspring_variants() {
         }
     }
 
-    assert!(found.into_iter().all(|present| present));
+    assert_eq!(found, [true; 5], "missing adult-and-offspring formation for {pairs:?}");
 
     let mut apex_found = [false; 2];
     for seed in 0..512 {
@@ -676,7 +676,7 @@ fn fauna_formations_include_adult_and_offspring_variants() {
 }
 
 #[test]
-fn fauna_formations_stay_gentle_through_turn_four_then_ramp_quickly() {
+fn fauna_formations_stay_gentle_through_turn_four_then_grow_gradually() {
     fn combat_profile(army: &Army) -> (usize, usize) {
         army.iter().fold((0_usize, 0_usize), |(hull, damage), (unit, count)| {
             (
@@ -768,18 +768,23 @@ fn fauna_formations_follow_the_opening_grace_period_and_late_game_cap() {
     assert_eq!(encounter_threat_budget(1), 2);
     assert_eq!(encounter_threat_budget(2), 3);
     assert_eq!(encounter_threat_budget(4), 5);
-    assert_eq!(encounter_threat_budget(5), 8);
-    assert_eq!(encounter_threat_budget(6), 11);
-    assert_eq!(encounter_threat_budget(10), 23);
+    for turn in 5..=15 {
+        assert_eq!(encounter_threat_budget(turn) - encounter_threat_budget(turn - 1), 2);
+    }
+    assert_eq!(encounter_threat_budget(5), 7);
+    assert_eq!(encounter_threat_budget(6), 9);
+    assert_eq!(encounter_threat_budget(10), 17);
+    assert_eq!(encounter_threat_budget(15), 27);
+    assert_eq!(encounter_threat_budget(16), 27);
     assert_eq!(encounter_threat_budget(20), 29);
-    assert_eq!(encounter_threat_budget(30), 36);
-    assert_eq!(encounter_threat_budget(40), 43);
-    assert_eq!(encounter_threat_budget(49), 49);
-    assert_eq!(encounter_threat_budget(50), 50);
-    assert_eq!(encounter_threat_budget(60), 54);
-    assert_eq!(encounter_threat_budget(75), 60);
-    assert_eq!(encounter_threat_budget(100), 70);
-    assert_eq!(encounter_threat_budget(150), 70);
+    assert_eq!(encounter_threat_budget(30), 35);
+    assert_eq!(encounter_threat_budget(40), 41);
+    assert_eq!(encounter_threat_budget(49), 46);
+    assert_eq!(encounter_threat_budget(50), 47);
+    assert_eq!(encounter_threat_budget(60), 51);
+    assert_eq!(encounter_threat_budget(75), 57);
+    assert_eq!(encounter_threat_budget(100), 67);
+    assert_eq!(encounter_threat_budget(150), 67);
 }
 
 #[test]

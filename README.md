@@ -8,12 +8,12 @@
 <br><br>
 </div>
 
-<img src="scenery/map.png" alt="Turn-18 three-player galaxy with colored territories and fleets from every empire travelling across the map">
-<img src="scenery/shop.png" alt="Construction panel over a developed colony in a three-player match">
-<img src="scenery/mission-planning.png" alt="Planning a cruiser and fighter attack in a three-player match">
-<img src="scenery/active-missions.png" alt="Active colonization, espionage, and attack missions in a three-player match">
-<img src="scenery/combat.png" alt="Mara and Jonas in a live fleet battle with weapon fire and planetary defenses">
-<img src="scenery/battle-report.png" alt="Detailed report of Mara and Jonas's fleet battle with losses and planetary defenses">
+<img src="scenery/map.png" alt="map">
+<img src="scenery/shop.png" alt="shop">
+<img src="scenery/mission-planning.png" alt="mission-planning">
+<img src="scenery/active-missions.png" alt="active-missions">
+<img src="scenery/combat.png" alt="combat">
+<img src="scenery/battle-report.png" alt="battle-report">
 
 <br>
 

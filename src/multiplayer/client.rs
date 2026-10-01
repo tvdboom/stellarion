@@ -78,7 +78,7 @@ const EVENT_POLL_INTERVAL_FALLBACK: Duration = Duration::from_secs(2);
 const HOST_CLOSED_LOBBY_NOTICE: &str = "The host closed the lobby.";
 const HOST_CLOSED_LOBBY_NOTICE_DURATION: Duration = Duration::from_secs(2);
 const GAME_UNAVAILABLE_NOTICE: &str = "This game is no longer available.";
-const GAME_SAVED_NOTICE: &str = "Shared game and your current turn draft saved.";
+const GAME_SAVED_NOTICE: &str = "Game saved.";
 const WAITING_FOR_PLAYERS_NOTICE: &str = "Waiting for other players to finish their turn.";
 
 /// Stable connection feedback that does not flash during a brief recovery attempt.

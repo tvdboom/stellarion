@@ -239,10 +239,10 @@ pub(crate) const fn encounter_threat(creature: SpaceFauna) -> usize {
 
 /// Returns the encounter threat budget for a turn.
 ///
-/// The opening four turns deliberately stay gentle. Strength rises quickly through turn ten,
-/// reaches its former late-game level at turn fifty, then continues climbing gradually to a higher
-/// permanent cap at turn one hundred. Turn zero is treated as turn one so setup and first-turn
-/// previews use the same opening formation strength.
+/// The opening four turns deliberately stay gentle. Strength then rises by two threat points per
+/// turn from turns five through fifteen, and climbs more slowly afterward to a permanent cap at
+/// turn one hundred. Turn zero is treated as turn one so setup and first-turn previews use the
+/// same opening formation strength.
 pub(crate) const fn encounter_threat_budget(turn: usize) -> usize {
     let turn = if turn == 0 {
         1
@@ -251,15 +251,15 @@ pub(crate) const fn encounter_threat_budget(turn: usize) -> usize {
     };
     let uncapped = if turn <= 4 {
         turn.saturating_add(1)
-    } else if turn <= 10 {
-        5_usize.saturating_add((turn - 4).saturating_mul(3))
+    } else if turn <= 15 {
+        5_usize.saturating_add((turn - 4).saturating_mul(2))
     } else if turn <= 50 {
-        23_usize.saturating_add((turn - 10).saturating_mul(27) / 40)
+        27_usize.saturating_add((turn - 15).saturating_mul(20) / 35)
     } else {
-        50_usize.saturating_add((turn - 50).saturating_mul(20) / 50)
+        47_usize.saturating_add((turn - 50).saturating_mul(20) / 50)
     };
-    if uncapped > 70 {
-        70
+    if uncapped > 67 {
+        67
     } else {
         uncapped
     }
@@ -355,6 +355,7 @@ pub(crate) fn encounter_formation<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> 
         21..=49 => &[
             &[SolarRoc, IonWisp, AetherRay],
             &[ElderStarDragon, StarDragonWyrmling, StarDragonWyrmling, AetherRay],
+            &[CrystalLeviathan, CrystalShardling, AetherRay],
             &[StarKraken, StarKrakenSpawn, AetherRay],
             &[RiftSerpent, CrystalLeviathan, AetherRay],
             &[Gravemaw, VoidManta, VoidMantaCalf, AetherRay],

@@ -206,7 +206,7 @@ fn manual_save_reports_success_and_failure() {
         &MultiplayerSession::default(),
     )
     .unwrap();
-    assert_eq!(success.message, "Shared game and your current turn draft saved.");
+    assert_eq!(success.message, "Game saved.");
     assert_eq!(success.level, crate::core::messages::MessageLevel::Info);
 
     let error = BackendError::Offline("test outage".to_string());

@@ -3,7 +3,7 @@ name = "stellarion"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mavs"]
-description = "A deterministic multiplayer space strategy game for native and WebAssembly"
+description = "A multiplayer space strategy game for desktop and WebAssembly"
 
 [[bin]]
 name = "build-assets"

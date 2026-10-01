@@ -1,4 +1,4 @@
-//! Close-zoom development and public battle debris; neither changes simulation state.
+//! Close-zoom development and visible battle debris; neither changes simulation state.
 
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
@@ -23,7 +23,7 @@ use crate::core::missions::Missions;
 use crate::core::player::Player;
 #[cfg(test)]
 use crate::core::recycling::destroyed_ships;
-use crate::core::recycling::{debris_sites, DebrisSite, DebrisSize};
+use crate::core::recycling::{visible_debris_sites, DebrisSite, DebrisSize};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -1062,15 +1062,17 @@ fn refresh_details(
         surface_lights: &surface_lights.0,
         shadow: &shadow.0,
     };
-    // Canonical reports already persist on participants. Deduplicate their copies, exposing only
-    // coarse debris to other players without copying reports into their intelligence history.
+    // Canonical reports persist on participants; the viewer also learns debris through ownership
+    // or a successful spy mission without receiving the underlying battle report.
     let sites = if let Some(record) = &session.active_game {
-        debris_sites(
+        visible_debris_sites(
+            &map,
+            &player,
             record.persisted.state.players.iter().flat_map(|player| player.reports.iter()),
             settings.turn,
         )
     } else {
-        debris_sites(player.reports.iter(), settings.turn)
+        visible_debris_sites(&map, &player, player.reports.iter(), settings.turn)
     };
     let development = map
         .planets

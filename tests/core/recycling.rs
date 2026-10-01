@@ -75,6 +75,55 @@ fn debris_size_controls_one_two_and_three_turn_lifetimes() {
 }
 
 #[test]
+fn debris_visibility_requires_ownership_participation_or_a_surviving_spy_probe() {
+    let mut model = GameModel::new([18; 32], GameRules::default()).unwrap();
+    let planet_id = model.map.planets[0].id;
+    model.map.get_mut(planet_id).owned = Some(2);
+    let planet = model.map.get(planet_id).clone();
+    let first = report(10, 8, &planet, 4);
+    let second = report(11, 9, &planet, 3);
+    let reports = [&first, &second];
+    let mut viewer = model.players[0].clone();
+    viewer.id = 3;
+
+    assert!(visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9).is_empty());
+
+    viewer.id = 1;
+    assert_eq!(
+        visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9)[&planet_id].losses,
+        7
+    );
+    viewer.id = 2;
+    assert_eq!(
+        visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9)[&planet_id].losses,
+        7
+    );
+    viewer.id = 3;
+    model.map.get_mut(planet_id).owned = Some(3);
+    assert_eq!(
+        visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9)[&planet_id].losses,
+        7
+    );
+    model.map.get_mut(planet_id).owned = Some(2);
+
+    let mut spy = report(12, 8, &planet, 0);
+    spy.mission.owner = 3;
+    spy.mission.objective = Icon::Spy;
+    spy.combat_report = None;
+    viewer.reports.push(spy.clone());
+    assert!(visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9).is_empty());
+
+    viewer.reports[0].scout_probes = 1;
+    let sites = visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9);
+    assert_eq!(sites[&planet_id].losses, 4);
+    viewer.reports[0].turn = 9;
+    let sites = visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9);
+    assert_eq!(sites[&planet_id].losses, 7);
+    viewer.reports[0].mission.objective = Icon::Attack;
+    assert!(visible_debris_sites(&model.map, &viewer, reports.iter().copied(), 9).is_empty());
+}
+
+#[test]
 fn debris_counts_destroyed_protection_ships_from_the_shared_garrison() {
     let model = GameModel::new([18; 32], GameRules::default()).unwrap();
     let mut battle = report(20, 8, &model.map.planets[0], 0);

@@ -2,6 +2,7 @@ use super::*;
 use crate::core::combat::report::CombatReport;
 use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::recycling::debris_sites;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
 use std::collections::BTreeSet;
@@ -480,12 +481,12 @@ fn report(id: u64, turn: usize, planet: &Planet, losses: usize) -> MissionReport
 }
 
 #[test]
-fn public_debris_deduplicates_participant_reports_and_expires_by_turn() {
+fn debris_deduplicates_participant_reports_and_expires_by_turn() {
     let model = model();
     let planet = &model.map.planets[0];
     let old = report(1, 5, planet, 4);
     let mut recent = report(2, 7, planet, 12);
-    recent.hidden = true; // Public aftermath does not depend on report visibility.
+    recent.hidden = true; // Wreckage lifetime does not depend on report-tab visibility.
     let sites = debris_sites([&old, &old, &recent].into_iter(), 7);
     assert_eq!(sites[&planet.id].losses, 12);
     assert_eq!(sites[&planet.id].latest_turn, 7);

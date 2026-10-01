@@ -159,16 +159,16 @@ impl Description for Building {
             },
             Building::MetalMine => {
                 "The Metal Mine is the building that produces metal. The amount of metal produced \
-                each turn is equal to the planet's base metal times the mine's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn before automatically returning to Normal. Suspended uses no Energy and produces nothing; manual suspension lasts until you choose another mode."
+                each turn is equal to the planet's base metal times the mine's level."
             },
             Building::CrystalMine => {
                 "The Crystal Mine is the building that produces crystal. The amount of crystal \
-                produced each turn is equal to the planet's base crystal times the mine's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn before automatically returning to Normal. Suspended uses no Energy and produces nothing; manual suspension lasts until you choose another mode."
+                produced each turn is equal to the planet's base crystal times the mine's level."
             },
             Building::DeuteriumSynthesizer => {
                 "The Deuterium Synthesizer is the building that produces deuterium. The amount \
                 of deuterium produced each turn is equal to the planet's base deuterium times the \
-                synthesizer's level. Normal operation uses 1 Energy per level. Intensive uses 3 Energy per level for 150% output, then forces one suspended recovery turn before automatically returning to Normal. Suspended uses no Energy and produces nothing; manual suspension lasts until you choose another mode."
+                synthesizer's level."
             },
             Building::Shipyard => {
                 "The Shipyard constructs ships and orbital structures. At higher levels, more \

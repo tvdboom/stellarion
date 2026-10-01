@@ -57,7 +57,7 @@ use crate::core::map::utils::{
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::recycling::{
-    debris_sites, recycler_sources_with_asteroid_targets, DebrisSite, RecyclerSource,
+    recycler_sources_with_asteroid_targets, visible_debris_sites, DebrisSite, RecyclerSource,
 };
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
@@ -879,12 +879,14 @@ pub(crate) fn animate_recyclers(
     >,
 ) {
     let sites = if let Some(record) = &session.active_game {
-        debris_sites(
+        visible_debris_sites(
+            &map,
+            &player,
             record.persisted.state.players.iter().flat_map(|player| player.reports.iter()),
             settings.turn,
         )
     } else {
-        debris_sites(player.reports.iter(), settings.turn)
+        visible_debris_sites(&map, &player, player.reports.iter(), settings.turn)
     };
     let scenery_seed = map.scenery_seed();
     if cache.scenery_seed != Some(scenery_seed) {
