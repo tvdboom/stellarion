@@ -1704,10 +1704,11 @@ fn lobby_color_card(
                     |ui| {
                         ui.spacing_mut().item_spacing.x = gap;
                         for color in PLAYER_COLOR_PALETTE {
-                            let available = !busy && available_colors.contains(&color);
+                            // Only claimed colors dim; saving temporarily blocks input.
+                            let available = available_colors.contains(&color);
                             let clicked = ui
                                 .add_enabled_ui(available, |ui| {
-                                    player_color_swatch(ui, color, color == selected)
+                                    player_color_swatch(ui, color, color == selected, !busy)
                                 })
                                 .inner;
                             if clicked && color != selected {
@@ -1738,9 +1739,19 @@ fn available_player_colors(game: &GameRecord, player_id: u64) -> Vec<PlayerColor
         .collect()
 }
 
-/// Draws a shared lobby/practice swatch with selection, hover, and click feedback.
-fn player_color_swatch(ui: &mut egui::Ui, color: PlayerColor, selected: bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
+/// Blocks input during saves without changing the swatch's availability styling.
+fn player_color_swatch(
+    ui: &mut egui::Ui,
+    color: PlayerColor,
+    selected: bool,
+    interactive: bool,
+) -> bool {
+    let sense = if interactive {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), sense);
     let [red, green, blue] = color.rgb();
     let fill = egui::Color32::from_rgb(red, green, blue);
     ui.painter().circle_filled(
@@ -1759,8 +1770,9 @@ fn player_color_swatch(ui: &mut egui::Ui, color: PlayerColor, selected: bool) ->
             egui::Stroke::new(1.5, egui::Color32::WHITE),
         );
     }
-    let clicked =
-        ui.is_enabled() && response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    let clicked = interactive
+        && ui.is_enabled()
+        && response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     if clicked {
         mark_menu_click(ui);
     }

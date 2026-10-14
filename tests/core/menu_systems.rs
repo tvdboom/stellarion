@@ -2162,6 +2162,43 @@ fn enter_in_lobby_requires_a_ready_host() {
 }
 
 #[test]
+fn lobby_colors_keep_their_appearance_while_a_change_is_pending() {
+    let session = test_lobby();
+    let game = session.active_game.as_ref().unwrap();
+    for width in [280.0, 452.0] {
+        let context = egui::Context::default();
+        let mut idle_colors = None;
+        for busy in [false, true, false] {
+            let (shapes, requests) = menu_frame(&context, vec![], |ui, requests| {
+                ui.allocate_ui(egui::vec2(width, 128.0), |ui| {
+                    lobby_color_card(ui, game, Some(1), busy, requests);
+                });
+            });
+            assert!(requests.is_empty());
+            let colors = shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle) => Some((
+                        circle.center,
+                        circle.radius,
+                        circle.fill,
+                        circle.stroke,
+                        shape.clip_rect,
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(filled_circles(&shapes, 11.0).len(), PLAYER_COLOR_PALETTE.len());
+            if let Some(idle) = &idle_colors {
+                assert_eq!(&colors, idle, "colors flickered while saving at width {width}");
+            } else {
+                idle_colors = Some(colors);
+            }
+        }
+    }
+}
+
+#[test]
 fn lobby_color_card_shows_defaults_and_only_allows_unclaimed_colors() {
     let session = test_lobby();
     let game = session.active_game.as_ref().unwrap();
