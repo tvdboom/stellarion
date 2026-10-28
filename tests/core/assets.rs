@@ -1,8 +1,10 @@
 use super::*;
 
 #[test]
-fn cinematic_firing_sheets_have_eight_transparent_frames_for_every_armed_hull() {
-    assert_eq!(CINEMATIC_FIRING_IMAGE_NAMES.len(), 15);
+fn cinematic_firing_sheets_have_eight_transparent_frames_for_animated_hulls() {
+    assert_eq!(CINEMATIC_FIRING_IMAGE_NAMES.len(), 14);
+    assert!(!CINEMATIC_FIRING_IMAGE_NAMES.contains(&"firing war sun"));
+    assert!(CINEMATIC_IMAGE_NAMES.contains(&"cinematic war sun"));
     for name in CINEMATIC_FIRING_IMAGE_NAMES {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("assets/images/cinematic")

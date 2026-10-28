@@ -20,6 +20,8 @@ fn snapshot_matches_hull_by_id_across_casualties_and_reordered_rounds() {
 
     let unit = Unit::Ship(Ship::LightFighter);
     let record = |id, hull, shield| CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         owner: Some(1),
         unit,

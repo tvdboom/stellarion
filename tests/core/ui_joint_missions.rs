@@ -76,6 +76,7 @@ fn fixture() -> (GameModel, Player, UiState, JointAttackInvitation) {
         army: army.clone(),
         bombing: BombingRaid::Economic,
         combat_probes: true,
+        battle_plan: default(),
     };
     let invitation = JointAttackInvitation {
         id: 91,
@@ -119,6 +120,31 @@ fn fixture() -> (GameModel, Player, UiState, JointAttackInvitation) {
         ..default()
     };
     (model, player, state, invitation)
+}
+
+#[test]
+fn restoring_joint_owner_draft_preserves_its_independent_battle_plan() {
+    use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture};
+    let (_, _, mut state, mut invitation) = fixture();
+    let contribution = invitation.participants[0].contribution.as_mut().unwrap();
+    contribution.battle_plan = BattlePlan {
+        automatic_tactic: false,
+        tactic: CombatTactic::Siege,
+        protection: ProtectionPosture::ProtectBombers,
+        ..default()
+    };
+    let expected = contribution.battle_plan;
+    let origin = contribution.origin;
+    state.joint_attack_draft_id = None;
+    state.joint_attack_owner_draft = None;
+    restore_joint_attack_owner_draft(&mut state, &invitation);
+    assert_eq!(state.joint_attack_owner_draft.as_ref().unwrap().battle_plan, expected);
+    assert_eq!(state.mission_battle_plan_origin, Some(origin));
+
+    state.mission_info = state.joint_attack_owner_draft.clone().unwrap();
+    assert!(allied_synced_for_owner(&state, Some(&invitation)));
+    state.mission_info.battle_plan.tactic = CombatTactic::Swarm;
+    assert!(!allied_synced_for_owner(&state, Some(&invitation)));
 }
 
 fn session_for_model(model: &GameModel) -> MultiplayerSession {
@@ -1424,6 +1450,7 @@ fn added_invitees_wait_for_send_proposal_after_an_update() {
         army: state.mission_info.army.clone(),
         bombing: state.mission_info.bombing.clone(),
         combat_probes: state.mission_info.combat_probes,
+        battle_plan: state.mission_info.battle_plan,
     });
     let mut session = session_for_model(&model);
     session.joint_attack_update_pending = true;
@@ -2977,7 +3004,7 @@ fn render_joint_mission_panels() {
                     .map(Unit::to_lowername)
                     .collect::<std::collections::BTreeSet<_>>();
                 keys.extend(Icon::iter().map(|icon| icon.asset_key()));
-                keys.extend(["panel", "button", "button hover"].map(str::to_owned));
+                keys.extend(["panel", "button", "button hover", "battle plan"].map(str::to_owned));
                 keys.insert(map.get(state.mission_info.origin).image());
                 keys.insert(map.get(state.mission_info.destination).image());
                 keys.insert(state.mission_info.image(&player).to_owned());

@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+use crate::core::combat::plan::BattlePlan;
 use crate::core::constants::{PHALANX_DISTANCE, RADAR_DISTANCE, REACTOR_FUEL_REDUCTION_FACTOR};
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -229,6 +230,10 @@ pub struct Mission {
     pub bombing: BombingRaid,
     /// Whether probes remain in fleet combat beyond reconnaissance.
     pub combat_probes: bool,
+    /// Orders carried by this fleet, editable by its commander while travelling.
+    pub battle_plan: BattlePlan,
+    /// Source fleets retained when simultaneous arrivals carry different combat plans.
+    pub battle_fleets: Vec<BattleFleet>,
     /// Whether this Spy mission attempts to bypass combat using the origin's Command Relay.
     pub deep_cover: bool,
     /// Jump-gate capacity consumed during the current turn.
@@ -299,6 +304,18 @@ impl JointAttackMission {
 }
 
 /// Combat choices belonging to one commander in a coordinated attack.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BattleFleet {
+    /// Stable source mission identity, preserved when arrivals combine.
+    pub id: MissionId,
+    /// Ships following this source fleet's orders.
+    pub army: Army,
+    /// Independent combat orders, resolved from this fleet's composition.
+    pub battle_plan: BattlePlan,
+}
+
+/// Combat choices belonging to one commander in a coordinated attack.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FleetCombatOrders {
@@ -306,9 +323,85 @@ pub struct FleetCombatOrders {
     pub bombing: BombingRaid,
     /// Whether this commander's Probes stay after the first combat round.
     pub combat_probes: bool,
+    /// This commander's independently selected combat plan.
+    pub battle_plan: BattlePlan,
 }
 
 impl Mission {
+    /// Returns independent source fleets, resolving automatic selection before battle.
+    pub fn source_battle_fleets(&self) -> Vec<BattleFleet> {
+        if self.battle_fleets.is_empty() {
+            vec![BattleFleet {
+                id: self.id,
+                army: self.army.clone(),
+                battle_plan: self.battle_plan.resolved(&self.army),
+            }]
+        } else {
+            self.battle_fleets
+                .iter()
+                .map(|fleet| BattleFleet {
+                    battle_plan: fleet.battle_plan.resolved(&fleet.army),
+                    ..fleet.clone()
+                })
+                .collect()
+        }
+    }
+
+    /// Preserves separately ordered survivors on a returning combined fleet.
+    pub fn with_battle_fleets(mut self, fleets: Vec<BattleFleet>) -> Self {
+        self.battle_fleets = fleets;
+        self
+    }
+    /// Returns the current combat plan for one contingent in this mission.
+    pub fn battle_plan_for(&self, owner: Option<PlayerId>) -> BattlePlan {
+        if self.joint_attack.is_none() && owner == Some(self.owner) {
+            if let Some(fleet) = self
+                .battle_fleets
+                .iter()
+                .max_by_key(|fleet| fleet.army.values().map(|count| *count as u128).sum::<u128>())
+            {
+                return fleet.battle_plan.resolved(&fleet.army);
+            }
+        }
+        let plan = owner
+            .and_then(|owner| self.joint_attack.as_ref()?.combat_orders.get(&owner))
+            .map_or(self.battle_plan, |orders| orders.battle_plan);
+        plan.resolved(owner.and_then(|owner| self.commanded_army(owner)).unwrap_or(&self.army))
+    }
+
+    /// Returns only the ships commanded by this player, including an allied contingent.
+    pub fn commanded_army(&self, owner: PlayerId) -> Option<&Army> {
+        if let Some(joint) = &self.joint_attack {
+            joint.attackers.get(&owner)
+        } else {
+            (self.owner == owner).then_some(&self.army)
+        }
+    }
+
+    /// Updates one commander's plan without changing another allied contingent's orders.
+    pub fn set_battle_plan_for(&mut self, owner: PlayerId, plan: BattlePlan) -> bool {
+        if self.objective == Icon::MissileStrike || self.commanded_army(owner).is_none() {
+            return false;
+        }
+        if let Some(joint) = &mut self.joint_attack {
+            let Some(orders) = joint.combat_orders.get_mut(&owner) else {
+                return false;
+            };
+            orders.battle_plan = plan;
+        }
+        if self.owner == owner {
+            self.battle_plan = plan;
+            self.battle_fleets.clear();
+        }
+        true
+    }
+
+    /// Selects the combat orders carried by this fleet.
+    pub fn with_battle_plan(mut self, battle_plan: BattlePlan) -> Self {
+        self.battle_plan = battle_plan;
+        self
+    }
+
     /// Returns the bombing order for the owner of an individual combat unit.
     pub(crate) fn bombing_for(&self, owner: Option<PlayerId>) -> &BombingRaid {
         owner
@@ -397,6 +490,8 @@ impl Mission {
             combat_probes,
             jump_gate,
             logs: logs.unwrap_or(format!("- ({turn}) Mission send to {}.", destination.name)),
+            battle_plan: origin.battle_plan_for(Some(owner)),
+            battle_fleets: Vec::new(),
             deep_cover: false,
             joint_attack: None,
         }
@@ -428,6 +523,7 @@ impl Mission {
             None,
         )
         .with_deep_cover(mission.deep_cover)
+        .with_battle_plan(mission.battle_plan)
     }
 
     /// Selects Deep Cover; launch validation requires a Spy mission and an origin Command Relay.
@@ -764,6 +860,16 @@ impl Mission {
 
     /// Merges compatible simultaneous arrivals into one deterministic mission.
     pub fn merge(&mut self, other: &Mission) {
+        let distinct = !self.battle_fleets.is_empty()
+            || !other.battle_fleets.is_empty()
+            || self.battle_plan_for(Some(self.owner)).tactic
+                != other.battle_plan_for(Some(other.owner)).tactic
+            || self.battle_plan_for(Some(self.owner)) != other.battle_plan_for(Some(other.owner));
+        if distinct {
+            let mut fleets = self.source_battle_fleets();
+            fleets.extend(other.source_battle_fleets());
+            self.battle_fleets = fleets;
+        }
         // The planet of origin becomes the one that send the
         // largest army (measured by production amount)
         if self.army.total_production() < other.army.total_production() {
@@ -771,6 +877,7 @@ impl Mission {
             self.origin_owned = other.origin_owned;
             self.origin_controlled = other.origin_controlled;
             self.origin_army = other.origin_army.clone();
+            self.battle_plan = other.battle_plan;
         }
 
         // Select objective based on priority

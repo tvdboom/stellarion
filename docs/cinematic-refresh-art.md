@@ -2,7 +2,11 @@
 
 Generated with the built-in `image_gen` tool on 2026-09-18. No CLI/API fallback, manual image editing, resampling, or alpha modification was used. Each final PNG is an unchanged copy of its generated output. The mode tile border and text are supplied by the game UI.
 
-## War Sun
+## Earlier War Sun (superseded)
+
+Replaced on 2026-10-28 by the shop-faithful sprite documented in
+[cinematic-war-sun.md](cinematic-war-sun.md). The following records the earlier
+generation only; its interpretation of the front and rear is no longer used.
 
 Final asset: `assets/images/cinematic/cinematic war sun.png`
 

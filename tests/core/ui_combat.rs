@@ -4,6 +4,8 @@ use crate::core::units::buildings::Building;
 
 fn combatant(id: u64, unit: Unit, shots: Vec<ShotReport>) -> CombatUnit {
     CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         owner: None,
         unit,

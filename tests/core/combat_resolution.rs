@@ -170,6 +170,8 @@ fn zero_damage_stalemate_terminates() {
         command_relay_active: true,
         shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
+        battle_plan: Default::default(),
+        protector_battle_plans: Default::default(),
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),
@@ -287,6 +289,8 @@ fn first_war_sun_volley_uses_ten_percent_plus_planet_modifier() {
 fn ships_and_bombers_use_opposite_target_priorities_with_fallbacks() {
     fn combatant(id: u64, unit: Unit) -> CombatUnit {
         CombatUnit {
+            fleet_id: 0,
+            battle_plan: Default::default(),
             id,
             owner: Some(2),
             unit,
@@ -359,6 +363,8 @@ fn missing_rapid_fire_probability_stops_shooting() {
 fn antiballistic_missiles_fire_one_at_a_time_and_stop_after_each_interception() {
     let mut defenders = (1..=4)
         .map(|id| CombatUnit {
+            fleet_id: 0,
+            battle_plan: Default::default(),
             id,
             owner: None,
             unit: Unit::antiballistic_missile(),
@@ -615,6 +621,8 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         command_relay_active: true,
         shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
+        battle_plan: Default::default(),
+        protector_battle_plans: Default::default(),
         is_destroyed: false,
         owned: Some(2),
         controlled: Some(2),

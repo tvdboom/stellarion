@@ -18,6 +18,9 @@ mod operations;
 #[path = "senate.rs"]
 mod senate;
 
+#[path = "battle_plan_orders.rs"]
+mod battle_plan_orders;
+
 #[test]
 fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
     let mut model = started_model(2);
@@ -1164,6 +1167,7 @@ fn single_attack_revokes_only_the_attackers_protection_after_arrival() {
         army: Army::from([(fighter, 1)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1299,6 +1303,7 @@ fn revoked_protection_can_return_home_with_no_fuel_but_other_routes_still_cost_f
         army: army.clone(),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1325,6 +1330,7 @@ fn revoked_protection_can_return_home_with_no_fuel_but_other_routes_still_cost_f
         army,
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1356,6 +1362,7 @@ fn a_fleet_sent_from_revoked_protection_cannot_be_recalled_to_that_world() {
         army: Army::from([(fighter, 3)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1390,6 +1397,7 @@ fn revoked_protection_fleet_can_choose_a_different_destination() {
         army: Army::from([(fighter, 3)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1436,6 +1444,7 @@ fn stationed_protection_can_launch_missions_or_recall_home_without_using_host_un
         army: Army::from([(fighter, 3)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1483,6 +1492,7 @@ fn stationed_protection_can_launch_missions_or_recall_home_without_using_host_un
         army: Army::from([(fighter, 1)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: false,
     };
@@ -1516,6 +1526,7 @@ fn protection_departures_use_only_the_commanders_fleet_and_can_be_canceled() {
                 army: Army::from([(fighter, count)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
                 deep_cover: false,
                 jump_gate: false,
             };
@@ -1605,6 +1616,7 @@ fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_worl
                     army: Army::from([(fighter, 3)]),
                     bombing: crate::core::missions::BombingRaid::None,
                     combat_probes: false,
+                    battle_plan: Default::default(),
                 },
                 JointAttackContribution {
                     player_id: 2,
@@ -1612,6 +1624,7 @@ fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_worl
                     army: Army::from([(fighter, protector_count)]),
                     bombing: crate::core::missions::BombingRaid::None,
                     combat_probes: false,
+                    battle_plan: Default::default(),
                 },
             ];
             if leader == 2 {
@@ -2197,6 +2210,7 @@ fn mission_commands_ignore_zero_count_units() {
         &selected,
         BombingRaid::None,
         false,
+        BattlePlan::default(),
         false,
         false,
     )
@@ -2235,6 +2249,7 @@ fn recalling_a_mission_launched_in_the_same_turn_restores_the_exact_prelaunch_st
             army: Army::from([(fighter, 3)]),
             bombing: BombingRaid::None,
             combat_probes: false,
+            battle_plan: Default::default(),
             deep_cover: false,
             jump_gate: false,
         },
@@ -2491,6 +2506,7 @@ fn departing_planets_and_moons_release_control_only_when_vacant() {
                 &Army::from([(fighter, 1)]),
                 BombingRaid::None,
                 false,
+                BattlePlan::default(),
                 false,
                 false,
             )
@@ -3211,6 +3227,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
                 bombing: crate::core::missions::BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 2,
@@ -3218,6 +3235,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
                 bombing: crate::core::missions::BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
         ],
     };
@@ -3355,6 +3373,7 @@ fn joint_attack_revokes_protection_only_after_the_battle() {
                             army: Army::from([(fighter, 1)]),
                             bombing: BombingRaid::None,
                             combat_probes: false,
+                            battle_plan: Default::default(),
                         },
                         JointAttackContribution {
                             player_id: 2,
@@ -3362,6 +3381,7 @@ fn joint_attack_revokes_protection_only_after_the_battle() {
                             army: Army::from([(fighter, 1)]),
                             bombing: BombingRaid::None,
                             combat_probes: false,
+                            battle_plan: Default::default(),
                         },
                     ],
                 }],
@@ -3436,6 +3456,7 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
                 army: Army::from([(probes, 6), (fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: true,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 2,
@@ -3443,6 +3464,7 @@ fn practice_boost_precedes_joint_attack_fleet_reservations() {
                 army: Army::from([(probes, 3), (fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
         ],
     };
@@ -3522,6 +3544,7 @@ fn joint_attack_report_remains_valid_when_a_supporter_is_destroyed_in_transit() 
                 army: Army::from([(fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 2,
@@ -3529,6 +3552,7 @@ fn joint_attack_report_remains_valid_when_a_supporter_is_destroyed_in_transit() 
                 army: Army::from([(fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 3,
@@ -3536,6 +3560,7 @@ fn joint_attack_report_remains_valid_when_a_supporter_is_destroyed_in_transit() 
                 army: Army::from([(fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
         ],
     };
@@ -4302,6 +4327,7 @@ fn joint_scouts_return_to_their_own_commander_without_duplicate_survivors() {
                 army: Army::from([(Unit::probe(), 200), (Unit::Ship(Ship::LightFighter), 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: true,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 2,
@@ -4309,6 +4335,7 @@ fn joint_scouts_return_to_their_own_commander_without_duplicate_survivors() {
                 army: Army::from([(Unit::probe(), 200)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
         ],
     };

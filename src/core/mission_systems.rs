@@ -686,6 +686,7 @@ pub fn send_mission(
                 bombing: mission.bombing.clone(),
                 combat_probes: mission.combat_probes,
                 deep_cover: mission.deep_cover,
+                battle_plan: mission.battle_plan,
                 jump_gate: mission.jump_gate,
             }
         };

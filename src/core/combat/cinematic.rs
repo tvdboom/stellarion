@@ -32,6 +32,14 @@ const GREEN: Color32 = Color32::from_rgb(102, 255, 182);
 #[path = "cinematic_sprites.rs"]
 mod sprites;
 use sprites::{firing_sheet, FiringSheet};
+#[path = "cinematic_damage.rs"]
+mod damage;
+#[path = "cinematic_environment.rs"]
+mod environment;
+#[path = "cinematic_formation.rs"]
+mod formation;
+#[path = "cinematic_motion.rs"]
+mod motion;
 /// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
 pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
 /// The texture swap occurs inside the opaque core of the planet's detonation.
@@ -49,10 +57,13 @@ pub(crate) struct CinematicPlayback {
     maximum_shot_lifetime: f32,
     maximum_charge_lead: f32,
     repair_order: Vec<usize>,
+    /// Only visible stations participate in berth clearance; never scan all actors per frame.
+    orbital_obstacles: Vec<usize>,
     maximum_repair_lifetime: f32,
     planet_image: String,
     destroyed_planet_image: &'static str,
     planet_uv: Rect,
+    atmosphere_color: Color32,
     show_planet: bool,
     gas_planet: bool,
     missile_strike: bool,
@@ -74,6 +85,10 @@ struct ActorVisual {
     bombing_target: Option<Vec2>,
     firing_times: Vec<f32>,
     firing_shots: Vec<usize>,
+    /// Incoming events sorted by impact time for bounded local light and surface scars.
+    incoming_shots: Vec<usize>,
+    /// Penetrating surface contacts only; later shield hits must not erase older scars.
+    surface_hits: Vec<usize>,
     repair_visits: Vec<usize>,
 }
 
@@ -206,18 +221,38 @@ impl CinematicPlayback {
                 bombing_target: None,
                 firing_times: Vec::new(),
                 firing_shots: Vec::new(),
+                incoming_shots: Vec::new(),
+                surface_hits: Vec::new(),
                 repair_visits: Vec::new(),
             });
         }
+        formation::layout_fleets(&mut visuals, &timeline.actors);
+        environment::layout_surface(&mut visuals, &timeline.actors, counts[4] > 0);
         for (shot_index, shot) in timeline.shots.iter().enumerate() {
             visuals[shot.source].firing_times.push(shot.launch_at);
             visuals[shot.source].firing_shots.push(shot_index);
+            if let Some(target) = shot.target {
+                visuals[target].incoming_shots.push(shot_index);
+            }
             if let Some(target) = shot.target.filter(|target| {
                 timeline.actors[shot.source].unit == Unit::Ship(Ship::Bomber)
                     && visuals[*target].ground
                     && visuals[*target].visible
             }) {
                 visuals[shot.source].bombing_target = Some(visuals[target].home);
+            }
+        }
+        for visual in &mut visuals {
+            visual.incoming_shots.sort_by(|a, b| {
+                timeline.shots[*a].impact_at.total_cmp(&timeline.shots[*b].impact_at)
+            });
+            if visual.ground {
+                visual.surface_hits = visual
+                    .incoming_shots
+                    .iter()
+                    .copied()
+                    .filter(|shot| environment::scorches_surface(&timeline.shots[*shot]))
+                    .collect();
             }
         }
         let mut draw_order: Vec<_> = (0..visuals.len()).filter(|index| visible[*index]).collect();
@@ -260,6 +295,13 @@ impl CinematicPlayback {
             .fold(0.0_f32, f32::max);
         let planet_image = cinematic_planet_image(&report.planet);
         let planet_uv = cinematic_planet_uv(&planet_image);
+        let orbital_obstacles = timeline
+            .actors
+            .iter()
+            .enumerate()
+            .filter(|(index, actor)| visible[*index] && actor.unit == Unit::space_dock())
+            .map(|(index, _)| index)
+            .collect();
         Self {
             timeline,
             elapsed: 0.0,
@@ -269,6 +311,7 @@ impl CinematicPlayback {
             maximum_shot_lifetime,
             maximum_charge_lead,
             repair_order,
+            orbital_obstacles,
             maximum_repair_lifetime,
             planet_image,
             destroyed_planet_image: if report.planet.is_moon() {
@@ -277,6 +320,7 @@ impl CinematicPlayback {
                 "planet0"
             },
             planet_uv,
+            atmosphere_color: environment::atmosphere_color(report.planet.kind),
             show_planet: !report.is_space_fauna_encounter(),
             gas_planet,
             missile_strike,
@@ -336,6 +380,7 @@ impl CinematicPlayback {
             painter.ctx().graphics_mut(|graphics| graphics.entry(painter.layer_id()).next_idx());
         if self.show_planet {
             self.paint_planet(&painter, scene, images);
+            self.paint_surface_damage(&painter, scene);
         }
         for &index in &self.draw_order {
             self.paint_actor(&painter, scene, images, index);
@@ -421,8 +466,12 @@ impl CinematicPlayback {
             if let Some(death) = actor.death_at {
                 let age = self.elapsed - death;
                 if (0.0..3.6).contains(&age) {
-                    let pose = self.actor_pose(scene, index, death);
-                    explosion(&painter, images, pose.center, pose.size, age, actor.unit);
+                    if actor.unit.is_ship() {
+                        self.paint_actor_destruction(&painter, scene, images, index, death);
+                    } else {
+                        let pose = self.actor_pose(scene, index, death);
+                        explosion(&painter, images, pose.center, pose.size, age, actor.unit);
+                    }
                 }
             }
         }
@@ -433,6 +482,7 @@ impl CinematicPlayback {
             shapes.transform_range(first_world_shape, shapes.next_idx(), transform);
         });
         painter.set_clip_rect(clip);
+        environment::paint_vignette(&painter, rect);
         // Restrained letterbox shading keeps overlaid controls legible without hiding ships.
         let strip = (rect.height() * 0.045).min(28.0);
         for i in 0..8 {
@@ -474,6 +524,20 @@ impl CinematicPlayback {
                 Color32::WHITE,
             );
         }
+        // A restrained exposure gradient separates bright hulls and weapon light from the
+        // busy map starfield while retaining the source artwork and its natural palette.
+        let mut exposure = Mesh::default();
+        for (point, opacity) in [
+            (scene.rect.left_top(), 0.20),
+            (scene.rect.right_top(), 0.20),
+            (scene.rect.right_bottom(), 0.08),
+            (scene.rect.left_bottom(), 0.08),
+        ] {
+            exposure.colored_vertex(point, alpha(Color32::from_rgb(3, 8, 17), opacity));
+        }
+        exposure.add_triangle(0, 1, 2);
+        exposure.add_triangle(0, 2, 3);
+        painter.add(exposure);
         // Three camera-linked depths use the map's cool/white/warm palette and progressively
         // brighter, sharper twinkles. Stable seeds preserve stars across replay and seeking.
         for (layer, (depth, count, drift)) in [
@@ -574,13 +638,7 @@ impl CinematicPlayback {
             return;
         }
         let radius = scene.planet_radius;
-        for ring in (1..=12).rev() {
-            painter.circle_stroke(
-                scene.planet,
-                radius + ring as f32 * 1.6 * scene.scale,
-                Stroke::new(2.1 * scene.scale, alpha(BLUE, 0.08 - ring as f32 * 0.005)),
-            );
-        }
+        environment::paint_atmosphere(painter, scene.planet, radius, self.atmosphere_color);
         if let Some(texture) = images.0.get(&self.planet_image) {
             painter.image(
                 *texture,
@@ -590,16 +648,6 @@ impl CinematicPlayback {
             );
         } else {
             painter.circle_filled(scene.planet, radius, Color32::from_rgb(20, 41, 56));
-        }
-        for ring in 0..5 {
-            arc(
-                painter,
-                scene.planet,
-                radius + ring as f32 * scene.scale,
-                -3.65,
-                2.7,
-                Stroke::new(1.8 * scene.scale, alpha(BLUE, 0.12 - ring as f32 * 0.018)),
-            );
         }
         // Strategic missiles bypass the fleet and planetary shield; only surface defenses and
         // their antiballistic interceptors participate in this presentation.
@@ -624,8 +672,8 @@ impl CinematicPlayback {
             );
             if let Some(texture) = images.0.get("planetary shield marker") {
                 for (rotation, opacity, diameter) in [
-                    (self.elapsed * 0.14, 0.32 + pulse * 0.48, 2.38),
-                    (-self.elapsed * 0.09 + 1.8, 0.12 + (1.0 - pulse) * 0.16, 2.34),
+                    (self.elapsed * 0.14, 0.22 + pulse * 0.32, 2.38),
+                    (-self.elapsed * 0.09 + 1.8, 0.08 + (1.0 - pulse) * 0.12, 2.34),
                 ] {
                     rotated_image(
                         painter,
@@ -697,6 +745,11 @@ impl CinematicPlayback {
 
     fn actor_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
         let mut pose = self.actor_flight_pose(scene, index, time);
+        let impact_bank = if self.timeline.actors[index].unit.is_ship() {
+            pose.angle
+        } else {
+            0.0
+        };
         let actor = &self.timeline.actors[index];
         let visual = &self.visuals[index];
         if self.missile_strike && actor.unit == Unit::interplanetary_missile() {
@@ -712,9 +765,18 @@ impl CinematicPlayback {
         }
         if !visual.ground && actor.unit != Unit::space_dock() {
             // Face the actual course, including approach, shield clearance and withdrawal.
-            // Sampling the immutable path keeps pause, speed changes and seeking identical.
-            let velocity = self.actor_flight_pose(scene, index, time + 0.025).center
-                - self.actor_flight_pose(scene, index, time - 0.025).center;
+            // A hull-sized look along the immutable path gives heavy ships a deliberate
+            // helm response instead of amplifying tiny tangent changes into visible rocking.
+            // Keep rapid departures precise; they already include their own steering arc.
+            let sample = if actor.retreat_at.is_some_and(|at| time >= at - 0.2) {
+                0.025
+            } else {
+                (unit_size(actor.unit) / 95.0 * 0.085).clamp(0.06, 0.22)
+            };
+            // The helm anticipates its course, never a hit that has not happened yet.
+            // Hull shock is sampled at the exact current time and added separately.
+            let velocity = self.actor_course_pose(scene, index, time + sample).center
+                - self.actor_course_pose(scene, index, time - sample).center;
             if velocity.length_sq() > 0.000_001 {
                 // Mirror horizontally when changing course instead of rotating through
                 // a half-turn and exposing an upside-down isometric hull.
@@ -731,7 +793,7 @@ impl CinematicPlayback {
                 let heading = velocity.angle() - bow.angle();
                 let bank = heading.sin().atan2(heading.cos());
                 let limit = (0.80 * 95.0 / unit_size(actor.unit)).clamp(0.30, 0.65);
-                pose.angle = bank.clamp(-limit, limit);
+                pose.angle = bank.clamp(-limit, limit) + impact_bank;
             }
             if actor.retreat_at.is_none_or(|at| time < at) {
                 self.aim_ship_cannon(scene, index, time, &mut pose);
@@ -773,6 +835,34 @@ impl CinematicPlayback {
     }
 
     fn actor_flight_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
+        let mut pose = self.actor_course_pose(scene, index, time);
+        if self.timeline.actors[index].unit.is_ship() {
+            let response = self.hull_impact_response(scene, index, time);
+            let mut displacement = response.displacement;
+            if self.show_planet {
+                // Limit only the impulse's inward component. Re-projecting the whole
+                // already-cleared course would introduce a jump when a tiny hit starts.
+                let offset = pose.center - scene.planet;
+                let normal = offset.normalized();
+                let inward = displacement.dot(normal).min(0.0);
+                let gap =
+                    (offset.length() - scene.planet_radius * 1.11 - pose.size * 0.56).max(0.0);
+                let allowed = if gap > 0.0001 {
+                    -gap * (1.0 - (inward / gap).exp())
+                } else {
+                    0.0
+                };
+                displacement += normal * (allowed - inward);
+            }
+            pose.center += displacement;
+            pose.angle = response.bank;
+        }
+        pose
+    }
+
+    /// Planned flight excludes incoming impacts so independent actors never recurse through
+    /// each other's hit responses, and steering cannot react before a recorded contact.
+    fn actor_course_pose(&self, scene: Scene, index: usize, time: f32) -> ActorPose {
         let mut pose = self.actor_cruise_pose(scene, index, time);
         // Axial superweapons make a deliberate firing run. Only the participating hulls
         // change course; the rest of the recorded battle continues around them.
@@ -888,7 +978,13 @@ impl CinematicPlayback {
             1.0
         };
         let phase = visual.phase;
-        let size = visual.size * scene.scale;
+        let size = visual.size
+            * scene.scale
+            * if visual.ground {
+                environment::surface_perspective(visual.home)
+            } else {
+                1.0
+            };
         let mut center;
         let mut angle = 0.0;
         if visual.ground {
@@ -897,9 +993,9 @@ impl CinematicPlayback {
             if actor.unit == Unit::repair_truck() {
                 center = self.repair_truck_motion(scene, index, time).0;
             } else if actor.unit == Unit::crawler() {
-                center +=
-                    vec2((time * 0.16 + phase).sin() * 18.0, (time * 0.16 + phase).cos() * 5.0)
-                        * scene.scale;
+                center += vec2((time * 0.16 + phase).sin(), (time * 0.16 + phase).cos())
+                    * environment::crawler_patrol_extent(visual.size)
+                    * scene.scale;
             }
             if self.gas_planet {
                 center.y += (time * 0.85 + phase).sin() * 3.0 * scene.scale;
@@ -929,51 +1025,88 @@ impl CinematicPlayback {
             center = scene.point(visual.home);
             // Maneuverability follows the actual hull class, independent of fleet density.
             let agility = (95.0 / unit_size(actor.unit)).clamp(0.48, 1.65);
-            let flight_time = time - self.timeline.entrance_duration;
-            let course = flight_time * 0.18 * agility + (phase - PI) * 0.08;
+            let flight_time = (time - self.timeline.entrance_duration) * 0.55;
+            // Keep every escort in a visible outer lane during the opening exchange.
+            // The full formation opens out gradually as the fleets close under fire.
+            let approach = smooth((time / self.timeline.entrance_duration).clamp(0.0, 1.0));
+            let spine = if mirror {
+                0.73
+            } else {
+                0.26
+            };
+            center.x -= (visual.home.x - spine) * scene.rect.width() * 0.22 * (1.0 - approach);
+            let course = flight_time * 0.16 * agility / (1.0 + (flight_time / 35.0).powi(2)).sqrt()
+                + (phase - PI) * 0.08;
+            let advance = flight_time * 0.14 * agility;
+            let cruise_thrust = advance / (1.0 + (advance / 4.0).powi(2)).sqrt();
             // Long forward passes with shallow lateral bends. Closed 2D ellipses force
-            // a flat isometric sprite through vertical and upside-down attitudes.
+            // a flat isometric sprite through vertical and upside-down attitudes. Retain
+            // cruise thrust after the arrival braking, with finite travel so long battles
+            // stay framed. Lateral maneuvers settle with forward travel rather than
+            // continuing to oscillate after forward thrust has almost stopped.
             center += vec2(direction * scene.rect.width() * 0.055, 0.0)
                 + rotate(
                     scene.rect.size()
                         * vec2(
-                            direction * (flight_time * 0.14 * agility).atan() * 0.13 * agility,
-                            direction * (course + phase).cos() * 0.035 * agility,
+                            direction * (advance.atan() + cruise_thrust * 0.10) * 0.13 * agility,
+                            direction * (course + phase).cos() * 0.046 * agility,
                         ),
                     // High and low approach lanes converge toward the encounter instead
                     // of imposing the same upward tilt on every ship in the formation.
                     -direction * (visual.home.y - 0.40) * 0.60,
                 );
             if let Some(target) = visual.bombing_target {
+                // Keep each bomber's formation lane through the approach. A common focus
+                // squeezed an entire raid into one overlapping stack at peak convergence.
+                let lane = (visual.home - vec2(0.24, 0.44)) * scene.rect.size();
                 let approach = scene.planet
                     + (vec2(-1.25, -0.55) + target * 0.25).normalized()
                         * scene.planet_radius
-                        * 1.48;
+                        * 1.48
+                    + lane * vec2(0.45, 0.55);
                 let pass = smooth(0.5 + 0.5 * (course - 0.6).sin());
                 center = center.lerp(approach, pass * 0.72);
             }
             {
                 // Position, velocity and acceleration meet the cruising path smoothly, so
                 // neither the hull nor its tangent-based heading snaps at the end of arrival.
-                let delay = noise(index as u32 + 141) * 0.65;
-                let entered =
-                    if actor.retreat_at.is_some_and(|at| at < self.timeline.entrance_duration) {
-                        // Immediate withdrawals begin at the defended world. Flying in first would
-                        // leave their entire outward departure hidden beyond the viewport edge.
-                        1.0
-                    } else {
-                        ((time - delay) / (self.timeline.entrance_duration - delay).max(0.1))
-                            .clamp(0.0, 1.0)
-                    };
+                let visible_entry = 1.35;
+                let entered = if actor.retreat_at.is_some_and(|at| at < visible_entry) {
+                    // Immediate withdrawals begin at the defended world. Flying in first would
+                    // leave their entire outward departure hidden beyond the viewport edge.
+                    1.0
+                } else {
+                    // Ships enter already under thrust. A clamped, per-ship start delay
+                    // introduces an instantaneous velocity change when that delay ends.
+                    // Extend the curve slightly before zero for stable heading samples.
+                    (time / visible_entry).clamp(-0.1, 1.0)
+                };
                 let remaining = 1.0 - entered;
-                let distance = scene.rect.width() * 0.80;
+                let edge = if mirror {
+                    scene.rect.right() + size * 1.05
+                } else {
+                    scene.rect.left() - size * 1.05
+                };
+                // A short entrance only covers the gap from this outer lane to its edge.
+                // Deeper capital lanes can already be visible when the shot opens; forcing
+                // every hull across a whole viewport here creates a sprint and hard brake.
+                let available = (direction * (center.x - edge)).max(0.0);
+                let budget = 100.0 * scene.scale;
+                let distance = budget * (available / budget.max(0.001)).tanh();
                 let lane = (phase * 1.7).sin();
                 // Preserve a visible banking arc even for lanes whose seeded phase lies
                 // near zero; otherwise the level artwork exposes a straight slide-in.
                 let bend = (0.85 + lane.abs() * 0.25).copysign(lane);
                 let from = vec2(-direction * distance, -distance * visual.art_heading.tan());
-                let through =
-                    vec2(-direction * distance * 0.43, from.y * 0.14 + bend * 125.0 * scene.scale);
+                let through = vec2(
+                    -direction * distance * 0.43,
+                    from.y * 0.14
+                        + bend
+                            * 22.0
+                            * agility.sqrt()
+                            * scene.scale
+                            * (distance / budget.max(0.001)),
+                );
                 center += from * remaining.powi(4) + through * (4.0 * remaining.powi(3) * entered);
             }
         }
@@ -985,18 +1118,28 @@ impl CinematicPlayback {
             center.y -= (retreat * PI * 0.5).sin().powi(2) * scene.rect.height() * 0.8;
             angle -= direction * retreat * 0.25;
         }
-        if self.show_planet && !visual.ground {
+        if actor.unit.is_ship() {
+            center = self.station_berth(scene, index, time, center, size);
+        }
+        if self.show_planet && !visual.ground && actor.unit != Unit::space_dock() {
             // Both fleets stay in space even after the shield has fallen. Reserve room
             // for the entire hull, not just its center or the attacking fleet's nose.
             let offset = center - scene.planet;
             let clearance = scene.planet_radius * 1.11 + size * 0.56;
-            if offset.length_sq() < clearance * clearance {
+            // Anticipate the exclusion zone over a hull-sized band. The integrated
+            // smoothstep joins the free path with continuous velocity and acceleration;
+            // projecting abruptly onto a circle visibly snapped ships onto the shield rim.
+            let distance = offset.length();
+            let margin = (size * 0.8).max(28.0 * scene.scale);
+            if distance < clearance + margin {
                 let outward = if offset.length_sq() > 0.01 {
                     offset.normalized()
                 } else {
                     vec2(-1.0, 0.0)
                 };
-                center = scene.planet + outward * clearance;
+                let blend = ((distance - clearance + margin) / (2.0 * margin)).clamp(0.0, 1.0);
+                let radius = clearance + margin * blend.powi(3) * (2.0 - blend);
+                center = scene.planet + outward * radius;
             }
         }
         ActorPose {
@@ -1065,20 +1208,12 @@ impl CinematicPlayback {
         }
         let visual = &self.visuals[index];
         let pose = self.actor_pose(scene, index, self.elapsed);
-        if !scene.rect.expand(pose.size).contains(pose.center) {
+        // The painter clip is already in camera-space world coordinates. Culling against
+        // the original canvas made arriving ships disappear while panning or zooming out.
+        if !painter.clip_rect().expand(pose.size * 1.5).contains(pose.center) {
             return;
         }
-        let direction = if pose.mirror {
-            -1.0
-        } else {
-            1.0
-        };
         let state = actor.state_at(self.elapsed);
-        let health = actor
-            .levels_at(self.elapsed)
-            .map_or(state.hull as f32 / actor.max_hull.max(1) as f32, |levels| {
-                levels as f32 / actor.initial_levels.unwrap_or(1).max(1) as f32
-            });
         let shield_strength = state.shield as f32 / actor.max_shield.max(1) as f32;
         if visual.ground {
             if self.gas_planet {
@@ -1097,13 +1232,11 @@ impl CinematicPlayback {
                     glow(painter, lift, pose.size * 0.15, BLUE, pulse);
                 }
             } else {
-                painter.add(Shape::ellipse_filled(
-                    pose.center + vec2(0.0, pose.size * 0.25),
-                    vec2(pose.size * 0.34, pose.size * 0.12),
-                    Color32::from_black_alpha(95),
-                ));
+                environment::paint_surface_shadow(painter, pose);
             }
         }
+        self.paint_damage_wake(painter, scene, index);
+        self.paint_ship_propulsion(painter, scene, index, pose);
         let cinematic_texture = images.0.get(&visual.texture);
         let texture = cinematic_texture.or_else(|| images.0.get(&visual.fallback_texture));
         if let Some((sheet, texture)) = visual
@@ -1117,15 +1250,25 @@ impl CinematicPlayback {
             } else {
                 1.0
             };
+            let dimensions = self.hull_dimensions(
+                scene,
+                index,
+                pose,
+                self.elapsed,
+                vec2(pose.size * aspect.min(1.0), pose.size / aspect.max(1.0)),
+            );
             sprites::paint_owner_hull(
                 painter,
                 *texture,
                 pose.center,
-                vec2(pose.size * aspect.min(1.0), pose.size / aspect.max(1.0)),
+                dimensions,
                 pose.angle,
                 pose.mirror,
                 FULL_UV,
                 visual.owner_color,
+            );
+            self.paint_hull_illumination(
+                painter, scene, index, pose, *texture, dimensions, FULL_UV,
             );
         }
         if !visual.ground && state.shield > 0 {
@@ -1155,33 +1298,16 @@ impl CinematicPlayback {
             for puff in 0..5 {
                 let age = (self.elapsed * 0.24 + puff as f32 / 5.0 + visual.phase).fract();
                 let point = pose.center + vec2(-0.12 - age * 0.23, -0.21 - age * 0.43) * pose.size;
-                painter.circle_filled(
+                environment::soft_ellipse(
+                    painter,
                     point,
-                    pose.size * (0.02 + age * 0.075),
-                    alpha(Color32::from_rgb(124, 144, 159), (1.0 - age) * 0.24),
+                    Vec2::splat(pose.size * (0.02 + age * 0.075)),
+                    Color32::from_rgb(124, 144, 159),
+                    (1.0 - age) * age * 0.34,
                 );
             }
         }
-        if health < 0.52 && state.hull > 0 {
-            let damage = (0.6 - health).max(0.0);
-            let scar = pose.center + vec2(-0.12, 0.04) * pose.size;
-            glow(
-                painter,
-                scar,
-                pose.size * 0.16,
-                GOLD,
-                damage * (0.7 + (self.elapsed * 12.0).sin() * 0.2),
-            );
-            for part in 0..4 {
-                let age = (self.elapsed * 0.7 + part as f32 * 0.25 + visual.phase).fract();
-                let smoke = scar + vec2(-direction * 0.22, -0.24) * pose.size * age;
-                painter.circle_filled(
-                    smoke,
-                    pose.size * (0.035 + age * 0.045),
-                    Color32::from_black_alpha((damage * (1.0 - age) * 70.0) as u8),
-                );
-            }
-        }
+        self.paint_damage_vent(painter, scene, index, pose);
     }
 
     fn paint_level_losses(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
@@ -1383,30 +1509,36 @@ impl CinematicPlayback {
                     scene.scale,
                 );
             }
-            // Replay a bounded history of the same 35ms trail emissions as the schematic.
-            // Emission times are analytical, so pausing, speed changes and seeking are exact.
-            let last = (age.min(weapon.flight()) / 0.035).floor() as usize;
-            let first = ((age - 0.48).max(0.0) / 0.035).floor() as usize;
-            for step in first..=last {
-                let emitted = step as f32 * 0.035;
-                if emitted >= weapon.flight() {
-                    continue;
+            if matches!(weapon, Weapon::Missile | Weapon::Bomb) {
+                paint_missile_smoke(painter, flight, age, scene.scale);
+            }
+            // Ordinary projectiles have continuous wakes. Re-emitting glowing particles on
+            // top creates a dotted chain and makes several small weapons look like one beam.
+            // Retain only the electrical, organic and repair accents that carry a distinct shape.
+            if cinematic_particle_trail(weapon) {
+                let last = (age.min(weapon.flight()) / 0.035).floor() as usize;
+                let first = ((age - 0.48).max(0.0) / 0.035).floor() as usize;
+                for step in first..=last {
+                    let emitted = step as f32 * 0.035;
+                    if emitted >= weapon.flight() {
+                        continue;
+                    }
+                    weapon_trail(
+                        flight,
+                        weapon.charge() + emitted,
+                        emitted / weapon.flight(),
+                        |trail| {
+                            paint_trail(
+                                painter,
+                                images,
+                                trail,
+                                age - emitted,
+                                index as u32,
+                                scene.scale,
+                            );
+                        },
+                    );
                 }
-                weapon_trail(
-                    flight,
-                    weapon.charge() + emitted,
-                    emitted / weapon.flight(),
-                    |trail| {
-                        paint_trail(
-                            painter,
-                            images,
-                            trail,
-                            age - emitted,
-                            index as u32,
-                            scene.scale,
-                        );
-                    },
-                );
             }
             if self.elapsed >= shot.impact_at {
                 if let Some(width) = weapon.beam_width() {
@@ -1494,24 +1626,37 @@ impl CinematicPlayback {
             } else {
                 0.70
             } + impact_age * 0.40;
-            for layer in 0..3 {
-                arc(
-                    painter,
-                    center,
-                    radius + layer as f32 * 2.0 * scene.scale,
-                    direction_angle - spread,
-                    spread * 2.0,
-                    Stroke::new(
-                        (4.0 - layer as f32) * scene.scale,
-                        alpha(BLUE, strength * (0.45 - layer as f32 * 0.09)),
-                    ),
-                );
-            }
-            glow(painter, end, 23.0 * scene.scale, BLUE, strength * 0.75);
-            painter.circle_stroke(
-                end,
-                impact_age * 38.0 * scene.scale,
-                Stroke::new(scene.scale, alpha(BLUE, strength * 0.75)),
+            glow_arc(
+                painter,
+                center,
+                radius,
+                direction_angle - spread,
+                spread * 2.0,
+                1.4 * scene.scale,
+                BLUE,
+                strength * 0.75,
+            );
+            glow(painter, end, (18.0 + impact_age * 24.0) * scene.scale, BLUE, strength * 0.8);
+            // The pressure front follows the shield curvature, not a flat circle over the hull.
+            glow_arc(
+                painter,
+                center,
+                radius + impact_age * 14.0 * scene.scale,
+                direction_angle - spread * 1.45,
+                spread * 2.9,
+                scene.scale * 0.65,
+                BLUE,
+                strength * 0.26,
+            );
+            let tangent = vec2(-normal.y, normal.x);
+            let flash = (1.0 - impact_age / 0.16).max(0.0).powi(2);
+            glow_line(
+                painter,
+                end - tangent * 13.0 * scene.scale,
+                end + tangent * 13.0 * scene.scale,
+                scene.scale * 1.2,
+                Color32::WHITE,
+                flash * 0.8,
             );
         }
         if shot.outcome.hull_damage > 0 || (shot.outcome.killed && !shot.outcome.missed) {
@@ -1519,8 +1664,30 @@ impl CinematicPlayback {
             if shot.outcome.shield_damage > 0 {
                 glow_line(painter, end, hull, 1.6 * scene.scale, color, strength * 0.65);
             }
-            glow(painter, hull, (19.0 + target_size * 0.1) * strength, GOLD, strength * 0.7);
-            sparks(painter, hull, impact_age, target_size * 0.60, index as u32, GOLD, strength);
+            let flash = (1.0 - impact_age / 0.13).max(0.0).powi(2);
+            glow(
+                painter,
+                hull,
+                (15.0 + target_size * 0.16) * (1.0 + impact_age),
+                GOLD,
+                strength * 0.65,
+            );
+            glow(
+                painter,
+                hull,
+                (7.0 + target_size * 0.06) * (1.0 + impact_age * 2.0),
+                Color32::WHITE,
+                flash,
+            );
+            paint_impact_sparks(
+                painter,
+                hull,
+                start - end,
+                impact_age,
+                target_size * 0.75,
+                index as u32,
+                scene.scale,
+            );
         }
     }
 
@@ -2023,15 +2190,35 @@ fn paint_weapon_body(
     images: &ImageIds,
     flight: WeaponFlight,
     progress: f32,
-    _scale: f32,
+    scale: f32,
 ) {
     let sample = flight.sample(progress);
     if sample.position.distance_squared(flight.origin) < 0.0001 {
         return;
     }
-    let center = pos2(sample.center.x, sample.center.y);
-    let size = vec2(sample.dimensions.x, sample.dimensions.y);
+    let mut center = pos2(sample.center.x, sample.center.y);
+    let mut size = vec2(sample.dimensions.x, sample.dimensions.y);
     let angle = sample.direction.y.atan2(sample.direction.x);
+    let color = weapon_color(flight.weapon.color());
+    let physical = matches!(flight.weapon, Weapon::Missile | Weapon::Bomb | Weapon::Repair);
+    if matches!(flight.weapon, Weapon::Missile | Weapon::Bomb) {
+        // Preserve the recorded leading tip while giving a distant guided round a readable body.
+        size.y = size.y.max(3.2 * scale.max(0.65));
+        size.x = size.x.max(7.0 * scale.max(0.65)).min(sample.position.distance(flight.origin));
+        center = pos2(sample.position.x, sample.position.y) - Vec2::angled(angle) * size.x * 0.5;
+    }
+    if flight.weapon.beam_width().is_some() {
+        glow_line(
+            painter,
+            pos2(flight.origin.x, flight.origin.y),
+            pos2(sample.position.x, sample.position.y),
+            size.y * 1.8,
+            color,
+            0.28,
+        );
+    } else if flight.weapon != Weapon::Repair {
+        paint_projectile_wake(painter, flight, progress, scale);
+    }
     let mask = match flight.weapon {
         Weapon::Missile | Weapon::Bomb => "combat fx missile",
         Weapon::Repair => "combat fx glow",
@@ -2046,10 +2233,10 @@ fn paint_weapon_body(
         angle,
         weapon_color(flight.weapon.color().with_alpha(0.6)),
     );
-    let physical = matches!(flight.weapon, Weapon::Missile | Weapon::Bomb | Weapon::Repair);
     for barrel in 0..flight.weapon.barrels() {
-        let offset = (barrel as f32 - (flight.weapon.barrels() - 1) as f32 * 0.5) * 0.55;
-        let barrel_center = center + rotate(vec2(0.0, offset * size.y), angle);
+        let offset = barrel as f32 - (flight.weapon.barrels() - 1) as f32 * 0.5;
+        let spacing = (size.y * 0.55).max(1.7 * scale.max(0.75));
+        let barrel_center = center + rotate(vec2(0.0, offset * spacing), angle);
         if flight.weapon.barrels() > 1 {
             paint_effect_sprite(
                 painter,
@@ -2081,17 +2268,207 @@ fn paint_weapon_body(
                 Color32::WHITE
             },
         );
+        if !physical {
+            let direction = Vec2::angled(angle);
+            let beam = flight.weapon.beam_width().is_some();
+            let width = (size.y
+                * if flight.weapon.barrels() > 1 {
+                    0.11
+                } else {
+                    0.16
+                })
+            .max(
+                if beam {
+                    0.78
+                } else {
+                    0.68
+                } * scale.max(0.75),
+            );
+            paint_weapon_core(
+                painter,
+                barrel_center - direction * size.x * 0.5,
+                barrel_center + direction * size.x * 0.5,
+                width,
+                color,
+                !beam,
+                0.95,
+            );
+        }
+    }
+    if flight.weapon.beam_width().is_some() {
+        let tip = pos2(sample.position.x, sample.position.y);
+        glow(painter, tip, (size.y * 1.4).max(3.0 * scale), color, 0.45);
     }
 }
 
-/// Samples the exact schematic particle mask, growth, fade and spark motion at a movie age.
+/// Texture filtering can turn a subpixel core into dotted light. A continuous mesh retains
+/// readable calibre, a bright front and tapered tail without changing a projectile's position.
+fn paint_weapon_core(
+    painter: &Painter,
+    start: Pos2,
+    end: Pos2,
+    width: f32,
+    color: Color32,
+    tapered: bool,
+    strength: f32,
+) {
+    let direction = end - start;
+    if direction.length_sq() < 0.0001 || strength <= 0.0 {
+        return;
+    }
+    let normal = vec2(-direction.y, direction.x).normalized();
+    let rows = if tapered {
+        [(0.0, 0.0, 0.0), (0.18, 0.65, 0.7), (0.78, 1.0, 1.0), (0.96, 0.55, 0.85), (1.0, 0.0, 0.0)]
+    } else {
+        [(0.0, 0.5, 0.6), (0.025, 1.0, 1.0), (0.50, 1.0, 1.0), (0.975, 1.0, 1.0), (1.0, 0.5, 0.75)]
+    };
+    let mut mesh = Mesh::default();
+    for (along, spread, brightness) in rows {
+        for (across, radiance, tint) in [
+            (-1.8, 0.0, color),
+            (-0.6, 0.65, color),
+            (0.0, 1.0, Color32::WHITE),
+            (0.6, 0.65, color),
+            (1.8, 0.0, color),
+        ] {
+            mesh.colored_vertex(
+                start + direction * along + normal * width * spread * across,
+                emissive_color(tint, strength * brightness * radiance),
+            );
+        }
+    }
+    for row in 0..4 {
+        for column in 0..4 {
+            let a = row * 5 + column;
+            mesh.indices.extend_from_slice(&[a, a + 1, a + 6, a, a + 6, a + 5]);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+fn cinematic_particle_trail(weapon: Weapon) -> bool {
+    matches!(
+        weapon,
+        Weapon::Ion
+            | Weapon::FaunaSonic
+            | Weapon::FaunaLightning
+            | Weapon::FaunaBioPlasma
+            | Weapon::FaunaGravity
+            | Weapon::FaunaVoid
+            | Weapon::FaunaFire
+            | Weapon::FaunaExtinction
+            | Weapon::Repair
+    )
+}
+
+/// A continuous ribbon samples the projectile's own curved path, independent of frame rate.
+/// Its transparent tail replaces the dotted look of isolated trail particles at high speed.
+fn paint_projectile_wake(painter: &Painter, flight: WeaponFlight, progress: f32, scale: f32) {
+    const STEPS: u32 = 10;
+    let missile = matches!(flight.weapon, Weapon::Missile | Weapon::Bomb);
+    let history = match flight.weapon {
+        Weapon::Railgun => 0.22,
+        Weapon::Broadside => 0.15,
+        Weapon::Missile => 0.16,
+        Weapon::Bomb => 0.09,
+        _ => 0.065,
+    };
+    let from = (progress - history).max(0.0);
+    let width = (flight.size
+        * if missile {
+            0.025
+        } else {
+            0.012
+        })
+    .max(0.55 * scale);
+    let color = weapon_color(flight.weapon.color());
+    let mut mesh = Mesh::default();
+    for step in 0..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let p = from + (progress - from) * t;
+        let position = flight.position(p);
+        let tangent = flight.position((p + 0.002).min(1.0)) - flight.position((p - 0.002).max(0.0));
+        let normal = vec2(-tangent.y, tangent.x).normalized();
+        let center = pos2(position.x, position.y);
+        let spread = width
+            * if missile {
+                0.35 + (1.0 - t) * 1.35
+            } else {
+                0.3 + t * 0.7
+            };
+        let brightness = t
+            * t
+            * if missile {
+                0.85
+            } else {
+                0.45
+            };
+        for (offset, intensity) in [(-2.8, 0.0), (0.0, brightness), (2.8, 0.0)] {
+            mesh.colored_vertex(
+                center + normal * spread * offset,
+                emissive_color(color, intensity),
+            );
+        }
+        if step > 0 {
+            let current = step * 3;
+            for column in 0..2 {
+                let a = current + column;
+                mesh.indices.extend_from_slice(&[a - 3, a, a + 1, a - 3, a + 1, a - 2]);
+            }
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// A continuous, expanding smoke ribbon follows a physical round's sampled path. Its dark
+/// tail lingers after impact, while the bright exhaust belongs only to the flying projectile.
+fn paint_missile_smoke(painter: &Painter, flight: WeaponFlight, age: f32, scale: f32) {
+    const LIFE: f32 = 0.48;
+    const STEPS: u32 = 14;
+    let first = (age - LIFE).max(0.0);
+    let last = age.min(flight.weapon.flight());
+    if last <= first || !age.is_finite() {
+        return;
+    }
+    let mut mesh = Mesh::default();
+    for step in 0..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let emitted = first + (last - first) * t;
+        let progress = emitted / flight.weapon.flight();
+        let smoke_age = age - emitted;
+        let point = flight.position(progress);
+        let tangent = flight.position((progress + 0.002).min(1.0))
+            - flight.position((progress - 0.002).max(0.0));
+        let normal = vec2(-tangent.y, tangent.x).normalized();
+        let center = pos2(point.x, point.y)
+            + normal * (emitted * 17.0).sin() * flight.size * 0.025 * smoke_age;
+        let width = (flight.size * 0.040 + scale * 0.5) * (1.0 + smoke_age * 3.0);
+        let opacity = particle_envelope(smoke_age / LIFE) * 0.30;
+        for (across, density) in [(-1.0, 0.0), (-0.35, 0.65), (0.0, 1.0), (0.35, 0.65), (1.0, 0.0)]
+        {
+            mesh.colored_vertex(
+                center + normal * width * across,
+                alpha(Color32::from_rgb(111, 106, 104), opacity * density),
+            );
+        }
+        if step > 0 {
+            for column in 0..4 {
+                let a = step * 5 + column;
+                mesh.indices.extend_from_slice(&[a - 5, a, a + 1, a - 5, a + 1, a - 4]);
+            }
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// Samples the shared particle lifetimes with feathered cinematic light and directional sparks.
 fn paint_trail(
     painter: &Painter,
     images: &ImageIds,
     trail: WeaponTrail,
     age: f32,
-    _seed: u32,
-    _scale: f32,
+    seed: u32,
+    scale: f32,
 ) {
     let point = |position: BevyVec3| pos2(position.x, position.y);
     match trail {
@@ -2126,15 +2503,24 @@ fn paint_trail(
                 return;
             }
             let p = age / life;
-            let delta = to - from;
-            paint_effect_sprite(
+            glow_line(
                 painter,
-                images,
-                "combat fx beam",
-                point((from + to) * 0.5),
-                vec2(delta.length(), width * (1.0 - 0.6 * smooth(p))),
-                delta.y.atan2(delta.x),
-                weapon_color(color.with_alpha(color.to_srgba().alpha * particle_envelope(p))),
+                point(from),
+                point(to),
+                width * (1.0 - 0.6 * smooth(p)),
+                weapon_color(color),
+                (1.0 - p).powi(2),
+            );
+            // A beam begins fading immediately after contact; it must not blink out and
+            // then brighten again under a particle's fade-in envelope.
+            paint_weapon_core(
+                painter,
+                point(from),
+                point(to),
+                (width * 0.14).max(0.55 * scale.max(0.75)),
+                weapon_color(color),
+                false,
+                (1.0 - p).powi(2) * color.to_srgba().alpha * 0.65,
             );
         },
         WeaponTrail::Sparks(at, size, color, count) => {
@@ -2144,19 +2530,18 @@ fn paint_trail(
             }
             let p = age / life;
             for spark in 0..count {
-                let angle = spark as f32 * 2.399_963;
+                let angle = spark as f32 * 2.399_963 + noise(seed) * TAU;
                 let direction = vec2(angle.cos(), angle.sin());
-                let center = point(at) + direction * size * (0.5 + (spark % 5) as f32 * 0.17) * age;
-                let start = vec2(size * 0.035, size * 0.018);
-                let dimensions = start + (Vec2::splat(size * 0.008) - start) * smooth(p);
-                paint_effect_sprite(
+                let speed = size * (0.5 + (spark % 5) as f32 * 0.17);
+                let center = point(at) + direction * speed * age;
+                let tail = point(at) + direction * speed * (age - 0.045).max(0.0);
+                glow_line(
                     painter,
-                    images,
-                    "combat fx glow",
+                    tail,
                     center,
-                    dimensions,
-                    0.0,
-                    weapon_color(color.with_alpha(color.to_srgba().alpha * particle_envelope(p))),
+                    (size * 0.012).max(scale * 0.45),
+                    weapon_color(color),
+                    particle_envelope(p),
                 );
             }
         },
@@ -2220,22 +2605,91 @@ fn rotated_image(
 }
 
 fn glow(painter: &Painter, center: Pos2, radius: f32, color: Color32, strength: f32) {
-    if strength <= 0.0 || radius <= 0.0 {
+    if strength <= 0.0 || radius <= 0.0 || !radius.is_finite() || !strength.is_finite() {
         return;
     }
-    for layer in (1..=4).rev() {
-        painter.circle_filled(center, radius * layer as f32 / 4.0, alpha(color, strength * 0.065));
+    // A single radial falloff avoids the visible concentric disks of stacked fills.
+    // Additive vertices illuminate the artwork underneath instead of painting over it.
+    const SEGMENTS: u32 = 20;
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(center, emissive_color(color, strength * 0.8));
+    for (ring, (fraction, brightness)) in
+        [(0.12, 0.48), (0.32, 0.16), (0.64, 0.025), (1.0, 0.0)].into_iter().enumerate()
+    {
+        for segment in 0..SEGMENTS {
+            mesh.colored_vertex(
+                center + Vec2::angled(segment as f32 * TAU / SEGMENTS as f32) * radius * fraction,
+                emissive_color(color, strength * brightness),
+            );
+        }
+        let current = 1 + ring as u32 * SEGMENTS;
+        for segment in 0..SEGMENTS {
+            let next = (segment + 1) % SEGMENTS;
+            if ring == 0 {
+                mesh.indices.extend_from_slice(&[0, current + segment, current + next]);
+            } else {
+                let previous = current - SEGMENTS;
+                mesh.indices.extend_from_slice(&[
+                    previous + segment,
+                    current + segment,
+                    current + next,
+                    previous + segment,
+                    current + next,
+                    previous + next,
+                ]);
+            }
+        }
     }
-    painter.circle_filled(center, radius * 0.16, alpha(color, strength * 0.65));
+    painter.add(Shape::mesh(mesh));
 }
 
 fn glow_line(painter: &Painter, start: Pos2, end: Pos2, width: f32, color: Color32, strength: f32) {
-    for (factor, opacity) in [(5.0, 0.06), (2.5, 0.15), (1.0, 0.85)] {
-        painter.line_segment(
-            [start, end],
-            Stroke::new(width * factor, alpha(color, strength * opacity)),
-        );
+    let delta = end - start;
+    if width <= 0.0
+        || strength <= 0.0
+        || !width.is_finite()
+        || !strength.is_finite()
+        || delta.length_sq() < 0.0001
+    {
+        return;
     }
+    let normal = vec2(-delta.y, delta.x).normalized();
+    let mut mesh = Mesh::default();
+    // Feather both the ends and the cross-section, retaining a narrow luminous core.
+    for (along, envelope) in [(0.0, 0.0), (0.06, 1.0), (0.94, 1.0), (1.0, 0.0)] {
+        for (across, brightness) in [
+            (-2.5, 0.0),
+            (-1.0, 0.08),
+            (-0.25, 0.5),
+            (0.0, 0.85),
+            (0.25, 0.5),
+            (1.0, 0.08),
+            (2.5, 0.0),
+        ] {
+            mesh.colored_vertex(
+                start + delta * along + normal * width * across,
+                emissive_color(color, strength * envelope * brightness),
+            );
+        }
+    }
+    for row in 0..3 {
+        for column in 0..6 {
+            let a = row * 7 + column;
+            mesh.indices.extend_from_slice(&[a, a + 1, a + 8, a, a + 8, a + 7]);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// Premultiplied RGB with zero alpha adds light without dimming the underlying scene.
+fn emissive_color(color: Color32, strength: f32) -> Color32 {
+    let strength = strength.clamp(0.0, 1.0);
+    Color32::from_rgba_premultiplied(
+        (color.r() as f32 * strength) as u8,
+        (color.g() as f32 * strength) as u8,
+        (color.b() as f32 * strength) as u8,
+        0,
+    )
 }
 
 fn arc(painter: &Painter, center: Pos2, radius: f32, start: f32, sweep: f32, stroke: Stroke) {
@@ -2244,28 +2698,80 @@ fn arc(painter: &Painter, center: Pos2, radius: f32, start: f32, sweep: f32, str
     painter.add(Shape::line(points, stroke));
 }
 
-fn sparks(
+/// A shield contact is a luminous pressure front, feathered across and along its curved rim.
+fn glow_arc(
     painter: &Painter,
     center: Pos2,
-    age: f32,
     radius: f32,
-    seed: u32,
+    start: f32,
+    sweep: f32,
+    width: f32,
     color: Color32,
     strength: f32,
 ) {
-    for fragment in 0..9_u32 {
-        let angle = noise(seed.wrapping_mul(31).wrapping_add(fragment)) * TAU;
-        let speed = 0.5 + noise(seed.wrapping_add(fragment * 19)) * 1.4;
+    const STEPS: u32 = 24;
+    let mut mesh = Mesh::default();
+    for step in 0..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let direction = Vec2::angled(start + sweep * t);
+        let envelope = (PI * t).sin().max(0.0).powf(0.8);
+        for (distance, brightness) in
+            [(-2.4, 0.0), (-0.8, 0.10), (0.0, 0.85), (0.8, 0.10), (2.4, 0.0)]
+        {
+            mesh.colored_vertex(
+                center + direction * (radius + distance * width),
+                emissive_color(color, strength * envelope * brightness),
+            );
+        }
+        if step > 0 {
+            for column in 0..4 {
+                let a = step * 5 + column;
+                mesh.indices.extend_from_slice(&[a - 5, a, a + 1, a - 5, a + 1, a - 4]);
+            }
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+fn paint_impact_sparks(
+    painter: &Painter,
+    center: Pos2,
+    toward_source: Vec2,
+    age: f32,
+    radius: f32,
+    seed: u32,
+    scale: f32,
+) {
+    let incoming_angle = toward_source.y.atan2(toward_source.x);
+    for fragment in 0..12_u32 {
+        let variation = noise(seed.wrapping_mul(37).wrapping_add(fragment * 17));
+        let lifetime = 0.24 + variation * 0.42;
+        if !(0.0..lifetime).contains(&age) {
+            continue;
+        }
+        // Most splinters spray back from the struck armor, with a few penetrating fragments.
+        let angle = incoming_angle
+            + (variation - 0.5) * 2.4
+            + if fragment.is_multiple_of(4) {
+                PI
+            } else {
+                0.0
+            };
         let direction = Vec2::angled(angle);
-        let head = center + direction * radius * age * speed;
-        let tail = center + direction * radius * (age - 0.075).max(0.0) * speed;
-        painter.line_segment([tail, head], Stroke::new(1.0 + strength, alpha(color, strength)));
+        let speed = radius * (0.65 + noise(seed.wrapping_add(fragment * 73)) * 1.6);
+        let travel = |time: f32| 1.0 - (-time.max(0.0) * 3.0).exp();
+        let head = center + direction * speed * travel(age);
+        let tail = center + direction * speed * travel(age - 0.045);
+        let strength = (1.0 - age / lifetime).powi(2);
+        glow_line(painter, tail, head, scale * (0.6 + variation * 0.55), GOLD, strength);
     }
 }
 
 fn explosion(painter: &Painter, images: &ImageIds, center: Pos2, size: f32, age: f32, unit: Unit) {
     super::effects::sample_wreck(size, unit, age, |sample| {
-        if sample.atlas_frame.is_some() {
+        // Retain the shared delayed, spinning hull fragments after the atlas flame clears.
+        // Ring/glow samples stay omitted so destruction never becomes an opaque orange disk.
+        if sample.atlas_frame.is_some() || sample.texture == "combat fx shard" {
             paint_wreck_sample(painter, images, center, sample);
         }
     });
@@ -2277,8 +2783,7 @@ fn paint_wreck_sample(
     center: Pos2,
     sample: super::effects::WreckSample,
 ) {
-    // Cinematic destruction uses the normal explosion atlas only. The planet's
-    // separately retained tiny fragments are handled by the caller.
+    // Atlas fire and physical fragments share the exact seekable destruction clock.
     if sample.atlas_frame.is_none() && sample.texture != "combat fx shard" {
         return;
     }
@@ -2324,3 +2829,11 @@ fn sphere_entry(start: Pos2, end: Pos2, center: Pos2, radius: f32) -> Option<Pos
 #[cfg(test)]
 #[path = "../../../tests/core/combat_cinematic.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_cinematic_motion.rs"]
+mod motion_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_cinematic_vfx.rs"]
+mod vfx_tests;

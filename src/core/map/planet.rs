@@ -8,6 +8,7 @@ use rand::{rng, Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+use crate::core::combat::plan::BattlePlan;
 use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, JUMP_GATE_CAPACITY_PER_LEVEL, PROBES_PER_PRODUCTION_LEVEL,
     SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
@@ -446,6 +447,10 @@ pub struct Planet {
     pub shield_overload: ShieldOverloadState,
     /// Standing fleet withdrawal order for this colony; disabled until explicitly selected.
     pub fleet_withdrawal: FleetWithdrawal,
+    /// Standing combat orders for the controller's ships and defenses.
+    pub battle_plan: BattlePlan,
+    /// Independent standing orders for foreign protection fleets.
+    pub protector_battle_plans: BTreeMap<PlayerId, BattlePlan>,
     /// Whether this planet has been permanently destroyed.
     pub is_destroyed: bool,
 
@@ -580,6 +585,8 @@ impl Planet {
             command_relay_active: true,
             shield_overload: ShieldOverloadState::Ready,
             fleet_withdrawal: FleetWithdrawal::Off,
+            battle_plan: BattlePlan::default(),
+            protector_battle_plans: BTreeMap::new(),
             is_destroyed: false,
             owned: None,
             controlled: None,
@@ -653,6 +660,10 @@ impl Planet {
 
     /// Removes invalid or zero-count unit entries from this planet.
     pub fn clean(&mut self) {
+        self.battle_plan = BattlePlan::default();
+        // Foreign survivors return home after controller cleanup; retain their orders
+        // until that recall snapshots the fleet, then prune them with the departing army.
+        self.prune_battle_plans();
         self.shield_overload = ShieldOverloadState::Ready;
         self.operations = BuildingOperations::default();
 
@@ -667,6 +678,10 @@ impl Planet {
 
     /// Claims this planet for a player and initializes empty-world infrastructure.
     pub fn colonize(&mut self, player_id: PlayerId) {
+        if self.controlled != Some(player_id) {
+            self.battle_plan = BattlePlan::default();
+            self.protector_battle_plans.clear();
+        }
         self.owned = Some(player_id);
         self.controlled = Some(player_id);
         self.independent_population = IndependentPopulation::Empty;
@@ -686,6 +701,8 @@ impl Planet {
     /// Transfers control to another player.
     pub fn control(&mut self, player_id: PlayerId) {
         if self.controlled != Some(player_id) {
+            self.battle_plan = BattlePlan::default();
+            self.protector_battle_plans.clear();
             self.fleet_withdrawal = FleetWithdrawal::Off;
             self.protection_permissions.clear();
         }
@@ -1028,6 +1045,27 @@ impl Planet {
         self.army.dock_protector(player_id, army);
     }
 
+    /// Returns the standing orders belonging to this world's controller or a protector.
+    pub fn battle_plan_for(&self, owner: Option<PlayerId>) -> BattlePlan {
+        let plan = match owner {
+            Some(owner) if Some(owner) != self.controlled.or(self.owned) => {
+                self.protector_battle_plans.get(&owner).copied().unwrap_or_default()
+            },
+            _ => self.battle_plan,
+        };
+        let army = owner
+            .filter(|owner| Some(*owner) != self.controlled.or(self.owned))
+            .and_then(|owner| self.army.protector(owner))
+            .unwrap_or(self.army.controller());
+        plan.resolved(army)
+    }
+
+    /// Drops orders whose foreign fleet has completely departed or been destroyed.
+    pub fn prune_battle_plans(&mut self) {
+        self.protector_battle_plans
+            .retain(|owner, _| self.army.protector(*owner).is_some_and(|army| army.has_army()));
+    }
+
     /// Returns whether this world has a non-orbital defense unit.
     pub fn has_defense(&self) -> bool {
         self.army
@@ -1037,6 +1075,7 @@ impl Planet {
 
     /// Releases control after a fleet departs when no infrastructure or ships remain.
     pub fn release_control_if_vacant(&mut self) {
+        self.prune_battle_plans();
         if !self.has_buildings() && !self.army.has_fleet() {
             self.controlled = None;
             self.protection_permissions.clear();
@@ -1053,6 +1092,8 @@ impl Planet {
 
     /// Permanently destroys this planet and clears all ownership and stationed units.
     pub fn destroy(&mut self) {
+        self.battle_plan = BattlePlan::default();
+        self.protector_battle_plans.clear();
         self.owned = None;
         self.controlled = None;
         self.independent_population = IndependentPopulation::Empty;

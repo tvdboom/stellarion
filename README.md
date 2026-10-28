@@ -160,7 +160,7 @@ In combat, there are two sides: the attacker and the defender. There is the poss
 the attacker has launched his fleets against a planet with no defense or ships, in which case 
 he automatically wins the combat. But otherwise, if the defender has ships or defense on his 
 planet, each side will fire upon the enemy. Combat ends in an attacker victory, a defender
-victory, or a draw. If both combat armies survive the 100-round limit, the defender keeps
+victory, or a draw. If both combat armies survive the 20-round limit, the defender keeps
 the planet and the surviving attackers return to their origin.
 
 The battle selection panel offers **Schematic** (the default tactical replay) and
@@ -177,7 +177,61 @@ before the planetary blast. Building damage and planet destruction follow the sa
 The cinematic view has no round banners and stops on the recorded victory, defeat,
 or draw, including stalemates where ships survive on both sides.
 
-Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S), 
+Each fleet carries a **battle plan**: a tactic, target priority, and protection posture. Set
+standing orders by hovering the battle-plan icon at the left of your planet's units header,
+or on a friendly world where your protection fleet is stationed;
+new mission drafts inherit those orders and can override them before dispatch. Hover the
+battle-plan icon to open three selection cards in one row. In the mission footer it sits left
+of fleet strength; active fleets use the same icon beside their objective. Click a card to browse tactics,
+targets, or protection options. Active missions use the same icon and can receive new orders
+before turn resolution; each allied commander edits only their own contingent. Mission hover
+details show the three selection icons, names, and tactic affinity below the travel information.
+Allied contingents retain their own plans. Reinforcements join the destination's standing orders;
+a newly captured world adopts the attacking leader's
+plan, and a new foreign protection fleet keeps its dispatch plan.
+
+Tactics automatically use the highest affinity for the current fleet until you select a tactic
+manually. **Auto-select highest affinity** in the tactic picker restores automatic selection.
+Automatic choices update when a fleet's composition changes, then freeze for each battle.
+Default targeting is **Balanced fire** and default protection is **Open formation**.
+
+Simultaneous arrivals with different plans retain their source fleets inside the combined attack.
+Every combatant records its fleet identity and frozen plan; damage, target preference, and
+protection use that source fleet, including when several fleets belong to the same player.
+Returning survivors retain their source orders. Issuing a new plan to a combined active fleet
+reforms it under those new orders; docking places reinforcements under the garrison's standing
+orders. Both combat views display each participating fleet's plan beneath its commander.
+
+| Tactic | Main composition fit | Counters |
+| --- | --- | --- |
+| Swarm | Light and Heavy Fighters | Breakthrough, Siege |
+| Skirmish | Destroyers, Cruisers | Siege, Bastion |
+| Breakthrough | Cruisers, Battleships | Skirmish, Interception |
+| Siege | Bombers, Dreadnoughts, War Suns | Breakthrough, Bastion |
+| Interception | Destroyers, Battleships, light batteries | Swarm, Skirmish |
+| Bastion | Dreadnoughts, heavy batteries, Space Dock | Swarm, Interception |
+
+Each tactic counters two others, loses to two, and is neutral against itself and one other.
+A favorable matchup earns up to 15% extra weapon damage, scaled by the surviving force's
+resource-weighted suitability at the beginning of each round. Partial affinities let mixed
+fleets use several tactics. Probes, Colony Ships, unarmed support, buildings, and missiles
+do not contribute suitability. Neutral forces and missile strikes receive no tactic bonuses.
+
+Target priority is **Balanced fire**, **Small ships**, **Medium ships**, **Capital ships**, or
+**Defenses**. Preferred targets receive twice the selection weight; other eligible targets
+remain possible. Small ships are Light and Heavy Fighters; medium ships are Destroyers,
+Cruisers, and Bombers; capitals are Battleships, Dreadnoughts, War Suns, and Space Docks.
+Bombers retain their defense-first role. Defenses priority lets ordinary ships engage ground
+defenses before enemy ships are eliminated, but the Planetary Shield still protects them.
+
+Protection is **Open formation**, **Screen capitals**, **Heavy cover**, or **Protect bombers**.
+Covering ships take additional fire to reduce protected ships' target weight by at most 25%,
+scaled by the commander's surviving covering strength. Probes and Colony Ships cannot screen;
+stationary defenses do not change exposure. A fleet cannot use another commander's ships as
+its screen. The combat report's **Battle plans** menu shows the original orders, initial
+suitability, and opposing tactic matchups.
+
+Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S),
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
 unit starts with its shield at its initial value. The hull has the value of previous round
 (initial value of the ship if it's the first round). In each round, ordinary ships randomly target

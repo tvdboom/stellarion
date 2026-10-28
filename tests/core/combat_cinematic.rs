@@ -10,6 +10,8 @@ pub(super) fn replay() -> CinematicPlayback {
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
     let record = |id, unit| CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         unit,
         owner: None,
@@ -29,6 +31,32 @@ pub(super) fn replay() -> CinematicPlayback {
         ..Default::default()
     });
     CinematicPlayback::new(&report)
+}
+
+#[test]
+fn actor_culling_uses_the_navigated_world_clip_instead_of_the_original_canvas() {
+    let mut movie = replay();
+    movie.visuals[0].home = vec2(-1.0, 0.3);
+    movie.elapsed = 5.0;
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let pose = movie.actor_pose(scene, 0, movie.elapsed);
+    assert!(!scene.rect.expand(pose.size * 1.5).contains(pose.center));
+    let texture = TextureId::User(999);
+    let images = ImageIds([(movie.visuals[0].texture.clone(), texture)].into());
+    let navigated_clip = Rect::from_center_size(pose.center, Vec2::splat(pose.size * 4.0));
+    let shapes = capture_planet_shapes(scene, |painter| {
+        let mut painter = painter.clone();
+        painter.set_clip_rect(navigated_clip);
+        movie.paint_actor(&painter, scene, &images, 0);
+    });
+    assert!(
+        shapes.iter().any(|shape| matches!(shape, Shape::Mesh(mesh) if mesh.texture_id == texture)),
+        "Camera navigation must reveal actors beyond the default battle canvas"
+    );
+    let hidden = capture_planet_shapes(scene, |painter| {
+        movie.paint_actor(&painter.with_clip_rect(scene.rect), scene, &images, 0);
+    });
+    assert!(hidden.is_empty());
 }
 
 #[test]
@@ -57,13 +85,16 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
     let movie = replay();
     let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 820.0)));
     let end = movie.timeline.entrance_duration;
-    assert!(end >= 4.0, "Ships need time for a visible approach before weapons fire");
+    assert!(end >= 4.0, "The fleets should keep approaching during the opening exchange");
     let mut banks = Vec::new();
     for index in 0..24 {
         let start = movie.actor_pose(scene, index, 0.0);
         let middle = movie.actor_pose(scene, index, end * 0.5);
         let arrived = movie.actor_pose(scene, index, end);
-        assert!(start.center.x + start.size < scene.rect.left());
+        assert!(
+            start.center.x < scene.rect.width() * 0.40,
+            "Ships should open in distant outer lanes"
+        );
         assert!(middle.center.x > start.center.x && arrived.center.x > middle.center.x);
         let chord = arrived.center - start.center;
         let distance_from_line = (1..10)
@@ -73,7 +104,7 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
                 (chord.x * offset.y - chord.y * offset.x).abs() / chord.length()
             })
             .fold(0.0_f32, f32::max);
-        assert!(distance_from_line > 12.0, "Arrival {index} collapsed to a straight translation");
+        assert!(distance_from_line > 3.0, "Arrival {index} collapsed to a straight translation");
         banks.push(middle.angle);
         assert!(
             (middle.angle - start.angle).abs().max((arrived.angle - middle.angle).abs()) > 0.02,
@@ -134,6 +165,8 @@ fn missile_strike_is_one_straight_descent_and_hides_defending_ships() {
     let missile = Unit::interplanetary_missile();
     let defense = Unit::Defense(Defense::GaussCannon);
     let record = |id, unit, shots| CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         unit,
         owner: Some(if id == 1 {
@@ -470,6 +503,8 @@ fn map_shield_filaments_animate_with_playback_and_disappear_on_recorded_collapse
     report.combat_report = Some(CombatReport {
         rounds: vec![RoundReport {
             attacker: vec![CombatUnit {
+                fleet_id: 0,
+                battle_plan: Default::default(),
                 id: 1,
                 unit: Unit::Ship(Ship::Cruiser),
                 owner: None,
@@ -563,7 +598,9 @@ fn cinematic_weapon_meshes_preserve_distinct_barrels_masks_and_shared_colors() {
             .iter()
             .filter_map(|shape| {
                 if let Shape::Mesh(mesh) = &shape.shape {
-                    Some(mesh)
+                    // Untextured additive light and curved wakes surround the actual masks.
+                    // The textured bodies still retain every distinct barrel and its palette.
+                    matches!(mesh.texture_id, TextureId::User(_)).then_some(mesh)
                 } else {
                     None
                 }
@@ -599,6 +636,8 @@ pub(super) fn bombing_report() -> MissionReport {
         rounds: vec![RoundReport {
             attacker: (0..3)
                 .map(|index| CombatUnit {
+                    fleet_id: 0,
+                    battle_plan: Default::default(),
                     id: index,
                     unit: Unit::Ship(Ship::Bomber),
                     owner: None,
@@ -615,6 +654,8 @@ pub(super) fn bombing_report() -> MissionReport {
                 .collect(),
             defender: (4..10)
                 .map(|id| CombatUnit {
+                    fleet_id: 0,
+                    battle_plan: Default::default(),
                     id,
                     unit: Unit::Defense(Defense::RocketLauncher),
                     owner: None,
@@ -1084,6 +1125,8 @@ pub(super) fn planet_strike_replay(destroyed: bool) -> CinematicPlayback {
         rounds: vec![RoundReport {
             attacker: (0..3)
                 .map(|id| CombatUnit {
+                    fleet_id: 0,
+                    battle_plan: Default::default(),
                     id,
                     unit: Unit::war_sun(),
                     owner: None,
@@ -1123,7 +1166,7 @@ fn planet_strike_shapes(movie: &CinematicPlayback, scene: Scene, images: &ImageI
     })
 }
 
-fn capture_planet_shapes(scene: Scene, mut paint: impl FnMut(&Painter)) -> Vec<Shape> {
+pub(super) fn capture_planet_shapes(scene: Scene, mut paint: impl FnMut(&Painter)) -> Vec<Shape> {
     use bevy_egui::egui;
     let context = egui::Context::default();
     let mut output = context.run_ui(

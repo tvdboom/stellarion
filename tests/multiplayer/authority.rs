@@ -106,6 +106,88 @@ fn online_game_accepts_and_replays_the_testing_boost() {
 }
 
 #[test]
+fn battle_orders_require_ownership_and_survive_authoritative_resolution() {
+    use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
+
+    let (backend, host, guest, active) = started();
+    let home = active.persisted.state.players[0].home_planet;
+    let enemy_home = active.persisted.state.players[1].home_planet;
+    let battle_plan = BattlePlan {
+        automatic_tactic: false,
+        tactic: CombatTactic::Interception,
+        target_priority: TargetPriority::SmallShips,
+        protection: ProtectionPosture::HeavyCover,
+    };
+    assert!(matches!(
+        block_on(backend.submit_turn(
+            &host,
+            &active.id,
+            TurnSubmission::new(
+                1,
+                1,
+                vec![TurnCommand::SetBattlePlan {
+                    planet_id: enemy_home,
+                    battle_plan,
+                }],
+            ),
+        )),
+        Err(BackendError::InvalidData(_))
+    ));
+    let submissions = vec![
+        TurnSubmission::new(
+            1,
+            1,
+            vec![TurnCommand::SetBattlePlan {
+                planet_id: home,
+                battle_plan,
+            }],
+        ),
+        TurnSubmission::new(2, 1, vec![]),
+    ];
+    block_on(backend.submit_turn(&host, &active.id, submissions[0].clone())).unwrap();
+    block_on(backend.submit_turn(&guest, &active.id, submissions[1].clone())).unwrap();
+    let canonical = resolved_snapshot(&active, &submissions).unwrap();
+    let next =
+        block_on(backend.publish_resolution(&host, &active.id, active.revision, 1, canonical))
+            .unwrap();
+    assert_eq!(next.persisted.state.map.get(home).battle_plan, battle_plan);
+    assert_eq!(
+        block_on(backend.load_game(&guest, &active.id))
+            .unwrap()
+            .persisted
+            .state
+            .map
+            .get(home)
+            .battle_plan,
+        battle_plan
+    );
+}
+
+#[test]
+fn transport_rejects_missing_and_unknown_battle_orders() {
+    let submission = TurnSubmission::new(
+        1,
+        1,
+        vec![TurnCommand::SetBattlePlan {
+            planet_id: 0,
+            battle_plan: Default::default(),
+        }],
+    );
+    let encoded = serde_json::to_value(submission).unwrap();
+    for field in ["tactic", "target_priority", "protection"] {
+        let mut missing = encoded.clone();
+        missing["commands"][0]["battle_plan"].as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<TurnSubmission>(missing).is_err());
+        let mut invalid = encoded.clone();
+        invalid["commands"][0]["battle_plan"][field] = serde_json::json!("Unknown");
+        assert!(serde_json::from_value::<TurnSubmission>(invalid).is_err());
+    }
+    let mut missing = encoded;
+    missing["commands"][0].as_object_mut().unwrap().remove("battle_plan");
+    assert!(serde_json::from_value::<TurnSubmission>(missing).is_err());
+}
+
+#[test]
 fn member_drafts_cannot_replace_another_player_or_resolved_state() {
     let (backend, host, guest, active) = started();
     assert!(matches!(

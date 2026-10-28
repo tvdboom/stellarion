@@ -15,6 +15,8 @@ pub(crate) const DEATH_RAY_DISCHARGE_AT: f32 = 2.0;
 pub(crate) const DEATH_RAY_COLLAPSE_AT: f32 = 3.7;
 /// Includes a heavy wreck's final flash and delayed debris before the result banner.
 pub(crate) const CLOSING_HOLD: f32 = 2.7;
+/// Fleets exchange long-range fire while their much longer approach is still under way.
+pub(crate) const FLEET_FIRE_START: f32 = 1.65;
 
 /// One visible combatant, retaining its identity through casualties and reordered snapshots.
 pub(crate) struct CinematicActor {
@@ -120,7 +122,7 @@ impl CinematicTimeline {
             entrance_duration: if report.mission.objective == Icon::MissileStrike {
                 1.4
             } else {
-                4.8
+                8.8
             },
             duration: 4.0,
             initial_planetary_shield,
@@ -204,7 +206,13 @@ impl CinematicTimeline {
             }
         }
 
-        let mut cursor = movie.entrance_duration;
+        // Entry choreography and weapon scheduling have separate clocks: waiting for
+        // the full approach made fleets close almost completely before their first shot.
+        let mut cursor = if report.mission.objective == Icon::MissileStrike {
+            movie.entrance_duration
+        } else {
+            FLEET_FIRE_START
+        };
         for (round_index, round) in combat.rounds.iter().enumerate() {
             cursor = movie.add_round(report, round, round_index, cursor, &indices);
         }
@@ -315,6 +323,8 @@ impl CinematicTimeline {
                 let stagger = unit_fraction(record.id ^ round_index as u64)
                     * if covering_fire {
                         2.1
+                    } else if round_index == 0 && report.mission.objective != Icon::MissileStrike {
+                        0.35
                     } else {
                         1.25
                     };

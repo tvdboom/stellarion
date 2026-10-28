@@ -235,6 +235,66 @@ fn escape_closes_confirmation_without_closing_the_planet_or_opening_the_menu() {
 }
 
 #[test]
+fn battle_plan_modal_consumes_escape_and_blocks_turn_submission() {
+    for key in [KeyCode::Escape, KeyCode::Enter] {
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(key);
+        if key == KeyCode::Enter {
+            keyboard.press(KeyCode::ControlLeft);
+        }
+        let mut app = App::new();
+        app.insert_resource(State::new(AppState::Game))
+            .insert_resource(State::new(GameState::Playing))
+            .init_resource::<NextState<AppState>>()
+            .init_resource::<NextState<GameState>>()
+            .insert_resource(keyboard)
+            .insert_resource(UiState {
+                planet_selected: Some(1),
+                battle_plan_planet: Some(1),
+                ..default()
+            })
+            .add_message::<StartTurnMsg>()
+            .add_message::<MultiplayerRequest>();
+        app.world_mut().run_system_once(check_keys_menu).unwrap();
+        let state = app.world().resource::<UiState>();
+        assert_eq!(state.battle_plan_planet, (key != KeyCode::Escape).then_some(1));
+        assert_eq!(state.planet_selected, Some(1));
+        assert!(!state.end_turn);
+        assert!(matches!(*app.world().resource::<NextState<GameState>>(), NextState::Unchanged));
+    }
+}
+
+#[test]
+fn battle_plan_modal_keeps_mission_and_world_navigation_shortcuts_inactive() {
+    let mut keyboard = ButtonInput::default();
+    keyboard.press(KeyCode::KeyM);
+    keyboard.press(KeyCode::Space);
+    keyboard.press(KeyCode::Tab);
+    let mut app = App::new();
+    app.insert_resource(keyboard)
+        .init_resource::<ButtonInput<MouseButton>>()
+        .insert_resource(Map {
+            rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: Vec::new(),
+        })
+        .insert_resource(Player::new(1, 0))
+        .insert_resource(Settings::default())
+        .insert_resource(UiState {
+            battle_plan_planet: Some(4),
+            planet_selected: Some(4),
+            mission: true,
+            mission_tab: MissionTab::NewMission,
+            ..default()
+        });
+    app.world_mut().run_system_once(check_keys).unwrap();
+    let state = app.world().resource::<UiState>();
+    assert_eq!(state.planet_selected, Some(4));
+    assert!(state.mission);
+    assert_eq!(state.mission_tab, MissionTab::NewMission);
+}
+
+#[test]
 fn modal_menus_block_map_picking_clear_hover_and_restore_input_on_resume() {
     let mut app = App::new();
     app.insert_resource(UiState {
@@ -458,6 +518,7 @@ fn local_practice_shortcut_is_immediately_available_to_allied_preview() {
                 army: Army::from([(fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
             },
             JointAttackContribution {
                 player_id: 1,
@@ -465,6 +526,7 @@ fn local_practice_shortcut_is_immediately_available_to_allied_preview() {
                 army: Army::from([(Unit::probe(), 3)]),
                 bombing: BombingRaid::None,
                 combat_probes: true,
+                battle_plan: Default::default(),
             },
         ],
     };

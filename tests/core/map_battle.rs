@@ -904,6 +904,8 @@ fn fauna_outcomes_show_recorded_survivors_and_only_recorded_return_fire() {
     report.surviving_defender = Army::from([(fauna, 1)]).into();
     report.combat_report.as_mut().unwrap().rounds.push(RoundReport {
         attacker: vec![CombatUnit {
+            fleet_id: 0,
+            battle_plan: Default::default(),
             id: 1,
             owner: Some(1),
             unit: Unit::Ship(Ship::Cruiser),

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_tweening::lens::{
     TextColorLens, TransformPositionLens, TransformScaleLens, UiBackgroundColorLens,
@@ -275,7 +276,7 @@ struct CombatIdentityAccentSegmentCmp;
 
 #[derive(Component)]
 /// Background card naming one side of the current combat.
-struct CombatIdentityCmp;
+pub(crate) struct CombatIdentityCmp;
 
 #[derive(Component)]
 /// Marks cards whose firing highlight must be reversed after firing.
@@ -939,6 +940,7 @@ fn spawn_combat_identity(
     commands: &mut Commands,
     role: &str,
     participants: &[(String, Color, u128)],
+    plans: &[(crate::core::combat::plan::BattlePlan, u8)],
     color: Color,
     top: Option<f32>,
     bottom: Option<f32>,
@@ -967,6 +969,13 @@ fn spawn_combat_identity(
         overflow: Overflow::clip(),
         ..default()
     };
+    if !plans.is_empty() {
+        node.height = Val::Auto;
+        node.min_width = Val::Px(132.0);
+        node.max_width = Val::Vw(45.0);
+        node.max_height = Val::Vh(40.0);
+        node.overflow = Overflow::scroll_y();
+    }
     if let Some(top) = top {
         node.top = Val::Px(top);
     }
@@ -982,6 +991,7 @@ fn spawn_combat_identity(
             ZIndex(5),
             CombatCmp,
             CombatIdentityCmp,
+            ScrollPosition::default(),
         ))
         .with_children(|parent| {
             parent
@@ -1027,6 +1037,7 @@ fn spawn_combat_identity(
                 .spawn(Node {
                     flex_direction: FlexDirection::Column,
                     justify_content: JustifyContent::Center,
+                    flex_shrink: 0.0,
                     row_gap: Val::Px(1.0),
                     overflow: Overflow::clip(),
                     ..default()
@@ -1051,15 +1062,74 @@ fn spawn_combat_identity(
                             color
                         }),
                     ));
-                    for (name, participant_color, _) in participants {
+                    for (index, (name, participant_color, _)) in participants.iter().enumerate() {
                         content.spawn((
                             add_text(name, "medium", 9.0, assets, window),
                             TextLayout::no_wrap(),
                             TextColor(*participant_color),
                         ));
+                        if let Some((plan, affinity)) = plans.get(index) {
+                            for (key, label) in combat_plan_labels(*plan, *affinity) {
+                                content
+                                    .spawn(Node {
+                                        column_gap: Val::Px(4.0),
+                                        align_items: AlignItems::Center,
+                                        ..default()
+                                    })
+                                    .with_children(|line| {
+                                        line.spawn((
+                                            ImageNode::new(assets.image(key)),
+                                            Node {
+                                                width: Val::Px(18.0),
+                                                height: Val::Px(18.0),
+                                                flex_shrink: 0.0,
+                                                ..default()
+                                            },
+                                        ));
+                                        line.spawn((
+                                            add_text(label, "medium", 7.0, assets, window),
+                                            TextColor(Color::srgb_u8(207, 219, 232)),
+                                        ));
+                                    });
+                            }
+                        }
                     }
                 });
         });
+}
+
+/// Keeps large multi-fleet order lists reachable inside their bounded replay panels.
+pub(crate) fn scroll_combat_identities(
+    mut wheel: MessageReader<MouseWheel>,
+    window: Single<&Window>,
+    mut panels: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
+        With<CombatIdentityCmp>,
+    >,
+) {
+    let delta = wheel
+        .read()
+        .map(|event| match event.unit {
+            MouseScrollUnit::Line => event.y * 28.0,
+            MouseScrollUnit::Pixel => event.y,
+        })
+        .sum::<f32>();
+    let Some(cursor) = window.physical_cursor_position() else {
+        return;
+    };
+    if delta == 0.0 {
+        return;
+    }
+    for (node, transform, mut scroll) in &mut panels {
+        let Some(inverse) = transform.try_inverse() else {
+            continue;
+        };
+        if Rect::from_center_size(Vec2::ZERO, node.size).contains(inverse.transform_point2(cursor))
+        {
+            let limit = (node.content_size.y - node.size.y).max(0.0) * node.inverse_scale_factor;
+            scroll.y = (scroll.y - delta).clamp(0.0, limit);
+        }
+    }
 }
 
 /// Participant order, names, colors and strength weights shared by both replay views.
@@ -1075,23 +1145,55 @@ pub(super) fn combat_identity_participants(
             combat_fleet_strength(&report.planet.army.combined()),
         )];
     }
-    let players = match side {
-        Side::Attacker => report.attacker_players(),
-        Side::Defender => report.defender_players(),
-    };
-    players
+    let fleets = report.battle_plan_fleets(side);
+    let mut counts = std::collections::BTreeMap::new();
+    for (owner, _, _, _) in &fleets {
+        if let Some(owner) = owner {
+            *counts.entry(*owner).or_insert(0_usize) += 1;
+        }
+    }
+    let mut sequence = std::collections::BTreeMap::new();
+    fleets
         .into_iter()
-        .map(|id| {
-            (
-                session
-                    .player_name(id)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Player {id}")),
-                session.player_color(id).color(),
-                report.participant_fleet_strength(side, id),
-            )
+        .filter_map(|(owner, _, _, army)| {
+            let owner = owner?;
+            let mut name = session
+                .player_name(owner)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Player {owner}"));
+            if counts[&owner] > 1 {
+                let index = sequence.entry(owner).or_insert(0_usize);
+                *index += 1;
+                name.push_str(&format!(" · Fleet {}", *index));
+            }
+            Some((name, session.player_color(owner).color(), combat_fleet_strength(&army)))
         })
         .collect()
+}
+
+pub(super) fn combat_identity_plans(
+    report: &MissionReport,
+    side: &Side,
+) -> Vec<(crate::core::combat::plan::BattlePlan, u8)> {
+    if report.mission.objective == Icon::MissileStrike {
+        return Vec::new();
+    }
+    report
+        .battle_plan_fleets(side)
+        .into_iter()
+        .filter_map(|(owner, _, plan, army)| owner.map(|_| (plan, plan.suitability(&army))))
+        .collect()
+}
+
+pub(super) fn combat_plan_labels(
+    plan: crate::core::combat::plan::BattlePlan,
+    affinity: u8,
+) -> [(&'static str, String); 3] {
+    [
+        (plan.tactic.image_key(), format!("{} ({affinity}%)", plan.tactic.name())),
+        (plan.target_priority.image_key(), plan.target_priority.name().to_owned()),
+        (plan.protection.image_key(), plan.protection.name().to_owned()),
+    ]
 }
 
 /// Fans non-zero salvage gains above the surviving Crawler card. Each pickup owns its icon,
@@ -1544,6 +1646,7 @@ pub fn setup_combat(
         &mut commands,
         "Attacker",
         &attackers,
+        &combat_identity_plans(report, &Side::Attacker),
         attack_c,
         Some(COMBAT_IDENTITY_EDGE_INSET),
         None,
@@ -1558,6 +1661,7 @@ pub fn setup_combat(
             "Defender"
         },
         &defenders,
+        &combat_identity_plans(report, &Side::Defender),
         defend_c,
         None,
         Some(COMBAT_IDENTITY_EDGE_INSET),

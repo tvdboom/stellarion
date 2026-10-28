@@ -734,7 +734,7 @@ fn cinematic_identity_banners_keep_commander_colors_without_painting_hulls() {
     let ally_color = session.player_color(1).color().to_color32();
     app.insert_resource(session);
     let hull_texture = egui::TextureId::User(4321);
-    app.world_mut().resource_mut::<ImageIds>().0.insert("firing war sun".into(), hull_texture);
+    app.world_mut().resource_mut::<ImageIds>().0.insert("cinematic war sun".into(), hull_texture);
     app.world_mut().resource_mut::<CinematicPlayback>().elapsed = 5.0;
     let fighter = Unit::Ship(Ship::LightFighter);
     {
@@ -779,9 +779,13 @@ fn cinematic_identity_banners_keep_commander_colors_without_painting_hulls() {
         })
         .unwrap();
     assert!(
-        hull.vertices.iter().all(|vertex| vertex.color == egui::Color32::WHITE),
-        "Identity remains in the banners without adding colored lines to hull artwork"
+        hull.vertices.iter().all(|vertex| {
+            vertex.color == egui::Color32::WHITE
+                || vertex.color == egui::Color32::from_rgb(210, 225, 242)
+        }),
+        "Environmental lighting must not paint commander-colored bands over hull artwork"
     );
+    assert_eq!(hull.vertices.len(), 4, "Hull lighting must remain one continuous surface");
 }
 
 #[test]

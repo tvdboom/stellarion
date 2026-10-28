@@ -21,11 +21,17 @@ selection at any time, as does the schematic-style **Exit combat** button at the
 bottom right; the completed outcome banner is also clickable. Attacker and defender
 banners align beneath the top-right controls, using the same participant ordering,
 names, colors, and fleet-strength accent segments as the schematic replay.
-Each owned ship carries two player-colored hull bands, a subtle armor tint, and
-matching running lights and engine exhaust. These use the individual combatant's
-owner and the match's selected player palette, so allies on either side retain
-their own colors. Space Docks carry the same hull markings; surface defenses use
-colored pedestal armor. Neutral fauna keep their original artwork.
+Ship artwork retains its original armor detail under subtle cool underside lighting.
+An additive pass through the hull's own texture reflects nearby planetary light and
+brief recorded muzzle/impact flashes. Transparent margins and gaps between station
+arms remain transparent; gun lighting follows the same articulated surface as its barrel.
+Attached engine nozzles emit tapered plasma plumes tinted by the individual
+combatant's selected player color. Thrust follows actual travel speed, with shorter,
+steadier capital-ship exhaust and longer fighter burns during arrival and withdrawal.
+Exhaust curves through recent nozzle positions, and small maneuvering jets respond
+to actual changes in direction and braking instead of firing as a repeating decoration.
+Surface defenses use restrained colored pedestal armor. Neutral fauna keep their
+original artwork.
 Schematic unit images have a thin border in the same owner color. Individual cards
 use their own player's color; grouped cards split the perimeter between contributing
 players in proportion to their unit counts.
@@ -47,16 +53,24 @@ remains unchanged. Surface turrets
 fire from their raised gun housings toward their recorded ship targets, using the
 shared weapon effects at a readable size even in dense defensive formations.
 
-Armed ships, surface turrets and the Space Dock have eight-stage firing sprites:
-charge, muzzle flash, barrel recoil and recovery. Ship and station silhouettes stay
-whole. Ground weapons aim through continuous joints attached to fixed foundations.
+Most armed ships, surface turrets and the Space Dock have eight-stage firing sprites:
+charge, muzzle flash, barrel recoil and recovery. The War Sun uses a single registered
+shop-derived hull with procedural charge and muzzle light, preserving its complete
+ring through firing. Its three forward blue emitters supply the weapon; the rear
+nozzles supply propulsion. Ship and station silhouettes stay whole.
+Ground weapons aim through continuous joints attached to fixed foundations.
 Projectiles and beams use the rendered cannon's frame-specific muzzle attachment.
 The ship artwork has a level bow-to-stern axis; banking follows the actual flight
 path with bounded banks and horizontal reflection, so ships never roll upside down.
-During ordinary salvos, hulls smoothly aim their cannons toward the recorded target,
-including defenses below them, then return to their travel heading. Firing elevation
-remains bounded to keep steep nearby targets from rolling the artwork over. Lateral
+During ordinary salvos, hulls retain their travel heading with a small aiming suggestion
+of roughly 3–6 degrees, depending on mass. Nearby recorded salvos contribute to a smooth
+average, so alternating high and low targets cannot wrench the whole ship around.
+Shots leave the attached muzzle and reach the recorded target even when firing off-axis.
+Ground turrets still track targets through their articulated gun assemblies. Lateral
 cruise bends have individual phases instead of tilting the whole fleet together.
+Turns also change the hull's perspective slightly, with heavier ships banking less.
+The same transform keeps guns, engines and reflected light attached; it settles during
+firing alignment. Directional skylight and engine reflections move over the armor.
 War Suns form a shallow firing fan and advance toward their shared focus during a
 planet strike, with the rest of the battle continuing around them. The convergence
 point is anchored beside the planet, independent of fleet height; barrel axes line up
@@ -85,19 +99,45 @@ cue, while still following the player's volume setting.
 
 Weapon colors, projectile masks, barrel patterns, trajectories, particle trails,
 staged explosion-atlas frames, and sound pitch/gain are shared with the schematic renderer.
-The cinematic atlas uses premultiplied alpha; wrecks omit the extra orange glow disks.
+The cinematic atlas uses premultiplied alpha. Soft additive light, feathered beams,
+continuous curved projectile wakes, directional impact sparks and brief hot flashes
+replace hard glow disks. Wrecks leave delayed rotating fragments after their blast.
+Energy bolts have crisp tapered cores, railguns leave longer hot streaks, and missiles
+leave curved exhaust and continuous smoke. Barrel patterns remain distinct at small
+scales. Beam afterglows begin at contact and fade without a dark gap.
+Damaged survivors vent from their armor, with vapor retaining its emission position
+and momentum. Repairs stop new venting while existing smoke disperses naturally.
+Destroyed ships also separate into three darkened, irregular sections of their actual
+hull, retaining their final velocity under the blast. Their smoke and glowing seams
+travel with the fragments, with heavier wrecks turning more slowly and fading before
+the closing hold ends. Ground hits leave bounded scorch marks at their recorded impact
+locations with brief dust clouds; shield-only contacts and gas worlds leave no craters.
 Charged weapons build up before their recorded launch, preserving the last shot of a destroyed ship.
 The planetary shield reuses the map's energy-field artwork with a three-second
 pulse, moving filaments and surface sweeps; its strength follows recorded damage.
-The scene uses the normal map background with its proportions preserved. Three
+The scene uses the normal map background with its proportions preserved, restrained
+exposure shading and a soft edge vignette. Planet rims have a directional, feathered
+halo colored for the world, and surface units cast soft contact shadows. Defense
+terraces pack actual gun widths, mix classes and stagger positions to keep large
+weapons from overlapping their neighbors. The far terrace recedes slightly in scale.
+Fleet staging reserves room for large hulls and arranges smaller escorts in irregular
+groups with cached footprint separation. Three
 wrapping star layers respond at different depths to camera movement and zoom,
 with the map's blue, white, and warm star colors, independent twinkles, and sparse
 glowing flares. Their animation follows the replay clock; navigating while paused
 still changes their parallax. Ships
-follow curved approaches over 4.8 seconds, then shallow, continuous forward passes.
+open fire around 1.65–2.0 seconds while still occupying distant outer lanes, then keep
+closing under fire through an 8.8-second approach. Their ongoing cruise runs at 55%
+of the earlier pace. Strategic missile strikes retain their separate 1.4-second entrance.
 Their bows and engine trails follow their actual travel direction, including withdrawals.
-Capital ships take slow, steady arcs without recoil-driven wiggling; lighter ships
-make faster, broader passes. Bombers make approaches toward their recorded surface
+Capital ships take slow, steady arcs with a longer steering look-ahead; lighter ships
+make faster, broader passes. Long encounters ease forward and lateral travel together,
+avoiding sideways oscillation after forward motion slows. Arrival velocity is continuous,
+and planet avoidance bends the approach smoothly before reaching the clearance boundary.
+Recorded penetrating hits push surviving ships into a short, mass-sensitive recovery;
+shield-only contacts do not displace hulls. Reactions never begin before impact.
+Ships bend around the Space Dock's occupied berth while the station keeps its orbit.
+Bombers make approaches toward their recorded surface
 targets while both fleets keep their complete hulls outside the planet and shield.
 Turrets scale by class, with Ion and Plasma guns larger than inexpensive emplacements.
 The relevant buildings occupy a smaller, lower settlement row. Repair trucks travel
@@ -119,7 +159,8 @@ by the existing asset pipeline and included by normal native and web packaging.
 The six building references and generation prompts are documented in
 [cinematic-economic-art.md](cinematic-economic-art.md) and
 [cinematic-industrial-art.md](cinematic-industrial-art.md).
-The rebuilt War Sun and mode tiles are documented in
+The current War Sun is documented in [cinematic-war-sun.md](cinematic-war-sun.md).
+The mode tiles and earlier artwork provenance are in
 [cinematic-refresh-art.md](cinematic-refresh-art.md).
 Twenty detailed 1254-pixel planet sprites provide two stable variants for each of
 the ten planet/moon kinds. The camera frames their globe rims consistently, and
@@ -157,3 +198,6 @@ banner in both renderers, the mode tiles and shared settings/volume popovers, th
 planet breakup, both building categories before and during bombing, rising level
 loss captions, and a 640×480 viewport. It uses the generated runtime textures with the same
 filtering and alpha settings as the game; run `just assets` first.
+Set `STELLARION_CINEMATIC_MOTION=1` for the same test to also write 360 sequential
+`motion-000.png` through `motion-359.png` frames at 30 fps for reviewing the opening
+12 seconds of flight and combat.

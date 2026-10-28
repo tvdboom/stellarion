@@ -15,6 +15,7 @@ const generated = spawnSync("cargo", [
 ], { cwd: fileURLToPath(root), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
 assert.equal(generated.status, 0, generated.error?.message ?? generated.stderr);
 const fixtures = JSON.parse(generated.stdout);
+const defaultBattlePlan = fixtures.battle_plan;
 const schemaPath = new URL("supabase/schema.sql", root);
 const db = new PGlite({ extensions: { pgcrypto } });
 await db.exec(`
@@ -140,6 +141,56 @@ assert.equal(
 console.log(
   "Second reset removed app data, obsolete objects/jobs/history, and recreated current RLS and schedule; managed auth and unrelated jobs survived.",
 );
+for (const plan of fixtures.battle_plans) {
+  assert.equal((await db.query(
+    "select public.stellarion_battle_plan_valid($1) as valid", [JSON.stringify(plan)],
+  )).rows[0].valid, true, `Rust battle plan must be accepted: ${JSON.stringify(plan)}`);
+}
+const invalidBattlePlans = [null, {}, "Swarm", { ...defaultBattlePlan, automatic_tactic: "yes" }, { ...defaultBattlePlan, tactic: "Unknown" },
+  { ...defaultBattlePlan, target_priority: "Unknown" }, { ...defaultBattlePlan, protection: "Unknown" },
+  { ...defaultBattlePlan, extra: true }, ...Object.keys(defaultBattlePlan).map(key => {
+    const plan = { ...defaultBattlePlan };
+    delete plan[key];
+    return plan;
+  })];
+for (const plan of invalidBattlePlans) {
+  assert.equal((await db.query(
+    "select public.stellarion_battle_plan_valid($1) as valid", [JSON.stringify(plan)],
+  )).rows[0].valid, false);
+}
+const validatePlans = state => db.query(
+  "select public.stellarion_validate_persisted($1, 2::smallint, 'active', 1)", [state],
+);
+const plannedSnapshot = structuredClone(fixtures.active);
+plannedSnapshot.state.missions.push(fixtures.battle_report.mission);
+plannedSnapshot.state.players[0].reports.push(fixtures.battle_report);
+await validatePlans(plannedSnapshot);
+for (const corrupt of [
+  state => { delete state.state.map.planets[0].battle_plan; },
+  state => { state.state.map.planets[0].protector_battle_plans = []; },
+  state => { state.state.map.planets[0].protector_battle_plans["2"] = defaultBattlePlan; },
+  state => { delete state.state.missions[0].battle_plan; },
+  state => { state.state.players[0].reports[0].mission.battle_plan.tactic = "Unknown"; },
+  state => { delete state.state.players[0].reports[0].planet.battle_plan; },
+  state => { state.state.missions[0].joint_attack = { combat_orders: { "1": {} } }; },
+]) {
+  const malformed = structuredClone(plannedSnapshot);
+  corrupt(malformed);
+  await assert.rejects(validatePlans(malformed), /STLR_INVALID_DATA:.*battle_plan/);
+}
+for (const kind of ["send_mission", "set_battle_plan", "set_mission_battle_plan"]) {
+  const valid = await db.query("select * from public.stellarion_submission_ids($1)", [{
+    player_id: 1, turn: 1, generation: 0,
+    commands: [{ kind, mission_id: 9901, battle_plan: defaultBattlePlan }],
+  }]);
+  assert.equal(valid.rows.length, 1);
+  for (const plan of invalidBattlePlans) {
+    await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [{
+      player_id: 1, turn: 1, generation: 0, commands: [{ kind, battle_plan: plan }],
+    }]), /STLR_INVALID_DATA:battle_plan/);
+  }
+}
+console.log("All Rust battle plans, required snapshot/report orders, and malformed command rejection passed.");
 for (const route of fixtures.trade_routes) {
   const result = await db.query(
     `select public.stellarion_trade_route_valid($1, $2) as valid,
@@ -390,6 +441,7 @@ const twoPlayerJointAttack = {
         army: { "Ship(LightFighter)": 1 },
         bombing: "None",
         combat_probes: false,
+        battle_plan: defaultBattlePlan,
       },
     },
     { player_id: 2, response: "pending", contribution: null },
@@ -746,7 +798,7 @@ const jointAttack = {
     {
       player_id: 1,
       response: "accepted",
-      contribution: { player_id: 1, origin: protectedPlanet, army: { "Ship(LightFighter)": 1 }, bombing: "None", combat_probes: false },
+      contribution: { player_id: 1, origin: protectedPlanet, army: { "Ship(LightFighter)": 1 }, bombing: "None", combat_probes: false, battle_plan: defaultBattlePlan },
     },
     { player_id: 2, response: "pending", contribution: null },
   ],
@@ -763,6 +815,11 @@ const cancelJointAttack = (actor, attackId) => rpc(actor,
 const loadJointAttacks = actor => rpc(actor,
   "select public.stellarion_load_joint_attacks($1) as result", [protectionGame.id]);
 await assert.rejects(createJointAttack(guest), /STLR_INVALID_DATA:joint_attack/);
+for (const plan of invalidBattlePlans) {
+  const malformed = structuredClone(jointAttack);
+  malformed.participants[0].contribution.battle_plan = plan;
+  await assert.rejects(createJointAttack(host, malformed), /STLR_INVALID_DATA:joint_attack/);
+}
 const emptyJointAttack = structuredClone(jointAttack);
 emptyJointAttack.participants[0].contribution.army = {};
 await assert.rejects(createJointAttack(host, emptyJointAttack),
@@ -780,6 +837,7 @@ guestRouteEdit.participants[1].response = "accepted";
 guestRouteEdit.participants[1].contribution = {
   player_id: 2, origin: protectorHome, army: { "Ship(LightFighter)": 1 },
   bombing: "None", combat_probes: false,
+  battle_plan: defaultBattlePlan,
 };
 await assert.rejects(createJointAttack(guest, guestRouteEdit),
   /STLR_INVALID_DATA:joint_attack/, "only the inviter may revise the shared route");
@@ -805,7 +863,12 @@ const guestContribution = {
   army: { "Ship(LightFighter)": 1 },
   bombing: "None",
   combat_probes: true,
+  battle_plan: { automatic_tactic: false, tactic: "Interception", target_priority: "SmallShips", protection: "HeavyCover" },
 };
+for (const plan of invalidBattlePlans) {
+  await assert.rejects(respondJointAttack(guest, jointAttack.id, "pending",
+    { ...guestContribution, battle_plan: plan }), /STLR_INVALID_DATA:joint_attack_contribution/);
+}
 const conflictingGuestBombing = structuredClone(guestContribution);
 conflictingGuestBombing.bombing = "Industrial";
 await assert.rejects(
@@ -946,6 +1009,10 @@ const plannedLaunch = { ...jointCommand, attack_id: planningAttack.id, mission_i
 const tamperedOrders = structuredClone(plannedLaunch);
 tamperedOrders.contributions[1].combat_probes = false;
 await assert.rejects(saveJointDraft([tamperedOrders]), /STLR_INVALID_DATA:joint_attack/);
+const tamperedPlan = structuredClone(plannedLaunch);
+tamperedPlan.contributions[1].battle_plan.tactic = "Bastion";
+await assert.rejects(saveJointDraft([tamperedPlan]), /STLR_INVALID_DATA:joint_attack/,
+  "the inviter cannot replace a guest's accepted battle plan");
 await saveJointDraft([plannedLaunch]);
 assert((await loadJointAttacks(guest)).find(item => item.id === planningAttack.id).launched);
 await assert.rejects(respondJointAttack(guest, planningAttack.id, "pending", guestContribution, finalPlanning.revision),
@@ -953,7 +1020,7 @@ await assert.rejects(respondJointAttack(guest, planningAttack.id, "pending", gue
 await assert.rejects(respondJointAttack(outsider, planningAttack.id, "accepted",
   { ...guestContribution, player_id: 3, origin: thirdHome }, finalPlanning.revision), /STLR_FORBIDDEN/);
 await assert.rejects(createJointAttack(host, { ...planningAttack, revision: finalPlanning.revision }), /STLR_FORBIDDEN/);
-console.log("Live allied planning, shared bombing, per-fleet probe orders, proposal revisions, undo acceptance, and early launch passed.");
+console.log("Live allied planning, shared bombing, independent battle plans/probe orders, proposal revisions, undo acceptance, and early launch passed.");
 
 // All participants may revise an accepted offer; consent belongs to the other offers.
 const editableAttack = structuredClone(jointAttack);
@@ -974,6 +1041,12 @@ editable = await respondJointAttack(guest, editable.id, "accepted", largerFleet,
 assert.equal(editable.participants[1].response, "accepted", "own edit preserves consent to other offers");
 assert.equal(editable.participants[2].response, "pending");
 await assert.rejects(respondJointAttack(outsider, editable.id, "accepted", thirdContribution, staleRevision), /STLR_FORBIDDEN/);
+editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
+editable = await respondJointAttack(guest, editable.id, "accepted", {
+  ...largerFleet,
+  battle_plan: { ...largerFleet.battle_plan, target_priority: "CapitalShips" },
+}, editable.revision);
+assert.equal(editable.participants[2].response, "pending", "battle-plan-only changes require fresh consent");
 editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
 editable = await respondJointAttack(guest, editable.id, "accepted",
   { ...largerFleet, origin: protectedPlanet }, editable.revision);

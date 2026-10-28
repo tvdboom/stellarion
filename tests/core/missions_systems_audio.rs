@@ -136,6 +136,7 @@ fn solo_dispatch_after_inviting_players_cancels_only_after_the_launch_is_accepte
                         army: Army::from([(fighter, 2)]),
                         bombing: BombingRaid::None,
                         combat_probes: false,
+                        battle_plan: default(),
                     }),
                 },
                 JointAttackParticipant {
@@ -213,6 +214,7 @@ fn sending_allied_mission_projects_only_own_contingent_and_requests_publication(
             army: fleet.clone(),
             bombing: BombingRaid::None,
             combat_probes: false,
+            battle_plan: default(),
         })
         .collect::<Vec<_>>();
     let mission = Mission::new_with_id(

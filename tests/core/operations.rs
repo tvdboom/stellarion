@@ -232,6 +232,7 @@ fn abandoning_a_colony_cannot_refund_jump_energy_or_skip_extraction_recovery() {
                 army: Army::from([(fighter, 1)]),
                 bombing: BombingRaid::None,
                 combat_probes: false,
+                battle_plan: Default::default(),
                 deep_cover: false,
                 jump_gate: true,
             },
@@ -272,6 +273,7 @@ fn jumps_round_energy_per_mission_refund_cancellation_and_charge_only_launch_tur
         army: Army::from([(fighter, count)]),
         bombing: BombingRaid::None,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: true,
     };

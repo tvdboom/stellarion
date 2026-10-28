@@ -1,10 +1,15 @@
 //! Generates current Rust snapshots for disposable SQL contract tests.
 
+use rand::SeedableRng;
+use stellarion::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
+use stellarion::core::combat::resolution::resolve_combat_with_rng;
+use stellarion::core::map::icon::Icon;
+use stellarion::core::missions::{BombingRaid, Mission};
 use stellarion::core::simulation::{
     resolve_turn, GameModel, GameRules, PersistedGame, TurnSubmission,
 };
 use stellarion::core::trading::{trading_post_capacity, trading_posts_are_adjacent};
-use stellarion::core::units::{buildings::Building, Unit};
+use stellarion::core::units::{buildings::Building, ships::Ship, Army, Unit};
 
 fn trade_route_fixtures(model: &GameModel) -> Vec<serde_json::Value> {
     let mut map = model.map.clone();
@@ -40,6 +45,28 @@ fn trade_route_fixtures(model: &GameModel) -> Vec<serde_json::Value> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let battle_plans = CombatTactic::ALL
+        .into_iter()
+        .flat_map(|tactic| {
+            TargetPriority::ALL.into_iter().flat_map(move |target_priority| {
+                ProtectionPosture::ALL.into_iter().map(move |protection| BattlePlan {
+                    automatic_tactic: false,
+                    tactic,
+                    target_priority,
+                    protection,
+                })
+            })
+        })
+        .flat_map(|plan| {
+            [
+                plan,
+                BattlePlan {
+                    automatic_tactic: true,
+                    ..plan
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
     let rules = GameRules {
         planets_per_player: 5,
         moons_percent: 0,
@@ -58,6 +85,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     active.start()?;
+    let battle_mission = Mission::new_with_id(
+        7,
+        1,
+        1,
+        active.map.get(active.players[0].home_planet),
+        active.map.get(active.players[1].home_planet),
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let battle_report = resolve_combat_with_rng(
+        1,
+        &battle_mission,
+        active.map.get(active.players[1].home_planet),
+        &mut rand_chacha::ChaCha8Rng::seed_from_u64(7),
+    );
     let mut active_three = GameModel::new(
         [9; 32],
         GameRules {
@@ -74,6 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({
+            "battle_plan": BattlePlan::default(),
+            "battle_plans": battle_plans,
+            "battle_report": battle_report,
             "trade_routes": trade_route_fixtures(&active),
             "lobby": lobby,
             "active": PersistedGame::new(active),

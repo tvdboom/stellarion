@@ -1199,6 +1199,7 @@ fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
                                 true,
                                 &images,
                                 editable,
+                                &Settings::default(),
                             );
                         });
                     },

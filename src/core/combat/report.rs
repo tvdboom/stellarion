@@ -108,6 +108,107 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// Original forces and independent plans, in the same stable order as replay identities.
+    pub fn battle_plan_fleets(
+        &self,
+        side: &Side,
+    ) -> Vec<(Option<PlayerId>, u64, crate::core::combat::plan::BattlePlan, Army)> {
+        match side {
+            Side::Attacker => {
+                if let Some(joint) =
+                    self.mission.joint_attack.as_ref().filter(|joint| !joint.attackers.is_empty())
+                {
+                    self.attacker_players()
+                        .into_iter()
+                        .filter_map(|owner| {
+                            joint.attackers.get(&owner).map(|army| {
+                                (
+                                    Some(owner),
+                                    self.mission.id,
+                                    self.mission.battle_plan_for(Some(owner)),
+                                    army.clone(),
+                                )
+                            })
+                        })
+                        .collect()
+                } else {
+                    self.mission
+                        .source_battle_fleets()
+                        .into_iter()
+                        .map(|fleet| {
+                            (Some(self.mission.owner), fleet.id, fleet.battle_plan, fleet.army)
+                        })
+                        .collect()
+                }
+            },
+            Side::Defender => {
+                let owner = self.planet.controlled.or(self.planet.owned);
+                let mut fleets = vec![(
+                    owner,
+                    0,
+                    self.planet.battle_plan_for(owner),
+                    self.planet.army.controller().clone(),
+                )];
+                fleets.extend(self.planet.army.protectors().map(|(owner, army)| {
+                    (Some(owner), 0, self.planet.battle_plan_for(Some(owner)), army.clone())
+                }));
+                fleets.retain(|(_, _, _, army)| army.has_army());
+                fleets
+            },
+        }
+    }
+
+    /// Partitions surviving or returning ships by their original fleet orders.
+    pub(crate) fn retained_battle_fleets(
+        &self,
+        returning: &Army,
+    ) -> Vec<crate::core::missions::BattleFleet> {
+        if self.mission.battle_fleets.is_empty() {
+            return Vec::new();
+        }
+        let mut latest = BTreeMap::new();
+        if let Some(combat) = &self.combat_report {
+            for round in &combat.rounds {
+                for unit in &round.attacker {
+                    latest.insert(unit.id, unit);
+                }
+            }
+        }
+        let mut remaining = returning.clone();
+        let mut fleets = Vec::new();
+        for source in self.mission.source_battle_fleets() {
+            let mut alive = Army::new();
+            for unit in latest.values().filter(|unit| unit.fleet_id == source.id && unit.hull > 0) {
+                let count = alive.entry(unit.unit).or_default();
+                *count = count.saturating_add(1);
+            }
+            if latest.is_empty() {
+                alive = source.army.clone();
+            }
+            // Colony ships never enter the firing arrays and survive unless consumed by conquest.
+            if let Some(count) = source.army.get(&Unit::colony_ship()) {
+                alive.insert(Unit::colony_ship(), *count);
+            }
+            let mut army = Army::new();
+            for (unit, count) in alive {
+                let retained = count.min(remaining.amount(&unit));
+                if retained > 0 {
+                    army.insert(unit, retained);
+                    if let Some(left) = remaining.get_mut(&unit) {
+                        *left -= retained;
+                    }
+                }
+            }
+            if !army.is_empty() {
+                fleets.push(crate::core::missions::BattleFleet {
+                    army,
+                    ..source
+                });
+            }
+        }
+        fleets
+    }
+
     /// Returns whether this report records combat against neutral space fauna.
     pub fn is_space_fauna_encounter(&self) -> bool {
         self.planet.army.combined().keys().any(Unit::is_fauna)

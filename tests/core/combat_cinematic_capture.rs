@@ -231,6 +231,10 @@ fn render_cinematic_preview() {
         ("maneuver-a".to_string(), playback.timeline.entrance_duration + 3.0),
         ("maneuver-b".to_string(), playback.timeline.entrance_duration + 7.0),
     ];
+    if let Some(first) = playback.timeline.shots.first() {
+        samples.push(("opening-fire".into(), first.launch_at + 0.30));
+        samples.push(("closing-fire".into(), first.launch_at + 2.5));
+    }
     // Sample actual simultaneous counterfire, while the dock still guards the planet.
     // An arbitrary battle time can miss the short turret volleys and hide their return fire.
     let dock = playback
@@ -269,6 +273,34 @@ fn render_cinematic_preview() {
         })
         .expect("surface-combat capture requires recorded turret fire while the dock survives");
     samples.push(("turret-counterfire".into(), counterfire));
+    if let Some(shot) = playback.timeline.shots.iter().find(|shot| {
+        matches!(
+            super::super::effects::Weapon::for_shot(
+                playback.timeline.actors[shot.source].unit,
+                &shot.outcome
+            ),
+            super::super::effects::Weapon::Missile
+        )
+    }) {
+        samples.push((
+            "missile-flight".into(),
+            shot.launch_at + (shot.impact_at - shot.launch_at) * 0.65,
+        ));
+    }
+    if let Some(shot) = playback.timeline.shots.iter().find(|shot| {
+        !shot.outcome.killed
+            && shot.outcome.hull_damage > 0
+            && shot.target.is_some_and(|target| {
+                let actor = &playback.timeline.actors[target];
+                actor.unit.is_ship()
+                    && actor.state_at(shot.impact_at).hull < actor.max_hull * 3 / 5
+                    && actor.death_at.is_none_or(|death| death > shot.impact_at + 0.9)
+            })
+    }) {
+        for (name, age) in [("damage-hit", 0.05), ("damage-recovery", 0.45), ("damage-wake", 0.9)] {
+            samples.push((name.into(), shot.impact_at + age));
+        }
+    }
     if let Some(shot) = playback
         .timeline
         .shots
@@ -288,7 +320,23 @@ fn render_cinematic_preview() {
     {
         samples.push(("explosion".into(), death + 0.2));
     }
+    if let Some(actor) = playback
+        .timeline
+        .actors
+        .iter()
+        .filter(|actor| actor.unit.is_ship() && actor.death_at.is_some())
+        .max_by_key(|actor| actor.max_hull)
+    {
+        let death = actor.death_at.unwrap();
+        for (name, age) in [("wreck-flash", 0.08), ("wreck-breakup", 0.65), ("wreck-drift", 1.6)] {
+            samples.push((name.into(), death + age));
+        }
+    }
     samples.push(("result".into(), playback.timeline.duration));
+    // Optional sequential frames reveal steering/exhaust defects that still captures miss.
+    if std::env::var_os("STELLARION_CINEMATIC_MOTION").is_some() {
+        samples.extend((0..360).map(|frame| (format!("motion-{frame:03}"), frame as f32 / 30.0)));
+    }
     let mut player = Player::new(1, 0);
     let report_id = report.id;
     player.reports.push(report);

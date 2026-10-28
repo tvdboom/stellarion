@@ -78,6 +78,7 @@ pub(crate) const CINEMATIC_IMAGE_NAMES: &[&str] = &[
 ];
 
 /// Eight-frame weapon cycles, with invariant foundations and registered muzzle points.
+/// The War Sun uses its complete cinematic cutout with procedural charge and beam effects.
 pub(crate) const CINEMATIC_FIRING_IMAGE_NAMES: &[&str] = &[
     "firing light fighter",
     "firing heavy fighter",
@@ -86,7 +87,6 @@ pub(crate) const CINEMATIC_FIRING_IMAGE_NAMES: &[&str] = &[
     "firing bomber",
     "firing battleship",
     "firing dreadnought",
-    "firing war sun",
     "firing rocket launcher",
     "firing light laser",
     "firing heavy laser",
@@ -549,6 +549,22 @@ impl WorldAssets {
             &[
                 "abandon",
                 "allied attack",
+                "battle plan",
+                "tactic swarm",
+                "tactic skirmish",
+                "tactic breakthrough",
+                "tactic siege",
+                "tactic interception",
+                "tactic bastion",
+                "target standard",
+                "target small ships",
+                "target medium ships",
+                "target capital ships",
+                "target defenses",
+                "protection standard",
+                "protection screen capitals",
+                "protection heavy cover",
+                "protection protect bombers",
                 "enemy fleet",
                 "buildings",
                 "orbitals",

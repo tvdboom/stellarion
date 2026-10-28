@@ -703,6 +703,7 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
         origin: model.player(player_id).unwrap().home_planet,
         army: Army::from([(Unit::war_sun(), 1)]),
         bombing: BombingRaid::None,
+        battle_plan: Default::default(),
         combat_probes: false,
     });
     let mut invitation = JointAttackInvitation {
@@ -863,6 +864,7 @@ fn local_practice_end_turn_closes_other_players_missions_even_after_a_failed_att
                     origin: record.persisted.state.players[1].home_planet,
                     army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
                     bombing: Default::default(),
+                    battle_plan: Default::default(),
                     combat_probes: false,
                 }),
             },

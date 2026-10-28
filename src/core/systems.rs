@@ -129,6 +129,7 @@ pub fn check_keys_menu(
                                 || state.colonize_confirmation.is_some()
                                 || state.railgun_confirmation.is_some()
                                 || state.protection_access.is_some()
+                                || state.battle_plan_planet.is_some()
                                 || state.trade_open.is_some()
                                 || state.trading_post_open.is_some()
                             {
@@ -138,6 +139,7 @@ pub fn check_keys_menu(
                                 state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
                                 state.protection_access = None;
+                                state.battle_plan_planet = None;
                                 state.trade_open = None;
                                 state.trading_post_open = None;
                             } else if state.joint_attack_open.is_some() {
@@ -166,7 +168,7 @@ pub fn check_keys_menu(
     if ctrl_pressed && keyboard.just_pressed(KeyCode::Enter) && *app_state.get() == AppState::Game {
         if *game_state.get() == GameState::Playing {
             if let Some(mut state) = state {
-                if !state.mission {
+                if !state.mission && state.battle_plan_planet.is_none() {
                     state.planet_selected = None;
                     state.mission = false;
                     state.combat_report = None;
@@ -236,6 +238,12 @@ pub fn check_keys(
     if player.spectator {
         state.mission = false;
         state.mission_planet_hover = None;
+    }
+
+    // Standing orders are a modal editor: navigation shortcuts must not change its world
+    // or open another panel while Egui owns the input.
+    if state.battle_plan_planet.is_some() {
+        return;
     }
 
     // Toggle show planet info

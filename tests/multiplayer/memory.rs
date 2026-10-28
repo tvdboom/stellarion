@@ -334,6 +334,7 @@ fn protection_access_updates_canonical_state_immediately_with_a_compact_revision
                     objective: Icon::Protect,
                     army: Army::from([(fleet_unit, 1)]),
                     bombing: BombingRaid::None,
+                    battle_plan: Default::default(),
                     combat_probes: false,
                     deep_cover: false,
                     jump_gate: false,
@@ -416,6 +417,7 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
         origin,
         army: Army::from([(fighter, 1)]),
         bombing: crate::core::missions::BombingRaid::None,
+        battle_plan: Default::default(),
         combat_probes: false,
     };
     let invitation = JointAttackInvitation {
@@ -539,6 +541,16 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
             contributions.pop();
         }
         assert!(validate_joint_attack_commands(stored, &spoofed_launch).is_err());
+        let mut forged_plan = exact_launch.clone();
+        if let TurnCommand::SendJointMission {
+            contributions,
+            ..
+        } = &mut forged_plan.commands[0]
+        {
+            contributions[1].battle_plan.automatic_tactic = false;
+            contributions[1].battle_plan.tactic = crate::core::combat::plan::CombatTactic::Siege;
+        }
+        assert!(validate_joint_attack_commands(stored, &forged_plan).is_err());
         freeze_joint_attack_launches(stored, &exact_launch).unwrap();
         stored.submissions.insert(
             (active.persisted.state.turn, 1),
@@ -707,6 +719,7 @@ fn two_player_games_reject_joint_attack_invitations() {
                     origin: host_home,
                     army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
                     bombing: BombingRaid::None,
+                    battle_plan: Default::default(),
                     combat_probes: false,
                 }),
             },
@@ -1776,6 +1789,7 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
         origin: model.player(id).unwrap().home_planet,
         army: Army::from([(fighter, 1)]),
         bombing: BombingRaid::None,
+        battle_plan: Default::default(),
         combat_probes: false,
     };
     let mut invitation = JointAttackInvitation {
@@ -1829,6 +1843,12 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     .is_err());
     let mut guest_fleet = contribution(2);
     guest_fleet.combat_probes = true;
+    guest_fleet.battle_plan = crate::core::combat::plan::BattlePlan {
+        automatic_tactic: false,
+        tactic: crate::core::combat::plan::CombatTactic::Interception,
+        target_priority: crate::core::combat::plan::TargetPriority::SmallShips,
+        protection: crate::core::combat::plan::ProtectionPosture::HeavyCover,
+    };
     let respond = |revision, response, fleet| {
         block_on(backend.respond_joint_attack(
             &guests[0],
@@ -1905,7 +1925,7 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             .unwrap()
             .revision;
     // Every owner edit invalidates consent; identical publications preserve it.
-    for change in 0..6 {
+    for change in 0..7 {
         let mut proposal = invitation.clone();
         match change {
             0 => proposal.destination = model.player(3).unwrap().home_planet,
@@ -1926,6 +1946,16 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
                 proposal.combat_probes = true;
                 proposal.participants[0].contribution.as_mut().unwrap().combat_probes = true;
             },
+            6 => {
+                proposal.participants[0]
+                    .contribution
+                    .as_mut()
+                    .unwrap()
+                    .battle_plan
+                    .automatic_tactic = false;
+                proposal.participants[0].contribution.as_mut().unwrap().battle_plan.tactic =
+                    crate::core::combat::plan::CombatTactic::Siege;
+            },
             _ => unreachable!(),
         }
         let revised = block_on(backend.create_joint_attack(&host, &active.id, proposal)).unwrap();
@@ -1935,6 +1965,11 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
             .iter()
             .filter_map(|item| item.contribution.as_ref())
             .all(|contribution| contribution.bombing == revised.bombing));
+        assert_eq!(
+            revised.participants[1].contribution.as_ref().unwrap().battle_plan,
+            guest_fleet.battle_plan,
+            "host edits must retain the guest's independent battle plan"
+        );
         assert!(respond(invitation.revision, JointAttackResponse::Accepted, guest_fleet.clone())
             .is_err());
         let live = block_on(backend.load_joint_attacks(&guests[0], &active.id)).unwrap();
@@ -2125,6 +2160,7 @@ fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orde
         origin: homes[player_id as usize - 1],
         army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
         bombing: BombingRaid::None,
+        battle_plan: Default::default(),
         combat_probes: false,
     };
     for (id, owner, guest) in [(901, 1, 2), (902, 2, 3)] {

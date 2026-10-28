@@ -12,6 +12,8 @@ use bevy::prelude::Vec2;
 
 fn record(id: u64, owner: PlayerId, unit: Unit) -> CombatUnit {
     CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         owner: Some(owner),
         unit,
@@ -42,6 +44,33 @@ fn actor_index(movie: &CinematicTimeline, defender: bool, id: u64) -> usize {
         .iter()
         .position(|actor| actor.id == Some(id) && (actor.side == Side::Defender) == defender)
         .unwrap()
+}
+
+#[test]
+fn fleets_start_long_range_fire_before_the_approach_finishes() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let mut attacker = record(11, 1, fighter);
+    let mut defender = record(22, 2, fighter);
+    attacker.shots = vec![ShotReport {
+        target_id: Some(22),
+        unit: Some(fighter),
+        hull_damage: 10,
+        ..Default::default()
+    }];
+    defender.shots = vec![ShotReport {
+        target_id: Some(11),
+        unit: Some(fighter),
+        hull_damage: 10,
+        ..Default::default()
+    }];
+    let movie = CinematicTimeline::new(&report(vec![RoundReport {
+        attacker: vec![attacker],
+        defender: vec![defender],
+        ..Default::default()
+    }]));
+    assert!(movie.entrance_duration >= 8.0);
+    assert!(movie.shots.iter().all(|shot| (FLEET_FIRE_START..=2.0).contains(&shot.launch_at)));
+    assert!(movie.shots.iter().all(|shot| shot.impact_at < movie.entrance_duration));
 }
 
 #[test]

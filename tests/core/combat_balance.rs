@@ -1018,6 +1018,7 @@ fn send(
         army,
         bombing,
         combat_probes: false,
+        battle_plan: Default::default(),
         deep_cover: false,
         jump_gate: jump,
     }

@@ -70,6 +70,26 @@ const FLEET_MOVEMENT_TOOLTIP: &str = "Distance the fleet will travel next turn. 
 const JUMP_GATE_MOVEMENT_TOOLTIP: &str =
     "A Jump Gate bypasses normal fleet movement and delivers the fleet in one turn.";
 
+/// Matches mission-planning tooltip text to the small labels in the panel.
+trait MissionTooltip {
+    fn on_hover_mission(self, text: impl Into<RichText>) -> Self;
+    fn on_disabled_hover_mission(self, text: impl Into<RichText>) -> Self;
+}
+
+impl MissionTooltip for Response {
+    fn on_hover_mission(self, text: impl Into<RichText>) -> Self {
+        self.on_hover_ui(|ui| {
+            ui.label(text.into().small());
+        })
+    }
+
+    fn on_disabled_hover_mission(self, text: impl Into<RichText>) -> Self {
+        self.on_disabled_hover_ui(|ui| {
+            ui.label(text.into().small());
+        })
+    }
+}
+
 const fn mission_report_destination_cursor(is_space_fauna_encounter: bool) -> CursorIcon {
     if is_space_fauna_encounter {
         CursorIcon::Default
@@ -107,14 +127,14 @@ fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
         })
         .inner;
     response
-        .on_hover_small(format!(
+        .on_hover_mission(format!(
             "Costs {} extra deuterium per Probe. If the origin's completed Command Relay level is \
         higher than the destination's when the mission arrives, all Probes scan and return \
         without combat or alerting the defender. Otherwise, the Probes face normal Spy combat. \
         Deep Cover missions never encounter space fauna.",
             crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE,
         ))
-        .on_disabled_hover_small("Build a Command Relay at the origin to enable Deep Cover.");
+        .on_disabled_hover_mission("Build a Command Relay at the origin to enable Deep Cover.");
 }
 
 /// Keeps mission-planning and active-mission movement explanations in agreement.
@@ -793,6 +813,7 @@ fn sync_allied_mission(
         army: state.mission_info.army.clone(),
         bombing: state.mission_info.bombing.clone(),
         combat_probes: state.mission_info.combat_probes,
+        battle_plan: state.mission_info.battle_plan,
     };
     let invitees_synced = invitation.is_some_and(|invitation| {
         invitation
@@ -858,6 +879,7 @@ fn allied_synced_for_owner(state: &UiState, invitation: Option<&JointAttackInvit
                         && contribution.army == state.mission_info.army
                         && contribution.bombing == state.mission_info.bombing
                         && contribution.combat_probes == state.mission_info.combat_probes
+                        && contribution.battle_plan == state.mission_info.battle_plan
                 })
             && invitation
                 .participants
@@ -967,7 +989,7 @@ fn draw_joint_attack_invite_picker(
                                     enabled && (!invited || invitees_revocable),
                                 );
                                 let response = if invited {
-                                    response.on_hover_small(if invitees_revocable {
+                                    response.on_hover_mission(if invitees_revocable {
                                         "Click to remove this player from the draft."
                                     } else {
                                         "Invited players cannot be removed after sending a proposal."
@@ -1070,6 +1092,12 @@ fn draw_new_mission(
     }
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
+    super::battle_plan::initialize_mission_plan(
+        &mut state.mission_info,
+        origin,
+        player.id,
+        &mut state.mission_battle_plan_origin,
+    );
     let origin_army = mission_origin_army_after_allied_reservations(
         map,
         session,
@@ -1211,6 +1239,12 @@ fn draw_new_mission(
         origin.id != state.mission_info.origin || destination.id != state.mission_info.destination;
     let origin = map.get(state.mission_info.origin);
     let destination = map.get(state.mission_info.destination);
+    super::battle_plan::initialize_mission_plan(
+        &mut state.mission_info,
+        origin,
+        player.id,
+        &mut state.mission_battle_plan_origin,
+    );
     if route_changed {
         state.mission_info = Mission::from_mission(
             settings.turn,
@@ -1301,7 +1335,7 @@ fn draw_new_mission(
             egui::Vec2::splat(MISSION_INVITE_ICON_SIZE),
         );
         let mut editing_fleet = false;
-        ScrollArea::horizontal()
+        ScrollArea::both()
             .id_salt("mission fleet and details")
             .max_width(body_width)
             .max_height((footer_rect.top() - ui.cursor().top() - 20.0).max(0.0))
@@ -1492,7 +1526,7 @@ fn draw_new_mission(
                                     draw_jump_energy_cost(ui, &state.mission_info, images);
                                 })
                                 .response
-                                .on_hover_small(
+                                .on_hover_mission(
                                     "Whether to send this mission through the Jump Gate. Missions \
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
                                 army's total production can't surpass the Gate's limit. Each jump \
@@ -1530,7 +1564,7 @@ fn draw_new_mission(
                 let response = ui
                     .interact(icon_rect, ui.id().with("invite players"), Sense::hover())
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_disabled_hover_small(
+                    .on_disabled_hover_mission(
                         "Players can join Attack, Colonize, and Destroy missions.",
                     );
                 response.widget_info(|| {
@@ -1647,6 +1681,7 @@ fn draw_new_mission(
                                                 army: state.mission_info.army.clone(),
                                                 bombing: state.mission_info.bombing.clone(),
                                                 combat_probes: state.mission_info.combat_probes,
+                                                battle_plan: state.mission_info.battle_plan,
                                             }),
                                         });
                                     }
@@ -1719,6 +1754,7 @@ fn draw_new_mission(
                                                 crate::core::missions::FleetCombatOrders {
                                                     bombing: item.bombing.clone(),
                                                     combat_probes: item.combat_probes,
+                                                    battle_plan: item.battle_plan,
                                                 },
                                             )
                                         })
@@ -1749,6 +1785,7 @@ fn draw_new_mission(
                             state.planet_selected = None;
                             state.mission = false;
                             state.mission_info = Mission::default();
+                            state.mission_battle_plan_origin = None;
                             state.joint_attack_invitees.clear();
                             state.joint_attack_draft_id = None;
                             state.allied_mission = false;
@@ -1784,16 +1821,21 @@ fn draw_new_mission(
                         state.allied_mission = false;
                         state.mission = false;
                         state.mission_info = Mission::default();
+                        state.mission_battle_plan_origin = None;
                     }
                 }
                 if let (Some(button), Some(right)) = (send_button_rect, badge_right) {
-                    draw_mission_strength_badge(
+                    let fleet_icon = draw_mission_strength_badge(
                         ui,
                         &state.mission_info.army,
                         images,
                         button.center().y,
                         right - 20.0,
                     );
+                    if state.mission_info.objective != Icon::MissileStrike {
+                        let rect = egui::Rect::from_min_size(fleet_icon.min - egui::vec2(fleet_icon.width() + 12.0, 0.0), fleet_icon.size());
+                        super::battle_plan_controls::draw_plan_button_at(ui, images, rect, &mut state.mission_info.battle_plan, &state.mission_info.army);
+                    }
                 }
             });
         });
@@ -1947,9 +1989,6 @@ fn draw_mission_route(
 
                     ComboBox::from_id_salt("origin")
                         .height(60. * origins.len().max(5) as f32)
-                        .popup_style(egui::style::StyleModifier::new(|style: &mut egui::Style| {
-                            style.spacing.menu_margin.right = 0;
-                        }))
                         .selected_text(mission_planet_selector_label(
                             ui,
                             map,
@@ -1970,8 +2009,13 @@ fn draw_mission_route(
                                 let label = mission_planet_selector_label(
                                     ui, map, player, missions, session, planet, true,
                                 );
-                                ui.selectable_value(&mut mission.origin, planet.id, label)
-                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                if ui
+                                    .selectable_value(&mut mission.origin, planet.id, label)
+                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                    .changed()
+                                {
+                                    mission.battle_plan = planet.battle_plan_for(Some(player.id));
+                                }
                             }
                         })
                         .response
@@ -1982,7 +2026,7 @@ fn draw_mission_route(
             let (rect, mut response) =
                 ui.cell(50., |ui| ui.allocate_exact_size([50.; 2].into(), Sense::click()));
 
-            response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_small(
+            response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_mission(
                 "Click to select all units on the origin planet. Right-click to unselect all.",
             );
 
@@ -2017,11 +2061,6 @@ fn draw_mission_route(
                         style_selection_boxes(ui, selected_color);
                         ui.add_space(15.);
                         ComboBox::from_id_salt("destination")
-                            .popup_style(egui::style::StyleModifier::new(
-                                |style: &mut egui::Style| {
-                                    style.spacing.menu_margin.right = 0;
-                                },
-                            ))
                             .selected_text(mission_planet_selector_label(
                                 ui,
                                 map,
@@ -2099,8 +2138,8 @@ fn draw_mission_fleet_picker(
                             .add_image(images.get(unit.to_lowername()), [65., 65.])
                             .interact(Sense::click())
                             .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_small(unit.to_name())
-                            .on_disabled_hover_small(unit.to_name());
+                            .on_hover_mission(unit.to_name())
+                            .on_disabled_hover_mission(unit.to_name());
 
                         if response.clicked() {
                             *selected.entry(*unit).or_insert(0) = n;
@@ -2147,7 +2186,7 @@ fn draw_mission_strength_badge(
     images: &ImageIds,
     button_center_y: f32,
     right: f32,
-) {
+) -> egui::Rect {
     let value = selected.total_production().to_string();
     let font = egui::FontId::proportional(24.0);
     let text_width =
@@ -2176,8 +2215,10 @@ fn draw_mission_strength_badge(
         font,
         Color32::WHITE,
     );
-    ui.interact(badge, ui.id().with("mission strength badge"), Sense::hover())
-        .on_hover_small("Fleet strength: total production points of the selected fleet.");
+    ui.interact(badge, ui.id().with("mission strength badge"), Sense::hover()).on_hover_ui(|ui| {
+        ui.small("Fleet strength: total production points of the selected fleet.");
+    });
+    icon
 }
 
 /// Uses every current non-rejected fleet, replacing our published offer with the live editor.
@@ -2267,7 +2308,7 @@ fn draw_mission_details(
         ui.small(mission.objective.to_name());
     });
 
-    ui.small(format!("📏 Target distance: {distance:.1} AU")).on_hover_small(
+    ui.small(format!("📏 Target distance: {distance:.1} AU")).on_hover_mission(
         "AU means astronomical unit, the distance scale used on the galaxy map. \
         Target distance is the length of the route from the origin world to the \
         destination world.",
@@ -2287,7 +2328,7 @@ fn draw_mission_details(
             format!("{speed} AU")
         }
     ))
-    .on_hover_small(movement_tooltip);
+    .on_hover_mission(movement_tooltip);
     let arrival_turn = mission_arrival_turn(turn, duration);
     let duration_response = ui.small(format!(
         "⏱ Duration: {}",
@@ -2308,9 +2349,9 @@ fn draw_mission_details(
     ));
     if duration == 0 {
         duration_response
-            .on_hover_small("Select a valid fleet and route to calculate its arrival turn.");
+            .on_hover_mission("Select a valid fleet and route to calculate its arrival turn.");
     } else {
-        duration_response.on_hover_small(if invitation.is_some() {
+        duration_response.on_hover_mission(if invitation.is_some() {
             format!("All participating fleets arrive at turn {arrival_turn}. The slowest arrival sets the shared duration; each fleet adjusts its own movement.")
         } else {
             mission_arrival_tooltip(turn, duration)
@@ -2324,7 +2365,7 @@ fn draw_mission_details(
     } else {
         ui.colored_label(Color32::RED, RichText::new(fuel_text).small())
     };
-    fuel_response.on_hover_small("Amount of deuterium it costs to send this mission.");
+    fuel_response.on_hover_mission("Amount of deuterium it costs to send this mission.");
     draw_deep_cover_option(ui, mission, origin);
 
     if mission.objective == Icon::Destroy {
@@ -2336,7 +2377,7 @@ fn draw_mission_details(
             per_sun * 100.0,
             combined * 100.0,
         ))
-        .on_hover_small(
+        .on_hover_mission(
             "The first number is the probability of destroying the world per War Sun if \
             they shoot the first round of combat. The second number is the total chance for \
             all selected War Suns.",
@@ -2363,7 +2404,7 @@ fn draw_mission_details(
             Probes always stay if the combat takes only one round.",
             );
         })
-        .on_disabled_hover_small("No Probes selected for this mission.");
+        .on_disabled_hover_mission("No Probes selected for this mission.");
 
         if probes == 0 {
             mission.combat_probes = false;
@@ -2372,7 +2413,7 @@ fn draw_mission_details(
         let bombing_fixed_by_inviter = invitation.is_some_and(|item| item.inviter != player.id);
         if let Some(invitation) = invitation.filter(|_| bombing_fixed_by_inviter) {
             // Bombing is a shared allied-attack order. Guests choose only their fleet and
-            // probe behavior; the mission owner controls every participating Bomber's target.
+            // probe behavior and battle plan; the mission owner controls every Bomber's target.
             mission.bombing.clone_from(&invitation.bombing);
         }
         let bombers = mission.army.amount(&Unit::Ship(Ship::Bomber));
@@ -2402,7 +2443,7 @@ fn draw_mission_details(
                                     RichText::new(item.to_name()).small(),
                                 )
                                 .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_small(item.description());
+                                .on_hover_mission(item.description());
                             }
                         })
                         .response
@@ -2411,13 +2452,13 @@ fn draw_mission_details(
             },
         )
         .response
-        .on_hover_small(
+        .on_hover_mission(
             "Command Bombers to bomb enemy buildings. Every round of combat, \
         every bomber has a 25% chance to decrease a target building's level by \
         one. The Planetary Shield must first be destroyed before bombing can \
         take place.",
         )
-        .on_disabled_hover_small(if bombing_fixed_by_inviter {
+        .on_disabled_hover_mission(if bombing_fixed_by_inviter {
             "The player who created the allied attack fixed its bombing objective."
         } else if destination.is_moon() {
             "Moons cannot be bombed."
@@ -2443,6 +2484,7 @@ fn draw_active_missions(
     is_hovered: bool,
     images: &ImageIds,
     editable: bool,
+    settings: &Settings,
 ) {
     if missions.is_empty() {
         ui.add_space(40.);
@@ -2539,10 +2581,26 @@ fn draw_active_missions(
                                     [25.; 2],
                                 );
 
+                                let has_plan = super::battle_plan_controls::mission_plan_visible(mission, player.id);
+                                if has_plan {
+                                    let mut plan = mission.battle_plan_for(Some(player.id));
+                                    ui.add_enabled_ui(editable, |ui| {
+                                        ui.push_id(("active battle plan", mission.id), |ui| {
+                                            super::battle_plan::draw_mission_plan_button(
+                                                ui,
+                                                images, &mut plan, mission.commanded_army(player.id).unwrap_or(&mission.army),
+                                            );
+                                        });
+                                    });
+                                    if plan != mission.battle_plan_for(Some(player.id)) {
+                                        state.mission_battle_plan_changes.push((mission.id, plan));
+                                    }
+                                }
+
                                 let [red, green, blue] = session.player_color(mission.owner).rgb();
                                 draw_route_preview(
                                     ui,
-                                    route_preview_width,
+                                    route_preview_width - if has_plan { 44.0 } else { 0.0 },
                                     mission,
                                     map,
                                     player,
@@ -2576,11 +2634,16 @@ fn draw_active_missions(
                                 }
                             });
 
-                            let response = if mission.owner != player.id {
+                            let response = if mission.commanded_army(player.id).is_none() {
                                 block_enemy_route_clicks(ui, response, mission.id)
                             } else {
                                 response
                             };
+
+                            let response = response.on_hover_ui(|ui| {
+                                ui.set_width(MISSION_HOVER_INFO_WIDTH);
+                                draw_mission_info_hover(ui, mission, settings, map, player, session, images);
+                            });
 
                             if response.hovered() {
                                 // Browsing animated routes must never enqueue generic UI audio.
@@ -3580,7 +3643,7 @@ fn draw_joint_attack_strengths(
     });
 }
 
-/// Keep the new mission panel at its original height so its footer stays close to the fleet.
+/// Leave room for battle orders while keeping the launch footer inside the viewport.
 pub(super) fn mission_panel_size(viewport: egui::Vec2) -> egui::Vec2 {
     mission_panel_size_with_height(viewport, 640.0)
 }
@@ -3704,6 +3767,12 @@ fn draw_joint_attack_response_panel(
             ui.add(Separator::default().shrink(70.0));
             let destination = map.get(state.joint_attack_contribution.destination);
             let origin = map.get(state.joint_attack_contribution.origin);
+            super::battle_plan::initialize_mission_plan(
+                &mut state.joint_attack_contribution,
+                origin,
+                player.id,
+                &mut state.joint_battle_plan_origin,
+            );
             let available = mission_origin_army_after_allied_reservations(
                 map,
                 session,
@@ -3718,7 +3787,7 @@ fn draw_joint_attack_response_panel(
                 destination,
                 &state.joint_attack_contribution,
             );
-            ScrollArea::horizontal()
+            ScrollArea::both()
                 .id_salt(("joint attack fleet and details", invitation.id))
                 .max_width(panel.width())
                 .max_height((footer.top() - ui.cursor().top() - 20.0).max(0.0))
@@ -3796,6 +3865,7 @@ fn draw_joint_attack_response_panel(
             army: state.joint_attack_contribution.army.clone(),
             bombing: state.joint_attack_contribution.bombing.clone(),
             combat_probes: state.joint_attack_contribution.combat_probes,
+            battle_plan: state.joint_attack_contribution.battle_plan,
         };
         let changed = invitation
             .participants
@@ -3858,13 +3928,26 @@ fn draw_joint_attack_response_panel(
             actions.bottom() - 50.0
         };
         let bottom_y = actions.bottom() - 50.0;
-        draw_mission_strength_badge(
+        let fleet_icon = draw_mission_strength_badge(
             ui,
             &state.joint_attack_contribution.army,
             images,
             reject_y + 25.0,
             reject_x - 20.0,
         );
+        ui.add_enabled_ui(editable, |ui| {
+            let rect = egui::Rect::from_min_size(
+                fleet_icon.min - egui::vec2(fleet_icon.width() + 12.0, 0.0),
+                fleet_icon.size(),
+            );
+            super::battle_plan_controls::draw_plan_button_at(
+                ui,
+                images,
+                rect,
+                &mut state.joint_attack_contribution.battle_plan,
+                &state.joint_attack_contribution.army,
+            );
+        });
         let button_rect =
             |x: f32, y: f32| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(180.0, 50.0));
         let send = draw_button(
@@ -4177,6 +4260,7 @@ pub(super) fn draw_joint_attack_notifications(
             objective: invitation.objective,
             ..default()
         };
+        state.joint_battle_plan_origin = None;
     }
     if restore_draft {
         if let Some(contribution) = participant.contribution.as_ref() {
@@ -4184,6 +4268,8 @@ pub(super) fn draw_joint_attack_notifications(
             state.joint_attack_contribution.army = contribution.army.clone();
             state.joint_attack_contribution.bombing = contribution.bombing.clone();
             state.joint_attack_contribution.combat_probes = contribution.combat_probes;
+            state.joint_attack_contribution.battle_plan = contribution.battle_plan;
+            state.joint_battle_plan_origin = Some(contribution.origin);
         } else if !joint_origin_has_ships(
             map,
             session,
@@ -4210,6 +4296,13 @@ pub(super) fn draw_joint_attack_notifications(
         state.joint_attack_contribution.origin = player.home_planet;
         state.joint_attack_contribution.army.clear();
     }
+    let origin = map.get(state.joint_attack_contribution.origin);
+    super::battle_plan::initialize_mission_plan(
+        &mut state.joint_attack_contribution,
+        origin,
+        player.id,
+        &mut state.joint_battle_plan_origin,
+    );
     draw_joint_attack_response_panel(
         context,
         state,
@@ -4239,6 +4332,7 @@ fn restore_joint_attack_owner_draft(state: &mut UiState, invitation: &JointAttac
     if let Some(contribution) =
         invitation.participants.first().and_then(|item| item.contribution.as_ref())
     {
+        state.mission_battle_plan_origin = Some(contribution.origin);
         state.joint_attack_owner_draft = Some(Mission {
             origin: contribution.origin,
             destination: invitation.destination,
@@ -4246,6 +4340,7 @@ fn restore_joint_attack_owner_draft(state: &mut UiState, invitation: &JointAttac
             army: contribution.army.clone(),
             bombing: contribution.bombing.clone(),
             combat_probes: contribution.combat_probes,
+            battle_plan: contribution.battle_plan,
             ..default()
         });
     }
@@ -4308,7 +4403,7 @@ pub(super) fn draw_mission(
         },
         MissionTab::ActiveMissions => draw_active_missions(
             ui,
-            missions.iter().filter(|m| m.owner == player.id).collect(),
+            missions.iter().filter(|m| m.commanded_army(player.id).is_some()).collect(),
             recall_mission,
             state,
             map,
@@ -4317,10 +4412,11 @@ pub(super) fn draw_mission(
             is_hovered,
             images,
             editable,
+            settings,
         ),
         MissionTab::EnemyMissions => draw_active_missions(
             ui,
-            missions.iter().filter(|m| m.owner != player.id).collect(),
+            missions.iter().filter(|m| m.commanded_army(player.id).is_none()).collect(),
             recall_mission,
             state,
             map,
@@ -4329,6 +4425,7 @@ pub(super) fn draw_mission(
             is_hovered,
             images,
             editable,
+            settings,
         ),
         MissionTab::MissionReports => {
             draw_mission_reports(ui, state, map, player, session, is_hovered, images)

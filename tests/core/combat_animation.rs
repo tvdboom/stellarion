@@ -175,9 +175,11 @@ fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
         .iter(app.world())
         .collect::<Vec<_>>();
     assert_eq!(identity_nodes.len(), 2);
-    assert!(identity_nodes
-        .iter()
-        .all(|node| node.width == Val::Auto && node.min_width == Val::Px(220.0)));
+    assert!(identity_nodes.iter().all(|node| node.width == Val::Auto
+        && node.min_width == Val::Px(132.0)
+        && node.max_width == Val::Vw(45.0)
+        && node.max_height == Val::Vh(40.0)));
+    assert!(identity_nodes.iter().all(|node| node.overflow.y == OverflowAxis::Scroll));
     assert!(app
         .world_mut()
         .query::<(&Text, &TextLayout)>()
@@ -1315,6 +1317,8 @@ fn intercepted_missile_cards_leave_before_surviving_missiles_are_highlighted() {
     let interceptor = Unit::antiballistic_missile();
     let target = Unit::Defense(Defense::GaussCannon);
     let missile_record = |id: u64| CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         owner: Some(1),
         unit: missile,
@@ -1333,6 +1337,8 @@ fn intercepted_missile_cards_leave_before_surviving_missiles_are_highlighted() {
         },
     };
     let interceptor_record = |id: u64, target_id: u64, killed: bool| CombatUnit {
+        fleet_id: 0,
+        battle_plan: Default::default(),
         id,
         owner: Some(2),
         unit: interceptor,
@@ -2630,4 +2636,56 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::EndCombat)
     ));
+}
+
+#[test]
+fn combat_identity_scroll_is_bounded_and_only_moves_the_hovered_panel() {
+    use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+    let mut app = App::new();
+    app.add_message::<MouseWheel>().add_systems(Update, scroll_combat_identities);
+    let mut window = Window::default();
+    window.set_cursor_position(Some(Vec2::new(30.0, 30.0)));
+    let window_entity = app.world_mut().spawn(window).id();
+    let node = ComputedNode {
+        size: Vec2::splat(100.0),
+        content_size: Vec2::new(100.0, 300.0),
+        ..Default::default()
+    };
+    let hovered = app
+        .world_mut()
+        .spawn((
+            CombatIdentityCmp,
+            node,
+            UiGlobalTransform::from_xy(50.0, 50.0),
+            ScrollPosition::default(),
+        ))
+        .id();
+    let other = app
+        .world_mut()
+        .spawn((
+            CombatIdentityCmp,
+            node,
+            UiGlobalTransform::from_xy(200.0, 50.0),
+            ScrollPosition::default(),
+        ))
+        .id();
+    for amount in [-50.0, 50.0] {
+        app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: amount,
+            window: window_entity,
+            phase: bevy::input::touch::TouchPhase::Moved,
+        });
+        app.update();
+        assert_eq!(
+            app.world().get::<ScrollPosition>(hovered).unwrap().y,
+            if amount < 0.0 {
+                200.0
+            } else {
+                0.0
+            }
+        );
+        assert_eq!(app.world().get::<ScrollPosition>(other).unwrap().y, 0.0);
+    }
 }

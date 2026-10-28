@@ -71,6 +71,9 @@ use crate::utils::{format_thousands, FmtNumb, NameFromEnum, SafeDiv, ToColor32};
 
 mod combat;
 use combat::{CombatRoundView, CombatStatistics};
+mod battle_plan;
+mod battle_plan_controls;
+use battle_plan::{can_edit_garrison_plan, draw_garrison_plan_modal, draw_report_battle_plans};
 
 mod missions;
 use missions::{
@@ -152,6 +155,18 @@ pub struct UiState {
     pub(crate) colonize_confirmation: Option<PlanetId>,
     /// Controlled world whose immediate protection-access modal is open.
     pub(crate) protection_access: Option<PlanetId>,
+    /// World whose local commander's standing battle-plan controls are open.
+    pub(crate) battle_plan_planet: Option<PlanetId>,
+    /// Origin whose standing orders have initialized the current solo mission draft.
+    pub(crate) mission_battle_plan_origin: Option<PlanetId>,
+    /// Origin whose standing orders have initialized the current allied contribution draft.
+    pub(crate) joint_battle_plan_origin: Option<PlanetId>,
+    /// Active fleet edits collected by the UI before queuing authoritative turn commands.
+    pub(crate) mission_battle_plan_changes: Vec<(u64, crate::core::combat::plan::BattlePlan)>,
+    /// Stationed-fleet edits collected by the overview header's hover editor.
+    pub(crate) garrison_battle_plan_changes: Vec<(PlanetId, crate::core::combat::plan::BattlePlan)>,
+    /// World whose hover editor keeps its parent overview visible.
+    pub(crate) garrison_battle_plan_hover: Option<PlanetId>,
     /// Players hidden from each world's combined garrison overview. Missing entries mean all
     /// stationed players are included, so newly arriving fleets are visible by default.
     pub(crate) garrison_hidden_players: HashMap<PlanetId, HashSet<PlayerId>>,
@@ -951,7 +966,7 @@ fn mission_hover_panel_x_positions_on_side(
     }
 }
 
-/// Map mission hovers include route details; mission-list hovers preview only the fleet.
+/// Mission lists use a route tooltip; map hovers show the separate framed info panel.
 fn mission_hover_shows_info_panel(mission_hover_from_ui: bool) -> bool {
     !mission_hover_from_ui
 }
@@ -3736,11 +3751,16 @@ fn draw_planet_overview(
                 detail_line_progress[1],
                 right_side,
             )
-            .on_hover_small(format!(
-                "Smaller worlds are easier to destroy with War Suns and Orbital Railguns. \
-                Size modifier: {:+}%.",
-                f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0,
-            ));
+            .on_hover_ui(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Smaller worlds are easier to destroy with War Suns and Orbital Railguns. \
+                        Size modifier: {:+}%.",
+                        f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0,
+                    ))
+                    .small(),
+                );
+            });
             draw_sliding_text(
                 ui,
                 RichText::new(format!(
@@ -3967,10 +3987,11 @@ fn abandon_planet(
 fn draw_overview(
     ui: &mut Ui,
     planet: &Planet,
-    home_planet: PlanetId,
+    player: &Player,
     session: &MultiplayerSession,
     state: &mut UiState,
     images: &ImageIds,
+    editable: bool,
 ) {
     ui.add_space(17.);
 
@@ -3986,13 +4007,31 @@ fn draw_overview(
             state.garrison_hidden_players.get(&planet.id),
         ))
     });
-    let (_, protection_filter) = draw_world_overview_header(
+    let own_army = battle_plan::commandable_garrison(planet, player);
+    let (_, protection_filter, plan_icon) = draw_world_overview_header(
         ui,
         &format_thousands(strength),
         defense_strength.as_deref(),
         images,
         garrison_players.len() > 1,
+        own_army.is_some(),
     );
+    state.garrison_battle_plan_hover = None;
+    if let (Some(rect), Some(army)) = (plan_icon, own_army) {
+        let mut plan = planet.battle_plan_for(Some(player.id));
+        let open = ui
+            .add_enabled_ui(editable, |ui| {
+                battle_plan_controls::draw_plan_button_at(ui, images, rect, &mut plan, army)
+            })
+            .inner;
+        if open {
+            state.garrison_battle_plan_hover = Some(planet.id);
+        }
+        battle_plan_controls::paint_tactic_affinity(ui, rect, plan, army);
+        if plan != planet.battle_plan_for(Some(player.id)) {
+            state.garrison_battle_plan_changes.push((planet.id, plan));
+        }
+    }
     if let Some(protection_filter) = protection_filter {
         on_immediate_hover_ui(protection_filter, |ui| {
             draw_garrison_filters(ui, planet, session, state);
@@ -4007,7 +4046,7 @@ fn draw_overview(
 
         ui.add_space(10.);
 
-        for units in Unit::all_for_world(planet.is_moon(), planet.id == home_planet) {
+        for units in Unit::all_for_world(planet.is_moon(), planet.id == player.home_planet) {
             ui.add_space(5.);
 
             ui.vertical(|ui| {
@@ -4121,7 +4160,8 @@ fn draw_world_overview_header(
     defense_strength: Option<&str>,
     images: &ImageIds,
     show_protection_filter: bool,
-) -> (Response, Option<Response>) {
+    show_battle_plan: bool,
+) -> (Response, Option<Response>, Option<egui::Rect>) {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), WORLD_OVERVIEW_HEADER_HEIGHT),
         Sense::hover(),
@@ -4138,8 +4178,13 @@ fn draw_world_overview_header(
             .size()
             .x
     });
-    let layout =
-        world_overview_header_layout(rect, strength_width, defense_width, show_protection_filter);
+    let layout = world_overview_header_layout(
+        rect,
+        strength_width,
+        defense_width,
+        show_protection_filter,
+        show_battle_plan,
+    );
     ui.painter().image(
         images.get("fleet"),
         layout.fleet_icon,
@@ -4189,13 +4234,14 @@ fn draw_world_overview_header(
         ui.interact(icon, ui.id().with("world garrison filters"), Sense::hover())
     });
 
-    (response, protection_response)
+    (response, protection_response, layout.battle_plan_icon)
 }
 
 struct WorldOverviewHeaderLayout {
     fleet_badge: egui::Rect,
     fleet_icon: egui::Rect,
     protection_icon: Option<egui::Rect>,
+    battle_plan_icon: Option<egui::Rect>,
     defense_badge: Option<egui::Rect>,
     defense_icon: Option<egui::Rect>,
 }
@@ -4205,6 +4251,7 @@ fn world_overview_header_layout(
     strength_width: f32,
     defense_width: Option<f32>,
     show_protection_filter: bool,
+    show_battle_plan: bool,
 ) -> WorldOverviewHeaderLayout {
     let right_edge = rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN;
     let protection_icon = show_protection_filter.then(|| {
@@ -4232,6 +4279,35 @@ fn world_overview_header_layout(
     let badge_width = WORLD_OVERVIEW_ICON_SIZE + WORLD_OVERVIEW_ICON_TEXT_GAP + strength_width;
     let fleet_right =
         defense_badge.map_or(content_right, |badge| badge.left() - WORLD_OVERVIEW_BADGE_GAP);
+    // Keep the established strength positions while moving only the plan control.
+    // Compact moon headers can reclaim the old slot when the left side needs room.
+    let established_right = fleet_right
+        - if show_battle_plan {
+            WORLD_OVERVIEW_ICON_SIZE + WORLD_OVERVIEW_BADGE_GAP
+        } else {
+            0.0
+        };
+    let fleet_right = if show_battle_plan
+        && established_right - badge_width
+            < rect.left()
+                + WORLD_OVERVIEW_RIGHT_MARGIN
+                + WORLD_OVERVIEW_ICON_SIZE
+                + WORLD_OVERVIEW_BADGE_GAP
+    {
+        fleet_right
+    } else {
+        established_right
+    };
+    let battle_plan_icon = show_battle_plan.then(|| {
+        let left =
+            (fleet_right - badge_width - WORLD_OVERVIEW_BADGE_GAP - WORLD_OVERVIEW_ICON_SIZE)
+                .min(rect.left() + WORLD_OVERVIEW_RIGHT_MARGIN)
+                .max(rect.left());
+        egui::Rect::from_center_size(
+            egui::pos2(left + WORLD_OVERVIEW_ICON_SIZE * 0.5, rect.center().y),
+            egui::Vec2::splat(WORLD_OVERVIEW_ICON_SIZE),
+        )
+    });
     let fleet_badge = egui::Rect::from_center_size(
         egui::pos2(fleet_right - badge_width * 0.5, rect.center().y),
         egui::vec2(badge_width, rect.height()),
@@ -4244,6 +4320,7 @@ fn world_overview_header_layout(
         fleet_badge,
         fleet_icon,
         protection_icon,
+        battle_plan_icon,
         defense_badge,
         defense_icon,
     }
@@ -4389,7 +4466,7 @@ fn draw_report_overview(
             "?".to_owned()
         }
     });
-    draw_world_overview_header(ui, &strength, defense_strength.as_deref(), images, false)
+    draw_world_overview_header(ui, &strength, defense_strength.as_deref(), images, false, false)
         .0
         .on_hover_small(format!("Intelligence from turn {}.", info.turn));
 
@@ -4449,6 +4526,7 @@ fn draw_mission_fleet_hover(
         &mission_fleet_strength_label(mission, map, player),
         None,
         images,
+        false,
         false,
     );
 
@@ -4752,7 +4830,21 @@ fn draw_combat_report(
         ui.set_height(55.);
         ui.spacing_mut().item_spacing.x = 8.;
 
-        ui.add_space(70.);
+        ui.allocate_ui_with_layout(
+            egui::vec2(62.0, 30.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                if report.mission.objective != Icon::MissileStrike {
+                    ui.menu_button(RichText::new("Plans").small(), |ui| {
+                        draw_report_battle_plans(ui, report, session);
+                    })
+                    .response
+                    .on_hover_text(
+                        "Battle plans, fleet suitability, and tactic matchups for each commander.",
+                    );
+                }
+            },
+        );
 
         ui.add_image(images.get(origin.image()), [35., 35.]);
         ui.add_space(5.);
@@ -5241,6 +5333,37 @@ fn draw_mission_info_hover(
         });
     });
 
+    if battle_plan_controls::mission_plan_visible(mission, player.id) {
+        ui.add(Separator::default().shrink(20.0));
+        ui.horizontal(|ui| {
+            ui.add_space(25.0);
+            ui.vertical(|ui| {
+                if mission.owner == player.id && !mission.battle_fleets.is_empty() {
+                    ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for (index, fleet) in mission.battle_fleets.iter().enumerate() {
+                            if mission.battle_fleets.len() > 1 {
+                                ui.small(format!("Fleet {}", index + 1));
+                            }
+                            battle_plan_controls::draw_mission_plan_summary(
+                                ui,
+                                images,
+                                fleet.battle_plan,
+                                &fleet.army,
+                            );
+                        }
+                    });
+                } else {
+                    battle_plan_controls::draw_mission_plan_summary(
+                        ui,
+                        images,
+                        mission.battle_plan_for(Some(player.id)),
+                        mission.commanded_army(player.id).unwrap_or(&mission.army),
+                    );
+                }
+            });
+        });
+    }
+
     let participants = mission_hover_participants(mission, player.id).collect::<Vec<_>>();
     if !participants.is_empty() {
         ui.add(Separator::default().shrink(20.));
@@ -5386,6 +5509,11 @@ fn mission_participant_name(session: &MultiplayerSession, participant: PlayerId)
 fn mission_info_hover_height(mission: &Mission, viewer: PlayerId) -> f32 {
     let allied_rows = mission_hover_participants(mission, viewer).count() as f32;
     MISSION_HOVER_INFO_BASE_HEIGHT
+        + if battle_plan_controls::mission_plan_visible(mission, viewer) {
+            155.0
+        } else {
+            0.0
+        }
         + if allied_rows > 0.0 {
             MISSION_HOVER_ALLIED_HEADER_HEIGHT
         } else {
@@ -5701,7 +5829,7 @@ pub fn draw_ui(
     ),
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
-    missions: Res<Missions>,
+    mut missions: ResMut<Missions>,
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
     mut pending: ResMut<PendingTurnCommands>,
@@ -5821,8 +5949,10 @@ pub fn draw_ui(
     // Selection keeps the shop and mission origin without pinning the details open. A map-hover
     // panel remains briefly after PointerOut so the pointer can reach it, then stays visible for as
     // long as any of its constituent panels are hovered.
-    let direct_planet_panel =
-        planet_hover_panel_target(&state, cursor_position.map(|pos| pos.x), width);
+    let direct_planet_panel = state
+        .garrison_battle_plan_hover
+        .and_then(|id| planet_panel_hover_hold.target.filter(|target| target.id == id))
+        .or_else(|| planet_hover_panel_target(&state, cursor_position.map(|pos| pos.x), width));
     let planet_panel = if state.mission_hover.is_some() {
         // Mission hover owns the edge-card layer. Do not let the planet transfer grace period keep
         // the old card open behind it; the planet slide reverses on this same frame instead.
@@ -5872,6 +6002,7 @@ pub fn draw_ui(
             }
         }
 
+        let garrison_editable = pending.can_accept_commands();
         let mut draw_planet_info = |contexts, id, map, player, state, extension| {
             let (window_w2, window_h2) = (518., 216.);
 
@@ -5946,7 +6077,15 @@ pub fn draw_ui(
                     panel_scale,
                     &images,
                     |ui| {
-                        draw_overview(ui, planet, player.home_planet, &session, &mut state, &images)
+                        draw_overview(
+                            ui,
+                            planet,
+                            &player,
+                            &session,
+                            &mut state,
+                            &images,
+                            garrison_editable,
+                        )
                     },
                 ),
             );
@@ -6010,6 +6149,7 @@ pub fn draw_ui(
         planet_panel_hover_hold.set_panel_rects(panel_rects);
     } else {
         planet_panel_hover_hold.set_panel_rects([None; 2]);
+        state.garrison_battle_plan_hover = None;
     }
 
     let mission_hover_target = state.mission_hover.map(|id| MissionHoverPanelSlideTarget {
@@ -6172,6 +6312,37 @@ pub fn draw_ui(
         }
     }
 
+    for (mission_id, battle_plan) in std::mem::take(&mut state.mission_battle_plan_changes) {
+        if let Some(mission) = missions.0.iter_mut().find(|mission| mission.id == mission_id) {
+            if !player.spectator
+                && battle_plan_controls::mission_plan_visible(mission, player.id)
+                && pending.push(TurnCommand::SetMissionBattlePlan {
+                    mission_id,
+                    battle_plan,
+                })
+            {
+                mission.set_battle_plan_for(player.id, battle_plan);
+            }
+        }
+    }
+
+    for (planet_id, battle_plan) in std::mem::take(&mut state.garrison_battle_plan_changes) {
+        if let Some(planet) = map.try_get_mut(planet_id) {
+            if can_edit_garrison_plan(planet, &player)
+                && pending.push(TurnCommand::SetBattlePlan {
+                    planet_id,
+                    battle_plan,
+                })
+            {
+                if player.controls(planet) {
+                    planet.battle_plan = battle_plan;
+                } else {
+                    planet.protector_battle_plans.insert(player.id, battle_plan);
+                }
+            }
+        }
+    }
+
     if mission_hover_from_ui && !state.mission_hover_from_ui {
         state.mission_hover = None;
     }
@@ -6226,6 +6397,38 @@ pub fn draw_ui(
                 )
             },
         );
+    }
+
+    if let Some(id) = state.battle_plan_planet {
+        let valid = map.try_get(id).is_some_and(|planet| can_edit_garrison_plan(planet, &player));
+        if !valid {
+            state.battle_plan_planet = None;
+        } else if let Ok(context) = contexts.ctx_mut() {
+            let (close, changed) = draw_garrison_plan_modal(
+                context,
+                &images,
+                map.get(id),
+                &player,
+                pending.can_accept_commands(),
+            );
+            if close {
+                state.battle_plan_planet = None;
+            }
+            if let Some(battle_plan) = changed {
+                if pending.push(TurnCommand::SetBattlePlan {
+                    planet_id: id,
+                    battle_plan,
+                }) {
+                    let planet = map.get_mut(id);
+                    if player.controls(planet) {
+                        planet.battle_plan = battle_plan;
+                    } else {
+                        planet.protector_battle_plans.insert(player.id, battle_plan);
+                    }
+                    set_ui_sound(context, Some(SoundEffect::Button));
+                }
+            }
+        }
     }
 
     if let Some(id) = state.protection_access {

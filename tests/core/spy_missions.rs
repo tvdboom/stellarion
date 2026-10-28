@@ -46,6 +46,7 @@ fn launch(mission: &Mission) -> TurnCommand {
         army: mission.army.clone(),
         bombing: mission.bombing.clone(),
         combat_probes: mission.combat_probes,
+        battle_plan: mission.battle_plan,
         deep_cover: mission.deep_cover,
         jump_gate: mission.jump_gate,
     }

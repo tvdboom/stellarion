@@ -327,6 +327,45 @@ create policy stellarion_events_member_select
     to authenticated
     using (public.stellarion_can_read_event(game_id, kind, player_id));
 
+-- Battle plans are part of the current persisted/command contract. All three choices
+-- and automatic-selection mode are required; malformed plans never become default orders.
+-- Suitability, targeting weights and combat effects remain deterministic Rust rules.
+create function public.stellarion_battle_plan_valid(p_plan jsonb)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog
+as $$
+    select coalesce(case when jsonb_typeof(p_plan) = 'object' then
+        p_plan ?& array['automatic_tactic', 'tactic', 'target_priority', 'protection']
+        and p_plan - array['automatic_tactic', 'tactic', 'target_priority', 'protection'] = '{}'::jsonb
+        and jsonb_typeof(p_plan -> 'automatic_tactic') = 'boolean'
+        and (p_plan ->> 'automatic_tactic' = 'false' or p_plan ->> 'tactic' = 'Breakthrough')
+        and p_plan ->> 'tactic' in ('Swarm', 'Skirmish', 'Breakthrough', 'Siege', 'Interception', 'Bastion')
+        and p_plan ->> 'target_priority' in ('Standard', 'SmallShips', 'MediumShips', 'CapitalShips', 'Defenses')
+        and p_plan ->> 'protection' in ('Standard', 'ScreenCapitals', 'HeavyCover', 'ProtectBombers')
+        else false end, false);
+$$;
+revoke all on function public.stellarion_battle_plan_valid(jsonb) from public, anon, authenticated;
+
+-- An allied contribution owns its battle plan independently of the shared objective.
+create function public.stellarion_joint_contribution_valid(p_contribution jsonb)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+    select coalesce(case when jsonb_typeof(p_contribution) = 'object' then
+        p_contribution ?& array['player_id', 'origin', 'army', 'bombing', 'combat_probes', 'battle_plan']
+        and p_contribution - array['player_id', 'origin', 'army', 'bombing', 'combat_probes', 'battle_plan'] = '{}'::jsonb
+        and jsonb_typeof(p_contribution -> 'army') = 'object'
+        and jsonb_typeof(p_contribution -> 'combat_probes') = 'boolean'
+        and p_contribution ->> 'bombing' in ('None', 'Economic', 'Industrial')
+        and public.stellarion_battle_plan_valid(p_contribution -> 'battle_plan')
+        else false end, false);
+$$;
+revoke all on function public.stellarion_joint_contribution_valid(jsonb) from public, anon, authenticated;
+
 -- Validates the database-visible invariants of the Rust snapshot.
 -- Detailed gameplay validation remains in the deterministic Rust core.
 create function public.stellarion_validate_persisted(
@@ -362,6 +401,8 @@ declare
     v_unique_planets integer;
     v_min_planet_id bigint;
     v_max_planet_id bigint;
+    v_item jsonb;
+    v_plan_entry record;
 begin
     if p_persisted is null
        or jsonb_typeof(p_persisted) is distinct from 'object'
@@ -513,6 +554,69 @@ begin
        or v_max_planet_id <> v_planet_total - 1 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:planet_ids';
     end if;
+
+    -- Reports retain the plans used in that battle, independently of later standing
+    -- orders. Validate both live state and these historical snapshots consistently.
+    for v_item in
+        select value from jsonb_path_query(p_persisted, '$.state.map.planets[*]') as entries(value)
+        union all
+        select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].planet') as entries(value)
+    loop
+        if not public.stellarion_battle_plan_valid(v_item -> 'battle_plan')
+           or jsonb_typeof(v_item -> 'protector_battle_plans') is distinct from 'object' then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:planet_battle_plan';
+        end if;
+        for v_plan_entry in select key, value from jsonb_each(v_item -> 'protector_battle_plans')
+        loop
+            if v_plan_entry.key !~ '^[1-4]$'
+               or v_plan_entry.key::integer > p_max_players
+               or not coalesce((v_item #> '{army,protectors}') ? v_plan_entry.key, false)
+               or not public.stellarion_battle_plan_valid(v_plan_entry.value) then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:protector_battle_plan';
+            end if;
+        end loop;
+    end loop;
+    for v_item in
+        select value from jsonb_path_query(p_persisted, '$.state.missions[*]') as entries(value)
+        union all
+        select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].mission') as entries(value)
+    loop
+        if not public.stellarion_battle_plan_valid(v_item -> 'battle_plan') then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_battle_plan';
+        end if;
+        if jsonb_typeof(v_item -> 'battle_fleets') is distinct from 'array' then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_battle_fleets';
+        end if;
+        for v_plan_entry in select value from jsonb_array_elements(v_item -> 'battle_fleets')
+        loop
+            if not public.stellarion_battle_plan_valid(v_plan_entry.value -> 'battle_plan')
+               or jsonb_typeof(v_plan_entry.value -> 'army') is distinct from 'object'
+               or jsonb_typeof(v_plan_entry.value -> 'id') is distinct from 'number' then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:fleet_battle_plan';
+            end if;
+        end loop;
+        if v_item -> 'joint_attack' <> 'null'::jsonb then
+            if jsonb_typeof(v_item #> '{joint_attack,combat_orders}') is distinct from 'object' then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_battle_plan';
+            end if;
+            for v_plan_entry in select key, value from jsonb_each(v_item #> '{joint_attack,combat_orders}')
+            loop
+                if not public.stellarion_battle_plan_valid(v_plan_entry.value -> 'battle_plan') then
+                    raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_battle_plan';
+                end if;
+            end loop;
+        end if;
+    end loop;
+    for v_item in
+        select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].combat_report.rounds[*].attacker[*]') as entries(value)
+        union all
+        select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].combat_report.rounds[*].defender[*]') as entries(value)
+    loop
+        if not public.stellarion_battle_plan_valid(v_item -> 'battle_plan')
+           or jsonb_typeof(v_item -> 'fleet_id') is distinct from 'number' then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:combatant_battle_plan';
+        end if;
+    end loop;
 exception
     when invalid_text_representation or numeric_value_out_of_range then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:numeric_field';
@@ -1102,6 +1206,7 @@ begin
             where fleet.unit like 'Ship(%)' and fleet.amount ~ '^[1-9][0-9]*$'
        )
        or (v_participants -> 0 -> 'contribution' ->> 'player_id')::bigint <> (p_invitation ->> 'inviter')::bigint
+       or not public.stellarion_joint_contribution_valid(v_participants -> 0 -> 'contribution')
        or v_revision is null or v_revision < 0
        or (v_participants -> 0 -> 'contribution' -> 'bombing') is distinct from (p_invitation -> 'bombing')
        or (v_participants -> 0 -> 'contribution' -> 'combat_probes') is distinct from (p_invitation -> 'combat_probes')
@@ -1272,8 +1377,7 @@ begin
     if p_response in ('pending', 'accepted') then
         if p_contribution is null
            or jsonb_typeof(p_contribution) is distinct from 'object'
-           or not (p_contribution ?& array['player_id', 'origin', 'army', 'bombing', 'combat_probes'])
-           or p_contribution - array['player_id', 'origin', 'army', 'bombing', 'combat_probes'] <> '{}'::jsonb
+           or not public.stellarion_joint_contribution_valid(p_contribution)
            or (p_contribution ->> 'player_id')::bigint <> v_player
            or jsonb_typeof(p_contribution -> 'army') is distinct from 'object'
            or jsonb_typeof(p_contribution -> 'combat_probes') is distinct from 'boolean'
@@ -2365,6 +2469,8 @@ declare
     v_player_id bigint;
     v_turn bigint;
     v_generation bigint;
+    v_command jsonb;
+    v_contribution jsonb;
 begin
     if p_submission is null or jsonb_typeof(p_submission) is distinct from 'object'
        or pg_column_size(p_submission) > 1048576
@@ -2390,6 +2496,24 @@ begin
        or v_turn is null or v_turn < 1 or v_generation is null or v_generation < 0 then
         raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:submission_ids';
     end if;
+    for v_command in select value from jsonb_array_elements(p_submission -> 'commands')
+    loop
+        if v_command ->> 'kind' in ('send_mission', 'set_battle_plan', 'set_mission_battle_plan')
+           and not public.stellarion_battle_plan_valid(v_command -> 'battle_plan') then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:battle_plan';
+        end if;
+        if v_command ->> 'kind' = 'send_joint_mission' then
+            if jsonb_typeof(v_command -> 'contributions') is distinct from 'array' then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_contribution';
+            end if;
+            for v_contribution in select value from jsonb_array_elements(v_command -> 'contributions')
+            loop
+                if not public.stellarion_joint_contribution_valid(v_contribution) then
+                    raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:joint_attack_contribution';
+                end if;
+            end loop;
+        end if;
+    end loop;
     return query select v_player_id, v_turn, v_generation;
 end;
 $$;

@@ -9,12 +9,14 @@ use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
+use crate::core::combat::plan::{combat_value, BattlePlan, TargetPriority};
 use crate::core::combat::report::{
     combat_fleet_strength, CombatReport, DefenderRetreat, MissionReport, RetreatingFleet,
     RoundReport, Side,
 };
 use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
 use crate::core::energy::EnergyGrid;
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Garrison, Planet};
 use crate::core::missions::{BombingRaid, Mission};
@@ -82,6 +84,10 @@ pub struct CombatUnit {
     /// Player whose independently persisted fleet supplied this unit.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub owner: Option<crate::core::identity::PlayerId>,
+    /// Source fleet whose composition and protection orders govern this combatant.
+    pub fleet_id: u64,
+    /// Frozen orders copied from this ship's source fleet before combat starts.
+    pub battle_plan: BattlePlan,
     /// Unit kind represented by this record or presentation component.
     pub unit: Unit,
     /// Hull points remaining at this stage of combat.
@@ -109,6 +115,8 @@ impl CombatUnit {
         Self {
             id: rng.random(),
             owner,
+            fleet_id: 0,
+            battle_plan: BattlePlan::default(),
             unit: *unit,
             hull: unit.hull(),
             shield: unit.shield(),
@@ -247,9 +255,16 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             }
         }
     } else {
-        for (unit, count) in mission.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship()) {
-            for _ in 0..*count {
-                attack_army.push(CombatUnit::new_owned_with_rng(unit, Some(mission.owner), rng));
+        for fleet in mission.source_battle_fleets() {
+            for (unit, count) in fleet.army.iter().filter(|(unit, _)| **unit != Unit::colony_ship())
+            {
+                for _ in 0..*count {
+                    let mut combatant =
+                        CombatUnit::new_owned_with_rng(unit, Some(mission.owner), rng);
+                    combatant.fleet_id = fleet.id;
+                    combatant.battle_plan = fleet.battle_plan.frozen(&fleet.army);
+                    attack_army.push(combatant);
+                }
             }
         }
     }
@@ -287,6 +302,22 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
         }
     }
 
+    if joint_attackers.is_some() {
+        for unit in &mut attack_army {
+            unit.fleet_id = mission.id;
+            unit.battle_plan = mission.battle_plan_for(unit.owner).frozen(
+                unit.owner.and_then(|owner| mission.commanded_army(owner)).unwrap_or(&mission.army),
+            );
+        }
+    }
+    for unit in &mut defend_army {
+        unit.battle_plan = destination.battle_plan_for(unit.owner).frozen(
+            unit.owner
+                .and_then(|owner| destination.army.protector(owner))
+                .unwrap_or(destination.army.controller()),
+        );
+    }
+
     // Sort armies by firing order
     let firing_order = Unit::all_firing_order();
     let rank: Army = firing_order.iter().enumerate().map(|(i, u)| (*u, i)).collect();
@@ -299,6 +330,9 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
     let mut used_antiballistic = vec![];
     let mut planet_destroyed = false;
     let mut bombing_resolved = false;
+    // Preserve earned fractions across this combatant's shots and rounds so low-damage
+    // fighters receive their full tactical benefit without introducing another random roll.
+    let mut tactic_damage_carry = BTreeMap::<u64, u128>::new();
     let mut withdrawal_ordered = threshold == Some(0) && initial_fleet_strength > 0;
     let mut withdrawal_cover = withdrawal_ordered && administration < 5;
     if withdrawal_ordered && administration >= 5 {
@@ -323,6 +357,18 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             break;
         }
 
+        // Both commanders use the same round-start composition. Casualties caused by the
+        // first volley must not weaken the second side's tactic or cover within this round.
+        let attacker_plans = RoundBattlePlans::from_units(&attack_army);
+        let mut defender_plans = RoundBattlePlans::from_units(&defend_army);
+        // A shield can remain after the controller's last armed unit was destroyed.
+        defender_plans.commanders.entry((defender_owner, 0)).or_insert_with(|| {
+            CommanderBattlePlan {
+                plan: destination.battle_plan_for(defender_owner),
+                ..Default::default()
+            }
+        });
+
         for side in Side::iter() {
             if mission.objective == Icon::MissileStrike && side == Side::Defender {
                 continue;
@@ -331,6 +377,10 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             let (army, enemy_army) = match side {
                 Side::Attacker => (&mut attack_army, &mut defend_army),
                 Side::Defender => (&mut defend_army, &mut attack_army),
+            };
+            let (plans, enemy_plans) = match side {
+                Side::Attacker => (&attacker_plans, &defender_plans),
+                Side::Defender => (&defender_plans, &attacker_plans),
             };
 
             // Reset all repairs, shots and defender's shields
@@ -398,13 +448,35 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
                         && *mission.bombing_for(unit.owner) != BombingRaid::None
                     {
                         // Bombers always target the planetary shield first when bombing
+                        damage = plans.damage_for_fleet(
+                            damage,
+                            unit,
+                            defender_owner,
+                            0,
+                            None,
+                            enemy_plans,
+                            &mut tactic_damage_carry,
+                        );
                         shot.planetary_shield_damage = damage.min(planetary_shield);
                         planetary_shield -= shot.planetary_shield_damage;
                         shot.unit = Some(Unit::planetary_shield());
                         None
-                    } else if let Some(target) =
-                        choose_combat_target(unit.unit, enemy_army, &mut *rng)
-                    {
+                    } else if let Some(target) = choose_planned_combat_target(
+                        unit.unit,
+                        plans.plan(unit).target_priority,
+                        enemy_army,
+                        enemy_plans,
+                        &mut *rng,
+                    ) {
+                        damage = plans.damage_for_fleet(
+                            damage,
+                            unit,
+                            target.owner,
+                            target.fleet_id,
+                            Some(target.unit),
+                            enemy_plans,
+                            &mut tactic_damage_carry,
+                        );
                         // If shooting on a defense, shoot on the planetary shield instead
                         if target.unit.is_defense()
                             && target.unit != Unit::space_dock()
@@ -816,6 +888,260 @@ fn rapid_fire_stops(attacker: &Unit, target: &Unit, shots_fired: usize, roll: f3
                 / 100.0
 }
 
+#[derive(Default)]
+struct CommanderBattlePlan {
+    plan: BattlePlan,
+    suitability: u8,
+    covering_value: u128,
+    protected_value: u128,
+}
+
+/// Frozen at the round boundary, while each owner's ships retain independent orders.
+#[derive(Default)]
+struct RoundBattlePlans {
+    commanders: BTreeMap<(Option<PlayerId>, u64), CommanderBattlePlan>,
+}
+
+impl RoundBattlePlans {
+    #[cfg(test)]
+    fn new(units: &[CombatUnit], plan_for: impl Fn(Option<PlayerId>) -> BattlePlan) -> Self {
+        Self::build(units, |unit| plan_for(unit.owner))
+    }
+    fn from_units(units: &[CombatUnit]) -> Self {
+        Self::build(units, |unit| unit.battle_plan)
+    }
+    fn build(units: &[CombatUnit], plan_for: impl Fn(&CombatUnit) -> BattlePlan) -> Self {
+        let mut armies = BTreeMap::<(Option<PlayerId>, u64), Army>::new();
+        let mut orders = BTreeMap::new();
+        for unit in units.iter().filter(|unit| unit.hull > 0) {
+            let key = (unit.owner, unit.fleet_id);
+            let count = armies.entry(key).or_default().entry(unit.unit).or_default();
+            *count = count.saturating_add(1);
+            orders.entry(key).or_insert_with(|| plan_for(unit));
+        }
+        let commanders = armies
+            .into_iter()
+            .map(|(owner, army)| {
+                let plan = orders[&owner];
+                let mut commander = CommanderBattlePlan {
+                    plan,
+                    suitability: plan.suitability(&army),
+                    ..Default::default()
+                };
+                for (unit, count) in &army {
+                    let value = combat_value(*unit).saturating_mul(*count as u128);
+                    if plan.protection.covers(*unit) {
+                        commander.covering_value = commander.covering_value.saturating_add(value);
+                    }
+                    if plan.protection.protects(*unit) {
+                        commander.protected_value = commander.protected_value.saturating_add(value);
+                    }
+                }
+                (owner, commander)
+            })
+            .collect();
+        Self {
+            commanders,
+        }
+    }
+
+    fn plan(&self, unit: &CombatUnit) -> BattlePlan {
+        self.commanders
+            .get(&(unit.owner, unit.fleet_id))
+            .map_or(BattlePlan::default(), |commander| commander.plan)
+    }
+
+    #[cfg(test)]
+    fn damage(
+        &self,
+        base: usize,
+        shooter: &CombatUnit,
+        target_owner: Option<PlayerId>,
+        target: Option<Unit>,
+        opponents: &Self,
+        carry: &mut BTreeMap<u64, u128>,
+    ) -> usize {
+        self.damage_for_fleet(base, shooter, target_owner, 0, target, opponents, carry)
+    }
+
+    fn damage_for_fleet(
+        &self,
+        base: usize,
+        shooter: &CombatUnit,
+        target_owner: Option<PlayerId>,
+        target_fleet: u64,
+        target: Option<Unit>,
+        opponents: &Self,
+        fractional_damage: &mut BTreeMap<u64, u128>,
+    ) -> usize {
+        if shooter.owner.is_none()
+            || target_owner.is_none()
+            || combat_value(shooter.unit) == 0
+            || target.is_some_and(|unit| matches!(unit, Unit::Fauna(_)))
+        {
+            return base;
+        }
+        let Some(commander) = self.commanders.get(&(shooter.owner, shooter.fleet_id)) else {
+            return base;
+        };
+        if !commander.plan.tactic.counters(
+            opponents
+                .commanders
+                .get(&(target_owner, target_fleet))
+                .map_or(BattlePlan::default(), |commander| commander.plan)
+                .tactic,
+        ) {
+            return base;
+        }
+        // Integer arithmetic is shared by native and WASM; only a favorable matchup
+        // grants a bonus, capped at 15% across its eligible shots. Fractions survive
+        // rounding; the opponent receives no additional penalty.
+        let carry = fractional_damage.entry(shooter.id).or_default();
+        let earned = (base as u128)
+            .saturating_mul(15)
+            .saturating_mul(commander.suitability as u128)
+            .saturating_add(*carry);
+        let bonus = earned / 10_000;
+        *carry = earned % 10_000;
+        base.saturating_add(bonus.min(usize::MAX as u128) as usize)
+    }
+}
+
+fn planned_target_category(attacker: Unit, target: Unit, priority: TargetPriority) -> u8 {
+    if attacker == Unit::Ship(Ship::Bomber) || priority == TargetPriority::Standard {
+        combat_target_priority(attacker, target)
+    } else if priority == TargetPriority::Defenses {
+        0
+    } else {
+        u8::from(!(target.is_ship() || target == Unit::space_dock()))
+    }
+}
+
+/// Builds integer target weights, transferring protected exposure to the same owner's
+/// eligible covering ships. No exposure disappears, and an unreachable screen cannot help.
+fn planned_target_weights(
+    attacker: Unit,
+    priority: TargetPriority,
+    defenders: &[CombatUnit],
+    plans: &RoundBattlePlans,
+) -> Vec<(usize, u128)> {
+    let Some(category) = defenders
+        .iter()
+        .filter(|unit| !unit.unit.is_missile())
+        .map(|unit| planned_target_category(attacker, unit.unit, priority))
+        .min()
+    else {
+        return Vec::new();
+    };
+    let mut candidates = defenders
+        .iter()
+        .enumerate()
+        .filter(|(_, unit)| {
+            !unit.unit.is_missile()
+                && planned_target_category(attacker, unit.unit, priority) == category
+        })
+        .map(|(index, unit)| {
+            (
+                index,
+                if priority.prefers(unit.unit) {
+                    20_000
+                } else {
+                    10_000
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    // Restrict redistribution to this shot's eligible pool so bomber defense priority
+    // and enemy target preferences cannot create immunity with absent covering targets.
+    let mut covering = BTreeMap::<(Option<PlayerId>, u64), u128>::new();
+    for (index, _) in &candidates {
+        let unit = &defenders[*index];
+        if plans.plan(unit).protection.covers(unit.unit) {
+            let value = covering.entry((unit.owner, unit.fleet_id)).or_default();
+            *value = value.saturating_add(combat_value(unit.unit));
+        }
+    }
+    let mut transferred = BTreeMap::<(Option<PlayerId>, u64), u128>::new();
+    for (index, weight) in &mut candidates {
+        let unit = &defenders[*index];
+        let Some(commander) = plans.commanders.get(&(unit.owner, unit.fleet_id)) else {
+            continue;
+        };
+        if commander.protected_value == 0
+            || !commander.plan.protection.protects(unit.unit)
+            || covering.get(&(unit.owner, unit.fleet_id)).copied().unwrap_or_default() == 0
+        {
+            continue;
+        }
+        let reduction = 2_500 * commander.covering_value.min(commander.protected_value)
+            / commander.protected_value;
+        let removed = *weight * reduction / 10_000;
+        *weight -= removed;
+        let value = transferred.entry((unit.owner, unit.fleet_id)).or_default();
+        *value = value.saturating_add(removed);
+    }
+    // Carry integer remainders so the total target weight is preserved exactly.
+    let mut remaining = transferred;
+    for (index, weight) in &mut candidates {
+        let unit = &defenders[*index];
+        if !plans.plan(unit).protection.covers(unit.unit) {
+            continue;
+        }
+        let Some(total) = covering.get_mut(&(unit.owner, unit.fleet_id)) else {
+            continue;
+        };
+        let Some(remaining) = remaining.get_mut(&(unit.owner, unit.fleet_id)) else {
+            continue;
+        };
+        let value = combat_value(unit.unit);
+        if let Some(added) = (*remaining * value).checked_div(*total) {
+            *weight += added;
+            *remaining -= added;
+            *total = total.saturating_sub(value);
+        }
+    }
+    candidates
+}
+
+fn choose_planned_combat_target<'a, R: Rng + ?Sized>(
+    attacker: Unit,
+    priority: TargetPriority,
+    defenders: &'a mut [CombatUnit],
+    plans: &RoundBattlePlans,
+    rng: &mut R,
+) -> Option<&'a mut CombatUnit> {
+    if priority == TargetPriority::Standard
+        && plans
+            .commanders
+            .values()
+            .all(|commander| commander.covering_value == 0 || commander.protected_value == 0)
+    {
+        return choose_combat_target(attacker, defenders, rng);
+    }
+    let candidates = planned_target_weights(attacker, priority, defenders, plans);
+    let first_weight = candidates.first()?.1;
+    if candidates.iter().all(|(_, weight)| *weight == first_weight) {
+        let category = planned_target_category(attacker, defenders[candidates[0].0].unit, priority);
+        return defenders
+            .iter_mut()
+            .filter(|unit| {
+                !unit.unit.is_missile()
+                    && planned_target_category(attacker, unit.unit, priority) == category
+            })
+            .choose(rng);
+    }
+    let total = candidates.iter().map(|(_, weight)| *weight).sum::<u128>();
+    let mut draw = rng.random_range(0..total);
+    for (index, weight) in candidates {
+        if draw < weight {
+            return defenders.get_mut(index);
+        }
+        draw -= weight;
+    }
+    None
+}
+
 /// Selects a target from the highest-priority non-missile category available to the shooter.
 fn choose_combat_target<'a, R: Rng + ?Sized>(
     attacker: Unit,
@@ -894,3 +1220,7 @@ mod balance_tests;
 #[cfg(test)]
 #[path = "../../../tests/core/combat_bombing.rs"]
 mod bombing_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/combat_battle_plan.rs"]
+mod battle_plan_tests;

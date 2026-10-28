@@ -245,6 +245,7 @@ fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
                 FleetCombatOrders {
                     bombing: BombingRaid::None,
                     combat_probes: false,
+                    battle_plan: Default::default(),
                 },
             ),
             (
@@ -252,6 +253,7 @@ fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
                 FleetCombatOrders {
                     bombing: BombingRaid::Economic,
                     combat_probes: false,
+                    battle_plan: Default::default(),
                 },
             ),
             (
@@ -259,6 +261,7 @@ fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
                 FleetCombatOrders {
                     bombing: BombingRaid::Industrial,
                     combat_probes: false,
+                    battle_plan: Default::default(),
                 },
             ),
         ]),
@@ -315,6 +318,7 @@ fn joint_probes_only_withdraw_for_commanders_who_disable_combat_probes() {
                 1,
                 FleetCombatOrders {
                     combat_probes: false,
+                    battle_plan: Default::default(),
                     ..Default::default()
                 },
             ),
@@ -322,6 +326,7 @@ fn joint_probes_only_withdraw_for_commanders_who_disable_combat_probes() {
                 2,
                 FleetCombatOrders {
                     combat_probes: true,
+                    battle_plan: Default::default(),
                     ..Default::default()
                 },
             ),

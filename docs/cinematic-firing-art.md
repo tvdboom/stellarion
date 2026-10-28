@@ -26,7 +26,12 @@ Reference: `assets/images/cinematic/cinematic light laser.png`
 
 Use case: precise-object-edit. Asset type: production 8-frame firing sprite sheet for a 2D game. Use the provided unit as the identity reference, preserving its materials, silhouette and lights. Output one transparent PNG sprite sheet in a strict 4 COLUMN by 2 ROW equal-cell grid, all 8 frames row-major. No text, no grid lines, no background, genuine transparent alpha. Each cell has the EXACT SAME camera, scale, pivot and immobile hull/base; never translate, rotate or distort the whole unit between frames. Keep generous equal padding in every cell and all effects within their own cell. Frames: 0 resting cannon fully extended and dark muzzle; 1 gun charges, breech opens slightly; 2 bright compact muzzle flash, barrel retracts 5% of unit width into its housing; 3 recoil fully compressed and flash fades; 4 barrel half returns with faint vapor; 5 almost extended; 6 fully extended cooling; 7 identical to resting frame0. Only the cannon/barrel, breech, vents and muzzle flash animate. Detailed realistic sci-fi brushed-metal painterly hard-surface rendering, no blur. Keep the unit recognizably identical across all frames. Silver slender laser turret with orange cooling slots from reference. Fixed round pedestal; articulated upper gun points horizontally RIGHT, slightly seen from above. Barrel axis must be horizontal, not diagonally upward. Pivot of gun at cell coordinate (0.46,0.43), muzzle at (0.78,0.43). Base and lower pedestal unmoving. Muzzle flash yellow-orange. Square individual cells. Entire turret spans x0.18..0.79 y0.16..0.88.
 
-### war sun
+### earlier war sun sheet (retired)
+
+The eight-frame sheet below was removed on 2026-10-28. The War Sun now uses the
+single registered cutout described in [cinematic-war-sun.md](cinematic-war-sun.md),
+with procedural weapon light. Its three forward blue ports are weapon emitters.
+The historical prompt below incorrectly called those ports rear engines.
 
 Reference: `assets/images/cinematic/cinematic war sun.png`
 

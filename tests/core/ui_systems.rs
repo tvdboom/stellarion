@@ -1026,6 +1026,8 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
     };
     let round = RoundReport {
         defender: vec![CombatUnit {
+            fleet_id: 0,
+            battle_plan: Default::default(),
             id: 7,
             owner: None,
             unit: Unit::space_dock(),
@@ -2166,7 +2168,7 @@ fn garrison_filters_default_to_all_players_and_remove_hidden_fleets_from_totals(
 fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
     let rect =
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(270.0, WORLD_OVERVIEW_HEADER_HEIGHT));
-    let layout = world_overview_header_layout(rect, 24.0, Some(24.0), true);
+    let layout = world_overview_header_layout(rect, 24.0, Some(24.0), true, false);
     let protection = layout.protection_icon.expect("protection filter icon");
     let defense_badge = layout.defense_badge.expect("defense badge");
     let defense = layout.defense_icon.expect("defense icon");
@@ -2178,7 +2180,7 @@ fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
     assert_eq!(defense_badge.right() + WORLD_OVERVIEW_PROTECTION_GAP, protection.left());
     assert_eq!(protection.right(), rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN);
 
-    let moon_layout = world_overview_header_layout(rect, 24.0, None, true);
+    let moon_layout = world_overview_header_layout(rect, 24.0, None, true, false);
     assert!(moon_layout.defense_badge.is_none());
     assert!(moon_layout.defense_icon.is_none());
     let moon_protection = moon_layout.protection_icon.expect("moon protection filter icon");
@@ -2187,6 +2189,31 @@ fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
         moon_protection.left()
     );
     assert_eq!(moon_protection.right(), rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN);
+}
+
+#[test]
+fn planet_battle_plan_icon_sits_left_without_moving_strength_badges() {
+    let rect = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(270.0, WORLD_OVERVIEW_HEADER_HEIGHT),
+    );
+    for defense in [None, Some(24.0)] {
+        let layout = world_overview_header_layout(rect, 24.0, defense, true, true);
+        let original = world_overview_header_layout(rect, 24.0, defense, true, false);
+        let plan = layout.battle_plan_icon.unwrap();
+        assert_eq!(plan.size(), layout.fleet_icon.size());
+        assert_eq!(
+            layout.fleet_badge,
+            original
+                .fleet_badge
+                .translate(egui::vec2(-WORLD_OVERVIEW_ICON_SIZE - WORLD_OVERVIEW_BADGE_GAP, 0.0))
+        );
+        assert_eq!(layout.defense_badge, original.defense_badge);
+        assert_eq!(layout.protection_icon, original.protection_icon);
+        assert_eq!(plan.left(), rect.left() + WORLD_OVERVIEW_RIGHT_MARGIN);
+        assert!(rect.contains_rect(plan));
+        assert!(plan.right() < layout.fleet_badge.left());
+    }
 }
 
 #[test]
@@ -4934,7 +4961,7 @@ fn shared_modals_keep_their_default_size_and_center_as_the_window_changes() {
 }
 
 #[test]
-fn mission_list_hover_hides_route_details_but_map_hover_keeps_them() {
+fn mission_list_uses_route_tooltips_and_map_hover_keeps_its_info_panel() {
     assert!(!mission_hover_shows_info_panel(true));
     assert!(mission_hover_shows_info_panel(false));
 }
@@ -4953,6 +4980,12 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
         origin,
         destination,
         objective: Icon::Attack,
+        battle_plan: crate::core::combat::plan::BattlePlan {
+            automatic_tactic: false,
+            target_priority: crate::core::combat::plan::TargetPriority::SmallShips,
+            protection: crate::core::combat::plan::ProtectionPosture::ScreenCapitals,
+            ..default()
+        },
         army: hovered_army.clone(),
         joint_attack: Some(JointAttackMission {
             leader: 2,
@@ -4976,6 +5009,7 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
     assert_eq!(
         mission_info_hover_height(&mission, 1),
         MISSION_HOVER_INFO_BASE_HEIGHT
+            + 155.0
             + MISSION_HOVER_ALLIED_HEADER_HEIGHT
             + 3.0 * MISSION_HOVER_ALLIED_ROW_HEIGHT
     );
@@ -5027,8 +5061,15 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
         mission_arrival_turn(Settings::default().turn, duration_turns)
     );
     let duration = text_rect(&output.shapes, &duration_label);
+    let tactic = text_rect(&output.shapes, "Breakthrough");
+    let target = text_rect(&output.shapes, "Small ships");
+    let protection = text_rect(&output.shapes, "Screen capitals");
+    assert!(duration.bottom() < tactic.top());
+    assert!(has_text(&output.shapes, "(25%)"));
+    assert!(tactic.bottom() < target.top());
+    assert!(target.bottom() < protection.top());
     let allied_header = text_rect(&output.shapes, "Allied Attack");
-    assert!(duration.bottom() < allied_header.top());
+    assert!(protection.bottom() < allied_header.top());
 
     let names = ["Player 2", "Player 1", "Player 30"].map(|name| text_rect(&output.shapes, name));
     assert!(names.windows(2).all(|pair| (pair[0].left() - pair[1].left()).abs() < 0.5));

@@ -1,0 +1,96 @@
+{
+  "tool": "Built-in image_gen",
+  "date": "2026-10-28",
+  "output_size": [
+    106,
+    106
+  ],
+  "references": [
+    "assets/images/mission/attack.png",
+    "assets/images/mission/protect.png",
+    "assets/images/mission/allied attack.png"
+  ],
+  "prompt_direction": "Match the existing objective icons: glossy colored enamel square, bevelled gold double rim, cream inner border, bold ivory pictogram, transparent perimeter, no text. Battle plan: branching fleet orders. Tactics: Swarm fighters; Skirmish mobile crossing ships; Breakthrough a ship breaking a line; Siege heavy artillery beams; Interception a spacecraft in a reticle; Bastion a shield and defensive towers.",
+  "artifacts": [
+    {
+      "path": "assets/images/mission/battle plan.png",
+      "generated_artifact": "exec-36838162-7af7-4479-8aaf-083cbc6dde8f.png",
+      "prompt": "Create the battle plan icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic swarm.png",
+      "generated_artifact": "exec-3708099a-4dcf-4f4a-a43e-e62372ce6649.png",
+      "prompt": "Create the tactic swarm icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic skirmish.png",
+      "generated_artifact": "exec-36331c67-f427-47b9-9c3b-542e7245eee3.png",
+      "prompt": "Create the tactic skirmish icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic breakthrough.png",
+      "generated_artifact": "exec-11b5e732-083d-4f68-ab44-f02333e8ac4b.png",
+      "prompt": "Create the tactic breakthrough icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic siege.png",
+      "generated_artifact": "exec-ac61d93c-3ca1-4ae0-a452-febdc1c4dd3d.png",
+      "prompt": "Create the tactic siege icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic interception.png",
+      "generated_artifact": "exec-803ae53f-431a-4c13-a270-cf59f4b24179.png",
+      "prompt": "Create the tactic interception icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/tactic bastion.png",
+      "generated_artifact": "exec-99f47d7d-de78-4a1f-9a15-9a6250d0d197.png",
+      "prompt": "Create the tactic bastion icon using the shared prompt direction and objective references."
+    },
+    {
+      "path": "assets/images/mission/target standard.png",
+      "generated_artifact": "exec-0516a66b-8950-4f14-b30f-c05492aa70c8.png",
+      "prompt": "Generate ONE target standard game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel steel blue tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: three different-sized spacecraft arranged in a balanced triangular formation, with a small central targeting dot. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for target standard, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/target small ships.png",
+      "generated_artifact": "exec-fb6bba33-56b6-4736-b96f-b875ac8d8eaa.png",
+      "prompt": "Generate ONE target small ships game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel turquoise green tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a bold targeting reticle around three tiny fighter spacecraft. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for target small ships, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/target medium ships.png",
+      "generated_artifact": "exec-c93c0fca-c6bf-49e2-9b94-094e5b548574.png",
+      "prompt": "Generate ONE target medium ships game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel cyan blue tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a bold targeting reticle around one medium cruiser spacecraft, with two broad wings. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for target medium ships, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/target capital ships.png",
+      "generated_artifact": "exec-aefd8ef0-6df8-4763-b7aa-a904a3b803b5.png",
+      "prompt": "Generate ONE target capital ships game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel amber orange tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a bold targeting reticle around one large imposing heavy capital spacecraft silhouette. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for target capital ships, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/target defenses.png",
+      "generated_artifact": "exec-def70d2b-1448-49c9-8e2c-4f295c86564f.png",
+      "prompt": "Generate ONE target defenses game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel crimson red tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a bold targeting reticle around a stationary armored defense turret. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for target defenses, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/protection standard.png",
+      "generated_artifact": "exec-ae7d96c3-bfc0-40f0-96e3-67e1f78d2ff5.png",
+      "prompt": "Generate ONE protection standard game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel slate blue tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: three spacecraft flying side by side inside a simple thin open circle, showing ordinary unrestricted formation. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for protection standard, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/protection screen capitals.png",
+      "generated_artifact": "exec-6726f4f0-7b18-4c9e-8d80-5363de285a78.png",
+      "prompt": "Generate ONE protection screen capitals game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel emerald green tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a large spacecraft sheltered behind three small fighters forming a protective semicircular screen. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for protection screen capitals, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/protection heavy cover.png",
+      "generated_artifact": "exec-4c46c855-b807-48a9-bd27-6dc9fdb281c5.png",
+      "prompt": "Generate ONE protection heavy cover game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel burnished orange tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: one large armored spacecraft in front shielding two tiny fighter spacecraft behind it. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for protection heavy cover, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    },
+    {
+      "path": "assets/images/mission/protection protect bombers.png",
+      "generated_artifact": "exec-97866cfb-ad7f-4827-957e-744e3aeb5676.png",
+      "prompt": "Generate ONE protection protect bombers game UI icon for the Stellarion space strategy game. The supplied images are STYLE REFERENCES ONLY, not edit targets. Match their exact glossy vintage objective-icon family: compact square jewel/enamel amethyst violet tile with a bevelled GOLD double rim, thin cream inner border, slight diagonal sheen and subtly worn texture; a bold simple IVORY/CREAM pictogram. Use the third reference's frame proportions. Central pictogram: a stout bomber spacecraft cradled by a shield, with two small escort fighters at the sides. Simple thick shapes, highly readable at 20px and 40px. Single frontal square icon, occupies virtually the full canvas with a tiny transparent perimeter outside the gold rim; interior fully opaque. No text, labels, numbers, letters, extra scene, mockup, or thin vector cyan line art. This icon is for protection protect bombers, so it must clearly communicate that selection and remain distinct from the branching fleet-orders reference."
+    }
+  ]
+}
