@@ -727,6 +727,8 @@ impl Plugin for MultiplayerClientPlugin {
             .add_systems(Startup, initialize_client)
             .add_systems(OnExit(AppState::JoinGame), clear_join_error)
             .add_systems(OnExit(AppState::RecoverPlayer), clear_join_error)
+            .add_systems(OnEnter(AppState::Lobby), profile::reset_new_game_combat_speed)
+            .add_systems(OnEnter(AppState::LoadingGame), profile::reset_new_game_combat_speed)
             .add_systems(
                 Update,
                 (

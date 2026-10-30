@@ -5,13 +5,203 @@ fn siege_plan() -> BattlePlan {
     BattlePlan {
         automatic_tactic: false,
         tactic: CombatTactic::Siege,
-        target_priority: TargetPriority::Defenses,
-        protection: ProtectionPosture::ProtectBombers,
+        target_priority: TargetPriority::LightTargets,
+        protection: ProtectionPosture::BattleLine,
     }
 }
 
 #[test]
-fn merged_source_fleets_are_recorded_on_each_ship_and_survive_draw_returns() {
+fn merged_attacks_inherit_the_stronger_sources_auto_setting_and_resolve_all_ships() {
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let bomber = Unit::Ship(Ship::Bomber);
+    for stronger_auto in [false, true] {
+        for weaker_auto in [false, true] {
+            let mut stronger = Mission {
+                id: 10,
+                owner: 1,
+                objective: Icon::Attack,
+                army: Army::from([(fighter, 4)]),
+                battle_plan: BattlePlan {
+                    automatic_tactic: stronger_auto,
+                    tactic: CombatTactic::Interception,
+                    ..siege_plan()
+                },
+                ..Default::default()
+            };
+            let weaker = Mission {
+                id: 11,
+                army: Army::from([(bomber, 1)]),
+                battle_plan: BattlePlan {
+                    automatic_tactic: weaker_auto,
+                    tactic: CombatTactic::Bastion,
+                    ..Default::default()
+                },
+                ..stronger.clone()
+            };
+            let initial = stronger.battle_plan_for(Some(1));
+            stronger.merge(&weaker);
+            let selected = stronger.battle_plan_for(Some(1));
+            assert_eq!(selected.automatic_tactic, stronger_auto);
+            assert_eq!(selected.target_priority, TargetPriority::LightTargets);
+            assert_eq!(selected.protection, ProtectionPosture::BattleLine);
+            assert_eq!(
+                selected.tactic,
+                if stronger_auto {
+                    assert_eq!(initial.tactic, CombatTactic::Swarm);
+                    CombatTactic::Swarm
+                } else {
+                    CombatTactic::Interception
+                }
+            );
+            assert_eq!(stronger.battle_plan, selected);
+        }
+    }
+}
+
+#[test]
+fn strongest_original_fleet_wins_in_every_merge_order_even_against_accumulated_groups() {
+    let sources = [
+        Mission {
+            id: 20,
+            owner: 1,
+            objective: Icon::Attack,
+            army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
+            battle_plan: siege_plan(),
+            ..Default::default()
+        },
+        Mission {
+            id: 21,
+            owner: 1,
+            objective: Icon::Attack,
+            army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
+            battle_plan: siege_plan(),
+            ..Default::default()
+        },
+        Mission {
+            id: 22,
+            owner: 1,
+            objective: Icon::Attack,
+            army: Army::from([(Unit::Ship(Ship::Destroyer), 3)]),
+            battle_plan: BattlePlan {
+                automatic_tactic: false,
+                tactic: CombatTactic::Interception,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    ];
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let mut merged = sources[order[0]].clone();
+        merged.merge(&sources[order[1]]);
+        merged.merge(&sources[order[2]]);
+        assert_eq!(merged.battle_plan_for(Some(1)), sources[2].battle_plan);
+        assert_eq!(merged.battle_fleets.len(), 3);
+    }
+    // Four fighters and one battleship have equal fleet power, despite different counts.
+    let mut tied = sources[2].clone();
+    tied.id = 19;
+    tied.army = Army::from([(Unit::Ship(Ship::Battleship), 1)]);
+    for (first, second) in [(&sources[0], &tied), (&tied, &sources[0])] {
+        let mut merged = first.clone();
+        merged.merge(second);
+        assert_eq!(merged.battle_plan_for(Some(1)), tied.battle_plan);
+    }
+}
+
+#[test]
+fn docking_inherits_the_stronger_same_players_plan_including_auto_intent() {
+    use crate::core::map::planet::{Garrison, Planet};
+    let fighters = Army::from([(Unit::Ship(Ship::LightFighter), 4)]);
+    let bomber = Army::from([(Unit::Ship(Ship::Bomber), 1)]);
+    let unrelated = Army::from([(Unit::war_sun(), 100)]);
+    for protector in [false, true] {
+        for incoming_stronger in [false, true] {
+            for stronger_auto in [false, true] {
+                for weaker_auto in [false, true] {
+                    let strong_plan = BattlePlan {
+                        automatic_tactic: stronger_auto,
+                        tactic: CombatTactic::Interception,
+                        ..siege_plan()
+                    };
+                    let weak_plan = BattlePlan {
+                        automatic_tactic: weaker_auto,
+                        tactic: CombatTactic::Bastion,
+                        ..Default::default()
+                    };
+                    let (stationed, incoming, standing_plan, incoming_plan) = if incoming_stronger {
+                        (bomber.clone(), fighters.clone(), weak_plan, strong_plan)
+                    } else {
+                        (fighters.clone(), bomber.clone(), strong_plan, weak_plan)
+                    };
+                    let mut world = Planet::new(0, "World".into(), Vec2::ZERO, false, 1.0);
+                    world.controlled = Some(1);
+                    let owner = if protector {
+                        world.army = Garrison::from_parts(
+                            unrelated.clone(),
+                            BTreeMap::from([(2, stationed)]),
+                        );
+                        world.battle_plan = weak_plan;
+                        world.protector_battle_plans.insert(2, standing_plan);
+                        world.dock_protecting_fleet_with_battle_plan(2, incoming, incoming_plan);
+                        assert_eq!(world.battle_plan, weak_plan);
+                        assert_eq!(world.army.controller(), &unrelated);
+                        2
+                    } else {
+                        world.army = Garrison::from_parts(
+                            stationed,
+                            BTreeMap::from([(2, unrelated.clone())]),
+                        );
+                        world.protector_battle_plans.insert(2, weak_plan);
+                        world.battle_plan = standing_plan;
+                        world.dock_with_battle_plan(incoming, incoming_plan);
+                        assert_eq!(world.protector_battle_plans[&2], weak_plan);
+                        1
+                    };
+                    let selected = world.battle_plan_for(Some(owner));
+                    assert_eq!(selected.automatic_tactic, stronger_auto);
+                    assert_eq!(selected.target_priority, strong_plan.target_priority);
+                    assert_eq!(selected.protection, strong_plan.protection);
+                    assert_eq!(
+                        selected.tactic,
+                        if stronger_auto {
+                            CombatTactic::Swarm
+                        } else {
+                            CombatTactic::Interception
+                        }
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn docking_ties_keep_stationed_orders_and_defenses_do_not_vote() {
+    use crate::core::map::planet::Planet;
+    let mut world = Planet::new(0, "World".into(), Vec2::ZERO, false, 1.0);
+    world.controlled = Some(1);
+    world.army.insert(Unit::Ship(Ship::LightFighter), 3);
+    world.army.insert(Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 1_000);
+    world.battle_plan = siege_plan();
+    world.dock_with_battle_plan(Army::from([(Unit::Ship(Ship::Bomber), 1)]), BattlePlan::default());
+    assert_eq!(world.battle_plan, siege_plan(), "equal production keeps standing orders");
+    world.dock_with_battle_plan(Army::from([(Unit::war_sun(), 2)]), BattlePlan::default());
+    assert!(world.battle_plan.automatic_tactic, "ground defenses cannot outweigh incoming ships");
+    world.dock_protecting_fleet_with_battle_plan(
+        2,
+        Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
+        siege_plan(),
+    );
+    world.dock_protecting_fleet_with_battle_plan(
+        2,
+        Army::from([(Unit::Ship(Ship::Bomber), 1)]),
+        BattlePlan::default(),
+    );
+    assert_eq!(world.battle_plan_for(Some(2)), siege_plan());
+}
+
+#[test]
+fn merged_source_fleets_share_the_strongest_plan_through_combat_and_draw_returns() {
     use crate::core::combat::resolution::resolve_combat_with_rng;
     let mut origin =
         crate::core::map::planet::Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
@@ -49,19 +239,18 @@ fn merged_source_fleets_are_recorded_on_each_ship_and_survive_draw_returns() {
     assert!(report.is_stalemate());
     let round = report.combat_report.as_ref().unwrap().rounds.first().unwrap();
     for ship in &round.attacker {
-        let expected = if ship.fleet_id == 41 {
-            CombatTactic::Swarm
-        } else {
-            assert_eq!(ship.fleet_id, 42);
-            CombatTactic::Siege
-        };
-        assert_eq!(ship.battle_plan.tactic, expected);
+        assert!([41, 42].contains(&ship.fleet_id));
+        assert_eq!(ship.battle_plan, siege_plan());
     }
+    let plans = report.battle_plan_fleets(&crate::core::combat::report::Side::Attacker);
+    assert_eq!(plans.len(), 1, "one plan and combined affinity per commander");
+    assert_eq!(plans[0].2, siege_plan());
+    assert_eq!(plans[0].3, first.army);
     let returning = report.retained_battle_fleets(&report.surviving_attacker);
     assert_eq!(returning.len(), 2);
     assert_eq!(returning[0].army.amount(&Unit::Ship(Ship::Destroyer)), 2);
     assert_eq!(returning[1].army.amount(&Unit::Ship(Ship::Destroyer)), 3);
-    assert_eq!(returning[0].battle_plan.tactic, CombatTactic::Swarm);
+    assert_eq!(returning[0].battle_plan.tactic, CombatTactic::Siege);
     assert_eq!(returning[1].battle_plan.tactic, CombatTactic::Siege);
 }
 
@@ -297,7 +486,7 @@ fn canceling_a_protector_launch_restores_standing_orders_not_mission_overrides()
 }
 
 #[test]
-fn merged_arrivals_preserve_independent_plans_and_joint_contingents_stay_separate() {
+fn merged_arrivals_share_one_plan_and_joint_contingents_stay_separate() {
     let mut first = Mission {
         id: 1,
         owner: 1,
@@ -312,6 +501,7 @@ fn merged_arrivals_preserve_independent_plans_and_joint_contingents_stay_separat
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].battle_fleets.len(), 2);
     assert_eq!(groups[0].battle_fleets[1].battle_plan, siege_plan());
+    assert!(groups[0].battle_plan_for(Some(1)).automatic_tactic);
     second.battle_plan = first.battle_plan;
     assert_eq!(regroup_missions(&[first.clone(), second.clone()]).len(), 1);
     first.joint_attack = Some(JointAttackMission::default());
@@ -371,6 +561,7 @@ fn friendly_reinforcements_preserve_host_and_protector_orders() {
     model.map.get_mut(origin).colonize(1);
     set_protection_permission_immediately(&mut model, 1, target, 2, true).unwrap();
     let fighter = Unit::Ship(Ship::LightFighter);
+    model.map.get_mut(target).army.insert(fighter, 2);
     model.map.get_mut(target).dock_protecting_fleet(2, Army::from([(fighter, 2)]));
     let guest_plan = BattlePlan {
         automatic_tactic: false,
@@ -457,6 +648,74 @@ fn allied_missions_preserve_each_accepted_plan() {
         }
     }
     model.validate().unwrap();
+}
+
+#[test]
+fn stronger_deploy_and_protect_arrivals_replace_only_their_commanders_orders() {
+    for protector in [false, true] {
+        let mut model = started_model(3);
+        let target = model.players[0].home_planet;
+        let owner = if protector {
+            2
+        } else {
+            1
+        };
+        let origin = if protector {
+            model.players[1].home_planet
+        } else {
+            let origin =
+                model.map.planets.iter().find(|p| !p.is_moon() && p.owned.is_none()).unwrap().id;
+            model.map.get_mut(origin).colonize(owner);
+            origin
+        };
+        let fighter = Unit::Ship(Ship::LightFighter);
+        model.map.get_mut(target).army.insert(fighter, 1);
+        apply_battle_plan(&mut model, 1, target, siege_plan()).unwrap();
+        if protector {
+            set_protection_permission_immediately(&mut model, 1, target, 2, true).unwrap();
+            model.map.get_mut(target).dock_protecting_fleet(2, Army::from([(fighter, 1)]));
+            apply_battle_plan(&mut model, 2, target, siege_plan()).unwrap();
+        }
+        let selected = BattlePlan {
+            automatic_tactic: false,
+            tactic: CombatTactic::Interception,
+            ..Default::default()
+        };
+        let destination = model.map.get(target).clone();
+        let mut mission = Mission::new_with_id(
+            8_004,
+            1,
+            owner,
+            model.map.get(origin),
+            &destination,
+            if protector {
+                Icon::Protect
+            } else {
+                Icon::Deploy
+            },
+            Army::from([(Unit::war_sun(), 2)]),
+            BombingRaid::None,
+            false,
+            false,
+            None,
+        )
+        .with_battle_plan(selected);
+        mission.position = destination.position;
+        model.missions.push(mission);
+        let turn = model.turn;
+        let submissions =
+            (1..=3).map(|player| TurnSubmission::new(player, turn, vec![])).collect::<Vec<_>>();
+        resolve_turn(&mut model, &submissions).unwrap();
+        let world = model.map.get(target);
+        assert_eq!(world.battle_plan_for(Some(owner)), selected);
+        if protector {
+            assert_eq!(world.battle_plan, siege_plan());
+            assert_eq!(world.army.protector(2).unwrap().amount(&Unit::war_sun()), 2);
+        } else {
+            assert_eq!(world.army.amount(&Unit::war_sun()), 2);
+        }
+        model.validate().unwrap();
+    }
 }
 
 #[test]

@@ -29,7 +29,7 @@ const DOCUMENTATION_IMAGES: &[&str] = &[
 ];
 
 #[derive(Clone, Debug)]
-/// One source PNG and its deterministic KTX2 destination/options.
+/// One source PNG or loading JPEG and its deterministic KTX2 destination/options.
 struct Conversion {
     source: PathBuf,
     destination: PathBuf,
@@ -117,7 +117,24 @@ fn run() -> Result<(), String> {
                 );
                 copies.push((source, destination, relative.clone(), relative));
             },
-            Some(extension) if extension == "png" => {
+            Some(extension)
+                if extension == "png"
+                    || (extension == "jpg" && relative.starts_with("images/bg/loading/")) =>
+            {
+                // The browser shell needs the same menu artwork before its KTX2 loader is
+                // available. Keep source copies for it and the match-loading JPEG slides.
+                if extension == "jpg" || relative == "images/bg/menu.png" {
+                    let destination = runtime_root.join(&relative_path);
+                    expected.insert(
+                        relative.clone(),
+                        ExpectedAsset {
+                            source_relative: relative.clone(),
+                            source_hash: source_hash.clone(),
+                            destination: destination.clone(),
+                        },
+                    );
+                    copies.push((source.clone(), destination, relative.clone(), relative.clone()));
+                }
                 let mut destination_relative = relative_path.clone();
                 destination_relative.set_extension("basisu.ktx2");
                 let destination_name = normalized(&destination_relative)?;
@@ -589,7 +606,7 @@ fn convert_all(conversions: Vec<Conversion>, toktx: &OsStr, jobs: usize) -> Resu
     }
 }
 
-/// Encodes one PNG to an atomically replaced sRGB UASTC/Zstd KTX2 texture.
+/// Encodes source artwork to an atomically replaced sRGB UASTC/Zstd KTX2 texture.
 fn convert_one(conversion: &Conversion, toktx: &OsStr) -> Result<(), String> {
     let parent = conversion
         .destination

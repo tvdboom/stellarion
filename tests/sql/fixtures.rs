@@ -4,9 +4,11 @@ use rand::SeedableRng;
 use stellarion::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
 use stellarion::core::combat::resolution::resolve_combat_with_rng;
 use stellarion::core::map::icon::Icon;
+use stellarion::core::map::planet::Planet;
 use stellarion::core::missions::{BombingRaid, Mission};
+use stellarion::core::resources::Resources;
 use stellarion::core::simulation::{
-    resolve_turn, GameModel, GameRules, PersistedGame, TurnSubmission,
+    resolve_turn, GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission,
 };
 use stellarion::core::trading::{trading_post_capacity, trading_posts_are_adjacent};
 use stellarion::core::units::{buildings::Building, ships::Ship, Army, Unit};
@@ -42,6 +44,121 @@ fn trade_route_fixtures(model: &GameModel) -> Vec<serde_json::Value> {
         }
     }
     routes
+}
+
+/// Exercises normal multiplayer orders and combat across serialized turn boundaries.
+fn combat_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    assert!(!model.rules.practice_mode);
+    let origin = model.players[0].home_planet;
+    let destination = model.players[1].home_planet;
+    model.map.get_mut(origin).position = bevy::math::Vec2::ZERO;
+    model.map.get_mut(destination).position = bevy::math::Vec2::X * Planet::SIZE * 8.0;
+    let army = Army::from([
+        (Unit::Ship(Ship::LightFighter), 12),
+        (Unit::Ship(Ship::Destroyer), 2),
+        (Unit::Ship(Ship::Bomber), 2),
+    ]);
+    for player in &mut model.players {
+        player.resources = Resources::new(100_000, 100_000, 100_000);
+        for (unit, count) in &army {
+            model.map.get_mut(player.home_planet).army.insert(*unit, *count * 2);
+        }
+    }
+    model.validate()?;
+    let initial = PersistedGame::new(model.clone());
+    let departure = BattlePlan {
+        automatic_tactic: false,
+        tactic: CombatTactic::Swarm,
+        target_priority: TargetPriority::LightTargets,
+        protection: ProtectionPosture::Vanguard,
+    };
+    let revised = BattlePlan {
+        tactic: CombatTactic::Interception,
+        target_priority: TargetPriority::HeavyTargets,
+        protection: ProtectionPosture::Bulwark,
+        ..departure
+    };
+    let defender = BattlePlan {
+        tactic: CombatTactic::Bastion,
+        target_priority: TargetPriority::MediumTargets,
+        protection: ProtectionPosture::BattleLine,
+        ..departure
+    };
+    let mut turns = Vec::new();
+    let mut battle_seen = false;
+    for index in 0..16 {
+        let commands = match index {
+            0 => vec![
+                TurnCommand::SetBattlePlan {
+                    planet_id: origin,
+                    battle_plan: BattlePlan {
+                        target_priority: TargetPriority::MediumTargets,
+                        protection: ProtectionPosture::Vanguard,
+                        ..BattlePlan::default()
+                    },
+                },
+                TurnCommand::SendMission {
+                    mission_id: 9901,
+                    origin,
+                    destination,
+                    objective: Icon::Attack,
+                    army: army.clone(),
+                    bombing: BombingRaid::Economic,
+                    combat_probes: false,
+                    battle_plan: departure,
+                    deep_cover: false,
+                    jump_gate: false,
+                },
+            ],
+            1 => {
+                assert!(model.missions.iter().any(|mission| mission.id == 9901));
+                vec![TurnCommand::SetMissionBattlePlan {
+                    mission_id: 9901,
+                    battle_plan: revised,
+                }]
+            },
+            _ => Vec::new(),
+        };
+        let submissions = vec![
+            TurnSubmission::new(1, model.turn, commands),
+            TurnSubmission::new(
+                2,
+                model.turn,
+                if index == 0 {
+                    vec![TurnCommand::SetBattlePlan {
+                        planet_id: destination,
+                        battle_plan: defender,
+                    }]
+                } else {
+                    Vec::new()
+                },
+            ),
+        ];
+        // A resumed client must produce exactly the same combat and RNG progression.
+        let mut restored: GameModel = serde_json::from_value(serde_json::to_value(&model)?)?;
+        restored.validate()?;
+        resolve_turn(&mut restored, &submissions)?;
+        resolve_turn(&mut model, &submissions)?;
+        assert_eq!(serde_json::to_value(&model)?, serde_json::to_value(restored)?);
+        turns.push(serde_json::json!({
+            "submissions": submissions,
+            "resolved": PersistedGame::new(model.clone()),
+        }));
+        if battle_seen {
+            break;
+        }
+        if let Some(report) = model.players[0].reports.iter().find(|r| r.combat_report.is_some()) {
+            assert_eq!(report.mission.battle_plan, revised);
+            assert_eq!(report.planet.battle_plan, defender);
+            let rounds = &report.combat_report.as_ref().unwrap().rounds;
+            assert!(!rounds.is_empty());
+            assert!(rounds.iter().flat_map(|r| &r.attacker).all(|u| u.battle_plan == revised));
+            assert!(rounds.iter().flat_map(|r| &r.defender).all(|u| u.battle_plan == defender));
+            battle_seen = true;
+        }
+    }
+    assert!(battle_seen, "normal multiplayer fixture must resolve a battle");
+    Ok(serde_json::json!({ "initial": initial, "turns": turns }))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -123,6 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "battle_plan": BattlePlan::default(),
             "battle_plans": battle_plans,
             "battle_report": battle_report,
+            "combat_game": combat_fixture(active.clone())?,
             "trade_routes": trade_route_fixtures(&active),
             "lobby": lobby,
             "active": PersistedGame::new(active),

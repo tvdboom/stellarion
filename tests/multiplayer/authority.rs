@@ -115,8 +115,8 @@ fn battle_orders_require_ownership_and_survive_authoritative_resolution() {
     let battle_plan = BattlePlan {
         automatic_tactic: false,
         tactic: CombatTactic::Interception,
-        target_priority: TargetPriority::SmallShips,
-        protection: ProtectionPosture::HeavyCover,
+        target_priority: TargetPriority::LightTargets,
+        protection: ProtectionPosture::Bulwark,
     };
     assert!(matches!(
         block_on(backend.submit_turn(
@@ -180,6 +180,16 @@ fn transport_rejects_missing_and_unknown_battle_orders() {
         assert!(serde_json::from_value::<TurnSubmission>(missing).is_err());
         let mut invalid = encoded.clone();
         invalid["commands"][0]["battle_plan"][field] = serde_json::json!("Unknown");
+        assert!(serde_json::from_value::<TurnSubmission>(invalid).is_err());
+    }
+    for priority in ["Defenses", "SmallShips", "MediumShips", "CapitalShips"] {
+        let mut invalid = encoded.clone();
+        invalid["commands"][0]["battle_plan"]["target_priority"] = serde_json::json!(priority);
+        assert!(serde_json::from_value::<TurnSubmission>(invalid).is_err());
+    }
+    for protection in ["ScreenCapitals", "HeavyCover", "ProtectBombers"] {
+        let mut invalid = encoded.clone();
+        invalid["commands"][0]["battle_plan"]["protection"] = serde_json::json!(protection);
         assert!(serde_json::from_value::<TurnSubmission>(invalid).is_err());
     }
     let mut missing = encoded;

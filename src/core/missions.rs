@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::combat::plan::BattlePlan;
+use crate::core::combat::report::combat_fleet_strength;
 use crate::core::constants::{PHALANX_DISTANCE, RADAR_DISTANCE, REACTOR_FUEL_REDUCTION_FACTOR};
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -232,7 +233,7 @@ pub struct Mission {
     pub combat_probes: bool,
     /// Orders carried by this fleet, editable by its commander while travelling.
     pub battle_plan: BattlePlan,
-    /// Source fleets retained when simultaneous arrivals carry different combat plans.
+    /// Source identities and departure orders used to choose the strongest arriving fleet.
     pub battle_fleets: Vec<BattleFleet>,
     /// Whether this Spy mission attempts to bypass combat using the origin's Command Relay.
     pub deep_cover: bool,
@@ -303,15 +304,15 @@ impl JointAttackMission {
     }
 }
 
-/// Combat choices belonging to one commander in a coordinated attack.
+/// Source fleet retained for deterministic plan selection and survivor tracking.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BattleFleet {
     /// Stable source mission identity, preserved when arrivals combine.
     pub id: MissionId,
-    /// Ships following this source fleet's orders.
+    /// Ships contributed by this source fleet.
     pub army: Army,
-    /// Independent combat orders, resolved from this fleet's composition.
+    /// Departure orders; the strongest source supplies the combined force's orders.
     pub battle_plan: BattlePlan,
 }
 
@@ -328,7 +329,7 @@ pub struct FleetCombatOrders {
 }
 
 impl Mission {
-    /// Returns independent source fleets, resolving automatic selection before battle.
+    /// Returns source contributions, preserving their automatic-selection intent.
     pub fn source_battle_fleets(&self) -> Vec<BattleFleet> {
         if self.battle_fleets.is_empty() {
             vec![BattleFleet {
@@ -347,20 +348,20 @@ impl Mission {
         }
     }
 
-    /// Preserves separately ordered survivors on a returning combined fleet.
+    /// Preserves source identities on a returning combined fleet.
     pub fn with_battle_fleets(mut self, fleets: Vec<BattleFleet>) -> Self {
         self.battle_fleets = fleets;
         self
     }
-    /// Returns the current combat plan for one contingent in this mission.
+    /// Returns one plan per commander. Same-owner sources use the greatest ship
+    /// production strength, ties favoring the lowest source ID, then resolve Auto
+    /// against the whole combined army rather than the winning source alone.
     pub fn battle_plan_for(&self, owner: Option<PlayerId>) -> BattlePlan {
         if self.joint_attack.is_none() && owner == Some(self.owner) {
-            if let Some(fleet) = self
-                .battle_fleets
-                .iter()
-                .max_by_key(|fleet| fleet.army.values().map(|count| *count as u128).sum::<u128>())
-            {
-                return fleet.battle_plan.resolved(&fleet.army);
+            if let Some(fleet) = self.battle_fleets.iter().max_by_key(|fleet| {
+                (combat_fleet_strength(&fleet.army), std::cmp::Reverse(fleet.id))
+            }) {
+                return fleet.battle_plan.resolved(&self.army);
             }
         }
         let plan = owner
@@ -860,16 +861,12 @@ impl Mission {
 
     /// Merges compatible simultaneous arrivals into one deterministic mission.
     pub fn merge(&mut self, other: &Mission) {
-        let distinct = !self.battle_fleets.is_empty()
-            || !other.battle_fleets.is_empty()
-            || self.battle_plan_for(Some(self.owner)).tactic
-                != other.battle_plan_for(Some(other.owner)).tactic
-            || self.battle_plan_for(Some(self.owner)) != other.battle_plan_for(Some(other.owner));
-        if distinct {
-            let mut fleets = self.source_battle_fleets();
-            fleets.extend(other.source_battle_fleets());
-            self.battle_fleets = fleets;
-        }
+        // Keep every source, even equal plans: an accumulated group must not outvote
+        // a later source that was stronger than each individual arriving fleet.
+        let mut fleets = self.source_battle_fleets();
+        fleets.extend(other.source_battle_fleets());
+        fleets.sort_by_key(|fleet| fleet.id);
+        self.battle_fleets = fleets;
         // The planet of origin becomes the one that send the
         // largest army (measured by production amount)
         if self.army.total_production() < other.army.total_production() {
@@ -877,7 +874,6 @@ impl Mission {
             self.origin_owned = other.origin_owned;
             self.origin_controlled = other.origin_controlled;
             self.origin_army = other.origin_army.clone();
-            self.battle_plan = other.battle_plan;
         }
 
         // Select objective based on priority
@@ -896,6 +892,7 @@ impl Mission {
                 .as_str(),
         );
         self.joint_attack = None;
+        self.battle_plan = self.battle_plan_for(Some(self.owner));
     }
 
     /// Return the origin planet if still controlled by the player,

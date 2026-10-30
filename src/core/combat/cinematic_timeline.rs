@@ -105,6 +105,7 @@ pub(crate) struct CinematicTimeline {
     pub duration: f32,
     pub initial_planetary_shield: usize,
     planetary_shield: Vec<(f32, usize)>,
+    round_starts: Vec<f32>,
 }
 
 type ActorKey = (bool, u64);
@@ -127,6 +128,7 @@ impl CinematicTimeline {
             duration: 4.0,
             initial_planetary_shield,
             planetary_shield: vec![(0.0, initial_planetary_shield)],
+            round_starts: Vec::new(),
         };
         let Some(combat) = &report.combat_report else {
             return movie;
@@ -214,6 +216,7 @@ impl CinematicTimeline {
             FLEET_FIRE_START
         };
         for (round_index, round) in combat.rounds.iter().enumerate() {
+            movie.round_starts.push(cursor);
             cursor = movie.add_round(report, round, round_index, cursor, &indices);
         }
         if report.is_stalemate() {
@@ -244,6 +247,11 @@ impl CinematicTimeline {
     pub fn planetary_shield_at(&self, time: f32) -> usize {
         let end = self.planetary_shield.partition_point(|(at, _)| *at <= time);
         self.planetary_shield[end.saturating_sub(1)].1
+    }
+
+    /// Selects round-start tactical stats during forward playback and seeking.
+    pub fn round_index_at(&self, time: f32) -> usize {
+        self.round_starts.partition_point(|start| *start <= time).saturating_sub(1)
     }
 
     fn add_actor(

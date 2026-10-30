@@ -1082,3 +1082,66 @@ fn soundtrack_omits_hidden_orbitals_and_unselected_buildings_without_mutating_ev
     assert_eq!(movie.timeline.actors[orbital].death_at, Some(7.0));
     assert_eq!(movie.timeline.actors[building].death_at, Some(9.0));
 }
+
+#[test]
+fn cinematic_identity_keeps_the_compact_heading_and_reveals_orders_on_hover() {
+    let (mut app, context) = controls_app();
+    context.global_style_mut(|style| {
+        style.animation_time = 0.0;
+        style.interaction.tooltip_delay = 0.0;
+    });
+    for _ in 0..4 {
+        controls_frame(&mut app, &context, vec![]);
+    }
+    let shapes = controls_frame(&mut app, &context, vec![]);
+    let name = label_rect(&shapes, "Player 1").unwrap();
+    assert!(label_rect(&shapes, "Protection").is_none());
+    let panel = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.fill == Color::srgba(0.025, 0.045, 0.07, 0.88).to_color32()
+                    && rect.rect.contains(name.center()) =>
+            {
+                Some(rect.rect)
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert!(panel.height() < 80.0, "heading keeps its original compact height: {panel:?}");
+    let pointer = panel.right_bottom() - egui::vec2(3.0, 3.0);
+    for _ in 0..5 {
+        controls_frame(&mut app, &context, vec![egui::Event::PointerMoved(pointer)]);
+    }
+    let shapes = controls_frame(&mut app, &context, vec![cinematic_wheel(-2.0)]);
+    for label in ["Tactic", "Target priority", "Protection"] {
+        assert!(label_rect(&shapes, label).is_some(), "missing {label}");
+    }
+    for label in ["Attacker · Battle plans", "Orders at the start of battle"] {
+        assert!(label_rect(&shapes, label).is_none(), "unexpected {label}");
+    }
+    assert_eq!(
+        shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Player 1")
+            })
+            .count(),
+        1,
+        "the player name belongs in the heading"
+    );
+    assert_eq!(label_rect(&shapes, "Player 1"), Some(name));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+    assert_eq!(
+        app.world().resource::<CinematicPlayback>().camera.transform(viewport),
+        egui::emath::TSTransform::IDENTITY
+    );
+    for _ in 0..5 {
+        controls_frame(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(320.0, 420.0))],
+        );
+    }
+    assert!(label_rect(&controls_frame(&mut app, &context, vec![]), "Protection").is_none());
+}

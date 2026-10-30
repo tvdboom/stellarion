@@ -286,7 +286,7 @@ fn first_war_sun_volley_uses_ten_percent_plus_planet_modifier() {
 }
 
 #[test]
-fn ships_and_bombers_use_opposite_target_priorities_with_fallbacks() {
+fn ordinary_ships_use_one_target_pool_while_bombers_keep_defense_priority() {
     fn combatant(id: u64, unit: Unit) -> CombatUnit {
         CombatUnit {
             fleet_id: 0,
@@ -307,10 +307,15 @@ fn ships_and_bombers_use_opposite_target_priorities_with_fallbacks() {
     let mut mixed = vec![combatant(1, ship), combatant(2, dock), combatant(3, defense)];
     let mut rng = rand_chacha::ChaCha8Rng::from_seed([14; 32]);
 
-    let ordinary_target = choose_combat_target(Unit::Ship(Ship::Cruiser), &mut mixed, &mut rng)
-        .expect("ordinary ship must find a target")
-        .unit;
-    assert!(ordinary_target == ship || ordinary_target == dock);
+    let mut selected = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        selected.insert(
+            choose_combat_target(Unit::Ship(Ship::Cruiser), &mut mixed, &mut rng)
+                .expect("ordinary ship must find a target")
+                .unit,
+        );
+    }
+    assert_eq!(selected, std::collections::BTreeSet::from([ship, dock, defense]));
 
     let bomber_target = choose_combat_target(Unit::Ship(Ship::Bomber), &mut mixed, &mut rng)
         .expect("bomber must find a target")

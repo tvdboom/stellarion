@@ -10,6 +10,8 @@ pub(crate) mod cinematic_timeline;
 pub(crate) mod cinematic_ui;
 #[cfg(feature = "app")]
 pub(crate) mod effects;
+#[cfg(feature = "app")]
+pub(crate) mod identity_ui;
 pub mod plan;
 #[cfg(feature = "app")]
 pub(crate) mod playback;

@@ -1,4 +1,4 @@
-//! Shared battle-plan controls for fleet dispatch, standing orders, and reports.
+//! Shared battle-plan controls for fleet dispatch and standing orders.
 
 use super::*;
 use crate::core::combat::plan::BattlePlan;
@@ -100,98 +100,6 @@ pub(super) fn draw_garrison_plan_modal(
     let should_close = response.should_close();
     let (close, changed) = response.inner;
     (close || should_close, changed)
-}
-
-struct ReportBattlePlan {
-    owner: Option<PlayerId>,
-    plan: BattlePlan,
-    army: Army,
-}
-
-/// Uses pre-battle snapshots so casualties and later standing-order edits cannot rewrite history.
-fn report_battle_plans(report: &MissionReport, side: &Side) -> Vec<ReportBattlePlan> {
-    report
-        .battle_plan_fleets(side)
-        .into_iter()
-        .map(|(owner, _, plan, army)| ReportBattlePlan {
-            owner,
-            plan,
-            army,
-        })
-        .collect()
-}
-
-pub(super) fn draw_report_battle_plans(
-    ui: &mut Ui,
-    report: &MissionReport,
-    session: &MultiplayerSession,
-) {
-    ui.set_max_width(440.0);
-    ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-        ui.small("Plans at the start of the battle");
-        ui.add(egui::Label::new(RichText::new("Tactic advantages use the surviving force's suitability at the start of each round.").small()).wrap());
-        for side in [Side::Attacker, Side::Defender] {
-            let opponents = report_battle_plans(report, &side.opposite());
-            for entry in report_battle_plans(report, &side) {
-                ui.separator();
-                let name = entry.owner.map_or_else(
-                    || report.planet.name.clone(),
-                    |owner| {
-                        session
-                            .player_name(owner)
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| format!("Player {owner}"))
-                    },
-                );
-                ui.small(format!(
-                    "{} · {name}",
-                    if side == Side::Attacker {
-                        "Attacker"
-                    } else {
-                        "Defender"
-                    }
-                ));
-                if entry.owner.is_none() {
-                    ui.small("No commander orders; tactical counters do not apply.");
-                    continue;
-                }
-                ui.small(format!(
-                    "{} · {}% suitability",
-                    entry.plan.tactic.name(),
-                    entry.plan.suitability(&entry.army)
-                ));
-                ui.small(format!(
-                    "Target: {} · Protection: {}",
-                    entry.plan.target_priority.name(),
-                    entry.plan.protection.name()
-                ));
-                for opponent in &opponents {
-                    let Some(owner) = opponent.owner else {
-                        ui.small("No tactical counter bonus against uncommanded forces.");
-                        continue;
-                    };
-                    let opponent_name = session.player_name(owner).map(str::to_owned).unwrap_or_else(|| format!("Player {owner}"));
-                    let relationship = if entry.plan.tactic.counters(opponent.plan.tactic) {
-                        "Favorable; damage advantage scales with your suitability"
-                    } else if opponent.plan.tactic.counters(entry.plan.tactic) {
-                        "Unfavorable; enemy damage advantage scales with their suitability"
-                    } else {
-                        "Neutral; neither tactic gains a counter advantage"
-                    };
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!(
-                                "Against {opponent_name}'s {}: {relationship}.",
-                                opponent.plan.tactic.name()
-                            ))
-                            .small(),
-                        )
-                        .wrap(),
-                    );
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]

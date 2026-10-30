@@ -4,6 +4,7 @@ use crate::core::combat::effects::PendingImpact;
 use crate::core::combat::resolution::{
     resolve_combat_with_energy_with_rng, resolve_combat_with_rng,
 };
+use crate::core::combat::systems::CombatFormationState;
 use crate::core::energy::EnergyGrid;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
@@ -58,6 +59,10 @@ fn app(bombers: usize) -> App {
 }
 
 fn app_with_raid(bombers: usize, raid: BombingRaid) -> App {
+    app_with_army(Army::from([(Unit::Ship(Ship::Bomber), bombers)]), raid)
+}
+
+fn app_with_army(army: Army, raid: BombingRaid) -> App {
     let mut rng = DeterministicRngState::from_u64(2).next_rng();
     let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     origin.colonize(1);
@@ -78,7 +83,7 @@ fn app_with_raid(bombers: usize, raid: BombingRaid) -> App {
         &origin,
         &target,
         Icon::Attack,
-        Army::from([(Unit::Ship(Ship::Bomber), bombers)]),
+        army,
         raid,
         false,
         false,
@@ -266,64 +271,230 @@ fn eliminated_army_finishes_its_wrecks_before_concluding_playback() {
 }
 
 #[test]
-fn automatic_individual_conclusion_waits_for_wrecks_and_preserves_survivor_slots() {
-    let mut app = app(150);
-    assert!(app.world().resource::<Player>().reports[0]
-        .surviving_attacker
-        .iter()
-        .any(|(_, count)| *count > 0));
-    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
-    app.world_mut().run_system_once(super::super::systems::update_combat_formation).unwrap();
-    app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
-    app.world_mut().run_system_once(super::super::systems::update_combat_formation).unwrap();
-    assert!(app.world().resource::<CombatFormationState>().individual());
+fn automatic_individual_conclusion_waits_for_wrecks_and_preserves_survivor_layout() {
+    use super::super::systems::{HullCmp, ShieldCmp};
 
-    let expected = app
-        .world_mut()
-        .query::<&IndividualCombatUnitCmp>()
-        .iter(app.world())
-        .filter_map(|card| {
-            card.id.filter(|_| card.side == Side::Attacker).map(|id| (id, card.home()))
-        })
-        .collect::<HashMap<_, _>>();
-    assert!(!expected.is_empty());
-
-    let defenders = app
-        .world_mut()
-        .query::<(Entity, &CombatUnitCmp)>()
-        .iter(app.world())
-        .filter_map(|(entity, card)| {
-            (card.side == Side::Defender && combatant(card.unit)).then_some(entity)
-        })
-        .collect::<Vec<_>>();
-    for entity in defenders {
-        app.world_mut().despawn(entity);
+    #[derive(Debug, PartialEq)]
+    struct CardGeometry {
+        home: Vec3,
+        display_size: f32,
+        image_size: Option<Vec2>,
+        children: Vec<(Transform, Option<Vec2>)>,
     }
 
-    let wreck = app
-        .world_mut()
-        .spawn(super::super::effects::Wreck::new(Vec3::ZERO, 40.0, Unit::crawler()))
-        .id();
-    app.world_mut().run_system_once(control_combat_playback).unwrap();
-    assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
-    app.world_mut().despawn(wreck);
+    let geometry = |app: &mut App| {
+        let mut children_query = app.world_mut().query::<&Children>();
+        let mut cards = app.world_mut().query::<(Entity, &IndividualCombatUnitCmp, &Sprite)>();
+        let children = children_query.query(app.world());
+        cards
+            .iter(app.world())
+            .filter_map(|(entity, card, sprite)| {
+                card.id.map(|id| {
+                    (
+                        (card.side == Side::Defender, id),
+                        CardGeometry {
+                            home: card.home(),
+                            display_size: card.display_size(),
+                            image_size: sprite.custom_size,
+                            children: children
+                                .iter_descendants(entity)
+                                // Filled lengths reflect damage; tracks and borders retain their geometry.
+                                .filter(|child| {
+                                    app.world().get::<ShieldCmp>(*child).is_none()
+                                        && app.world().get::<HullCmp>(*child).is_none()
+                                })
+                                .filter_map(|child| {
+                                    Some((
+                                        *app.world().get::<Transform>(child)?,
+                                        app.world().get::<Sprite>(child)?.custom_size,
+                                    ))
+                                })
+                                .collect(),
+                        },
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>()
+    };
 
-    app.world_mut().run_system_once(control_combat_playback).unwrap();
-    assert!(matches!(
-        *app.world().resource::<NextState<CombatState>>(),
-        NextState::Pending(CombatState::EndCombat)
-    ));
-    let survivors = app
-        .world_mut()
-        .query::<(&Transform, &IndividualCombatUnitCmp)>()
-        .iter(app.world())
-        .filter_map(|(transform, card)| {
-            card.id.filter(|_| card.side == Side::Attacker).map(|id| (id, transform.translation))
-        })
-        .collect::<Vec<_>>();
-    assert!(!survivors.is_empty());
-    for (id, position) in survivors {
-        assert_eq!(position, expected[&id]);
+    for (army, defeated_side) in [
+        (
+            Army::from([
+                (Unit::Ship(Ship::LightFighter), 60),
+                (Unit::Ship(Ship::Bomber), 12),
+                (Unit::war_sun(), 2),
+            ]),
+            Side::Defender,
+        ),
+        (Army::from([(Unit::Ship(Ship::Bomber), 2)]), Side::Attacker),
+    ] {
+        for individual in [true, false] {
+            let mut app = app_with_army(army.clone(), BombingRaid::None);
+            // Exercise actual viewport dimensions, including a smaller window.
+            let viewport = if individual {
+                Vec2::new(1280.0, 720.0)
+            } else {
+                Vec2::new(800.0, 600.0)
+            };
+            for mut projection in
+                app.world_mut().query::<&mut Projection>().iter_mut(app.world_mut())
+            {
+                let Projection::Orthographic(projection) = &mut *projection else {
+                    unreachable!();
+                };
+                projection.area = Rect::from_center_size(Vec2::ZERO, viewport);
+            }
+            let report = app.world().resource::<Player>().reports[0].clone();
+            let rounds = &report.combat_report.as_ref().unwrap().rounds;
+            if defeated_side == Side::Defender {
+                assert!(rounds.len() > 1);
+                assert!(report.surviving_attacker.has_army());
+                assert!(
+                    rounds.last().unwrap().attacker.len() < rounds[0].attacker.len(),
+                    "the victory fixture must lose ships before the final round's layout is fitted"
+                );
+            }
+            seek(app.world_mut(), &report, 0, false, CombatState::DisplayRound, None);
+            app.insert_resource(NextState::<CombatState>::Unchanged);
+            app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+            app.world_mut()
+                .run_system_once(super::super::systems::update_combat_formation)
+                .unwrap();
+            assert_eq!(app.world().resource::<CombatFormationState>().individual(), individual);
+            let expected = geometry(&mut app);
+            assert!(!expected.is_empty());
+
+            let defeated = app
+                .world_mut()
+                .query::<(Entity, &CombatUnitCmp)>()
+                .iter(app.world())
+                .filter_map(|(entity, card)| {
+                    (card.side == defeated_side && combatant(card.unit)).then_some(entity)
+                })
+                .collect::<Vec<_>>();
+            for entity in defeated {
+                app.world_mut().despawn(entity);
+            }
+
+            let wreck = app
+                .world_mut()
+                .spawn(super::super::effects::Wreck::new(Vec3::ZERO, 40.0, Unit::crawler()))
+                .id();
+            app.world_mut().run_system_once(control_combat_playback).unwrap();
+            assert!(matches!(
+                *app.world().resource::<NextState<CombatState>>(),
+                NextState::Unchanged
+            ));
+            app.world_mut().despawn(wreck);
+
+            app.world_mut().run_system_once(control_combat_playback).unwrap();
+            assert!(matches!(
+                *app.world().resource::<NextState<CombatState>>(),
+                NextState::Pending(CombatState::EndCombat)
+            ));
+            assert!(!app.world().contains_resource::<CombatLayoutSnapshot>());
+            let survivors = geometry(&mut app);
+            assert!(!survivors.is_empty());
+            assert!(survivors.len() < expected.len(), "fixture must remove casualties");
+            for (id, layout) in &survivors {
+                assert_eq!(layout, &expected[id]);
+            }
+
+            // A later combine/split must return to the same slots rather than the rebuilt fit.
+            app.insert_resource(State::new(CombatState::EndCombat));
+            for individual in [!individual, individual, true] {
+                app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
+                app.world_mut()
+                    .run_system_once(super::super::systems::update_combat_formation)
+                    .unwrap();
+            }
+            assert_eq!(geometry(&mut app), survivors);
+            for (card, transform) in
+                app.world_mut().query::<(&IndividualCombatUnitCmp, &Transform)>().iter(app.world())
+            {
+                assert_eq!(transform.translation, card.home());
+                assert_eq!(transform.scale, Vec3::ONE);
+            }
+        }
+    }
+}
+
+#[test]
+fn automatic_conclusion_keeps_damaged_bars_at_their_recorded_values() {
+    use super::super::systems::{update_combat_stats, HullCmp, ShieldCmp};
+
+    let bars = |app: &mut App| {
+        let mut cards =
+            app.world_mut()
+                .query::<(Entity, Option<&CombatUnitCmp>, Option<&IndividualCombatUnitCmp>)>();
+        let mut children_query = app.world_mut().query::<&Children>();
+        let world = app.world();
+        let children = children_query.query(world);
+        cards
+            .iter(world)
+            .filter_map(|(entity, group, individual)| {
+                let (side, unit, id) = if let Some(card) = group {
+                    (&card.side, card.unit, None)
+                } else {
+                    let card = individual?;
+                    (&card.side, card.unit, card.id)
+                };
+                (!unit.is_building()).then_some((entity, side, unit, id))
+            })
+            .flat_map(|(entity, side, unit, id)| {
+                children.iter_descendants(entity).filter_map(move |child| {
+                    let shield = world.get::<ShieldCmp>(child).is_some();
+                    if !shield && world.get::<HullCmp>(child).is_none() {
+                        return None;
+                    }
+                    Some((
+                        (side == &Side::Defender, unit, id, shield),
+                        (
+                            world.get::<Sprite>(child)?.custom_size?.x,
+                            world.get::<Transform>(child)?.translation.x,
+                        ),
+                    ))
+                })
+            })
+            .collect::<HashMap<_, _>>()
+    };
+
+    for bombers in [150, 2] {
+        let mut app = app(bombers);
+        let mut report = app.world().resource::<Player>().reports[0].clone();
+        let rounds = &mut report.combat_report.as_mut().unwrap().rounds;
+        let last = rounds.len() - 1;
+        let round = &mut rounds[last];
+        // Give every survivor partial hull and shields, so both bar types expose a reset.
+        for record in round.attacker.iter_mut().chain(&mut round.defender) {
+            if record.hull > 0 {
+                record.hull = (record.unit.hull() / 2).max(1);
+                record.shield = record.unit.shield() / 3;
+            }
+        }
+        app.world_mut().resource_mut::<Player>().reports[0] = report.clone();
+        seek(app.world_mut(), &report, last, true, CombatState::EndCombat, None);
+        app.add_systems(Update, update_combat_stats);
+        app.insert_resource(State::new(CombatState::Fire));
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+        app.update();
+        let expected = bars(&mut app);
+        assert!(expected.keys().any(|(_, _, id, shield)| id.is_some() && *shield));
+        assert!(expected.values().all(|(_, x)| *x < 0.0), "all bars must be depleted");
+
+        app.insert_resource(NextState::<CombatState>::Unchanged);
+        app.world_mut().run_system_once(control_combat_playback).unwrap();
+        assert!(matches!(
+            *app.world().resource::<NextState<CombatState>>(),
+            NextState::Pending(CombatState::EndCombat)
+        ));
+        app.insert_resource(State::new(CombatState::EndCombat));
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(16));
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(bars(&mut app), expected, "result bars must never refill after rebuilding");
+        }
     }
 }
 

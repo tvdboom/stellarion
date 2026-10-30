@@ -1,7 +1,147 @@
 use super::*;
+use bevy::ecs::system::RunSystemOnce;
+use bevy::state::{app::StatesPlugin, state::StateTransition};
+use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
 use crate::core::simulation::{GameModel, GameRules};
+use crate::core::turns::StartTurnMsg;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
+use crate::multiplayer::client::MultiplayerRequest;
+
+fn notification_test_app() -> (App, egui::Context) {
+    let mut app = App::new();
+    app.add_plugins(StatesPlugin)
+        .insert_state(AppState::Game)
+        .init_state::<GameState>()
+        .init_resource::<Time>()
+        .init_resource::<EguiUserTextures>()
+        .init_resource::<UiState>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .add_message::<MessageMsg>()
+        .add_message::<PlayAudioMsg>()
+        .add_message::<StartTurnMsg>()
+        .add_message::<MultiplayerRequest>()
+        .add_plugins(MessagesPlugin);
+    let mut context = EguiContext::default();
+    let egui = context.get_mut().clone();
+    app.world_mut().spawn((context, PrimaryEguiContext));
+    app.world_mut().run_schedule(StateTransition);
+    (app, egui)
+}
+
+fn notification_system_frame(app: &mut App, context: &egui::Context, size: egui::Vec2) -> String {
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..default()
+        },
+        |_| app.world_mut().run_schedule(EguiPrimaryContextPass),
+    );
+    output.textures_delta.clear();
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn escape_hides_turn_toasts_until_gameplay_resumes() {
+    for size in [egui::vec2(900.0, 700.0), egui::vec2(320.0, 480.0)] {
+        let (mut app, context) = notification_test_app();
+        app.world_mut().write_message(MessageMsg::info("Turn 1 started."));
+        for _ in 0..3 {
+            notification_system_frame(&mut app, &context, size);
+        }
+        assert!(notification_system_frame(&mut app, &context, size).contains("Turn 1 started."));
+        app.world_mut().resource_mut::<bevy::prelude::Messages<PlayAudioMsg>>().clear();
+        let remaining = app.world().resource::<Messages>().0[0].remaining_seconds;
+
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+        app.world_mut().run_system_once(crate::core::systems::check_keys_menu).unwrap();
+        app.world_mut().run_schedule(StateTransition);
+        assert_eq!(*app.world().resource::<State<GameState>>().get(), GameState::GameMenu);
+        app.world_mut().write_message(MessageMsg::warning("Player disconnected."));
+        app.world_mut().write_message(
+            MessageMsg::error("Mission failed.").with_action(MessageAction::OpenMissionReports),
+        );
+        assert!(notification_system_frame(&mut app, &context, size).is_empty());
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(20));
+
+        for state in [GameState::GameMenu, GameState::Settings, GameState::EndGame] {
+            app.world_mut().resource_mut::<NextState<GameState>>().set(state);
+            app.world_mut().run_schedule(StateTransition);
+            assert!(notification_system_frame(&mut app, &context, size).is_empty(), "{state:?}");
+            assert_eq!(app.world().resource::<Messages>().0[0].remaining_seconds, remaining);
+            assert!(app.world().resource::<bevy::prelude::Messages<PlayAudioMsg>>().is_empty());
+        }
+
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(16));
+        app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::Playing);
+        app.world_mut().run_schedule(StateTransition);
+        for _ in 0..3 {
+            notification_system_frame(&mut app, &context, size);
+        }
+        let text = notification_system_frame(&mut app, &context, size);
+        assert!(text.contains("Turn 1 started."));
+        assert!(text.contains("Player disconnected."));
+        assert!(text.contains("Mission failed."));
+        assert_eq!(
+            app.world_mut().resource_mut::<bevy::prelude::Messages<PlayAudioMsg>>().drain().count(),
+            2
+        );
+    }
+}
+
+#[test]
+fn leaving_game_clears_visible_and_unread_toasts_but_allows_new_menu_notices() {
+    for game_state in [GameState::Playing, GameState::GameMenu, GameState::EndGame] {
+        let (mut app, context) = notification_test_app();
+        let size = egui::vec2(900.0, 700.0);
+        app.world_mut().write_message(MessageMsg::info("Turn 1 started."));
+        notification_system_frame(&mut app, &context, size);
+        app.world_mut().resource_mut::<NextState<GameState>>().set(game_state);
+        app.world_mut().run_schedule(StateTransition);
+        app.world_mut().write_message(MessageMsg::warning("An unread gameplay notice."));
+        app.world_mut().resource_mut::<bevy::prelude::Messages<PlayAudioMsg>>().clear();
+
+        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::MainMenu);
+        app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::Playing);
+        app.world_mut().run_schedule(StateTransition);
+        for _ in 0..3 {
+            assert!(notification_system_frame(&mut app, &context, size).is_empty());
+        }
+        assert!(app.world().resource::<Messages>().0.is_empty());
+        assert!(app.world().resource::<bevy::prelude::Messages<PlayAudioMsg>>().is_empty());
+
+        app.world_mut().write_message(MessageMsg::info("The host closed the lobby."));
+        for _ in 0..3 {
+            notification_system_frame(&mut app, &context, size);
+        }
+        let text = notification_system_frame(&mut app, &context, size);
+        assert!(text.contains("The host closed the lobby."));
+        assert!(!text.contains("Turn 1 started."));
+        assert!(!text.contains("An unread gameplay notice."));
+
+        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::LoadingGame);
+        app.world_mut().run_schedule(StateTransition);
+        assert!(notification_system_frame(&mut app, &context, size).is_empty());
+        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Game);
+        app.world_mut().run_schedule(StateTransition);
+        app.world_mut().write_message(MessageMsg::info("Turn 2 started."));
+        for _ in 0..3 {
+            notification_system_frame(&mut app, &context, size);
+        }
+        let text = notification_system_frame(&mut app, &context, size);
+        assert!(text.contains("Turn 2 started."));
+        assert!(!text.contains("The host closed the lobby."));
+    }
+}
 
 #[test]
 fn error_notifications_begin_with_a_capital_letter() {
@@ -197,7 +337,7 @@ fn colony_toast_is_clickable_and_fits_small_viewports() {
 #[test]
 fn toasts_are_hidden_and_paused_during_combat_selection_and_animation() {
     for game_state in [GameState::CombatMenu, GameState::Combat] {
-        let hidden_for_combat = notifications_hidden_during_combat(true, Some(game_state));
+        let hidden_for_combat = notifications_hidden_by_game_state(true, Some(game_state));
         assert!(hidden_for_combat);
         let context = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));

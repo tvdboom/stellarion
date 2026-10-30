@@ -89,15 +89,12 @@ impl Description for Ship {
                 systems, and a high speed make this ship a tough opponent to fight against."
             },
             Ship::Bomber => {
-                "The Bomber is used primarily to destroy planetary buildings and defenses. Its \
-                high Rapid Fire against most defensive structures makes it very effective for \
-                planetary assaults. It's the only ship with Rapid Fire against the Plasma Turret. \
-                Unlike other ships, Bombers target defenses before enemy ships. Having Bombers in \
-                an offensive mission enables bombing raids, which destabilize the enemy's economy \
-                or industrial capabilities. After the first round ending with no Planetary Shield, \
-                each surviving Bomber gets one 25% chance to destroy a level of a random building \
-                in the selected category. This raid occurs once per battle and destroys at most 3 \
-                levels per building."
+                "Bombers are primarily used against defenses due to its Rapid Fire against defensive \
+                structures. It's the only ship with Rapid Fire against the Plasma Turret. Unlike \
+                other ships, Bombers target defenses before enemy ships. Bombers enables bombing \
+                raids. After the first round ending with no Planetary Shield, each surviving Bomber \
+                gets one 25% chance to destroy a level of a random building in the selected category. \
+                A raid occurs once per battle and destroys at most 3 levels per building."
             },
             Ship::Battleship => {
                 "The Battleship is a powerfull war ship, more powerful than the Cruiser but less \

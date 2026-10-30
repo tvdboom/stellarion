@@ -927,6 +927,19 @@ pub(crate) fn local_practice_app() -> App {
     local_practice_app_with_players(1)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn isolate_screenshot_client(world: &mut World) {
+    world.resource_mut::<BackendTasks>().0.clear();
+    world.insert_resource(ClientRuntime {
+        backend: None,
+        realtime_config: None,
+        storage: Arc::new(MemoryStorage::default()),
+        profile: ClientProfile::default(),
+        practice_return: None,
+        practice_players: Vec::new(),
+    });
+}
+
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 pub(crate) fn local_practice_app_with_players(player_count: u8) -> App {
     let rules = GameRules {
@@ -1472,6 +1485,110 @@ fn created_player_name_is_available_for_later_joins() {
     );
     assert_eq!(restored_form.saved_display_name.as_deref(), Some("Nova"));
     assert_eq!(restored_form.display_name, "Nova");
+}
+
+#[test]
+fn new_games_reset_combat_speed_and_keep_changes_within_the_match() {
+    use crate::core::settings::{CombatPreferences, Settings};
+
+    for local_practice in [false, true] {
+        let mut settings = Settings::default();
+        settings.apply_combat_preferences(CombatPreferences {
+            speed: 0.5,
+            volley_fire: true,
+            individual_units: true,
+        });
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .insert_state(AppState::MainMenu)
+            .insert_resource(settings)
+            .insert_resource(MultiplayerSession {
+                active_game: Some(record(
+                    "new-game",
+                    0,
+                    1,
+                    if local_practice {
+                        MatchStatus::Active
+                    } else {
+                        MatchStatus::Lobby
+                    },
+                )),
+                local_practice,
+                ..default()
+            })
+            .add_systems(OnEnter(AppState::Lobby), profile::reset_new_game_combat_speed)
+            .add_systems(OnEnter(AppState::LoadingGame), profile::reset_new_game_combat_speed);
+        app.update();
+        app.world_mut().resource_mut::<NextState<AppState>>().set(if local_practice {
+            AppState::LoadingGame
+        } else {
+            AppState::Lobby
+        });
+        app.update();
+        let settings = app.world().resource::<Settings>();
+        assert_eq!(settings.combat_speed, 1.0);
+        assert!(settings.combat_volley_fire);
+        assert!(settings.combat_individual_units);
+
+        if !local_practice {
+            app.world_mut()
+                .resource_mut::<MultiplayerSession>()
+                .active_game
+                .as_mut()
+                .unwrap()
+                .status = MatchStatus::Active;
+            app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::LoadingGame);
+            app.update();
+        }
+        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Game);
+        app.update();
+        app.world_mut().resource_mut::<Settings>().combat_speed = 4.0;
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<Settings>().combat_speed, 4.0);
+
+        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::MainMenu);
+        app.update();
+        app.world_mut().resource_mut::<MultiplayerSession>().active_game = Some(record(
+            "another-new-game",
+            0,
+            1,
+            if local_practice {
+                MatchStatus::Active
+            } else {
+                MatchStatus::Lobby
+            },
+        ));
+        app.world_mut().resource_mut::<NextState<AppState>>().set(if local_practice {
+            AppState::LoadingGame
+        } else {
+            AppState::Lobby
+        });
+        app.update();
+        assert_eq!(app.world().resource::<Settings>().combat_speed, 1.0);
+    }
+}
+
+#[test]
+fn resuming_games_preserves_combat_speed() {
+    use crate::core::settings::Settings;
+
+    for status in [MatchStatus::Active, MatchStatus::Finished] {
+        let mut app = App::new();
+        app.insert_resource(Settings {
+            combat_speed: 0.5,
+            ..default()
+        })
+        .insert_resource(MultiplayerSession {
+            active_game: Some(record("resumed-game", 1, 1, status)),
+            ..default()
+        });
+
+        app.world_mut().run_system_once(profile::reset_new_game_combat_speed).unwrap();
+
+        assert_eq!(app.world().resource::<Settings>().combat_speed, 0.5);
+    }
 }
 
 #[test]

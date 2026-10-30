@@ -1,6 +1,5 @@
 use super::*;
 use crate::core::combat::plan::CombatTactic;
-use crate::core::missions::FleetCombatOrders;
 
 #[test]
 fn mission_source_changes_inherit_standing_orders_without_resetting_draft_edits() {
@@ -41,73 +40,6 @@ fn standing_plan_editing_only_exposes_the_viewers_own_force() {
     assert!(commandable_garrison(&planet, &spectator).is_none());
     planet.is_destroyed = true;
     assert!(commandable_garrison(&planet, &Player::new(1, 0)).is_none());
-}
-
-#[test]
-fn report_plans_keep_each_commanders_initial_composition_and_orders() {
-    let swarm = BattlePlan {
-        automatic_tactic: false,
-        tactic: CombatTactic::Swarm,
-        ..default()
-    };
-    let siege = BattlePlan {
-        automatic_tactic: false,
-        tactic: CombatTactic::Siege,
-        ..default()
-    };
-    let bastion = BattlePlan {
-        automatic_tactic: false,
-        tactic: CombatTactic::Bastion,
-        ..default()
-    };
-    let fighters = Army::from([(Unit::Ship(Ship::LightFighter), 12)]);
-    let bombers = Army::from([(Unit::Ship(Ship::Bomber), 4)]);
-    let mut planet = Planet::new(0, "World".into(), Vec2::ZERO, false, 1.0);
-    planet.owned = Some(3);
-    planet.controlled = Some(3);
-    planet.battle_plan = bastion;
-    planet.army = crate::core::map::planet::Garrison::from_parts(
-        Army::from([(Unit::space_dock(), 1)]),
-        BTreeMap::from([(4, fighters.clone())]),
-    );
-    planet.protector_battle_plans.insert(4, swarm);
-    let mission = Mission {
-        owner: 1,
-        battle_plan: swarm,
-        joint_attack: Some(JointAttackMission {
-            attackers: BTreeMap::from([(1, fighters.clone()), (2, bombers.clone())]),
-            survivors: BTreeMap::new(),
-            combat_orders: BTreeMap::from([
-                (
-                    1,
-                    FleetCombatOrders {
-                        battle_plan: swarm,
-                        ..default()
-                    },
-                ),
-                (
-                    2,
-                    FleetCombatOrders {
-                        battle_plan: siege,
-                        ..default()
-                    },
-                ),
-            ]),
-            ..default()
-        }),
-        ..default()
-    };
-    let report = crate::test_support::empty_report(mission, planet);
-    let attacker = report_battle_plans(&report, &Side::Attacker);
-    assert_eq!(attacker.len(), 2);
-    assert_eq!((attacker[0].owner, attacker[0].plan), (Some(1), swarm));
-    assert_eq!(attacker[0].army, fighters);
-    assert_eq!((attacker[1].owner, attacker[1].plan), (Some(2), siege));
-    assert_eq!(attacker[1].army, bombers);
-    assert_eq!(attacker[1].plan.suitability(&attacker[1].army), 100);
-    let defender = report_battle_plans(&report, &Side::Defender);
-    assert_eq!((defender[0].owner, defender[0].plan), (Some(3), bastion));
-    assert_eq!((defender[1].owner, defender[1].plan), (Some(4), swarm));
 }
 
 #[test]
@@ -220,7 +152,7 @@ fn planet_header_edits_our_own_force_on_our_world_or_a_friendly_world() {
         let protection = text(&output, "Protection");
         assert!((tactic.center().y - target.center().y).abs() < 0.1);
         assert!((target.center().y - protection.center().y).abs() < 0.1);
-        text(&output, "100% fit");
+        text(&output, "Auto");
         let card = text(&output, "Swarm").center();
         frame(pointer(card, Some(true)));
         frame(pointer(card, Some(false)));

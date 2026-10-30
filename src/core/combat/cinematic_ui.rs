@@ -6,9 +6,10 @@ use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 
 use super::cinematic::{CinematicPlayback, PLANET_BLAST_TIME_SCALE};
 use super::effects::{hull_impact_cue, wreck_cue, EffectTextures, Weapon};
+use super::identity_ui::{show_identity_tooltip, CombatIdentityPlan};
 use super::report::{combat_strength_ranges, MissionReport, ReportId, Side};
 use super::result_banner;
-use super::systems::{combat_identity_participants, combat_identity_plans, combat_plan_labels};
+use super::systems::{combat_identity_participants, combat_identity_plans};
 use crate::core::audio::{set_ui_sound, PlayAudioMsg, SoundEffect, StopAudioMsg};
 use crate::core::constants::BUTTON_TEXT_SIZE;
 use crate::core::map::utils::{
@@ -217,10 +218,11 @@ pub(crate) struct CinematicHud {
     fonts_installed: bool,
     result_elapsed: f32,
     report_id: Option<ReportId>,
+    plan_round: Option<usize>,
     attackers: Vec<(String, Color, u128)>,
-    attacker_plans: Vec<(super::plan::BattlePlan, u8)>,
+    attacker_plans: Vec<CombatIdentityPlan>,
     defenders: Vec<(String, Color, u128)>,
-    defender_plans: Vec<(super::plan::BattlePlan, u8)>,
+    defender_plans: Vec<CombatIdentityPlan>,
     identity_rects: [Option<egui::Rect>; 2],
 }
 
@@ -230,8 +232,6 @@ fn draw_identity(
     right: bool,
     role: &str,
     participants: &[(String, Color, u128)],
-    plans: &[(super::plan::BattlePlan, u8)],
-    images: &ImageIds,
     fallback: egui::Color32,
 ) -> egui::Rect {
     let scale = viewport_ui_scale(viewport.size());
@@ -274,10 +274,7 @@ fn draw_identity(
     } * scale)
         .max(text_width + 35.0 * scale)
         .min(max_width);
-    let plan_row_height = (20.0 * scale).max(18.0);
-    let natural_height = (38.0 + 16.0 * names.len() as f32).max(text_height + 14.0 * scale)
-        + plans.len() as f32 * 3.0 * plan_row_height;
-    let height = natural_height.min((viewport.height() - 154.0 * scale).max(80.0));
+    let height = (38.0 + 16.0 * names.len() as f32).max(text_height + 14.0 * scale);
     let top = viewport.top() + 64.0 * scale;
     let left = if right {
         viewport.right() - inset - width
@@ -309,70 +306,21 @@ fn draw_identity(
             }
         }
     }
-    let hovered = painter
-        .ctx()
-        .input(|input| input.pointer.hover_pos().is_some_and(|pos| panel.contains(pos)));
-    let limit = (natural_height - height).max(0.0);
-    let scroll_id = egui::Id::new(("combat identity scroll", right, role));
-    let mut offset = painter.ctx().data_mut(|data| data.get_temp::<f32>(scroll_id).unwrap_or(0.0));
-    if hovered && limit > 0.0 {
-        offset -= painter.ctx().input(|input| input.smooth_scroll_delta.y);
-    }
-    offset = offset.clamp(0.0, limit);
-    painter.ctx().data_mut(|data| data.insert_temp(scroll_id, offset));
-    if limit > 0.0 {
-        let track = egui::Rect::from_min_max(
-            panel.right_top() + egui::vec2(-4.0, 4.0),
-            panel.right_bottom() - egui::vec2(2.0, 4.0),
-        );
-        let thumb_height = (track.height() * height / natural_height).max(12.0);
-        let thumb = egui::Rect::from_min_size(
-            track.min + egui::vec2(0.0, (track.height() - thumb_height) * offset / limit),
-            egui::vec2(2.0, thumb_height),
-        );
-        painter.rect_filled(thumb, 1.0, egui::Color32::from_gray(125));
-    }
     let text_painter = painter.with_clip_rect(panel.shrink2(egui::vec2(12.0 * scale, 3.0)));
     // Keep the two role headings aligned even when only one side has allied fleets.
     let first_line_height =
         role_galley.size().y + names.first().map_or(0.0, |name| name.size().y + 1.0);
     let mut position = egui::pos2(
         panel.left() + 23.0 * scale,
-        panel.top()
-            + if plans.is_empty() {
-                ((54.0 - first_line_height) * 0.5).max(7.0 * scale)
-            } else {
-                7.0 * scale
-            },
+        panel.top() + ((54.0 - first_line_height) * 0.5).max(7.0 * scale),
     );
-    position.y -= offset;
     let role_height = role_galley.size().y;
     text_painter.galley(position, role_galley, egui::Color32::WHITE);
     position.y += role_height + 1.0;
-    for (index, name) in names.into_iter().enumerate() {
+    for name in names {
         let height = name.size().y;
         text_painter.galley(position, name, egui::Color32::WHITE);
         position.y += height + 1.0;
-        if let Some((plan, affinity)) = plans.get(index) {
-            for (key, label) in combat_plan_labels(*plan, *affinity) {
-                let edge = plan_row_height - 2.0;
-                let icon = egui::Rect::from_min_size(position, egui::vec2(edge, edge));
-                text_painter.image(
-                    images.get(key),
-                    icon,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                text_painter.text(
-                    position + egui::vec2(edge + 4.0, edge * 0.5),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    egui::FontId::proportional((7.0 * font_scale).max(10.0)),
-                    egui::Color32::from_rgb(207, 219, 232),
-                );
-                position.y += plan_row_height;
-            }
-        }
     }
     panel
 }
@@ -508,11 +456,16 @@ pub(crate) fn draw_cinematic(
             let fallback = MultiplayerSession::default();
             let session = session.as_deref().unwrap_or(&fallback);
             hud.attackers = combat_identity_participants(report, &Side::Attacker, session);
-            hud.attacker_plans = combat_identity_plans(report, &Side::Attacker);
             hud.defenders = combat_identity_participants(report, &Side::Defender, session);
-            hud.defender_plans = combat_identity_plans(report, &Side::Defender);
             playback.set_owner_colors(|owner| session.player_color(owner).color().to_color32());
             hud.report_id = Some(report.id);
+            hud.plan_round = None;
+        }
+        let round = playback.timeline.round_index_at(playback.elapsed);
+        if hud.plan_round != Some(round) {
+            hud.attacker_plans = combat_identity_plans(report, &Side::Attacker, round);
+            hud.defender_plans = combat_identity_plans(report, &Side::Defender, round);
+            hud.plan_round = Some(round);
         }
     }
     egui::Area::new(egui::Id::new("cinematic scene"))
@@ -523,10 +476,12 @@ pub(crate) fn draw_cinematic(
             ui.set_min_size(rect.size());
             // Consume the scene's pointer area so clicks cannot select the map underneath.
             let scene = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-            let identity_hovered = context.input(|input| {
-                input.pointer.hover_pos().is_some_and(|pointer| {
-                    hud.identity_rects.iter().flatten().any(|panel| panel.contains(pointer))
-                })
+            let pointer = context.input(|input| input.pointer.hover_pos());
+            let identity_hovered = pointer.is_some_and(|pointer| {
+                hud.identity_rects.iter().flatten().any(|panel| panel.contains(pointer))
+                    || context
+                        .layer_id_at(pointer)
+                        .is_some_and(|layer| layer.order == egui::Order::Tooltip)
             });
             if !identity_hovered {
                 playback.camera.navigate(&scene, time.delta_secs());
@@ -538,8 +493,6 @@ pub(crate) fn draw_cinematic(
                 false,
                 "ATTACKER",
                 &hud.attackers,
-                &hud.attacker_plans,
-                &images,
                 egui::Color32::from_rgb(150, 158, 170),
             );
             let defender_panel = draw_identity(
@@ -552,11 +505,21 @@ pub(crate) fn draw_cinematic(
                     "DEFENDER"
                 },
                 &hud.defenders,
-                &hud.defender_plans,
-                &images,
                 egui::Color32::from_rgb(150, 158, 170),
             );
             hud.identity_rects = [Some(attacker_panel), Some(defender_panel)];
+            for (right, panel, plans) in [
+                (false, attacker_panel, &hud.attacker_plans),
+                (true, defender_panel, &hud.defender_plans),
+            ] {
+                show_identity_tooltip(
+                    ui,
+                    panel,
+                    egui::Id::new(("cinematic identity", right)),
+                    plans,
+                    &images,
+                );
+            }
             if playback.is_finished() {
                 let status = report.map_or("draw", |report| report.status(&player));
                 let opacity = result_banner::entrance_opacity(hud.result_elapsed);
@@ -593,6 +556,7 @@ pub(crate) fn draw_cinematic(
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {
+                    set_ui_sound(context, Some(SoundEffect::Button));
                     next.set(GameState::CombatMenu);
                 }
             } else if settings.combat_paused {

@@ -9,8 +9,8 @@ use bevy_tweening::TweenAnim;
 use super::effects::{PendingImpact, Wreck};
 use super::report::{MissionReport, Side};
 use super::systems::{
-    restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatFormationState,
-    CombatUnitCmp, FireState, IndividualCombatUnitCmp, SpawnShotMsg,
+    restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatUnitCmp, FireState,
+    IndividualCombatUnitCmp, SpawnShotMsg,
 };
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
@@ -27,6 +27,10 @@ pub(crate) struct CombatCardHome(pub Vec3);
 #[derive(Resource)]
 /// Requests a short round banner after a playback shortcut.
 pub struct CombatRoundJump;
+
+#[derive(Resource)]
+/// Exact card geometry retained for one automatic conclusion rebuild.
+pub struct CombatLayoutSnapshot(pub(super) HashMap<(bool, u64), (Vec3, f32)>);
 
 fn combatant(unit: Unit) -> bool {
     !unit.is_building() && !unit.is_missile() && unit != Unit::colony_ship()
@@ -198,7 +202,7 @@ fn seek(
     index: usize,
     finished: bool,
     ending_phase: CombatState,
-    preserved_individual_positions: Option<&HashMap<(bool, u64), Vec3>>,
+    preserved_layout: Option<CombatLayoutSnapshot>,
 ) {
     if let Err(error) = world.run_system_once(restore_combat_camera) {
         warn!("Could not restore combat camera: {error}");
@@ -212,7 +216,12 @@ fn seek(
     }
     world.resource_mut::<Messages<SpawnShotMsg>>().clear();
     world.resource_mut::<UiState>().combat_round = index;
-    if let Err(error) = world.run_system_once(setup_combat) {
+    if let Some(layout) = preserved_layout {
+        world.insert_resource(layout);
+    }
+    let setup_result = world.run_system_once(setup_combat);
+    world.remove_resource::<CombatLayoutSnapshot>();
+    if let Err(error) = setup_result {
         warn!("Could not rebuild combat playback: {error}");
         return;
     }
@@ -287,13 +296,7 @@ fn seek(
             let individuals = world
                 .query::<(Entity, &IndividualCombatUnitCmp)>()
                 .iter(world)
-                .map(|(entity, card)| {
-                    let key = card.id.map(|id| (card.side == Side::Defender, id));
-                    let home = key
-                        .and_then(|key| preserved_individual_positions?.get(&key).copied())
-                        .unwrap_or_else(|| card.home());
-                    (entity, card.id, card.side.clone(), home)
-                })
+                .map(|(entity, card)| (entity, card.id, card.side.clone(), card.home()))
                 .collect::<Vec<_>>();
             for (entity, id, side, home) in individuals {
                 world
@@ -456,26 +459,23 @@ pub fn control_combat_playback(world: &mut World) {
     };
     let report = report.clone();
     // Automatic early completion rebuilds the report at its final boundary. Keep the exact
-    // survivor slots from the played formation instead of compacting them around casualties.
-    let preserved_individual_positions = (shortcut.is_none()
-        && world
-            .get_resource::<CombatFormationState>()
-            .is_some_and(|formation| formation.individual()))
-    .then(|| {
-        world
-            .query::<&IndividualCombatUnitCmp>()
-            .iter(world)
-            .filter_map(|card| card.id.map(|id| ((card.side == Side::Defender, id), card.home())))
-            .collect::<HashMap<_, _>>()
+    // survivor slots and sizes from the played formation: fitting larger cards to the reduced
+    // fleet while retaining their old positions would overlap ships, bars, and borders. Preserve
+    // hidden individual cards too, so changing display modes after the result uses the same layout.
+    let preserved_layout = shortcut.is_none().then(|| {
+        CombatLayoutSnapshot(
+            world
+                .query::<&IndividualCombatUnitCmp>()
+                .iter(world)
+                .filter_map(|card| {
+                    card.id.map(|id| {
+                        ((card.side == Side::Defender, id), (card.home(), card.display_size()))
+                    })
+                })
+                .collect(),
+        )
     });
-    seek(
-        world,
-        &report,
-        destination.0,
-        destination.1,
-        destination.2,
-        preserved_individual_positions.as_ref(),
-    );
+    seek(world, &report, destination.0, destination.1, destination.2, preserved_layout);
 }
 
 #[cfg(test)]

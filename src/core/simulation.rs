@@ -3288,22 +3288,25 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             let Some(home) = retreat_destinations.get(owner) else {
                                 continue;
                             };
-                            fleeing_missions.push(Mission::new_with_id(
-                                next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
-                                turn - 1,
-                                *owner,
-                                destination,
-                                home,
-                                Icon::Deploy,
-                                fleet.ships.clone(),
-                                BombingRaid::None,
-                                false,
-                                false,
-                                Some(format!(
-                                    "- ({turn}) Fleet withdrew from {} to {}.",
-                                    destination.name, home.name
-                                )),
-                            ));
+                            fleeing_missions.push(
+                                Mission::new_with_id(
+                                    next_unique_mission_id(&mut rng, &mut used_mission_ids)?,
+                                    turn - 1,
+                                    *owner,
+                                    destination,
+                                    home,
+                                    Icon::Deploy,
+                                    fleet.ships.clone(),
+                                    BombingRaid::None,
+                                    false,
+                                    false,
+                                    Some(format!(
+                                        "- ({turn}) Fleet withdrew from {} to {}.",
+                                        destination.name, home.name
+                                    )),
+                                )
+                                .with_battle_plan(destination.battle_plan_for(Some(*owner))),
+                            );
                         }
                     }
                     report.mission.logs.push_str(&format!(
@@ -3563,17 +3566,21 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                         continue;
                                     }
                                     if *owner == mission.owner {
-                                        destination.dock(stationed);
+                                        destination.dock_with_battle_plan(
+                                            stationed,
+                                            mission.battle_plan_for(Some(*owner)),
+                                        );
                                     } else {
                                         destination.protection_permissions.insert(*owner);
-                                        destination.dock_protecting_fleet(*owner, stationed);
-                                        destination
-                                            .protector_battle_plans
-                                            .insert(*owner, mission.battle_plan_for(Some(*owner)));
+                                        destination.dock_protecting_fleet_with_battle_plan(
+                                            *owner,
+                                            stationed,
+                                            mission.battle_plan_for(Some(*owner)),
+                                        );
                                     }
                                 }
                             } else {
-                                destination.dock(
+                                destination.dock_with_battle_plan(
                                     report
                                         .surviving_attacker
                                         .iter()
@@ -3588,6 +3595,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                             )
                                         })
                                         .collect(),
+                                    mission.battle_plan_for(Some(mission.owner)),
                                 );
                             }
                         }
@@ -3669,7 +3677,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                 None,
                 &mut rng,
             );
-            home.dock(mission.army.clone());
+            home.dock_with_battle_plan(mission.army.clone(), mission.battle_plan);
             if let Some(player) = model.players.iter_mut().find(|player| player.id == mission.owner)
             {
                 player.push_report(report);
@@ -4058,11 +4066,11 @@ fn resolve_protect_arrivals<R: Rng + ?Sized>(model: &mut GameModel, turn: usize,
             .mission
             .logs
             .push_str(&format!("\n- ({turn}) Protection fleet stationed at {}.", destination.name));
-        let already_stationed = destination.is_protected_by(protector);
-        destination.dock_protecting_fleet(protector, mission.army.clone());
-        if !already_stationed {
-            destination.protector_battle_plans.insert(protector, mission.battle_plan);
-        }
+        destination.dock_protecting_fleet_with_battle_plan(
+            protector,
+            mission.army.clone(),
+            mission.battle_plan_for(Some(protector)),
+        );
         report.planet = destination.clone();
         report.surviving_defender = destination.army.clone();
         report.destination_owned = destination.owned;
@@ -4115,7 +4123,10 @@ fn recall_unpermitted_protecting_fleets<R: Rng + ?Sized>(
                 (origin, army)
             };
             if origin.id == home_planet {
-                model.map.get_mut(home_planet).dock(army);
+                model
+                    .map
+                    .get_mut(home_planet)
+                    .dock_with_battle_plan(army, origin.battle_plan_for(Some(owner)));
                 continue;
             }
             if model.map.get(home_planet).is_destroyed {
@@ -4224,8 +4235,8 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
             Icon::Spy => 3,
             _ => 4,
         };
-        // Merging retains independently ordered source fleets. Coordinated attacks keep
-        // their allied contingents and never enter an ordinary same-owner group.
+        // Same-owner arrivals share the strongest source's plan. Coordinated attacks
+        // keep their allied contingents and never enter an ordinary same-owner group.
         if let Some(grouped) = groups[index].iter_mut().find(|grouped| {
             grouped.owner == mission.owner
                 && grouped.joint_attack.is_none()

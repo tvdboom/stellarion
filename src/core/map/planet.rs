@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::core::combat::plan::BattlePlan;
+use crate::core::combat::report::combat_fleet_strength;
 use crate::core::constants::{
     FACTORY_PRODUCTION_FACTOR, JUMP_GATE_CAPACITY_PER_LEVEL, PROBES_PER_PRODUCTION_LEVEL,
     SHIPYARD_PRODUCTION_FACTOR, SILO_CAPACITY_FACTOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
@@ -1045,6 +1046,27 @@ impl Planet {
         self.army.dock_protector(player_id, army);
     }
 
+    /// Merges arriving protection ships under the stronger fleet's orders; ties keep
+    /// the stationed orders. Other players' ships never influence this choice.
+    pub fn dock_protecting_fleet_with_battle_plan(
+        &mut self,
+        player_id: PlayerId,
+        army: Army,
+        plan: BattlePlan,
+    ) {
+        let incoming_strength = combat_fleet_strength(&army);
+        let stationed_strength = self.army.protector(player_id).map_or(0, combat_fleet_strength);
+        let selected = if incoming_strength > stationed_strength {
+            plan
+        } else {
+            self.protector_battle_plans.get(&player_id).copied().unwrap_or_default()
+        };
+        self.dock_protecting_fleet(player_id, army);
+        if let Some(fleet) = self.army.protector(player_id) {
+            self.protector_battle_plans.insert(player_id, selected.resolved(fleet));
+        }
+    }
+
     /// Returns the standing orders belonging to this world's controller or a protector.
     pub fn battle_plan_for(&self, owner: Option<PlayerId>) -> BattlePlan {
         let plan = match owner {
@@ -1088,6 +1110,17 @@ impl Planet {
             let stationed = self.army.entry(unit).or_default();
             *stationed = stationed.saturating_add(count);
         }
+    }
+
+    /// Merges arriving ships under the stronger fleet's orders; ties keep the
+    /// stationed orders. Buildings, defenses, and allied fleets do not vote.
+    /// Automatic selection then uses the entire controller force's composition.
+    pub fn dock_with_battle_plan(&mut self, army: Army, plan: BattlePlan) {
+        if combat_fleet_strength(&army) > combat_fleet_strength(self.army.controller()) {
+            self.battle_plan = plan;
+        }
+        self.dock(army);
+        self.battle_plan = self.battle_plan.resolved(self.army.controller());
     }
 
     /// Permanently destroys this planet and clears all ownership and stationed units.

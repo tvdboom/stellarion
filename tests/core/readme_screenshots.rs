@@ -1,0 +1,513 @@
+//! Opt-in README captures using the complete application and a seeded, offline match.
+//!
+//! Run with STELLARION_BACKEND=mock:
+//! cargo test --lib render_readme_screenshots -- --ignored --nocapture
+//! Review target/readme-screenshots before copying the six PNGs into scenery/.
+
+use crate::core::camera::MainCamera;
+use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
+use crate::core::combat::resolution::resolve_combat_with_rng;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::map::icon::Icon;
+use crate::core::map::model::Map;
+use crate::core::missions::Mission;
+use crate::core::player::Player;
+use crate::core::resources::Resources;
+use crate::core::settings::Settings;
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::states::{AppState, AudioState, GameState};
+use crate::core::ui::systems::{MissionTab, Shop, UiState};
+use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Unit};
+use crate::multiplayer::client::{ConnectionStatus, MultiplayerSession};
+use crate::multiplayer::model::{GameMembership, GameRecord};
+use bevy::asset::AssetMetaCheck;
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
+use bevy::window::WindowResolution;
+use bevy::winit::{WinitPlugin, WinitSettings};
+use bevy_egui::{egui, EguiInput, EguiPlugin, EguiPreUpdateSet};
+use bevy_kira_audio::AudioPlugin;
+use bevy_tweening::TweeningPlugin;
+use std::time::Duration;
+
+#[derive(Resource)]
+struct CaptureScene {
+    model: GameModel,
+    origin: usize,
+    destination: usize,
+    camera: Vec2,
+    frame: usize,
+}
+
+fn fleet(counts: &[(Ship, usize)]) -> Army {
+    counts.iter().map(|(ship, count)| (Unit::Ship(*ship), *count)).collect()
+}
+
+fn name_world(map: &mut Map, id: usize, name: &str) {
+    let previous = map.get(id).name.clone();
+    if let Some(existing) = map.planets.iter_mut().find(|planet| planet.name == name) {
+        existing.name = previous;
+    }
+    map.get_mut(id).name = name.into();
+}
+
+fn scene() -> CaptureScene {
+    let mut model = GameModel::new(
+        [73; 32],
+        GameRules {
+            player_count: 3,
+            planets_per_player: 12,
+            colonizable_percent: 35,
+            moons_percent: 20,
+            ..default()
+        },
+    )
+    .unwrap();
+    model.start().unwrap();
+    model.turn = 24;
+    for planet in &mut model.map.planets {
+        planet.owned = None;
+        planet.controlled = None;
+        planet.army.clear();
+    }
+    let center = model.map.rect.center();
+    let mut occupied = std::collections::BTreeSet::new();
+    let mut colonies = Vec::new();
+    for (slot, (offset, count)) in
+        [(Vec2::new(-550., 200.), 6), (Vec2::new(650., 550.), 5), (Vec2::new(100., -950.), 4)]
+            .into_iter()
+            .enumerate()
+    {
+        let owner = slot as u64 + 1;
+        let mut worlds = model
+            .map
+            .planets
+            .iter()
+            .filter(|planet| !planet.is_moon() && !occupied.contains(&planet.id))
+            .map(|planet| (planet.id, planet.position.distance_squared(center + offset)))
+            .collect::<Vec<_>>();
+        worlds.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let ids = worlds.iter().take(count).map(|(id, _)| *id).collect::<Vec<_>>();
+        let player = &mut model.players[slot];
+        player.home_planet = ids[0];
+        player.world_acquisition_order = ids.clone();
+        player.resources = [
+            Resources {
+                metal: 6840,
+                crystal: 4275,
+                deuterium: 2910,
+            },
+            Resources {
+                metal: 3925,
+                crystal: 6150,
+                deuterium: 1840,
+            },
+            Resources {
+                metal: 8140,
+                crystal: 2865,
+                deuterium: 3560,
+            },
+        ][slot];
+        for (index, id) in ids.iter().copied().enumerate() {
+            occupied.insert(id);
+            let planet = model.map.get_mut(id);
+            planet.owned = Some(owner);
+            planet.controlled = Some(owner);
+            let level = if index == 0 {
+                4
+            } else {
+                2 + index % 2
+            };
+            for (building, amount) in [
+                (Building::MetalMine, level),
+                (Building::CrystalMine, level.saturating_sub(index % 2)),
+                (Building::DeuteriumSynthesizer, 2 + index % 2),
+                (Building::Factory, 3),
+                (
+                    Building::Shipyard,
+                    if index == 0 {
+                        5
+                    } else {
+                        3
+                    },
+                ),
+                (Building::SolarSatellite, 4),
+                (Building::Reactor, 2),
+                (Building::ColonialAdministration, usize::from(index > 0)),
+            ] {
+                if amount > 0 {
+                    planet.army.insert(Unit::Building(building), amount);
+                }
+            }
+            if index == 0 {
+                planet.army.insert(Unit::Building(Building::Senate), 2);
+                planet.army.insert(Unit::Building(Building::SensorPhalanx), 2);
+                planet.army.insert(Unit::Building(Building::CommandRelay), 1);
+                planet.army.insert(Unit::Building(Building::PlanetaryShield), 2);
+            }
+            if index < 2 {
+                planet.army.insert(Unit::Building(Building::TradingPost), 1);
+                planet.army.insert(Unit::space_dock(), 1);
+                planet.army.insert(Unit::Building(Building::Recycler), 2);
+            }
+            for (unit, amount) in fleet(&[
+                (Ship::Probe, 7 + index * 2 + slot),
+                (Ship::ColonyShip, usize::from(index == 0)),
+                (Ship::LightFighter, 18 - index * 2 + slot * 3),
+                (Ship::HeavyFighter, 9 - index + slot),
+                (Ship::Destroyer, 6 - index + slot),
+                (Ship::Cruiser, 4 - index.min(3)),
+                (
+                    Ship::Battleship,
+                    if index < 2 {
+                        3 - index
+                    } else {
+                        0
+                    },
+                ),
+                (Ship::Bomber, usize::from(index == 0) * 2),
+                (Ship::Dreadnought, usize::from(index == 0)),
+            ]) {
+                if amount > 0 {
+                    planet.army.insert(unit, amount);
+                }
+            }
+            for (defense, amount) in [
+                (Defense::RocketLauncher, 8 + index * 2),
+                (Defense::LightLaser, 5 + slot),
+                (Defense::HeavyLaser, 3),
+                (Defense::GaussCannon, usize::from(index < 2) * 2),
+                (Defense::IonCannon, usize::from(index < 2)),
+                (Defense::RepairTruck, usize::from(index < 2) * 2),
+            ] {
+                if amount > 0 {
+                    planet.army.insert(Unit::Defense(defense), amount);
+                }
+            }
+        }
+        colonies.push(ids);
+    }
+    let origin = colonies[0][0];
+    let origin_position = model.map.get(origin).position;
+    let destination = colonies[1][1];
+    model.map.get_mut(destination).army.insert(Unit::Building(Building::PlanetaryShield), 1);
+    name_world(&mut model.map, origin, "Aegis");
+    name_world(&mut model.map, colonies[0][1], "Orion");
+    name_world(&mut model.map, colonies[0][2], "Syron");
+    name_world(&mut model.map, destination, "Ghorin");
+    // The report is resolved by the same combat rules as a normal submitted turn.
+    let attack = Mission {
+        id: 71,
+        owner: 1,
+        origin,
+        origin_owned: Some(1),
+        origin_controlled: Some(1),
+        origin_army: model.map.get(origin).army.controller().clone(),
+        destination,
+        position: model.map.get(destination).position,
+        send: 20,
+        travel_turns: 3,
+        objective: Icon::Attack,
+        army: fleet(&[
+            (Ship::LightFighter, 34),
+            (Ship::HeavyFighter, 16),
+            (Ship::Destroyer, 10),
+            (Ship::Cruiser, 7),
+            (Ship::Battleship, 5),
+            (Ship::Bomber, 3),
+            (Ship::Dreadnought, 1),
+        ]),
+        battle_plan: BattlePlan {
+            automatic_tactic: false,
+            tactic: CombatTactic::Breakthrough,
+            target_priority: TargetPriority::HeavyTargets,
+            ..default()
+        },
+        ..default()
+    };
+    let report =
+        resolve_combat_with_rng(23, &attack, model.map.get(destination), &mut model.rng.next_rng());
+    assert!(report.combat_report.as_ref().unwrap().rounds.len() > 2);
+    // Keep this a past engagement; its surviving units and ownership become the live map.
+    let fought = model.map.get_mut(destination);
+    fought.owned = report.destination_owned;
+    fought.controlled = report.destination_controlled;
+    fought.army = report.surviving_defender.clone();
+    if report.destination_controlled == Some(1) {
+        *fought.army.controller_mut() = report.surviving_attacker.clone();
+        model.players[0].record_world_acquisition(destination);
+    }
+    model.players[0].push_report(report.clone());
+    model.players[1].push_report(report);
+    let next_target =
+        *colonies[1].iter().skip(1).find(|id| model.map.get(**id).controlled == Some(2)).unwrap();
+    for (id, from, to, objective, army, elapsed) in [
+        (
+            81,
+            origin,
+            colonies[0][2],
+            Icon::Deploy,
+            fleet(&[(Ship::LightFighter, 8), (Ship::HeavyFighter, 3)]),
+            1,
+        ),
+        (82, origin, colonies[2][1], Icon::Spy, fleet(&[(Ship::Probe, 7)]), 1),
+        (
+            83,
+            colonies[0][1],
+            next_target,
+            Icon::Attack,
+            fleet(&[(Ship::Destroyer, 4), (Ship::Cruiser, 2)]),
+            2,
+        ),
+        (
+            84,
+            colonies[0][3],
+            *model
+                .map
+                .planets
+                .iter()
+                .find(|p| !p.is_moon() && p.owned.is_none() && p.controlled.is_none())
+                .map(|p| &p.id)
+                .unwrap(),
+            Icon::Colonize,
+            fleet(&[(Ship::ColonyShip, 1), (Ship::LightFighter, 4)]),
+            1,
+        ),
+    ] {
+        let start = model.map.get(from);
+        let mut mission = Mission {
+            id,
+            owner: 1,
+            origin: from,
+            origin_owned: Some(1),
+            origin_controlled: Some(1),
+            origin_army: start.army.controller().clone(),
+            destination: to,
+            position: start.position,
+            send: 24 - elapsed,
+            objective,
+            army,
+            ..default()
+        };
+        // Do not include a fleet that has already arrived in a list of active missions.
+        for _ in 0..elapsed.min(mission.duration(&model.map).saturating_sub(1)) {
+            mission.advance(&model.map);
+        }
+        mission.send = 24 - mission.travel_turns;
+        // Preserve only fleets still travelling, as a real turn projection would.
+        if mission.distance(&model.map) > 0.0 {
+            model.missions.push(mission);
+        }
+    }
+    model.validate().unwrap();
+    println!(
+        "Turn {}: {} active missions, battle outcome {}, colony at {:?}",
+        model.turn,
+        model.missions.len(),
+        model.players[0].reports[0].status(&model.players[0]),
+        origin_position,
+    );
+    CaptureScene {
+        camera: origin_position + Vec2::new(260., 50.),
+        model,
+        origin,
+        destination: next_target,
+        frame: 0,
+    }
+}
+
+#[test]
+#[ignore = "requires generated assets and a GPU; captures all six README views offline"]
+fn render_readme_screenshots() {
+    assert_eq!(
+        std::env::var("STELLARION_BACKEND").as_deref(),
+        Ok("mock"),
+        "Set STELLARION_BACKEND=mock for this offline fixture"
+    );
+    std::fs::create_dir_all("target/readme-screenshots").unwrap();
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: format!("{}/assets-runtime", env!("CARGO_MANIFEST_DIR")),
+                meta_check: AssetMetaCheck::Never,
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Stellarion README captures".into(),
+                    resolution: WindowResolution::new(1600, 900).with_scale_factor_override(1.0),
+                    visible: false,
+                    ..default()
+                }),
+                ..default()
+            })
+            .set(WinitPlugin {
+                run_on_any_thread: true,
+            }),
+    )
+    .add_plugins((
+        EguiPlugin::default(),
+        crate::core::messages::MessagesPlugin,
+        AudioPlugin,
+        TweeningPlugin,
+    ))
+    .add_plugins(crate::core::GamePlugin)
+    .insert_resource(WinitSettings::continuous())
+    .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+        1.0 / 60.0,
+    )))
+    .insert_resource(scene())
+    .add_systems(PostStartup, install_scene)
+    .add_systems(
+        PreUpdate,
+        (|mut input: Query<&mut EguiInput>| {
+            for mut input in &mut input {
+                input.events.push(egui::Event::PointerGone);
+            }
+        })
+        .after(EguiPreUpdateSet::ProcessInput)
+        .before(EguiPreUpdateSet::BeginPass),
+    )
+    .add_systems(Last, capture_views);
+    app.run();
+}
+
+fn install_scene(world: &mut World) {
+    let model = world.resource::<CaptureScene>().model.clone();
+    let members = ["Mara", "Jonas", "Priya"]
+        .into_iter()
+        .enumerate()
+        .map(|(slot, name)| GameMembership {
+            game_id: GameId("readme-offline".into()),
+            player_id: slot as u64 + 1,
+            user_id: UserId(format!("readme-{slot}")),
+            display_name: name.into(),
+            is_creator: slot == 0,
+            identity_version: 1,
+            connected: true,
+        })
+        .collect::<Vec<_>>();
+    // Discard boot authentication and keep all profile writes in memory.
+    crate::multiplayer::client::tests::isolate_screenshot_client(world);
+    let mut session = MultiplayerSession::default();
+    session.connection = ConnectionStatus::Connected;
+    session.membership = Some(members[0].clone());
+    session.active_game = Some(GameRecord {
+        id: GameId("readme-offline".into()),
+        code: GameCode("NEBULA".into()),
+        revision: 23,
+        saved_at: 0,
+        max_players: 3,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model),
+        members,
+        submitted_players: vec![],
+    });
+    world.insert_resource(session);
+    world.resource_mut::<Settings>().set_audio_mode(AudioState::Mute);
+    world.resource_mut::<NextState<AppState>>().set(AppState::LoadingGame);
+}
+
+fn capture_views(world: &mut World) {
+    if *world.resource::<State<AppState>>().get() != AppState::Game {
+        return;
+    }
+    let frame = {
+        let mut scene = world.resource_mut::<CaptureScene>();
+        scene.frame += 1;
+        scene.frame
+    };
+    let (origin, destination, camera) = {
+        let scene = world.resource::<CaptureScene>();
+        (scene.origin, scene.destination, scene.camera)
+    };
+    if frame < 440 {
+        let mut query =
+            world.query_filtered::<(&mut Transform, &mut Projection), With<MainCamera>>();
+        for (mut transform, mut projection) in query.iter_mut(world) {
+            transform.translation.x = camera.x;
+            transform.translation.y = camera.y;
+            if let Projection::Orthographic(projection) = &mut *projection {
+                projection.scale = std::env::var("STELLARION_README_ZOOM")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1.25);
+            }
+        }
+    }
+    let report_id = world.resource::<Player>().reports[0].id;
+    match frame {
+        80 => world.insert_resource(crate::core::messages::Messages::default()),
+        140 => {
+            let mut ui = world.resource_mut::<UiState>();
+            ui.planet_selected = Some(origin);
+            ui.shop = Shop::Buildings;
+        },
+        240 => {
+            let map = world.resource::<Map>();
+            let mission = Mission {
+                owner: 1,
+                origin,
+                destination,
+                position: map.get(origin).position,
+                objective: Icon::Attack,
+                army: fleet(&[
+                    (Ship::LightFighter, 12),
+                    (Ship::HeavyFighter, 6),
+                    (Ship::Destroyer, 4),
+                    (Ship::Cruiser, 2),
+                ]),
+                ..default()
+            };
+            let mut ui = world.resource_mut::<UiState>();
+            ui.planet_selected = None;
+            ui.mission = true;
+            ui.mission_info = mission;
+            ui.mission_tab = MissionTab::NewMission;
+        },
+        340 => world.resource_mut::<UiState>().mission_tab = MissionTab::ActiveMissions,
+        440 => {
+            let mut ui = world.resource_mut::<UiState>();
+            ui.mission = false;
+            ui.in_combat = Some(report_id);
+            world.resource_mut::<Settings>().combat_speed = 0.5;
+            world.resource_mut::<Settings>().combat_volley_fire = true;
+            world.resource_mut::<NextState<GameState>>().set(GameState::Combat);
+        },
+        2200 => {
+            world.resource_mut::<NextState<GameState>>().set(GameState::Playing);
+        },
+        2240 => {
+            let mut ui = world.resource_mut::<UiState>();
+            ui.combat_report = Some(report_id);
+            ui.combat_report_total = true;
+        },
+        _ => {},
+    }
+    let name = match frame {
+        120 => "map".to_owned(),
+        220 => "shop".to_owned(),
+        320 => "mission-planning".to_owned(),
+        420 => "active-missions".to_owned(),
+        2040 => "combat".to_owned(),
+        2340 => "battle-report".to_owned(),
+        frame if (900..=2100).contains(&frame) && frame.is_multiple_of(60) => {
+            format!("combat-{frame}")
+        },
+        _ => return,
+    };
+    let path = format!("{}/target/readme-screenshots/{name}.png", env!("CARGO_MANIFEST_DIR"));
+    let mut capture = world.spawn(Screenshot::primary_window());
+    capture.observe(save_to_disk(path));
+    if frame == 2340 {
+        capture.observe(
+            |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
+                exit.write(bevy::app::AppExit::Success);
+            },
+        );
+    }
+}

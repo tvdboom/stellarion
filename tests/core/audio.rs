@@ -4,9 +4,9 @@ use crate::core::missions::Mission;
 /// Runs actual egui pointer press/release frames against an interactive widget.
 fn click_widget(
     enabled: bool,
-    sense: egui::Sense,
+    button: egui::PointerButton,
     override_sound: Option<Option<SoundEffect>>,
-    menu_clicks: bool,
+    mut widget: impl FnMut(&mut egui::Ui) -> egui::Response,
 ) -> Vec<SoundEffect> {
     let context = egui::Context::default();
     let mut rect = egui::Rect::NOTHING;
@@ -17,7 +17,7 @@ fn click_widget(
                 egui::Event::PointerMoved(rect.center()),
                 egui::Event::PointerButton {
                     pos: rect.center(),
-                    button: egui::PointerButton::Primary,
+                    button,
                     pressed,
                     modifiers: egui::Modifiers::NONE,
                 },
@@ -30,16 +30,15 @@ fn click_widget(
             },
             |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
-                    let (widget_rect, response) =
-                        ui.allocate_exact_size(egui::vec2(120.0, 40.0), sense);
-                    rect = widget_rect;
+                    let response = widget(ui);
+                    rect = response.rect;
                     if response.clicked() {
                         if let Some(sound) = override_sound {
                             set_ui_sound(ui.ctx(), sound);
                         }
                     }
                 });
-                if let Some(sound) = take_ui_sound(ui.ctx(), menu_clicks) {
+                if let Some(sound) = take_ui_sound(ui.ctx()) {
                     sounds.push(sound);
                 }
             },
@@ -50,31 +49,165 @@ fn click_widget(
 }
 
 #[test]
-fn button_clicks_ignore_disabled_widgets_and_drag_controls() {
-    assert_eq!(click_widget(true, egui::Sense::click(), None, true), [SoundEffect::Button]);
-    assert!(click_widget(false, egui::Sense::click(), None, true).is_empty());
-    assert!(click_widget(true, egui::Sense::hover(), None, true).is_empty());
-    assert!(click_widget(true, egui::Sense::click_and_drag(), None, true).is_empty());
+fn button_clicks_ignore_disabled_widgets_and_secondary_clicks() {
+    for enabled in [true, false] {
+        for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+            let sounds = click_widget(enabled, button, None, |ui| ui.button("Back"));
+            if enabled && button == egui::PointerButton::Primary {
+                assert_eq!(sounds, [SoundEffect::Button]);
+            } else {
+                assert!(sounds.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn gameplay_controls_share_click_feedback() {
+    use crate::core::ui::utils::{toggle, CustomUi};
+
+    let primary = egui::PointerButton::Primary;
+    let images = ImageIds::default();
+    assert_eq!(
+        click_widget(true, primary, None, |ui| ui.add_custom_button("Cancel mission", &images)),
+        [SoundEffect::Button]
+    );
+    assert_eq!(
+        click_widget(true, primary, None, |ui| {
+            sized_image_tile_button(ui, images.get("metal"), false, egui::vec2(74.0, 50.0))
+        }),
+        [SoundEffect::Button]
+    );
+    let mut checked = false;
+    assert_eq!(
+        click_widget(true, primary, None, |ui| ui.add(toggle(&mut checked))),
+        [SoundEffect::Button]
+    );
+    assert!(checked);
+    assert_eq!(
+        click_widget(true, primary, None, |ui| ui.selectable_label(false, "Missions")),
+        [SoundEffect::Button]
+    );
+}
+
+#[test]
+fn backgrounds_text_fields_and_drag_controls_are_silent() {
+    let primary = egui::PointerButton::Primary;
+    for sense in [egui::Sense::click(), egui::Sense::hover(), egui::Sense::click_and_drag()] {
+        assert!(click_widget(true, primary, None, |ui| {
+            ui.allocate_exact_size(egui::vec2(120.0, 40.0), sense).1
+        })
+        .is_empty());
+    }
+    let mut value = 0.5;
+    assert!(click_widget(true, primary, None, |ui| {
+        ui.add(egui::Slider::new(&mut value, 0.0..=1.0))
+    })
+    .is_empty());
+    let mut text = String::new();
+    assert!(click_widget(true, primary, None, |ui| ui.text_edit_singleline(&mut text)).is_empty());
 }
 
 #[test]
 fn action_feedback_replaces_the_generic_click() {
-    assert_eq!(
-        click_widget(true, egui::Sense::click(), Some(Some(SoundEffect::ShipPurchased)), true),
-        [SoundEffect::ShipPurchased]
-    );
-    assert!(click_widget(true, egui::Sense::click(), Some(None), true).is_empty());
+    for sound in [
+        SoundEffect::ShipPurchased,
+        SoundEffect::BuildingQueued,
+        SoundEffect::DefensePurchased,
+        SoundEffect::MissionLaunched,
+    ] {
+        assert_eq!(
+            click_widget(true, egui::PointerButton::Primary, Some(Some(sound)), |ui| {
+                ui.button("Confirm")
+            }),
+            [sound]
+        );
+    }
+    assert!(click_widget(true, egui::PointerButton::Primary, Some(None), |ui| {
+        ui.button("Send mission")
+    })
+    .is_empty());
 }
 
 #[test]
-fn gameplay_browsing_is_silent_but_accepted_purchases_still_sound() {
-    assert!(click_widget(true, egui::Sense::click(), None, false).is_empty());
-    for sound in
-        [SoundEffect::ShipPurchased, SoundEffect::BuildingQueued, SoundEffect::DefensePurchased]
-    {
-        assert_eq!(click_widget(true, egui::Sense::click(), Some(Some(sound)), false), [sound]);
+fn keyboard_button_activation_has_click_feedback() {
+    let context = egui::Context::default();
+    let mut sounds = Vec::new();
+    for pressed in [None, Some(true), Some(false)] {
+        let events = pressed.map_or_else(Vec::new, |pressed| {
+            vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        });
+        context
+            .run_ui(
+                egui::RawInput {
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    let response = ui.button("Continue");
+                    if pressed.is_none() {
+                        response.request_focus();
+                    }
+                    if let Some(sound) = take_ui_sound(ui.ctx()) {
+                        sounds.push(sound);
+                    }
+                },
+            )
+            .drop_without_applying_deltas();
     }
-    assert!(click_widget(true, egui::Sense::click(), Some(None), false).is_empty());
+    assert_eq!(sounds, [SoundEffect::Button]);
+}
+
+#[test]
+fn ui_audio_plays_each_click_once_when_layout_repeats() {
+    use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+    let mut app = App::new();
+    app.init_resource::<EguiUserTextures>()
+        .add_message::<PlayAudioMsg>()
+        .add_systems(Update, play_ui_audio);
+    let mut egui_context = EguiContext::default();
+    let context = egui_context.get_mut().clone();
+    app.world_mut().spawn((egui_context, PrimaryEguiContext));
+    let mut rect = egui::Rect::NOTHING;
+    for pressed in [None, Some(true), Some(false), Some(true), Some(false)] {
+        let events = pressed.map_or_else(Vec::new, |pressed| {
+            vec![
+                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        });
+        context
+            .run_ui(
+                egui::RawInput {
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    // A pass without feedback must not suppress a later pass's activation.
+                    app.world_mut().run_schedule(Update);
+                    rect = ui.button("Back").rect;
+                    app.world_mut().run_schedule(Update);
+                    app.world_mut().run_schedule(Update);
+                },
+            )
+            .drop_without_applying_deltas();
+    }
+    let requests =
+        app.world_mut().resource_mut::<Messages<PlayAudioMsg>>().drain().collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.name == "ui-click"));
 }
 
 #[test]

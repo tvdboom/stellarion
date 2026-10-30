@@ -330,6 +330,12 @@ create policy stellarion_events_member_select
 -- Battle plans are part of the current persisted/command contract. All three choices
 -- and automatic-selection mode are required; malformed plans never become default orders.
 -- Suitability, targeting weights and combat effects remain deterministic Rust rules.
+-- Normal multiplayer saves standing, travelling and allied orders in snapshots and
+-- draft/submitted commands. Resolved snapshots also retain frozen combatant plans,
+-- shot histories and outcomes for battle replay after reconnect or player recovery.
+-- Local Practice uses the same Rust simulation with an in-memory backend.
+-- Priorities are balanced fire or light/medium/heavy target classes spanning ships and defenses.
+-- Protection names the ship class drawing extra fire; ground-defense exposure never changes.
 create function public.stellarion_battle_plan_valid(p_plan jsonb)
 returns boolean
 language sql
@@ -342,8 +348,8 @@ as $$
         and jsonb_typeof(p_plan -> 'automatic_tactic') = 'boolean'
         and (p_plan ->> 'automatic_tactic' = 'false' or p_plan ->> 'tactic' = 'Breakthrough')
         and p_plan ->> 'tactic' in ('Swarm', 'Skirmish', 'Breakthrough', 'Siege', 'Interception', 'Bastion')
-        and p_plan ->> 'target_priority' in ('Standard', 'SmallShips', 'MediumShips', 'CapitalShips', 'Defenses')
-        and p_plan ->> 'protection' in ('Standard', 'ScreenCapitals', 'HeavyCover', 'ProtectBombers')
+        and p_plan ->> 'target_priority' in ('Standard', 'LightTargets', 'MediumTargets', 'HeavyTargets')
+        and p_plan ->> 'protection' in ('Standard', 'Vanguard', 'BattleLine', 'Bulwark')
         else false end, false);
 $$;
 revoke all on function public.stellarion_battle_plan_valid(jsonb) from public, anon, authenticated;

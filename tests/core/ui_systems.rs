@@ -21,6 +21,108 @@ fn combat_details_hide_the_underlying_mission_panel_until_closed() {
 }
 
 #[test]
+fn combat_details_header_stays_inside_the_panel_at_every_viewport_scale() {
+    let mut origin = Planet::new(0, "Aegis".into(), Vec2::ZERO, false, 1.0);
+    origin.kind = PlanetKind::Metallic;
+    origin.image = PlanetKind::Metallic.indices()[0];
+    let mut destination = Planet::new(1, "Ghorin".into(), Vec2::X, false, 1.0);
+    destination.kind = PlanetKind::Water;
+    destination.image = PlanetKind::Water.indices()[0];
+    destination.owned = Some(2);
+    destination.controlled = Some(2);
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            origin: 0,
+            destination: 1,
+            objective: Icon::Attack,
+            ..default()
+        },
+        destination.clone(),
+    );
+    report.id = 42;
+    report.combat_report = Some(crate::core::combat::report::CombatReport {
+        rounds: vec![RoundReport::default()],
+        ..default()
+    });
+    let map = Map {
+        rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin.clone(), destination.clone()],
+    };
+    let mut player = Player::new(1, 0);
+    player.reports.push(report);
+    let session = MultiplayerSession::default();
+    let images = ImageIds(HashMap::from([
+        (origin.image(), egui::TextureId::User(91)),
+        (destination.image(), egui::TextureId::User(92)),
+        ("panel".into(), egui::TextureId::User(93)),
+    ]));
+
+    for viewport in [egui::vec2(1600.0, 900.0), egui::vec2(1024.0, 768.0), egui::vec2(640.0, 480.0)]
+    {
+        for total in [false, true] {
+            let context = egui::Context::default();
+            context.set_global_style(NordDark.custom_style());
+            let mut state = UiState {
+                combat_report: Some(42),
+                combat_report_total: total,
+                ..default()
+            };
+            let size = egui::vec2(1070.0, 700.0);
+            let scale = game_panel_scale(viewport)
+                .min((viewport.x - 16.0) / size.x)
+                .min((viewport.y - 16.0) / size.y);
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                        ..default()
+                    },
+                    |context| {
+                        draw_panel_on_context(
+                            context,
+                            "combat report",
+                            "panel",
+                            (
+                                viewport.x * 0.5 - size.x * scale * 0.5,
+                                viewport.y * 0.9 - size.y * scale,
+                            ),
+                            (size.x, size.y),
+                            0.0,
+                            scale,
+                            &images,
+                            |ui| {
+                                draw_combat_report(ui, &mut state, &map, &player, &session, &images)
+                            },
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+                shapes = output.shapes;
+            }
+            let panel = image_rect(&shapes, egui::TextureId::User(93)).unwrap();
+            let inset = panel.shrink2(egui::vec2(30.0 * scale, 5.0 * scale));
+            for texture in [91, 92] {
+                let planet = image_rect(&shapes, egui::TextureId::User(texture)).unwrap();
+                assert!(
+                    inset.contains_rect(planet),
+                    "planet header outside panel at {viewport:?}: {planet:?} vs {inset:?}"
+                );
+            }
+            for label in ["Aegis", "Ghorin", "Total:", "Round: 1/1"] {
+                let text = text_rect(&shapes, label);
+                assert!(
+                    inset.contains_rect(text),
+                    "{label} outside panel at {viewport:?}: {text:?} vs {inset:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn combat_attacker_heading_keeps_reading_order_and_participant_colors() {
     let context = egui::Context::default();
     let attacker_color = Color32::from_rgb(88, 112, 255);
@@ -2168,7 +2270,7 @@ fn garrison_filters_default_to_all_players_and_remove_hidden_fleets_from_totals(
 fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
     let rect =
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(270.0, WORLD_OVERVIEW_HEADER_HEIGHT));
-    let layout = world_overview_header_layout(rect, 24.0, Some(24.0), true, false);
+    let layout = world_overview_header_layout(rect, 24.0, Some(24.0), true, None);
     let protection = layout.protection_icon.expect("protection filter icon");
     let defense_badge = layout.defense_badge.expect("defense badge");
     let defense = layout.defense_icon.expect("defense icon");
@@ -2180,7 +2282,7 @@ fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
     assert_eq!(defense_badge.right() + WORLD_OVERVIEW_PROTECTION_GAP, protection.left());
     assert_eq!(protection.right(), rect.right() - WORLD_OVERVIEW_RIGHT_MARGIN);
 
-    let moon_layout = world_overview_header_layout(rect, 24.0, None, true, false);
+    let moon_layout = world_overview_header_layout(rect, 24.0, None, true, None);
     assert!(moon_layout.defense_badge.is_none());
     assert!(moon_layout.defense_icon.is_none());
     let moon_protection = moon_layout.protection_icon.expect("moon protection filter icon");
@@ -2192,27 +2294,62 @@ fn protection_filter_icon_sits_right_of_the_planet_strength_badges() {
 }
 
 #[test]
-fn planet_battle_plan_icon_sits_left_without_moving_strength_badges() {
-    let rect = egui::Rect::from_min_size(
-        egui::Pos2::ZERO,
-        egui::vec2(270.0, WORLD_OVERVIEW_HEADER_HEIGHT),
-    );
-    for defense in [None, Some(24.0)] {
-        let layout = world_overview_header_layout(rect, 24.0, defense, true, true);
-        let original = world_overview_header_layout(rect, 24.0, defense, true, false);
-        let plan = layout.battle_plan_icon.unwrap();
-        assert_eq!(plan.size(), layout.fleet_icon.size());
-        assert_eq!(
-            layout.fleet_badge,
-            original
-                .fleet_badge
-                .translate(egui::vec2(-WORLD_OVERVIEW_ICON_SIZE - WORLD_OVERVIEW_BADGE_GAP, 0.0))
+fn planet_battle_plan_badge_keeps_strengths_separate_and_wraps_in_narrow_headers() {
+    let plan_width = 140.0;
+    for width in [145.0, 210.0, 270.0, 400.0] {
+        let rect = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width, WORLD_OVERVIEW_HEADER_HEIGHT),
         );
-        assert_eq!(layout.defense_badge, original.defense_badge);
-        assert_eq!(layout.protection_icon, original.protection_icon);
-        assert_eq!(plan.left(), rect.left() + WORLD_OVERVIEW_RIGHT_MARGIN);
-        assert!(rect.contains_rect(plan));
-        assert!(plan.right() < layout.fleet_badge.left());
+        for defense in [None, Some(24.0)] {
+            for show_protection_filter in [false, true] {
+                let layout = world_overview_header_layout(
+                    rect,
+                    24.0,
+                    defense,
+                    show_protection_filter,
+                    Some(plan_width),
+                );
+                let original =
+                    world_overview_header_layout(rect, 24.0, defense, show_protection_filter, None);
+                let plan = layout.battle_plan_icon.unwrap();
+                assert_eq!(plan.size(), egui::Vec2::splat(WORLD_OVERVIEW_BATTLE_PLAN_ICON_SIZE));
+                let wraps = plan.left() + plan_width + battle_plan_controls::PLAN_STRENGTH_GAP
+                    > original.fleet_badge.left();
+                let offset = egui::vec2(
+                    0.0,
+                    if wraps {
+                        32.0
+                    } else {
+                        0.0
+                    },
+                );
+                assert_eq!(layout.fleet_badge, original.fleet_badge.translate(offset));
+                assert_eq!(
+                    layout.defense_badge,
+                    original.defense_badge.map(|rect| rect.translate(offset))
+                );
+                assert_eq!(
+                    layout.protection_icon,
+                    original.protection_icon.map(|rect| rect.translate(offset))
+                );
+                assert_eq!(
+                    plan.left(),
+                    rect.left() + ((width - plan_width) * 0.5).min(WORLD_OVERVIEW_RIGHT_MARGIN)
+                );
+                assert!(rect.contains_rect(plan));
+                assert!(plan.left() + plan_width <= rect.right());
+                if wraps {
+                    assert!(plan.bottom() < layout.fleet_badge.top());
+                } else {
+                    assert!(
+                        plan.left() + plan_width + battle_plan_controls::PLAN_STRENGTH_GAP
+                            <= layout.fleet_badge.left()
+                    );
+                }
+                assert_eq!(layout.height, layout.fleet_badge.bottom());
+            }
+        }
     }
 }
 
@@ -2399,6 +2536,11 @@ fn image_rects(
 ) -> Vec<egui::Rect> {
     fn collect(shape: &egui::Shape, texture_id: egui::TextureId, rects: &mut Vec<egui::Rect>) {
         match shape {
+            egui::Shape::Rect(rect)
+                if rect.brush.is_some() && rect.fill_texture_id() == texture_id =>
+            {
+                rects.push(rect.rect);
+            },
             egui::Shape::Mesh(mesh) if mesh.texture_id == texture_id => {
                 let min = mesh
                     .vertices
@@ -4121,8 +4263,10 @@ fn brief_space_dock_hover_keeps_cost_and_mode_controls_without_description_or_st
 
     let full = render(false);
     assert!(has_text(&full, Unit::space_dock().description()));
+    assert!(has_text(&full, "Tactic Affinity"));
     let brief = render(true);
     assert!(!has_text(&brief, Unit::space_dock().description()));
+    assert!(!has_text(&brief, "Tactic Affinity"));
     for price in ["1000", "750", "650"] {
         assert!(has_text(&brief, price));
     }
@@ -4184,12 +4328,17 @@ fn brief_ship_hover_hides_combat_movement_and_rapid_fire_sections() {
         assert!(has_text(&full, stat));
     }
     assert!(has_text(&full, &CombatStats::RapidFire.to_name()));
+    assert!(
+        text_rect(&full, "Tactic Affinity").top()
+            > text_rect(&full, &CombatStats::RapidFire.to_name()).bottom()
+    );
 
     let brief = render(true);
     for stat in ["1400", "5", "1.6"] {
         assert!(!has_text(&brief, stat));
     }
     assert!(!has_text(&brief, &CombatStats::RapidFire.to_name()));
+    assert!(!has_text(&brief, "Tactic Affinity"));
     for price in ["1000", "500", "250"] {
         assert!(has_text(&brief, price));
     }
@@ -4961,7 +5110,7 @@ fn shared_modals_keep_their_default_size_and_center_as_the_window_changes() {
 }
 
 #[test]
-fn mission_list_uses_route_tooltips_and_map_hover_keeps_its_info_panel() {
+fn mission_list_keeps_only_the_fleet_panel_and_map_hover_keeps_its_info_panel() {
     assert!(!mission_hover_shows_info_panel(true));
     assert!(mission_hover_shows_info_panel(false));
 }
@@ -4982,8 +5131,8 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
         objective: Icon::Attack,
         battle_plan: crate::core::combat::plan::BattlePlan {
             automatic_tactic: false,
-            target_priority: crate::core::combat::plan::TargetPriority::SmallShips,
-            protection: crate::core::combat::plan::ProtectionPosture::ScreenCapitals,
+            target_priority: crate::core::combat::plan::TargetPriority::LightTargets,
+            protection: crate::core::combat::plan::ProtectionPosture::Vanguard,
             ..default()
         },
         army: hovered_army.clone(),
@@ -5009,7 +5158,7 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
     assert_eq!(
         mission_info_hover_height(&mission, 1),
         MISSION_HOVER_INFO_BASE_HEIGHT
-            + 155.0
+            + 120.0
             + MISSION_HOVER_ALLIED_HEADER_HEIGHT
             + 3.0 * MISSION_HOVER_ALLIED_ROW_HEIGHT
     );
@@ -5062,14 +5211,14 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
     );
     let duration = text_rect(&output.shapes, &duration_label);
     let tactic = text_rect(&output.shapes, "Breakthrough");
-    let target = text_rect(&output.shapes, "Small ships");
-    let protection = text_rect(&output.shapes, "Screen capitals");
-    assert!(duration.bottom() < tactic.top());
+    let target = text_rect(&output.shapes, "Light targets");
+    let protection = text_rect(&output.shapes, "Light screen");
+    assert!(duration.bottom() < target.top());
     assert!(has_text(&output.shapes, "(25%)"));
-    assert!(tactic.bottom() < target.top());
     assert!(target.bottom() < protection.top());
+    assert!(protection.bottom() < tactic.top());
     let allied_header = text_rect(&output.shapes, "Allied Attack");
-    assert!(protection.bottom() < allied_header.top());
+    assert!(tactic.bottom() < allied_header.top());
 
     let names = ["Player 2", "Player 1", "Player 30"].map(|name| text_rect(&output.shapes, name));
     assert!(names.windows(2).all(|pair| (pair[0].left() - pair[1].left()).abs() < 0.5));

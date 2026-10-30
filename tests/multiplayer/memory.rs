@@ -1846,8 +1846,8 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     guest_fleet.battle_plan = crate::core::combat::plan::BattlePlan {
         automatic_tactic: false,
         tactic: crate::core::combat::plan::CombatTactic::Interception,
-        target_priority: crate::core::combat::plan::TargetPriority::SmallShips,
-        protection: crate::core::combat::plan::ProtectionPosture::HeavyCover,
+        target_priority: crate::core::combat::plan::TargetPriority::LightTargets,
+        protection: crate::core::combat::plan::ProtectionPosture::Bulwark,
     };
     let respond = |revision, response, fleet| {
         block_on(backend.respond_joint_attack(

@@ -16,6 +16,8 @@ pub mod energy;
 pub mod identity;
 #[cfg(feature = "app")]
 mod loading;
+#[cfg(feature = "app")]
+mod loading_screen;
 pub mod map;
 #[cfg(feature = "app")]
 mod menu;
@@ -45,3 +47,7 @@ mod utils;
 
 #[cfg(feature = "app")]
 pub use app::GamePlugin;
+
+#[cfg(all(test, feature = "app", not(target_arch = "wasm32")))]
+#[path = "../../tests/core/readme_screenshots.rs"]
+mod readme_screenshots;

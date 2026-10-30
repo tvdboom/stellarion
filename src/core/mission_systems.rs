@@ -848,13 +848,24 @@ pub fn recall_mission(
             && (draft_launch.is_some() || queued_launch.is_some());
 
         if cancel_launch {
+            // Removing a launch also removes orders that require that mission to exist.
+            // Submitted commands stay immutable; only an editable draft or queued launch
+            // can be erased. A submitted launch instead keeps its ordered recall below.
+            let keep_command = |command: &TurnCommand| {
+                !matches!(
+                    command,
+                    TurnCommand::SendMission { mission_id: id, .. }
+                        | TurnCommand::SetMissionBattlePlan { mission_id: id, .. }
+                        if id == mission_id
+                )
+            };
             let accepted = if pending.is_editable() {
-                draft_launch.is_some_and(|index| {
-                    pending.commands.remove(index);
+                draft_launch.is_some_and(|_| {
+                    pending.commands.retain(keep_command);
                     true
                 })
-            } else if let Some(index) = queued_launch {
-                pending.queued_commands.remove(index);
+            } else if queued_launch.is_some() {
+                pending.queued_commands.retain(keep_command);
                 true
             } else {
                 pending.push(TurnCommand::RecallMission {
@@ -1120,3 +1131,7 @@ mod audio_tests;
 #[cfg(test)]
 #[path = "../../tests/core/missions_recall_animation.rs"]
 mod recall_animation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/core/missions_recall_commands.rs"]
+mod recall_command_tests;

@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use bevy::color::palettes::css::WHITE;
-use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy_egui::{egui, EguiContexts};
 use bevy_tweening::lens::{
     TextColorLens, TransformPositionLens, TransformScaleLens, UiBackgroundColorLens,
 };
@@ -18,7 +18,8 @@ pub use crate::core::combat::effects::{
     restore_combat_camera, run_combat_animations, shake_combat_camera,
 };
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
-use crate::core::combat::playback::{CombatCardHome, CombatRoundJump};
+use crate::core::combat::identity_ui::{show_identity_tooltip, CombatIdentityPlan};
+use crate::core::combat::playback::{CombatCardHome, CombatLayoutSnapshot, CombatRoundJump};
 use crate::core::combat::report::{
     combat_fleet_strength, combat_strength_ranges, CombatReport, DefenderRetreat, MissionReport,
     RoundReport, Side,
@@ -42,9 +43,10 @@ use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{UiCmp, UiState};
+use crate::core::ui::utils::ImageIds;
 use crate::core::units::fauna::{FaunaAttack, SpaceFauna};
 use crate::core::units::ships::Ship;
-use crate::core::units::{Amount, Combat, Unit};
+use crate::core::units::{Amount, Army, Combat, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
 
@@ -139,7 +141,7 @@ const INDIVIDUAL_CARD_LOWER_EXTENT: f32 = 0.75;
 const INDIVIDUAL_FLEET_SEPARATION_FACTOR: f32 = 0.115;
 const INDIVIDUAL_DEFENDER_FRONT_FACTOR: f32 = 0.075;
 
-/// Positions round and pause overlays according to the active formation presentation.
+/// Positions round banners according to the active formation presentation.
 fn combat_status_node(individual_units: bool) -> Node {
     Node {
         position_type: PositionType::Absolute,
@@ -279,6 +281,14 @@ struct CombatIdentityAccentSegmentCmp;
 pub(crate) struct CombatIdentityCmp;
 
 #[derive(Component)]
+/// Frozen fleet orders revealed when hovering a schematic commander panel.
+pub(crate) struct CombatIdentityDetails {
+    side: Side,
+    round_index: usize,
+    plans: Vec<CombatIdentityPlan>,
+}
+
+#[derive(Component)]
 /// Marks cards whose firing highlight must be reversed after firing.
 pub struct CombatFireHighlight;
 
@@ -291,14 +301,14 @@ pub struct VolleyResolutionPause;
 pub struct BackgroundImageCmp;
 
 #[derive(Component)]
-/// Marker for the pause overlay at the combat round-label position.
+/// Marker for the pause overlay fixed at the center of the viewport.
 pub struct CombatPausedCmp;
 
 #[derive(Component)]
-pub(crate) struct CombatRoundPauseAnchorCmp;
+pub(crate) struct CombatRoundAnchorCmp;
 
 #[derive(Component)]
-pub(crate) struct CombatRoundPauseContentCmp;
+pub(crate) struct CombatRoundContentCmp;
 
 #[derive(Component)]
 pub(crate) struct CombatStatusBandCmp;
@@ -400,6 +410,10 @@ pub struct IndividualCombatUnitCmp {
 impl IndividualCombatUnitCmp {
     pub(super) fn home(&self) -> Vec3 {
         self.home
+    }
+
+    pub(super) fn display_size(&self) -> f32 {
+        self.display_size
     }
 }
 
@@ -938,9 +952,10 @@ pub struct SpawnShotMsg {
 
 fn spawn_combat_identity(
     commands: &mut Commands,
+    side: Side,
     role: &str,
     participants: &[(String, Color, u128)],
-    plans: &[(crate::core::combat::plan::BattlePlan, u8)],
+    plans: &[CombatIdentityPlan],
     color: Color,
     top: Option<f32>,
     bottom: Option<f32>,
@@ -969,13 +984,6 @@ fn spawn_combat_identity(
         overflow: Overflow::clip(),
         ..default()
     };
-    if !plans.is_empty() {
-        node.height = Val::Auto;
-        node.min_width = Val::Px(132.0);
-        node.max_width = Val::Vw(45.0);
-        node.max_height = Val::Vh(40.0);
-        node.overflow = Overflow::scroll_y();
-    }
     if let Some(top) = top {
         node.top = Val::Px(top);
     }
@@ -991,7 +999,11 @@ fn spawn_combat_identity(
             ZIndex(5),
             CombatCmp,
             CombatIdentityCmp,
-            ScrollPosition::default(),
+            CombatIdentityDetails {
+                side,
+                round_index: 0,
+                plans: plans.to_vec(),
+            },
         ))
         .with_children(|parent| {
             parent
@@ -1037,7 +1049,6 @@ fn spawn_combat_identity(
                 .spawn(Node {
                     flex_direction: FlexDirection::Column,
                     justify_content: JustifyContent::Center,
-                    flex_shrink: 0.0,
                     row_gap: Val::Px(1.0),
                     overflow: Overflow::clip(),
                     ..default()
@@ -1062,73 +1073,54 @@ fn spawn_combat_identity(
                             color
                         }),
                     ));
-                    for (index, (name, participant_color, _)) in participants.iter().enumerate() {
+                    for (name, participant_color, _) in participants {
                         content.spawn((
                             add_text(name, "medium", 9.0, assets, window),
                             TextLayout::no_wrap(),
                             TextColor(*participant_color),
                         ));
-                        if let Some((plan, affinity)) = plans.get(index) {
-                            for (key, label) in combat_plan_labels(*plan, *affinity) {
-                                content
-                                    .spawn(Node {
-                                        column_gap: Val::Px(4.0),
-                                        align_items: AlignItems::Center,
-                                        ..default()
-                                    })
-                                    .with_children(|line| {
-                                        line.spawn((
-                                            ImageNode::new(assets.image(key)),
-                                            Node {
-                                                width: Val::Px(18.0),
-                                                height: Val::Px(18.0),
-                                                flex_shrink: 0.0,
-                                                ..default()
-                                            },
-                                        ));
-                                        line.spawn((
-                                            add_text(label, "medium", 7.0, assets, window),
-                                            TextColor(Color::srgb_u8(207, 219, 232)),
-                                        ));
-                                    });
-                            }
-                        }
                     }
                 });
         });
 }
 
-/// Keeps large multi-fleet order lists reachable inside their bounded replay panels.
-pub(crate) fn scroll_combat_identities(
-    mut wheel: MessageReader<MouseWheel>,
-    window: Single<&Window>,
-    mut panels: Query<
-        (&ComputedNode, &UiGlobalTransform, &mut ScrollPosition),
-        With<CombatIdentityCmp>,
-    >,
+/// Anchors the shared egui hover card to the schematic's rendered Bevy identity panel.
+pub(crate) fn draw_combat_identity_tooltips(
+    mut contexts: EguiContexts,
+    images: Res<ImageIds>,
+    state: Option<Res<UiState>>,
+    player: Option<Res<Player>>,
+    mut panels: Query<(Entity, &ComputedNode, &UiGlobalTransform, &mut CombatIdentityDetails)>,
 ) {
-    let delta = wheel
-        .read()
-        .map(|event| match event.unit {
-            MouseScrollUnit::Line => event.y * 28.0,
-            MouseScrollUnit::Pixel => event.y,
-        })
-        .sum::<f32>();
-    let Some(cursor) = window.physical_cursor_position() else {
+    let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    if delta == 0.0 {
-        return;
-    }
-    for (node, transform, mut scroll) in &mut panels {
-        let Some(inverse) = transform.try_inverse() else {
-            continue;
-        };
-        if Rect::from_center_size(Vec2::ZERO, node.size).contains(inverse.transform_point2(cursor))
-        {
-            let limit = (node.content_size.y - node.size.y).max(0.0) * node.inverse_scale_factor;
-            scroll.y = (scroll.y - delta).clamp(0.0, limit);
+    let pixels_per_point = context.pixels_per_point();
+    for (entity, node, transform, mut details) in &mut panels {
+        if let (Some(state), Some(player)) = (state.as_deref(), player.as_deref()) {
+            if details.round_index != state.combat_round {
+                if let Some(report) =
+                    player.reports.iter().find(|report| Some(report.id) == state.in_combat)
+                {
+                    details.plans =
+                        combat_identity_plans(report, &details.side, state.combat_round);
+                    details.round_index = state.combat_round;
+                }
+            }
         }
+        let center = transform.translation / pixels_per_point;
+        let size = node.size / pixels_per_point;
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(center.x, center.y),
+            egui::vec2(size.x, size.y),
+        );
+        egui::Area::new(egui::Id::new(("schematic identity", entity))).fixed_pos(rect.min).show(
+            context,
+            |ui| {
+                ui.set_min_size(rect.size());
+                show_identity_tooltip(ui, rect, ui.id().with("hover"), &details.plans, &images);
+            },
+        );
     }
 }
 
@@ -1145,55 +1137,103 @@ pub(super) fn combat_identity_participants(
             combat_fleet_strength(&report.planet.army.combined()),
         )];
     }
-    let fleets = report.battle_plan_fleets(side);
-    let mut counts = std::collections::BTreeMap::new();
-    for (owner, _, _, _) in &fleets {
-        if let Some(owner) = owner {
-            *counts.entry(*owner).or_insert(0_usize) += 1;
-        }
-    }
-    let mut sequence = std::collections::BTreeMap::new();
-    fleets
+    let players = match side {
+        Side::Attacker => report.attacker_players(),
+        Side::Defender => report.defender_players(),
+    };
+    players
         .into_iter()
-        .filter_map(|(owner, _, _, army)| {
-            let owner = owner?;
-            let mut name = session
-                .player_name(owner)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("Player {owner}"));
-            if counts[&owner] > 1 {
-                let index = sequence.entry(owner).or_insert(0_usize);
-                *index += 1;
-                name.push_str(&format!(" · Fleet {}", *index));
-            }
-            Some((name, session.player_color(owner).color(), combat_fleet_strength(&army)))
+        .map(|id| {
+            (
+                session
+                    .player_name(id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Player {id}")),
+                session.player_color(id).color(),
+                report.participant_fleet_strength(side, id),
+            )
         })
         .collect()
 }
 
+/// Frozen opening affinity with bonuses against the opposing tactics in the current round.
 pub(super) fn combat_identity_plans(
     report: &MissionReport,
     side: &Side,
-) -> Vec<(crate::core::combat::plan::BattlePlan, u8)> {
-    if report.mission.objective == Icon::MissileStrike {
+    round_index: usize,
+) -> Vec<CombatIdentityPlan> {
+    if report.mission.objective == Icon::MissileStrike
+        || (*side == Side::Defender && report.is_space_fauna_encounter())
+    {
         return Vec::new();
     }
-    report
-        .battle_plan_fleets(side)
+    let opponents = combat_identity_forces(report, &side.opposite(), round_index);
+    let opening_affinities = combat_identity_forces(report, side, 0)
         .into_iter()
-        .filter_map(|(owner, _, plan, army)| owner.map(|_| (plan, plan.suitability(&army))))
+        .map(|(owner, plan, army)| (owner, plan.suitability(&army)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    combat_identity_forces(report, side, round_index)
+        .into_iter()
+        .filter_map(|(owner, plan, _)| {
+            owner?;
+            let affinity = opening_affinities.get(&owner).copied().unwrap_or(0);
+            let damage_bonuses = crate::core::combat::plan::CombatTactic::ALL
+                .into_iter()
+                .filter(|tactic| {
+                    opponents
+                        .iter()
+                        .any(|(owner, plan, _)| owner.is_some() && plan.tactic == *tactic)
+                })
+                .map(|tactic| (tactic, plan.tactic.damage_bonus_basis_points(tactic, affinity)))
+                .collect();
+            Some(CombatIdentityPlan {
+                plan,
+                affinity,
+                damage_bonuses,
+            })
+        })
         .collect()
 }
 
-pub(super) fn combat_plan_labels(
-    plan: crate::core::combat::plan::BattlePlan,
-    affinity: u8,
-) -> [(&'static str, String); 3] {
-    [
-        (plan.tactic.image_key(), format!("{} ({affinity}%)", plan.tactic.name())),
-        (plan.target_priority.image_key(), plan.target_priority.name().to_owned()),
-        (plan.protection.image_key(), plan.protection.name().to_owned()),
-    ]
+fn combat_identity_forces(
+    report: &MissionReport,
+    side: &Side,
+    round_index: usize,
+) -> Vec<(Option<PlayerId>, crate::core::combat::plan::BattlePlan, Army)> {
+    let Some(round) =
+        report.combat_report.as_ref().and_then(|combat| combat.rounds.get(round_index))
+    else {
+        return report
+            .battle_plan_fleets(side)
+            .into_iter()
+            .map(|(owner, _, plan, army)| (owner, plan, army))
+            .collect();
+    };
+    let mut forces = std::collections::BTreeMap::new();
+    // The first snapshot includes opening casualties, so it recovers the combat-start affinity.
+    for unit in round.units(side) {
+        let (_, army) = forces.entry(unit.owner).or_insert_with(|| (unit.battle_plan, Army::new()));
+        let count = army.entry(unit.unit).or_default();
+        *count = count.saturating_add(1);
+    }
+    let shield_at_start = round_index
+        .checked_sub(1)
+        .and_then(|index| report.combat_report.as_ref()?.rounds.get(index))
+        .map_or_else(|| report.initial_planetary_shield(), |previous| previous.planetary_shield);
+    if *side == Side::Defender && shield_at_start > 0 {
+        let owner = report.planet.controlled.or(report.planet.owned);
+        forces.entry(owner).or_insert_with(|| (report.planet.battle_plan_for(owner), Army::new()));
+    }
+    let owners = match side {
+        Side::Attacker => report.attacker_players(),
+        Side::Defender => report.defender_players(),
+    };
+    let mut forces =
+        forces.into_iter().map(|(owner, (plan, army))| (owner, plan, army)).collect::<Vec<_>>();
+    forces.sort_by_key(|(owner, _, _)| {
+        owners.iter().position(|id| Some(*id) == *owner).unwrap_or(usize::MAX)
+    });
+    forces
 }
 
 /// Fans non-zero salvage gains above the surviving Crawler card. Each pickup owns its icon,
@@ -1354,6 +1394,7 @@ pub fn exit_combat_menu(
 pub fn setup_combat(
     mut commands: Commands,
     settings: Res<Settings>,
+    preserved_layout: Option<Res<CombatLayoutSnapshot>>,
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
@@ -1644,9 +1685,10 @@ pub fn setup_combat(
 
     spawn_combat_identity(
         &mut commands,
+        Side::Attacker,
         "Attacker",
         &attackers,
-        &combat_identity_plans(report, &Side::Attacker),
+        &combat_identity_plans(report, &Side::Attacker, 0),
         attack_c,
         Some(COMBAT_IDENTITY_EDGE_INSET),
         None,
@@ -1655,13 +1697,14 @@ pub fn setup_combat(
     );
     spawn_combat_identity(
         &mut commands,
+        Side::Defender,
         if report.is_space_fauna_encounter() {
             "Space Fauna"
         } else {
             "Defender"
         },
         &defenders,
-        &combat_identity_plans(report, &Side::Defender),
+        &combat_identity_plans(report, &Side::Defender, 0),
         defend_c,
         None,
         Some(COMBAT_IDENTITY_EDGE_INSET),
@@ -2095,6 +2138,18 @@ pub fn setup_combat(
         }
     }
 
+    // Restore complete geometry before spawning images, borders, and stat bars. Restoring only
+    // transforms after setup would leave newly enlarged cards overlapping their original slots.
+    if let Some(preserved_layout) = preserved_layout {
+        for (seed, layout) in individual_seeds.iter().zip(&mut individual_layout) {
+            if let Some(saved) =
+                seed.id.and_then(|id| preserved_layout.0.get(&(seed.side == Side::Defender, id)))
+            {
+                *layout = Some(*saved);
+            }
+        }
+    }
+
     let individual_ground_left = defender_ground_indices
         .iter()
         .filter_map(|index| individual_layout[*index])
@@ -2382,7 +2437,16 @@ pub fn setup_combat(
 
     commands
         .spawn((
-            combat_status_node(settings.combat_individual_units),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::ZERO,
+                top: Val::ZERO,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
             if settings.combat_paused {
                 Visibility::Inherited
             } else {
@@ -2391,14 +2455,11 @@ pub fn setup_combat(
             Pickable::IGNORE,
             ZIndex(7),
             CombatPausedCmp,
-            CombatRoundPauseAnchorCmp,
             CombatCmp,
         ))
         .with_child((
             combat_status_band_node(),
             BackgroundColor(Color::BLACK.with_alpha(result_banner::BAR_ALPHA as f32 / 255.0)),
-            combat_status_transform(settings.combat_individual_units),
-            CombatRoundPauseContentCmp,
             CombatStatusBandCmp,
             Pickable::IGNORE,
             children![(
@@ -2415,11 +2476,11 @@ pub fn setup_combat(
         });
 }
 
-/// Keeps round and pause overlays at their mode-specific anchors when settings change.
+/// Keeps round banners at their mode-specific anchors when settings change.
 pub(crate) fn update_combat_status_layout(
     settings: Res<Settings>,
-    mut anchors: Query<&mut Node, With<CombatRoundPauseAnchorCmp>>,
-    mut contents: Query<&mut UiTransform, With<CombatRoundPauseContentCmp>>,
+    mut anchors: Query<&mut Node, With<CombatRoundAnchorCmp>>,
+    mut contents: Query<&mut UiTransform, With<CombatRoundContentCmp>>,
 ) {
     let node = combat_status_node(settings.combat_individual_units);
     for mut anchor in &mut anchors {
@@ -3277,12 +3338,12 @@ pub fn animate_combat(
                     combat_status_node(settings.combat_individual_units),
                     Pickable::IGNORE,
                     ZIndex(7),
-                    CombatRoundPauseAnchorCmp,
+                    CombatRoundAnchorCmp,
                     children![(
                         combat_status_band_node(),
                         BackgroundColor(Color::BLACK.with_alpha(0.0)),
                         combat_status_transform(settings.combat_individual_units),
-                        CombatRoundPauseContentCmp,
+                        CombatRoundContentCmp,
                         CombatStatusBandCmp,
                         TweenAnim::new(
                             Tween::new(
@@ -3769,9 +3830,9 @@ pub fn animate_combat(
 
 /// Updates combat stats from the current canonical ECS projection.
 pub fn update_combat_stats(
-    unit_q: Query<(Entity, &CombatUnitCmp, Option<&FleetRetreatCmp>)>,
+    unit_q: Query<(Entity, Ref<CombatUnitCmp>, Option<&FleetRetreatCmp>)>,
     individual_q: Query<
-        (Entity, &Sprite, &IndividualCombatUnitCmp),
+        (Entity, &Sprite, Ref<IndividualCombatUnitCmp>),
         (Without<CombatUnitCmp>, Without<PendingImpact>, Without<ShieldCmp>, Without<HullCmp>),
     >,
     mut anim_q: Query<&mut TweenAnim, With<CombatCmp>>,
@@ -3839,6 +3900,13 @@ pub fn update_combat_stats(
         .any(|(_, cu, _)| cu.unit == Unit::interplanetary_missile() && cu.fire.has_fired());
 
     for (unit_e, cu, fleeing) in &unit_q {
+        // Rebuilt playback cards must show their restored damage on the first frame, before
+        // the result appears. Only existing cards should animate toward newly applied damage.
+        let speed = if cu.is_added() {
+            1.0
+        } else {
+            speed
+        };
         for child in children_q.iter_descendants(unit_e) {
             if let Ok((counter, text, span)) = count_q.get_mut(child) {
                 let count = displayed_combat_unit_count(
@@ -3846,7 +3914,7 @@ pub fn update_combat_stats(
                     combat,
                     round,
                     combat_state.get(),
-                    cu,
+                    &cu,
                     fleeing.is_some(),
                     counter.owner,
                     antiballistic_fired,
@@ -3885,6 +3953,11 @@ pub fn update_combat_stats(
     }
 
     for (unit_e, sprite, cu) in &individual_q {
+        let speed = if cu.is_added() {
+            1.0
+        } else {
+            speed
+        };
         let card_size = sprite.custom_size.unwrap_or(Vec2::splat(size)).x;
         for child in children_q.iter_descendants(unit_e) {
             if let Ok((mut shield_t, mut shield_s, _)) = shield_q.get_mut(child) {

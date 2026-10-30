@@ -24,7 +24,7 @@ use crate::core::units::Unit;
 /// Short feedback cues balanced for repeated menu and gameplay actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundEffect {
-    /// Short click for main-menu buttons and explicit action buttons.
+    /// Short click for menu and gameplay controls.
     Button,
     /// Purchase accepted by the shipyard.
     ShipPurchased,
@@ -72,20 +72,28 @@ pub fn set_ui_sound(context: &egui::Context, sound: Option<SoundEffect>) {
 }
 
 /// Selects one cue for an enabled button, ignoring background clicks and drag controls.
-fn take_ui_sound(context: &egui::Context, menu_clicks: bool) -> Option<SoundEffect> {
+fn take_ui_sound(context: &egui::Context) -> Option<SoundEffect> {
     if let Some(sound) =
         context.data_mut(|data| data.remove_temp::<Option<SoundEffect>>(egui::Id::new("ui_sound")))
     {
         return sound;
     }
-    // Gameplay windows also receive clicks on their empty backgrounds. Only
-    // explicit accepted actions may make sound there; browsing stays silent.
-    if !menu_clicks {
-        return None;
-    }
-    let id = context.interaction_snapshot(|interaction| interaction.clicked)?;
-    let response = context.read_response(id)?;
-    (response.enabled() && response.clicked() && !response.sense.senses_drag())
+    // Semantic widget events cover standard and custom controls, including keyboard
+    // activation, without mistaking window backgrounds or drag gestures for buttons.
+    context
+        .output(|output| {
+            output.events.iter().any(|event| {
+                matches!(event, egui::output::OutputEvent::Clicked(info)
+                    if info.enabled && matches!(info.typ,
+                        egui::WidgetType::Button
+                        | egui::WidgetType::Checkbox
+                        | egui::WidgetType::RadioButton
+                        | egui::WidgetType::SelectableLabel
+                        | egui::WidgetType::ComboBox
+                        | egui::WidgetType::CollapsingHeader
+                        | egui::WidgetType::Link))
+            })
+        })
         .then_some(SoundEffect::Button)
 }
 
@@ -93,22 +101,16 @@ fn take_ui_sound(context: &egui::Context, menu_clicks: bool) -> Option<SoundEffe
 pub fn play_ui_audio(
     mut contexts: EguiContexts,
     mut play: MessageWriter<PlayAudioMsg>,
-    app_state: Res<State<AppState>>,
-    game_state: Res<State<GameState>>,
     mut last_frame: Local<Option<u64>>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    let menu_clicks = *app_state.get() != AppState::Game
-        || matches!(game_state.get(), GameState::GameMenu | GameState::Settings);
-    let sound = take_ui_sound(context, menu_clicks);
+    let sound = take_ui_sound(context);
     let frame = context.cumulative_frame_nr();
-    if *last_frame != Some(frame) {
+    if let Some(sound) = sound.filter(|_| *last_frame != Some(frame)) {
         *last_frame = Some(frame);
-        if let Some(sound) = sound {
-            play.write(sound.request());
-        }
+        play.write(sound.request());
     }
 }
 

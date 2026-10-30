@@ -147,7 +147,10 @@ for (const plan of fixtures.battle_plans) {
   )).rows[0].valid, true, `Rust battle plan must be accepted: ${JSON.stringify(plan)}`);
 }
 const invalidBattlePlans = [null, {}, "Swarm", { ...defaultBattlePlan, automatic_tactic: "yes" }, { ...defaultBattlePlan, tactic: "Unknown" },
-  { ...defaultBattlePlan, target_priority: "Unknown" }, { ...defaultBattlePlan, protection: "Unknown" },
+  ...["Unknown", "Defenses", "SmallShips", "MediumShips", "CapitalShips"].map(target_priority =>
+    ({ ...defaultBattlePlan, target_priority })),
+  ...["Unknown", "ScreenCapitals", "HeavyCover", "ProtectBombers"].map(protection =>
+    ({ ...defaultBattlePlan, protection })),
   { ...defaultBattlePlan, extra: true }, ...Object.keys(defaultBattlePlan).map(key => {
     const plan = { ...defaultBattlePlan };
     delete plan[key];
@@ -863,7 +866,7 @@ const guestContribution = {
   army: { "Ship(LightFighter)": 1 },
   bombing: "None",
   combat_probes: true,
-  battle_plan: { automatic_tactic: false, tactic: "Interception", target_priority: "SmallShips", protection: "HeavyCover" },
+  battle_plan: { automatic_tactic: false, tactic: "Interception", target_priority: "LightTargets", protection: "Bulwark" },
 };
 for (const plan of invalidBattlePlans) {
   await assert.rejects(respondJointAttack(guest, jointAttack.id, "pending",
@@ -1044,7 +1047,7 @@ await assert.rejects(respondJointAttack(outsider, editable.id, "accepted", third
 editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
 editable = await respondJointAttack(guest, editable.id, "accepted", {
   ...largerFleet,
-  battle_plan: { ...largerFleet.battle_plan, target_priority: "CapitalShips" },
+  battle_plan: { ...largerFleet.battle_plan, target_priority: "HeavyTargets" },
 }, editable.revision);
 assert.equal(editable.participants[2].response, "pending", "battle-plan-only changes require fresh consent");
 editable = await respondJointAttack(outsider, editable.id, "accepted", thirdContribution, editable.revision);
@@ -1159,6 +1162,76 @@ const protectionEvents = await rpc(guest,
 assert.equal(protectionEvents.events.filter(event => event.kind === "protection_changed").length, 2);
 assert(protectionEvents.events.some(event =>
   event.kind === "turn_withdrawn" && event.player_id === 2));
+
+// Use real Rust commands and resolved snapshots, with practice_mode disabled.
+// Compare the full persisted payload so targeting, damage, shots, casualties,
+// bombing, source fleets, historical plans and RNG state cannot silently disappear.
+const combatLobby = await create(host, "CMBT01");
+const combatJoined = await rpc(guest,
+  "select public.stellarion_join_game($1, $2, $3) as result",
+  [combatLobby.game.code, "Guest", guestRecovery]);
+let combatGame = await snapshotWrite(host,
+  "select public.stellarion_start_game($1, $2, $3) as result",
+  [combatLobby.game.id, combatJoined.game.revision, fixtures.combat_game.initial]);
+assert.equal(combatGame.persisted.state.rules.practice_mode, false);
+for (const { submissions, resolved } of fixtures.combat_game.turns) {
+  const turn = combatGame.persisted.state.turn;
+  for (const [index, actor] of [host, guest].entries()) {
+    const submission = submissions[index];
+    if (turn === 1 && actor === host) {
+      for (const plan of invalidBattlePlans) {
+        const malformed = structuredClone(submission);
+        malformed.commands[0].battle_plan = plan;
+        await assert.rejects(rpc(actor,
+          "select public.stellarion_save_game($1, $2, $3) as result",
+          [combatGame.id, combatGame.revision, malformed]), /STLR_INVALID_DATA:battle_plan/);
+        await assert.rejects(rpc(actor,
+          "select public.stellarion_submit_turn($1, $2) as result",
+          [combatGame.id, malformed]), /STLR_INVALID_DATA:battle_plan/);
+      }
+    }
+    await rpc(actor, "select public.stellarion_save_game($1, $2, $3) as result",
+      [combatGame.id, combatGame.revision, submission]);
+    const saved = await rpc(actor,
+      "select public.stellarion_load_turn_submissions($1, $2, 'mine') as result",
+      [combatGame.id, turn]);
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].ready, false);
+    assert.deepEqual(saved[0].submission, submission, "saved combat orders survive a client reload");
+    for (const disposition of ["inserted", "duplicate"]) {
+      assert.equal((await rpc(actor,
+        "select public.stellarion_submit_turn($1, $2) as result",
+        [combatGame.id, submission])).disposition, disposition);
+    }
+  }
+  const accepted = await rpc(guest,
+    "select public.stellarion_load_turn_submissions($1, $2, 'resolution') as result",
+    [combatGame.id, turn]);
+  assert.deepEqual(accepted.map(row => row.submission), submissions);
+  combatGame = await snapshotWrite(guest,
+    "select public.stellarion_publish_resolution($1, $2, $3, $4) as result",
+    [combatGame.id, combatGame.revision, turn, resolved]);
+  for (const actor of [host, guest]) {
+    const loaded = await rpc(actor, "select public.stellarion_load_game($1) as result", [combatGame.id]);
+    assert.deepEqual(loaded.persisted, resolved, "both clients reload the complete Rust combat result");
+  }
+}
+const combatReports = combatGame.persisted.state.players[0].reports.filter(report => report.combat_report);
+assert(combatReports.length > 0);
+assert(combatReports.some(report => report.combat_report.rounds.some(round =>
+  [...round.attacker, ...round.defender].some(unit => unit.shots.length > 0))));
+for (const actor of [host, guest]) {
+  await rpc(actor, "select public.stellarion_set_connected($1, false) as result", [combatGame.id]);
+}
+const combatRecovered = await rpc(outsider,
+  "select public.stellarion_recover_player($1, $2) as result", [combatGame.code, guestRecovery]);
+assert.deepEqual(combatRecovered.game.persisted, combatGame.persisted,
+  "recovery on another client retains standing orders, fleets and battle playback");
+await rpc(host, "select public.stellarion_set_connected($1, true) as result", [combatGame.id]);
+await rpc(host, "select public.stellarion_resume_game($1) as result", [combatGame.id]);
+assert.deepEqual((await rpc(outsider,
+  "select public.stellarion_load_game($1) as result", [combatGame.id])).persisted, combatGame.persisted);
+console.log("Normal-game battle plans: saved drafts, dispatch, in-flight changes, automatic/manual orders, deterministic combat, full reports, recovery and resume passed through authenticated SQL RPCs.");
 console.log("Host and guest presence expires after 15 seconds; read-only refreshes, resume guards, reconnects, and saved games remain consistent.");
 console.log("Direct authenticated SQL RPCs: create/join/recovery/start/save/ready/continue/resolve, stable recovery codes, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
 await db.close();

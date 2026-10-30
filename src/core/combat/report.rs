@@ -108,7 +108,7 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
-    /// Original forces and independent plans, in the same stable order as replay identities.
+    /// Original forces and the single combined plan used by each commander.
     pub fn battle_plan_fleets(
         &self,
         side: &Side,
@@ -132,13 +132,12 @@ impl MissionReport {
                         })
                         .collect()
                 } else {
-                    self.mission
-                        .source_battle_fleets()
-                        .into_iter()
-                        .map(|fleet| {
-                            (Some(self.mission.owner), fleet.id, fleet.battle_plan, fleet.army)
-                        })
-                        .collect()
+                    vec![(
+                        Some(self.mission.owner),
+                        self.mission.id,
+                        self.mission.battle_plan_for(Some(self.mission.owner)),
+                        self.mission.army.clone(),
+                    )]
                 }
             },
             Side::Defender => {
@@ -158,7 +157,7 @@ impl MissionReport {
         }
     }
 
-    /// Partitions surviving or returning ships by their original fleet orders.
+    /// Partitions survivors by source identity, carrying the combined commander's orders.
     pub(crate) fn retained_battle_fleets(
         &self,
         returning: &Army,
@@ -202,6 +201,7 @@ impl MissionReport {
             if !army.is_empty() {
                 fleets.push(crate::core::missions::BattleFleet {
                     army,
+                    battle_plan: self.mission.battle_plan_for(Some(self.mission.owner)),
                     ..source
                 });
             }

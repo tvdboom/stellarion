@@ -130,7 +130,7 @@ fn restoring_joint_owner_draft_preserves_its_independent_battle_plan() {
     contribution.battle_plan = BattlePlan {
         automatic_tactic: false,
         tactic: CombatTactic::Siege,
-        protection: ProtectionPosture::ProtectBombers,
+        protection: ProtectionPosture::BattleLine,
         ..default()
     };
     let expected = contribution.battle_plan;
@@ -898,7 +898,10 @@ fn invite_picker_opens_on_hover_and_applies_each_choice_without_launching() {
             assert!(screen.contains_rect(invite), "invite footer at {size:?}: {invite:?}");
             assert!(screen.contains_rect(send), "send footer at {size:?}: {send:?}");
             assert!(strength_icon.right() < strength.left(), "icon precedes value");
-            assert!(strength.right() < send.left(), "strength precedes send button");
+            assert!(
+                strength.right() < send.left() || strength.bottom() < send.top(),
+                "strength stays beside or above the send button"
+            );
             assert!(send.right() < screen.right() - 15.0, "send button has a right inset");
             assert!(invite.right() < send.left());
             assert!(invite.left() < 36.0, "invite stays at the bottom left");
@@ -988,7 +991,7 @@ fn invite_picker_opens_on_hover_and_applies_each_choice_without_launching() {
             vec![egui::Event::PointerMoved(egui::pos2(size.x - 8.0, 8.0))],
             &keyboard,
         );
-        assert!(text_bounds(&away, "Player 2").is_some());
+        assert!(text_bounds(&away, "Players (1)").is_some());
         assert!(state.joint_attack_invite_panel_rect.is_none());
         assert_eq!(state.joint_attack_invitees, [2].into());
     }
@@ -1729,23 +1732,28 @@ fn joint_response_matches_mission_controls_and_keeps_disabled_reasons_on_accept(
                         "{label} {button:?} must stay inside {panel:?} at {size:?}"
                     );
                 }
-                if size.x > 800.0 {
-                    let reject = text_bounds(&output, "Reject").unwrap();
+                if (rect.center().y - reject.center().y).abs() < 1.0 {
                     assert!(
                         rect.center().x - reject.center().x >= 195.0 * scale,
                         "response actions need a visible horizontal gap"
                     );
+                } else {
+                    assert!(reject.bottom() < rect.top(), "stacked response actions need a gap");
                 }
                 accept = Some(rect.center());
                 let title = text_bounds(&output, "Joint Attack").unwrap();
                 assert!((title.center().x - panel.center().x).abs() < 1.0);
-                assert!(title.center().y < panel.top() + 40.0 * scale);
-                assert_eq!(text_font_size(&output, "Joint Attack"), Some(18.0));
+                let header = egui::Rect::from_min_size(
+                    panel.shrink(8.0).min,
+                    egui::vec2(panel.width() - 16.0, 48.0 * scale),
+                );
+                assert!(header.contains_rect(title));
+                assert_eq!(text_font_size(&output, "Joint Attack"), Some(16.0));
                 assert!(text_bounds(&output, "New mission").is_none());
                 assert!(text_bounds(&output, "Your fleet").is_none());
                 if size.x > 800.0 {
                     for label in
-                        ["🎯 Objective:", "⚔ Combat Probes:", "💣 Bombing raid:", "Accepted"]
+                        ["🎯 Objective:", "⚔ Combat Probes:", "💣 Bombing raid:", "Players (1)"]
                     {
                         assert!(text_bounds(&output, label).is_some(), "missing {label}");
                     }
@@ -1918,7 +1926,7 @@ fn joint_strengths_show_compact_other_player_roster() {
 }
 
 #[test]
-fn mission_strength_follows_the_available_footer_action() {
+fn mission_footer_positions_stay_stable_as_invitees_join() {
     for size in [egui::vec2(1040.0, 800.0), egui::vec2(560.0, 460.0)] {
         let mut baseline: Option<(egui::Pos2, egui::Pos2, egui::Pos2)> = None;
         let mut cancel_baseline: Option<egui::Pos2> = None;
@@ -1993,12 +2001,18 @@ fn mission_strength_follows_the_available_footer_action() {
                 .unwrap();
             if guest_count > 0 {
                 let cancel = text_bounds(&output, "Cancel mission").unwrap();
-                assert!(fleet.right() < cancel.left() && cancel.right() < send.left());
-                assert!(
-                    cancel.center().x - 90.0 - fleet.right() < 60.0,
-                    "badge should sit beside cancel at {size:?}"
-                );
-                assert!((fleet.center().y - cancel.center().y).abs() < 25.0);
+                let badge_action = if (cancel.center().y - send.center().y).abs() < 1.0 {
+                    cancel
+                } else {
+                    send
+                };
+                assert!(!cancel.intersects(send), "footer actions must stay separate");
+                if (fleet.center().y - badge_action.center().y).abs() < 25.0 {
+                    assert!(fleet.right() < badge_action.left());
+                    assert!(badge_action.center().x - 90.0 - fleet.right() < 60.0);
+                } else {
+                    assert!(fleet.bottom() < send.top() && fleet.bottom() < cancel.top());
+                }
                 if let Some((previous_invite, previous_send, previous_fleet)) = baseline {
                     assert_eq!(invite.center(), previous_invite);
                     assert_eq!(send.center(), previous_send);
@@ -2013,116 +2027,193 @@ fn mission_strength_follows_the_available_footer_action() {
                 }
             } else {
                 assert!(text_bounds(&output, "Cancel mission").is_none());
-                assert!(fleet.right() < send.left());
-                assert!(
-                    send.center().x - 90.0 - fleet.right() < 60.0,
-                    "badge should sit beside send at {size:?}: fleet {fleet:?}, send {send:?}"
-                );
-                assert!((fleet.center().y - send.center().y).abs() < 25.0);
+                assert!(fleet.right() < send.left() || fleet.bottom() < send.top());
             }
         }
     }
 }
 
 #[test]
-fn owner_roster_sits_beside_invite_icon_at_supported_panel_widths() {
+fn owner_summary_shows_every_invitee_on_hover_without_pinning_on_click() {
     for size in [egui::vec2(1040.0, 800.0), egui::vec2(560.0, 460.0), egui::vec2(360.0, 460.0)] {
         let (mut model, mut player, mut state, mut invitation) = fixture();
         invitation.inviter = player.id;
         invitation.participants.reverse();
+        invitation.participants.push(JointAttackParticipant {
+            player_id: 3,
+            response: JointAttackResponse::Rejected,
+            contribution: None,
+        });
+        state.mission_info = state.joint_attack_contribution.clone();
         state.joint_attack_draft_id = Some(invitation.id);
-        state.joint_attack_owner_draft = Some(state.joint_attack_contribution.clone());
+        state.joint_attack_owner_draft = Some(state.mission_info.clone());
         state.allied_mission = true;
-        state.joint_attack_invitees.insert(2);
+        state.joint_attack_invitees = [2, 3, 4].into();
         let mut session = session_for_model(&model);
-        session.active_game.as_mut().unwrap().members[1].display_name = "Practice P2".into();
         session.joint_attacks.push(invitation.clone());
+        let context = egui::Context::default();
+        let mut style = NordDark.custom_style();
+        style.interaction.tooltip_delay = 0.0;
+        context.set_global_style(style);
+        let mut world = World::new();
+        world.init_resource::<Messages<MultiplayerRequest>>();
+        world.init_resource::<Messages<SendMissionMsg>>();
+        let mut frame = |events| {
+            owner_frame(
+                &context,
+                &mut world,
+                &mut model,
+                &mut player,
+                &mut state,
+                &session,
+                size,
+                events,
+                &ButtonInput::default(),
+            )
+        };
+        frame(vec![]);
+        let output = frame(vec![]);
+        let summary = text_bounds(&output, "Players (3)").unwrap();
+        let send = text_bounds(&output, "Send mission")
+            .or_else(|| text_bounds(&output, "Send proposal"))
+            .unwrap();
+        let cancel = text_bounds(&output, "Cancel mission").unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for control in [summary, send, cancel] {
+            assert!(screen.contains_rect(control));
+        }
+        assert!(
+            !summary.intersects(send) && !summary.intersects(cancel) && !send.intersects(cancel)
+        );
+        assert!(text_bounds(&output, "Player 2").is_none());
+        for _ in 0..3 {
+            frame(vec![egui::Event::PointerMoved(summary.center())]);
+        }
+        let output = frame(vec![]);
+        assert_eq!(output.platform_output.cursor_icon, CursorIcon::Default);
+        assert!(text_bounds(&output, "Invited players").is_none());
+        assert!(text_bounds(&output, "Fleet strength and proposal status").is_none());
+        for label in ["Player 2", "Player 3", "Player 4", "Accepted", "Rejected", "Pending"] {
+            assert!(text_bounds(&output, label).is_some(), "missing {label} at {size:?}");
+        }
+        let strength =
+            fleet_strength(&invitation.participants[1].contribution.as_ref().unwrap().army);
+        assert!(text_bounds(&output, &strength.to_string()).is_some());
+        for pressed in [true, false] {
+            frame(pointer_click(summary.center(), pressed));
+        }
+        let output = frame(vec![egui::Event::PointerGone]);
+        assert!(text_bounds(&output, "Player 2").is_none());
+        assert!(!egui::Popup::is_any_open(&context));
+    }
+}
+
+#[test]
+fn mission_footer_keeps_large_fleets_and_small_windows_in_disjoint_rows() {
+    for width in [324.0_f32, 524.0, 830.0] {
+        for badges_width in [230.0, width.min(450.0)] {
+            for players_width in [MISSION_PLAYERS_SUMMARY_WIDTH, 138.0] {
+                for secondary in [false, true] {
+                    let bounds =
+                        egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(width, 500.0));
+                    let layout =
+                        mission_footer_layout(bounds, players_width, badges_width, secondary);
+                    let mut cells = vec![layout.players, layout.badges, layout.send];
+                    cells.extend(layout.secondary);
+                    for (index, cell) in cells.iter().enumerate() {
+                        assert!(bounds.contains_rect(*cell), "{cell:?} outside {bounds:?}");
+                        for other in &cells[index + 1..] {
+                            assert!(!cell.intersects(*other), "overlap: {cell:?}, {other:?}");
+                        }
+                    }
+                    assert!(cells.iter().all(|cell| cell.top() >= layout.top));
+                    if width == 830.0 && badges_width == 230.0 {
+                        assert_eq!(layout.top, layout.send.top());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scaled_owner_panel_keeps_the_complete_footer_in_the_viewport() {
+    for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(560.0, 460.0), egui::vec2(360.0, 460.0)]
+    {
+        let (mut model, mut player, mut state, mut invitation) = fixture();
+        invitation.inviter = player.id;
+        invitation.participants.reverse();
+        state.mission_info = state.joint_attack_contribution.clone();
+        state.joint_attack_draft_id = Some(invitation.id);
+        state.joint_attack_owner_draft = Some(state.mission_info.clone());
+        state.joint_attack_invitees = [2].into();
+        state.allied_mission = true;
+        let mut session = session_for_model(&model);
+        session.joint_attacks.push(invitation);
         let context = egui::Context::default();
         context.set_global_style(NordDark.custom_style());
         let mut world = World::new();
         world.init_resource::<Messages<MultiplayerRequest>>();
         world.init_resource::<Messages<SendMissionMsg>>();
-        owner_frame(
-            &context,
-            &mut world,
-            &mut model,
-            &mut player,
-            &mut state,
-            &session,
-            size,
-            vec![],
-            &ButtonInput::default(),
-        );
-        let output = owner_frame(
-            &context,
-            &mut world,
-            &mut model,
-            &mut player,
-            &mut state,
-            &session,
-            size,
-            vec![],
-            &ButtonInput::default(),
-        );
-        let (icon, _) = invite_icon(&output);
-        let strength =
-            fleet_strength(&invitation.participants[1].contribution.as_ref().unwrap().army);
-        let name = text_bounds(&output, "Practice P2").unwrap();
-        let badge = text_bounds(&output, "Accepted").unwrap();
-        let fleet = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Mesh(mesh) if mesh.texture_id == FLEET_ICON_TEXTURE => {
-                    let rect = mesh.calc_bounds();
-                    (rect.left() > name.right() && rect.right() < badge.left()).then_some(rect)
+        let mut params = bevy::ecs::system::SystemState::<(
+            MessageWriter<MultiplayerRequest>,
+            MessageWriter<SendMissionMsg>,
+        )>::new(&mut world);
+        let scale = mission_panel_scale(viewport);
+        let size = mission_panel_size(viewport / scale);
+        let pos = (viewport - size * scale) * 0.5;
+        for step in 0..2 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                    ..default()
                 },
-                _ => None,
-            })
-            .unwrap();
-        let strength_text = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == strength.to_string() => {
-                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                    ((rect.center().y - name.center().y).abs() < 3.0).then_some(rect)
+                |ctx| {
+                    draw_panel_on_context(
+                        ctx,
+                        "mission",
+                        "panel",
+                        (pos.x, pos.y),
+                        (size.x, size.y),
+                        0.0,
+                        scale,
+                        &ImageIds::default(),
+                        |ui| {
+                            let (mut requests, mut sends) = params.get_mut(&mut world).unwrap();
+                            draw_new_mission(
+                                ui,
+                                &mut sends,
+                                &[],
+                                &Settings::default(),
+                                &mut state,
+                                &mut model.map,
+                                &mut player,
+                                &session,
+                                &mut requests,
+                                false,
+                                &ButtonInput::default(),
+                                &ImageIds::default(),
+                            );
+                        },
+                    );
                 },
-                _ => None,
-            })
-            .unwrap();
-        assert!(name.left() - icon.right() >= 11.0, "size {size:?}: name {name:?}, icon {icon:?}");
-        assert!(
-            fleet.left() - name.right() >= 7.0,
-            "size {size:?}: fleet {fleet:?}, name {name:?}"
-        );
-        let name_clip = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == "Practice P2" => {
-                    Some(shape.clip_rect)
-                },
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            name_clip.right() + 1.0 >= name.right(),
-            "size {size:?}: full name {name:?} must be visible inside {name_clip:?}"
-        );
-        assert!(
-            strength_text.left() >= fleet.right(),
-            "size {size:?}: strength {strength_text:?}, fleet {fleet:?}"
-        );
-        assert!(
-            badge.left() - strength_text.right() >= 12.0,
-            "size {size:?}: badge {badge:?}, strength {strength_text:?}"
-        );
-        assert!(
-            (badge.bottom() - icon.bottom()).abs() < 5.0,
-            "size {size:?}: badge {badge:?}, icon {icon:?}"
-        );
-        assert!(text_bounds(&output, "Player 1").is_none());
+            );
+            output.textures_delta.clear();
+            if step == 0 {
+                continue;
+            }
+            let summary = text_bounds(&output, "Players (1)").unwrap();
+            let send = text_bounds(&output, "Send mission")
+                .or_else(|| text_bounds(&output, "Send proposal"))
+                .unwrap();
+            let cancel = text_bounds(&output, "Cancel mission").unwrap();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+            for control in [summary, send, cancel] {
+                assert!(screen.contains_rect(control), "{control:?} outside {screen:?}");
+            }
+            assert!((send.center().y - cancel.center().y).abs() < 1.0);
+            assert!((send.center().y - summary.center().y).abs() < 12.0 * scale);
+        }
     }
 }
 
@@ -2275,117 +2366,105 @@ fn guest_roster_strength_column_follows_the_longest_name() {
 }
 
 #[test]
-fn invited_player_roster_keeps_the_full_name_near_the_left_edge() {
-    let (model, player, mut state, invitation) = fixture();
-    let mut session = session_for_model(&model);
-    session.active_game.as_mut().unwrap().members[1].display_name = "Practice P1".into();
-    let context = egui::Context::default();
-    context.set_global_style(NordDark.custom_style());
-    let mut world = World::new();
-    world.init_resource::<Messages<MultiplayerRequest>>();
-    let mut params =
-        bevy::ecs::system::SystemState::<MessageWriter<MultiplayerRequest>>::new(&mut world);
-    let mut frame = || {
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1040.0, 800.0),
-                )),
-                ..default()
-            },
-            |ctx| {
-                draw_joint_attack_response_panel(
-                    ctx,
-                    &mut state,
-                    &model.map,
-                    &player,
-                    &session,
-                    &mut params.get_mut(&mut world).unwrap(),
-                    &ImageIds::default(),
-                    &invitation,
-                    model.map.get(invitation.destination),
-                    JointAttackResponse::Pending,
-                );
-            },
+fn invitee_summary_fits_small_windows_and_reveals_the_owner_on_hover() {
+    for size in [egui::vec2(1040.0, 800.0), egui::vec2(560.0, 460.0), egui::vec2(360.0, 460.0)] {
+        let (model, player, mut state, invitation) = fixture();
+        let session = session_for_model(&model);
+        let panel_texture = egui::TextureId::User(94);
+        let images = ImageIds(
+            [
+                ("panel".to_owned(), panel_texture),
+                (Icon::AlliedAttack.asset_key(), INVITE_ICON_TEXTURE),
+            ]
+            .into(),
         );
-        output.textures_delta.clear();
-        output
-    };
-    frame();
-    let output = frame();
-    let name = text_bounds(&output, "Practice P1").unwrap();
-    let viewport = egui::vec2(1040.0, 800.0);
-    let scale = mission_panel_scale(viewport);
-    let panel = egui::Rect::from_center_size(
-        egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).center(),
-        mission_panel_size(viewport / scale) * scale,
-    );
-    assert!(name.left() >= panel.left() + 20.0 * scale);
-    assert!(name.left() < panel.left() + 30.0 * scale, "name should start beside the panel edge");
-    assert!(name.bottom() > panel.bottom() - 32.0 * scale);
-    let shape = output
-        .shapes
-        .iter()
-        .find(|shape| {
-            matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.text() == "Practice P1")
-        })
-        .unwrap();
-    assert!(
-        shape.clip_rect.left() <= name.left() + 1.0
-            && shape.clip_rect.right() + 1.0 >= name.right(),
-        "full player name must be visible: {name:?} in {:?}",
-        shape.clip_rect,
-    );
-    assert!(text_bounds(&output, "Accept").is_some());
-}
-
-#[test]
-fn compact_invitee_panel_keeps_the_roster_inside_its_footer() {
-    let (model, player, mut state, invitation) = fixture();
-    let mut session = session_for_model(&model);
-    session.active_game.as_mut().unwrap().members[1].display_name = "Practice P2".into();
-    let context = egui::Context::default();
-    context.set_global_style(NordDark.custom_style());
-    let mut world = World::new();
-    world.init_resource::<Messages<MultiplayerRequest>>();
-    let size = egui::vec2(560.0, 460.0);
-    let mut frame = |state: &mut UiState| {
+        let context = egui::Context::default();
+        let mut style = NordDark.custom_style();
+        style.interaction.tooltip_delay = 0.0;
+        context.set_global_style(style);
+        let mut world = World::new();
+        world.init_resource::<Messages<MultiplayerRequest>>();
         let mut params =
             bevy::ecs::system::SystemState::<MessageWriter<MultiplayerRequest>>::new(&mut world);
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                ..default()
-            },
-            |ctx| {
-                draw_joint_attack_response_panel(
-                    ctx,
-                    state,
-                    &model.map,
-                    &player,
-                    &session,
-                    &mut params.get_mut(&mut world).unwrap(),
-                    &ImageIds::default(),
-                    &invitation,
-                    model.map.get(invitation.destination),
-                    JointAttackResponse::Pending,
-                );
-            },
+        let mut frame_time = 0.0;
+        let mut frame = |events| {
+            frame_time += 0.1;
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(frame_time),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..default()
+                },
+                |ctx| {
+                    draw_joint_attack_response_panel(
+                        ctx,
+                        &mut state,
+                        &model.map,
+                        &player,
+                        &session,
+                        &mut params.get_mut(&mut world).unwrap(),
+                        &images,
+                        &invitation,
+                        model.map.get(invitation.destination),
+                        JointAttackResponse::Pending,
+                    )
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(vec![]);
+        let output = frame(vec![]);
+        let summary = text_bounds(&output, "Players (1)").unwrap();
+        let accept = text_bounds(&output, "Accept").unwrap();
+        let reject = text_bounds(&output, "Reject").unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let scale = mission_panel_scale(size);
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|shape| textured_shape_bounds(&shape.shape, panel_texture, 0.0))
+            .unwrap();
+        assert!((panel.size() - mission_panel_size(size / scale) * scale).length() < 0.5);
+        let (icon, _) = invite_icon(&output);
+        assert!(panel.contains_rect(icon));
+        assert!((icon.width() - MISSION_INVITE_ICON_SIZE * scale).abs() < 0.5);
+        assert!(icon.right() < summary.left());
+        assert!((icon.center().y - summary.center().y).abs() < 12.0 * scale);
+        assert!(
+            screen.contains_rect(summary)
+                && screen.contains_rect(accept)
+                && screen.contains_rect(reject)
         );
-        output.textures_delta.clear();
-        output
-    };
-    frame(&mut state);
-    let output = frame(&mut state);
-    let name = text_bounds(&output, "Practice P2").expect("compact roster name");
-    let scale = mission_panel_scale(size);
-    let panel = egui::Rect::from_center_size(
-        egui::Rect::from_min_size(egui::Pos2::ZERO, size).center(),
-        mission_panel_size(size / scale) * scale,
-    );
-    assert!(panel.contains_rect(name), "roster name {name:?} outside {panel:?}");
+        assert!(!summary.intersects(accept) && !summary.intersects(reject));
+        assert!(text_bounds(&output, "Player 2").is_none());
+        for _ in 0..3 {
+            let output = frame(vec![egui::Event::PointerMoved(icon.center())]);
+            assert_eq!(output.platform_output.cursor_icon, CursorIcon::Default);
+            assert!(text_bounds(&output, "Player 2").is_none());
+            assert!(text_bounds(&output, "Invite players").is_none());
+        }
+        for _ in 0..3 {
+            frame(vec![egui::Event::PointerMoved(summary.center())]);
+        }
+        let output = frame(vec![egui::Event::PointerMoved(summary.center())]);
+        assert_eq!(output.platform_output.cursor_icon, CursorIcon::Default);
+        assert!(text_bounds(&output, "Invited players").is_none());
+        assert!(text_bounds(&output, "Fleet strength and proposal status").is_none());
+        let name = text_bounds(&output, "Player 2").expect("owner name in hover roster");
+        assert!(screen.contains_rect(name), "{name:?} outside {screen:?}");
+        assert!(text_bounds(&output, "Accepted").is_some());
+        let strength =
+            fleet_strength(&invitation.participants[0].contribution.as_ref().unwrap().army);
+        assert!(text_bounds(&output, &strength.to_string()).is_some());
+        for pressed in [true, false] {
+            frame(pointer_click(summary.center(), pressed));
+        }
+        let output = frame(vec![egui::Event::PointerGone]);
+        assert!(text_bounds(&output, "Player 2").is_none());
+        assert!(!egui::Popup::is_any_open(&context));
+    }
 }
 
 #[test]
@@ -2907,11 +2986,12 @@ fn render_joint_mission_panels() {
     use bevy::app::AppExit;
     use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
     use bevy::winit::{WinitPlugin, WinitSettings};
-    use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+    use bevy_egui::{EguiInput, EguiPlugin, EguiPreUpdateSet, EguiPrimaryContextPass};
     #[derive(Resource)]
     struct RenderCase {
         invitation: JointAttackInvitation,
         frame: usize,
+        summary_hover: Option<egui::Pos2>,
     }
     let (model, player, mut state, mut invitation) = fixture();
     state.mission_info = state.joint_attack_contribution.clone();
@@ -2970,6 +3050,7 @@ fn render_joint_mission_panels() {
     .insert_resource(RenderCase {
         invitation,
         frame: 0,
+        summary_hover: None,
     })
     .insert_resource(model.map)
     .insert_resource(player)
@@ -2983,6 +3064,20 @@ fn render_joint_mission_panels() {
     .add_systems(Startup, |mut commands: Commands| {
         commands.spawn(Camera2d);
     })
+    .add_systems(
+        PreUpdate,
+        (|case: Res<RenderCase>, mut inputs: Query<&mut EguiInput>| {
+            for mut input in &mut inputs {
+                input.events.push(if (80..140).contains(&case.frame) {
+                    case.summary_hover.map_or(egui::Event::PointerGone, egui::Event::PointerMoved)
+                } else {
+                    egui::Event::PointerGone
+                });
+            }
+        })
+        .after(EguiPreUpdateSet::ProcessInput)
+        .before(EguiPreUpdateSet::BeginPass),
+    )
     .add_systems(
         EguiPrimaryContextPass,
         (
@@ -3004,7 +3099,24 @@ fn render_joint_mission_panels() {
                     .map(Unit::to_lowername)
                     .collect::<std::collections::BTreeSet<_>>();
                 keys.extend(Icon::iter().map(|icon| icon.asset_key()));
-                keys.extend(["panel", "button", "button hover", "battle plan"].map(str::to_owned));
+                keys.extend(
+                    ["panel", "button", "button hover", "battle plan", "fleet"].map(str::to_owned),
+                );
+                keys.extend(
+                    crate::core::combat::plan::CombatTactic::ALL
+                        .into_iter()
+                        .map(|tactic| tactic.image_key().to_owned()),
+                );
+                keys.extend(
+                    crate::core::combat::plan::TargetPriority::ALL
+                        .into_iter()
+                        .map(|priority| priority.image_key().to_owned()),
+                );
+                keys.extend(
+                    crate::core::combat::plan::ProtectionPosture::ALL
+                        .into_iter()
+                        .map(|posture| posture.image_key().to_owned()),
+                );
                 keys.insert(map.get(state.mission_info.origin).image());
                 keys.insert(map.get(state.mission_info.destination).image());
                 keys.insert(state.mission_info.image(&player).to_owned());
@@ -3047,6 +3159,7 @@ fn render_joint_mission_panels() {
                 let Ok(ctx) = contexts.ctx_mut() else {
                     return;
                 };
+                ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.0);
                 if case.frame == 160 {
                     case.invitation.inviter = 2;
                     case.invitation.participants.reverse();
@@ -3080,12 +3193,14 @@ fn render_joint_mission_panels() {
                         &images,
                     );
                 } else if case.frame < 160 || case.frame >= 320 {
-                    let size = mission_panel_size(ctx.content_rect().size());
-                    show_panel_modal(
+                    let scale = mission_panel_scale(ctx.content_rect().size());
+                    let size = mission_panel_size(ctx.content_rect().size() / scale);
+                    scaled_modal(
                         ctx,
                         &images,
                         egui::Id::new("owner render"),
                         size,
+                        scale,
                         |ui, rect, _| {
                             ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                                 draw_mission(
@@ -3104,6 +3219,22 @@ fn render_joint_mission_panels() {
                                     &images,
                                     true,
                                 );
+                                let badges = mission_badges_width(
+                                    ui,
+                                    &state.mission_info.army,
+                                    Some(state.mission_info.battle_plan),
+                                );
+                                let footer = mission_footer_layout(
+                                    rect.shrink(10.0),
+                                    MISSION_INVITE_ICON_SIZE + 12.0 + MISSION_PLAYERS_SUMMARY_WIDTH,
+                                    badges,
+                                    true,
+                                );
+                                case.summary_hover =
+                                    Some(egui::emath::TSTransform::from_scaling(scale).mul_pos(
+                                        footer.players.right_center()
+                                            - egui::vec2(MISSION_PLAYERS_SUMMARY_WIDTH * 0.5, 0.0),
+                                    ));
                             });
                         },
                     );
@@ -3122,12 +3253,13 @@ fn render_joint_mission_panels() {
                     );
                 }
                 case.frame += 1;
-                if [60, 220, 300, 380, 460, 540].contains(&case.frame) {
+                if [60, 140, 220, 300, 380, 460, 540].contains(&case.frame) {
                     let path = format!(
                         "{}/target/ui-joint/{}.png",
                         env!("CARGO_MANIFEST_DIR"),
                         match case.frame {
                             60 => "owner",
+                            140 => "owner-roster",
                             220 => "invitee",
                             300 => "invitee-compact",
                             380 => "owner-compact",

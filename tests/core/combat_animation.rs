@@ -155,6 +155,9 @@ fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
         ..default()
     });
     let mut rng = DeterministicRngState::from_u64(37).next_rng();
+    // Tactical stats come from recorded rounds, so record both commanders after adding the ally.
+    report.mission.army = Army::from([(fighter, 10)]);
+    report = resolve_combat_with_rng(report.turn, &report.mission, &report.planet, &mut rng);
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
@@ -176,10 +179,23 @@ fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
         .collect::<Vec<_>>();
     assert_eq!(identity_nodes.len(), 2);
     assert!(identity_nodes.iter().all(|node| node.width == Val::Auto
-        && node.min_width == Val::Px(132.0)
-        && node.max_width == Val::Vw(45.0)
-        && node.max_height == Val::Vh(40.0)));
-    assert!(identity_nodes.iter().all(|node| node.overflow.y == OverflowAxis::Scroll));
+        && node.min_width == Val::Px(220.0)
+        && matches!(node.height, Val::Px(height) if height <= 70.0)
+        && node.overflow.y == OverflowAxis::Clip));
+    assert!(app
+        .world_mut()
+        .query::<&Text>()
+        .iter(app.world())
+        .all(|text| { !text.contains("Breakthrough") && !text.contains("Open formation") }));
+    assert_eq!(
+        app.world_mut()
+            .query::<&CombatIdentityDetails>()
+            .iter(app.world())
+            .map(|details| details.plans.len())
+            .sum::<usize>(),
+        3,
+        "per-fleet plans remain available through hover details"
+    );
     assert!(app
         .world_mut()
         .query::<(&Text, &TextLayout)>()
@@ -1832,9 +1848,11 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
     assert_eq!(shield_fill.color, SHIELD_COLOR);
     let full_fill_width = shield_fill.custom_size.unwrap().x;
 
+    app.add_systems(Update, update_combat_stats);
+    app.update();
     app.world_mut().get_mut::<CombatUnitCmp>(shield_entity).unwrap().shield /= 2;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
-    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    app.update();
     let animated_fill_width = app
         .world_mut()
         .query_filtered::<&Sprite, (With<PlanetaryShieldFillCmp>, With<ShieldCmp>)>()
@@ -1848,7 +1866,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
         "the single shield fill rapidly interpolates instead of jumping to its new value"
     );
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(400));
-    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    app.update();
     let settled_fill_width = app
         .world_mut()
         .query_filtered::<&Sprite, (With<PlanetaryShieldFillCmp>, With<ShieldCmp>)>()
@@ -1889,7 +1907,7 @@ fn single_round_battles_go_directly_to_fire_without_a_round_banner() {
 }
 
 #[test]
-fn round_and_pause_overlays_use_the_grouped_offset_or_individual_center() {
+fn round_banners_use_the_grouped_offset_or_individual_center() {
     let grouped_anchor = combat_status_node(false);
     assert_eq!(grouped_anchor.width, Val::Percent(100.0));
     assert_eq!(grouped_anchor.height, Val::Percent(105.0));
@@ -1913,11 +1931,11 @@ fn round_and_pause_overlays_use_the_grouped_offset_or_individual_center() {
 }
 
 #[test]
-fn visible_round_and_pause_layouts_follow_the_formation_setting() {
+fn visible_round_layouts_follow_the_formation_setting() {
     let mut app = App::new();
     app.init_resource::<Settings>();
-    let anchor = app.world_mut().spawn((Node::default(), CombatRoundPauseAnchorCmp)).id();
-    let content = app.world_mut().spawn((UiTransform::default(), CombatRoundPauseContentCmp)).id();
+    let anchor = app.world_mut().spawn((Node::default(), CombatRoundAnchorCmp)).id();
+    let content = app.world_mut().spawn((UiTransform::default(), CombatRoundContentCmp)).id();
 
     app.world_mut().run_system_once(update_combat_status_layout).unwrap();
     assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(105.0));
@@ -1930,6 +1948,50 @@ fn visible_round_and_pause_layouts_follow_the_formation_setting() {
     app.world_mut().run_system_once(update_combat_status_layout).unwrap();
     assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(100.0));
     assert_eq!(app.world().get::<UiTransform>(content).unwrap().translation, Val2::ZERO);
+}
+
+#[test]
+fn pause_stays_centered_when_switching_between_grouped_and_individual_units() {
+    for initially_individual in [false, true] {
+        let report = report(5, 0, true, 61);
+        let mut rng = DeterministicRngState::from_u64(61).next_rng();
+        let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
+        let map = Map {
+            rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: vec![origin, report.planet.clone()],
+        };
+        let mut app = playback_app(report, 0, CombatState::Fire);
+        app.insert_resource(map).init_resource::<MultiplayerSession>();
+        {
+            let mut settings = app.world_mut().resource_mut::<Settings>();
+            settings.combat_paused = true;
+            settings.combat_individual_units = initially_individual;
+        }
+        app.world_mut().run_system_once(setup_combat).unwrap();
+        let pause = app
+            .world_mut()
+            .query_filtered::<Entity, With<CombatPausedCmp>>()
+            .single(app.world())
+            .unwrap();
+        let band = app.world().get::<Children>(pause).unwrap()[0];
+
+        for individual in [initially_individual, !initially_individual, initially_individual] {
+            app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
+            app.world_mut().run_system_once(update_combat_status_layout).unwrap();
+
+            let anchor = app.world().get::<Node>(pause).unwrap();
+            assert_eq!(anchor.position_type, PositionType::Absolute);
+            assert_eq!(anchor.left, Val::ZERO);
+            assert_eq!(anchor.top, Val::ZERO);
+            assert_eq!(anchor.width, Val::Percent(100.0));
+            assert_eq!(anchor.height, Val::Percent(100.0));
+            assert_eq!(anchor.align_items, AlignItems::Center);
+            assert_eq!(anchor.justify_content, JustifyContent::Center);
+            assert_eq!(app.world().get::<UiTransform>(band).unwrap().translation, Val2::ZERO);
+            assert_eq!(app.world().get::<Visibility>(pause), Some(&Visibility::Inherited));
+        }
+    }
 }
 
 #[test]
@@ -2639,53 +2701,77 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
 }
 
 #[test]
-fn combat_identity_scroll_is_bounded_and_only_moves_the_hovered_panel() {
-    use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-    let mut app = App::new();
-    app.add_message::<MouseWheel>().add_systems(Update, scroll_combat_identities);
-    let mut window = Window::default();
-    window.set_cursor_position(Some(Vec2::new(30.0, 30.0)));
-    let window_entity = app.world_mut().spawn(window).id();
-    let node = ComputedNode {
-        size: Vec2::splat(100.0),
-        content_size: Vec2::new(100.0, 300.0),
-        ..Default::default()
-    };
-    let hovered = app
-        .world_mut()
-        .spawn((
-            CombatIdentityCmp,
-            node,
-            UiGlobalTransform::from_xy(50.0, 50.0),
-            ScrollPosition::default(),
-        ))
-        .id();
-    let other = app
-        .world_mut()
-        .spawn((
-            CombatIdentityCmp,
-            node,
-            UiGlobalTransform::from_xy(200.0, 50.0),
-            ScrollPosition::default(),
-        ))
-        .id();
-    for amount in [-50.0, 50.0] {
-        app.world_mut().write_message(MouseWheel {
-            unit: MouseScrollUnit::Line,
-            x: 0.0,
-            y: amount,
-            window: window_entity,
-            phase: bevy::input::touch::TouchPhase::Moved,
+fn schematic_identity_hover_uses_the_whole_panel_at_each_display_scale() {
+    use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
+    use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+    for scale in [1.0, 2.0] {
+        let mut app = App::new();
+        app.init_resource::<EguiUserTextures>()
+            .init_resource::<ImageIds>()
+            .add_systems(Update, draw_combat_identity_tooltips);
+        let mut egui_context = EguiContext::default();
+        let context = egui_context.get_mut().clone();
+        context.set_pixels_per_point(scale);
+        context.global_style_mut(|style| {
+            style.animation_time = 0.0;
+            style.interaction.tooltip_delay = 0.0;
         });
-        app.update();
-        assert_eq!(
-            app.world().get::<ScrollPosition>(hovered).unwrap().y,
-            if amount < 0.0 {
-                200.0
-            } else {
-                0.0
-            }
-        );
-        assert_eq!(app.world().get::<ScrollPosition>(other).unwrap().y, 0.0);
+        app.world_mut().spawn((egui_context, PrimaryEguiContext));
+        app.world_mut().spawn((
+            ComputedNode {
+                size: Vec2::new(220.0, 54.0) * scale,
+                ..default()
+            },
+            UiGlobalTransform::from_xy(128.0 * scale, 45.0 * scale),
+            CombatIdentityDetails {
+                side: Side::Attacker,
+                round_index: 0,
+                plans: vec![CombatIdentityPlan {
+                    plan: BattlePlan {
+                        automatic_tactic: false,
+                        tactic: CombatTactic::Breakthrough,
+                        target_priority: TargetPriority::HeavyTargets,
+                        ..default()
+                    },
+                    affinity: 75,
+                    damage_bonuses: vec![(CombatTactic::Skirmish, 1125)],
+                }],
+            },
+        ));
+        let mut render = |pointer| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 480.0),
+                    )),
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    ..default()
+                },
+                |_| app.update(),
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        let contains = |shapes: &[egui::epaint::ClippedShape], label| {
+            shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+        })
+        };
+        for _ in 0..4 {
+            render(egui::pos2(400.0, 350.0));
+        }
+        assert!(!contains(&render(egui::pos2(400.0, 350.0)), "Heavy targets"));
+        // Hover the panel's empty far edge, beyond the commander's text.
+        for _ in 0..5 {
+            render(egui::pos2(230.0, 65.0));
+        }
+        let shapes = render(egui::pos2(230.0, 65.0));
+        for label in
+            ["Breakthrough", "75% affinity", "+11.25% damage", "Heavy targets", "Open formation"]
+        {
+            assert!(contains(&shapes, label), "missing {label} at scale {scale}");
+        }
     }
 }

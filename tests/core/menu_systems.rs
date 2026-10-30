@@ -418,8 +418,17 @@ fn assert_main_actions_visible(shapes: &[egui::epaint::ClippedShape], viewport: 
 }
 
 #[test]
-fn gameplay_asset_failure_replaces_spinner_with_escape_action() {
+fn gameplay_asset_failure_keeps_loading_diagnostics_and_escape_action_visible() {
     let (mut app, context) = menu_app();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<crate::core::loading_screen::LoadingScreen>()
+        .add_systems(Startup, crate::core::loading_screen::begin_loading_screen)
+        .add_systems(Update, crate::core::loading_screen::draw_loading_screen.after(draw_menu));
     app.world_mut().resource_mut::<MultiplayerSession>().menu_error =
         Some("Could not load gameplay asset `missing.ktx2`.".to_string());
     let viewport = egui::vec2(900.0, 700.0);
@@ -429,19 +438,19 @@ fn gameplay_asset_failure_replaces_spinner_with_escape_action() {
     let shapes = menu_app_frame(&mut app, &context, viewport, AppState::LoadingGame, vec![]);
 
     assert!(visible_menu_label(&shapes, "Starting game…").is_none());
-    assert!(visible_menu_label(&shapes, "Game assets could not be loaded.").is_some());
+    assert!(visible_menu_label(&shapes, "LOADING INTERRUPTED").is_some());
     let failure_title = shapes
         .iter()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text)
-                if text.galley.job.text == "Game assets could not be loaded." =>
-            {
+            egui::Shape::Text(text) if text.galley.job.text == "LOADING INTERRUPTED" => {
                 Some(&text.galley)
             },
             _ => None,
         })
         .unwrap();
     assert_eq!(failure_title.rows.len(), 1);
+    assert_eq!(failure_title.job.sections[0].format.color, egui::Color32::from_rgb(148, 177, 201));
+    assert!(visible_menu_label(&shapes, "PREPARING YOUR SECTOR").is_none());
     let back = visible_menu_label(&shapes, "Back to Menu").unwrap();
     click_menu_app(&mut app, &context, viewport, AppState::LoadingGame, back.center());
     let requests: Vec<_> =

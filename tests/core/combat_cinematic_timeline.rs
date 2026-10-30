@@ -47,6 +47,23 @@ fn actor_index(movie: &CinematicTimeline, defender: bool, id: u64) -> usize {
 }
 
 #[test]
+fn tactical_stats_follow_round_boundaries_when_seeking_in_either_direction() {
+    let round = RoundReport {
+        attacker: vec![record(1, 1, Unit::Ship(Ship::Cruiser))],
+        defender: vec![record(2, 2, Unit::Ship(Ship::Cruiser))],
+        ..Default::default()
+    };
+    let movie = CinematicTimeline::new(&report(vec![round.clone(), round.clone(), round]));
+    assert_eq!(movie.round_starts.len(), 3);
+    assert_eq!(movie.round_index_at(0.0), 0);
+    for (index, start) in movie.round_starts.iter().enumerate().rev() {
+        assert_eq!(movie.round_index_at(*start), index);
+        assert_eq!(movie.round_index_at(*start - 0.001), index.saturating_sub(1));
+    }
+    assert_eq!(movie.round_index_at(movie.duration), 2);
+}
+
+#[test]
 fn fleets_start_long_range_fire_before_the_approach_finishes() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut attacker = record(11, 1, fighter);

@@ -16,14 +16,18 @@ use crate::core::camera::{
     update_parallax,
 };
 use crate::core::combat::systems::{
-    animate_combat, exit_combat, exit_combat_menu, restore_combat_camera, run_combat_animations,
-    scroll_combat_identities, setup_combat, setup_combat_menu, shake_combat_camera,
-    update_combat_formation, update_combat_stats, update_combat_status_layout, CombatCmp,
-    CombatMenuCmp, SpawnShotMsg,
+    animate_combat, draw_combat_identity_tooltips, exit_combat, exit_combat_menu,
+    restore_combat_camera, run_combat_animations, setup_combat, setup_combat_menu,
+    shake_combat_camera, update_combat_formation, update_combat_stats, update_combat_status_layout,
+    CombatCmp, CombatMenuCmp, SpawnShotMsg,
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
     PublicStructureChangeMsg,
+};
+use crate::core::loading_screen::{
+    advance_loading_screen, begin_loading_screen, draw_loading_screen, reveal_loaded_screen,
+    LoadingScreen,
 };
 use crate::core::map::battle::{BattleAftermathPlugin, BattleAftermathSet};
 use crate::core::map::colonization::ColonizationPlugin;
@@ -110,6 +114,7 @@ impl Plugin for GamePlugin {
             .init_resource::<ImageIds>()
             .init_resource::<PlayingAudio>()
             .init_resource::<WorldAssets>()
+            .init_resource::<LoadingScreen>()
             .init_resource::<AmbientCometSpawner>()
             .init_resource::<EndGamePresentation>()
             .init_resource::<EndGameOverlayFade>()
@@ -185,7 +190,9 @@ impl Plugin for GamePlugin {
             );
 
         // Menu
-        for state in AppState::iter().filter(|s| *s != AppState::Game) {
+        for state in AppState::iter()
+            .filter(|s| !matches!(s, AppState::Game | AppState::Boot | AppState::LoadingGame))
+        {
             app.add_systems(OnEnter(state), setup_menu)
                 .add_systems(OnExit(state), despawn::<MenuCmp>);
         }
@@ -209,13 +216,33 @@ impl Plugin for GamePlugin {
             // Ui
             .add_systems(
                 EguiPrimaryContextPass,
-                (set_ui_style, draw_menu.run_if(not(in_state(AppState::Game)))).chain(),
+                (
+                    set_ui_style,
+                    draw_menu.run_if(
+                        not(in_state(AppState::Game))
+                            .and_then(not(in_state(AppState::Boot)))
+                            .and_then(not(in_state(AppState::LoadingGame))),
+                    ),
+                )
+                    .chain(),
             )
             .add_systems(
                 EguiPrimaryContextPass,
                 (draw_ui, draw_game_overlay).chain().in_set(InGameSet),
             )
             // Deferred loading
+            .add_systems(OnEnter(AppState::Boot), begin_loading_screen)
+            .add_systems(OnEnter(AppState::LoadingGame), begin_loading_screen)
+            .add_systems(OnExit(AppState::Boot), reveal_loaded_screen)
+            .add_systems(OnExit(AppState::LoadingGame), reveal_loaded_screen)
+            .add_systems(
+                Update,
+                advance_loading_screen.before(finish_boot).before(finish_gameplay_loading),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                draw_loading_screen.after(draw_audio_controls).after(draw_ui),
+            )
             .add_systems(Update, fit_menu_background)
             .add_systems(Update, finish_boot.run_if(in_state(AppState::Boot)))
             .add_systems(OnEnter(AppState::LoadingGame), begin_gameplay_loading)
@@ -336,6 +363,14 @@ impl Plugin for GamePlugin {
                     .run_if(cinematic_selected),
             )
             .add_systems(
+                EguiPrimaryContextPass,
+                draw_combat_identity_tooltips
+                    .before(draw_ui)
+                    .in_set(InGameSet)
+                    .run_if(in_state(GameState::Combat))
+                    .run_if(not(cinematic_selected)),
+            )
+            .add_systems(
                 Update,
                 (
                     control_combat_playback,
@@ -345,7 +380,6 @@ impl Plugin for GamePlugin {
                     shake_combat_camera,
                     update_combat_stats,
                     update_combat_status_layout,
-                    scroll_combat_identities,
                 )
                     .chain()
                     .run_if(in_state(GameState::Combat))

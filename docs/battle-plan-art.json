@@ -11,6 +11,24 @@
     "assets/images/mission/allied attack.png"
   ],
   "prompt_direction": "Match the existing objective icons: glossy colored enamel square, bevelled gold double rim, cream inner border, bold ivory pictogram, transparent perimeter, no text. Battle plan: branching fleet orders. Tactics: Swarm fighters; Skirmish mobile crossing ships; Breakthrough a ship breaking a line; Siege heavy artillery beams; Interception a spacecraft in a reticle; Bastion a shield and defensive towers.",
+  "attribute_artwork": {
+    "tool": "Built-in image_gen",
+    "date": "2026-10-29",
+    "path": "assets/images/combat/tactic affinity.png",
+    "output_size": [200, 200],
+    "generated_artifact": "exec-934387d4-508a-485e-9840-ae56aaf5be2f.png",
+    "ship_identity_references": [
+      "assets/images/ships/light fighter.png",
+      "assets/images/ships/cruiser.png",
+      "assets/images/ships/battleship.png"
+    ],
+    "style_references_inspected": [
+      "assets/images/combat/rapid fire.png",
+      "assets/images/combat/damage.png",
+      "assets/images/combat/speed.png"
+    ],
+    "prompt": "Edit the first image, the Tactic Affinity illustration for the Stellarion game. The current image's spacecraft are invented: replace ALL of those ship designs with ONLY the exact existing game ships supplied in images 2, 3 and 4. Image 2 is the buy-screen Light Fighter: preserve its angular silver-white hull, orange dark cockpit, narrow forward nose and swept pointed wings and fin shapes. Image 3 is the buy-screen Cruiser: preserve its long dark teal rectangular hull, skeletal industrial spine, blocky modules and characteristic protrusions. Image 4 is the buy-screen Battleship: preserve its bulky burgundy-red wedge-shaped forward hull with the cream curved leading edge, small top turret/bridge and matching rear structure. These are identity and silhouette references, not loose inspiration. Do not redesign them, add invented ship types, or substitute generic modern sci-fi spacecraft. Recompose a small group of these recognizable ships into a coordinated formation above a planet to communicate tactical cooperation. Image 5 is a STYLE reference for the existing combat-attribute illustrations. Match that vintage painted early-2000s strategy-game artwork and the paint style of the supplied buy-screen images: gritty brushed metal, painterly space background, textured slightly soft detail, muted dark tones, bright localized warm weapon/engine light. Avoid sleek glossy modern high-detail 3D/PBR render appearance. Remove the conspicuous curved blue trajectory graphics from the old image. Keep the scene readable as a 200x200 pixel square source asset that is shown at 130x90 pixels in a tooltip. Whole spacecraft recognizable, dynamic but simple composition, no excessive empty space. Opaque background, no text, labels, symbols, diagram arrows, numbers, logos, border, UI, or watermark."
+  },
   "artifacts": [
     {
       "path": "assets/images/mission/battle plan.png",

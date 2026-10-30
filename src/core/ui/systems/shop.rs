@@ -1,6 +1,7 @@
 //! Shop panels for the game interface.
 
 use super::*;
+use crate::core::combat::plan::CombatTactic;
 use crate::core::map::planet::ShieldOverloadState;
 use crate::core::orders::conversion_output;
 use crate::core::ui::utils::sized_image_tile_button;
@@ -8,6 +9,10 @@ use crate::core::units::buildings::FleetWithdrawal;
 use crate::core::units::operations::{
     mine_building, MineMode, SenatePolicy, SenateSupport, SpaceDockMode,
 };
+
+const TACTIC_AFFINITY_TITLE: &str = "Tactic Affinity";
+const TACTIC_AFFINITY_DESCRIPTION: &str = "How well this unit fits each tactic. Against a \
+    tactic it counters, a fleet gains up to 15% weapon damage, scaled by its affinity.";
 
 /// Formats the resource output confirmed by a laboratory conversion.
 pub(super) fn conversion_success_message(gain: usize, resource: ResourceName) -> MessageMsg {
@@ -61,15 +66,25 @@ fn resource_tile_button(
 
 /// Draws the large explanation shared by compact unit-stat rows.
 pub(super) fn draw_stat_hover(ui: &mut Ui, stat: &CombatStats, images: &ImageIds) {
+    draw_attribute_hover(ui, &stat.to_lowername(), &stat.to_name(), stat.description(), images);
+}
+
+fn draw_attribute_hover(
+    ui: &mut Ui,
+    image: &str,
+    title: &str,
+    description: &str,
+    images: &ImageIds,
+) {
     ui.set_width(500.);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.add_image(images.get(stat.to_lowername()), [130., 90.]);
+            ui.add_image(images.get(image), [130., 90.]);
         });
         ui.vertical(|ui| {
-            ui.label(stat.to_name());
+            ui.label(title);
             ui.separator();
-            ui.small(stat.description());
+            ui.small(description);
         });
     });
 }
@@ -125,6 +140,60 @@ fn draw_unit_hover_section<R>(ui: &mut Ui, contents: impl FnOnce(&mut Ui) -> R) 
             .inner
     })
     .inner
+}
+
+/// Shows every tactic in combat-model order, including zero fits for otherwise eligible units.
+fn draw_unit_tactic_affinities(ui: &mut Ui, unit: Unit, images: &ImageIds) {
+    let affinities = CombatTactic::ALL.map(|tactic| (tactic, tactic.affinity(unit)));
+    if affinities.iter().all(|(_, fit)| *fit == 0) {
+        return;
+    }
+    draw_unit_hover_section(ui, |ui| {
+        ui.small(TACTIC_AFFINITY_TITLE).on_hover_ui(|ui| {
+            draw_attribute_hover(
+                ui,
+                "tactic affinity",
+                TACTIC_AFFINITY_TITLE,
+                TACTIC_AFFINITY_DESCRIPTION,
+                images,
+            );
+        });
+        // Match the breathing room below the Rapid Fire heading.
+        ui.add_space(12.0);
+        ui.horizontal_top(|ui| {
+            let cell_width = ((ui.available_width() - 5.0 * 6.0) / 6.0).clamp(1.0, 45.0);
+            ui.spacing_mut().item_spacing.x =
+                ((ui.available_width() - 6.0 * cell_width) / 5.0).max(0.0);
+            let icon_size = cell_width;
+            let font = TextStyle::Small.resolve(ui.style());
+            let label_width = ui
+                .painter()
+                .layout_no_wrap("100%".to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .x;
+            // Font hinting can add a pixel when scaled down in a narrow tooltip.
+            let font_size = font.size * ((cell_width - 2.0).max(1.0) / label_width).min(1.0);
+            for (tactic, fit) in affinities {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(
+                        cell_width,
+                        icon_size + 4.0 + ui.text_style_height(&TextStyle::Small),
+                    ),
+                    Layout::top_down(Align::Center),
+                    |ui| {
+                        ui.add_image(images.get(tactic.image_key()), [icon_size; 2]);
+                        ui.label(
+                            RichText::new(format!("{fit}%"))
+                                .size(font_size)
+                                .color(battle_plan_controls::affinity_color(fit)),
+                        );
+                    },
+                )
+                .response
+                .on_hover_text(RichText::new(tactic.name()).small());
+            }
+        });
+    });
 }
 
 /// Draws one full-width unit stat row.
@@ -482,6 +551,10 @@ pub(super) fn draw_unit_hover(
                 });
             }
 
+            if !brief {
+                draw_unit_tactic_affinities(ui, *unit, images);
+            }
+
             if *unit == Unit::space_dock() && count > 0 {
                 draw_unit_hover_section(ui, |ui| {
                     draw_space_dock_mode(ui, planet, pending, images, *senate);
@@ -490,6 +563,10 @@ pub(super) fn draw_unit_hover(
         });
     });
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/core/ui_unit_affinity.rs"]
+mod affinity_tests;
 
 /// Displays the selected Dock statistics in its normal unit tooltip.
 fn draw_operating_unit_stat_cell(
@@ -739,6 +816,7 @@ fn labeled_toggle(ui: &mut Ui, label: &str, active: &mut bool) -> Response {
             .on_hover_cursor(CursorIcon::PointingHand);
         if label.clicked() {
             *active = !*active;
+            set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
         }
         ui.add(toggle(active));
     })

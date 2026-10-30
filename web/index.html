@@ -31,34 +31,29 @@
         inset: 0;
         margin: 0;
         display: flex;
-        align-items: center;
+        align-items: flex-end;
         justify-content: center;
-        gap: 12px;
+        background: #050b14;
         color: #d9e7ff;
-        font-size: 40px;
-        font-weight: 700;
         text-align: center;
         pointer-events: none;
       }
-      #status::before {
-        content: "";
-        width: 24px;
-        height: 24px;
-        flex-shrink: 0;
-        border: 2px solid transparent;
-        border-top-color: currentColor;
-        border-right-color: currentColor;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-      }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      #status.error { padding: 1rem; color: #ffb4a9; font-size: 16px; pointer-events: auto; }
-      #status.error::before { display: none; }
+      .loading-background { position: absolute; inset: 0; background: center / cover no-repeat url("./assets-runtime/images/bg/menu.png"); }
+      .loading-content { position: relative; width: min(560px, calc(100% - 40px)); margin-bottom: clamp(42px, 7.9vh, 78px); }
+      .loading-detail { margin: 0 0 12px; color: #edf5ff; font-size: clamp(13px, 1.5vw, 23px); }
+      .loading-percentage { margin: 0; color: #b1cfe2; font: clamp(10px, 1.17vw, 18px) monospace; }
+      #status.error .loading-detail { color: #ffb4a9; }
     </style>
   </head>
   <body>
     <canvas id="bevy" aria-label="Stellarion game canvas"></canvas>
-    <p id="status" role="status">Loading</p>
+    <div id="status" role="status" aria-live="polite">
+      <div class="loading-background" aria-hidden="true"></div>
+      <div class="loading-content">
+        <p class="loading-detail">Loading game</p>
+        <p class="loading-percentage">0%</p>
+      </div>
+    </div>
     <script type="module">
       import init from "./stellarion.js";
 
@@ -150,7 +145,8 @@
         status.remove();
       } catch (error) {
         console.error(error);
-        status.textContent = "Stellarion could not start. Reload the page or check the browser console.";
+        status.querySelector(".loading-detail").textContent = "Stellarion could not start. Reload the page or check the browser console.";
+        status.querySelector(".loading-percentage").hidden = true;
         status.classList.add("error");
       }
     </script>

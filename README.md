@@ -8,12 +8,12 @@
 <br><br>
 </div>
 
-<img src="scenery/map.png" alt="map">
-<img src="scenery/shop.png" alt="shop">
-<img src="scenery/mission-planning.png" alt="mission-planning">
-<img src="scenery/active-missions.png" alt="active-missions">
-<img src="scenery/combat.png" alt="combat">
-<img src="scenery/battle-report.png" alt="battle-report">
+<img src="scenery/map.png" alt="Mid-game star map with three empires, developed colonies, and fleets">
+<img src="scenery/shop.png" alt="Building shop on an established colony">
+<img src="scenery/mission-planning.png" alt="Planning a mixed-fleet attack with battle orders and fuel costs">
+<img src="scenery/active-missions.png" alt="Deployment, espionage, attack, and colonization missions in flight">
+<img src="scenery/combat.png" alt="Combat replay between unequal fleets and planetary defenses">
+<img src="scenery/battle-report.png" alt="Detailed battle report with casualties and combat statistics">
 
 <br>
 
@@ -163,83 +163,25 @@ planet, each side will fire upon the enemy. Combat ends in an attacker victory, 
 victory, or a draw. If both combat armies survive the 20-round limit, the defender keeps
 the planet and the surviving attackers return to their origin.
 
-The battle selection panel offers **Schematic** (the default tactical replay) and
-**Cinematic**. Cinematic replays show one animated ship or defense per combatant,
-with overlapping weapon fire, shield impacts, repairs, explosions, and recorded
-withdrawals. Both views replay the same saved outcome. Use Space to pause and
-Left/Right or the top-right settings gear to change speed. The adjacent sound icon
-provides mute and volume controls; scrolling during combat changes volume. Escape
-or **Exit combat** returns to battle selection; the cinematic outcome banner can
-also be clicked. Both views show the participating players and their fleet colors.
-Bombing raids show the targeted planetary buildings, explosions, and rising level
-loss captions. During destruction missions, surviving War Suns combine their rays
-before the planetary blast. Building damage and planet destruction follow the saved report.
-The cinematic view has no round banners and stops on the recorded victory, defeat,
-or draw, including stalemates where ships survive on both sides.
+Each fleet carries a battle plan: target priority, protection posture, and tactic.
 
-Each fleet carries a **battle plan**: a tactic, target priority, and protection posture. Set
-standing orders by hovering the battle-plan icon at the left of your planet's units header,
-or on a friendly world where your protection fleet is stationed;
-new mission drafts inherit those orders and can override them before dispatch. Hover the
-battle-plan icon to open three selection cards in one row. In the mission footer it sits left
-of fleet strength; active fleets use the same icon beside their objective. Click a card to browse tactics,
-targets, or protection options. Active missions use the same icon and can receive new orders
-before turn resolution; each allied commander edits only their own contingent. Mission hover
-details show the three selection icons, names, and tactic affinity below the travel information.
-Allied contingents retain their own plans. Reinforcements join the destination's standing orders;
-a newly captured world adopts the attacking leader's
-plan, and a new foreign protection fleet keeps its dispatch plan.
-
-Tactics automatically use the highest affinity for the current fleet until you select a tactic
-manually. **Auto-select highest affinity** in the tactic picker restores automatic selection.
-Automatic choices update when a fleet's composition changes, then freeze for each battle.
-Default targeting is **Balanced fire** and default protection is **Open formation**.
-
-Simultaneous arrivals with different plans retain their source fleets inside the combined attack.
-Every combatant records its fleet identity and frozen plan; damage, target preference, and
-protection use that source fleet, including when several fleets belong to the same player.
-Returning survivors retain their source orders. Issuing a new plan to a combined active fleet
-reforms it under those new orders; docking places reinforcements under the garrison's standing
-orders. Both combat views display each participating fleet's plan beneath its commander.
-
-| Tactic | Main composition fit | Counters |
-| --- | --- | --- |
-| Swarm | Light and Heavy Fighters | Breakthrough, Siege |
-| Skirmish | Destroyers, Cruisers | Siege, Bastion |
-| Breakthrough | Cruisers, Battleships | Skirmish, Interception |
-| Siege | Bombers, Dreadnoughts, War Suns | Breakthrough, Bastion |
-| Interception | Destroyers, Battleships, light batteries | Swarm, Skirmish |
-| Bastion | Dreadnoughts, heavy batteries, Space Dock | Swarm, Interception |
-
-Each tactic counters two others, loses to two, and is neutral against itself and one other.
-A favorable matchup earns up to 15% extra weapon damage, scaled by the surviving force's
-resource-weighted suitability at the beginning of each round. Partial affinities let mixed
-fleets use several tactics. Probes, Colony Ships, unarmed support, buildings, and missiles
-do not contribute suitability. Neutral forces and missile strikes receive no tactic bonuses.
-
-Target priority is **Balanced fire**, **Small ships**, **Medium ships**, **Capital ships**, or
-**Defenses**. Preferred targets receive twice the selection weight; other eligible targets
-remain possible. Small ships are Light and Heavy Fighters; medium ships are Destroyers,
-Cruisers, and Bombers; capitals are Battleships, Dreadnoughts, War Suns, and Space Docks.
-Bombers retain their defense-first role. Defenses priority lets ordinary ships engage ground
-defenses before enemy ships are eliminated, but the Planetary Shield still protects them.
-
-Protection is **Open formation**, **Screen capitals**, **Heavy cover**, or **Protect bombers**.
-Covering ships take additional fire to reduce protected ships' target weight by at most 25%,
-scaled by the commander's surviving covering strength. Probes and Colony Ships cannot screen;
-stationary defenses do not change exposure. A fleet cannot use another commander's ships as
-its screen. The combat report's **Battle plans** menu shows the original orders, initial
-suitability, and opposing tactic matchups.
+* **Target priority:** Doubles the target selection probability of certain enemy units.
+* **Protection:** Your selected units receive 25% higher relative target weight than your 
+other units. Use this to divert fire away from your more vulnerable units.
+* **Tactic:** Each tactic counters two others, is countered by two, and is neutral against itself
+and one other. Countering an enemy grants `15% * affinity / 100` extra weapon damage. Affinity
+is the average unit fit weighted by unit count times production level. The starting affinity
+and damage bonus stay fixed throughout combat.
 
 Every unit (ships + defenses) has four basic parameters that affect combat: hull (H), shield (S),
 damage (D), and rapid fire (RF). Combat consists of rounds. In the beginning of each round, every 
 unit starts with its shield at its initial value. The hull has the value of previous round
 (initial value of the ship if it's the first round). In each round, ordinary ships randomly target
-enemy ships and the Space Dock first, falling back to other defenses only when those targets are
-gone. Bombers reverse that priority, targeting defenses before ships. Stationary defenses choose
-randomly among all enemy units. Shots are resolved per ship type in increasing production order,
-i.e., the lowest production units shoot first, and the highest production units shoot last (ships
-fire before defenses).
+enemy ships and the Space Dock first (with probabilities weighted by the battle plans), falling 
+back to other defenses only when those targets are gone. Bombers reverse that priority, targeting 
+defenses before ships. Stationary defenses choose among all enemy units. Shots are resolved per 
+ship type in increasing production order, i.e., the lowest production units shoot first, and the 
+highest production units shoot last (ships fire before defenses).
 
 For each shooting unit:
 
@@ -274,13 +216,15 @@ Things to keep in mind:
   automatically is transformed in an attack. Protect missions are the exception: every valid
   same-turn Protect arrival is stationed before hostile missions at that world resolve.
 - Attacks on the same planet on the same turn are merged per player and per objective. The planet
-  of origin becomes the planet that send the largest army. The order of resolution becomes: Missile
+  of origin becomes the planet that send the strongest army. The order of resolution becomes: Missile
   strikes are resolved first, followed by spying missions, and then the remaining, which are
-  grouped together following objective priority `Destroy` > `Colonize` > `Attack`.
+  grouped together following objective priority `Destroy` > `Colonize` > `Attack`. The resulting
+  army uses the battle plan from the strongest contributing fleet.
 - An attacking player receives no enemy unit information if all its units are destroyed. If there
   are scout probes, he can only see the number of enemy units prior to combat.
 - A defender player receives no enemy unit information if all its units are destroyed and he
   doesn't own the planet.
+- During allied attacks, each player keeps their own battle plan.
 
 <br>
 

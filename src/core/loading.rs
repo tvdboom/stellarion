@@ -6,6 +6,7 @@ use crate::core::assets::{GameplayAssetState, WorldAssets, GAMEPLAY_ASSET_LOAD_F
 use crate::core::camera::MainCamera;
 use crate::core::combat::report::MissionReport;
 use crate::core::identity::PlayerId;
+use crate::core::loading_screen::LoadingScreen;
 use crate::core::map::model::Map;
 use crate::core::map::orbital_railgun::OrbitalStrikes;
 use crate::core::map::planet::PlanetId;
@@ -73,9 +74,16 @@ pub fn finish_boot(
     server: Res<AssetServer>,
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
+    mut screen: ResMut<LoadingScreen>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if session.connection != ConnectionStatus::Initializing && assets.menu_ready(&server) {
+    if screen.boot_error.is_none() {
+        screen.boot_error = assets.menu_error(&server);
+    }
+    if session.connection != ConnectionStatus::Initializing
+        && assets.menu_ready(&server)
+        && screen.finish()
+    {
         next_state.set(AppState::MainMenu);
     }
 }
@@ -94,6 +102,7 @@ pub fn finish_gameplay_loading(
     mut commands: Commands,
     server: Res<AssetServer>,
     mut assets: ResMut<WorldAssets>,
+    mut screen: ResMut<LoadingScreen>,
     mut session: ResMut<MultiplayerSession>,
     mut pending: ResMut<PendingTurnCommands>,
     mut settings: ResMut<Settings>,
@@ -116,6 +125,9 @@ pub fn finish_gameplay_loading(
             return;
         },
         GameplayAssetState::Deferred | GameplayAssetState::Loading => return,
+    }
+    if session.active_game.is_none() || session.membership.is_none() || !screen.finish() {
+        return;
     }
     if install_gameplay_projection(
         &mut commands,

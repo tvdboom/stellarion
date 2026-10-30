@@ -219,6 +219,51 @@ impl WorldAssets {
         handles_ready(server, &self.menu_handles)
     }
 
+    /// Counts completed asset groups, including recursive dependencies, for the loading UI.
+    pub(crate) fn loading_progress(&self, server: &AssetServer, gameplay: bool) -> f32 {
+        let handles = if gameplay {
+            &self.gameplay_handles
+        } else {
+            &self.menu_handles
+        };
+        if handles.is_empty() {
+            return 0.0;
+        }
+        let loaded =
+            handles.iter().filter(|handle| server.is_loaded_with_dependencies(handle.id())).count();
+        loaded as f32 / handles.len() as f32
+    }
+
+    /// Reports a broken startup asset instead of leaving boot waiting indefinitely.
+    pub(crate) fn menu_error(&self, server: &AssetServer) -> Option<String> {
+        first_handle_failure(server, &self.menu_handles)
+    }
+
+    /// Names actual pending work rather than cycling through fictional loading messages.
+    pub(crate) fn gameplay_loading_activity(&self, server: &AssetServer) -> &'static str {
+        let pending = self
+            .gameplay_handles
+            .iter()
+            .find(|handle| !server.is_loaded_with_dependencies(handle.id()));
+        let Some(path) = pending.and_then(|handle| server.get_path(handle.id())) else {
+            return "Preparing your galaxy and turn…";
+        };
+        let path = path.path();
+        if path.starts_with("audio") {
+            "Loading music and sound effects…"
+        } else if path.starts_with("images/planets") {
+            "Loading planets and moons…"
+        } else if path.starts_with("images/ships") {
+            "Loading fleets and shipyards…"
+        } else if path.starts_with("images/animations") || path.starts_with("images/cinematic") {
+            "Loading combat artwork and effects…"
+        } else if path.starts_with("images/bg") {
+            "Loading space backgrounds…"
+        } else {
+            "Loading the galaxy and command interface…"
+        }
+    }
+
     /// Starts loading gameplay groups once, preserving shared menu handles.
     pub fn begin_gameplay_loading(
         &mut self,
@@ -560,7 +605,6 @@ impl WorldAssets {
                 "target small ships",
                 "target medium ships",
                 "target capital ships",
-                "target defenses",
                 "protection standard",
                 "protection screen capitals",
                 "protection heavy cover",
@@ -600,6 +644,7 @@ impl WorldAssets {
                 "speed",
                 "fuel consumption",
                 "rapid fire",
+                "tactic affinity",
             ],
         );
         self.load_gameplay_images(server, "planets", &["unknown", "destroyed bg"]);
@@ -997,7 +1042,7 @@ fn first_handle_failure(server: &AssetServer, handles: &[UntypedHandle]) -> Opti
         let path = server
             .get_path(handle.id())
             .map_or_else(|| format!("{:?}", handle.id()), |path| path.to_string());
-        Some(format!("Could not load gameplay asset `{path}`: {failure}"))
+        Some(format!("Could not load asset `{path}`: {failure}"))
     })
 }
 

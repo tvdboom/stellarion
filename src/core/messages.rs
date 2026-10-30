@@ -9,6 +9,7 @@ use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::report::ReportId;
 use crate::core::constants::{MAX_ZOOM, MESSAGE_DURATION};
+use crate::core::loading_screen::LoadingScreen;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
@@ -189,6 +190,7 @@ struct ActiveMessage {
     level: MessageLevel,
     action: Option<MessageAction>,
     remaining_seconds: f32,
+    pending_sound: bool,
 }
 
 /// Active notification queue.
@@ -202,6 +204,7 @@ impl Messages {
             text: message.message.clone(),
             level: message.level,
             action: message.action,
+            pending_sound: !message.silent,
             remaining_seconds: message.display_duration.map_or_else(
                 || {
                     if matches!(
@@ -249,15 +252,28 @@ fn check_messages(
     app_state: Option<Res<State<AppState>>>,
     game_state: Option<Res<State<GameState>>>,
     session: Option<Res<MultiplayerSession>>,
+    loading_screen: Option<Res<LoadingScreen>>,
 ) {
+    // Keep reading during loading so Bevy's short-lived messages cannot expire before
+    // the reveal. Their display lifetime and sound start only when the game is visible.
+    for message in message_msg.read() {
+        messages.push(message);
+    }
+    if loading_screen.as_deref().is_some_and(LoadingScreen::visible) {
+        return;
+    }
+    let in_game = app_state.as_ref().is_some_and(|s| *s.get() == AppState::Game);
+    let current_game_state = game_state.as_ref().map(|state| *state.get());
+    let playing = in_game && current_game_state == Some(GameState::Playing);
+    let hidden = notifications_hidden_by_game_state(in_game, current_game_state);
     // Only make one sound per severity per frame.
     let (mut info_sound, mut warning_sound, mut error_sound) = (true, true, true);
 
-    for message in message_msg.read() {
-        if message.silent {
-            messages.push(message);
+    for message in &mut messages.0 {
+        if hidden || !message.pending_sound {
             continue;
         }
+        message.pending_sound = false;
         let play = match message.level {
             MessageLevel::Info if info_sound => {
                 info_sound = false;
@@ -276,14 +292,9 @@ fn check_messages(
         if let Some(name) = play {
             play_audio_msg.write(PlayAudioMsg::new(name));
         }
-        messages.push(message);
     }
 
     let elapsed = time.delta_secs();
-    let in_game = app_state.as_ref().is_some_and(|s| *s.get() == AppState::Game);
-    let current_game_state = game_state.as_ref().map(|state| *state.get());
-    let playing = in_game && current_game_state == Some(GameState::Playing);
-    let combat_active = notifications_hidden_during_combat(in_game, current_game_state);
     if playing {
         if let (Some(map), Some(player)) = (&map, &player) {
             for planet in &map.planets {
@@ -303,7 +314,8 @@ fn check_messages(
                             },
                             planet.name
                         ))
-                        .with_action(MessageAction::OpenRevokedProtectionMission(planet.id)),
+                        .with_action(MessageAction::OpenRevokedProtectionMission(planet.id))
+                        .silent(),
                     );
                 }
             }
@@ -357,7 +369,7 @@ fn check_messages(
         if matches!(message.action, Some(MessageAction::OpenRevokedProtectionMission(_))) {
             true
         } else {
-            advance_message_lifetime(message, elapsed, combat_active)
+            advance_message_lifetime(message, elapsed, hidden)
         }
     });
     if messages.0.is_empty() {
@@ -367,7 +379,7 @@ fn check_messages(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    if let Some((index, action)) = draw_notifications(context, &messages, playing, combat_active) {
+    if let Some((index, action)) = draw_notifications(context, &messages, playing, hidden) {
         if !matches!(action, MessageAction::OpenRevokedProtectionMission(_)) {
             messages.0.remove(index);
         }
@@ -507,9 +519,9 @@ fn draw_notifications(
     context: &egui::Context,
     messages: &Messages,
     playing: bool,
-    hidden_for_combat: bool,
+    hidden: bool,
 ) -> Option<(usize, MessageAction)> {
-    if hidden_for_combat {
+    if hidden {
         return None;
     }
 
@@ -584,18 +596,14 @@ fn draw_notifications(
     clicked_message
 }
 
-/// Returns whether combat currently owns the complete game viewport.
-const fn notifications_hidden_during_combat(in_game: bool, game_state: Option<GameState>) -> bool {
-    in_game && matches!(game_state, Some(GameState::CombatMenu | GameState::Combat))
+/// Menus and combat own the game viewport; queued notifications wait for the map.
+fn notifications_hidden_by_game_state(in_game: bool, game_state: Option<GameState>) -> bool {
+    in_game && game_state != Some(GameState::Playing)
 }
 
 /// Advances a toast only while it is eligible to be shown.
-fn advance_message_lifetime(
-    message: &mut ActiveMessage,
-    elapsed: f32,
-    paused_for_combat: bool,
-) -> bool {
-    if paused_for_combat {
+fn advance_message_lifetime(message: &mut ActiveMessage, elapsed: f32, hidden: bool) -> bool {
+    if hidden {
         true
     } else {
         message.remaining_seconds -= elapsed;
@@ -701,11 +709,23 @@ pub struct MessagesPlugin;
 impl Plugin for MessagesPlugin {
     /// Registers this plugin's resources, messages, and ordered systems.
     fn build(&self, app: &mut App) {
-        app.init_resource::<Messages>().add_systems(
-            EguiPrimaryContextPass,
-            check_messages.after(crate::core::ui::systems::draw_ui),
-        );
+        app.init_resource::<Messages>()
+            .add_systems(OnExit(AppState::Game), clear_notifications)
+            .add_systems(OnEnter(AppState::LoadingGame), clear_notifications)
+            .add_systems(
+                EguiPrimaryContextPass,
+                check_messages.after(crate::core::ui::systems::draw_ui),
+            );
     }
+}
+
+/// Notifications belong to their current screen, including any not collected before leaving it.
+fn clear_notifications(
+    mut messages: ResMut<Messages>,
+    mut incoming: ResMut<bevy::prelude::Messages<MessageMsg>>,
+) {
+    messages.0.clear();
+    incoming.clear();
 }
 
 #[cfg(test)]

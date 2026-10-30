@@ -35,6 +35,8 @@ pub(crate) fn sized_image_tile_button(
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), selected, ""));
     let border = if selected {
         Color32::from_rgb(116, 211, 245)
     } else if response.hovered() {
@@ -205,6 +207,9 @@ impl CustomUi for Ui {
         let (rect, mut response) = self.allocate_exact_size([180., 50.].into(), Sense::click());
 
         response = response.on_hover_cursor(CursorIcon::PointingHand);
+        response.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Button, self.is_enabled(), text.to_string())
+        });
 
         let image = if response.hovered() && !response.is_pointer_button_down_on() {
             images.get("button hover")

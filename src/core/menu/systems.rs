@@ -202,7 +202,6 @@ pub fn draw_menu(
             ui.set_width(content_width);
             ui.vertical_centered(|ui| {
                 match app_state.get() {
-                    AppState::Boot => boot_screen(ui),
                     AppState::MainMenu => main_screen(ui, &mut requests, &mut next_state),
                     AppState::CreateGame => create_screen(
                         ui,
@@ -229,7 +228,6 @@ pub fn draw_menu(
                     AppState::Settings => {
                         settings_screen(ui, &mut settings, &mut change_audio, &mut next_state)
                     },
-                    AppState::LoadingGame => loading_screen(ui, &session, &mut requests),
                     AppState::SinglePlayerMenu => {
                         #[cfg(debug_assertions)]
                         local_practice_screen(
@@ -243,7 +241,7 @@ pub fn draw_menu(
                         #[cfg(not(debug_assertions))]
                         next_state.set(AppState::MainMenu);
                     },
-                    AppState::Game => {},
+                    AppState::Boot | AppState::LoadingGame | AppState::Game => {},
                 };
             });
         });
@@ -458,27 +456,6 @@ fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f32 {
     let gap = FORM_CARD_GAP;
     let actions_height = MENU_ACTION_HEIGHT * count + gap * (count - 1.0);
     (viewport.y * 0.365).min(viewport.y - 96.0 - actions_height).max(title_bottom + 24.0)
-}
-
-/// Shows progress while public configuration and anonymous authentication initialize.
-fn boot_screen(ui: &mut egui::Ui) {
-    let color = ui.visuals().text_color();
-    let label =
-        ui.painter().layout_no_wrap("Loading".to_string(), egui::FontId::proportional(40.0), color);
-    let spinner_size = 24.0;
-    let gap = 12.0;
-    let size = egui::vec2(spinner_size + gap + label.size().x, spinner_size.max(label.size().y));
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let spinner_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + spinner_size * 0.5, rect.center().y),
-        egui::Vec2::splat(spinner_size),
-    );
-    ui.put(spinner_rect, egui::Spinner::new().size(spinner_size));
-    ui.painter().galley(
-        egui::pos2(rect.left() + spinner_size + gap, rect.center().y - label.size().y * 0.5),
-        label,
-        color,
-    );
 }
 
 /// Draws top-level actions required by the multiplayer product flow.
@@ -1803,46 +1780,6 @@ fn lobby_leave_button(ui: &mut egui::Ui, enabled: bool) -> bool {
         .inner;
     ui.add_space(spacing);
     clicked
-}
-
-/// Shows loading progress or an escape action when required gameplay assets fail.
-fn loading_screen(
-    ui: &mut egui::Ui,
-    session: &MultiplayerSession,
-    requests: &mut MessageWriter<MultiplayerRequest>,
-) {
-    if session.menu_error.is_some() {
-        loading_failure_title(ui);
-        ui.add_space(18.0);
-        let (size, text_size, spacing) = menu_button_metrics(ui);
-        if menu_button_widget(ui, "Back to Menu", true, size, text_size) {
-            requests.write(MultiplayerRequest::LeaveGame);
-        }
-        ui.add_space(spacing);
-        return;
-    }
-    ui.add(egui::Spinner::new().size(42.0));
-    ui.add_space(14.0);
-    ui.label(egui::RichText::new("Starting game…").size(MENU_TITLE_TEXT_SIZE).strong());
-}
-
-/// Keeps the asset failure title on one centered line, shrinking it on narrow viewports.
-fn loading_failure_title(ui: &mut egui::Ui) {
-    const TEXT: &str = "Game assets could not be loaded.";
-    let color = ui.visuals().strong_text_color();
-    let mut font_size = 30.0;
-    let mut title =
-        ui.painter().layout_no_wrap(TEXT.to_string(), egui::FontId::proportional(font_size), color);
-    if title.size().x > ui.available_width() {
-        font_size *= ui.available_width() / title.size().x;
-        title = ui.painter().layout_no_wrap(
-            TEXT.to_string(),
-            egui::FontId::proportional(font_size),
-            color,
-        );
-    }
-    let (rect, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
-    ui.painter().galley(rect.min, title, color);
 }
 
 /// Edits preferences that do not affect deterministic turn resolution.
