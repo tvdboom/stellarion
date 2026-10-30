@@ -29,6 +29,7 @@ use crate::core::loading_screen::{
     advance_loading_screen, begin_loading_screen, draw_loading_screen, reveal_loaded_screen,
     LoadingScreen,
 };
+use crate::core::map::ambience::PlanetAmbiencePlugin;
 use crate::core::map::battle::{BattleAftermathPlugin, BattleAftermathSet};
 use crate::core::map::colonization::ColonizationPlugin;
 use crate::core::map::details::MapDetailsPlugin;
@@ -124,6 +125,7 @@ impl Plugin for GamePlugin {
             .add_plugins(OrbitalRailgunAnimationPlugin)
             .add_plugins(MissionDetectionPlugin)
             .add_plugins(MapDetailsPlugin)
+            .add_plugins(PlanetAmbiencePlugin)
             // Sets
             .configure_sets(First, InGameSet.run_if(in_state(AppState::Game)))
             .configure_sets(PreUpdate, InGameSet.run_if(in_state(AppState::Game)))

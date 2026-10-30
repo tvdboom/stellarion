@@ -1,5 +1,7 @@
 //! Strategic map data plus its Bevy rendering and interaction adapters.
 
+#[cfg(feature = "app")]
+pub(crate) mod ambience;
 pub(crate) mod asteroids;
 #[cfg(feature = "app")]
 pub(crate) mod battle;

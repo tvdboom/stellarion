@@ -39,6 +39,15 @@ pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 /// Time used to cover 95% of a zoom-sensitive debris or orbital opacity change.
 const ZOOM_DETAIL_FADE_SECONDS: f32 = 0.55;
 const ZOOM_DETAIL_FADE_RATE: f32 = 2.995_732;
+// Shared by structure art and its activity lights so completed slots never drift apart.
+const SURFACE_SLOTS: [Vec2; 4] =
+    [Vec2::new(-0.08, 0.30), Vec2::new(-0.30, 0.0), Vec2::new(-0.08, -0.30), Vec2::new(0.12, 0.0)];
+const GAS_SURFACE_SLOTS: [Vec2; 4] = [
+    Vec2::new(-0.06, 0.27),
+    Vec2::new(-0.26, -0.01),
+    Vec2::new(-0.05, -0.27),
+    Vec2::new(0.13, 0.0),
+];
 
 #[cfg(test)]
 fn destroyed_units(report: &MissionReport) -> usize {
@@ -266,6 +275,76 @@ struct PlatformLight {
     brightness: f32,
 }
 
+#[derive(Resource)]
+struct ShipyardGlow(Handle<Image>);
+
+impl FromWorld for ShipyardGlow {
+    fn from_world(world: &mut World) -> Self {
+        Self(world.resource_mut::<Assets<Image>>().add(super::ambience::soft_glow_image()))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ShipyardWork {
+    Welding(usize),
+    Maintenance,
+    EngineTest,
+}
+
+#[derive(Component)]
+struct ShipyardActivity {
+    anchor: Vec2,
+    diameter: f32,
+    phase: f32,
+    floating_phase: Option<f32>,
+    work: ShipyardWork,
+    brightness: f32,
+}
+
+fn animate_shipyards(
+    elapsed: Res<DetailAnimationTime>,
+    mut activity: Query<(&mut ShipyardActivity, &mut Transform)>,
+) {
+    for (mut activity, mut transform) in &mut activity {
+        let seconds = elapsed.0 + activity.phase;
+        let (offset, brightness) = match activity.work {
+            ShipyardWork::Welding(index) => {
+                let cycle = (seconds / (4.7 + index as f32 * 1.3)).fract();
+                let burst = smooth_work((cycle - 0.12) / 0.025)
+                    * (1.0 - smooth_work((cycle - 0.24) / 0.10));
+                (
+                    Vec2::new(-0.18 + index as f32 * 0.18, -0.03 + index as f32 * 0.055),
+                    burst * (0.5 + 0.5 * (seconds * 23.0).sin().powi(2)),
+                )
+            },
+            ShipyardWork::Maintenance => {
+                let angle = seconds * 0.45;
+                (Vec2::new(angle.cos() * 0.28, angle.sin() * 0.12 - 0.05), 0.6)
+            },
+            ShipyardWork::EngineTest => {
+                let cycle = (seconds / 14.0).fract();
+                (
+                    Vec2::new(0.05, -0.22),
+                    smooth_work((cycle - 0.65) / 0.04)
+                        * (1.0 - smooth_work((cycle - 0.73) / 0.08))
+                        * (0.8 + 0.2 * (seconds * 17.0).sin()),
+                )
+            },
+        };
+        let bob = activity.floating_phase.map_or(0.0, |phase| {
+            (elapsed.0 * 0.8 + phase).sin() * activity.diameter / 0.29 * 0.008
+        });
+        let position = activity.anchor + offset * activity.diameter + Vec2::Y * bob;
+        transform.translation = position.extend(transform.translation.z);
+        activity.brightness = brightness;
+    }
+}
+
+fn smooth_work(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    value * value * (3.0 - 2.0 * value)
+}
+
 fn floating_detail(planet: &Planet, offset: Vec2, origin: Vec2) -> FloatingDetail {
     FloatingDetail {
         origin,
@@ -413,6 +492,94 @@ struct DevelopmentArt<'a> {
     gas_planet_administration: &'a Handle<Image>,
     surface_lights: &'a Handle<Image>,
     shadow: &'a Handle<Image>,
+    shipyard_glow: &'a Handle<Image>,
+}
+
+fn spawn_shipyard_activity(
+    commands: &mut Commands,
+    planet: &Planet,
+    development: Development,
+    art: &DevelopmentArt,
+) {
+    // Development is already filtered through the viewer's current or last-known army.
+    // Pending orders and hidden live shipyards must never create an activity signal.
+    if development.shipyard == 0 || planet.is_destroyed {
+        return;
+    }
+    let slots = if planet.kind == PlanetKind::Gas {
+        GAS_SURFACE_SLOTS
+    } else {
+        SURFACE_SLOTS
+    };
+    let Some(index) = development
+        .surface_build_order
+        .iter()
+        .take(if planet.is_moon() {
+            3
+        } else {
+            4
+        })
+        .position(|building| *building == Some(Building::Shipyard))
+    else {
+        return;
+    };
+    let offset = slots[index] * planet.size();
+    let diameter = planet.size()
+        * if planet.kind == PlanetKind::Gas {
+            0.29
+        } else {
+            let level = if planet.is_moon() {
+                development.shipyard
+            } else {
+                development.shipyard.max(development.factory)
+            };
+            0.285 + level as f32 * 0.018
+        };
+    let floating_phase = (planet.kind == PlanetKind::Gas)
+        .then(|| floating_detail(planet, offset, planet.position + offset).phase);
+    for (index, work) in [
+        ShipyardWork::Welding(0),
+        ShipyardWork::Welding(1),
+        ShipyardWork::Welding(2),
+        ShipyardWork::Maintenance,
+        ShipyardWork::EngineTest,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (size, color) = match work {
+            ShipyardWork::Welding(_) => (Vec2::splat(0.22), Color::srgb(0.65, 0.88, 1.0)),
+            ShipyardWork::Maintenance => (Vec2::splat(0.12), Color::srgb(1.0, 0.72, 0.35)),
+            ShipyardWork::EngineTest => (Vec2::new(0.14, 0.36), Color::srgb(0.3, 0.72, 1.0)),
+        };
+        commands.spawn((
+            Sprite {
+                image: art.shipyard_glow.clone(),
+                color,
+                custom_size: Some(size * diameter),
+                ..default()
+            },
+            Transform::from_translation(
+                (planet.position + offset).extend(PLANET_Z + 0.18 + index as f32 * 0.001),
+            ),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            Detail {
+                planet: planet.id,
+                opacity: 0.9,
+                debris_turn: None,
+            },
+            ShipyardActivity {
+                anchor: planet.position + offset,
+                diameter,
+                phase: noise(planet.id as u32 + 631) * 14.0,
+                floating_phase,
+                work,
+                brightness: 0.0,
+            },
+            MapCmp,
+        ));
+    }
 }
 
 /// Selects a new surface position only while the cluster is fully dark.
@@ -877,13 +1044,7 @@ fn spawn_gas_development(
     art: &DevelopmentArt,
 ) {
     // Each completed category has its own slot, entirely inside the planet and clear of icons.
-    let slots = [
-        Vec2::new(-0.06, 0.27),
-        Vec2::new(-0.26, -0.01),
-        Vec2::new(-0.05, -0.27),
-        Vec2::new(0.13, 0.0),
-    ];
-    for (building, slot) in development.surface_build_order.into_iter().zip(slots) {
+    for (building, slot) in development.surface_build_order.into_iter().zip(GAS_SURFACE_SLOTS) {
         let Some((_, dedicated, _, variant)) =
             building.and_then(|building| planet_structure_spec(development, building, true))
         else {
@@ -931,6 +1092,7 @@ fn spawn_development(
     art: &DevelopmentArt,
 ) {
     let size = planet.size();
+    spawn_shipyard_activity(commands, planet, development, art);
     if planet.kind == PlanetKind::Gas {
         spawn_gas_development(commands, planet, development, art);
         return;
@@ -962,15 +1124,9 @@ fn spawn_development(
     }
     // Leave the right-hand status icon column clear, including on smaller moons. Stored slots are
     // never compacted, so destroyed structures leave holes instead of moving their neighbors.
-    let slots = [
-        Vec2::new(-0.08, 0.30),
-        Vec2::new(-0.30, 0.0),
-        Vec2::new(-0.08, -0.30),
-        Vec2::new(0.12, 0.0),
-    ];
     if planet.is_moon() {
         for (building, slot) in
-            development.surface_build_order.into_iter().zip(slots.into_iter().take(3))
+            development.surface_build_order.into_iter().zip(SURFACE_SLOTS.into_iter().take(3))
         {
             let Some(building) = building else {
                 continue;
@@ -987,7 +1143,7 @@ fn spawn_development(
         }
         return;
     }
-    for (building, slot) in development.surface_build_order.into_iter().zip(slots) {
+    for (building, slot) in development.surface_build_order.into_iter().zip(SURFACE_SLOTS) {
         let Some((level, dedicated, facilities, variant)) =
             building.and_then(|building| planet_structure_spec(development, building, false))
         else {
@@ -1014,6 +1170,7 @@ fn refresh_details(
     images: Res<Assets<Image>>,
     shadow: Res<StructureShadow>,
     surface_lights: Res<SurfaceLightAtlas>,
+    shipyard_glow: Res<ShipyardGlow>,
 ) {
     if !map.is_changed()
         && !player.is_changed()
@@ -1061,6 +1218,7 @@ fn refresh_details(
         gas_planet_administration: &gas_planet_administration,
         surface_lights: &surface_lights.0,
         shadow: &shadow.0,
+        shipyard_glow: &shipyard_glow.0,
     };
     // Canonical reports persist on participants; the viewer also learns debris through ownership
     // or a successful spy mission without receiving the underlying battle report.
@@ -1139,6 +1297,7 @@ fn fade_details(
         &mut Visibility,
         Option<&SurfaceLight>,
         Option<&PlatformLight>,
+        Option<&ShipyardActivity>,
     )>,
     mut debris_hit_targets: Query<
         (&DebrisHitTarget, &mut Visibility, &mut Pickable),
@@ -1152,7 +1311,7 @@ fn fade_details(
     let development_alpha =
         development_visibility.update(scale <= DEVELOPMENT_MAX_SCALE, time.delta_secs());
     let zoom_detail_alpha = zoom_detail_visibility.update(scale, time.delta_secs());
-    for (detail, mut sprite, mut visibility, light, platform_light) in &mut details {
+    for (detail, mut sprite, mut visibility, light, platform_light, shipyard) in &mut details {
         let alpha = if detail.debris_turn.is_some() {
             zoom_detail_alpha
         } else {
@@ -1170,7 +1329,8 @@ fn fade_details(
                 * alpha
                 * age_alpha
                 * light.map_or(1.0, |light| light.brightness)
-                * platform_light.map_or(1.0, |light| light.brightness),
+                * platform_light.map_or(1.0, |light| light.brightness)
+                * shipyard.map_or(1.0, |activity| activity.brightness),
         );
         *visibility = if alpha * age_alpha > 0.01 {
             Visibility::Inherited
@@ -1207,6 +1367,7 @@ impl Plugin for MapDetailsPlugin {
         app.init_resource::<DetailCache>()
             .init_resource::<StructureShadow>()
             .init_resource::<SurfaceLightAtlas>()
+            .init_resource::<ShipyardGlow>()
             .init_resource::<DetailAnimationTime>()
             .add_systems(OnEnter(AppState::Game), |mut cache: ResMut<DetailCache>| {
                 *cache = DetailCache::default()
@@ -1216,6 +1377,7 @@ impl Plugin for MapDetailsPlugin {
                 (
                     refresh_details,
                     animate_surface_lights,
+                    animate_shipyards,
                     animate_floating_development,
                     animate_debris,
                     fade_details,

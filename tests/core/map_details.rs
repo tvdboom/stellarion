@@ -571,6 +571,70 @@ fn development_requires_known_completed_buildings_and_disappears_on_destruction(
 }
 
 #[test]
+fn shipyard_activity_requires_a_known_completed_yard_and_stays_attached_to_its_slot() {
+    for kind in [PlanetKind::Water, PlanetKind::Gas, PlanetKind::Gray] {
+        let mut planet = model().map.planets[0].clone();
+        planet.kind = kind;
+        planet.surface_build_order =
+            [Some(Building::MetalMine), Some(Building::Shipyard), None, None];
+        planet.army = Army::from([(Unit::Building(Building::Shipyard), 5)]).into();
+        planet.buy.push(Unit::Building(Building::Shipyard));
+        let image = Handle::<Image>::default();
+        let art = development_art(&image);
+        let mut app = App::new();
+        app.init_resource::<DetailAnimationTime>().add_systems(Update, animate_shipyards);
+        // A live yard is still hidden without intelligence, and an order is not a completed yard.
+        let unknown = development(&planet, None);
+        spawn_shipyard_activity(&mut app.world_mut().commands(), &planet, unknown, &art);
+        let known_empty = development(&planet, Some(&Army::default()));
+        spawn_shipyard_activity(&mut app.world_mut().commands(), &planet, known_empty, &art);
+        app.world_mut().flush();
+        assert_eq!(app.world_mut().query::<&ShipyardActivity>().iter(app.world()).count(), 0);
+
+        let known = Army::from([(Unit::Building(Building::Shipyard), 1)]);
+        spawn_shipyard_activity(
+            &mut app.world_mut().commands(),
+            &planet,
+            development(&planet, Some(&known)),
+            &art,
+        );
+        app.world_mut().flush();
+        assert_eq!(app.world_mut().query::<&ShipyardActivity>().iter(app.world()).count(), 5);
+        for seconds in 0..160 {
+            app.world_mut().resource_mut::<DetailAnimationTime>().0 = seconds as f32 * 0.2;
+            app.update();
+            for (activity, transform, sprite, pickable) in app
+                .world_mut()
+                .query::<(&ShipyardActivity, &Transform, &Sprite, &Pickable)>()
+                .iter(app.world())
+            {
+                assert!((0.0..=1.0).contains(&activity.brightness));
+                assert!(
+                    (transform.translation.truncate() - activity.anchor).length()
+                        < activity.diameter * 0.4
+                );
+                assert!(
+                    (transform.translation.truncate() - planet.position).length()
+                        + sprite.custom_size.unwrap().length() * 0.5
+                        < planet.size() * 0.5
+                );
+                assert_eq!(*pickable, Pickable::IGNORE);
+            }
+        }
+        planet.is_destroyed = true;
+        let mut world = World::new();
+        spawn_shipyard_activity(
+            &mut world.commands(),
+            &planet,
+            development(&planet, Some(&known)),
+            &art,
+        );
+        world.flush();
+        assert_eq!(world.query::<&ShipyardActivity>().iter(&world).count(), 0);
+    }
+}
+
+#[test]
 fn clicking_uses_report_order_and_never_grants_missing_intelligence() {
     let model = model();
     let mut player = model.players[0].clone();
@@ -1072,6 +1136,7 @@ fn projection_reuses_entities_and_removes_expired_debris() {
         .init_resource::<DetailCache>()
         .init_resource::<StructureShadow>()
         .init_resource::<SurfaceLightAtlas>()
+        .init_resource::<ShipyardGlow>()
         .init_resource::<MultiplayerSession>()
         .insert_resource(Missions(Vec::new()))
         .insert_resource(Settings {
@@ -1150,6 +1215,7 @@ fn render_development_and_wreckage() {
     .add_plugins(BasisTexturePlugin)
     .init_resource::<StructureShadow>()
     .init_resource::<SurfaceLightAtlas>()
+    .init_resource::<ShipyardGlow>()
     .init_resource::<DetailAnimationTime>()
     .insert_resource(ClearColor(Color::srgb(0.012, 0.02, 0.035)))
     .insert_resource(Settings {
@@ -1176,6 +1242,7 @@ fn render_development_and_wreckage() {
              mut gas_loaded: Local<Option<Handle<Image>>>,
              shadow: Res<StructureShadow>,
              surface_lights: Res<SurfaceLightAtlas>,
+             shipyard_glow: Res<ShipyardGlow>,
              mut spawned: Local<bool>| {
                 let image = loaded
                     .get_or_insert_with(|| server.load("images/ambient/wreckage.basisu.ktx2"));
@@ -1244,6 +1311,7 @@ fn render_development_and_wreckage() {
                     gas_planet_administration: &gas_planet_robotics,
                     surface_lights: &surface_lights.0,
                     shadow: &shadow.0,
+                    shipyard_glow: &shipyard_glow.0,
                 };
                 if *spawned {
                     return;
@@ -1386,6 +1454,7 @@ fn render_development_and_wreckage() {
                 }
             },
             animate_surface_lights,
+            animate_shipyards,
             animate_floating_development,
             animate_debris,
             fade_details,
@@ -1423,5 +1492,6 @@ fn development_art(image: &Handle<Image>) -> DevelopmentArt<'_> {
         gas_planet_administration: image,
         surface_lights: image,
         shadow: image,
+        shipyard_glow: image,
     }
 }
